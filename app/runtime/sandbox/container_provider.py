@@ -70,6 +70,10 @@ from app.platform.sandbox.docker_governed_network import (
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
+from app.platform.sandbox.trusted_skill_mount import (
+    TrustedSkillMount as _TrustedSkillMount,
+    prepare_trusted_skill_mount,
+)
 from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
@@ -604,14 +608,7 @@ _NATIVE_TOOL_HEALTH_PROBE_COMMAND = (
 _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
 _NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
-_CLAUDE_PROJECT_SETTING_NAMES = ("settings.json", "settings.local.json")
 
-
-@dataclass(frozen=True)
-class _TrustedSkillMount:
-    host_path: Path
-    container_path: str
-    fingerprint: str
 
 
 def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> bool:
@@ -656,109 +653,16 @@ def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
     )
 
 
-def _real_directory(path: Path, *, error: str) -> tuple[Path, os.stat_result]:
-    try:
-        node = path.lstat()
-        resolved = path.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ContainerStartFailedError(error) from exc
-    if stat.S_ISLNK(node.st_mode) or not stat.S_ISDIR(node.st_mode):
-        raise ContainerStartFailedError(error)
-    return resolved, node
-
-
-def _scrub_host_project_settings(claude_dir: Path) -> None:
-    for name in _CLAUDE_PROJECT_SETTING_NAMES:
-        setting = claude_dir / name
-        try:
-            node = setting.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise ContainerStartFailedError("staged Skill settings cannot be inspected") from exc
-        if not (stat.S_ISREG(node.st_mode) or stat.S_ISLNK(node.st_mode)):
-            raise ContainerStartFailedError("staged Skill settings path is invalid")
-        try:
-            setting.unlink()
-        except OSError as exc:
-            raise ContainerStartFailedError("staged Skill settings cannot be scrubbed") from exc
-        try:
-            setting.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise ContainerStartFailedError("staged Skill settings cannot be validated") from exc
-        raise ContainerStartFailedError("staged Skill settings cannot be scrubbed")
-
-
 def _prepare_trusted_skill_mount(
     request: SandboxRuntimeRequest,
     workspace: WorkspaceLease,
 ) -> _TrustedSkillMount | None:
-    """Derive, scrub, and validate the staged Skill mount only from the trusted lease."""
-
     if not _staged_skill_mount_required(request):
         return None
-    workspace_path = Path(workspace.workspace_host_path)
-    workspace_root, workspace_node = _real_directory(
-        workspace_path,
-        error="staged Skill workspace is invalid",
-    )
-    try:
-        trusted_host_root = Path(workspace.host_root).resolve(strict=True)
-        workspace_root.relative_to(trusted_host_root)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ContainerStartFailedError("staged Skill workspace escapes trusted run root") from exc
-
-    claude_path = workspace_path / ".claude"
-    claude_root, claude_node = _real_directory(
-        claude_path,
-        error="staged Skill .claude directory is invalid",
-    )
-    skills_root, skills_node = _real_directory(
-        claude_path / "skills",
-        error="staged Skill directory is invalid",
-    )
-    try:
-        claude_root.relative_to(workspace_root)
-        skills_root.relative_to(claude_root)
-    except ValueError as exc:
-        raise ContainerStartFailedError("staged Skill directory escapes trusted workspace") from exc
-
-    _scrub_host_project_settings(claude_path)
-    final_claude_root, final_claude_node = _real_directory(
-        claude_path,
-        error="staged Skill .claude directory changed during validation",
-    )
-    final_skills_root, final_skills_node = _real_directory(
-        claude_path / "skills",
-        error="staged Skill directory changed during validation",
-    )
-    if (
-        final_claude_root != claude_root
-        or final_skills_root != skills_root
-        or (final_claude_node.st_dev, final_claude_node.st_ino)
-        != (claude_node.st_dev, claude_node.st_ino)
-        or (final_skills_node.st_dev, final_skills_node.st_ino)
-        != (skills_node.st_dev, skills_node.st_ino)
-    ):
-        raise ContainerStartFailedError("staged Skill directory changed during validation")
-
-    fingerprint_payload = "\0".join(
-        str(value)
-        for value in (
-            workspace_node.st_dev,
-            workspace_node.st_ino,
-            claude_node.st_dev,
-            claude_node.st_ino,
-            skills_node.st_dev,
-            skills_node.st_ino,
-        )
-    )
-    return _TrustedSkillMount(
-        host_path=claude_root,
-        container_path=f"{workspace.workspace_container_path.rstrip('/')}/.claude",
-        fingerprint=hashlib.sha256(fingerprint_payload.encode("ascii")).hexdigest(),
+    return prepare_trusted_skill_mount(
+        workspace_host_path=workspace.workspace_host_path,
+        host_root=workspace.host_root,
+        workspace_container_path=workspace.workspace_container_path,
     )
 
 

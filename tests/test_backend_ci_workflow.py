@@ -126,6 +126,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_settings.py",
         "tests/test_host_bind.py",
         "tests/test_sandbox_container_provider.py",
+        "tests/test_trusted_skill_mount.py",
         "tests/test_docker_async_operations.py",
         "tests/test_sandbox_creation_claim.py",
         "tests/test_opensandbox_live_credential_isolation.py",
