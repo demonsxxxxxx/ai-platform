@@ -4563,8 +4563,9 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
 
     assert "Skill: qa-file-reviewer" not in prompt
     assert "sample.docx" in prompt
-    assert "backend-managed skills" in prompt
-    assert "staged Skill" in prompt
+    assert "Workspace input files (under inputs/):" in prompt
+    assert "Use Simplified Chinese" not in prompt
+    assert "attach_file" not in prompt
 
 
 def test_build_skill_prompt_includes_bounded_executor_context_pack():
@@ -4599,8 +4600,9 @@ def test_build_skill_prompt_includes_bounded_executor_context_pack():
 
     assert "Office context pack:" in prompt
     assert "Context pack: 2 message(s), 1 file(s), 1 artifact(s)" in prompt
-    assert "Context pack generated at: 2026-06-12T01:23:45Z" in prompt
-    assert "Use this bounded context only as background" in prompt
+    # Legacy packs retain their safe summary, but not separate audit metadata.
+    assert "Context pack generated at:" not in prompt
+    assert "2026-06-12T01:23:45Z" not in prompt
     assert "raw_storage_key" not in prompt
     assert "s3://private" not in prompt
     assert "sandbox_workdir" not in prompt

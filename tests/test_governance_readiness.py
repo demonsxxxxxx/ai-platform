@@ -293,10 +293,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     )
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
         "source_probe_schema_version"
-    ] == "ai-platform.executor-context-pack-probe.v2"
+    ] == "ai-platform.executor-context-pack-probe.v3"
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"][
         "runtime_acceptance_schema_version"
-    ] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
+    ] == "ai-platform.executor-context-pack-runtime-acceptance.v3"
     assert context_evidence["executor_context_pack_runtime_acceptance_contract"]["generator_script"] == (
         "scripts/generate_executor_context_pack_evidence.py"
     )
@@ -340,7 +340,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "scoped_context_snapshot_loaded" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
-    assert "prompt_includes_context_pack_generated_at" in context_evidence[
+    assert "prompt_rendering_contract_verified" in context_evidence[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert "fresh_generated_at" in context_evidence[
