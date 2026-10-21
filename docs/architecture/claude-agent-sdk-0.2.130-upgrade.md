@@ -99,6 +99,8 @@ checks cover both that representation and legacy transcripts without cost-state,
 which start at zero. An invalid baseline makes cost unavailable while retaining
 normal per-turn token usage. SDK prices remain client-side estimates, not billing
 authority; another CLI upgrade must requalify this accounting boundary.
+Current file-task composition and native-resume behavior are documented in
+[the continuity contract](claude-provider-session-continuity.md#file-task-prompt-composition-sdk-02165).
 
 The single private `cost_coverage` marker is `complete`, `partial`, or
 `unavailable`. Missing/invalid latest cost does not erase an earlier observation.
@@ -106,8 +108,9 @@ An execution-crash result can contain false zeroes; earlier observations remain
 partial. Missing final results, cumulative regressions, changed session identity,
 or initial/supplemental `/clear`, `/reset`, or `/new` commands never manufacture
 a complete Run total. The adapter observes reset inputs and result identity;
-it does not alter user input or reconstruct accounting across resets. A legitimate zero on an intact
-call remains a complete zero. Optional telemetry failure cannot fail a Run.
+it does not alter user input or reconstruct accounting across resets. A
+legitimate zero on an intact call remains a complete zero. Optional telemetry
+failure cannot fail a Run.
 Cancellation still propagates directly without assembling a returned result;
 this observer does not persist a partial cost on that cancellation path.
 Partial snapshots are carried only by results the existing assembler returns,
