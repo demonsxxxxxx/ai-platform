@@ -28,6 +28,10 @@ from app.identity.application.profile_metadata import (
     ProfileMetadataValidationError,
 )
 
+from app.identity.application.company_employees import (
+    CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeDirectoryUnavailable,
+)
+
 __all__ = [
     "DepartmentAuthority",
     "department_authority_from_snapshot",
@@ -48,4 +52,7 @@ __all__ = [
     "ProfileMetadataService",
     "ProfileMetadataStore",
     "ProfileMetadataValidationError",
+    "CompanyEmployee",
+    "CompanyEmployeeDirectoryService",
+    "CompanyEmployeeDirectoryUnavailable",
 ]

@@ -699,10 +699,11 @@ def test_stream_only_schema_change_advances_schema_version():
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.15.1"
+    assert schema_migrations.MODEL_USER_ACCESS_SCHEMA_VERSION == "2026.10.20.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.20.2"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION
+        == schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION
     )
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
@@ -722,6 +723,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "users",
         "runs",
         "run_diagnostics",
+        "model_token_usage_scopes",
+        "model_token_usage_observations",
+        "model_token_usage_coverage",
+        "model_token_usage_deltas",
         "model_gateway_revisions",
         "model_catalog_entries",
         "run_attempts",
@@ -902,6 +907,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("upstream_available", "bool"),
         ("is_default", "bool"),
         ("display_order", "int4"),
+        ("access_mode", "text"),
         ("first_seen_revision", "int8"),
         ("last_seen_revision", "int8"),
         ("first_seen_at", "timestamptz"),
@@ -915,6 +921,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     for column in ("max_input_tokens", "max_output_tokens"):
         assert ("model_catalog_entries", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
         assert ("runs", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "model_catalog_entries", "allowed_user_ids", "jsonb", True,
+    ) in schema_migrations.CRITICAL_COLUMNS
     for constraint in (
         ("runs", "fk_runs_model_gateway_revision"),
         ("runs", "chk_runs_model_token_limits"),
@@ -928,6 +937,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("model_catalog_entries", "chk_model_catalog_upstream_id"),
         ("model_catalog_entries", "chk_model_catalog_display_name"),
         ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+        ("model_catalog_entries", "chk_model_catalog_access_mode"),
+        ("model_catalog_entries", "chk_model_catalog_access_users_array"),
+        ("model_catalog_entries", "chk_model_catalog_selected_users_present"),
     ):
         assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("uq_model_gateway_active", True) in schema_migrations.CRITICAL_INDEXES

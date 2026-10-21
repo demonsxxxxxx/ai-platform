@@ -548,11 +548,22 @@ create table if not exists model_catalog_entries (
   display_order integer not null default 0,
   max_input_tokens bigint,
   max_output_tokens bigint,
+  access_mode text not null default 'all',
+  allowed_user_ids jsonb not null default '[]'::jsonb,
   first_seen_revision bigint not null references model_gateway_revisions(revision),
   last_seen_revision bigint not null references model_gateway_revisions(revision),
   first_seen_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
   constraint chk_model_catalog_id check (model_id ~ '^[A-Za-z0-9_.:-]{1,128}$'),
+  constraint chk_model_catalog_access_mode check (
+    access_mode = 'all' or access_mode = 'selected'
+  ),
+  constraint chk_model_catalog_access_users_array check (
+    jsonb_typeof(allowed_user_ids) = 'array'
+  ),
+  constraint chk_model_catalog_selected_users_present check (
+    access_mode <> 'selected' or jsonb_array_length(allowed_user_ids) > 0
+  ),
   constraint chk_model_catalog_upstream_id check (
     length(upstream_model_id) between 1 and 512
     and upstream_model_id = btrim(upstream_model_id)
@@ -637,6 +648,74 @@ create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at
 create index if not exists idx_runs_session_created on runs(session_id, created_at desc);
 create index if not exists idx_runs_status on runs(status);
 create unique index if not exists uq_runs_tenant_id on runs(tenant_id, id);
+
+-- Actual SDK model usage is an append-only, callback-fenced ledger. It is
+-- deliberately separate from the legacy Run token counters.
+create table if not exists model_token_usage_scopes (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  scope_id text not null,
+  baseline text not null check (baseline in ('fresh','restored','unknown')),
+  baseline_json jsonb,
+  provider_session_id text,
+  created_at timestamptz not null default now(),
+  latest_observation_seq bigint not null default -1,
+  cumulative_json jsonb not null default '{}'::jsonb,
+  coverage text not null check (coverage in ('reported_final','partial','unavailable')),
+  coverage_reason text,
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, run_id, attempt_id, scope_id),
+  foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  check (latest_observation_seq >= -1),
+  check (jsonb_typeof(cumulative_json) = 'object')
+);
+create table if not exists model_token_usage_observations (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  scope_id text not null,
+  observation_seq bigint not null check (observation_seq > 0),
+  payload_json jsonb not null check (jsonb_typeof(payload_json) = 'object'),
+  recorded_at timestamptz not null,
+  source_receipt_id text not null,
+  primary key (tenant_id, run_id, attempt_id, scope_id, observation_seq),
+  foreign key (tenant_id, run_id, attempt_id, scope_id)
+    references model_token_usage_scopes(tenant_id, run_id, attempt_id, scope_id)
+);
+
+create table if not exists model_token_usage_coverage (
+  id bigint generated always as identity primary key,
+  tenant_id text not null, run_id text not null, attempt_id text not null, scope_id text not null,
+  source_receipt_id text not null, recorded_at timestamptz not null,
+  coverage text not null check (coverage in ('reported_final','partial','unavailable')),
+  coverage_reason text,
+  unique (tenant_id,run_id,attempt_id,scope_id,source_receipt_id),
+  foreign key (tenant_id,run_id,attempt_id,scope_id)
+    references model_token_usage_scopes(tenant_id,run_id,attempt_id,scope_id)
+);
+create index if not exists idx_model_token_usage_coverage_window
+  on model_token_usage_coverage(tenant_id,recorded_at);
+
+create table if not exists model_token_usage_deltas (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  scope_id text not null,
+  observation_seq bigint not null,
+  actual_model text not null,
+  input_tokens bigint not null check (input_tokens >= 0),
+  cache_read_input_tokens bigint not null check (cache_read_input_tokens >= 0),
+  cache_creation_input_tokens bigint not null check (cache_creation_input_tokens >= 0),
+  output_tokens bigint not null check (output_tokens >= 0),
+  recorded_at timestamptz not null default now(),
+  source_receipt_id text,
+  primary key (tenant_id, run_id, attempt_id, scope_id, observation_seq, actual_model),
+  foreign key (tenant_id, run_id, attempt_id, scope_id)
+    references model_token_usage_scopes(tenant_id, run_id, attempt_id, scope_id)
+);
+create index if not exists idx_model_token_usage_delta_window
+  on model_token_usage_deltas(tenant_id, recorded_at, run_id, actual_model);
 
 create table if not exists run_diagnostics (
   diagnostic_id text primary key,
@@ -1069,6 +1148,27 @@ alter table runs add column if not exists max_input_tokens bigint;
 alter table runs add column if not exists max_output_tokens bigint;
 alter table model_catalog_entries add column if not exists max_input_tokens bigint;
 alter table model_catalog_entries add column if not exists max_output_tokens bigint;
+alter table model_catalog_entries
+  add column if not exists access_mode text not null default 'all';
+alter table model_catalog_entries
+  add column if not exists allowed_user_ids jsonb not null default '[]'::jsonb;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_access_mode') then
+    alter table model_catalog_entries add constraint chk_model_catalog_access_mode check (
+      access_mode = 'all' or access_mode = 'selected'
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_access_users_array') then
+    alter table model_catalog_entries add constraint chk_model_catalog_access_users_array check (
+      jsonb_typeof(allowed_user_ids) = 'array'
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_catalog_entries'::regclass and conname = 'chk_model_catalog_selected_users_present') then
+    alter table model_catalog_entries add constraint chk_model_catalog_selected_users_present check (
+      access_mode <> 'selected' or jsonb_array_length(allowed_user_ids) > 0
+    );
+  end if;
+end $$;
 do $$ begin
   if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_token_limits') then
     alter table runs add constraint chk_runs_model_token_limits check (

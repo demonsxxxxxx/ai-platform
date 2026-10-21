@@ -12,6 +12,15 @@ Management pages import `Table` and `Pagination` directly from `@lobehub/ui/base
 
 Complex department/role selections, market-tag autocomplete and model/Skill/MCP catalogs retain their data and authority owners while using Lobe Select/Popover/AutoComplete/Modal controls. Department selections preserve authority IDs, unresolved values, duplicate restrictions and the 128-choice limit. Expert access editing remains department-only; historical API fields are preserved.
 
+Model user access is employee-only, separate from expert department access.
+`ModelUserAccess` uses Lobe Checkbox controls and the administrator company
+employee API (`companyEmployeesApi`), not the local-user diagnostics API.
+Options and selected labels show name plus work ID; `allowed_user_ids` retains
+its historical field name but carries work IDs. Each model owns its server-side
+search/page and abortable request; retained selections survive searches and
+pagination, and directory failures remain retryable. Publication disables all
+access controls; losing management permission clears pending directory state.
+
 Avatar candidates remain four columns inside the editor card. Viewport width alone does not establish room for eight fixed-size avatars. Actual rendered candidates must stay within their buttons without overlap.
 
 ## Retirement and compatibility disposition

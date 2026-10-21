@@ -7296,3 +7296,36 @@ async def test_sdk_response_registration_keeps_private_cause_only_when_required(
     assert "synthetic decorator cause" in json.dumps(private)
     assert "synthetic-secret" not in json.dumps(private)
     assert "synthetic response registration failed" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+async def test_actual_model_usage_reports_each_result_before_final_and_keeps_private_scope(monkeypatch, tmp_path):
+    sdk = _fake_sdk({}, hook_invocations=[])
+    original_query = sdk.query
+    observed = []
+
+    async def query(**kwargs):
+        async for message in original_query(**kwargs):
+            if isinstance(message, sdk.ResultMessage):
+                message.model_usage = {"actual-model": {
+                    "inputTokens": 1, "cacheReadInputTokens": 2,
+                    "cacheCreationInputTokens": 3, "outputTokens": 4,
+                }}
+            yield message
+
+    sdk.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    async def snapshot(value):
+        observed.append(value)
+        return True
+
+    result = await run_claude_agent_sdk(prompt="start",cwd=tmp_path,skill_id=None,
+        run_id="run-a",attempt_id="attempt-a",on_model_usage_snapshot=snapshot)
+    assert observed[0]["coverage"] == "unavailable"
+    assert observed[-1]["models"]["actual-model"]["input_tokens"] == 1
+    assert observed[-1]["coverage"] == "partial"
+    assert result.model_usage_snapshot["coverage"] == "reported_final"
+    assert result.model_usage_snapshot["scope_id"] == observed[-1]["scope_id"]
+    assert result.model_usage_snapshot["observation_seq"] > observed[-1]["observation_seq"]

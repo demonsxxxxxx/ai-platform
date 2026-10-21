@@ -244,11 +244,14 @@ def auth_settings():
 
 
 class EmptyPropagationCursor:
+    def __init__(self, row=None):
+        self._row = row
+
     async def fetchone(self):
-        return None
+        return self._row
 
     async def fetchall(self):
-        return []
+        return [] if self._row is None else [self._row]
 
 
 class EmptyPropagationConnection:
@@ -258,6 +261,9 @@ class EmptyPropagationConnection:
             return EmptyPropagationCursor()
         if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
             return EmptyPropagationCursor()
+        if normalized.startswith("select access_mode, allowed_user_ids from model_catalog_entries"):
+            # Synthetic catalog row: the inherited model stays available.
+            return EmptyPropagationCursor({"access_mode": "all", "allowed_user_ids": []})
         raise AssertionError(f"unexpected fake transaction sql: {normalized}")
 
 
@@ -1243,6 +1249,98 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     ]
     assert calls["enqueue"][0]["model_id"] == "model-catalog-retry"
     assert calls["enqueue"][0]["model_value"] == "provider-model-retry"
+
+
+@pytest.mark.parametrize("action", ["copy", "retry", "resume"])
+def test_revoked_model_access_blocks_the_child_run_before_queue_admission(monkeypatch, action):
+    """A new child Run must not be admitted once the model excludes this user."""
+
+    enqueued: list[dict[str, object]] = []
+
+    async def copied_child(conn, **_kwargs):
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-child",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"message": "child"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_decision": {},
+            "skill_manifests": [],
+            "model_id": "model-revoked",
+            "model_value": "provider-model-revoked",
+        }
+
+    async def empty_catalog_access(conn, *, model_id, user_id):
+        # The saved restriction now excludes the caller.
+        assert model_id == "model-revoked"
+        assert user_id == "user-a"
+        return True
+
+    async def enqueue(payload):
+        enqueued.append(payload)
+        return 1
+
+    async def admit(conn, **kwargs):
+        return 0
+
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def operation_lock(*_args, **_kwargs):
+        return None
+
+    async def resolve_operation(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+    monkeypatch.setattr("app.routes.runs.model_access_excludes_user", empty_catalog_access)
+    monkeypatch.setattr(
+        "app.runs.infrastructure.postgres.enforce_user_active_run_admission", admit, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.copy_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.retry_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.resume_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.control_operations_postgres.acquire_run_control_operation_lock",
+        operation_lock, raising=False,
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.control_operations_postgres.get_run_control_operation",
+        resolve_operation, raising=False,
+    )
+    for target in (
+        "app.routes.runs._agent_profile_authority",
+    ):
+        monkeypatch.setattr(
+            target,
+            type("A", (), {"reauthorize_pinned_run_for_replay": staticmethod(noop)})(),
+        )
+    client = TestClient(create_app())
+
+    if action == "copy":
+        response = client.post("/api/ai/runs/run-source/copy", headers=headers())
+    else:
+        response = client.post(run_control_url("run-source", action), headers=headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "model_not_available_to_user"
+    assert enqueued == [], "a revoked child must never reach queue admission"
 def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creation(monkeypatch):
     calls: list[object] = []
     mapping: dict[str, object] | None = None

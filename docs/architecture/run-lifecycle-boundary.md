@@ -457,3 +457,9 @@ The terminal behavior change is not ready until focused evidence covers:
 Source and CI evidence do not prove a stopped deployment, production schema
 migration, Redis convergence, Sandbox cleanup, or mixed-version runtime safety.
 Those remain deployment/runtime acceptance.
+
+## Actual-model usage accounting
+
+[Actual model token usage](actual-model-token-usage.md) owns the administrator
+usage ledger. It consumes private callback snapshots in the existing fenced
+receipt transaction, independently of Run terminal state and legacy counters.

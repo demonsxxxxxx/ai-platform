@@ -12,7 +12,10 @@ from app.bootstrap.files import (
     configure_file_preview_services,
     configure_file_upload_services,
 )
-from app.bootstrap.identity import build_admin_users_router, build_identity_profile_router
+from app.bootstrap.model_token_usage import build_model_token_usage_service, build_model_token_usage_admin_router
+from app.bootstrap.identity import (
+    build_admin_users_router, build_identity_profile_router, build_company_employee_directory_router,
+)
 from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
@@ -179,6 +182,7 @@ def create_app() -> FastAPI:
     app.state.run_attempt_lifecycle = build_run_attempt_lifecycle_service()
     app.state.run_diagnostics_service = build_run_diagnostics_service()
     app.state.run_inputs_service = build_run_inputs_service()
+    app.state.model_token_usage_service = build_model_token_usage_service()
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,
@@ -203,7 +207,9 @@ def create_app() -> FastAPI:
     app.include_router(runtime_callbacks_router, prefix="/api/ai")
     app.include_router(admin_runtime_router, prefix="/api/ai")
     app.include_router(admin_runs_router, prefix="/api/ai")
+    app.include_router(build_model_token_usage_admin_router(app.state.model_token_usage_service), prefix="/api/ai")
     app.include_router(build_admin_users_router(), prefix="/api/ai")
+    app.include_router(build_company_employee_directory_router(), prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(build_model_management_router(), prefix="/api/ai")

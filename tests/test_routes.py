@@ -4606,7 +4606,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         calls.append(("run_input_model", kwargs["input_json"]["model_id"], kwargs["input_json"]["model_value"]))
         return kwargs["run_id"]
 
-    async def resolve_model(conn, *, selection):
+    async def resolve_model(conn, *, selection, user_id):
         calls.append(("resolve_model", conn, selection))
         return SimpleNamespace(
             model_id="catalog-default",
@@ -6656,6 +6656,11 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
     monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
+    # Model access is owned by test_run_control_routes; this case pins release replay.
+    async def _model_still_available(_conn, **_kwargs):
+        return False
+
+    monkeypatch.setattr("app.routes.runs.model_access_excludes_user", _model_still_available)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,

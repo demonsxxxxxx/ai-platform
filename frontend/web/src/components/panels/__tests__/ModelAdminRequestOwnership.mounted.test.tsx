@@ -65,7 +65,7 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
         (field as unknown as HTMLInputElement).dispatchEvent(new Event("input", { bubbles: true }));
       }); },
-      click: async (attribute) => { await React.act(async () => { props(button(attribute)).onClick?.(new MouseEvent("click", { bubbles: true })); await Promise.resolve(); }); },
+      click: async (attribute) => { await React.act(async () => { (button(attribute) as HTMLButtonElement).click(); await Promise.resolve(); }); },
     });
   } finally { await React.act(async () => root.unmount()); Object.assign(modelAdminApi, original); }
 }
@@ -119,8 +119,8 @@ test("test probes the editable draft only; new endpoint needs its own key and di
     assert.equal(input("模型 API Key").value, ""); assert.equal(props(button("data-model-admin-test")).disabled, true);
     await change("模型 API Key", "synthetic-b"); await click("data-model-admin-test");
     assert.deepEqual(calls[0], { url: "https://gateway-b.example/v1", key: "synthetic-b" });
-    assert.equal(input("mock/gpt 显示名称").value, "合成模型"); assert.equal(props(button("data-model-admin-publish")).disabled, true);
-    await click("data-model-admin-discover"); assert.equal(input("mock/new 显示名称").value, "新候选");
+    assert.equal(input("mock/gpt 平台显示名称").value, "合成模型"); assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    await click("data-model-admin-discover"); assert.equal(input("mock/new 平台显示名称").value, "新候选");
     assert.equal(input("模型 API 地址").value, "https://gateway-b.example/v1");
   });
 });
@@ -144,9 +144,9 @@ test("dirty reload updates saved baseline; discovery preserves edits and failure
   } }, async ({ change, click, input, container }) => {
     await change("mock/gpt 最大输入 Token", "64000"); await change("模型 API Key", "synthetic-b"); await click("data-model-admin-reload");
     assert.equal(gets, 2); assert.equal(input("模型 API Key").value, ""); assert.equal(input("mock/gpt 最大输入 Token").value, "32000");
-    await change("mock/gpt 最大输入 Token", "64000"); await change("mock/gpt 显示名称", "我的模型"); await click("data-model-admin-discover");
+    await change("mock/gpt 最大输入 Token", "64000"); await change("mock/gpt 平台显示名称", "我的模型"); await click("data-model-admin-discover");
     assert.equal(input("mock/gpt 最大输入 Token").value, "64000"); assert.equal(choice(container, "启用 我的模型").getAttribute("aria-checked"), "true");
-    await click("data-model-admin-discover"); assert.equal(input("mock/gpt 显示名称").value, "我的模型"); assert.match(text(container), /无法连接模型服务/);
+    await click("data-model-admin-discover"); assert.equal(input("mock/gpt 平台显示名称").value, "我的模型"); assert.match(text(container), /无法连接模型服务/);
   });
 });
 
@@ -164,7 +164,7 @@ test("save conflict keeps edits until explicit reload; saving locks fields and b
     await click("data-model-admin-reload");
     await change("mock/gpt 最大输入 Token", "64000");
     await click("data-model-admin-publish"); await click("data-model-admin-publish"); assert.equal(calls, 2);
-    for (const label of ["模型 API 地址", "模型 API Key", "mock/gpt 显示名称", "mock/gpt 最大输入 Token"]) assert.equal(props(input(label)).disabled, true);
+    for (const label of ["模型 API 地址", "模型 API Key", "mock/gpt 平台显示名称", "mock/gpt 最大输入 Token"]) assert.equal(props(input(label)).disabled, true);
     await React.act(async () => pending.resolve(saved(8)));
   });
 });
@@ -185,9 +185,9 @@ test("ordinary publish failure preserves the entered key and model edits for ret
     if (calls.length === 1) throw new ApiRequestError("unavailable", 502, "model_upstream_unavailable");
     return { ...saved(8), models };
   } }, async ({ change, click, input, button, container }) => {
-    await change("模型 API Key", "synthetic-retry"); await change("mock/gpt 显示名称", "我的草稿");
+    await change("模型 API Key", "synthetic-retry"); await change("mock/gpt 平台显示名称", "我的草稿");
     await click("data-model-admin-discover"); await click("data-model-admin-publish");
-    assert.equal(input("模型 API Key").value, "synthetic-retry"); assert.equal(input("mock/gpt 显示名称").value, "我的草稿");
+    assert.equal(input("模型 API Key").value, "synthetic-retry"); assert.equal(input("mock/gpt 平台显示名称").value, "我的草稿");
     assert.match(text(container), /无法连接模型服务/); assert.equal(props(button("data-model-admin-publish")).disabled, false);
     await click("data-model-admin-publish"); assert.deepEqual(calls, [{ key: "synthetic-retry", revision: 4 }, { key: "synthetic-retry", revision: 4 }]);
     assert.equal(input("模型 API Key").value, "");
@@ -199,7 +199,7 @@ for (const discoveredRevision of [3, 5]) {
     const pending = deferred<ReturnType<typeof candidate>>(); let publications = 0;
     await withControl({ discover: async () => pending.promise, publish: async () => { publications += 1; return saved(6); } },
       async ({ React, change, click, input, button, container }) => {
-        await change("mock/gpt 显示名称", "我的未保存名称");
+        await change("mock/gpt 平台显示名称", "我的未保存名称");
         await change("mock/gpt 最大输入 Token", "64000");
         await change("mock/gpt 最大输出 Token", "4096");
         await change("模型 API Key", "synthetic-unsaved");
@@ -208,7 +208,7 @@ for (const discoveredRevision of [3, 5]) {
         const concurrent = candidate(discoveredRevision);
         concurrent.models[0].label = "其他管理员的新名称";
         await React.act(async () => pending.resolve(concurrent));
-        assert.equal(input("mock/gpt 显示名称").value, "我的未保存名称");
+        assert.equal(input("mock/gpt 平台显示名称").value, "我的未保存名称");
         assert.equal(input("mock/gpt 最大输入 Token").value, "64000");
         assert.equal(input("mock/gpt 最大输出 Token").value, "4096");
         assert.equal(choice(container, "启用 我的未保存名称").getAttribute("aria-checked"), "true");
@@ -243,8 +243,8 @@ test("a connectivity test at a newer revision never changes the draft publicatio
   await withControl({ discover: async () => candidate(7), publish: async (_url, _key, revision) => {
     revisions.push(revision); throw new ApiRequestError("conflict", 409, "model_catalog_revision_conflict");
   } }, async ({ change, click, input, container }) => {
-    await change("mock/gpt 显示名称", "我的草稿"); await click("data-model-admin-test");
-    assert.equal(input("mock/gpt 显示名称").value, "我的草稿");
+    await change("mock/gpt 平台显示名称", "我的草稿"); await click("data-model-admin-test");
+    assert.equal(input("mock/gpt 平台显示名称").value, "我的草稿");
     await click("data-model-admin-publish"); assert.deepEqual(revisions, [4]);
     assert.match(text(container), /模型配置已被更新/);
   });
@@ -303,7 +303,7 @@ for (const clearCapacity of [false, true]) {
             if ((enabled.getAttribute("aria-checked") === "true") !== checked) enabled.click();
           }); };
           await change("模型 API Key", "synthetic-capacity-key");
-          await change("mock/second 显示名称", "停用草稿");
+          await change("mock/second 平台显示名称", "停用草稿");
           await change("mock/second 最大输入 Token", "");
           await click("data-model-admin-discover");
           await toggle(false);
@@ -311,7 +311,7 @@ for (const clearCapacity of [false, true]) {
           assert.equal(requests.length, 0);
           assert.match(text(container), /停用草稿.*同时留空/);
           assert.equal(input("模型 API Key").value, "synthetic-capacity-key");
-          assert.equal(input("mock/second 显示名称").value, "停用草稿");
+          assert.equal(input("mock/second 平台显示名称").value, "停用草稿");
           assert.equal(input("mock/second 最大输出 Token").value, "2048",
             "disabling must not erase the remaining draft capacity");
           await change("mock/second 最大输入 Token", "1");
@@ -336,6 +336,7 @@ for (const clearCapacity of [false, true]) {
           assert.deepEqual(requests[0].models[1], {
             id: "mdl_second", value: "mock/second", display_name: "停用草稿",
             enabled: false, is_default: false, order: 2,
+            access_mode: "all", allowed_user_ids: [],
             ...(clearCapacity ? {} : { max_input_tokens: 1, max_output_tokens: 10000000 }),
           });
           assert.equal(input("模型 API Key").value, "");

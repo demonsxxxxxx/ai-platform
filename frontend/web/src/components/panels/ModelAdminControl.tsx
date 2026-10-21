@@ -7,6 +7,8 @@ import {
   type AdminModelEntry,
   type AdminModelState,
 } from "../../services/api/modelAdmin";
+import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
+import { ModelUserAccess, type UserDirectoryStatus } from "./ModelUserAccess";
 import { ApiRequestError } from "../../services/api/fetch";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 
@@ -17,7 +19,39 @@ const STATUS_FILTERS = [
   ["unavailable", "状态：上游缺失"],
 ] as const;
 
+// Matches the company employee directory API page bound (limit <= 100).
+const DIRECTORY_PAGE_SIZE = 100;
+
+/** One model's own directory query; rows never share a page or a search. */
+interface ModelDirectoryState {
+  query: string;
+  mode: UserDirectoryStatus;
+  page: CompanyEmployee[];
+  names: Map<string, CompanyEmployee>;
+  total: number;
+  error: string | null;
+}
+
+const EMPTY_DIRECTORY: ModelDirectoryState = {
+  query: "",
+  mode: "idle",
+  page: [],
+  names: new Map(),
+  total: 0,
+  error: null,
+};
+
+function mergeDirectory(
+  current: CompanyEmployee[],
+  incoming: CompanyEmployee[],
+): CompanyEmployee[] {
+  const known = new Set(current.map((user) => user.work_id));
+  return [...current, ...incoming.filter((user) => !known.has(user.work_id))];
+}
+
 const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
+  company_employee_directory_unavailable: "公司员工目录暂不可用，请重试；新增授权尚未保存。",
+  company_employee_directory_forbidden: "无权访问公司员工目录。",
   model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
   model_connection_endpoint_must_be_origin: "API 地址应为服务根地址或以 /v1 结尾，不能含其它路径。",
   model_connection_endpoint_forbidden: "该 API 地址未获平台网络策略授权。",
@@ -33,6 +67,9 @@ const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_upstream_unavailable: "无法连接模型服务，请检查地址、网络和服务状态。",
   model_catalog_revision_conflict: "模型配置已被更新，请重新加载配置后再发布。",
   model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
+  model_user_access_invalid: "用户访问设置无效，请重新选择。",
+  model_user_access_requires_users: "“仅指定用户”至少需要选择一名用户。",
+  model_user_access_unknown_user: "所选工号不在有效公司员工目录中或存在歧义，请移除后重试。",
 };
 
 function errorMessage(error: unknown): string {
@@ -79,6 +116,7 @@ function modelDraftSignature(models: AdminModelEntry[]): string {
   return JSON.stringify(models.map((model) => [
     model.id, model.value, model.label, model.enabled, model.is_default,
     model.order, model.max_input_tokens ?? null, model.max_output_tokens ?? null,
+    model.access_mode ?? "all", [...(model.allowed_user_ids ?? [])].sort(),
   ]));
 }
 
@@ -89,6 +127,8 @@ function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEn
       ...candidate,
       label: previous.label, enabled: previous.enabled, is_default: previous.is_default,
       max_input_tokens: previous.max_input_tokens, max_output_tokens: previous.max_output_tokens,
+      access_mode: previous.access_mode ?? "all",
+      allowed_user_ids: [...(previous.allowed_user_ids ?? [])],
     } : candidate;
   });
 }
@@ -114,6 +154,9 @@ export function ModelAdminControl({
   const [message, setMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [directoryByModel, setDirectoryByModel] = useState<Record<string, ModelDirectoryState>>({});
+  const directoryOwners = useRef(new Map<string, AbortController>());
+  const directoryVersions = useRef(new Map<string, number>());
   const connectionVersion = useRef(0);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ModelAdminRequestOwner | null>(null);
@@ -181,14 +224,87 @@ export function ModelAdminControl({
     } finally { finishRequest(owner); }
   }, [abandonRequest, startRequest, ownsRequest, applyState, onStateChange, finishRequest]);
 
+  const patchDirectory = useCallback((modelId: string, patch: Partial<ModelDirectoryState>) => {
+    setDirectoryByModel((current) => ({
+      ...current,
+      [modelId]: { ...(current[modelId] ?? EMPTY_DIRECTORY), ...patch },
+    }));
+  }, []);
+
+  // Each model owns its own query, page and owner. Rows never mix results, so a
+  // page append always continues the search this row is actually showing.
+  const loadDirectory = useCallback(async (
+    modelId: string,
+    search: string,
+    options: { append?: boolean } = {},
+  ) => {
+    const append = options.append === true;
+    if (activeRequest.current) return;
+    directoryOwners.current.get(modelId)?.abort();
+    const controller = new AbortController();
+    directoryOwners.current.set(modelId, controller);
+    const version = (directoryVersions.current.get(modelId) ?? 0) + 1;
+    directoryVersions.current.set(modelId, version);
+    const owned = () => directoryVersions.current.get(modelId) === version
+      && !controller.signal.aborted;
+    const pageBefore = directoryByModel[modelId]?.page ?? [];
+    patchDirectory(modelId, {
+      query: search, mode: "loading", error: null,
+      ...(!append ? { page: [], total: 0 } : {}),
+    });
+    try {
+      const page = await companyEmployeesApi.list({
+        search: search || undefined,
+        offset: append ? pageBefore.length : 0,
+        limit: DIRECTORY_PAGE_SIZE,
+        signal: controller.signal,
+      });
+      if (!owned()) return;
+      const incoming = page.employees ?? [];
+      setDirectoryByModel((current) => {
+        const previous = current[modelId] ?? EMPTY_DIRECTORY;
+        const nextPage = append ? mergeDirectory(previous.page, incoming) : incoming;
+        const nextNames = new Map(previous.names);
+        for (const user of incoming) nextNames.set(user.work_id, user);
+        return {
+          ...current,
+          [modelId]: {
+            query: search,
+            mode: "ready",
+            page: nextPage,
+            names: nextNames,
+            total: page.total ?? incoming.length,
+            error: null,
+          },
+        };
+      });
+    } catch (caught) {
+      if (!owned()) return;
+      // A failure stays retryable; it is never cached as a successful empty page.
+      patchDirectory(modelId, { mode: "error", error: errorMessage(caught) });
+    }
+  }, [directoryByModel, patchDirectory]);
+
+  const resetDirectoryOwners = useCallback(() => {
+    for (const controller of directoryOwners.current.values()) controller.abort();
+    directoryOwners.current.clear();
+    directoryVersions.current.clear();
+  }, []);
+
   useEffect(() => {
     if (canManage) void load();
     else {
       setState(null); setBaseUrl(""); setCredential(""); setDraft([]);
       setCatalogReceipt(null); setTestState("untested"); setBusy(null);
+      setDirectoryByModel({});
+      resetDirectoryOwners();
     }
-    return () => { abandonRequest(); connectionVersion.current += 1; };
-  }, [canManage, load, abandonRequest]);
+    return () => {
+      abandonRequest();
+      connectionVersion.current += 1;
+      resetDirectoryOwners();
+    };
+  }, [canManage, load, abandonRequest, resetDirectoryOwners]);
 
   const invalidateConnection = () => {
     if (activeRequest.current?.operation === "publish" || activeRequest.current?.operation === "load") return false;
@@ -287,8 +403,19 @@ export function ModelAdminControl({
     if (enabled.filter((model) => model.is_default).length !== 1) {
       setPublishError("请在已启用模型中指定唯一默认模型。"); return;
     }
-    if (available.some((model) => !model.label.trim() || model.label.trim().length > 160)) {
-      setPublishError("模型显示名称需为 1–160 个字符。"); return;
+    if (available.some((model) => model.label.trim().length > 160)) {
+      setPublishError("平台显示名称最多 160 个字符。"); return;
+    }
+    // Every published row is sent, so the server's non-empty rule applies to
+    // disabled rows too; validate the same set here instead of only enabled ones.
+    const emptySelection = available.find((model) =>
+      (model.access_mode ?? "all") === "selected"
+      && (model.allowed_user_ids ?? []).length === 0);
+    if (emptySelection) {
+      setPublishError(
+        `请为 ${emptySelection.label} 至少选择一名用户，或改为全部已认证用户。`,
+      );
+      return;
     }
     const owner = startRequest("publish");
     if (!owner) return;
@@ -296,7 +423,13 @@ export function ModelAdminControl({
     try {
       const next = await modelAdminApi.publish(
         baseUrl.trim(), credential.trim() || undefined, catalogReceipt.revision,
-        available.map((model) => ({ ...model, display_name: model.label.trim() })),
+        available.map((model) => ({
+          ...model,
+          display_name: model.label.trim(),
+          access_mode: model.access_mode ?? "all",
+          allowed_user_ids:
+            (model.access_mode ?? "all") === "selected" ? model.allowed_user_ids ?? [] : [],
+        })),
         { signal: owner.controller.signal },
       );
       if (!ownsRequest(owner)) return;
@@ -418,6 +551,7 @@ export function ModelAdminControl({
             <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
               <Input
                 aria-label="搜索模型"
+                disabled={connectionLocked}
                 prefix={<Search size={16} />} size="large"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索模型名称或模型 ID"
@@ -426,6 +560,7 @@ export function ModelAdminControl({
             </label>
             <LobeSelectField
               aria-label="筛选模型状态"
+              disabled={connectionLocked}
               className="h-10 sm:w-40"
               onChange={setStatusFilter}
               value={statusFilter}
@@ -444,7 +579,7 @@ export function ModelAdminControl({
           onValueChange={(id) => updateDraft(id as string, { is_default: true })}
         >
         <Table
- size="small" pagination={false} scroll={{ x: 900 }} tableLayout="fixed" sticky
+ size="small" pagination={false} scroll={{ x: 1200 }} tableLayout="fixed" sticky
  dataSource={visibleDraft}
  rowKey={(model) => model.id}
  onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
@@ -464,7 +599,7 @@ render: (_value, model) => (<>
 
                     </label>
 </>) },
-{ key: "identity", width: 280, title: "显示名称 / 上游模型 ID",
+{ key: "identity", width: 280, title: "平台显示名称 / 上游模型 ID",
 render: (_value, model) => (<>
 <div className="flex min-w-0 items-center gap-3">
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#eef2ff] text-[#5967e8]" aria-hidden="true">
@@ -472,7 +607,7 @@ render: (_value, model) => (<>
                       </div>
                       <div className="min-w-0 flex-1">
                         <Input
-                          aria-label={`${model.value} 显示名称`}
+                          aria-label={`${model.value} 平台显示名称`}
                           size="small" variant="borderless"
                           onChange={(event) => updateDraft(model.id, { label: event.target.value })}
                           disabled={busy !== null}
@@ -482,6 +617,24 @@ render: (_value, model) => (<>
                       </div>
                     </div>
 </>) },
+{ key: "access", width: 300, title: "可用用户",
+render: (_value, model) => (
+  <ModelUserAccess
+    accessMode={model.access_mode ?? "all"}
+    allowedUserIds={model.allowed_user_ids ?? []}
+    directory={directoryByModel[model.id]?.page ?? []}
+    directoryNames={directoryByModel[model.id]?.names ?? EMPTY_DIRECTORY.names}
+    directoryStatus={directoryByModel[model.id]?.mode ?? "idle"}
+    directoryQuery={directoryByModel[model.id]?.query ?? ""}
+    directoryTotal={directoryByModel[model.id]?.total ?? 0}
+    directoryError={directoryByModel[model.id]?.error ?? null}
+    disabled={busy !== null}
+    onDirectoryQuery={(search, options) => { void loadDirectory(model.id, search, options); }}
+    onChange={(mode, userIds) => updateDraft(model.id, {
+      access_mode: mode, allowed_user_ids: mode === "selected" ? userIds : [],
+    })}
+  />
+) },
 { key: "inputTokens", width: 160, title: "最大输入 Token",
 render: (_value, model) => (<>
 <Input

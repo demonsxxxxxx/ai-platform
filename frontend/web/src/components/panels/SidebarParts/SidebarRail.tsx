@@ -11,6 +11,7 @@ import {
   Bot,
   Cpu,
   Activity,
+  ChartNoAxesColumn,
   Settings,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -48,6 +49,7 @@ interface SidebarRailProps {
   onOpenMcp: () => void;
   onOpenModels: () => void;
   onOpenRuns: () => void;
+  onOpenUsage: () => void;
   hideSessionDiscovery?: boolean;
   navigationOnly?: boolean;
   agentWorkspace?: boolean;
@@ -71,6 +73,7 @@ export function SidebarRail({
   onOpenMcp,
   onOpenModels,
   onOpenRuns,
+  onOpenUsage,
   hideSessionDiscovery = false,
   navigationOnly = false,
   agentWorkspace = false,
@@ -266,6 +269,20 @@ export function SidebarRail({
             active={isRailItemActive("models")}
           >
             <Cpu size={20} />
+          </LibreChatRailButton>
+        )}
+        {canAccessWorkbenchItem(user, "usage") && (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenUsage}
+            className={railBtn}
+            aria-current={isRailItemActive("usage") ? "page" : undefined}
+            title={t("nav.usage")}
+            aria-label={t("nav.usage")}
+            itemKey="usage"
+            active={isRailItemActive("usage")}
+          >
+            <ChartNoAxesColumn size={20} />
           </LibreChatRailButton>
         )}
         {canAccessWorkbenchItem(user, "runs") && (

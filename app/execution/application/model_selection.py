@@ -25,6 +25,7 @@ class GovernedModelResolver(Protocol):
         *,
         model_id: str | None,
         model_value: str | None,
+        user_id: str,
     ) -> RunModelSelection | None: ...
 
 
@@ -71,6 +72,7 @@ async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
+    user_id: str,
     resolve_governed_model: GovernedModelResolver,
 ) -> RunModelSelection:
     """Resolve only the configured, Run-budgeted model for new execution."""
@@ -81,6 +83,7 @@ async def resolve_chat_model_selection(
         conn,
         model_id=model_id,
         model_value=model_value,
+        user_id=user_id,
     )
     if governed is None:
         raise ValueError("model_connection_not_configured")

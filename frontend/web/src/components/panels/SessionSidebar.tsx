@@ -717,6 +717,7 @@ export const SessionSidebar = forwardRef<
               onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
               onOpenMcp={() => navigate("/mcp")}
               onOpenModels={() => navigateWorkbenchItem("models")}
+              onOpenUsage={() => navigateWorkbenchItem("usage")}
               onOpenRuns={() => navigateWorkbenchItem("runs")}
               hideSessionDiscovery={agentWorkspace !== undefined}
               navigationOnly={navigationOnly}
@@ -760,6 +761,7 @@ export const SessionSidebar = forwardRef<
           onOpenPluginMarket={() => navigateWorkbenchItem("pluginMarket")}
           onOpenMcp={() => navigate("/mcp")}
           onOpenModels={() => navigateWorkbenchItem("models")}
+          onOpenUsage={() => navigateWorkbenchItem("usage")}
           onOpenRuns={() => navigateWorkbenchItem("runs")}
           hideSessionDiscovery={agentWorkspace !== undefined}
           navigationOnly={navigationOnly}

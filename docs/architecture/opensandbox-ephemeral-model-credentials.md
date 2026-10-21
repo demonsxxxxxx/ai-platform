@@ -8,7 +8,8 @@ Status: accepted source contract. Runtime publication is a separate release gate
   model/capacity binding, runtime proxy and count compatibility. Deployment owns
   only the encryption key, internal proxy token, internal-host allowlist and the
   governed OpenSandbox topology. The administrator Models page owns the upstream
-  origin, write-only credential, enabled directory, capacities and default.
+  origin, write-only credential, enabled directory, capacities, default, the
+  platform display name and each model's user access list.
 - **Bounded paths:** model-control-plane and OpenSandbox credential application
   logic and tests, the internal-test OpenSandbox Compose overlay, package assembly,
   this contract, and the existing model administration component and mounted test.
@@ -266,6 +267,77 @@ snapshot after later publication. The internal proxy serves only queued or runni
 matches that admission. Missing or invalid encryption, proxy authentication,
 Run binding, or connection configuration fails closed before an upstream model
 connection is opened.
+
+## Per-model user access
+
+Execution owns a per-model user list on the same catalog entry as the platform
+display name. Access is a property of each model, not of the shared connection:
+the gateway remains one platform-wide origin and credential.
+
+`access_mode='all'` is the default and the meaning of an unconfigured model, so
+history keeps its original availability. `access_mode='selected'` requires a
+non-empty employee work-ID list. An empty selection is rejected
+(`model_user_access_requires_users`) rather than read as "everyone", and an
+unknown mode or malformed list is `model_user_access_invalid`. The historical
+`allowed_user_ids` JSON field stores company `workid`, never DingTalk `userId`
+or department IDs. Identity owns the company employee directory and validates
+only newly added work IDs; local `users` records are not an employee inventory
+and employees need not have logged into AI Platform before being granted access.
+Carried-over members are not revalidated, so saved restrictions remain editable
+and members can be removed during a directory outage. New grants fail closed
+with a retryable directory error; there is no local-user fallback.
+
+The administrator-only `GET /api/ai/admin/company-employees` endpoint projects
+only `work_id` and `display_name`. It uses the deployment's trusted tenant scope,
+not a client-selected tenant, and reads the existing same-origin
+`GET /api/DingTalk/getUserDetail` array through Identity. Only `正式员工` and
+`试用期` are eligible; blank/unknown/`离职` status is not. Blank or malformed
+work IDs are excluded. Exact duplicate identities collapse; conflicting
+work-ID identities or one DingTalk user ID mapped to multiple work IDs are
+excluded. Server-side literal name/work-ID search and pagination (100 per page,
+50,000 records, 16 MiB response bound) cover the whole upstream response.
+Employee selection reuses the existing department directory's address resolution:
+an empty `DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` uses the existing company
+DingTalkAPI origin `http://10.56.0.25:5033`; a configured value overrides that
+origin for both read-only directories. No additional deployment configuration is
+required. The adapter reuses `DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS`
+(default 5 seconds, maximum 30). Directory failures still return 503 with no
+local-user fallback. AD login and department-membership authority retain their
+existing configuration and fail-closed behavior; their scope is not expanded
+by the read-only directory default.
+
+Malformed/oversized responses and upstream failures return a safe 503; private
+phone/email/union ID fields are never projected or logged.
+
+Directory I/O runs outside database transactions. Publication retains its
+existing revision compare-and-swap, while omitted access fields inherit the
+saved catalog values. Model selectors use this employee API, not the separate
+local-user diagnostics API. The replaced `existing_tenant_user_ids` query and
+Postgres repository lookup callback are removed; diagnostics remain for their
+existing operational consumers. AD authentication and trusted Chat principal
+construction are unchanged.
+
+The public catalog and new-Run admission both filter by the calling principal
+inside their own SQL, so the default model, an explicit `model_id`, and a raw
+upstream `model_value` share one predicate and none of them can bypass the list.
+Administrators manage the list but receive no usage exemption. The public
+projection reports `default_model_id` from the already-filtered rows, falling
+back to the first visible model and reporting no default when the caller can use
+none; the per-model user list itself never appears in a user projection.
+
+Revocation applies to admission, not to work already admitted. An existing Run
+or Attempt keeps its frozen model, capacities and revision, and its proxy
+requests continue to succeed against that snapshot. A new child Run created by
+copy, retry or resume is admitted only if the current list still includes the
+caller; the check runs inside the child-Run transaction before queue admission,
+so a rejection rolls the child back and never leaves an unauthorized queued Run.
+A child whose model row no longer exists in the catalog is also refused.
+
+An update that omits `access_mode` and `allowed_user_ids` keeps the saved
+restriction, so an older client cannot silently widen a restricted model. An
+omitted `display_name` keeps the saved platform name; an explicitly empty value
+clears back to the upstream model ID. Neither field changes the model ID,
+upstream value, provider association or the forwarded request.
 
 ## Non-Goals
 

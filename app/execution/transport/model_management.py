@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -74,10 +74,12 @@ class ModelPublicationEntry(BaseModel):
 
     id: str
     value: str
-    display_name: str = Field(min_length=1, max_length=160)
+    display_name: str | None = Field(default=None, max_length=160)
     enabled: StrictBool
     is_default: StrictBool
     order: StrictInt = Field(ge=1)
+    access_mode: Literal["all", "selected"] | None = None
+    allowed_user_ids: list[str] | None = Field(default=None, max_length=10_000)
     max_input_tokens: StrictInt | None = Field(default=None, ge=1, le=10_000_000)
     max_output_tokens: StrictInt | None = Field(default=None, ge=1, le=10_000_000)
 
@@ -106,6 +108,9 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_connection_api_key_invalid",
         "model_connection_api_key_required",
         "model_display_name_invalid",
+        "model_user_access_invalid",
+        "model_user_access_requires_users",
+        "model_user_access_unknown_user",
         "model_default_must_be_available",
         "model_catalog_default_required",
         "model_catalog_order_invalid",
@@ -121,7 +126,9 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=code)
     if code in {"model_connection_rate_limited"}:
         return HTTPException(status_code=429, detail=code)
-    if code in {"model_connection_encryption_key_invalid"}:
+    if code in {"company_employee_directory_forbidden"}:
+        return HTTPException(status_code=403, detail=code)
+    if code in {"model_connection_encryption_key_invalid", "company_employee_directory_unavailable"}:
         return HTTPException(status_code=503, detail=code)
     return HTTPException(status_code=502, detail=code or "model_connection_unavailable")
 
@@ -177,8 +184,9 @@ async def publish_model_catalog(
             expected_revision=payload.expected_revision,
             models=[model.model_dump() for model in payload.models],
             actor_user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
         )
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, PermissionError) as exc:
         raise _translate_control_plane_error(exc) from exc
 
 

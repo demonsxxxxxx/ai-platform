@@ -12,6 +12,7 @@ import {
   Bot,
   Cpu,
   Activity,
+  ChartNoAxesColumn,
   Settings,
   PanelLeftClose,
 } from "lucide-react";
@@ -412,6 +413,12 @@ export function SessionListContent({
       icon: Cpu,
       label: t("nav.models"),
       onClick: () => navigate("/models"),
+    },
+    {
+      key: "usage",
+      icon: ChartNoAxesColumn,
+      label: t("nav.usage"),
+      onClick: () => navigate("/usage"),
     },
     {
       key: "runs",

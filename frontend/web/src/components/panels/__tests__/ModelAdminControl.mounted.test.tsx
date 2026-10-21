@@ -26,6 +26,8 @@ function model(overrides: ModelOverrides = {}): AdminModelEntry {
     available: true,
     is_default: false,
     order: 1,
+    access_mode: "all" as const,
+    allowed_user_ids: [],
     last_seen_revision: 1,
     last_seen_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -248,7 +250,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     await waitFor(
       React,
       () => calls.discover.length === 1
-        && inputByLabel(container, "openai/gpt-5 显示名称").value === "GPT-5",
+        && inputByLabel(container, "openai/gpt-5 平台显示名称").value === "GPT-5",
       "discovery should populate only the editable draft",
     );
     assert.deepEqual(calls.discover, [

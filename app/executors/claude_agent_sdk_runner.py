@@ -215,6 +215,7 @@ class ClaudeAgentSdkRunResult:
     answer_receipt: dict[str, Any] | None = None
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    model_usage_snapshot: dict[str, Any] | None = None
     error: str | None = None
     # ResultMessage.stop_reason is meaningful only on a non-error SDK terminal
     # result. Keep it separate from the failure text.
@@ -1585,6 +1586,8 @@ async def run_claude_agent_sdk(
     on_subagent_lifecycle: Callable[[dict[str, str]], Awaitable[None] | None]
     | None = None,
     on_agent_event: Callable[[tuple[Any, ...]], Awaitable[bool | None] | bool | None]
+    | None = None,
+    on_model_usage_snapshot: Callable[[dict[str, Any]], Awaitable[bool | None] | bool | None]
     | None = None,
     run_id: str | None = None,
     attempt_id: str | None = None,
@@ -3456,6 +3459,10 @@ async def run_claude_agent_sdk(
     result_usage = prepare_claude_result_usage(
         session_id=session_id, prompt=sdk_prompt, resumed_entries=main_transcript,
     )
+    if on_model_usage_snapshot is not None:
+        initial_usage_result = on_model_usage_snapshot(result_usage.model_usage_snapshot(terminal=False))
+        if isawaitable(initial_usage_result):
+            await initial_usage_result
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3497,6 +3504,7 @@ async def run_claude_agent_sdk(
             answer_receipt=answer_receipt,
             session_id=result_session_id,
             usage=result_usage.project(usage or continuation_usage, terminal_result=terminal_result_message is not None),
+            model_usage_snapshot=result_usage.model_usage_snapshot(terminal=terminal_result_message is not None),
             error=error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
@@ -3632,6 +3640,12 @@ async def run_claude_agent_sdk(
                         continue
                     if isinstance(message, ResultMessage):
                         result_usage.observe_result(message)
+                        if on_model_usage_snapshot is not None:
+                            snapshot_result = on_model_usage_snapshot(
+                                result_usage.model_usage_snapshot(terminal=False)
+                            )
+                            if isawaitable(snapshot_result):
+                                await snapshot_result
                         permission_denials = getattr(message, "permission_denials", None)
                         if isinstance(permission_denials, list):
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)

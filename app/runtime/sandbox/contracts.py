@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
+
+from app.runs.api import normalize_model_usage_snapshot
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -268,7 +270,7 @@ class ContextRetrievalScope(BaseModel):
 class ModelTokenLimits(BaseModel):
     """Run-frozen model budget accepted by the sandbox transport."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     max_input_tokens: int = Field(gt=0, le=10_000_000)
     max_output_tokens: int = Field(gt=0, le=10_000_000)
@@ -776,6 +778,24 @@ def normalize_executor_terminal_status(
     return None
 
 
+class ModelUsageSnapshotPayload(BaseModel):
+    """Private callback wire DTO; Runs receives only normalized standard values."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scope_id: str
+    observation_seq: int
+    baseline: Literal["fresh", "restored", "unknown"]
+    models: dict[str, dict[str, int]]
+    coverage: Literal["reported_final", "partial", "unavailable"]
+    provider_session_id: str | None = None
+    baseline_models: dict[str, dict[str, int]] | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_usage(self):
+        normalize_model_usage_snapshot(self.model_dump())
+        return self
+
+
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -792,6 +812,8 @@ class ExecutorCallbackEvent(BaseModel):
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list, max_length=100)
     terminal_result: ExecutorTerminalResult | None = None
+    # Private platform-to-callback carrier; never projected to public events.
+    model_usage_snapshot: ModelUsageSnapshotPayload | None = None
 
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "ExecutorCallbackEvent":

@@ -345,6 +345,11 @@ class Settings(BaseSettings):
         return self
 
 
+def resolve_dingtalk_directory_base_url(configured_base: str) -> str:
+    """Share the existing read-only directory origin without changing membership authority."""
+    return configured_base.rstrip("/") if configured_base else "http://10.56.0.25:5033"
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
