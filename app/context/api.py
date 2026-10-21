@@ -2,6 +2,24 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.application.artifact_transfer import (
+    ARTIFACT_STAGE_MAX_BYTES as ARTIFACT_STAGE_MAX_BYTES,
+    prepare_artifact_transfer as prepare_artifact_transfer,
+    download_artifact_transfer as download_artifact_transfer,
+)
+from app.context.domain.artifact_transfer import (
+    ARTIFACT_TRANSFER_CHUNK_BYTES as ARTIFACT_TRANSFER_CHUNK_BYTES,
+    ARTIFACT_TRANSFER_HEADER as ARTIFACT_TRANSFER_HEADER,
+    ARTIFACT_JSON_COMPAT_MAX_BYTES as ARTIFACT_JSON_COMPAT_MAX_BYTES,
+    expected_artifact_sha256 as expected_artifact_sha256,
+    ARTIFACT_TRANSFER_SAFE_ERRORS as ARTIFACT_TRANSFER_SAFE_ERRORS,
+    ArtifactTransferError as ArtifactTransferError,
+    artifact_workspace_parts as artifact_workspace_parts,
+)
+from app.context.domain.artifact_workspace import (
+    ArtifactWorkspace as ArtifactWorkspace, artifact_stage_result as artifact_stage_result,
+)
+
 from app.context.application.snapshot_recording import (
     ContextSnapshotRecorder as ContextSnapshotRecorder,
 )
@@ -232,6 +250,18 @@ async def materialize_worker_context_snapshot(
     return result
 
 __all__ = [
+    "prepare_artifact_transfer",
+    "download_artifact_transfer",
+    "expected_artifact_sha256",
+    "ARTIFACT_JSON_COMPAT_MAX_BYTES",
+    "ARTIFACT_STAGE_MAX_BYTES",
+    "ARTIFACT_TRANSFER_CHUNK_BYTES",
+    "ARTIFACT_TRANSFER_HEADER",
+    "ARTIFACT_TRANSFER_SAFE_ERRORS",
+    "ArtifactTransferError",
+    "ArtifactWorkspace",
+    "artifact_workspace_parts",
+    "artifact_stage_result",
     "ContextSnapshotRecorder",
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",

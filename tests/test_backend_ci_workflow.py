@@ -167,6 +167,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_context_memory_retention.py",
         "tests/test_context_persistence.py",
         "tests/test_context_builder.py",
+        "tests/test_context_artifact_transfer.py",
         "tests/test_conversations_persistence.py",
         "tests/test_files_artifacts_persistence.py",
         "tests/test_artifact_manifest_projection.py",
@@ -543,7 +544,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"19014:9000"' in tests_job
     assert '--health-cmd "mc ready local"' in tests_job
-    assert "matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "(matrix.shard == 'schema-migrations' || matrix.shard == 'repository-worker-streaming') && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "MINIO_ROOT_USER: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests' || 'synthetic-provider-images' }}" in tests_job
+    assert "MINIO_ROOT_PASSWORD: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests-only' || 'synthetic-provider-images-local-test-only' }}" in tests_job
+    assert "AI_PLATFORM_ARTIFACT_MINIO_URL: ${{ matrix.shard == 'repository-worker-streaming' && 'http://127.0.0.1:19014' || '' }}" in tests_job
     assert "AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL:" in tests_job
     assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job

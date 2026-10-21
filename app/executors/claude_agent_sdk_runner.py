@@ -14,7 +14,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from app.context.api import MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
+from app.context.api import ARTIFACT_TRANSFER_SAFE_ERRORS, MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
 from app.context_manifest import truncate_utf8_text
 from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
@@ -696,12 +696,25 @@ async def _sdk_user_prompt_stream(
     }
 
 
-def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
+def _context_retrieval_tool_response(payload: dict[str, Any], *, action: str | None = None) -> dict[str, Any]:
     sanitized = sanitize_public_payload(payload)
     if isinstance(sanitized, dict):
-        workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
-        if workspace_path:
-            sanitized["workspace_path"] = workspace_path
+        if action == "stage_run_artifact_to_workspace":
+            from app.context.api import artifact_workspace_parts, ArtifactTransferError
+            try:
+                expected_path = "/".join(artifact_workspace_parts(payload.get("artifact_id"), payload.get("name")))
+            except (ArtifactTransferError, TypeError, ValueError) as exc:
+                raise ContextRetrievalDenied("context_scope_denied") from exc
+            if payload.get("workspace_path") != expected_path or sanitized.get("name") != payload.get("name"):
+                raise ContextRetrievalDenied("context_scope_denied")
+            sanitized["workspace_path"] = expected_path
+            source_run_id = payload.get("source_run_id")
+            if source_run_id and (not isinstance(source_run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", source_run_id)):
+                sanitized.pop("source_run_id", None)
+        else:
+            workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
+            if workspace_path:
+                sanitized["workspace_path"] = workspace_path
     return {
         "content": [
             {
@@ -803,7 +816,7 @@ def _build_context_retrieval_mcp_server(
         tool_args = args if isinstance(args, dict) else {}
         try:
             return _context_retrieval_tool_response(
-                await retrieval.execute(action, identity, tool_args)
+                await retrieval.execute(action, identity, tool_args), action=action,
             )
         except ContextRetrievalInputError as exc:
             return _context_retrieval_tool_error(str(exc), action=audit_action)
@@ -812,6 +825,7 @@ def _build_context_retrieval_mcp_server(
             if reason not in {
                 "context_file_too_large",
                 "context_file_size_required",
+                *ARTIFACT_TRANSFER_SAFE_ERRORS,
                 "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
