@@ -30,6 +30,7 @@ try:
 except ImportError:  # pragma: no cover - exercised through docker = None path
     docker = None
 
+from app.artifacts.api import ARTIFACT_MAX_FILE_BYTES
 from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
 from app.platform.sandbox.docker_native_filesystem import (
     NATIVE_FILESYSTEM_LABEL, NATIVE_FILESYSTEM_VERSION, NATIVE_SOCKET_DIRECTORY,
@@ -1387,9 +1388,8 @@ def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
 
 
 _OPENSANDBOX_COLLECT_MAX_FILES = 128
-_OPENSANDBOX_COLLECT_MAX_FILE_BYTES = 64 * 1024 * 1024
+_OPENSANDBOX_COLLECT_MAX_FILE_BYTES = ARTIFACT_MAX_FILE_BYTES
 _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
-
 
 
 _OPENSANDBOX_CONFIRMED_STOP_STATUSES = frozenset({"running", "created", "removed", "exited", "paused"})

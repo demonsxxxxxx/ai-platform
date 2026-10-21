@@ -97,10 +97,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       minio:
-        image: ${{ matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1' || '' }}
+        image: ${{ (matrix.shard == 'schema-migrations' || matrix.shard == 'repository-worker-streaming') && 'bitnamilegacy/minio:2025.4.22-debian-12-r1' || '' }}
         env:
-          MINIO_ROOT_USER: synthetic-provider-images
-          MINIO_ROOT_PASSWORD: synthetic-provider-images-local-test-only
+          MINIO_ROOT_USER: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests' || 'synthetic-provider-images' }}
+          MINIO_ROOT_PASSWORD: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests-only' || 'synthetic-provider-images-local-test-only' }}
         ports:
           - "19014:9000"
         options: >-
@@ -206,6 +206,7 @@ jobs:
               tests/test_context_memory_retention.py
               tests/test_context_persistence.py
               tests/test_context_builder.py
+              tests/test_context_artifact_transfer.py
               tests/test_conversations_persistence.py
               tests/test_files_artifacts_persistence.py
               tests/test_artifact_manifest_projection.py
@@ -499,6 +500,7 @@ jobs:
       AI_PLATFORM_MCP_CATALOG_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_CAPABILITY_DISTRIBUTION_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL: ${{ matrix.shard == 'schema-migrations' && 'http://127.0.0.1:19014' || '' }}
+      AI_PLATFORM_ARTIFACT_MINIO_URL: ${{ matrix.shard == 'repository-worker-streaming' && 'http://127.0.0.1:19014' || '' }}
       AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}
     steps:
       - name: Checkout exact backend test source

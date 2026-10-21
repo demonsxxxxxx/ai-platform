@@ -1,3 +1,4 @@
+import os
 import json
 import sys
 import types
@@ -291,6 +292,7 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
     assert captured_messages[0]["session_id"] != "default"
 
 
+@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="requires POSIX no-follow directory descriptors")
 @pytest.mark.asyncio
 async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch, tmp_path):
     captured = {}
@@ -455,6 +457,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "run_id": "run-a",
                     "artifact_id": "artifact-a",
                     "artifact_type": "translated_docx",
+                    "storage_key": "synthetic/artifact-a",
                     "label": "translated.docx",
                     "content": "artifact bytes",
                     "size_bytes": len("artifact bytes".encode("utf-8")),
@@ -644,3 +647,61 @@ def test_legacy_context_summary_preserves_unknown_material_counts(materials):
         "referenced_materials": materials,
     }
     assert pack["prompt_summary"] in claude_prompts.context_pack_prompt_section(pack)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "context_artifact_too_large", "context_artifact_size_required", "context_artifact_identity_mismatch",
+    "context_artifact_unavailable", "context_artifact_target_conflict", "context_artifact_name_invalid",
+    "context_artifact_safe_filesystem_required", "unknown", "s3://private/key?credential=secret",
+])
+async def test_artifact_stage_tool_preserves_only_safe_stable_errors(reason):
+    from app.context.retrieval import ContextRetrievalDenied
+    from app.executors.claude_agent_sdk_runner import _build_context_retrieval_mcp_server
+    handlers = {}
+    def tool(name, description, schema):
+        def register(handler):
+            handlers[name] = handler
+            return types.SimpleNamespace(name=name, handler=handler)
+        return register
+    class Retrieval:
+        async def execute(self, *args):
+            raise ContextRetrievalDenied(reason)
+    sdk = types.SimpleNamespace(tool=tool, create_sdk_mcp_server=lambda *args, **kwargs: kwargs)
+    identity = ScopedContextRetrievalIdentity(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-a", agent_id="agent-a")
+    _build_context_retrieval_mcp_server(sdk, retrieval=Retrieval(), identity=identity,
+                                      tool_names=["stage_run_artifact_to_workspace"])
+    result = await handlers["stage_run_artifact_to_workspace"]({"artifact_id": "artifact-a"})
+    payload = json.loads(result["content"][0]["text"])
+    assert result["is_error"] is True
+    assert payload["error"] == (reason if reason.startswith("context_artifact_") else "context_scope_denied")
+    assert "private/key" not in str(result) and "secret" not in str(result)
+
+
+@pytest.mark.parametrize("overrides,allowed", [
+    ({}, True),
+    ({"workspace_path": "context/artifact-a/private-budget.docx/../escape"}, False),
+    ({"workspace_path": "/tmp/private-budget.docx"}, False),
+    ({"workspace_path": "https://object.test/key"}, False),
+    ({"artifact_id": "artifact-b"}, False),
+    ({"name": "different.docx"}, False),
+    ({"name": "../../private-budget.docx"}, False),
+    ({"name": "api_key=secret.docx", "workspace_path": "context/artifact-a/api_key=secret.docx"}, False),
+])
+def test_artifact_tool_projection_preserves_only_exact_safe_relative_path(overrides, allowed):
+    from app.context.retrieval import ContextRetrievalDenied
+    from app.executors.claude_agent_sdk_runner import _context_retrieval_tool_response
+    payload = {"artifact_id": "artifact-a", "name": "private-budget.docx", "source_run_id": "source-run",
+               "workspace_path": "context/artifact-a/private-budget.docx", "storage_key": "tenants/private/object",
+               "content_base64": "secret", "callback_token": "secret", **overrides}
+    if not allowed:
+        with pytest.raises(ContextRetrievalDenied):
+            _context_retrieval_tool_response(payload, action="stage_run_artifact_to_workspace")
+    else:
+        result = json.loads(_context_retrieval_tool_response(payload, action="stage_run_artifact_to_workspace")["content"][0]["text"])
+        assert result["workspace_path"] == payload["workspace_path"] and result["name"] == payload["name"]
+        assert result["source_run_id"] == "source-run"
+        assert "storage_key" not in result and "content_base64" not in result and "callback_token" not in result
+        unknown = json.loads(_context_retrieval_tool_response(payload, action="unknown")["content"][0]["text"])
+        assert "workspace_path" not in unknown

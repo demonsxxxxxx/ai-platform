@@ -4455,7 +4455,9 @@ def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path)
             workspace_root,
             *,
             storage_io,
+            artifact_download,
         ):
+            captured["artifact_download"] = artifact_download
             captured["factory"] = (
                 transaction_factory,
                 storage_adapter,
@@ -4475,6 +4477,11 @@ def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path)
         tmp_path,
         context_bootstrap.run_storage_io,
     )
+
+
+    assert captured["artifact_download"].func is context_bootstrap.download_artifact_object
+    assert captured["artifact_download"].args == (storage, context_bootstrap.run_storage_io)
+    assert captured["artifact_download"].keywords == {"close_storage": False}
 
 
 @pytest.mark.parametrize("has_manifest", [False, True])
