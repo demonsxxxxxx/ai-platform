@@ -1113,10 +1113,11 @@ export function ChatView({
           </Button>
         </div>
       ) : null}
-      {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      {/* Task questions and the Composer are one surface, not two stacked cards. */}
       <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
+        taskSurface={runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : undefined}
         className="mx-auto max-w-[68rem] px-2"
       />
     </div>

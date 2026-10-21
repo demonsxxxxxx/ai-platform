@@ -117,6 +117,7 @@ export const ChatInput = memo(function ChatInput({
   pendingInput,
   onPendingInputConsumed,
   className,
+  taskSurface,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const { hasPermission, user } = useAuth();
@@ -928,6 +929,15 @@ export const ChatInput = memo(function ChatInput({
             onDrop={handleDrop}
             dragActive={isDraggingOver}
           >
+            {taskSurface ? (
+              /* The task surface is the bounded region inside the Composer shell. It
+                 is a flex column so the active question body is the only scroll
+                 owner and the action row is never clipped. */
+              <div
+                className="flex min-h-0 shrink flex-col overflow-hidden"
+                data-slot="composer-task-surface"
+              >{taskSurface}</div>
+            ) : null}
             <div data-slot="composer-attachments">
               <ChatInputAttachments
                 attachments={attachments}

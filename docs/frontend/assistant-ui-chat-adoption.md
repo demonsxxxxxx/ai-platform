@@ -93,6 +93,10 @@ Virtuoso/useMessageScroll 保持大历史、返回底部、Run/文件深链和�
 
 Run 问答只使用一个 RunInputsController：单选、多选、自由文本、补充文本、默认值、deadline、uncertain 与历史回执保持。answered 表示已受理，resolved 表示问题已处理，均不代表 Run 完成。uncertain 重试使用原 input_id 和答案，前端倒计时不提交默认答案。OptionList choice 来自平台，不使用工具 addResult 或批准接口。
 
+一个待答复输入仍是“一个 question_id 下的整批问题”（服务端 `canonicalize_answers` 要求答案键集合等于该批全部问题，provider `_native_answers` 也需要整批答案才返回一次工具结果）。因此多问交互采用约定的协议 A：**逐题本地草稿，最后整批一次提交**。RunQuestionCard 以“第 N/总 题”一次只显示一题，上一题/下一题只在本组件内部移动草稿，不写服务器、不标记受理；最后一题的“提交答复”才通过原 `submitAnswers` 发送整批答案和唯一稳定的 `input_id`。只有服务端实际受理回执才把该批显示为“答案已提交，等待当前任务继续”，与“问题已处理”和 Run 完成都不同。Enter 只在答复自由文本框内作为推进/提交快捷方式，且跳过 IME 组合（`isComposing`/`keyCode 229`）；选项、上一题和重试按钮保留原生键盘行为，Shift+Enter 保持换行。
+
+任务问答与 Composer 共用一层表面：`ChatInput` 的 `taskSurface` slot 渲染在 ComposerBar 内，问答卡片不再自带第二层边框/阴影。滚动归属是**每个有界独立区域各一个**，而不是全局只有一个：待答问题的题目正文在自己的区域内滚动，上一题/下一题/提交答复行动栏固定在该区域之外；关闭、超时默认与未处理回执在另一个受限区域内独立滚动，不会挤占当前待答问题或 Composer。全部历史 Run 的标题、关闭问题和回执共用一个滚动区域，而不是给每个 Run 单独分配高度；历史分页累积不会增加外部标题的固定高度。两者共存时，当前待答问题保留弹性份额，整个历史区域统一限高；只有历史时，该区域使用剩余空间。普通 Composer 草稿、附件、发送与取消不受问答状态影响。
+
 ## 退役与具名保留
 
 - LibreChat Composer/CommandMenu/Chips、ComposerModelPanel、MessageFrame 旧入口和 exports/对应 selectors 已替换，旧专用 CSS 清退。业务控制器继续在 ChatInput，不增加第二 form、上传器或提交路径。
@@ -102,6 +106,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 - MarkdownContent 保留显式业务内容/图库适配；独立文档直接走共享 renderer，主消息正文不再使用旧直接 parser。
 - LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。历史 release evidence 和来源许可不改写。
 - 升级检查真实消费者、旧入口/export、静态断言、脚本、依赖和文档；不得为旧 source regex 恢复被替换代码。
+- Run 问答逐题化替换了旧的独立问答区与“全题同表”卡片：独立区总标题 `当前任务输入`、卡片外框/阴影、内层 `<form>` 及其 submit 按钮不再存在，历史分组标题仍保留在共享滚动区内，生产消费者只剩 `ChatInput` 的 `taskSurface` slot（由 `ChatView` 传入 `RunInputHistory`）。`data-run-question-card`、`data-run-question-index`、`data-run-question-progress`、`data-run-question-filled`、`data-run-question-advance`、`data-run-question-previous` 是当前问题选择器；`data-run-input-receipts` 是关闭/超时/未处理回执的受限滚动区，`data-run-input-history`/`data-run-input-history-run`/`data-run-input-entry` 保持其原有限定与历史含义。`fieldset:last-child textarea`、`button[type="submit"]` 和 `data-run-input-history` 上的 30dvh 上限已无消费者，浏览器脚本与回归已改用上述新选择器。服务器合同、存储、超时默认答案与 provider 交互未变，因此没有旧的兼容分支需要保留。
 
 ## 验证要求
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test, { afterEach, beforeEach } from "node:test";
 import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
 import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
@@ -8,6 +9,7 @@ import { RunQuestionCard } from "../../../components/chat/RunQuestionCard.tsx";
 import { RunInputHistory } from "../../../components/chat/RunInputHistory.tsx";
 import { presentRunInputAnswer } from "../../../components/chat/runInputPresentation.ts";
 import type {
+  RunInputQuestionBatch,
   RunInputRecord,
   RunInputSubmissionRequest,
   RunInputsProjection,
@@ -129,12 +131,9 @@ test("restores Run questions after remount and submits multi-select answers to t
     await render();
     assert.equal(controller().projection?.questions[0]?.status, "pending");
     assert.ok(container.querySelector("[data-run-question-card]"));
-    const readOnlyForm = container.querySelector("[data-run-question-card] form");
-    assert.ok(readOnlyForm);
-    await act(async () => {
-      readOnlyForm.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true }));
-      await flush();
-    });
+    const readOnlyAdvance = container.querySelector<HTMLButtonElement>("[data-run-question-card] [data-run-question-advance]");
+    assert.ok(readOnlyAdvance);
+    await act(async () => { readOnlyAdvance.click(); await flush(); });
     assert.equal(submissions.length, 0);
     assert.ok(container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled);
     canSend = true;
@@ -143,12 +142,9 @@ test("restores Run questions after remount and submits multi-select answers to t
     assert.equal(checkboxes.length, 2);
     await act(async () => { checkboxes[0].click(); });
     await act(async () => { checkboxes[1].click(); });
-    const form = container.querySelector("[data-run-question-card] form");
-    assert.ok(form);
-    await act(async () => {
-      form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true }));
-      await flush();
-    });
+    const submit = container.querySelector<HTMLButtonElement>("[data-run-question-card] [data-run-question-advance]");
+    assert.ok(submit);
+    await act(async () => { submit.click(); await flush(); });
 
     assert.equal(submissions.length, 1);
     assert.equal(submissions[0].runId, "run-question");
@@ -411,9 +407,9 @@ test("answers indistinguishable redacted options by key and distinguishes free t
     await act(async () => { boxes[1].click(); });
     assert.equal(boxes[0].getAttribute("aria-checked"), "true");
     assert.equal(boxes[1].getAttribute("aria-checked"), "true");
-    const form = container.querySelector("form");
-    assert.ok(form);
-    await act(async () => { form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+    const submit = container.querySelector<HTMLButtonElement>("[data-run-question-advance]");
+    assert.ok(submit);
+    await act(async () => { submit.click(); await flush(); });
     assert.deepEqual(bodies[0], { input_id: bodies[0].input_id, question_id: "question-batch-1", answers: { q0: ["o0", "o1"] } });
     await act(async () => { assert.equal(await controls().submitAnswers("question-batch-1", { q0: { text: "o0" } }), true); });
     assert.ok("answers" in bodies[1]);
@@ -807,7 +803,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
     try {
       await render();
       await act(async () => { container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click(); });
-      await act(async () => { container.querySelector("form")!.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!.click(); await flush(); });
       assert.equal(latest.pendingSubmission?.state, "uncertain");
       assert.equal(submissions.length, 1);
       assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /尚未确认答案是否提交成功/);
@@ -815,7 +811,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
       assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
       assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
       assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
-      assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+      assert.equal(container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!.disabled, true);
       const applyTimeout = async () => {
         persisted.questions[0].status = "resolved";
         persisted.inputs = [{
@@ -843,7 +839,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
         await act(async () => { await latest.refresh(); });
         assert.equal(latest.pendingSubmission, null);
         assert.equal(retryButton(), undefined);
-        assert.equal(container.querySelector("form"), null);
+        assert.equal(container.querySelector("[data-run-question-card]"), null);
         assert.equal(submissions.length, 1);
       } else if (["closed", "read-only", "other-batch", "navigate", "identity", "resolved"].includes(outcome)) {
         if (outcome === "closed" || outcome === "resolved") {
@@ -871,7 +867,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
         assert.deepEqual(submissions[1], submissions[0]);
         assert.equal(latest.pendingSubmission?.state, "submitting");
         assert.equal(retryButton(), undefined);
-        assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+        assert.equal(container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!.disabled, true);
         if (outcome.startsWith("timeout-during-retry-")) {
           await applyTimeout();
           await act(async () => { resolveRetry(); await flush(); });
@@ -895,7 +891,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
           assert.equal(retryButton(), undefined);
           await act(async () => { resolveRetry(); await flush(); });
           assert.equal(latest.isClosed, true);
-          assert.equal(container.querySelector("form"), null);
+          assert.equal(container.querySelector("[data-run-question-card]"), null);
           assert.equal(retryButton(), undefined);
           assert.equal(submissions.length, 2);
           return;
@@ -942,7 +938,7 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
         } else {
           assert.equal(latest.pendingSubmission, null);
           assert.equal(retryButton(), undefined);
-          assert.equal(container.querySelector("form"), null);
+          assert.equal(container.querySelector("[data-run-question-card]"), null);
         }
       }
     } finally {
@@ -954,3 +950,344 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
     }
   });
 }
+
+function steppedProjection(): RunInputsProjection {
+  return {
+    run_id: "run-steps",
+    state: "open",
+    inputs: [],
+    questions: [{
+      question_id: "question-steps",
+      status: "pending",
+      created_at: "2026-10-07T00:00:00Z",
+      questions: [
+        {
+          key: "q0", header: "第一步", question: "选择优先级", multiSelect: false,
+          options: [
+            { key: "o0", label: "普通", description: "按默认顺序" },
+            { key: "o1", label: "紧急", description: "优先处理" },
+          ],
+        },
+        {
+          key: "q1", header: "第二步", question: "选择格式", multiSelect: true,
+          options: [
+            { key: "o0", label: "PDF", description: "归档" },
+            { key: "o1", label: "DOCX", description: "编辑" },
+          ],
+        },
+        {
+          key: "q2", header: "第三步", question: "选择收尾方式", multiSelect: false,
+          options: [
+            { key: "o0", label: "归档后结束", description: "" },
+            { key: "o1", label: "发送给我", description: "" },
+          ],
+        },
+      ],
+    }],
+  };
+}
+
+test("numbered steps keep one active question and submit the whole batch once on the final step", async () => {
+  const env = installDom();
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = await createLobeTestRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  const originalSubmit = sessionApi.submitRunInput;
+  const persisted = steppedProjection();
+  const submissions: RunInputSubmissionRequest[] = [];
+  sessionApi.getRunInputs = async () => structuredClone(persisted);
+  sessionApi.submitRunInput = async (_runId, body) => {
+    submissions.push(structuredClone(body));
+    if (!("question_id" in body)) throw new Error("expected_answer");
+    persisted.inputs.push(answerRecord(body));
+    persisted.questions[0].status = "answered";
+    return { input_id: body.input_id, status: "applied" };
+  };
+
+  let latest!: RunInputsController;
+  const canSend = true;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-steps", runId: "run-steps", isRunActive: true });
+    const batch = latest.projection?.questions[0];
+    return batch ? createElement(RunQuestionCard, { batch, runInputs: latest, canSend }) : null;
+  }
+  const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
+  const stepText = () => container.querySelector("[data-run-question-progress]")?.textContent ?? "";
+  const advance = () => container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!;
+  const submitForm = async () => {
+    await act(async () => {
+      advance().click();
+      await flush();
+    });
+  };
+  const chooseOption = async (label: string) => {
+    await act(async () => {
+      [...container.querySelectorAll<HTMLButtonElement>("[data-run-question-card] button")]
+        .find((button) => button.getAttribute("aria-label") === label)!.click();
+    });
+  };
+
+  try {
+    await render();
+    assert.match(stepText(), /第 1\/3 题/);
+    assert.equal(container.querySelectorAll("[data-run-question-index]").length, 1);
+    assert.equal(container.querySelector("[data-run-question-index]")?.getAttribute("data-run-question-index"), "1");
+    assert.match(container.textContent ?? "", /选择优先级/);
+    assert.doesNotMatch(container.textContent ?? "", /选择格式|补充说明/);
+    assert.equal(advance().textContent?.trim(), "下一题");
+    assert.equal(container.querySelector("[data-run-question-previous]"), null);
+
+    await submitForm();
+    assert.match(stepText(), /第 1\/3 题/);
+    assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /请先回答当前问题/);
+    assert.equal(submissions.length, 0);
+
+    await chooseOption("普通");
+    await submitForm();
+    assert.match(stepText(), /第 2\/3 题/);
+    assert.match(container.textContent ?? "", /选择格式/);
+    assert.doesNotMatch(container.textContent ?? "", /选择优先级|补充说明/);
+    // A local step is drafting only; it is never reported as server-accepted.
+    assert.equal(submissions.length, 0);
+    assert.equal(container.querySelector("[data-run-question-status]"), null);
+
+    await chooseOption("PDF");
+    await chooseOption("DOCX");
+    await submitForm();
+    assert.match(stepText(), /第 3\/3 题/);
+    assert.equal(advance().textContent?.trim(), "提交答复");
+    assert.equal(submissions.length, 0);
+
+    await act(async () => { container.querySelector<HTMLButtonElement>("[data-run-question-previous]")!.click(); });
+    assert.match(container.textContent ?? "", /第 2\/3 题/);
+    assert.equal(container.querySelector('[aria-label="PDF"]')?.getAttribute("aria-checked"), "true");
+    assert.equal(submissions.length, 0);
+    await submitForm();
+    assert.match(stepText(), /第 3\/3 题/);
+
+    await chooseOption("归档后结束");
+    await submitForm();
+    assert.equal(submissions.length, 1, "the whole batch is submitted exactly once");
+    const sent = submissions[0];
+    assert.ok("question_id" in sent);
+    assert.equal(sent.question_id, "question-steps");
+    assert.match(sent.input_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(sent.answers, {
+      q0: "o0",
+      q1: ["o0", "o1"],
+      q2: "o0",
+    });
+
+    assert.equal(container.querySelector("[data-run-question-card]"), null);
+    assert.equal(container.querySelector('[data-run-question-status="answered"]')?.textContent?.includes("答案已提交"), true);
+    assert.doesNotMatch(container.textContent ?? "", /问题已处理/);
+    assert.equal(latest.projection?.questions[0].status, "answered");
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    sessionApi.submitRunInput = originalSubmit;
+    env.restore();
+  }
+});
+
+test("an unanswered earlier step blocks the final submit instead of skipping a mandatory answer", async () => {
+  const env = installDom();
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = await createLobeTestRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  const originalSubmit = sessionApi.submitRunInput;
+  const projection = steppedProjection();
+  projection.questions[0].questions = [
+    {
+      key: "q0", header: "一", question: "选择优先级", multiSelect: false,
+      options: [{ key: "o0", label: "普通", description: "" }],
+    },
+    { key: "q1", header: "二", question: "补充说明", multiSelect: false, options: [] },
+  ];
+  let writes = 0;
+  sessionApi.getRunInputs = async () => structuredClone(projection);
+  sessionApi.submitRunInput = async () => { writes += 1; throw new Error("unexpected_submit"); };
+
+  let latest!: RunInputsController;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-steps", runId: "run-steps", isRunActive: true });
+    const batch = latest.projection?.questions[0];
+    return batch ? createElement(RunQuestionCard, { batch, runInputs: latest, canSend: true }) : null;
+  }
+  try {
+    await act(async () => { root.render(createElement(Probe)); await flush(); });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!.click();
+      await flush();
+    });
+    // Step 1 is still unanswered, so the local step cannot advance to the submit step.
+    assert.match(container.textContent ?? "", /请先回答当前问题/);
+    assert.match(container.querySelector("[data-run-question-progress]")?.textContent ?? "", /第 1\/2 题/);
+    assert.equal(writes, 0, "an incomplete batch never reaches the server");
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    sessionApi.submitRunInput = originalSubmit;
+    env.restore();
+  }
+});
+
+test("Enter advances only from the answer textarea and never for IME composition", async () => {
+  const env = installDom();
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = await createLobeTestRoot(container);
+  const source = readFileSync(new URL("../../../components/chat/RunQuestionCard.tsx", import.meta.url), "utf8");
+  // The shortcut owner is narrowed by source inspection because the library
+  // TextArea swallows bubbling keydown in jsdom; the real browser probe in
+  // scripts/route-layout-browser-smoke.mjs exercises the same keys end to end.
+  assert.match(source, /onKeyDown=\{\(event\) => \{/);
+  assert.match(source, /if \(event\.key !== "Enter" \|\| event\.shiftKey\) return;/);
+  assert.match(source, /if \(event\.nativeEvent\.isComposing \|\| event\.nativeEvent\.keyCode === 229\) return;/);
+  assert.match(source, /tagName !== "TEXTAREA"\) return;/);
+  // The handler must live on the question body, not on the step wrapper that
+  // also contains the previous/retry/advance buttons.
+  const handlerIndex = source.indexOf("onKeyDown={(event) => {");
+  const actionsIndex = source.indexOf('data-run-question-advance');
+  assert.ok(handlerIndex > 0 && actionsIndex > handlerIndex, "the Enter handler sits before the action row");
+
+  const batch: RunInputQuestionBatch = {
+    question_id: "question-keys",
+    status: "pending",
+    created_at: "2026-10-07T00:00:00Z",
+    questions: [
+      {
+        key: "q0", header: "一", question: "选择优先级", multiSelect: false,
+        options: [{ key: "o0", label: "普通", description: "" }],
+      },
+      { key: "q1", header: "二", question: "补充说明", multiSelect: false, options: [] },
+    ],
+  };
+  let submits = 0;
+  const runInputs = {
+    sessionId: "session-keys", runId: "run-keys",
+    projection: { run_id: "run-keys", state: "open", inputs: [], questions: [batch] },
+    history: [], historyIsLoading: false, historyLoadFailed: false, historyHasMore: false,
+    loadMoreHistory: async () => false, refreshHistory: async () => true, isLoading: false,
+    loadFailed: false, isClosed: false, submissionError: null, pendingSubmission: null,
+    lastAcceptedSubmission: null, submitText: async () => true,
+    submitAnswers: async () => { submits += 1; return true; },
+    retryPendingSubmission: async () => true, refresh: async () => true, retire: () => {},
+  } as unknown as RunInputsController;
+  const progress = () => container.querySelector("[data-run-question-progress]")?.textContent ?? "";
+  const pressEnterOn = async (node: Element, init: { isComposing?: boolean; keyCode?: number } = {}) => {
+    const event = new env.dom.window.KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, shiftKey: false });
+    if (init.isComposing) Object.defineProperty(event, "isComposing", { value: true });
+    if (init.keyCode) Object.defineProperty(event, "keyCode", { value: init.keyCode });
+    await act(async () => { node.dispatchEvent(event); await flush(); });
+  };
+  try {
+    await act(async () => {
+      root.render(createElement(RunQuestionCard, { batch, runInputs, canSend: true }));
+      await flush();
+    });
+    assert.match(progress(), /第 1\/2 题/);
+    // Enter dispatched at the question body is attributed to the body itself,
+    // so the TEXTAREA guard keeps the step in place.
+    await pressEnterOn(container.querySelector("[data-run-question-index]")!);
+    assert.match(progress(), /第 1\/2 题/, "a non-textarea Enter target never advances");
+    assert.equal(submits, 0);
+  } finally {
+    await act(async () => root.unmount());
+    env.restore();
+  }
+});
+
+test("many non-pending Runs share one scroll area beside an open question", async () => {
+  const env = installDom();
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = await createLobeTestRoot(container);
+  const longText = "已结束任务的长回执说明：" + "这一段用于验证关闭回执在受限区域内可以滚动读取。".repeat(24) + "【回执末尾哨兵】";
+  const pending: RunInputQuestionBatch = {
+    question_id: "question-open", status: "pending", created_at: "2026-10-07T00:00:00Z",
+    questions: [{ key: "q0", header: "一", question: "选择优先级", multiSelect: false, options: [{ key: "o0", label: "普通", description: "" }] }],
+  };
+  const closedHistor: RunInputsProjection = {
+    run_id: "run-history", state: "inactive",
+    questions: [{ ...pending, question_id: "question-closed", status: "closed" }],
+    inputs: [
+      { input_id: "long-text", kind: "text", text: longText, question_id: null, answers: null, status: "queued", created_at: "2026-10-06T00:00:00Z" },
+      { input_id: "timeout-answer", kind: "answer", text: null, question_id: "question-closed",
+        answers: { q0: "o0" }, status: "closed", source: "timeout_default", created_at: "2026-10-06T00:05:00Z" },
+    ],
+  };
+  const current: RunInputsProjection = { run_id: "run-open", state: "open", inputs: [], questions: [pending] };
+  const runInputs = {
+    sessionId: "session-history", runId: "run-open", projection: current,
+    history: [...Array.from({ length: 10 }, (_, index) => ({ ...closedHistor, run_id: `run-history-${index}` })), current],
+    historyIsLoading: false, historyLoadFailed: false, historyHasMore: false, isLoading: false,
+    loadFailed: false, isClosed: false, submissionError: null, pendingSubmission: null,
+    lastAcceptedSubmission: null, loadMoreHistory: async () => false, refreshHistory: async () => true,
+    submitText: async () => true, submitAnswers: async () => true, retryPendingSubmission: async () => true,
+    refresh: async () => true, retire: () => {},
+  } as unknown as RunInputsController;
+  try {
+    await act(async () => {
+      root.render(createElement(RunInputHistory, { runInputs, canSend: true }));
+      await flush();
+    });
+    const receipts = container.querySelector("[data-run-input-receipts]");
+    assert.ok(receipts, "non-pending receipts need their own container");
+    assert.equal(container.querySelectorAll("[data-run-input-receipts]").length, 1);
+    const historicalRuns = receipts.querySelectorAll<HTMLElement>("[data-run-input-history-run]");
+    assert.equal(historicalRuns.length, 10, "all paginated Runs, including titles, are inside the same scroll area");
+    assert.ok([...historicalRuns].every((run) => run.className.includes("shrink-0") && !run.style.flex));
+    assert.ok(!receipts.contains(container.querySelector("[data-run-question-advance]")), "pending actions stay outside historical scrolling");
+    // The open question stays the interactive card; the closed batch is a receipt.
+    assert.equal(container.querySelectorAll("[data-run-question-card]").length, 1);
+    assert.equal(container.querySelector("[data-run-question-advance]")?.getAttribute("data-run-question-advance"), "submit");
+    // Long history is not dropped: the full text and the timeout label still render
+    // inside the bounded area rather than being clipped away.
+    assert.match(receipts.textContent ?? "", /【回执末尾哨兵】/);
+    assert.match(receipts.textContent ?? "", /系统默认答复|任务已结束，未处理/);
+    assert.equal(container.querySelector("[data-run-input-history-run]")?.getAttribute("data-run-input-history-run"), "run-open");
+  } finally {
+    await act(async () => root.unmount());
+    env.restore();
+  }
+});
+
+test("history-only state makes the receipt area the single scroll owner", async () => {
+  const env = installDom();
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = await createLobeTestRoot(container);
+  const closed: RunInputsProjection = {
+    run_id: "run-history-only", state: "inactive", questions: [],
+    inputs: [{ input_id: "only-text", kind: "text", text: "历史补充内容", question_id: null, answers: null, status: "closed", created_at: "2026-10-06T00:00:00Z" }],
+  };
+  const runInputs = {
+    sessionId: "session-only", runId: null, projection: null,
+    history: Array.from({ length: 10 }, (_, index) => ({ ...closed, run_id: `run-only-${index}` })),
+    historyIsLoading: false, historyLoadFailed: false, historyHasMore: false, isLoading: false,
+    loadFailed: false, isClosed: false, submissionError: null, pendingSubmission: null,
+    lastAcceptedSubmission: null, loadMoreHistory: async () => false, refreshHistory: async () => true,
+    submitText: async () => true, submitAnswers: async () => true, retryPendingSubmission: async () => true,
+    refresh: async () => true, retire: () => {},
+  } as unknown as RunInputsController;
+  try {
+    await act(async () => {
+      root.render(createElement(RunInputHistory, { runInputs, canSend: true }));
+      await flush();
+    });
+    assert.equal(container.querySelector("[data-run-question-card]"), null);
+    const receipts = container.querySelector("[data-run-input-receipts]");
+    assert.ok(receipts, "history-only receipts still render in their own area");
+    assert.match(receipts.textContent ?? "", /历史补充内容/);
+    assert.match(receipts.className, /overflow-y-auto/);
+    assert.equal(container.querySelectorAll("[data-run-input-receipts]").length, 1);
+    assert.equal(receipts.querySelectorAll("[data-run-input-history-run]").length, 10);
+    assert.equal((receipts as HTMLElement).style.flex, "1 1 auto", "history-only receipts take the flexible share");
+  } finally {
+    await act(async () => root.unmount());
+    env.restore();
+  }
+});

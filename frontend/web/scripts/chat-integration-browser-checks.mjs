@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { captureScreenshot } from "./browser-smoke-harness.mjs";
+import { captureScreenshot, sleep } from "./browser-smoke-harness.mjs";
 
 async function key(client, key, code, virtualKey, modifiers = 0) {
   for (const type of ["keyDown", "keyUp"]) {
@@ -127,16 +127,171 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`document.body.textContent.includes('正在整理文件。')`, "chat:stream-update");
   await client.evaluate(`window.__chatIntegration.showQuestions()`);
   await client.waitFor(`Boolean(document.querySelector('[data-run-question-card]'))`, "chat:question-card");
-  for (const label of ["普通", "PDF", "DOCX"]) {
-    await client.evaluate(`document.querySelector('[data-run-question-card] [aria-label="${label}"]').click()`);
+  // Numbered steps: only the active question is on screen, advanced locally.
+  await client.waitFor(`document.querySelector('[data-run-question-progress]')?.textContent.includes('第 1/3 题')`, "chat:question-step-1");
+  const unifiedSurface = await client.evaluate(`(() => {
+    const card = document.querySelector('[data-run-question-card]');
+    const surface = card.closest('[data-slot="composer-bar"]');
+    const input = document.querySelector('[data-slot="composer-input"]');
+    const box = (node) => { const r = node.getBoundingClientRect(); return { x: r.x, right: r.right, width: r.width }; };
+    return {
+      insideComposer: Boolean(surface),
+      borders: document.querySelectorAll('[data-slot="composer-bar"]').length,
+      cardBox: box(card),
+      inputBox: box(input),
+      stepFields: document.querySelectorAll('[data-run-question-index]').length,
+      nextLabel: document.querySelector('[data-run-question-advance]')?.textContent?.trim(),
+      targets: [...document.querySelectorAll('[data-run-question-card] button')].map((node) => Math.round(node.getBoundingClientRect().height)),
+    };
+  })()`);
+  assert.ok(unifiedSurface.insideComposer, JSON.stringify(unifiedSurface));
+  assert.equal(unifiedSurface.borders, 1, "task questions and composer share one bordered surface");
+  assert.equal(unifiedSurface.stepFields, 1, "one active question at a time");
+  assert.equal(unifiedSurface.nextLabel, "下一题");
+  assert.ok(unifiedSurface.cardBox.right <= unifiedSurface.inputBox.right + 1 && unifiedSurface.cardBox.x >= unifiedSurface.inputBox.x - 1, JSON.stringify(unifiedSurface));
+  assert.ok(unifiedSurface.targets.every((height) => height >= 40), JSON.stringify(unifiedSurface.targets));
+  const questionScreenshots = [await captureScreenshot(client, evidenceDir, `${prefix}-question-step-1`)];
+  // Real pointer events and hit testing: the action row must be painted, inside
+  // the viewport and the topmost element at its centre, never a DOM .click().
+  const pointerClick = async (selector) => {
+    const hit = await client.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+      const top = document.elementFromPoint(x, y);
+      return { x, y, height: Math.round(r.height), reachable: Boolean(top && (top === el || el.contains(top))),
+        inViewport: x > 0 && x < innerWidth && y > 0 && y < innerHeight, topTag: top?.tagName ?? null };
+    })()`);
+    assert.ok(hit, `question control missing: ${selector}`);
+    assert.ok(hit.reachable && hit.inViewport, `question control not pointer-reachable: ${selector} ${JSON.stringify(hit)}`);
+    assert.ok(hit.height >= 40, `question control under 40px: ${selector} ${JSON.stringify(hit)}`);
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: hit.x, y: hit.y, button: "none" });
+    await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: hit.x, y: hit.y, button: "left", clickCount: 1 });
+    await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: hit.x, y: hit.y, button: "left", clickCount: 1 });
+    await sleep(180);
+    return hit;
+  };
+  const pressKey = async (key, code, vk, text) => {
+    const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+    await client.send("Input.dispatchKeyEvent", { type: text ? "keyDown" : "rawKeyDown", ...base, ...(text ? { text } : {}) });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    await sleep(150);
+  };
+  for (const [step, labels] of [[1, ["普通"]], [2, ["PDF", "DOCX"]], [3, []]]) {
+    if (step > 1) await pointerClick("[data-run-question-advance]");
+    await client.waitFor(`document.querySelector('[data-run-question-progress]')?.textContent.includes('第 ${step}/3 题')`, `chat:question-step-${step}`);
+    for (const label of labels) await pointerClick(`[data-run-question-card] [aria-label="${label}"]`);
+    const actions = await client.evaluate(`(() => {
+      const adv = document.querySelector('[data-run-question-advance]');
+      const prev = document.querySelector('[data-run-question-previous]');
+      const body = document.querySelector('[data-run-question-index]').parentElement;
+      const r = (n) => { const b = n.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) }; };
+      const bodyBox = body.getBoundingClientRect();
+      const advBox = adv.getBoundingClientRect();
+      return { adv: r(adv), prev: prev ? r(prev) : null, bodyScrolls: body.scrollHeight >= body.clientHeight,
+        advOutsideScroll: advBox.top >= bodyBox.bottom - 1 || advBox.bottom > bodyBox.top,
+        animated: getComputedStyle(adv).opacity };
+    })()`);
+    assert.ok(actions.adv.h >= 40 && actions.adv.top >= 0 && actions.adv.bottom <= viewport.height + 1, `step ${step} action row clipped ${JSON.stringify(actions)}`);
+    if (actions.prev) assert.ok(actions.prev.h >= 40, `step ${step} previous under 40px ${JSON.stringify(actions)}`);
+    questionScreenshots.push(await captureScreenshot(client, evidenceDir, `${prefix}-question-step-${step}`));
   }
-  await client.evaluate(`(() => { const note = document.querySelector('[data-run-question-card] fieldset:last-child textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(note, '请保留目录结构'); note.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await client.evaluate(`document.querySelector('[data-run-question-card] button[type="submit"]').click()`);
+  await client.evaluate("document.querySelector('[data-run-question-card] textarea').focus()");
+  await client.send("Input.insertText", { text: "请保留目录结构" });
+  await sleep(150);
+  await pressKey("Enter", "Enter", 13, String.fromCharCode(13));
   await client.waitFor(`Boolean(document.querySelector('[data-run-question-status="answered"]'))`, "chat:question-answered");
   const answerReceipt = await client.evaluate(`document.querySelector('[data-run-question-status="answered"]').textContent`);
   assert.match(answerReceipt, /答案已提交/);
   assert.doesNotMatch(answerReceipt, /问题已处理/);
   assert.deepEqual(await client.evaluate(`window.__chatIntegration.lastAnswers`), { priority: "normal", formats: ["pdf", "docx"], note: { text: "请保留目录结构" } });
+  // Coexistence regression: long closed receipts and an open pending question share
+  // the bounded task surface. Only the receipt region scrolls to its final sentinel;
+  // the pending question body, its action row and the Composer stay usable.
+  await client.evaluate("window.__chatIntegration.showQuestions()");
+  await client.evaluate("window.__chatIntegration.showHistoryWithReceipts()");
+  await client.waitFor(`document.querySelectorAll('[data-run-question-card]').length >= 1
+    && Boolean(document.querySelector('[data-run-input-receipts]'))`, "chat:history-with-pending");
+  await client.waitFor(`document.querySelector('[data-run-question-progress]')?.textContent.includes('第 1/3 题')`, "chat:history-pending-step");
+  const coexistence = await client.evaluate(`(() => {
+    const receipts = document.querySelector('[data-run-input-receipts]');
+    const current = document.querySelector('[data-run-question-card]');
+    const adv = document.querySelector('[data-run-question-advance]');
+    const bar = document.querySelector('[data-slot="composer-bar"]');
+    const composerInput = document.querySelector('[data-slot="composer-input"] textarea');
+    const r = (n) => { const b = n.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) }; };
+    const hit = (n) => { const b = n.getBoundingClientRect(); const t = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return Boolean(t && (t === n || n.contains(t))); };
+    return {
+      receipts: r(receipts), receiptsScrollable: receipts.scrollHeight > receipts.clientHeight,
+      receiptRegions: document.querySelectorAll('[data-run-input-receipts]').length,
+      historyRuns: receipts.querySelectorAll('[data-run-input-history-run]').length,
+      current: r(current), adv: r(adv), advReachable: hit(adv),
+      composer: r(composerInput), composerReachable: hit(composerInput),
+      bodyScrollOwner: (() => { const b = document.querySelector('[data-run-question-index]').parentElement; return { sh: b.scrollHeight, ch: b.clientHeight, scrolls: b.scrollHeight > b.clientHeight }; })(),
+      sentinel: document.body.textContent.includes('【回执末尾哨兵】'),
+      bodyWidth: document.body.scrollWidth, viewportWidth: innerWidth,
+    };
+  })()`);
+  assert.equal(coexistence.receiptRegions, 1, "all historical Runs share one scroll region");
+  assert.equal(coexistence.historyRuns, 10, "pagination can accumulate many closed Runs");
+  assert.ok(coexistence.receiptsScrollable, `receipt region must scroll ${JSON.stringify(coexistence)}`);
+  assert.ok(coexistence.bodyScrollOwner.ch >= 40, `history must not squeeze the active question body away ${JSON.stringify(coexistence)}`);
+  assert.ok(coexistence.advReachable && coexistence.adv.h >= 40, `pending action row unreachable ${JSON.stringify(coexistence)}`);
+  assert.ok(coexistence.composerReachable, `composer unreachable ${JSON.stringify(coexistence)}`);
+  assert.ok(coexistence.adv.bottom <= coexistence.composer.top + 1, `action row overlaps the composer ${JSON.stringify(coexistence)}`);
+  assert.ok(coexistence.bodyWidth <= coexistence.viewportWidth + 1, `horizontal overflow ${JSON.stringify(coexistence)}`);
+  // Scroll the receipt region with a real wheel over its centre to read the sentinel.
+  const receiptCentre = await client.evaluate(`(() => { const n = document.querySelector('[data-run-input-receipts]'); const b = n.getBoundingClientRect(); return { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2), before: n.scrollTop }; })()`);
+  await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: receiptCentre.x, y: receiptCentre.y, button: "none" });
+  for (let tick = 0; tick < 80; tick += 1) {
+    await client.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: receiptCentre.x, y: receiptCentre.y, deltaX: 0, deltaY: 800 });
+    await sleep(100);
+    if (await client.evaluate("(() => { const n = document.querySelector('[data-run-input-receipts]'); return n.scrollTop + n.clientHeight >= n.scrollHeight - 4; })()")) break;
+  }
+  await sleep(300);
+  const scrolled = await client.evaluate(`(() => {
+    const n = document.querySelector('[data-run-input-receipts]');
+    // The sentinel lives inside the long receipt text: measure the deepest element
+    // whose own text ends with it, so the check does not rely on outer wrappers.
+    const sentinel = [...n.querySelectorAll('*')].reverse().find((node) => (node.textContent || '').includes('【回执末尾哨兵】'));
+    const visible = sentinel ? (() => { const sb = sentinel.getBoundingClientRect(); const nb = n.getBoundingClientRect(); return sb.bottom > nb.top && sb.top < nb.bottom && sb.height > 0; })() : false;
+    const atEnd = n.scrollTop + n.clientHeight >= n.scrollHeight - 4;
+    return { after: n.scrollTop, max: n.scrollHeight - n.clientHeight, moved: n.scrollTop > 0, atEnd, visible,
+      sentinelTag: sentinel?.tagName ?? null,
+      advReachable: (() => { const a = document.querySelector('[data-run-question-advance]'); const b = a.getBoundingClientRect(); const t = document.elementFromPoint(Math.round(b.left + b.width/2), Math.round(b.top + b.height/2)); return Boolean(t && (t === a || a.contains(t))); })() };
+  })()`);
+  assert.ok(scrolled.moved && scrolled.atEnd && scrolled.visible, `receipt wheel scroll must reach the last Run's end ${JSON.stringify(scrolled)}`);
+  assert.ok(scrolled.advReachable, `action row must stay reachable after scrolling receipts ${JSON.stringify(scrolled)}`);
+  const coexistenceScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-history-with-pending`);
+  // History-only state: with no open question, the receipt area is the sole scroll
+  // owner and long closed receipts stay fully readable.
+  await client.evaluate("window.__chatIntegration.clearQuestion()");
+  await client.waitFor(`!document.querySelector('[data-run-question-card]')
+    && Boolean(document.querySelector('[data-run-input-receipts]'))`, "chat:history-only");
+  const historyOnlyLayout = await client.evaluate(`(() => {
+    const n = document.querySelector('[data-run-input-receipts]');
+    const composer = document.querySelector('[data-slot="composer-input"] textarea');
+    const b = n.getBoundingClientRect();
+    const t = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + Math.min(20, b.height / 2)));
+    return { overflowY: getComputedStyle(n).overflowY, scrolls: n.scrollHeight > n.clientHeight,
+      regions: document.querySelectorAll('[data-run-input-receipts]').length,
+      runs: n.querySelectorAll('[data-run-input-history-run]').length,
+      containsPointer: Boolean(t && (t === n || n.contains(t))),
+      composerReachable: (() => { const cb = composer.getBoundingClientRect(); const h = document.elementFromPoint(Math.round(cb.left + cb.width/2), Math.round(cb.top + cb.height/2)); return Boolean(h && (h === composer || composer.contains(h))); })(),
+      bodyWidth: document.body.scrollWidth, viewportWidth: innerWidth };
+  })()`);
+  assert.equal(historyOnlyLayout.regions, 1);
+  assert.equal(historyOnlyLayout.runs, 10);
+  assert.ok(historyOnlyLayout.scrolls && historyOnlyLayout.overflowY === "auto", `history-only receipts must scroll ${JSON.stringify(historyOnlyLayout)}`);
+  assert.ok(historyOnlyLayout.containsPointer, `history-only receipts must be the pointer owner ${JSON.stringify(historyOnlyLayout)}`);
+  assert.ok(historyOnlyLayout.composerReachable, `composer must stay usable ${JSON.stringify(historyOnlyLayout)}`);
+  assert.ok(historyOnlyLayout.bodyWidth <= historyOnlyLayout.viewportWidth + 1, `history-only horizontal overflow ${JSON.stringify(historyOnlyLayout)}`);
+  const historyOnlyScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-history-only`);
+  await client.evaluate("window.__chatIntegration.showQuestions()");
+  await client.waitFor("Boolean(document.querySelector('[data-run-question-card]'))", "chat:question-restored");
+  await client.evaluate("document.querySelector('[data-run-input-receipts]').scrollTop = 0");
+  await client.evaluate("window.__chatIntegration.clearHistory()");
   await client.evaluate(`window.__chatIntegration.resolveQuestions()`);
   await client.waitFor(`!document.querySelector('[data-run-question-status]')`, "chat:question-resolved");
   await client.evaluate(`document.querySelector('button[aria-label="停止生成"]').click()`);
@@ -201,6 +356,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`Boolean(document.querySelector('[data-composer-model-option="model-b"]'))`, "chat:model-reopen");
   await client.evaluate(`document.querySelector('[data-composer-model-option="model-b"]').click()`);
   await client.waitFor(`document.querySelector('[data-composer-model-trigger]')?.textContent.includes('合成模型乙') && !document.querySelector('[data-composer-model-panel]')`, "chat:model-selected");
-  return { geometry, activity, reveal, entryClearOfMessage, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, modelSelected: true, modelFocusReturn: true,
-    suggestionDraft: true, hydratedAttachment: true, questionAnswers: true, mermaid: true, waitingPainted: true, richTextReachable: true, sendOnce: true, streamUpdated: true, stopConfirmed: true, cancellationRetainsText: true, synchronized: true, richText: true, safeFailure: true, copyVerified: true };
+  return { geometry, activity, reveal, entryClearOfMessage, coexistence, receiptScroll: scrolled, historyOnlyLayout, coexistenceScreenshot, historyOnlyScreenshot, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, questionScreenshots,
+    modelSelected: true, modelFocusReturn: true, suggestionDraft: true, hydratedAttachment: true, questionAnswers: true, mermaid: true, waitingPainted: true, richTextReachable: true,
+    sendOnce: true, streamUpdated: true, stopConfirmed: true, cancellationRetainsText: true, synchronized: true, richText: true, safeFailure: true, copyVerified: true };
 }

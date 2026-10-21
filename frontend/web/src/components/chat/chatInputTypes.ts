@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
@@ -101,6 +102,8 @@ export interface ChatInputProps {
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;
+  /** Task questions rendered inside this Composer's single surface. */
+  taskSurface?: ReactNode;
 
   /** INTERNAL: panel state lifted from ChatInput for ChatView layout. */
   activePanel?: FeaturePanel;
