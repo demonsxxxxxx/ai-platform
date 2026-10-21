@@ -1237,7 +1237,6 @@ export function ChatAppContent({
     <AppShell
       activeTab="chat"
       onNewSession={handleNewSessionWithReset}
-      allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
       currentRunId={visibleCurrentRunId}
       onOpenRunPlayback={handleOpenRunPlayback}
@@ -1289,7 +1288,6 @@ export function ChatAppContent({
               : undefined
           }
           agentHistoryInMainPanel={agentWorkspace !== undefined}
-          navigationOnly={agentWorkspace === undefined}
         />
       }
     >

@@ -4,6 +4,7 @@ import {
 } from "../../governance/workbenchAccessPolicy";
 
 export type WorkbenchNavItem =
+  | "chat"
   | "apps"
   | "agentMarket"
   | "agentBuilder"
@@ -15,6 +16,7 @@ export type WorkbenchNavItem =
   | "usage";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
+  [/^\/chat(?:\/|$)/, "chat"],
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/agent-builder(?:\/|$)/, "agentBuilder"],
   [/^\/agent-market(?:\/|$)/, "agentMarket"],
@@ -27,6 +29,7 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
+  chat: "/chat",
   apps: "/apps",
   agentMarket: "/agent-market",
   agentBuilder: "/agent-builder",

@@ -7,6 +7,8 @@ import {
 } from "../navigationState";
 
 test("maps authenticated workbench routes to sidebar navigation items", () => {
+  assert.equal(getWorkbenchNavItemFromPathname("/chat"), "chat");
+  assert.equal(getWorkbenchNavItemFromPathname("/chat/session-1"), "chat");
   assert.equal(getWorkbenchNavItemFromPathname("/apps"), "apps");
   assert.equal(getWorkbenchNavItemFromPathname("/agent-builder"), "agentBuilder");
   assert.equal(getWorkbenchNavItemFromPathname("/agent-market"), "agentMarket");
@@ -18,10 +20,10 @@ test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/models"), "models");
   assert.equal(getWorkbenchNavItemFromPathname("/runs"), "runs");
   assert.equal(getWorkbenchNavItemFromPathname("/roles"), null);
-  assert.equal(getWorkbenchNavItemFromPathname("/chat"), null);
 });
 
 test("safe navigation redirects unauthorized management destinations before routing", () => {
+  assert.equal(getSafeWorkbenchNavPath("chat", { is_admin: false }), "/chat");
   assert.equal(getSafeWorkbenchNavPath("agentMarket", null), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("models", null), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("runs", { is_admin: false }), "/agent-market");

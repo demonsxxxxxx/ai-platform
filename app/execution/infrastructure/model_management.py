@@ -116,6 +116,57 @@ async def get_run_connection(
     return _connection_from_row(row, encryption_key=encryption_key) if row else None
 
 
+async def get_run_model_completion_connection(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    encryption_key: str,
+) -> ActiveConnection | None:
+    """Resolve a settled Run's own pinned model, only while it stays enabled.
+
+    A disabled or delisted pinned model returns no connection so the caller omits
+    the completion instead of silently switching to another model.
+    """
+
+    cursor = await conn.execute(
+        """
+        select runs.model_gateway_revision as revision, gateway.base_url,
+               gateway.api_key_ciphertext, gateway.key_fingerprint,
+               runs.model_value, runs.max_input_tokens, runs.max_output_tokens
+        from runs
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+        join model_catalog_entries catalog
+          on catalog.model_id = runs.model_id
+         and catalog.upstream_model_id = runs.model_value
+        join model_gateway_revisions gateway
+          on gateway.revision = runs.model_gateway_revision
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and runs.id = %s
+          and runs.status = 'succeeded'
+          and sessions.status = 'active'
+          and runs.model_id is not null
+          and runs.model_value is not null
+          and runs.model_gateway_revision is not null
+          and catalog.enabled = true
+          and catalog.upstream_available = true
+          and runs.max_input_tokens is not null
+          and runs.max_output_tokens is not null
+        limit 1
+        """,
+        (tenant_id, user_id, session_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return _connection_from_row(row, encryption_key=encryption_key) if row else None
+
+
 async def activate_connection_and_sync(
     conn: AsyncConnection,
     *,
@@ -389,6 +440,11 @@ class PostgresModelManagementRepository:
 
     async def run_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
         return await get_run_connection(conn, **kwargs)
+
+    async def run_model_completion_connection(
+        self, conn: AsyncConnection, **kwargs: Any
+    ) -> ActiveConnection | None:
+        return await get_run_model_completion_connection(conn, **kwargs)
 
     async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
         return await list_admin_models(conn)

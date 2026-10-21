@@ -19,6 +19,9 @@ from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
 )
+from app.bootstrap.follow_up_suggestions import (
+    build_chat_follow_up_suggestion_router,
+)
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.run_lifecycle import (
     build_run_cancellation_use_case,
@@ -194,6 +197,8 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api/ai")
     submission_latency_router = build_chat_submission_latency_router()
     app.include_router(submission_latency_router, prefix="/api/ai")
+    follow_up_suggestion_router = build_chat_follow_up_suggestion_router()
+    app.include_router(follow_up_suggestion_router, prefix="/api/ai")
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")
     app.include_router(runs_router, prefix="/api/ai")

@@ -119,6 +119,11 @@ class WorkerResultCommitService:
                     claim_token=command.reconciliation_claim_token,
                 ):
                     raise RuntimeError("executor_reconciliation_claim_lost")
+                # The Run is locked: include every success-only public field before
+                # answer materialization chooses between inline text and its receipt.
+                cancel_requested = await attempt_authority.is_cancel_requested(conn)
+                if result.status == "succeeded" and cancel_requested:
+                    result_payload = {**result_payload, "cancel_status": "cancel_requested_but_completed"}
                 answer_receipt = result.executor_payload.get("answer_receipt")
                 if result.status == "succeeded" and answer_receipt is not None:
                     materialized = await self._materialize_answer(
@@ -132,9 +137,9 @@ class WorkerResultCommitService:
                     artifact_records = materialized.artifact_records
                     assistant_message_for_persistence = materialized.assistant_message_for_persistence
                     assistant_message_metadata = materialized.assistant_message_metadata
-                cancel_requested = await attempt_authority.is_cancel_requested(conn)
-                if result.status == "succeeded" and cancel_requested:
-                    result_payload = {**result_payload, "cancel_status": "cancel_requested_but_completed"}
+                    if result.status != "succeeded" and cancel_requested:
+                        # Receipt rejection is a failure, not a completed cancellation.
+                        result_payload = {key: value for key, value in result_payload.items() if key != "cancel_status"}
                 await self._persist_artifacts(
                     conn, artifact_records, payload, trace_id=command.trace_id
                 )

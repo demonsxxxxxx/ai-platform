@@ -285,6 +285,7 @@
   "chat": {
     "assistant": "助手",
     "attachFile": "附件",
+    "followUpSuggestions": "后续建议",
     "cancelled": "已取消",
     "dropFilesHere": "拖放文件到此处上传",
     "enterToSend": "发送",

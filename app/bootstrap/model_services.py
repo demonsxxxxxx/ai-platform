@@ -5,6 +5,10 @@ from fastapi import APIRouter
 from app.bootstrap.run_diagnostics import record_execution_debug
 from app.auth import is_ai_admin, require_principal
 from app.db import transaction
+from app.execution.application.follow_up_completion import (
+    FollowUpSuggestionService,
+    configure_follow_up_suggestions,
+)
 from app.execution.application.model_control_plane import (
     ModelControlPlaneService,
     configure_model_control_plane,
@@ -33,6 +37,10 @@ from app.runs.infrastructure.postgres import (
     load_worker_dispatch_run_facts,
 )
 from app.settings import get_settings
+
+_model_repository = PostgresModelManagementRepository(
+    existing_user_ids=existing_tenant_user_ids,
+)
 
 
 def build_model_management_router() -> APIRouter:
@@ -63,17 +71,24 @@ def _model_attempt_capability_matches(
 
 
 def configure_model_services() -> None:
+    settings_provider = get_settings
     configure_model_control_plane(
         ModelControlPlaneService(
             transaction_factory=transaction,
-            settings_provider=get_settings,
-            repository=PostgresModelManagementRepository(
-                existing_user_ids=existing_tenant_user_ids,
-            ),
+            settings_provider=settings_provider,
+            repository=_model_repository,
             security=ModelEndpointSecurityAdapter(),
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,
             diagnostic_recorder=record_execution_debug,
+        )
+    )
+    configure_follow_up_suggestions(
+        FollowUpSuggestionService(
+            transaction_factory=transaction,
+            repository=_model_repository,
+            upstream=ModelUpstreamAdapter(),
+            settings_provider=settings_provider,
         )
     )
     configure_run_model_snapshots(

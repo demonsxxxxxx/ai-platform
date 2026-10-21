@@ -18,6 +18,8 @@ import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
+import { FollowUpSuggestionsGate } from "../../chat/assistant-ui/FollowUpSuggestionsGate";
+import { useFollowUpSuggestions } from "../../chat/assistant-ui/useFollowUpSuggestions";
 import { ThreadMessage } from "../../chat/assistant-ui/elements/thread";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
@@ -284,6 +286,8 @@ export function ChatView({
 }: ChatViewProps) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  // One scope for account changes: a different principal can never inherit these receipts.
+  const authScopeKey = `${user?.tenant_id ?? ""}:${user?.id ?? ""}`;
   const artifactDownloadScopeContext = useMemo(
     () =>
       createArtifactDownloadScopeContext({
@@ -465,6 +469,13 @@ export function ChatView({
         visibleWorkspaceProjection.inputFiles,
       ),
     [messages, visibleWorkspaceProjection.inputFiles],
+  );
+
+  const followUpSuggestions = useFollowUpSuggestions(
+    authScopeKey,
+    sessionId,
+    displayMessages,
+    canSendInCurrentView && !sessionRunning,
   );
 
   const getActiveOutlineId = useCallback(
@@ -1103,6 +1114,7 @@ export function ChatView({
         </div>
       ) : null}
       {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-[68rem] px-2"
@@ -1116,6 +1128,7 @@ export function ChatView({
       messages={displayMessages}
       isRunning={sessionRunning}
       actions={assistantUiActions}
+      suggestions={followUpSuggestions}
     >
       <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Search,
   MessageSquarePlus,
+  MessageSquare,
   LayoutGrid,
   Package,
   Plug,
@@ -354,6 +355,12 @@ export function SessionListContent({
     label: string;
     onClick: () => void;
   }> = [
+    {
+      key: "chat",
+      icon: MessageSquare,
+      label: t("nav.chat"),
+      onClick: () => navigate("/chat"),
+    },
     {
       key: "apps",
       icon: LayoutGrid,

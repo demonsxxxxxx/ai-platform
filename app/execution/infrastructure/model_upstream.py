@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from dataclasses import dataclass, field
 from typing import Iterator, Mapping
 
@@ -97,6 +98,18 @@ def _new_client(timeout_seconds: float) -> httpx.Client:
         limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
     )
     return httpx.Client(
+        transport=transport, trust_env=False, follow_redirects=False,
+        timeout=httpx.Timeout(timeout_seconds),
+    )
+
+
+def _new_async_client(timeout_seconds: float) -> httpx.AsyncClient:
+    # Same isolation as _new_client, with a transport the event loop can cancel.
+    transport = httpx.AsyncHTTPTransport(
+        verify=tls_context(), trust_env=False, retries=0, http2=False,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
+    return httpx.AsyncClient(
         transport=transport, trust_env=False, follow_redirects=False,
         timeout=httpx.Timeout(timeout_seconds),
     )
@@ -251,6 +264,97 @@ def request_upstream(
         raise ModelUpstreamError("model_upstream_unavailable", debug=getattr(exc, "debug", None)) from exc
 
 
+async def request_upstream_async(
+    *,
+    base_url: str,
+    allowed_internal_hosts: str,
+    api_key: str,
+    method: str,
+    path: str,
+    provider: str,
+    body: bytes = b"",
+    headers: Mapping[str, str] | None = None,
+    query: str = "",
+    timeout_seconds: float = 20.0,
+    max_response_bytes: int = 16 * 1024 * 1024,
+) -> UpstreamResponse:
+    """Non-streaming request whose transport cancels with the caller.
+
+    Cancelling closes the connection instead of leaving a worker thread on the
+    socket, so a cancelled call cannot keep a billed request running. Endpoint
+    validation, DNS pinning, header isolation and the no-replay rule match
+    `request_upstream`.
+    """
+
+    # Name resolution can block on a resolver. It sends nothing, so cancelling
+    # here never leaves a dispatched request behind.
+    endpoint = await asyncio.to_thread(
+        validate_endpoint, base_url, allowed_internal_hosts=allowed_internal_hosts
+    )
+    if method not in {"GET", "POST"} or not path.startswith("/") or ".." in path.split("/"):
+        raise ModelUpstreamError("model_upstream_request_invalid")
+    if provider not in {"catalog", "openai", "anthropic"}:
+        raise ModelUpstreamError("model_upstream_provider_invalid")
+    outbound = _outbound_headers(
+        endpoint=endpoint,
+        provider=provider,
+        api_key=api_key,
+        headers=headers,
+    )
+    origin = httpx.URL(endpoint.base_url)
+    last_error: Exception | None = None
+    attempts = 0
+    for attempts, ip in enumerate(endpoint.ips, start=1):
+        client = _new_async_client(timeout_seconds)
+        dispatched = False
+        try:
+            url = origin.copy_with(host=ip, path=path, query=query.encode("ascii"))
+            request = client.build_request(
+                method, url, content=body, headers=outbound,
+                extensions={"sni_hostname": endpoint.hostname},
+            )
+            response = await client.send(request, stream=True)
+            # Accepted: a later failure may follow a billed call and must not replay.
+            dispatched = True
+            if 300 <= response.status_code < 400:
+                raise ModelUpstreamError("model_upstream_redirect_rejected")
+            if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                raise ModelUpstreamError("model_upstream_unavailable")
+            payload = bytearray()
+            async for chunk in response.aiter_raw():
+                payload.extend(chunk)
+                if len(payload) > max_response_bytes:
+                    raise ModelUpstreamError("model_upstream_response_too_large")
+            return UpstreamResponse(
+                status=response.status_code,
+                content_type=response.headers.get("content-type") or "application/octet-stream",
+                body=bytes(payload),
+                debug={
+                    "component": "model_proxy", "phase": "response",
+                    "http_status": response.status_code, "attempt_count": attempts,
+                },
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            if dispatched:
+                raise ModelUpstreamError("model_upstream_unavailable", debug={
+                    "component": "model_proxy", "phase": "response",
+                    "failure_class": _failure_class(exc), "attempt_count": attempts,
+                }) from exc
+            last_error = exc
+        except (httpx.HTTPError, OSError) as exc:
+            raise ModelUpstreamError("model_upstream_unavailable", debug={
+                "component": "model_proxy", "phase": "response",
+                "failure_class": _failure_class(exc), "attempt_count": attempts,
+            }) from exc
+        finally:
+            # Cancellation reaches this point too: closing releases the socket.
+            await client.aclose()
+    raise ModelUpstreamError("model_upstream_unavailable", debug={
+        "component": "model_proxy", "phase": "connect",
+        "failure_class": _failure_class(last_error), "attempt_count": attempts,
+    }) from last_error
+
+
 def parse_model_ids(response: UpstreamResponse) -> list[str]:
     if response.status != 200:
         if response.status in {401, 403}:
@@ -283,5 +387,6 @@ def parse_model_ids(response: UpstreamResponse) -> list[str]:
 
 class ModelUpstreamAdapter:
     request = staticmethod(request_upstream)
+    request_async = staticmethod(request_upstream_async)
     parse_model_ids = staticmethod(parse_model_ids)
     open_stream = staticmethod(open_upstream_stream)

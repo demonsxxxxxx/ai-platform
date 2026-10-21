@@ -1,6 +1,7 @@
 import { Button } from "@lobehub/ui/base-ui";
 import {
   MessageSquarePlus,
+  MessageSquare,
   Search,
   Clock,
   LayoutGrid,
@@ -40,6 +41,7 @@ interface SidebarRailProps {
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
+  onOpenChat: () => void;
   onOpenAgentMarket: () => void;
   onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
@@ -63,6 +65,7 @@ export function SidebarRail({
   onOpenSearch,
   onOpenRecentChats,
   onOpenLaunchpad,
+  onOpenChat,
   onOpenAgentMarket,
   onOpenAgentBuilder,
   onOpenSkills,
@@ -166,6 +169,18 @@ export function SidebarRail({
             <Search size={20} />
           </LibreChatRailButton>
         ) : null}
+        <LibreChatRailButton
+          type="button"
+          onClick={onOpenChat}
+          className={railBtn}
+          aria-current={isRailItemActive("chat") ? "page" : undefined}
+          title={t("nav.chat")}
+          aria-label={t("nav.chat")}
+          itemKey="chat"
+          active={isRailItemActive("chat")}
+        >
+          <MessageSquare size={20} />
+        </LibreChatRailButton>
         <LibreChatRailButton
           type="button"
           onClick={onOpenLaunchpad}

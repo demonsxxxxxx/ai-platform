@@ -80,24 +80,21 @@ test("product UI is fixed to Chinese regardless of historical language storage",
   assert.match(i18n, /fallbackLng:\s*PRODUCT_LANGUAGE/);
 });
 
-test("generic Chat deep links remain readable without exposing generic creation or history", () => {
+test("generic Chat creation and history are available to authenticated users", () => {
   const chat = read("components/layout/AppContent/ChatAppContent.tsx");
   const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
 
-  assert.match(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
-  assert.match(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
+  assert.doesNotMatch(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
+  assert.doesNotMatch(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
   assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
   assert.match(menuHost, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
 });
 
-test("bare Chat redirects to Agent Market while session deep links remain readable", async () => {
+test("bare Chat renders generic Chat while session deep links remain readable", async () => {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import(
     "react-router-dom"
-  );
-  const { ChatRouteBoundary } = await import(
-    "../components/common/ChatRouteBoundary.tsx"
   );
 
   async function renderRoute(initialEntry: string) {
@@ -130,15 +127,7 @@ test("bare Chat redirects to Agent Market while session deep links remain readab
               null,
               React.createElement(Route, {
                 path: APP_ROUTE_PATHS.chat,
-                element: React.createElement(
-                  ChatRouteBoundary,
-                  null,
-                  React.createElement(SessionProbe),
-                ),
-              }),
-              React.createElement(Route, {
-                path: APP_ROUTE_PATHS.agentMarket,
-                element: React.createElement("span", null, "Agent Market"),
+                element: React.createElement(SessionProbe),
               }),
             ),
           ),
@@ -156,8 +145,8 @@ test("bare Chat redirects to Agent Market while session deep links remain readab
   }
 
   const bareChat = await renderRoute("/chat");
-  assert.equal(bareChat.pathname, APP_ROUTE_PATHS.agentMarket);
-  assert.equal(bareChat.sessionReadable, false);
+  assert.equal(bareChat.pathname, "/chat");
+  assert.equal(bareChat.sessionReadable, true);
   await bareChat.unmount();
 
   const historicalSession = await renderRoute("/chat/session-123");

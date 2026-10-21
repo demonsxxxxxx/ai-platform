@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-10-14
+Last updated: 2026-10-20
 
 ## Decision
 
@@ -14,11 +14,13 @@ Claude conversation continuity has one production path: the Claude Agent SDK
   covers the immutable conversation source receipt and remains below the
   provider-entry and transcript limits.
 - The SDK user turn is exactly the current Run `input.message` (or the legacy
-  current `input.prompt` alias). Current platform, Agent Profile, Skill catalog,
-  file/material, language, and response instructions use the controlled system
-  channel. Agent Profile instructions remain capped at 16,000 characters; the
-  composed private executor system channel is separately capped at 64,000 so
-  bounded control material can be appended without weakening profile admission.
+  current `input.prompt` alias). A short file-task core, current Agent Profile,
+  and bounded Skill/material metadata use the controlled system channel.
+  Shared language, file-integrity, workspace, progress and delivery rules live
+  once in the platform-owned read-only workspace `CLAUDE.md`; the SDK loads it
+  as a project-instruction reminder in the model conversation, not as a second
+  platform-authored user request. Agent Profile instructions remain capped at
+  16,000 characters; the private executor composition remains bounded at 64,000.
 - Admission preserves those top-level scalar user-text fields verbatim, including
   paths and JSON literals. They remain private execution input and cannot grant
   capabilities. Server-owned control fields and current authorization are still
@@ -34,6 +36,47 @@ Claude conversation continuity has one production path: the Claude Agent SDK
 `platform_bootstrap`, platform checkpoint summarization, and fallback
 reconstruction are retired. Continuity loss never degrades to `empty_start`
 inside an existing conversation.
+
+## File-task prompt composition (SDK 0.2.165)
+
+The dependency is pinned to Python SDK `0.2.165` (bundled CLI `2.1.294`).
+Execution passes a custom prompt object with `snapshot: false`: the CLI must
+rebuild the current system prompt when resuming, rather than replay the first
+Run's Profile and material instructions. Ordinary strings use snapshot recording
+in this CLI and do not meet that contract. A changed system prefix cannot reuse
+the old prompt cache; APIs enforcing preserved thinking may discard earlier
+thinking blocks. Platform authorization and native transcript continuity remain
+independent of those model-cache semantics.
+
+The SDK settings disable `autoMemoryEnabled`, `includeGitInstructions` and
+commit/PR attribution. These retire SDK-local file memory and Git workflow prose,
+not platform-scoped memory retrieval, Bash, native session storage or compaction.
+`setting_sources=["project"]` and the existing workspace scrubbing remain.
+
+Current manifest-backed material prompts contain authorized references and
+available retrieval tools, not generated summaries, timestamps or version/count
+receipts. Empty material sets add no prompt section. Legacy snapshots without a
+manifest retain their sanitized bounded summary when material presence is unknown
+or nonempty; explicit zero material counts omit it. That compatibility belongs to
+Context until those persisted snapshots are retired. Historical message bodies
+never enter either path. Skill rendering uses Unicode and only discovery name,
+description, availability and invocation handle, with truncation metadata; internal
+canonical snapshots, version pins and digests are unchanged. Only staged Skills
+are callable. Existing tool and MCP admission, including NotebookEdit consumers,
+are unchanged; no new Agent/browser/network capability is enabled.
+
+Retirement inventory: the production `claude_code` preset, duplicated language/
+delivery/workspace control prose, empty file placeholders and manifest audit
+rendering are removed. Owning prompt/worker/catalog tests follow the new semantic
+split, and the installed SDK selector is `test_installed_claude_agent_sdk_02165_contract`.
+The 0.2.130 upgrade document remains historical, not an active dependency pin.
+The owning regressions are `test_context_prompt_continuity.py`,
+`test_authorized_skill_catalog.py`, `test_claude_agent_sdk_runner.py`,
+`test_claude_agent_worker_adapter.py`, `test_sandbox_workspace_manager.py`,
+`test_claude_agent_sdk_installed_contract.py` and `test_packaging_contract.py`.
+Review the actual inventory with scoped searches for `preset.*claude_code`,
+`_PUBLIC_LANGUAGE_INSTRUCTION`, `_RESPONSE_FILES_INSTRUCTION` and `02130` in
+those production/test files; a historical document is not a compatibility path.
 
 ## Change Contract
 
@@ -455,3 +498,19 @@ Oversized SDK error values retain the existing truncation summary rather than an
 unbounded copy. Required response attachment tool registration failures likewise
 retain the constructor exception through this same diagnostic path; optional
 registration failure still leaves attachments unavailable without failing a turn.
+
+### Context prompt evidence compatibility
+
+The context-pack evidence generator, verifier, and office readiness consumer use
+probe/runtime-acceptance v3. They require the common redaction checks plus the
+selected rendering contract: manifest refs and retrieval tools, a bounded legacy
+summary, or no material section. Unknown legacy counts are not proof of absence;
+only three explicit integer-zero material counts suppress the legacy summary.
+`memory_read_flag_absent` checks prompt rendering only, not whether memory was
+read; worker-dispatch, scoped material evidence, and non-expansion invariants
+remain separately required. Source probes still cannot close runtime acceptance.
+
+Archived v2 reports remain immutable historical evidence for their original
+source. They do not satisfy the current v3 readiness contract; a current-runtime
+claim requires fresh v3 evidence rather than relabeling an old artifact. The
+retired summary/version/timestamp-in-prompt assertions have no current consumers.

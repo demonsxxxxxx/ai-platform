@@ -60,6 +60,22 @@ def _key() -> str:
     return base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
 
 
+def test_model_services_share_the_user_aware_repository_with_follow_up_suggestions(monkeypatch):
+    from app.bootstrap import model_services
+    from app.identity.api import existing_tenant_user_ids
+
+    captured = {}
+    monkeypatch.setattr(model_services, "configure_model_control_plane", lambda service: captured.update(models=service))
+    monkeypatch.setattr(model_services, "configure_follow_up_suggestions", lambda service: captured.update(follow_up=service))
+    monkeypatch.setattr(model_services, "configure_run_model_snapshots", lambda _service: None)
+    monkeypatch.setattr(model_services, "configure_worker_dispatch_run_facts_loader", lambda _loader: None)
+    model_services.configure_model_services()
+
+    assert captured["models"]._repository is captured["follow_up"]._repository
+    assert captured["models"]._repository._existing_user_ids is existing_tenant_user_ids
+    assert captured["models"]._settings_provider is captured["follow_up"]._settings_provider
+
+
 def _attempt_capability_verifier(secret: str):
     def verify(*, run_id: str, attempt_id: str, provided_capability: str) -> bool:
         return callback_token_matches(
