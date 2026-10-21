@@ -270,9 +270,11 @@ The rules are:
 contract for closed, content-free execution diagnostic facts. It is limited to
 allowlisted labels, bounded counts, HTTP status, version strings and runtime
 commit IDs; it grants no access to arbitrary SDK payloads or exception text.
-This declaration precedes the consumer migration: Execution's existing public
-entry remains compatible, while Runs and Sandbox retain independent validation
-at their persistence and projection boundaries. It does not permit other
+`app/kernel/runtime_debug.py` owns the single field policy and normalizer.
+Execution's existing public entry is a logic-free compatibility alias; Runs and
+Sandbox keep their dictionary input guards and independently invoke the shared
+normalizer at persistence and projection boundaries. The duplicated private
+field tables are retired. This does not permit other
 cross-context domain imports or weaken existing layer checks.
 
 A context MUST NOT import another context's `domain/`, `application/`,
