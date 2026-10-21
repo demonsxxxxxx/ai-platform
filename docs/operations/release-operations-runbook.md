@@ -5,7 +5,10 @@ version publishes an immutable Deployment Release with one operator asset,
 `ai-platform-internal-test.tar.gz`,
 containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
 GitHub Actions, source checkouts, and host image builds are not part of a normal
-application install or upgrade.
+application install or upgrade. The archive retains its historical `internal-test`
+name; there is no test/production package selection. The
+[single deployment guide](../../deploy/ai-platform/README.md) describes the
+configuration and commands included in that package.
 
 ## What CI publishes
 
@@ -75,19 +78,19 @@ A named version is reserved only after qualification and a fresh main-commit
 check. An existing tag is a hard failure, never moved or reused. If publication
 fails after reserving a tag, stop and inspect that tag and any draft Release;
 do not automatically delete, reuse, or overwrite it. A completed Release still
-requires immutable status and the single matching internal-test package asset. Publishing a package
+requires immutable status and the single matching package asset. Publishing a package
 does not install or upgrade any host.
 
 ## One-time host preparation
 
 Use a Linux host with Python 3, Docker, Compose v2 with `--wait` and `!reset`,
-and an active `opensandbox.service`. The internal-test host must retain native
+and an active `opensandbox.service`. The host for this package must retain native
 Docker `bridge` networking and `runsc` gVisor runtime, with the OpenSandbox
 NAT-redirect egress sidecar disabled. The test bridge has no production host
 network guard: a task can reach routable host, private and public destinations.
-Limit this package to a trusted isolated test host. The existing production
-host contract remains documented in [production host preparation](production-bootstrap.md),
-but this workflow does not publish a new production package for s75.
+Limit this package to a trusted isolated test host. The retained
+[dedicated-network host contract](production-bootstrap.md) is a controlled
+maintenance reference, not a second package or an interchangeable topology.
 
 Create or retain one owner-held mode `0600` environment file. For a new host:
 
@@ -118,7 +121,7 @@ execution and egress separately from controller readiness.
 
 ## Install or upgrade
 
-Download the internal-test package from one immutable Deployment Release and use
+Download the single package from one immutable Deployment Release and use
 its embedded manifest; extract the archive into a new directory, and keep that directory
 unchanged. Choose a maintenance window with no active Runs, Attempts, leases,
 or sandbox containers. The controller does not create a backup and cannot
