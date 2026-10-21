@@ -59,8 +59,8 @@ class RunCancellationPostProcessor:
         self._sandbox_cleanup = sandbox_cleanup
         self._provider_factory = provider_factory
         self._transaction_factory = transaction_factory
-        self._admit_stream = admit_stream
-        self._publish_event = publish_event
+        self.admit_v4_stream = admit_stream
+        self.publish_run_event = publish_event
         self._warn = warn
 
     async def post_cancel(
@@ -77,7 +77,7 @@ class RunCancellationPostProcessor:
             return None
         if cancellation.attempt_id:
             try:
-                await self._admit_stream(
+                await self.admit_v4_stream(
                     worker_capabilities,
                     tenant_id=tenant_id,
                     run_id=cancellation.run_id,
@@ -91,7 +91,7 @@ class RunCancellationPostProcessor:
         result.pop("_terminalization_progress", None)
         if cancellation.attempt_id:
             try:
-                await self._publish_event(
+                await self.publish_run_event(
                     worker_capabilities,
                     tenant_id=tenant_id,
                     run_id=cancellation.run_id,
