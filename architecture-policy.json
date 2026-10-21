@@ -94,7 +94,8 @@
     "events"
   ],
   "public_kernel_modules": [
-    "memory_redaction"
+    "memory_redaction",
+    "runtime_debug"
   ],
   "approved_root_modules": [
     "app/__init__.py",
