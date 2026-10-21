@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 
+from app.context.api import ARTIFACT_STAGE_MAX_BYTES, ArtifactTransferError
+from app.sandbox.api import ArtifactStreamStager
 from app.context.retrieval import ContextRetrievalDenied
 from app.path_safety import ensure_creatable_inside
 from app.runtime.sandbox.contracts import (
@@ -38,6 +40,7 @@ class PlatformContextRetrievalClient:
         workspace_root: str | Path | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
+        self._artifact_stager = ArtifactStreamStager(http_client_factory=lambda **kwargs: httpx.AsyncClient(**kwargs))
         self._callback_url = callback_url
         self._callback_token_id = callback_token_id
         self._callback_token = callback_token
@@ -94,6 +97,8 @@ class PlatformContextRetrievalClient:
                 run_id=self._scope.run_id,
                 agent_id=self._scope.agent_id,
             )
+        if action == "stage_run_artifact_to_workspace":
+            return await self._stage_artifact(arguments, self._required_workspace_root())
         result = await self._request(action, arguments)
         if action == "stage_context_file_to_workspace":
             max_bytes = max(1, int(arguments.get("max_bytes", 1048576)))
@@ -101,15 +106,6 @@ class PlatformContextRetrievalClient:
                 result,
                 id_key="file_id",
                 expected_id=str(arguments.get("file_id") or ""),
-                workspace_root=str(self._required_workspace_root()),
-                max_bytes=max_bytes,
-            )
-        if action == "stage_run_artifact_to_workspace":
-            max_bytes = max(1, int(arguments.get("max_bytes", 16777216)))
-            return self._stage_result(
-                result,
-                id_key="artifact_id",
-                expected_id=str(arguments.get("artifact_id") or ""),
                 workspace_root=str(self._required_workspace_root()),
                 max_bytes=max_bytes,
             )
@@ -187,21 +183,29 @@ class PlatformContextRetrievalClient:
         *,
         artifact_id: str,
         workspace_root: str,
-        max_bytes: int = 16777216,
+        max_bytes: int = ARTIFACT_STAGE_MAX_BYTES,
         **scope: str,
     ) -> dict[str, Any]:
         self._require_scope(**scope)
-        result = await self._request(
-            "stage_run_artifact_to_workspace",
-            {"artifact_id": artifact_id, "max_bytes": max_bytes},
+        return await self._stage_artifact(
+            {"artifact_id": artifact_id, "max_bytes": max_bytes}, workspace_root,
         )
-        return self._stage_result(
-            result,
-            id_key="artifact_id",
-            expected_id=artifact_id,
-            workspace_root=workspace_root,
-            max_bytes=max_bytes,
-        )
+
+    async def _stage_artifact(self, arguments, workspace_root):
+        try:
+            return await self._artifact_stager.stage(
+                callback_url=self._callback_url, callback_token=self._callback_token,
+                payload={"session_id": self._scope.session_id, "run_id": self._scope.run_id,
+                         "attempt_id": self._attempt_id, "callback_token_id": self._callback_token_id,
+                         "action": "stage_run_artifact_to_workspace", "arguments": arguments},
+                workspace_root=workspace_root, timeout_seconds=self._timeout_seconds,
+            )
+        except ArtifactTransferError as exc:
+            raise ContextRetrievalDenied(str(exc)) from exc
+        except (RuntimeError, ContextRetrievalDenied):
+            raise
+        except Exception as exc:
+            raise RuntimeError("context_retrieval_callback_failed") from exc
 
     async def stage_profile_drive_file_to_workspace(
         self,
@@ -339,7 +343,7 @@ class PlatformContextRetrievalClient:
         workspace_root: str,
         max_bytes: int,
     ) -> dict[str, Any]:
-        if str(result.get(id_key) or "") != expected_id:
+        if id_key != "file_id" or str(result.get(id_key) or "") != expected_id:
             raise ContextRetrievalDenied("context_scope_denied")
         try:
             raw_bytes = base64.b64decode(str(result.get("content_base64") or ""), validate=True)
@@ -368,7 +372,7 @@ class PlatformContextRetrievalClient:
             "bytes_staged": len(raw_bytes),
             "max_bytes": max(1, int(max_bytes)),
             "audit": {
-                "action": f"context_retrieval.{('stage_context_file_to_workspace' if id_key == 'file_id' else 'stage_run_artifact_to_workspace')}",
+                "action": "context_retrieval.stage_context_file_to_workspace",
                 "bytes_read": len(raw_bytes),
                 "max_bytes": max(1, int(max_bytes)),
                 "result": "staged",
