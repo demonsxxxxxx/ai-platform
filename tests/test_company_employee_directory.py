@@ -163,16 +163,19 @@ def test_transport_unavailable_is_retryable_503():
     ("", "http://10.56.0.25:5033"),
     ("https://directory.example/", "https://directory.example"),
 ])
+@pytest.mark.parametrize("timeout_seconds", [1, 5, 15, 30])
 async def test_bootstrap_reuses_department_directory_origin_for_listing_and_grants(
-    monkeypatch, configured_base, expected_base,
+    monkeypatch, configured_base, expected_base, timeout_seconds,
 ):
     from app.bootstrap import identity
     from app import department_directory
 
-    monkeypatch.setattr(identity, "get_settings", lambda: SimpleNamespace(
+    settings = SimpleNamespace(
         default_tenant_id="default", dingtalk_department_authority_base_url=configured_base,
-        dingtalk_department_authority_timeout_seconds=5,
-    ))
+        dingtalk_department_authority_timeout_seconds=timeout_seconds,
+    )
+    monkeypatch.setattr(identity, "get_settings", lambda: settings)
+    monkeypatch.setattr(department_directory, "get_settings", lambda: settings)
     original = httpx.AsyncClient
     requested = []
 
@@ -184,7 +187,7 @@ async def test_bootstrap_reuses_department_directory_origin_for_listing_and_gran
         return httpx.Response(200, json=[])
 
     def client(**kwargs):
-        assert kwargs == {"timeout": 5, "trust_env": False, "follow_redirects": False}
+        assert kwargs == {"timeout": timeout_seconds, "trust_env": False, "follow_redirects": False}
         return original(**kwargs, transport=httpx.MockTransport(handler))
 
     monkeypatch.setattr(adapter.httpx, "AsyncClient", client)

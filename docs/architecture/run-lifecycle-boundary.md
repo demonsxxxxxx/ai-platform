@@ -160,8 +160,15 @@ The migration MUST preserve these observable semantics:
    Redis receipts enforce idempotency and callback-prefix ordering. There is no
    publication state, pending-intent drain or successor recovery. Redis failure
    cannot undo Run finalization or hide its authoritative final answer.
-9. **Sandbox cleanup remains Sandbox-owned.** After the Run cancellation fact
-   commits, orchestration calls the public Sandbox Runtime release/reconcile
+9. **Sandbox cleanup remains Sandbox-owned.** Owner and administrator cancellation
+   retain separate authorization commands, then use one Runs-owned post-cancellation
+   operation after the transaction commits. That operation admits and publishes
+   the exact Attempt stream when present, removes queued payloads only for a
+   cancelled Run, and always attempts Sandbox cleanup before reporting a queue
+   failure. Publication failures do not prevent cleanup. Bootstrap injects these
+   collaborators; neither HTTP route owns a separate cleanup implementation.
+   The routes retain their existing 404/502/503 mapping and actor/role/reason.
+   After the Run cancellation fact commits, orchestration calls the public Sandbox Runtime release/reconcile
    application API through a separate Sandbox-owned operation boundary. That authority
    owns the scoped lease and operation fence and records stop/release or cleanup
    failure. The existing stop-under-lock compatibility mechanism must remain

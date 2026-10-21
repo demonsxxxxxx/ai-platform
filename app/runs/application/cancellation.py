@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, AsyncContextManager, Literal, Protocol
 
@@ -10,6 +10,116 @@ from app.runs.domain.terminalization import RunTerminalizationProgress
 
 CancelRequesterRole = Literal["owner", "admin"]
 CancelEventSource = Literal["user", "system"]
+
+
+class RunCancellationQueueCleanupError(RuntimeError):
+    """Queued cancellation payload cleanup failed after Run cancellation committed."""
+
+    def __init__(self, failures: list[Exception]) -> None:
+        self.failures = failures
+        super().__init__("queue_cleanup_failed")
+
+
+class RunCancellationSandboxCleanup(Protocol):
+    async def cleanup_cancelled_run_leases(
+        self,
+        sandbox_leases: list[dict[str, Any]] | None,
+        *,
+        tenant_id: str,
+        run_id: str,
+        user_id: str,
+        requested_by_role: CancelRequesterRole,
+        reason: str,
+        trace_id: str | None,
+        provider_factory: Callable[..., Any],
+        transaction_factory: Callable[[], AsyncContextManager[object]],
+    ) -> None: ...
+
+
+RunCancellationQueueCleanup = Callable[..., Awaitable[Any]]
+RunCancellationStreamOperation = Callable[..., Awaitable[Any]]
+RunCancellationWarning = Callable[[str, str, Exception], None]
+
+
+class RunCancellationPostProcessor:
+    """Perform cancellation side effects after the Run transaction commits."""
+
+    def __init__(
+        self,
+        *,
+        queue_cleanup: RunCancellationQueueCleanup,
+        sandbox_cleanup: RunCancellationSandboxCleanup,
+        provider_factory: Callable[..., Any],
+        transaction_factory: Callable[[], AsyncContextManager[object]],
+        admit_stream: RunCancellationStreamOperation,
+        publish_event: RunCancellationStreamOperation,
+        warn: RunCancellationWarning,
+    ) -> None:
+        self._queue_cleanup = queue_cleanup
+        self._sandbox_cleanup = sandbox_cleanup
+        self._provider_factory = provider_factory
+        self._transaction_factory = transaction_factory
+        self.admit_v4_stream = admit_stream
+        self.publish_run_event = publish_event
+        self._warn = warn
+
+    async def post_cancel(
+        self,
+        cancellation: "CancelRequestResult | None",
+        *,
+        tenant_id: str,
+        user_id: str,
+        requested_by_role: CancelRequesterRole,
+        reason: str,
+        worker_capabilities: Any,
+    ) -> dict[str, Any] | None:
+        if cancellation is None:
+            return None
+        if cancellation.attempt_id:
+            try:
+                await self.admit_v4_stream(
+                    worker_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=cancellation.run_id,
+                    attempt_id=cancellation.attempt_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - publication never blocks cleanup
+                self._warn(
+                    "Cancellation v4 admission deferred", cancellation.run_id, exc,
+                )
+        result = cancellation.as_route_result()
+        result.pop("_terminalization_progress", None)
+        if cancellation.attempt_id:
+            try:
+                await self.publish_run_event(
+                    worker_capabilities,
+                    tenant_id=tenant_id,
+                    run_id=cancellation.run_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - publication retries after cleanup
+                self._warn(
+                    "Cancellation v4 terminal publication deferred", cancellation.run_id, exc,
+                )
+        queue_cleanup_failures: list[Exception] = []
+        if result["status"] == "cancelled":
+            try:
+                await self._queue_cleanup(tenant_id=tenant_id, run_id=cancellation.run_id)
+            except Exception as exc:  # noqa: BLE001 - report after sandbox cleanup
+                queue_cleanup_failures.append(exc)
+        await self._sandbox_cleanup.cleanup_cancelled_run_leases(
+            result.get("active_sandbox_leases"),
+            tenant_id=tenant_id,
+            run_id=cancellation.run_id,
+            user_id=user_id,
+            requested_by_role=requested_by_role,
+            reason=reason,
+            trace_id=result.get("trace_id"),
+            provider_factory=self._provider_factory,
+            transaction_factory=self._transaction_factory,
+        )
+        if queue_cleanup_failures:
+            raise RunCancellationQueueCleanupError(queue_cleanup_failures)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,11 +230,34 @@ class RunCancellationUseCase:
         persistence: RunCancellationPersistence,
         event_writer: RunCancellationEventWriter,
         progress_terminalization: RunTerminalizationProgressor,
+        post_processor: RunCancellationPostProcessor | None = None,
     ) -> None:
         self._transaction_factory = transaction_factory
         self._persistence = persistence
         self._event_writer = event_writer
         self._progress_terminalization = progress_terminalization
+        self._post_processor = post_processor
+
+    async def post_cancel(
+        self,
+        cancellation: CancelRequestResult | None,
+        *,
+        tenant_id: str,
+        user_id: str,
+        requested_by_role: CancelRequesterRole,
+        reason: str,
+        worker_capabilities: Any,
+    ) -> dict[str, Any] | None:
+        if self._post_processor is None:
+            raise RuntimeError("run_cancellation_post_processor_unavailable")
+        return await self._post_processor.post_cancel(
+            cancellation,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            requested_by_role=requested_by_role,
+            reason=reason,
+            worker_capabilities=worker_capabilities,
+        )
 
     async def request_owner_cancel(
         self,

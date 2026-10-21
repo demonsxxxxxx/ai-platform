@@ -81,7 +81,11 @@ Platform login validation, trusted work-ID binding and downstream ACL checks
 remain required.
 
 `DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` and the bounded timeout configure API and
-Worker together. The same source provides `/api/DingTalk/departs/pure`. Canonical
+Worker together. `DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS` (default 5 seconds,
+maximum 30) applies to each membership, employee-directory and pure-department
+HTTP request; the pure directory has no independent hard-coded timeout. A membership
+lookup passes the same timeout to its ancestor-directory read. The same source
+provides `/api/DingTalk/departs/pure`. Canonical
 IDs are non-zero-leading ASCII decimal strings of at most ten digits. Identity
 combines all direct memberships with their ancestors; missing parents, cycles,
 overlong paths or unknown IDs reject the complete department scope. Names and
