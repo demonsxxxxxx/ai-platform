@@ -42,7 +42,7 @@ import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { isAiAdminUser } from "../capabilityAdmin";
 
 export interface SessionActions {
-  onDeleteSession: (id: string) => void;
+  onDeleteSession: (id: string, returnFocus?: HTMLElement | null) => void;
   onSelectSession: (id: string) => void;
 }
 
@@ -207,7 +207,7 @@ export function SessionListContent({
         session={session}
         isActive={currentSessionId === session.id}
         onSelect={onSelect}
-        onDelete={() => sessionActions.onDeleteSession(session.id)}
+        onDelete={(returnFocus) => sessionActions.onDeleteSession(session.id, returnFocus)}
         onSessionUpdate={onUpdate}
         onRenameSession={onRename}
       />
@@ -315,7 +315,7 @@ export function SessionListContent({
     loading: boolean,
     hasHistory: boolean,
     unreadCount: number,
-    content: ReactNode,
+    renderContent: () => ReactNode,
   ) => {
     if (!hasHistory && !loading) return null;
     return (
@@ -342,7 +342,7 @@ export function SessionListContent({
           />
         </div>
         {!isChatsCollapsed ? (
-          loading ? renderLoadingSessions() : content
+          loading ? renderLoadingSessions() : renderContent()
         ) : null}
       </>
     );
@@ -558,7 +558,7 @@ export function SessionListContent({
                   globalIsLoading,
                   groupedAgentSessions.length > 0,
                   globalChatsUnreadCount,
-                  renderGlobalSessionGroups(),
+                  renderGlobalSessionGroups,
                 )}
               </div>
               <div className="xl:hidden" data-workbench-mobile-history>
@@ -598,14 +598,14 @@ export function SessionListContent({
                       isLoading,
                       groupedSessions.length > 0,
                       chatsUnreadCount,
-                      renderTaskHistory(),
+                      renderTaskHistory,
                     )
                   : renderHistoryCatalog(
                       t("sidebar.chats"),
                       globalIsLoading,
                       groupedAgentSessions.length > 0,
                       globalChatsUnreadCount,
-                      renderGlobalSessionGroups(),
+                      renderGlobalSessionGroups,
                     )}
               </div>
             </>
@@ -616,7 +616,7 @@ export function SessionListContent({
               ? groupedSessions.length > 0
               : groupedAgentSessions.length > 0,
             agentWorkspace ? chatsUnreadCount : globalChatsUnreadCount,
-            agentWorkspace ? renderTaskHistory() : renderGlobalSessionGroups(),
+            agentWorkspace ? renderTaskHistory : renderGlobalSessionGroups,
           )}
         </div>
       </div> : <div className="flex-1" data-workbench-navigation-spacer />}

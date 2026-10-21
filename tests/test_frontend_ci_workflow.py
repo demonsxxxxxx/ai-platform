@@ -22,7 +22,7 @@ PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
+    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py tests/test_session_preview_browser_smoke.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_PYTEST_COMMAND = (
@@ -161,6 +161,55 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
         assert (PACKAGE.parent / selector).is_file()
 
 
+def test_frontend_ci_runs_browser_preference_owner_regressions():
+    scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    assert scripts["ci:verify"].split(" && ").count("corepack pnpm run test:browser-preferences") == 1
+    assert scripts["test:browser-preferences"].split() == [
+        "node", "--import", "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
+        "src/contexts/__tests__/BrowserPreferences.mounted.test.tsx",
+        "src/contexts/__tests__/SidebarPreference.mounted.test.tsx",
+        "src/utils/__tests__/themeDom.test.ts",
+        "src/features/agent-builder/__tests__/AgentBuilderShell.test.tsx",
+    ]
+    for selector in scripts["test:browser-preferences"].split()[7:]:
+        assert (PACKAGE.parent / selector).is_file()
+
+
+def test_frontend_ci_requires_synthetic_session_preview_browser_evidence():
+    workflow = _workflow_contract()
+    assert workflow["permissions"] == {"contents": "read"}
+    frontend = workflow["jobs"]["frontend"]
+    assert "permissions" not in frontend
+    assert "continue-on-error" not in frontend
+    steps = frontend["steps"]
+    names = [step["name"] for step in steps]
+    smoke_name = "Verify synthetic session and preview browser behavior"
+    upload_name = "Upload synthetic session and preview browser evidence"
+    assert names.count(smoke_name) == names.count(upload_name) == 1
+    assert names.index("Record packaged frontend runtime smoke contract") < names.index(smoke_name)
+    assert names.index(smoke_name) < names.index(upload_name)
+    smoke = next(step for step in steps if step["name"] == smoke_name)
+    assert smoke["working-directory"] == "frontend/web"
+    assert smoke["run"] == "corepack pnpm run smoke:session-preview"
+    assert "if" not in smoke
+    assert "continue-on-error" not in smoke
+    upload = next(step for step in steps if step["name"] == upload_name)
+    assert upload["if"] == "always()"
+    assert upload["uses"] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    assert upload["with"] == {
+        "name": "session-preview-browser-${{ github.event.pull_request.head.sha || github.sha }}",
+        "path": (
+            ".codex-tmp/session-preview-browser-smoke/*.png\n"
+            ".codex-tmp/session-preview-browser-smoke/evidence.json\n"
+            ".codex-tmp/session-preview-browser-smoke/browser.log\n"
+        ),
+        "include-hidden-files": "true",
+        "if-no-files-found": "warn",
+        "retention-days": "7",
+    }
+
+
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
@@ -176,6 +225,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         "src/components/layout/AppContent/__tests__/useSessionSync.test.ts",
         "src/components/layout/AppContent/__tests__/chatViewMessageListKey.test.ts",
         "src/hooks/__tests__/useSession.test.ts",
+        "src/components/panels/__tests__/SessionSidebarDelete.mounted.test.tsx",
+        "src/components/panels/__tests__/SearchDialog.mounted.test.tsx",
         "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
         "src/hooks/useAgent/runControlLifecycle.test.ts",
         "src/hooks/useAgent/__tests__/runLifecycle.test.ts",

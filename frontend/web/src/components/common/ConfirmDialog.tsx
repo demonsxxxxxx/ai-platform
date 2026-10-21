@@ -1,5 +1,5 @@
 import { Button, ModalBackdrop, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalPopup, ModalPortal, ModalRoot, ModalTitle } from "@lobehub/ui/base-ui";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -13,6 +13,7 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   variant?: "danger" | "warning" | "info";
   loading?: boolean;
+  finalFocus?: RefObject<HTMLElement | null>;
 }
 
 export function ConfirmDialog({
@@ -25,6 +26,7 @@ export function ConfirmDialog({
   onCancel,
   variant = "danger",
   loading = false,
+  finalFocus,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -38,7 +40,7 @@ export function ConfirmDialog({
     <ModalRoot open={isOpen} onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
       <ModalPortal>
         <ModalBackdrop />
-        <ModalPopup width={400} className="workbench-modal" initialFocus={confirmRef} finalFocus={returnFocusRef}>
+        <ModalPopup width={400} className="workbench-modal" initialFocus={confirmRef} finalFocus={finalFocus ?? returnFocusRef}>
           <ModalHeader><ModalTitle>{title}</ModalTitle></ModalHeader>
           <ModalContent>
             <div className="flex items-start gap-3">

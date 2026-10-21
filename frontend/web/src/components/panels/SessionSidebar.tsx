@@ -273,6 +273,15 @@ export const SessionSidebar = forwardRef<
     requestId: number;
   }>({ isOpen: false, sessionId: null, requestId: 0 });
   const deleteRequestIdRef = useRef(0);
+  const deleteReturnFocusRef = useRef<HTMLElement | null>(null);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const deleteRequestRef = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    setIsDeletingSession(false);
+    const requestId = ++deleteRequestIdRef.current;
+    setDeleteConfirm({ isOpen: false, sessionId: null, requestId });
+    return () => { deleteRequestRef.current = null; };
+  }, [authScopeKey, sessionList.updateSession, sessionList.removeSession, sessionList.prependSession, sessionSource?.loadMore]);
   const currentSessionIdRef = useRef(currentSessionId);
   const onNewSessionRef = useRef(onNewSession);
   useLayoutEffect(() => {
@@ -293,10 +302,13 @@ export const SessionSidebar = forwardRef<
   const confirmDeleteSession = async () => {
     const { sessionId, requestId } = deleteConfirm;
     const owner = deleteOwnerRef.current;
-    if (!deleteConfirm.isOpen || !sessionId || !owner || !isOwnerSnapshotCurrent(owner.snapshot)) return;
+    if (!deleteConfirm.isOpen || !sessionId || !owner || deleteRequestRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) return;
+    const request = {};
+    deleteRequestRef.current = request;
+    setIsDeletingSession(true);
     try {
       await sessionApi.delete(sessionId);
-      if (!deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
+      if (deleteRequestRef.current !== request || !deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
         return;
       }
       owner.snapshot.removeSession(sessionId);
@@ -306,13 +318,18 @@ export const SessionSidebar = forwardRef<
         setDeleteConfirm({ isOpen: false, sessionId: null, requestId });
       }
     } catch (err) {
-      if (!deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
+      if (deleteRequestRef.current !== request || !deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
         return;
       }
       if (deleteRequestIdRef.current === requestId) {
         console.error("Failed to delete session:", err);
         toast.error(t("sidebar.deleteFailed"));
         setDeleteConfirm({ isOpen: false, sessionId: null, requestId });
+      }
+    } finally {
+      if (deleteRequestRef.current === request) {
+        deleteRequestRef.current = null;
+        setIsDeletingSession(false);
       }
     }
   };
@@ -399,8 +416,10 @@ export const SessionSidebar = forwardRef<
   );
 
   const requestDeleteSession = useCallback(
-    (sessionId: string) => {
-      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
+    (sessionId: string, returnFocus?: HTMLElement | null) => {
+      if (deleteRequestRef.current || !isOwnerSnapshotCurrent(ownerSnapshot)) return;
+      // Menu items disappear when confirmation opens; the row owns its stable trigger.
+      deleteReturnFocusRef.current = returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
       const requestId = ++deleteRequestIdRef.current;
       setDeleteConfirm({ isOpen: true, sessionId, requestId });
     },
@@ -770,6 +789,7 @@ export const SessionSidebar = forwardRef<
 
       {isSearchOpen && !agentWorkspace && !navigationOnly && (
         <SearchDialog
+          key={JSON.stringify([user?.tenant_id, user?.id])}
           isOpen={isSearchOpen}
           onClose={() => setIsSearchOpen(false)}
           onSelectSession={(sessionId) => {
@@ -781,12 +801,15 @@ export const SessionSidebar = forwardRef<
 
       <ConfirmDialog
         isOpen={deleteConfirm.isOpen}
+        finalFocus={deleteReturnFocusRef}
         title={t("sidebar.deleteSession")}
         message={t("sidebar.deleteConfirm")}
         confirmText={t("common.delete")}
         cancelText={t("common.cancel")}
         onConfirm={confirmDeleteSession}
+        loading={isDeletingSession}
         onCancel={() => {
+          if (deleteRequestRef.current) return;
           const requestId = ++deleteRequestIdRef.current;
           setDeleteConfirm({
             isOpen: false,
