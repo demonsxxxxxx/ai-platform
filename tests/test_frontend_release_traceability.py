@@ -974,6 +974,8 @@ def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
         "--test", "--test-concurrency=2",
         "src/services/api/__tests__/adminRuns.test.ts",
         "src/services/api/__tests__/adminUsers.test.ts",
+        "src/services/api/__tests__/modelUsage.test.ts",
+        "src/features/usage/__tests__/UsagePage.test.tsx",
         "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
         "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
         "src/components/governance/__tests__/workbenchAccessPolicy.test.ts",

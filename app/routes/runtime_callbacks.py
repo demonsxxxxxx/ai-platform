@@ -56,6 +56,7 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_matches,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.runs.api import ModelTokenUsageService, normalize_model_usage_snapshot
 from app.runtime.sandbox.contracts import (
     PROFILE_DRIVE_STAGE_LEASE_FLAG,
     PROFILE_DRIVE_STAGE_MAX_BYTES,
@@ -179,6 +180,7 @@ async def record_executor_callback(
     *,
     capabilities: WorkerV4Capabilities,
     run_diagnostics: RunDiagnosticsService | None = None,
+    model_token_usage: ModelTokenUsageService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -193,6 +195,8 @@ async def record_executor_callback(
         }
         for event in callback.events
     ):
+        raise HTTPException(status_code=409, detail="callback_batch_id_required")
+    if callback.model_usage_snapshot is not None and not callback.batch_id:
         raise HTTPException(status_code=409, detail="callback_batch_id_required")
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
@@ -335,6 +339,18 @@ async def record_executor_callback(
             callback_deduplicated = bool(
                 receipt.get("duplicate") if isinstance(receipt, dict) else False
             )
+            if callback.model_usage_snapshot is not None and not callback_deduplicated:
+                if model_token_usage is None:
+                    raise RuntimeError("model_token_usage_service_unavailable")
+                await model_token_usage.record(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    snapshot=normalize_model_usage_snapshot(callback.model_usage_snapshot.model_dump()),
+                    receipt_id=str(receipt["id"]),
+                    recorded_at=receipt["callback_received_at"],
+                )
             if v4_items:
                 try:
                     committed_rows = await append_callback_v4_rows(
@@ -869,6 +885,7 @@ async def executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
         run_diagnostics=request.app.state.run_diagnostics_service,
+        model_token_usage=request.app.state.model_token_usage_service,
     )
 
 

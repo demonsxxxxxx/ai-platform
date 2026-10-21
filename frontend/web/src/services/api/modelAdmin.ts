@@ -18,6 +18,8 @@ export interface AdminModelEntry {
   available: boolean;
   is_default: boolean;
   order: number;
+  access_mode?: "all" | "selected";
+  allowed_user_ids?: string[];
   last_seen_revision: number;
   last_seen_at: string;
   max_input_tokens?: number;
@@ -77,6 +79,9 @@ export const modelAdminApi = {
           enabled: model.enabled,
           is_default: model.is_default,
           order: model.order,
+          access_mode: model.access_mode ?? "all",
+          allowed_user_ids:
+            model.access_mode === "selected" ? model.allowed_user_ids ?? [] : [],
           ...(model.max_input_tokens ? { max_input_tokens: model.max_input_tokens } : {}),
           ...(model.max_output_tokens ? { max_output_tokens: model.max_output_tokens } : {}),
         })),

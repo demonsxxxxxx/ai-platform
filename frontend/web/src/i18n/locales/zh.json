@@ -1291,6 +1291,7 @@
     "memory": "记忆",
     "models": "模型",
     "runs": "运行监控",
+    "usage": "用量统计",
     "more": "更多",
     "pluginMarket": "插件市场",
     "roles": "角色治理",
@@ -1509,6 +1510,10 @@
     "models": {
       "description": "管理大语言模型配置。连接和切换 Claude、GPT、Gemini 等模型，统一 API 抽象层。",
       "title": "模型管理"
+    },
+    "usage": {
+      "title": "用量统计",
+      "description": "按工号查看实际模型 Token 用量"
     },
     "runs": {
       "description": "查看最近的 Chat、Run 和 Worker 生命周期状态。",
@@ -2227,7 +2232,7 @@
     "publicProjection": "公开模型投影",
     "publicProjectionDescription": "聊天和选择器只读取公开可用模型，不暴露密钥、网关配置或内部部署信息。",
     "searchPlaceholder": "搜索模型、供应商或能力",
-    "subtitle": "查看平台公共模型；管理员可获取候选模型、配置容量和默认模型，然后发布给全员。",
+    "subtitle": "查看当前用户可用的模型；管理员可配置模型容量、默认模型和可用用户。",
     "title": "模型"
   },
   "workbench": {

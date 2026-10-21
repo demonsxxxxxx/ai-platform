@@ -78,6 +78,12 @@ class Repository:
         self.publications.append(kwargs)
         return 2, kwargs["models"]
 
+    async def catalog_access(self, _conn):
+        return {}
+
+    async def existing_user_ids(self, _conn, **_kwargs):
+        return set()
+
 
 def _service(repository):
     return ModelControlPlaneService(

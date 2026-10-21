@@ -1536,6 +1536,7 @@ async def chat_stream(
                 selected_model = await resolve_chat_model_selection(
                     conn,
                     selection=requested_model_selection,
+                    user_id=principal.user_id,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -160,6 +160,12 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
             publications.append(kwargs)
             return 1, kwargs["models"]
 
+        async def catalog_access(self, _conn):
+            return {}
+
+        async def existing_user_ids(self, _conn, **_kwargs):
+            return set()
+
     class Security:
         def normalize(self, base_url):
             return base_url
@@ -207,11 +213,13 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
         expected_revision=None, models=[entry], actor_user_id="admin-user",
     )
     assert published["revision"] == 1
-    assert publications[0]["models"] == [entry]
+    assert publications[0]["models"] == [
+        {**entry, "access_mode": "all", "allowed_user_ids": []}
+    ]
 
 
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
-    principal = SimpleNamespace(user_id="admin-user")
+    principal = SimpleNamespace(user_id="admin-user", tenant_id="tenant-a")
     authorized = {"value": True}
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -286,7 +294,10 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret"}),
         ("publish", {
             "base_url": "https://gateway.example", "api_key": "synthetic-secret",
-            "expected_revision": 1, "models": [entry], "actor_user_id": "admin-user",
+            "expected_revision": 1, "actor_user_id": "admin-user",
+            "models": [{
+                **entry, "access_mode": None, "allowed_user_ids": None,
+            }], "tenant_id": "tenant-a",
         }),
     ]
 
@@ -734,7 +745,7 @@ async def test_publication_checks_revision_before_changing_gateway_and_writes_on
     assert revision == 3
     applied = [params for sql, params in conn.calls
                if "update model_catalog_entries" in sql and "set display_name" in sql]
-    assert applied == [("GPT-5", True, True, 1, 32000, 2048,
+    assert applied == [("GPT-5", True, True, 1, 32000, 2048, "all", "[]",
                         platform_model_id("openai/gpt-5"), "openai/gpt-5", 3)]
 
 
@@ -807,6 +818,7 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
         conn,
         model_id="mdl_public",
         model_value="openai/gpt-5",
+        user_id="user-a",
     )
 
     assert selection is not None
@@ -820,13 +832,15 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
     assert "catalog.enabled = true" in model_query
     assert "catalog.upstream_available = true" in model_query
     assert "catalog.last_seen_revision = active_gateway.revision" in model_query
-    assert params == ("mdl_public", "mdl_public", "openai/gpt-5", "openai/gpt-5")
+    assert params == ("user-a", "mdl_public", "mdl_public", "openai/gpt-5", "openai/gpt-5")
 
 
 @pytest.mark.asyncio
 async def test_run_model_resolution_without_gateway_returns_none() -> None:
     conn = _ResolveConnection(row=None)
-    assert await resolve_run_model(conn, model_id="mdl_public", model_value="openai/gpt-5") is None
+    assert await resolve_run_model(
+        conn, model_id="mdl_public", model_value="openai/gpt-5", user_id="user-a",
+    ) is None
     assert len(conn.calls) == 2
 
 
@@ -837,7 +851,7 @@ async def test_chat_model_resolution_fails_without_governed_connection(monkeypat
     conn = _ResolveConnection(row=None)
     with pytest.raises(ValueError, match="model_connection_not_configured"):
         await model_selection.resolve_chat_model_selection(
-            conn, selection=None, resolve_governed_model=resolve_run_model,
+            conn, selection=None, user_id="user-a", resolve_governed_model=resolve_run_model,
         )
     assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
 
@@ -852,7 +866,9 @@ async def test_run_model_resolution_rejects_missing_capacity() -> None:
         "max_output_tokens": None,
     })
     with pytest.raises(ValueError, match="model_capacity_missing"):
-        await resolve_run_model(conn, model_id="mdl_public", model_value="openai/gpt-5")
+        await resolve_run_model(
+            conn, model_id="mdl_public", model_value="openai/gpt-5", user_id="user-a",
+        )
 
 
 @pytest.mark.asyncio
@@ -860,7 +876,9 @@ async def test_run_model_resolution_rejects_active_but_unavailable_catalog_entry
     conn = _ResolveConnection(row={"connection_revision": 9, "model_id": None, "upstream_model_id": None})
 
     with pytest.raises(ValueError, match="model_id_not_available"):
-        await resolve_run_model(conn, model_id="missing", model_value="missing")
+        await resolve_run_model(
+            conn, model_id="missing", model_value="missing", user_id="user-a",
+        )
 
     assert len(conn.calls) == 2
 

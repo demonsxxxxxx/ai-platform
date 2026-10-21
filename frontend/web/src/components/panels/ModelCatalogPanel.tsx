@@ -168,7 +168,7 @@ export function ModelCatalogPanel() {
       title={t("models.title", "模型")}
       subtitle={t(
         "models.subtitle",
-        "查看平台公共模型；管理员可获取候选模型、配置容量和默认模型，然后发布给全员。",
+        "查看当前用户可用的模型；管理员可配置模型容量、默认模型和可用用户。",
       )}
       icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
       searchValue={searchQuery}

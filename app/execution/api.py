@@ -117,18 +117,30 @@ from app.execution.application.model_selection import (
 )
 
 
-async def list_public_models(conn: Any) -> dict[str, object]:
-    return await configured_model_control_plane().public_models(conn)
+async def list_public_models(conn: Any, *, user_id: str) -> dict[str, object]:
+    return await configured_model_control_plane().public_models(conn, user_id=user_id)
+
+
+async def model_access_excludes_user(
+    conn: Any, *, model_id: str, user_id: str
+) -> bool:
+    """Return whether the current model user list excludes this user."""
+
+    return await configured_model_control_plane().model_access_excludes_user(
+        conn, model_id=model_id, user_id=user_id
+    )
 
 
 async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
+    user_id: str,
 ) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
+        user_id=user_id,
     )
 
 __all__ = [
@@ -186,6 +198,7 @@ __all__ = [
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
     "list_public_models",
+    "model_access_excludes_user",
     "bind_selected_run_model",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",

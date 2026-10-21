@@ -28,6 +28,8 @@ from app.identity.application.profile_metadata import (
     ProfileMetadataValidationError,
 )
 
+from app.identity.infrastructure.postgres import existing_tenant_user_ids
+
 __all__ = [
     "DepartmentAuthority",
     "department_authority_from_snapshot",
@@ -48,4 +50,5 @@ __all__ = [
     "ProfileMetadataService",
     "ProfileMetadataStore",
     "ProfileMetadataValidationError",
+    "existing_tenant_user_ids",
 ]

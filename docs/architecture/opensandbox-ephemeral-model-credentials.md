@@ -8,7 +8,8 @@ Status: accepted source contract. Runtime publication is a separate release gate
   model/capacity binding, runtime proxy and count compatibility. Deployment owns
   only the encryption key, internal proxy token, internal-host allowlist and the
   governed OpenSandbox topology. The administrator Models page owns the upstream
-  origin, write-only credential, enabled directory, capacities and default.
+  origin, write-only credential, enabled directory, capacities, default, the
+  platform display name and each model's user access list.
 - **Bounded paths:** model-control-plane and OpenSandbox credential application
   logic and tests, the internal-test OpenSandbox Compose overlay, package assembly,
   this contract, and the existing model administration component and mounted test.
@@ -266,6 +267,44 @@ snapshot after later publication. The internal proxy serves only queued or runni
 matches that admission. Missing or invalid encryption, proxy authentication,
 Run binding, or connection configuration fails closed before an upstream model
 connection is opened.
+
+## Per-model user access
+
+Execution owns a per-model user list on the same catalog entry as the platform
+display name. Access is a property of each model, not of the shared connection:
+the gateway remains one platform-wide origin and credential.
+
+`access_mode='all'` is the default and the meaning of an unconfigured model, so
+history keeps its original availability. `access_mode='selected'` requires a
+non-empty active-user list. An empty selection is rejected
+(`model_user_access_requires_users`) rather than read as "everyone", and an
+unknown mode or malformed list is `model_user_access_invalid`. Only newly added
+users are checked against the tenant's active identities; members carried over
+from the saved list are not re-validated, so an existing restriction survives a
+later user deactivation. The list is bound to the publishing tenant, so the same
+user ID in another tenant gains nothing.
+
+The public catalog and new-Run admission both filter by the calling principal
+inside their own SQL, so the default model, an explicit `model_id`, and a raw
+upstream `model_value` share one predicate and none of them can bypass the list.
+Administrators manage the list but receive no usage exemption. The public
+projection reports `default_model_id` from the already-filtered rows, falling
+back to the first visible model and reporting no default when the caller can use
+none; the per-model user list itself never appears in a user projection.
+
+Revocation applies to admission, not to work already admitted. An existing Run
+or Attempt keeps its frozen model, capacities and revision, and its proxy
+requests continue to succeed against that snapshot. A new child Run created by
+copy, retry or resume is admitted only if the current list still includes the
+caller; the check runs inside the child-Run transaction before queue admission,
+so a rejection rolls the child back and never leaves an unauthorized queued Run.
+A child whose model row no longer exists in the catalog is also refused.
+
+An update that omits `access_mode` and `allowed_user_ids` keeps the saved
+restriction, so an older client cannot silently widen a restricted model. An
+omitted `display_name` keeps the saved platform name; an explicitly empty value
+clears back to the upstream model ID. Neither field changes the model ID,
+upstream value, provider association or the forwarded request.
 
 ## Non-Goals
 

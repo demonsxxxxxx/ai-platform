@@ -598,9 +598,11 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             *,
             capabilities,
             run_diagnostics=None,
+            model_token_usage=None,
         ):
             recorded.append(callback)
             assert run_diagnostics is not None
+            assert model_token_usage is not None
             return {"accepted": True, "event_count": 1}
 
         monkeypatch.setattr(

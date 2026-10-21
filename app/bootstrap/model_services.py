@@ -17,6 +17,7 @@ from app.execution.infrastructure.model_upstream import ModelUpstreamAdapter
 from app.execution.transport import (
     build_model_management_router as build_execution_model_management_router,
 )
+from app.identity.api import existing_tenant_user_ids
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
@@ -66,7 +67,9 @@ def configure_model_services() -> None:
         ModelControlPlaneService(
             transaction_factory=transaction,
             settings_provider=get_settings,
-            repository=PostgresModelManagementRepository(),
+            repository=PostgresModelManagementRepository(
+                existing_user_ids=existing_tenant_user_ids,
+            ),
             security=ModelEndpointSecurityAdapter(),
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,

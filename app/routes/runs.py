@@ -30,7 +30,7 @@ from app.control_plane_contracts import (
 )
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import resolve_chat_model_selection
+from app.execution.api import model_access_excludes_user, resolve_chat_model_selection
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -617,6 +617,30 @@ def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | Non
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
+async def _require_inherited_model_access(
+    conn: Any,
+    *,
+    snapshot: dict[str, Any],
+    principal: AuthPrincipal,
+) -> None:
+    """Reject a new child Run whose frozen model now excludes this user.
+
+    This runs inside the child-Run transaction before queue admission, so a
+    rejection rolls the child back instead of leaving an unauthorized queued
+    Run. Existing Runs and Attempts never pass through here and keep their
+    snapshot and proxy access. A child with no frozen model is unbound: no
+    proxy request can succeed for it, so it is not a model-access path.
+    """
+
+    model_id = snapshot.get("model_id")
+    if not isinstance(model_id, str) or not model_id:
+        return
+    if await model_access_excludes_user(
+        conn, model_id=model_id, user_id=principal.user_id
+    ):
+        raise HTTPException(status_code=403, detail="model_not_available_to_user")
+
+
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -635,6 +659,11 @@ async def prepare_copied_run_for_queue(
     )
     if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
+    await _require_inherited_model_access(
+        conn,
+        snapshot=copied_snapshot,
+        principal=effective_principal,
+    )
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
@@ -938,7 +967,9 @@ async def create_run(
                 release_decision_payload = {}
                 skill_manifests = []
             try:
-                selected_model = await resolve_chat_model_selection(conn, selection=None)
+                selected_model = await resolve_chat_model_selection(
+                    conn, selection=None, user_id=principal.user_id,
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
             if selected_model is None:

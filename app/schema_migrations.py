@@ -47,7 +47,9 @@ RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
 TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION = "2026.10.13.1"
 PROVIDER_SESSION_IMAGES_SCHEMA_VERSION = "2026.10.14.1"
 MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
-TARGET_SCHEMA_VERSION = MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION
+MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
+MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
+TARGET_SCHEMA_VERSION = MODEL_TOKEN_USAGE_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -60,6 +62,10 @@ CRITICAL_RELATIONS = (
     "users",
     "runs",
     "run_diagnostics",
+    "model_token_usage_scopes",
+    "model_token_usage_observations",
+    "model_token_usage_coverage",
+    "model_token_usage_deltas",
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
@@ -120,6 +126,26 @@ CRITICAL_COLUMNS = (
     ("run_diagnostics", "payload_json", "jsonb", True),
     ("run_diagnostics", "created_at", "timestamptz", True),
     ("run_diagnostics", "updated_at", "timestamptz", True),
+    ("model_token_usage_scopes", "baseline", "text", True),
+    ("model_token_usage_scopes", "baseline_json", "jsonb", False),
+    ("model_token_usage_scopes", "provider_session_id", "text", False),
+    ("model_token_usage_coverage", "coverage", "text", True),
+    ("model_token_usage_coverage", "recorded_at", "timestamptz", True),
+    ("model_token_usage_scopes", "created_at", "timestamptz", True),
+    ("model_token_usage_scopes", "latest_observation_seq", "int8", True),
+    ("model_token_usage_scopes", "cumulative_json", "jsonb", True),
+    ("model_token_usage_scopes", "coverage", "text", True),
+    ("model_token_usage_observations", "observation_seq", "int8", True),
+    ("model_token_usage_observations", "payload_json", "jsonb", True),
+    ("model_token_usage_observations", "recorded_at", "timestamptz", True),
+    ("model_token_usage_observations", "source_receipt_id", "text", True),
+    ("model_token_usage_deltas", "observation_seq", "int8", True),
+    ("model_token_usage_deltas", "actual_model", "text", True),
+    ("model_token_usage_deltas", "input_tokens", "int8", True),
+    ("model_token_usage_deltas", "cache_read_input_tokens", "int8", True),
+    ("model_token_usage_deltas", "cache_creation_input_tokens", "int8", True),
+    ("model_token_usage_deltas", "output_tokens", "int8", True),
+    ("model_token_usage_deltas", "recorded_at", "timestamptz", True),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -137,6 +163,8 @@ CRITICAL_COLUMNS = (
     ("model_catalog_entries", "display_order", "int4", True),
     ("model_catalog_entries", "max_input_tokens", "int8", False),
     ("model_catalog_entries", "max_output_tokens", "int8", False),
+    ("model_catalog_entries", "access_mode", "text", True),
+    ("model_catalog_entries", "allowed_user_ids", "jsonb", True),
     ("model_catalog_entries", "first_seen_revision", "int8", True),
     ("model_catalog_entries", "last_seen_revision", "int8", True),
     ("model_catalog_entries", "first_seen_at", "timestamptz", True),
@@ -305,6 +333,9 @@ CRITICAL_COLUMNS = (
     ("provider_turn_receipts", "committed_coverage_sha256", "text", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("model_token_usage_scopes", "model_token_usage_scopes_pkey"),
+    ("model_token_usage_observations", "model_token_usage_observations_pkey"),
+    ("model_token_usage_deltas", "model_token_usage_deltas_pkey"),
     ("provider_session_entries", "chk_provider_entry_images"),
     ("provider_session_images", "provider_session_images_pkey"),
     ("provider_session_images", "provider_session_images_storage_key_key"),
@@ -323,6 +354,9 @@ CRITICAL_CONSTRAINTS = (
     ("model_catalog_entries", "chk_model_catalog_display_name"),
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
     ("model_catalog_entries", "chk_model_catalog_token_limits"),
+    ("model_catalog_entries", "chk_model_catalog_access_mode"),
+    ("model_catalog_entries", "chk_model_catalog_access_users_array"),
+    ("model_catalog_entries", "chk_model_catalog_selected_users_present"),
     ("sessions", "chk_sessions_title_source"),
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
@@ -486,6 +520,24 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
         "chk_model_catalog_default_enabled",
         "c",
         "CHECK (NOT is_default OR enabled)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_access_mode",
+        "c",
+        "CHECK (access_mode = 'all'::text OR access_mode = 'selected'::text)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_access_users_array",
+        "c",
+        "CHECK (jsonb_typeof(allowed_user_ids) = 'array'::text)",
+    ),
+    (
+        "model_catalog_entries",
+        "chk_model_catalog_selected_users_present",
+        "c",
+        "CHECK (access_mode <> 'selected'::text OR jsonb_array_length(allowed_user_ids) > 0)",
     ),
 )
 
@@ -974,6 +1026,15 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ),
 )
 STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "idx_model_token_usage_coverage_window", "model_token_usage_coverage",
+        ("tenant_id", "recorded_at"), (False, False),
+    ),
+    StaticIndexDefinition(
+        "idx_model_token_usage_delta_window", "model_token_usage_deltas",
+        ("tenant_id", "recorded_at", "run_id", "actual_model"),
+        (False, False, False, False),
+    ),
     StaticIndexDefinition(
         "uq_run_events_tenant_run_sequence",
         "run_events",

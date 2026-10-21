@@ -34,3 +34,8 @@ test("appRouteManifest separates the admin Builder from the ordinary-user Agent 
   assert.equal(resolveAppRoute("/chat"), "chat");
   assert.equal(resolveAppRoute("/agents"), "notFound");
 });
+
+test("usage has an independent route", () => {
+  assert.equal(APP_ROUTE_PATHS.usage, "/usage");
+  assert.equal(resolveAppRoute("/usage"), "usage");
+});

@@ -147,7 +147,7 @@ def _stub_terminal_provider_lineage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def authorized_default_model_for_chat_routes(monkeypatch):
-    async def governed_model(_conn, *, selection):
+    async def governed_model(_conn, *, selection, user_id):
         if selection is not None:
             raise ValueError("model_id_not_available")
         return RunModelSelection(
@@ -2893,7 +2893,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 ):
     calls = []
 
-    async def fake_resolve_chat_model_selection(_conn, *, selection):
+    async def fake_resolve_chat_model_selection(_conn, *, selection, user_id):
         assert selection == {"id": "deepseek-v4-pro"}
         return RunModelSelection(
             model_id="deepseek-v4-pro",
@@ -3554,7 +3554,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
-    async def fake_resolve_chat_model_selection(conn, *, selection):
+    async def fake_resolve_chat_model_selection(conn, *, selection, user_id):
         assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
         return RunModelSelection(
             model_id="pro-tier",

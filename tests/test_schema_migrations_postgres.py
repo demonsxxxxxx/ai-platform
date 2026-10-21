@@ -237,6 +237,80 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
 
 
 @pytest.mark.asyncio
+async def test_model_user_access_upgrade_preserves_existing_catalog(tmp_path: Path):
+    dsn = _postgres_dsn()
+    schema_name = f"model_access_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    # The last source before this additive ACL migration, not a simulated new-schema insert.
+    previous = _load_schema_migrations_at_commit(
+        tmp_path, "9a6be6c1068d1074a7437fddf2fc34ed91f17d78"
+    )
+    factory = _transaction_factory(dsn, schema_name)
+    index_factory = _index_connection_factory(dsn, schema_name)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await previous.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        async with factory() as conn:
+            columns = await conn.execute(
+                "select column_name from information_schema.columns "
+                "where table_schema = %s and table_name = 'model_catalog_entries'",
+                (schema_name,),
+            )
+            assert "access_mode" not in {row["column_name"] for row in await columns.fetchall()}
+            await conn.execute("insert into tenants(id, name) values ('tenant-a', 'Tenant A')")
+            await conn.execute(
+                "insert into users(id, tenant_id, display_name) values ('admin-a', 'tenant-a', 'Admin A')"
+            )
+            await conn.execute(
+                "insert into model_gateway_revisions(revision, base_url, api_key_ciphertext, "
+                "key_fingerprint, active, created_by) "
+                "values (1, 'https://synthetic.example', decode('00', 'hex'), '0123456789abcdef', true, 'admin-a')"
+            )
+            await conn.execute(
+                "insert into model_catalog_entries(model_id, upstream_model_id, display_name, "
+                "provider, enabled, upstream_available, is_default, display_order, "
+                "first_seen_revision, last_seen_revision, max_input_tokens, max_output_tokens) "
+                "values ('legacy-model', 'upstream-model', 'Saved display name', 'compatible', "
+                "true, true, true, 1, 1, 1, 32000, 2048)"
+            )
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert result["status"] == "applied"
+        async with factory() as conn:
+            cursor = await conn.execute(
+                "select model_id, upstream_model_id, display_name, access_mode, allowed_user_ids "
+                "from model_catalog_entries where model_id = 'legacy-model'"
+            )
+            assert await cursor.fetchone() == {
+                "model_id": "legacy-model", "upstream_model_id": "upstream-model",
+                "display_name": "Saved display name", "access_mode": "all", "allowed_user_ids": [],
+            }
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            await conn.execute(
+                "update model_catalog_entries set access_mode = 'selected', "
+                "allowed_user_ids = '[\"admin-a\"]'::jsonb where model_id = 'legacy-model'"
+            )
+        assert (await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        ))["status"] == "current"
+        async with factory() as conn:
+            cursor = await conn.execute(
+                "select access_mode, allowed_user_ids from model_catalog_entries "
+                "where model_id = 'legacy-model'"
+            )
+            assert await cursor.fetchone() == {
+                "access_mode": "selected", "allowed_user_ids": ["admin-a"],
+            }
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+        sys.modules.pop(previous.__name__, None)
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity_guard(tmp_path: Path):
     dsn = _postgres_dsn()
     schema_name = f"schema_attempt_heartbeat_upgrade_{uuid.uuid4().hex}"

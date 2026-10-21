@@ -950,3 +950,16 @@ class PostgresProviderEpochRepository:
     release_lineage = staticmethod(release_provider_lineage)
     prepare_epoch = staticmethod(prepare_provider_epoch)
     commit_turn = staticmethod(commit_provider_turn)
+
+
+async def read_usage_provider_session(conn, *, tenant_id: str, run_id: str, attempt_id: str) -> str | None:
+    """Resolve metering identity from the platform-owned exact provider turn."""
+    row = await (await conn.execute("""select e.provider_session_id::text as provider_session_id
+        from provider_turn_receipts t join provider_session_epochs e
+          on e.id=t.epoch_id and e.tenant_id=t.tenant_id
+        join runs r on r.tenant_id=t.tenant_id and r.id=t.run_id
+          and r.session_id=t.session_id and r.user_id=t.user_id
+          and r.workspace_id=t.workspace_id and r.agent_id=t.agent_id
+        where t.tenant_id=%s and t.run_id=%s and t.attempt_id=%s""",
+        (tenant_id, run_id, attempt_id))).fetchone()
+    return row["provider_session_id"] if row else None

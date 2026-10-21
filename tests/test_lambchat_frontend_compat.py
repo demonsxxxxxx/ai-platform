@@ -915,6 +915,29 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
     assert authenticated_notifications.json() == {"detail": "notifications_unavailable"}
 
 
+def test_lambchat_model_catalog_is_scoped_to_the_authenticated_principal(monkeypatch):
+    """The public catalog is filtered by the caller, not by a shared directory."""
+
+    seen: list[str] = []
+
+    async def catalog(_conn, *, user_id):
+        seen.append(user_id)
+        return {
+            "models": [], "count": 0, "enabled_count": 0,
+            "default_model_id": None,
+        }
+
+    monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", catalog)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available", headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert seen == ["user-a"]
+
+
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
     monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
     monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
