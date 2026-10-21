@@ -276,13 +276,44 @@ the gateway remains one platform-wide origin and credential.
 
 `access_mode='all'` is the default and the meaning of an unconfigured model, so
 history keeps its original availability. `access_mode='selected'` requires a
-non-empty active-user list. An empty selection is rejected
+non-empty employee work-ID list. An empty selection is rejected
 (`model_user_access_requires_users`) rather than read as "everyone", and an
-unknown mode or malformed list is `model_user_access_invalid`. Only newly added
-users are checked against the tenant's active identities; members carried over
-from the saved list are not re-validated, so an existing restriction survives a
-later user deactivation. The list is bound to the publishing tenant, so the same
-user ID in another tenant gains nothing.
+unknown mode or malformed list is `model_user_access_invalid`. The historical
+`allowed_user_ids` JSON field stores company `workid`, never DingTalk `userId`
+or department IDs. Identity owns the company employee directory and validates
+only newly added work IDs; local `users` records are not an employee inventory
+and employees need not have logged into AI Platform before being granted access.
+Carried-over members are not revalidated, so saved restrictions remain editable
+and members can be removed during a directory outage. New grants fail closed
+with a retryable directory error; there is no local-user fallback.
+
+The administrator-only `GET /api/ai/admin/company-employees` endpoint projects
+only `work_id` and `display_name`. It uses the deployment's trusted tenant scope,
+not a client-selected tenant, and reads the existing same-origin
+`GET /api/DingTalk/getUserDetail` array through Identity. Only `正式员工` and
+`试用期` are eligible; blank/unknown/`离职` status is not. Blank or malformed
+work IDs are excluded. Exact duplicate identities collapse; conflicting
+work-ID identities or one DingTalk user ID mapped to multiple work IDs are
+excluded. Server-side literal name/work-ID search and pagination (100 per page,
+50,000 records, 16 MiB response bound) cover the whole upstream response.
+Before deploying employee selection, explicitly set the existing
+`DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` to the company's DingTalkAPI origin
+(the same service serving `/api/DingTalk/getUserDetail`). The adapter reuses
+`DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS` (default 5 seconds, maximum 30).
+An empty base URL returns 503: there is no implicit host or local-user fallback.
+This requirement does not change the older department-directory fallback or AD
+login configuration. Confirm directory availability before enabling new grants.
+
+Malformed/oversized responses and upstream failures return a safe 503; private
+phone/email/union ID fields are never projected or logged.
+
+Directory I/O runs outside database transactions. Publication retains its
+existing revision compare-and-swap, while omitted access fields inherit the
+saved catalog values. Model selectors use this employee API, not the separate
+local-user diagnostics API. The replaced `existing_tenant_user_ids` query and
+Postgres repository lookup callback are removed; diagnostics remain for their
+existing operational consumers. AD authentication and trusted Chat principal
+construction are unchanged.
 
 The public catalog and new-Run admission both filter by the calling principal
 inside their own SQL, so the default model, an explicit `model_id`, and a raw

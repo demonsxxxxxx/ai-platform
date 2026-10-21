@@ -12,9 +12,10 @@ from app.bootstrap.files import (
     configure_file_preview_services,
     configure_file_upload_services,
 )
-from app.bootstrap.model_token_usage import build_model_token_usage_service
-from app.runs.transport.model_token_usage import router as model_token_usage_router
-from app.bootstrap.identity import build_admin_users_router, build_identity_profile_router
+from app.bootstrap.model_token_usage import build_model_token_usage_service, build_model_token_usage_admin_router
+from app.bootstrap.identity import (
+    build_admin_users_router, build_identity_profile_router, build_company_employee_directory_router,
+)
 from app.bootstrap.model_services import (
     build_model_management_router,
     configure_model_services,
@@ -206,8 +207,9 @@ def create_app() -> FastAPI:
     app.include_router(runtime_callbacks_router, prefix="/api/ai")
     app.include_router(admin_runtime_router, prefix="/api/ai")
     app.include_router(admin_runs_router, prefix="/api/ai")
-    app.include_router(model_token_usage_router, prefix="/api/ai")
+    app.include_router(build_model_token_usage_admin_router(app.state.model_token_usage_service), prefix="/api/ai")
     app.include_router(build_admin_users_router(), prefix="/api/ai")
+    app.include_router(build_company_employee_directory_router(), prefix="/api/ai")
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(build_model_management_router(), prefix="/api/ai")

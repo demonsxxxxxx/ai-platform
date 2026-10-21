@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
 import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
-import { adminUsersApi, type AdminUserSummary } from "../../../services/api/adminUsers.ts";
+import { companyEmployeesApi, type CompanyEmployee } from "../../../services/api/companyEmployees.ts";
 import {
   modelAdminApi,
   type AdminModelEntry,
@@ -25,18 +25,10 @@ function text(node: unknown): string {
     : Array.from(value.childNodes ?? []).map(text).join("");
 }
 
-function user(userId: string, displayName: string): AdminUserSummary {
+function user(userId: string, displayName: string): CompanyEmployee {
   return {
-    user_id: userId,
+    work_id: userId,
     display_name: displayName,
-    status: "active",
-    session_count: 0,
-    run_count: 0,
-    queued_run_count: 0,
-    running_run_count: 0,
-    succeeded_run_count: 0,
-    failed_run_count: 0,
-    cancelled_run_count: 0,
   };
 }
 
@@ -86,8 +78,7 @@ async function mount(
   options: {
     publish?: typeof modelAdminApi.publish;
     directory?: (call: DirectoryCall) => Promise<{
-      schema_version: "ai-platform.admin-user-diagnostics.v1";
-      users: AdminUserSummary[];
+      employees: CompanyEmployee[];
       total: number;
       offset: number;
       limit: number;
@@ -98,7 +89,7 @@ async function mount(
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
 
   const originalModelAdmin = { ...modelAdminApi };
-  const originalList = adminUsersApi.list;
+  const originalList = companyEmployeesApi.list;
   const saved: AdminModelState = Array.isArray(entry)
     ? { ...state(entry[0]), models: entry }
     : state(entry);
@@ -110,12 +101,11 @@ async function mount(
     published.push({ models });
     return saved;
   });
-  adminUsersApi.list = async (call = {}) => {
+  companyEmployeesApi.list = async (call = {}) => {
     directoryCalls.push(call);
     if (!options.directory) {
       return {
-        schema_version: "ai-platform.admin-user-diagnostics.v1" as const,
-        users: [user("user-a", "用户 A")],
+        employees: [user("user-a", "用户 A")],
         total: 1, offset: 0, limit: 100,
       };
     }
@@ -211,7 +201,7 @@ async function mount(
     unmount: async () => {
       await React.act(async () => root.unmount());
       Object.assign(modelAdminApi, originalModelAdmin);
-      adminUsersApi.list = originalList;
+      companyEmployeesApi.list = originalList;
     },
   };
 }
@@ -261,8 +251,7 @@ test("a saved restriction echoes its users and keeps them across paging and sear
     model({ access_mode: "selected", allowed_user_ids: ["user-001", "user-101"] }),
     {
       directory: async (call) => ({
-        schema_version: "ai-platform.admin-user-diagnostics.v1" as const,
-        users: call.offset ? [user("user-101", "用户 101")] : paged,
+        employees: call.offset ? [user("user-101", "用户 101")] : paged,
         total: 101,
         offset: call.offset ?? 0,
         limit: 100,
@@ -354,8 +343,7 @@ test("a failed directory load stays retryable on the same page", async () => {
         throw new ApiRequestError("目录暂不可用", 503);
       }
       return {
-        schema_version: "ai-platform.admin-user-diagnostics.v1" as const,
-        users: [user("user-a", "用户 A")],
+        employees: [user("user-a", "用户 A")],
         total: 1, offset: 0, limit: 100,
       };
     },
@@ -385,8 +373,7 @@ test("a failed directory load stays retryable on the same page", async () => {
 
 test("losing management permission or unmounting discards a late directory reply", async () => {
   let release: ((value: {
-    schema_version: "ai-platform.admin-user-diagnostics.v1";
-    users: AdminUserSummary[];
+    employees: CompanyEmployee[];
     total: number;
     offset: number;
     limit: number;
@@ -406,8 +393,7 @@ test("losing management permission or unmounting discards a late directory reply
     assert.equal(signal.aborted, true, "losing management must abort the request");
 
     (release as ((value: unknown) => void) | null)?.({
-      schema_version: "ai-platform.admin-user-diagnostics.v1",
-      users: [user("user-z", "泄漏用户")],
+      employees: [user("user-z", "泄漏用户")],
       total: 1, offset: 0, limit: 100,
     });
     await view.React.act(async () => {
@@ -439,8 +425,7 @@ test("two models keep independent searches: no cross-row results and no mixed pa
         const pool = call.search === "Alice" ? alice : bob;
         const offset = call.offset ?? 0;
         return {
-          schema_version: "ai-platform.admin-user-diagnostics.v1" as const,
-          users: pool.slice(offset, offset + 100),
+            employees: pool.slice(offset, offset + 100),
           total: pool.length,
           offset,
           limit: 100,
@@ -515,12 +500,12 @@ test("two models keep independent searches: no cross-row results and no mixed pa
 });
 
 test("a late search reply cannot replace the same model's newer query", async () => {
-  let release!: (page: Awaited<ReturnType<typeof adminUsersApi.list>>) => void;
+  let release!: (page: Awaited<ReturnType<typeof companyEmployeesApi.list>>) => void;
   const view = await mount(model({ access_mode: "selected", allowed_user_ids: ["user-a"] }), {
     directory: async (call) => {
       if (call.search === "old") return new Promise((resolve) => { release = resolve; });
       return {
-        schema_version: "ai-platform.admin-user-diagnostics.v1", users: [user("user-new", "新结果")],
+        employees: [user("user-new", "新结果")],
         total: 1, offset: 0, limit: 100,
       };
     },
@@ -533,7 +518,7 @@ test("a late search reply cannot replace the same model's newer query", async ()
     assert.equal(oldSignal?.aborted, true);
     await view.React.act(async () => {
       release({
-        schema_version: "ai-platform.admin-user-diagnostics.v1", users: [user("user-old", "迟到结果")],
+        employees: [user("user-old", "迟到结果")],
         total: 1, offset: 0, limit: 100,
       });
     });

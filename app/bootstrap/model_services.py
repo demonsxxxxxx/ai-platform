@@ -21,7 +21,7 @@ from app.execution.infrastructure.model_upstream import ModelUpstreamAdapter
 from app.execution.transport import (
     build_model_management_router as build_execution_model_management_router,
 )
-from app.identity.api import existing_tenant_user_ids
+from app.bootstrap.identity import build_company_employee_directory
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
@@ -38,9 +38,7 @@ from app.runs.infrastructure.postgres import (
 )
 from app.settings import get_settings
 
-_model_repository = PostgresModelManagementRepository(
-    existing_user_ids=existing_tenant_user_ids,
-)
+_model_repository = PostgresModelManagementRepository()
 
 
 def build_model_management_router() -> APIRouter:
@@ -77,6 +75,7 @@ def configure_model_services() -> None:
             transaction_factory=transaction,
             settings_provider=settings_provider,
             repository=_model_repository,
+            employee_directory=build_company_employee_directory(),
             security=ModelEndpointSecurityAdapter(),
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,

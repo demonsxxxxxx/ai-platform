@@ -105,7 +105,9 @@ class ModelManagementRepository(Protocol):
 
     async def catalog_access(self, conn: Any) -> dict[str, dict[str, Any]]: ...
 
-    async def existing_user_ids(self, conn: Any, **kwargs: Any) -> set[str]: ...
+
+class EmployeeGrantValidator(Protocol):
+    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None: ...
 
 
 class ModelEndpointSecurity(Protocol):
@@ -184,6 +186,7 @@ class ModelControlPlaneService:
         upstream: ModelUpstream,
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
         diagnostic_recorder: Callable[..., Any] | None = None,
+        employee_directory: EmployeeGrantValidator | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -192,6 +195,7 @@ class ModelControlPlaneService:
         self._upstream = upstream
         self._attempt_capability_verifier = attempt_capability_verifier
         self._diagnostic_recorder = diagnostic_recorder
+        self._employee_directory = employee_directory
 
     async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
         facts = normalize_execution_debug(debug)
@@ -314,37 +318,35 @@ class ModelControlPlaneService:
         if len({model["order"] for model in models}) != len(models):
             raise ValueError("model_catalog_order_invalid")
         async with self._transaction() as conn:
-            # Omitted access fields inherit the saved restriction; user identity
-            # is checked against the tenant directory in this same transaction.
             saved = await self._repository.catalog_access(conn)
-            added: set[str] = set()
-            for model in models:
-                previous = saved.get(model["id"])
-                previously_allowed = set(previous["allowed_user_ids"]) if previous else set()
-                model["display_name"] = normalize_model_display_name(
-                    model.get("display_name"),
-                    fallback=model["value"],
-                    current=previous["display_name"] if previous else None,
-                )
-                access_mode, allowed_user_ids = normalize_model_user_access(
-                    model.get("access_mode"),
-                    model.get("allowed_user_ids"),
-                    current=(previous["access_mode"], previous["allowed_user_ids"])
-                    if previous
-                    else None,
-                )
-                model["access_mode"] = access_mode
-                model["allowed_user_ids"] = allowed_user_ids
-                # Carry-over members are already bound; only newly granted users
-                # must currently exist in this tenant.
-                if access_mode == "selected":
-                    added.update(set(allowed_user_ids) - previously_allowed)
-            if added:
-                known = await self._repository.existing_user_ids(
-                    conn, tenant_id=tenant_id, user_ids=sorted(added)
-                )
-                if not added.issubset(known):
-                    raise ValueError("model_user_access_unknown_user")
+        added: set[str] = set()
+        for model in models:
+            previous = saved.get(model["id"])
+            previously_allowed = set(previous["allowed_user_ids"]) if previous else set()
+            model["display_name"] = normalize_model_display_name(
+                model.get("display_name"),
+                fallback=model["value"],
+                current=previous["display_name"] if previous else None,
+            )
+            access_mode, allowed_user_ids = normalize_model_user_access(
+                model.get("access_mode"),
+                model.get("allowed_user_ids"),
+                current=(previous["access_mode"], previous["allowed_user_ids"])
+                if previous
+                else None,
+            )
+            model["access_mode"] = access_mode
+            model["allowed_user_ids"] = allowed_user_ids
+            # Carry-over members are already bound; only newly granted users
+            # must currently exist in the trusted company directory.
+            if access_mode == "selected":
+                added.update(set(allowed_user_ids) - previously_allowed)
+        if added:
+            if self._employee_directory is None:
+                raise RuntimeError("company_employee_directory_unavailable")
+            await self._employee_directory.validate_grants(tenant_id=tenant_id, work_ids=added)
+        # Network validation is outside transactions; publication still owns revision CAS.
+        async with self._transaction() as conn:
             revision, published = await self._repository.publish_models(
                 conn,
                 base_url=requested_url,

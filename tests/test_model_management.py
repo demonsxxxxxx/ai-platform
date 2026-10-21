@@ -60,9 +60,9 @@ def _key() -> str:
     return base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
 
 
-def test_model_services_share_the_user_aware_repository_with_follow_up_suggestions(monkeypatch):
+def test_model_services_share_repository_and_inject_company_directory(monkeypatch):
     from app.bootstrap import model_services
-    from app.identity.api import existing_tenant_user_ids
+    from app.identity.api import CompanyEmployeeDirectoryService
 
     captured = {}
     monkeypatch.setattr(model_services, "configure_model_control_plane", lambda service: captured.update(models=service))
@@ -72,7 +72,8 @@ def test_model_services_share_the_user_aware_repository_with_follow_up_suggestio
     model_services.configure_model_services()
 
     assert captured["models"]._repository is captured["follow_up"]._repository
-    assert captured["models"]._repository._existing_user_ids is existing_tenant_user_ids
+    assert isinstance(captured["models"]._employee_directory, CompanyEmployeeDirectoryService)
+    assert not hasattr(captured["models"]._repository, "existing_user_ids")
     assert captured["models"]._settings_provider is captured["follow_up"]._settings_provider
 
 
@@ -178,9 +179,6 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
 
         async def catalog_access(self, _conn):
             return {}
-
-        async def existing_user_ids(self, _conn, **_kwargs):
-            return set()
 
     class Security:
         def normalize(self, base_url):
@@ -751,10 +749,11 @@ async def test_publication_checks_revision_before_changing_gateway_and_writes_on
         "encryption_key": _key(), "actor_user_id": "admin-user",
         "upstream_model_ids": ["openai/gpt-5"],
     }
-    conn = _ActivationConnection()
-    with pytest.raises(ValueError, match="model_catalog_revision_conflict"):
-        await publish_models(conn, expected_revision=1, **kwargs)
-    assert not any("insert into model_gateway_revisions" in sql for sql, _ in conn.calls)
+    for stale_revision in (1, None):
+        conn = _ActivationConnection()
+        with pytest.raises(ValueError, match="model_catalog_revision_conflict"):
+            await publish_models(conn, expected_revision=stale_revision, **kwargs)
+        assert not any("insert into model_gateway_revisions" in sql for sql, _ in conn.calls)
 
     conn = _ActivationConnection()
     revision, _ = await publish_models(conn, expected_revision=2, **kwargs)

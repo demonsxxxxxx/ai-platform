@@ -126,7 +126,9 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=code)
     if code in {"model_connection_rate_limited"}:
         return HTTPException(status_code=429, detail=code)
-    if code in {"model_connection_encryption_key_invalid"}:
+    if code in {"company_employee_directory_forbidden"}:
+        return HTTPException(status_code=403, detail=code)
+    if code in {"model_connection_encryption_key_invalid", "company_employee_directory_unavailable"}:
         return HTTPException(status_code=503, detail=code)
     return HTTPException(status_code=502, detail=code or "model_connection_unavailable")
 
@@ -184,7 +186,7 @@ async def publish_model_catalog(
             actor_user_id=principal.user_id,
             tenant_id=principal.tenant_id,
         )
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, PermissionError) as exc:
         raise _translate_control_plane_error(exc) from exc
 
 

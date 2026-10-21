@@ -252,6 +252,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
+        "tests/test_model_user_access.py",
+        "tests/test_company_employee_directory.py",
         "tests/test_model_upstream_stream.py",
         "tests/test_model_stream_ownership.py",
         "tests/test_model_discovery_security.py",
@@ -259,6 +261,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
+        "tests/test_model_token_usage_contract.py",
+        "tests/test_model_token_usage_routes.py",
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_auth_principal.py",
@@ -335,6 +339,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "schema-migrations": (
         "tests/test_run_diagnostics_postgres.py",
+        "tests/test_model_token_usage_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_skill_release_lifecycle_postgres.py",

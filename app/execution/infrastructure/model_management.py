@@ -428,10 +428,6 @@ async def resolve_run_model(
 
 
 class PostgresModelManagementRepository:
-    def __init__(self, *, existing_user_ids: Any) -> None:
-        # Identity owns the user directory; Execution only receives the lookup.
-        self._existing_user_ids = existing_user_ids
-
     async def connection_projection(self, conn: AsyncConnection) -> dict[str, Any]:
         return await get_connection_projection(conn)
 
@@ -476,11 +472,6 @@ class PostgresModelManagementRepository:
             }
             for row in await cursor.fetchall()
         }
-
-    async def existing_user_ids(
-        self, conn: AsyncConnection, **kwargs: Any
-    ) -> set[str]:
-        return await self._existing_user_ids(conn, **kwargs)
 
     async def publish_models(self, conn: AsyncConnection, **kwargs: Any) -> Any:
         return await publish_models(conn, **kwargs)

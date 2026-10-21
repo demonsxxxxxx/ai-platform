@@ -2895,6 +2895,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     async def fake_resolve_chat_model_selection(_conn, *, selection, user_id):
         assert selection == {"id": "deepseek-v4-pro"}
+        assert user_id == "user-a", "model access must use the trusted employee work ID"
         return RunModelSelection(
             model_id="deepseek-v4-pro",
             model_value="deepseek-v4-pro",
@@ -3032,6 +3033,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
             agent_id="document-review",
             selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "0.1.0"},
             message=current_message,
+            user_id="forged-authorized-employee",
             agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.execution.application.model_control_plane import ModelControlPlaneService
@@ -24,10 +24,24 @@ from app.execution.infrastructure.model_management import (
 from app.execution.transport.model_management import _translate_control_plane_error
 
 
-def _service(repository):
+def _service(repository, directory=None):
+    from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService
+
+    in_transaction = False
+
     @asynccontextmanager
     async def transaction():
-        yield object()
+        nonlocal in_transaction
+        in_transaction = True
+        try:
+            yield object()
+        finally:
+            in_transaction = False
+
+    async def read_employees():
+        assert not in_transaction, "directory I/O must not hold a database transaction"
+        return [CompanyEmployee(work_id, "Employee") for work_id in repository.existing]
+
 
     class Security:
         def normalize(self, base_url):
@@ -50,6 +64,7 @@ def _service(repository):
             model_connection_allowed_internal_hosts="",
         ),
         repository=repository,
+        employee_directory=directory or CompanyEmployeeDirectoryService(read_employees, tenant_id="tenant-a"),
         security=Security(),
         upstream=Upstream(),
         attempt_capability_verifier=lambda **_kwargs: True,
@@ -88,10 +103,6 @@ class _PublishRepository:
 
     async def catalog_access(self, _conn):
         return self.saved
-
-    async def existing_user_ids(self, _conn, *, tenant_id, user_ids):
-        assert tenant_id == "tenant-a"
-        return self.existing.intersection(user_ids)
 
     async def publish_models(self, _conn, **kwargs):
         self.published = kwargs
@@ -136,7 +147,7 @@ def test_display_name_clears_to_upstream_value_only_when_explicitly_empty():
 
 
 @pytest.mark.asyncio
-async def test_publication_persists_selection_and_rejects_unknown_or_foreign_users():
+async def test_publication_persists_company_work_id_without_local_login_and_rejects_unknown_users():
     repository = _PublishRepository(existing={"user-a"})
     published = await _service(repository).publish(
         base_url="https://gateway.example", api_key="synthetic",
@@ -347,3 +358,64 @@ def test_publication_transport_carries_tenant_scope(monkeypatch):
     assert captured["tenant_id"] == "tenant-a"
     assert captured["models"][0]["access_mode"] == "selected"
     assert captured["models"][0]["allowed_user_ids"] == ["user-a"]
+
+
+@pytest.mark.asyncio
+async def test_directory_outage_blocks_new_grants_but_allows_carryover_and_removal():
+    from app.identity.api import CompanyEmployeeDirectoryService, CompanyEmployeeDirectoryUnavailable
+
+    async def unavailable():
+        raise CompanyEmployeeDirectoryUnavailable()
+
+    directory = CompanyEmployeeDirectoryService(unavailable, tenant_id="tenant-a")
+    repository = _PublishRepository(saved={platform_model_id("openai/gpt-5"): {
+        "display_name": "Saved", "access_mode": "selected", "allowed_user_ids": ["E001", "E002"],
+    }})
+    for fields in ({}, {"access_mode": "selected", "allowed_user_ids": ["E001"]}):
+        await _service(repository, directory).publish(
+            base_url="https://gateway.example", api_key="synthetic", expected_revision=1,
+            models=[_entry(**fields)], actor_user_id="admin-a", tenant_id="tenant-a",
+        )
+        assert repository.published is not None
+    repository.published = None
+    with pytest.raises(CompanyEmployeeDirectoryUnavailable):
+        await _service(repository, directory).publish(
+            base_url="https://gateway.example", api_key="synthetic", expected_revision=1,
+            models=[_entry(access_mode="selected", allowed_user_ids=["E001", "E003"])],
+            actor_user_id="admin-a", tenant_id="tenant-a",
+        )
+    assert repository.published is None
+    assert _translate_control_plane_error(CompanyEmployeeDirectoryUnavailable()).status_code == 503
+
+
+def test_publication_transport_rejects_foreign_tenant_before_directory_read_or_publish(monkeypatch):
+    from app.execution.transport import model_management as transport
+    from app.identity.api import CompanyEmployeeDirectoryService
+
+    reader_calls = []
+
+    async def read_employees():
+        reader_calls.append(True)
+        raise AssertionError("foreign tenant must not read the company directory")
+
+    repository = _PublishRepository()
+    service = _service(repository, CompanyEmployeeDirectoryService(read_employees, tenant_id="default"))
+    monkeypatch.setattr(transport, "configured_model_control_plane", lambda: service)
+    app = FastAPI()
+    app.include_router(
+        transport.build_model_management_router(
+            principal_dependency=lambda: SimpleNamespace(user_id="admin-a", tenant_id="foreign"),
+            is_admin=lambda _principal: True,
+        ),
+        prefix="/api/ai",
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credential": "synthetic",
+            "expected_revision": 1,
+            "models": [_entry(access_mode="selected", allowed_user_ids=["E001"])],
+        })
+    assert response.status_code == 403
+    assert response.json() == {"detail": "company_employee_directory_forbidden"}
+    assert reader_calls == []
+    assert repository.published is None

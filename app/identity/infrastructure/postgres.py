@@ -86,26 +86,6 @@ async def get_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> di
     return dict(row) if row else None
 
 
-async def existing_tenant_user_ids(
-    conn: AsyncConnection, *, tenant_id: str, user_ids: list[str]
-) -> set[str]:
-    """Return which of the requested identities exist as active tenant users."""
-
-    if not user_ids:
-        return set()
-    cursor = await conn.execute(
-        """
-        select id
-        from users
-        where tenant_id = %s
-          and id = any(%s)
-          and status = 'active'
-        """,
-        (tenant_id, list(user_ids)),
-    )
-    return {str(row["id"]) for row in await cursor.fetchall()}
-
-
 async def _get_profile_metadata(
     conn: AsyncConnection,
     *,

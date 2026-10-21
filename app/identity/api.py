@@ -28,7 +28,9 @@ from app.identity.application.profile_metadata import (
     ProfileMetadataValidationError,
 )
 
-from app.identity.infrastructure.postgres import existing_tenant_user_ids
+from app.identity.application.company_employees import (
+    CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeDirectoryUnavailable,
+)
 
 __all__ = [
     "DepartmentAuthority",
@@ -50,5 +52,7 @@ __all__ = [
     "ProfileMetadataService",
     "ProfileMetadataStore",
     "ProfileMetadataValidationError",
-    "existing_tenant_user_ids",
+    "CompanyEmployee",
+    "CompanyEmployeeDirectoryService",
+    "CompanyEmployeeDirectoryUnavailable",
 ]

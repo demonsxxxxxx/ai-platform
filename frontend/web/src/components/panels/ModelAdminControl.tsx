@@ -7,7 +7,7 @@ import {
   type AdminModelEntry,
   type AdminModelState,
 } from "../../services/api/modelAdmin";
-import { adminUsersApi, type AdminUserSummary } from "../../services/api/adminUsers";
+import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
 import { ModelUserAccess, type UserDirectoryStatus } from "./ModelUserAccess";
 import { ApiRequestError } from "../../services/api/fetch";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
@@ -19,15 +19,15 @@ const STATUS_FILTERS = [
   ["unavailable", "状态：上游缺失"],
 ] as const;
 
-// Matches the admin user directory API page bound (limit <= 100).
+// Matches the company employee directory API page bound (limit <= 100).
 const DIRECTORY_PAGE_SIZE = 100;
 
 /** One model's own directory query; rows never share a page or a search. */
 interface ModelDirectoryState {
   query: string;
   mode: UserDirectoryStatus;
-  page: AdminUserSummary[];
-  names: Map<string, AdminUserSummary>;
+  page: CompanyEmployee[];
+  names: Map<string, CompanyEmployee>;
   total: number;
   error: string | null;
 }
@@ -42,14 +42,16 @@ const EMPTY_DIRECTORY: ModelDirectoryState = {
 };
 
 function mergeDirectory(
-  current: AdminUserSummary[],
-  incoming: AdminUserSummary[],
-): AdminUserSummary[] {
-  const known = new Set(current.map((user) => user.user_id));
-  return [...current, ...incoming.filter((user) => !known.has(user.user_id))];
+  current: CompanyEmployee[],
+  incoming: CompanyEmployee[],
+): CompanyEmployee[] {
+  const known = new Set(current.map((user) => user.work_id));
+  return [...current, ...incoming.filter((user) => !known.has(user.work_id))];
 }
 
 const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
+  company_employee_directory_unavailable: "公司员工目录暂不可用，请重试；新增授权尚未保存。",
+  company_employee_directory_forbidden: "无权访问公司员工目录。",
   model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
   model_connection_endpoint_must_be_origin: "API 地址应为服务根地址或以 /v1 结尾，不能含其它路径。",
   model_connection_endpoint_forbidden: "该 API 地址未获平台网络策略授权。",
@@ -67,7 +69,7 @@ const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
   model_user_access_invalid: "用户访问设置无效，请重新选择。",
   model_user_access_requires_users: "“仅指定用户”至少需要选择一名用户。",
-  model_user_access_unknown_user: "所选用户不属于当前租户或已停用，请移除后重试。",
+  model_user_access_unknown_user: "所选工号不在有效公司员工目录中或存在歧义，请移除后重试。",
 };
 
 function errorMessage(error: unknown): string {
@@ -251,19 +253,19 @@ export function ModelAdminControl({
       ...(!append ? { page: [], total: 0 } : {}),
     });
     try {
-      const page = await adminUsersApi.list({
+      const page = await companyEmployeesApi.list({
         search: search || undefined,
         offset: append ? pageBefore.length : 0,
         limit: DIRECTORY_PAGE_SIZE,
         signal: controller.signal,
       });
       if (!owned()) return;
-      const incoming = page.users ?? [];
+      const incoming = page.employees ?? [];
       setDirectoryByModel((current) => {
         const previous = current[modelId] ?? EMPTY_DIRECTORY;
         const nextPage = append ? mergeDirectory(previous.page, incoming) : incoming;
         const nextNames = new Map(previous.names);
-        for (const user of incoming) nextNames.set(user.user_id, user);
+        for (const user of incoming) nextNames.set(user.work_id, user);
         return {
           ...current,
           [modelId]: {

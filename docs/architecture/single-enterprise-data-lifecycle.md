@@ -11,6 +11,16 @@ AI Platform is a single-enterprise, multi-user, concurrent system. The existing
 queries, queues, leases, and storage paths scoped consistently. It is not a
 customer-selectable tenant and does not introduce tenant management.
 
+Local `users` rows record authenticated business identities; they are not the
+company employee inventory and must not gate pre-login employee grants. Identity
+reads the company DingTalk employee directory for administrator model access
+selection, projects only employee work ID and name, and validates new grants
+against that same source. The historical model `allowed_user_ids` values are
+company work IDs matching `AuthPrincipal.user_id`; DingTalk user IDs and department
+IDs are never substituted. Directory reads use the fixed deployment scope and
+fail closed without falling back to local users. The [model access contract](opensandbox-ephemeral-model-credentials.md#per-model-user-access)
+owns eligibility, ambiguity handling, bounds and compatibility.
+
 Role and permission facts come from the existing company login and user-info
 authority; department grants come from the DingTalk membership source below.
 Ordinary clients cannot choose them. A trusted gateway may inject principal

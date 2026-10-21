@@ -1,15 +1,15 @@
 import { Button, Checkbox, Input } from "@lobehub/ui/base-ui";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, RefreshCw, Search, X } from "lucide-react";
-import type { AdminUserSummary } from "../../services/api/adminUsers";
+import type { CompanyEmployee } from "../../services/api/companyEmployees";
 
 export type UserDirectoryStatus = "idle" | "loading" | "ready" | "error";
 
 export interface ModelUserAccessProps {
   accessMode: "all" | "selected";
   allowedUserIds: string[];
-  directory: AdminUserSummary[];
-  directoryNames: Map<string, AdminUserSummary>;
+  directory: CompanyEmployee[];
+  directoryNames: Map<string, CompanyEmployee>;
   directoryStatus: UserDirectoryStatus;
   directoryQuery: string;
   directoryTotal: number;
@@ -28,7 +28,7 @@ export function ModelUserAccess({
   const [open, setOpen] = useState(false);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   const usersById = useMemo(
-    () => new Map([...directoryNames, ...directory.map((user) => [user.user_id, user] as const)]),
+    () => new Map([...directoryNames, ...directory.map((user) => [user.work_id, user] as const)]),
     [directoryNames, directory],
   );
   const toggle = (userId: string) => {
@@ -67,7 +67,7 @@ export function ModelUserAccess({
               const user = usersById.get(userId);
               return (
                 <span className="inline-flex min-w-0 items-center gap-1 text-xs" data-model-access-user={userId} key={userId} title={user ? `${user.display_name} (${userId})` : userId}>
-                  <span className="truncate" data-model-access-user-label>{user?.display_name || userId}</span>
+                  <span className="truncate" data-model-access-user-label>{user ? `${user.display_name} (${userId})` : userId}</span>
                   <Button aria-label={`移除 ${user?.display_name || userId}`} disabled={disabled} icon={X} size="small" type="text" htmlType="button" onClick={() => toggle(userId)} />
                 </span>
               );
@@ -85,14 +85,14 @@ export function ModelUserAccess({
           {open ? (
             <div className="flex min-w-0 flex-col gap-2">
               <Input aria-label="搜索用户" disabled={disabled} prefix={<Search size={14} />} size="small"
-                placeholder="搜索用户名或 ID" value={query}
+                placeholder="搜索姓名或工号" value={query}
                 onChange={(event) => { if (!disabled) onDirectoryQuery(event.target.value.trim()); }} />
               <div aria-label="用户目录" aria-busy={directoryStatus === "loading"} className="flex max-h-44 flex-col gap-2 overflow-auto" data-model-access-directory role="group">
                 {directory.map((user) => (
-                  <Checkbox key={user.user_id} checked={allowedUserIds.includes(user.user_id)} disabled={disabled}
+                  <Checkbox key={user.work_id} checked={allowedUserIds.includes(user.work_id)} disabled={disabled}
                     tabIndex={disabled ? -1 : 0}
-                    onChange={() => toggle(user.user_id)}>
-                    <span>{user.display_name} <span className="text-xs text-[var(--theme-text-secondary)]">{user.user_id}</span></span>
+                    onChange={() => toggle(user.work_id)}>
+                    <span>{user.display_name} <span className="text-xs text-[var(--theme-text-secondary)]">{user.work_id}</span></span>
                   </Checkbox>
                 ))}
                 {directory.length === 0 && directoryStatus !== "error" ? (

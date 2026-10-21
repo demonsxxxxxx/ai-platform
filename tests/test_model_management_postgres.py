@@ -22,7 +22,7 @@ from app.execution.infrastructure.model_management import (
     resolve_run_model,
 )
 from app.execution.infrastructure.model_security import ModelEndpointSecurityAdapter, api_key_fingerprint
-from app.identity.api import existing_tenant_user_ids
+from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService
 from app.runs.infrastructure.postgres import inherit_run_model
 
 
@@ -405,13 +405,17 @@ async def test_publication_roundtrip_preserves_access_and_rolls_back_invalid_gra
         def parse_model_ids(self, _response):
             return ["publication-model"]
 
+    async def read_employees():
+        return [CompanyEmployee("employee-never-logged-in", "Company employee")]
+
     service = ModelControlPlaneService(
         transaction_factory=transaction,
         settings_provider=lambda: SimpleNamespace(
             model_connection_encryption_key=encryption_key,
             model_connection_allowed_internal_hosts="",
         ),
-        repository=PostgresModelManagementRepository(existing_user_ids=existing_tenant_user_ids),
+        repository=PostgresModelManagementRepository(),
+        employee_directory=CompanyEmployeeDirectoryService(read_employees, tenant_id="tenant-a"),
         security=ModelEndpointSecurityAdapter(),
         upstream=CatalogUpstream(),
         attempt_capability_verifier=lambda **_kwargs: False,
@@ -431,18 +435,22 @@ async def test_publication_roundtrip_preserves_access_and_rolls_back_invalid_gra
 
     try:
         result = await publish(
-            1, display_name="Published name", access_mode="selected", allowed_user_ids=["user-a"],
+            1, display_name="Published name", access_mode="selected", allowed_user_ids=["employee-never-logged-in"],
         )
         assert result["revision"] == 2
         assert result["models"][0]["label"] == "Published name"
-        assert result["models"][0]["allowed_user_ids"] == ["user-a"]
+        assert result["models"][0]["allowed_user_ids"] == ["employee-never-logged-in"]
         assert (await list_public_models(conn, user_id="user-b"))["models"] == []
+
+        cursor = await conn.execute("select id from users where id = 'employee-never-logged-in'")
+        assert await cursor.fetchone() is None
+        assert await resolve_run_model(conn, user_id="employee-never-logged-in", model_id="publication-model", model_value=None)
 
         # Older clients omit ACL/name fields: neither saved value may be erased.
         result = await publish(2)
         assert result["revision"] == 3
         assert result["models"][0]["access_mode"] == "selected"
-        assert result["models"][0]["allowed_user_ids"] == ["user-a"]
+        assert result["models"][0]["allowed_user_ids"] == ["employee-never-logged-in"]
         assert result["models"][0]["label"] == "Published name"
 
         for users in ([], ["missing-user"], ["user-foreign"]):
@@ -451,7 +459,7 @@ async def test_publication_roundtrip_preserves_access_and_rolls_back_invalid_gra
             cursor = await conn.execute("select revision from model_gateway_revisions where active")
             assert (await cursor.fetchone())["revision"] == 3
             cursor = await conn.execute("select allowed_user_ids from model_catalog_entries")
-            assert (await cursor.fetchone())["allowed_user_ids"] == ["user-a"]
+            assert (await cursor.fetchone())["allowed_user_ids"] == ["employee-never-logged-in"]
 
         result = await publish(3, display_name=" ", access_mode="all", allowed_user_ids=[])
         assert result["models"][0]["label"] == "publication-model"
