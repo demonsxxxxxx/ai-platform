@@ -106,3 +106,19 @@ test("keeps lifecycle precedence explicit", () => {
     "forbidden",
   );
 });
+
+
+test("catalog denial wins over admin grants while non-permission failures stay degraded", () => {
+  const permissions = {
+    isAuthenticated: true,
+    canReadSkills: true,
+    effectivePermissions: ["skill:admin"],
+    effectivePermissionsKnown: true,
+  };
+  assert.equal(resolveSkillsHubGovernance({
+    ...permissions, catalogPermissionDenied: true,
+  }).pageState, "forbidden");
+  assert.equal(resolveSkillsHubGovernance({
+    ...permissions, projectionError: "技能目录加载失败，请重试。",
+  }).pageState, "degraded");
+});

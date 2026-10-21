@@ -11,7 +11,6 @@ function read(path: string): string {
 
 test("workbench shell is owned by the local LibreChat shell layer", () => {
   const libreShell = read("src/librechat-ui/Shell.tsx");
-  const legacyShell = read("src/components/librechatShell/LibreChatShell.tsx");
   const workbenchShell = read("src/components/workbench/WorkbenchShell.tsx");
   const chatApp = read("src/components/layout/AppContent/ChatAppContent.tsx");
 
@@ -19,7 +18,6 @@ test("workbench shell is owned by the local LibreChat shell layer", () => {
   assert.match(libreShell, /data-workbench-region="thread"/);
   assert.match(libreShell, /data-workbench-region="composer"/);
   assert.match(libreShell, /data-workbench-region="context"/);
-  assert.match(legacyShell, /\.\.\/\.\.\/librechat-ui/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(workbenchShell, /librechat-ui\/Shell/);
   assert.match(chatApp, /WorkbenchShell/);
@@ -72,9 +70,6 @@ test("sidebar transplants LibreChat rail geometry and mobile close behavior", ()
 
 test("composer and right panel expose LibreChat-style regions without backend authority imports", () => {
   const sidePanel = read("src/librechat-ui/SidePanel.tsx");
-  const legacySidePanel = read(
-    "src/components/librechatShell/LibreChatSidePanel.tsx",
-  );
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
   const driveBrowser = read(
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
@@ -96,7 +91,6 @@ test("composer and right panel expose LibreChat-style regions without backend au
   assert.match(driveBrowser, /role="tablist"/);
   assert.match(driveBrowser, /role="tab"/);
   assert.match(driveBrowser, /activeSource|setActiveSource/);
-  assert.match(legacySidePanel, /\.\.\/\.\.\/librechat-ui/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
   assert.match(chatInput, /<ComposerBar/);

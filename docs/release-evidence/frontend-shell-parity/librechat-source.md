@@ -78,8 +78,14 @@ declared `ChatInputProps`.
 | `frontend/web/src/librechat-ui/Panel.tsx` | expanded sidebar section primitive |
 | `frontend/web/src/librechat-ui/SidePanel.tsx` | right context/artifact/run/permission panel |
 
-Legacy `frontend/web/src/components/librechatShell/*` files are compatibility
-re-exports only. Active workbench code must consume `frontend/web/src/librechat-ui/*`.
+The unconsumed legacy compatibility re-exports are retired: `LibreChatPanel.tsx`,
+`LibreChatRail.tsx`, `LibreChatShell.tsx`, `LibreChatSidePanel.tsx` and
+`libreChatSurface.ts` under `frontend/web/src/components/librechatShell/`, plus
+`frontend/web/src/librechat-ui/index.ts`. This private application has no identified
+repository consumer of those compatibility paths. Active workbench code continues
+to consume concrete `frontend/web/src/librechat-ui/*` modules; their components,
+styles, API and upstream/license scope are unchanged. The shell layout tests remain
+in the former compatibility directory and verify the active direct-import owners.
 
 ## Status Boundary
 

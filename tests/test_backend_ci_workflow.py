@@ -69,7 +69,6 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_capability_distribution.py",
     "tests/test_claude_capability_policy.py",
     "tests/test_github_skill_import.py",
-    "tests/test_skill_legacy_workbench.py",
     "tests/test_skill_pinning.py",
     "tests/test_skill_release_readiness.py",
     "tests/test_skill_version_labels.py",

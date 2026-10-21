@@ -976,6 +976,7 @@ def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
         "src/services/api/__tests__/adminUsers.test.ts",
         "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
         "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
+        "src/components/workbench/__tests__/WorkbenchUsersProjectionPanel.mounted.test.tsx",
         "src/components/governance/__tests__/workbenchAccessPolicy.test.ts",
         "src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
         "src/__tests__/appRouteManifest.test.ts",

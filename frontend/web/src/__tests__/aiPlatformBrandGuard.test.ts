@@ -19,7 +19,6 @@ const activeFiles = [
   "src/hooks/useSessionConfig.ts",
   "src/utils/sessionTitleEvents.ts",
   "src/components/common/selectionActionPrompt.ts",
-  "src/components/chat/ChatInputHelpMenu.tsx",
   "src/components/chat/WelcomePage.tsx",
   "src/components/auth/AuthPage.tsx",
   "src/components/auth/AuthLayout.tsx",

@@ -297,3 +297,102 @@ test("full authorized catalog does not reload for local list parameters", async 
     skillApi.listAllAuthorized = originalListAllAuthorized;
   }
 });
+
+test("catalog permission denial stays structured through localization, retries and disabled hosts", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useSkills } = await import("../useSkills.ts");
+  const originalList = skillApi.listAllAuthorized;
+  let nextRead: () => Promise<SkillsResponse> = async () => {
+    throw new ApiRequestError("private-permission-detail", 403);
+  };
+  skillApi.listAllAuthorized = () => nextRead();
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  let snapshot: ReturnType<typeof useSkills> | null = null;
+  function Probe({ enabled = true }: { enabled?: boolean }) {
+    snapshot = useSkills({ allAuthorizedCatalog: true, enabled });
+    return null;
+  }
+  const current = () => {
+    if (!snapshot) throw new Error("useSkills probe did not render");
+    return snapshot;
+  };
+  try {
+    await React.act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(current().listPermissionDenied, true);
+    assert.equal(current().listError, "您没有权限访问此页面");
+    assert.deepEqual(current().skills, []);
+    await React.act(async () => { current().clearError(); });
+    assert.equal(current().listPermissionDenied, true, "dismissing copy cannot clear authorization failure");
+    await React.act(async () => { root.render(React.createElement(Probe, { enabled: false })); });
+    assert.equal(current().listPermissionDenied, true, "disabled forbidden host must not restart its probe");
+
+    const pending = deferred<SkillsResponse>();
+    nextRead = () => pending.promise;
+    await React.act(async () => { root.render(React.createElement(Probe)); });
+    assert.equal(current().listPermissionDenied, false);
+    assert.equal(current().listError, null);
+    assert.equal(current().effectivePermissionsKnown, false);
+    assert.equal(current().catalogReadResolved, false);
+    await React.act(async () => { pending.resolve(catalogResponse(["restored"])); });
+    assert.equal(current().listPermissionDenied, false);
+    assert.equal(current().catalogReadResolved, true);
+
+    for (const failure of [new ApiRequestError("private-service-detail", 503), new Error("network unavailable")]) {
+      nextRead = async () => { throw failure; };
+      await React.act(async () => { await current().fetchSkills(); });
+      assert.equal(current().listPermissionDenied, false);
+      assert.equal(current().listError, "技能目录加载失败，请重试。");
+      assert.deepEqual(current().skills, []);
+    }
+
+    const stale = deferred<SkillsResponse>();
+    nextRead = () => stale.promise;
+    let staleRead!: Promise<boolean>;
+    await React.act(async () => { staleRead = current().fetchSkills(); });
+    nextRead = async () => { throw new ApiRequestError("private-permission-detail", 403); };
+    await React.act(async () => { await current().fetchSkills(); });
+    await React.act(async () => { stale.resolve(catalogResponse(["stale"])); await staleRead; });
+    assert.equal(current().listPermissionDenied, true);
+    assert.deepEqual(current().skills, []);
+  } finally {
+    await React.act(async () => { root.unmount(); });
+    skillApi.listAllAuthorized = originalList;
+  }
+});
+
+
+test("identity replacement clears a previous catalog denial even while the new host is disabled", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useSkills } = await import("../useSkills.ts");
+  const originalList = skillApi.listAllAuthorized;
+  let calls = 0;
+  skillApi.listAllAuthorized = async () => {
+    calls += 1;
+    throw new ApiRequestError("private-permission-detail", 403);
+  };
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  let snapshot: ReturnType<typeof useSkills> | undefined;
+  function Probe({ scope, enabled }: { scope: string; enabled: boolean }) {
+    snapshot = useSkills({ allAuthorizedCatalog: true, identityScope: scope, enabled });
+    return null;
+  }
+  const current = () => { assert.ok(snapshot); return snapshot; };
+  try {
+    await React.act(async () => root.render(React.createElement(Probe, { scope: "old-identity", enabled: true })));
+    assert.equal(current().listPermissionDenied, true);
+    await React.act(async () => root.render(React.createElement(Probe, { scope: "new-identity", enabled: false })));
+    assert.equal(current().listPermissionDenied, false);
+    assert.equal(current().listError, null);
+    assert.equal(current().effectivePermissionsKnown, false);
+    assert.equal(current().catalogReadResolved, false);
+    assert.deepEqual(current().skills, []);
+    assert.equal(calls, 1, "disabled replacement must not fetch to clear stale authority");
+  } finally {
+    await React.act(async () => root.unmount());
+    skillApi.listAllAuthorized = originalList;
+  }
+});

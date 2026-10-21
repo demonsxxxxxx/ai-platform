@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { Package2, Pencil, UploadCloud } from "lucide-react";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
-import { isPermissionError } from "../../governance/frontendGovernanceState";
 import { ConfirmDialog } from "../../common/ConfirmDialog";
 import { useSkillsActions } from "./useSkillsActions";
 import { SkillsList } from "./SkillsList";
@@ -68,7 +67,7 @@ export function SkillsPanel({
     onSkillsArchived: setArchivedSkills,
   });
   const { page: currentPage, setPage: setCatalogPage } = actions;
-  const permissionDenied = isPermissionError(actions.listError);
+  const permissionDenied = actions.listPermissionDenied;
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
   const canWrite =

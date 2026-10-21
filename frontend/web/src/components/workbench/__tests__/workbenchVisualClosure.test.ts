@@ -433,14 +433,17 @@ test("user projection renders a full workbench instead of a thin list", () => {
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
-test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
-  const baseCard = read("src/components/common/SkillBaseCard.tsx");
+test("active skill table and loading skeleton retain dense themed presentation", () => {
+  const table = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
+  const skeleton = read("src/components/skeletons/PanelSkeletons.tsx");
+  const main = read("src/main.tsx");
   const cardCss = read("src/styles/card-base.css");
 
-  assert.match(baseCard, /p-3\.5 sm:p-4/);
-  assert.match(baseCard, /text-sm font-semibold/);
-  assert.match(baseCard, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.doesNotMatch(baseCard, /text-base font-semibold/);
+  assert.match(table, /text-sm font-semibold text-\[var\(--theme-text\)\]/);
+  assert.doesNotMatch(table, /text-base font-semibold/);
+  assert.match(skeleton, /className="scb"/);
+  assert.match(skeleton, /className="scb__icon-ring shrink-0 /);
+  assert.match(main, /import "\.\/styles\/card-base\.css"/);
   assert.match(cardCss, /border-radius:\s*0\.5rem/);
   assert.match(cardCss, /background:\s*var\(--theme-workbench-panel\);/);
   assert.doesNotMatch(cardCss, /translateY\(-4px\)/);
@@ -463,7 +466,7 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 
 test("skills route selects the ordinary catalog while retaining the admin management resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
-  const ordinarySkills = read("src/components/panels/AvailableSkillsPanel.tsx");
+  const ordinarySkills = read("src/components/panels/SkillsPanel/index.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
 
@@ -485,10 +488,12 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.doesNotMatch(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
-  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
-  assert.match(ordinarySkills, /skills\.available\.title/);
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
-  assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
+  // The public effective version is allowed; private file/source metadata is not rendered.
+  // The real API-to-host boundary and role matrix are exercised by SkillsCatalogPublicHost.
+  assert.match(ordinarySkills, /selectedSkill\.expected_version/);
+  assert.match(ordinarySkills, /isAiAdmin &&/);
+  assert.doesNotMatch(ordinarySkills, /selectedSkill\.(?:content|files|source|private_manifest|storage_key|runtime_path)/);
   assert.equal(zh.skills.available.title, "可用技能");
   assert.match(resolver, /requiredPermission: "skill:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
