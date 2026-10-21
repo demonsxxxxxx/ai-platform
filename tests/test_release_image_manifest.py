@@ -189,6 +189,9 @@ def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path
             for role in ("backend", "frontend") for name in EVIDENCE_FILES
         )
         assert set(archive.getnames()) == expected
+        assert archive.extractfile("README.md").read() == (
+            ROOT / "deploy/ai-platform/README.internal-test.md"
+        ).read_bytes()
         assert all(member.isfile() for member in archive.getmembers())
         extracted_evidence = tmp_path / "extracted-evidence"
         extracted_evidence.mkdir()
