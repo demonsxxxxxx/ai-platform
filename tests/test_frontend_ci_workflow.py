@@ -495,3 +495,11 @@ def test_frontend_uv_bootstrap_matches_existing_authority_and_precedes_each_subs
         assert setup["with"]["version"] == "${{ env.UV_VERSION }}"
         assert steps.index(setup) < steps.index(install)
         assert setup.get("if") == install.get("if")
+
+
+def test_frontend_ci_runs_roles_error_projection_regression():
+    scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    assert "corepack pnpm run test:control-plane-ui" in scripts["ci:verify"].split(" && ")
+    selector = "src/components/panels/__tests__/RolesPanel.errorProjection.mounted.test.tsx"
+    assert scripts["test:control-plane-ui"].split().count(selector) == 1
+    assert (PACKAGE.parent / selector).is_file()
