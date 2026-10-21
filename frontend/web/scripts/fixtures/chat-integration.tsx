@@ -68,7 +68,7 @@ const questionBatch: RunInputQuestionBatch = {
   question_id: "question-synthetic", status: "pending", created_at: "2026-01-01T00:00:00Z",
   questions: [
     { key: "priority", header: "单选", question: "选择处理优先级", multiSelect: false, options: [{ key: "normal", label: "普通", description: "按默认顺序处理", recommended: true }, { key: "urgent", label: "紧急", description: "优先处理" }] },
-    { key: "formats", header: "多选", question: "选择输出格式", multiSelect: true, options: [{ key: "pdf", label: "PDF", description: "便于归档" }, { key: "docx", label: "DOCX", description: "便于编辑" }] },
+    { key: "formats", header: "多选", question: "选择输出格式", multiSelect: true, options: [{ key: "pdf", label: "PDF", description: "便于归档" }, { key: "docx", label: "DOCX", description: "便于编辑" }, { key: "markdown", label: "Markdown", description: "便于复用" }, { key: "csv", label: "CSV", description: "便于处理数据" }] },
     { key: "note", header: "自由文本", question: "补充说明", multiSelect: false, options: [] },
   ],
 };
@@ -88,7 +88,7 @@ function longHistoryProjection(index: number): RunInputsProjection {
     ],
   };
 }
-const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
+const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -158,6 +158,14 @@ export function Fixture() {
     };
     fixtureState.showGeneric = () => setGeneric(true);
     fixtureState.showQuestions = () => setQuestionProjection({ run_id: "run-synthetic-1", state: "open", inputs: [], questions: [questionBatch] });
+    // Exceptional content keeps a reachable fallback: 8 options and a long question
+    // must not promise the no-scroll behaviour that ordinary short questions have.
+    fixtureState.showLongQuestion = () => setQuestionProjection({ run_id: "run-synthetic-1", state: "open", inputs: [], questions: [{
+      ...questionBatch,
+      questions: [{ key: "long", header: "长问题", multiSelect: false, question: "请选择处理方式：" + "这是一个用于验证长问题在受限高度内仍可完整读取的问题描述。".repeat(8),
+        options: Array.from({ length: 8 }, (_, index) => ({ key: `opt-${index}`, label: `处理方式 ${index + 1}`, description: "选项说明用于填充真实高度" })) }],
+    }] });
+    fixtureState.attach = () => setAttachments([{ id: "attachment-synthetic", key: "attachment-synthetic", name: "已确认附件.pdf", type: "document", mimeType: "application/pdf", size: 2048 }]);
     // Multiple closed Runs must share one scroll budget, including their titles.
     fixtureState.showHistoryWithReceipts = () => setHistoryProjections(Array.from({ length: 10 }, (_, index) => longHistoryProjection(index)));
     fixtureState.clearHistory = () => setHistoryProjections([]);

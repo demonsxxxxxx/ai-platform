@@ -810,7 +810,9 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
       assert.ok(retryButton());
       assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
       assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
-      assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
+      // The alternative answer box is revealed on request, not always visible;
+      // while the batch is pending every answer control stays disabled.
+      assert.equal(container.querySelector<HTMLButtonElement>("[data-run-question-other-toggle]")!.disabled, true);
       assert.equal(container.querySelector<HTMLButtonElement>("[data-run-question-advance]")!.disabled, true);
       const applyTimeout = async () => {
         persisted.questions[0].status = "resolved";
@@ -1234,6 +1236,9 @@ test("many non-pending Runs share one scroll area beside an open question", asyn
       root.render(createElement(RunInputHistory, { runInputs, canSend: true }));
       await flush();
     });
+    const disclosure = container.querySelector<HTMLDetailsElement>("[data-run-input-history-disclosure]");
+    assert.ok(disclosure);
+    assert.equal(disclosure.open, false, "historical receipts start collapsed beside the current question");
     const receipts = container.querySelector("[data-run-input-receipts]");
     assert.ok(receipts, "non-pending receipts need their own container");
     assert.equal(container.querySelectorAll("[data-run-input-receipts]").length, 1);
@@ -1255,7 +1260,7 @@ test("many non-pending Runs share one scroll area beside an open question", asyn
   }
 });
 
-test("history-only state makes the receipt area the single scroll owner", async () => {
+test("history-only state stays collapsed and keeps one shared scroll panel", async () => {
   const env = installDom();
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
@@ -1282,10 +1287,13 @@ test("history-only state makes the receipt area the single scroll owner", async 
     const receipts = container.querySelector("[data-run-input-receipts]");
     assert.ok(receipts, "history-only receipts still render in their own area");
     assert.match(receipts.textContent ?? "", /历史补充内容/);
-    assert.match(receipts.className, /overflow-y-auto/);
+    const disclosure = container.querySelector<HTMLDetailsElement>("[data-run-input-history-disclosure]");
+    assert.ok(disclosure);
+    assert.equal(disclosure.open, false, "closing the task does not expand old receipts");
+    assert.match(container.querySelector("[data-run-input-history-panel]")!.className, /overflow-y-auto/);
     assert.equal(container.querySelectorAll("[data-run-input-receipts]").length, 1);
     assert.equal(receipts.querySelectorAll("[data-run-input-history-run]").length, 10);
-    assert.equal((receipts as HTMLElement).style.flex, "1 1 auto", "history-only receipts take the flexible share");
+    assert.match(container.querySelector("[data-run-input-history-toggle]")!.textContent ?? "", /10/);
   } finally {
     await act(async () => root.unmount());
     env.restore();

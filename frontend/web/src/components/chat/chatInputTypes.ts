@@ -102,8 +102,13 @@ export interface ChatInputProps {
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
   className?: string;
-  /** Task questions rendered inside this Composer's single surface. */
-  taskSurface?: ReactNode;
+  /** Task questions rendered inside this Composer's single surface. The Composer
+   *  passes its own stop control so a question footer reuses the same Run
+   *  cancellation path instead of a second controller. */
+  taskSurface?: (stop: ReactNode) => ReactNode;
+  /** An authorized pending batch owns the surface: the ordinary composer controls
+   *  stay mounted but hidden, so their draft and attachments survive the mode. */
+  questionMode?: boolean;
 
   /** INTERNAL: panel state lifted from ChatInput for ChatView layout. */
   activePanel?: FeaturePanel;

@@ -14,6 +14,8 @@ import { createPlatformAttachmentAdapter } from "./assistant-ui/attachmentBindin
 import { submitComposerMessage } from "./assistant-ui/composerSubmission";
 import { usePlatformComposer } from "./assistant-ui/platformComposer";
 import { toast } from "@lobehub/ui/base-ui";
+import { Button } from "@lobehub/ui/base-ui";
+import { Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -118,6 +120,7 @@ export const ChatInput = memo(function ChatInput({
   onPendingInputConsumed,
   className,
   taskSurface,
+  questionMode = false,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const { hasPermission, user } = useAuth();
@@ -201,7 +204,7 @@ export const ChatInput = memo(function ChatInput({
 
   // Consume external pendingInput: fill textarea and focus
   useEffect(() => {
-    if (pendingInput) {
+    if (pendingInput && !questionMode) {
       setInput(pendingInput);
       onPendingInputConsumed?.();
       requestAnimationFrame(() => {
@@ -212,7 +215,7 @@ export const ChatInput = memo(function ChatInput({
         }
       });
     }
-  }, [pendingInput, onPendingInputConsumed, setInput]);
+  }, [pendingInput, onPendingInputConsumed, questionMode, setInput]);
 
   const [activePanel, setActivePanel] = useState<FeaturePanel>(null);
   const [commandSearchSeed, setCommandSearchSeed] = useState<{
@@ -250,6 +253,15 @@ export const ChatInput = memo(function ChatInput({
     reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
   }, [isLoading]);
 
+  useEffect(() => {
+    // An arriving question owns the surface: no selector or command popover may
+    // stay open over it. Panel state itself is kept for the ordinary composer.
+    if (!questionMode) return;
+    setActivePanel(null);
+    setSlashMenuOpen(false);
+    setIsDraggingOver(false);
+  }, [questionMode]);
+
   const uploadCategories = (
     acceptedFileTypes?.length === 0
       ? []
@@ -286,6 +298,7 @@ export const ChatInput = memo(function ChatInput({
   }), [uploadFile, getUploadHandle, releaseUploadHandle, cancelPlatformUpload, removePlatformAttachment]);
 
   const uploadFiles = useCallback((files: FileList | File[], category?: FileCategory) => {
+    if (questionMode) return;
     // Profile type/count/size validation remains in the shared upload controller.
     uploadPlatformFiles(files, category, (file) => {
       const scopeRevision = draftSnapshot.scopeRevision;
@@ -300,7 +313,7 @@ export const ChatInput = memo(function ChatInput({
         });
       }).catch(() => { /* The upload controller already reports validation/upload failures. */ });
     });
-  }, [composerRuntime, draftSnapshot, getUploadHandle, uploadPlatformFiles]);
+  }, [composerRuntime, draftSnapshot, getUploadHandle, questionMode, uploadPlatformFiles]);
 
   const removeAttachment = useCallback((attachment: MessageAttachment) => {
     const handle = getUploadHandle(attachment.id);
@@ -339,6 +352,7 @@ export const ChatInput = memo(function ChatInput({
   });
 
   useEffect(() => {
+    if (questionMode) return;
     const applySelectionActionPrompt = (prompt: string) => {
       setInput((previous) => {
         const next = previous.trim()
@@ -370,7 +384,7 @@ export const ChatInput = memo(function ChatInput({
     return () => {
       window.removeEventListener(SELECTION_ACTION_EVENT, handleSelectionAction);
     };
-  }, [scheduleTextareaResize, setInput]);
+  }, [questionMode, scheduleTextareaResize, setInput]);
 
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
 
@@ -378,7 +392,7 @@ export const ChatInput = memo(function ChatInput({
     content,
     snapshot: draftSnapshot,
     attachments,
-    allowed: canSend && !hasUploadingAttachment && !isLoading && !disabled,
+    allowed: !questionMode && canSend && !hasUploadingAttachment && !isLoading && !disabled,
     lock: isSubmittingRef,
     onSend,
     agentOptionValues,
@@ -392,6 +406,7 @@ export const ChatInput = memo(function ChatInput({
   });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (questionMode) return;
     // IME candidate keys belong to the native editor, including the legacy 229
     // signal used when composition ends before the confirming keydown event.
     if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
@@ -505,13 +520,18 @@ export const ChatInput = memo(function ChatInput({
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
 
+  // A pending question batch owns the surface: nothing but the question card may
+  // reach the server, so the native form, Enter shortcut, drops and paste keep the
+  // ordinary draft intact while its controls stay mounted but hidden.
+  const canSubmitOrdinary = canSubmit && !questionMode;
+
   useLayoutEffect(() => registerComposer({
     send: submitToPlatform,
     requestCancel: () => setStopConfirmOpen(true),
     getText: () => draftSnapshot.value,
     setText: (text) => setInput(text),
     disabled: Boolean(disabled || !canSend),
-    sendDisabled: !canSend || isLoading || hasUploadingAttachment,
+    sendDisabled: !canSend || isLoading || hasUploadingAttachment || questionMode,
     canCancel: Boolean(canStop && isLoading),
     attachmentAdapter: uploadCategories.length > 0 ? attachmentAdapter : undefined,
   }));
@@ -871,6 +891,11 @@ export const ChatInput = memo(function ChatInput({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (questionMode) {
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
     if (hasProfileDriveDragData(e.dataTransfer)) {
       e.dataTransfer.dropEffect = "copy";
     }
@@ -885,6 +910,10 @@ export const ChatInput = memo(function ChatInput({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
+    if (questionMode) {
+      e.stopPropagation();
+      return;
+    }
     const profileDriveReference = getProfileDriveDragReference(e.dataTransfer);
     if (profileDriveReference && onProfileDriveFileDrop) {
       e.stopPropagation();
@@ -898,11 +927,28 @@ export const ChatInput = memo(function ChatInput({
     uploadFiles(files);
   };
 
+  // The question footer reuses this Composer's own Run cancellation path
+  // (confirmation dialog, lifecycle receipt, scope guards) instead of a second
+  // controller. It appears exactly where the toolbar's Stop button would.
+  const questionStopControl = isLoading && canStop ? (
+    <Button
+      type="text"
+      htmlType="button"
+      data-run-question-stop
+      onClick={() => setStopConfirmOpen(true)}
+      icon={<Square aria-hidden size={12} fill="currentColor" />}
+      style={{ height: "auto", minHeight: 40, padding: "4px 0", color: "var(--theme-text-secondary)" }}
+    >
+      {t("chat.stop")}
+    </Button>
+  ) : null;
+
   return (
     <div className="chat-input-shell sm:px-2" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
       <Composer
         onSubmit={(event) => {
-          if (!canSubmit || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
+          // Question mode owns the surface: the hidden ordinary form never sends.
+          if (!canSubmitOrdinary || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
         }}
         className={
           className ?? "mx-auto max-w-[68rem] px-2"
@@ -912,7 +958,7 @@ export const ChatInput = memo(function ChatInput({
           className="relative"
           data-composer-command-menu-anchor
         >
-          {!disableSlashCommands && slashMenuOpen && (
+          {!disableSlashCommands && slashMenuOpen && !questionMode && (
             <SlashCommandMenu
               items={slashCommandItems}
               highlightedIndex={slashMenuHighlight}
@@ -924,20 +970,27 @@ export const ChatInput = memo(function ChatInput({
           <ComposerBar
             ref={containerRef}
             data-disable-global-file-drop="true"
+            data-question-mode={questionMode || undefined}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             dragActive={isDraggingOver}
           >
             {taskSurface ? (
-              /* The task surface is the bounded region inside the Composer shell. It
-                 is a flex column so the active question body is the only scroll
-                 owner and the action row is never clipped. */
-              <div
-                className="flex min-h-0 shrink flex-col overflow-hidden"
-                data-slot="composer-task-surface"
-              >{taskSurface}</div>
+              /* The task surface replaces the ordinary controls in question mode; it
+                 keeps its natural height so short questions show every choice and
+                 action without an inner scroll. */
+              <div className="flex flex-col" data-slot="composer-task-surface">
+                {taskSurface(questionStopControl)}
+              </div>
             ) : null}
+            {/* The ordinary controls stay mounted (draft, uploads, selectors) and are
+                only hidden, so leaving question mode restores them untouched. */}
+            <div
+              className="flex flex-col gap-2"
+              style={{ display: questionMode ? "none" : undefined }}
+              data-slot="composer-ordinary-controls"
+            >
             <div data-slot="composer-attachments">
               <ChatInputAttachments
                 attachments={attachments}
@@ -992,13 +1045,13 @@ export const ChatInput = memo(function ChatInput({
                 }}
                 onFocus={scheduleTextareaResize}
                 onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
+                onPaste={questionMode ? undefined : handlePaste}
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
                     : placeholder ?? t("chat.noPermission")
                 }
-                disabled={disabled || !canSend}
+                disabled={questionMode || disabled || !canSend}
                 rows={1}
                 />
             </div>
@@ -1030,6 +1083,7 @@ export const ChatInput = memo(function ChatInput({
                 }}
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
+            </div>
             </div>
           </ComposerBar>
         </div>
