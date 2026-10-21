@@ -15,7 +15,7 @@ installBrowserAuthTestDb();
 const { act, createElement } = await import("react");
 const { MemoryRouter } = await import("react-router-dom");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
-const { KnowledgeBaseApplication } = await import("../AgentApplicationRoute");
+const { KnowledgeBaseApplication } = await import("../KnowledgeBaseApplication");
 await import("../../../i18n/index");
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 function response(data: unknown) { return new Response(`data: ${JSON.stringify({ data })}\n\n`); }
@@ -141,4 +141,35 @@ test("SOP same-user session replacement fences late results without needing a pr
     assert.equal(payloads[3].session_id, "synthetic-session");
     assert.match(view.container.textContent!, /fresh answer/);
   } finally { await view.close(); }
+});
+
+test("SOP route composes its extracted application and shared back navigation", async () => {
+  const { AgentApplicationRoute } = await import("../AgentApplicationRoute");
+  const { Routes, Route } = await import("react-router-dom");
+  const { APP_ROUTE_PATHS } = await import("../../../appRouteManifest");
+  const old = { bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser };
+  authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request.generation });
+  authApi.getCurrentUser = async () => principal();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    await act(async () => {
+      root.render(createElement(AuthProvider, null, createElement(MemoryRouter, { initialEntries: ["/ai-apps/sop-assistant"] },
+        createElement(Routes, null,
+          createElement(Route, { path: "/ai-apps/:appKey", element: createElement(AgentApplicationRoute) }),
+          createElement(Route, { path: APP_ROUTE_PATHS.apps, element: createElement("p", null, "Application catalog") }),
+        ),
+      )));
+    });
+    assert.match(container.textContent!, /您好，我是 SOP 问询助手/);
+    assert.doesNotMatch(container.textContent!, /当前任务|历史记录/);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="返回 AI 应用"]')!.click());
+    assert.equal(container.textContent, "Application catalog");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    authApi.bootstrapAuthContext = old.bootstrap;
+    authApi.getCurrentUser = old.user;
+  }
 });
