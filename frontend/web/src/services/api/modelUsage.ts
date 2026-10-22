@@ -32,6 +32,8 @@ export interface UsageReport<T> {
   limit: number | null;
   offset: number;
   meta: UsageMeta;
+  /** Whole-window aggregate; absent on older servers and null when no records exist. */
+  summary?: UsageCounts | null;
 }
 export interface UsageDates { start_date: string; end_date: string }
 export interface UsageUsersQuery extends UsageDates { q: string; limit: number; offset: number }

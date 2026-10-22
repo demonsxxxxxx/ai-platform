@@ -19,11 +19,17 @@ const reasons = {
 
 export function UsageCoverage({ meta }: { meta: UsageMeta }) {
   const { coverage } = meta;
-  return <div role="status" className="space-y-1 text-sm text-[var(--theme-text-secondary)]">
-    <p className="font-medium text-[var(--theme-text)]">{coverage.status === "reported_final" ? "已收到最终报告" : coverage.status === "partial" ? "采集不完整 · 仅展示已记录用量" : "用量不可完整统计 · 未采集不代表零用量"}</p>
-    {coverage.reason && <p>{reasons[coverage.reason]}</p>}
-    <p>统计窗口：{meta.start_date} 至 {meta.end_date}（北京时间）。报告范围 {coverage.scopes}，不完整范围 {coverage.partial_scopes}。</p>
-    {meta.collection_started_at && <p>采集启用：{new Date(meta.collection_started_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</p>}
+  return <div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-l-2 border-[var(--theme-primary)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]">
+    <strong className="text-[var(--theme-text)]">{coverage.status === "reported_final" ? "已收到最终报告" : coverage.status === "partial" ? "采集不完整 · 仅展示已记录用量" : "用量不可完整统计 · 未采集不代表零用量"}</strong>
+    {coverage.reason && <span>{reasons[coverage.reason]}</span>}
+    <details className="min-w-0">
+      <summary className="cursor-pointer text-[var(--theme-text-secondary)]">采集详情</summary>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+        <span>统计窗口：{meta.start_date} 至 {meta.end_date}（北京时间）</span>
+        <span>报告范围 {coverage.scopes}，不完整范围 {coverage.partial_scopes}</span>
+        {meta.collection_started_at && <span>采集启用：{new Date(meta.collection_started_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）</span>}
+      </div>
+    </details>
   </div>;
 }
 

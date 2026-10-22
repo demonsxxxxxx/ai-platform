@@ -75,7 +75,12 @@ non-admin returns 403. All reads are bound to the authenticated tenant. Current
 model ACL changes do not reinterpret previously reported usage.
 
 Both responses contain `data`, `total` (full filtered row count), `limit`
-(null for models), `offset`, and `meta`. User rows expose `user_id`, `work_id`,
+(null for models), `offset`, `meta`, and additive `summary`. The summary contains
+the same six token counters as a row, aggregated in PostgreSQL across the full
+filtered date/search window before pagination; it is not a current-page sum.
+An empty set of recorded rows returns `summary: null`, while actual zero-valued
+observations return zero counters. Missing summary from older APIs remains unknown
+in the dashboard rather than being reconstructed from a page. User rows expose `user_id`, `work_id`,
 `display_name` plus the four counters, `input_total`, `total_tokens`. Work ID is
 populated only when the grouped Runs all carry company-login identity. A Run with
 no user can have null `user_id`; it is not labelled a company employee. Model rows
@@ -114,8 +119,12 @@ not a public chat event or a terminal reconciliation field.
 
 No superseded production surface is removed. Legacy Run token counters and cost
 telemetry remain compatibility-owned by existing Run/monitor projections. They
-are explicitly not a source for this page. No old user/model usage implementation,
-frontend, billing, export or model ACL surface is replaced by this change. Apply
+are explicitly not a source for this page. The usage dashboard updates the existing frontend in place: a compact date/search
+toolbar, full-window token summary and composition, and user ranking with actual-model
+details. The previous plain ranking layout has no parallel route or compatibility
+renderer. Existing user/model endpoints and pagination remain usable; clients may
+ignore additive `summary`, and newer clients show unknown summary values when an
+older API omits it. No billing, export or model ACL contract is replaced. Apply
 schema before new API/Worker/executor binaries; old callbacks without snapshots
 remain accepted and their missing usage remains unknown. Rollback binaries do not
 require deleting the additive ledger. Do not rewrite historical usage.

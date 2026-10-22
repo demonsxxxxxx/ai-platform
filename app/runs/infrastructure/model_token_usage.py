@@ -112,7 +112,9 @@ class PostgresModelTokenUsage:
             group_key = "actual_model"
         cte += grouping + "," + ",".join(f"sum({f}) as {f}" for f in TOKEN_FIELDS)
         cte += f" from selected group by {group_key}) "
-        total = await (await conn.execute(cte + "select count(*) as total from totals", filters)).fetchone()
+        total = await (await conn.execute(cte + "select count(*) as total," +
+            ",".join(f"sum({field}) as {field}" for field in TOKEN_FIELDS) + " from totals", filters)).fetchone()
+        summary = token_totals(total) if total["total"] else None
         query = cte + "select * from totals order by (input_tokens+cache_read_input_tokens+cache_creation_input_tokens+output_tokens) desc, "
         query += "user_id asc nulls last" if user_id is None else "model asc"
         args = filters
@@ -153,7 +155,7 @@ class PostgresModelTokenUsage:
         reason = ("partial_report" if known and incomplete else
                   "baseline_unknown" if coverage["unknown_scopes"] else
                   "report_missing" if coverage["scopes"] else "not_collected")
-        return {"data": data, "total": int(total["total"]), "limit": limit if user_id is None else None,
+        return {"data": data, "total": int(total["total"]), "summary": summary, "limit": limit if user_id is None else None,
             "offset": offset if user_id is None else 0,
             "meta": {"collection_started_at": collected_at,
                 "coverage": {"status": ("partial" if incomplete else "reported_final") if known else "unavailable",
