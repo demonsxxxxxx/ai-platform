@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
+from app.bootstrap.context_artifact_transfer import build_artifact_transfer_response
+from app.context.api import ArtifactTransferError
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
 from app.bootstrap.execution import (
@@ -977,6 +979,7 @@ async def _profile_drive_file_response(
 async def executor_context_retrieval_callback(
     request: ExecutorContextRetrievalRequest,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+    accept: str | None = Header(default=None),
 ) -> Any:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
@@ -988,6 +991,24 @@ async def executor_context_retrieval_callback(
     )
     if request.action == PROFILE_DRIVE_STAGE_TOOL:
         return await _profile_drive_file_response(request)
+    if request.action == "stage_run_artifact_to_workspace" and accept == "application/octet-stream":
+        try:
+            return await build_artifact_transfer_response(
+                request, transaction=transaction, lock_authority=_lock_callback_authority,
+                load_snapshot=context_snapshot.get_bound_executor_context_snapshot,
+                storage_factory=ObjectStorage, storage_io=run_storage_io,
+                tools=available_context_retrieval_tools, record_event=streaming_run_events.append_event,
+            )
+        except ContextRetrievalInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ArtifactTransferError, ContextRetrievalDenied) as exc:
+            reason = str(exc)
+            code = 413 if reason in {"context_artifact_too_large", "context_artifact_size_required"} else 403
+            raise HTTPException(status_code=code, detail=reason) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="context_retrieval_failed") from exc
     async with transaction() as conn:
         run_identity, _lease = await _lock_callback_authority(
             conn,

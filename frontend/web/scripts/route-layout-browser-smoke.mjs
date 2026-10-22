@@ -229,6 +229,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
         preview_url: '/api/ai/files/file-synthetic/preview?session_id=session-synthetic', download_url: '/api/ai/files/file-synthetic/download?session_id=session-synthetic'
       }] });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
+      if (url.pathname === '/api/ai/chat/follow-up-suggestions' && method === 'POST') return json({ suggestions: [] });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.startsWith('/api/')) {
         state.errors.push('unstubbed_api:' + method + ':' + url.pathname);

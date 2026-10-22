@@ -6,9 +6,11 @@ not synthesize missing metadata or claim to emulate PostgreSQL locking/ACL SQL.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import tempfile
 from typing import Any
 
-from app.storage import ObjectStorageSizeLimitError
+from app.storage import DownloadedObject, ObjectStorageSizeLimitError
 
 
 class InMemoryContextRetrievalRepository:
@@ -92,3 +94,10 @@ class InMemoryContextRetrievalRepository:
         content = row.get('content', b'')
         raw = content if isinstance(content, bytes) else str(content).encode('utf-8')
         return raw[:max_bytes]
+
+    async def download_artifact(self, storage_key: str, max_bytes: int):
+        row = next(row for row in self.artifacts if row.get("storage_key") == storage_key)
+        raw = self.read_storage_bytes(row, max_bytes=max_bytes)
+        with tempfile.NamedTemporaryFile(delete=False) as output:
+            output.write(raw)
+        return DownloadedObject(output.name, hashlib.sha256(raw).hexdigest(), len(raw))

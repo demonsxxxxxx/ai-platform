@@ -1,5 +1,7 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
+
 from app.sandbox.application.callback_authority import (
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,

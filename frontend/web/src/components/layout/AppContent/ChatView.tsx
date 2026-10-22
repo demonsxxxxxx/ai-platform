@@ -37,6 +37,7 @@ import {
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
 import { RunInputHistory } from "../../chat/RunInputHistory";
+import { deriveRunInputSurface } from "../../chat/runInputSurface";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -337,6 +338,11 @@ export function ChatView({
   );
   const canSendInCurrentView =
     canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
+  // The authorized pending batch, not a route flag, owns question mode. A closed
+  // or accepted batch leaves no pending answer, so the ordinary composer returns
+  // with its draft and attachments untouched.
+  const runInputQuestionMode =
+    deriveRunInputSurface(runInputs).activeBatches.length > 0;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
@@ -1113,10 +1119,14 @@ export function ChatView({
           </Button>
         </div>
       ) : null}
-      {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      {/* Task questions and the Composer are one surface, not two stacked cards. */}
       <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
+        questionMode={runInputQuestionMode}
+        taskSurface={runInputs
+          ? (stop) => <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} stop={stop} />
+          : undefined}
         className="mx-auto max-w-[68rem] px-2"
       />
     </div>

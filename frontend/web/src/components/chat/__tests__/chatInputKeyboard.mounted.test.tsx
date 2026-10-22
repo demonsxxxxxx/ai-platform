@@ -190,6 +190,54 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal(submitted.length, 2);
       assert.equal(textarea().value, "");
     });
+    await t.test("question mode preserves the ordinary draft and attachments while blocking hidden submission and drops", async () => {
+      const attachment = { id: "draft-file", key: "draft-file", name: "draft.txt", type: "document" as const, url: "/api/files/draft", mimeType: "text/plain", size: 5 };
+      let sent = 0;
+      let imported = 0;
+      let stops = 0;
+      await render({ attachments: [attachment], isLoading: false, canSend: true,
+        draftScopeKey: "question-session", onSend: async () => { sent += 1; return { status: "accepted" }; },
+        onProfileDriveFileDrop: async () => { imported += 1; },
+        onStop: async () => { stops += 1; return "acknowledged"; } });
+      await type("保留普通草稿");
+      const originalInput = textarea();
+      const originalFile = container.querySelector("[data-composer-file-reference]");
+      assert.ok(originalFile);
+      await render({ questionMode: true, taskSurface: (stop) => <section data-test-question>当前问题{stop}</section> });
+      assert.equal(textarea(), originalInput, "question mode must not remount the input owner");
+      assert.equal(originalInput.value, "保留普通草稿");
+      assert.equal(originalInput.disabled, true);
+      assert.equal(container.querySelector<HTMLElement>('[data-slot="composer-ordinary-controls"]')!.style.display, "none");
+      await key("Enter");
+      await act(async () => originalInput.closest("form")!.requestSubmit());
+      assert.equal(sent, 0, "even explicit hidden-form submission is blocked");
+      const bar = container.querySelector('[data-slot="composer-bar"]')!;
+      const drop = new dom.window.Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(drop, "dataTransfer", { value: {
+        files: [new File(["new"], "new.txt", { type: "text/plain" })],
+        types: ["application/x-ai-platform-profile-drive-path", "Files"],
+        getData: () => JSON.stringify({ source_id: "profile", path: "synthetic.txt" }),
+      } });
+      await act(async () => bar.dispatchEvent(drop));
+      assert.equal(imported, 0, "question drops cannot mutate hidden file references");
+      assert.equal(container.querySelector("[data-composer-file-reference]"), originalFile);
+      await render({ isLoading: true, canStop: true });
+      await act(async () => container.querySelector<HTMLButtonElement>("[data-run-question-stop]")!.click());
+      const dialog = document.querySelector('[role="dialog"], [role="alertdialog"]');
+      assert.ok(dialog, "question stop keeps the existing confirmation");
+      assert.equal(stops, 0);
+      const confirm = [...dialog.querySelectorAll("button")].find((button) => button.textContent?.includes("停止"));
+      assert.ok(confirm);
+      await act(async () => confirm.click());
+      assert.equal(stops, 1);
+      await render({ questionMode: false, taskSurface: undefined, isLoading: false });
+      assert.equal(textarea(), originalInput);
+      assert.equal(textarea().value, "保留普通草稿");
+      assert.equal(container.querySelector("[data-composer-file-reference]"), originalFile);
+      await render({ questionMode: true, draftScopeKey: "different-session" });
+      assert.equal(textarea().value, "", "scope changes still reset the hidden draft");
+      await render({ questionMode: false });
+    });
   } finally {
     await act(async () => root.unmount());
     authApi.bootstrapAuthContext = originalBootstrap;
