@@ -75,8 +75,8 @@ export function getFileTypeColor(fileName: string): {
   if (["jpg", "jpeg", "png", "gif", "svg", "webp", "ico"].includes(ext)) {
     return {
       icon: ImageIcon,
-      color: "text-green-600 dark:text-green-400",
-      bg: "bg-green-100 dark:bg-green-900/30",
+      color: "text-[var(--theme-success-text)]",
+      bg: "bg-[var(--theme-success-soft)]",
     };
   }
   // 代码文件
@@ -108,31 +108,31 @@ export function getFileTypeColor(fileName: string): {
   ) {
     return {
       icon: FileCode,
-      color: "text-blue-600 dark:text-blue-400",
-      bg: "bg-blue-100 dark:bg-blue-900/30",
+      color: "text-[var(--theme-info-text)]",
+      bg: "bg-[var(--theme-info-soft)]",
     };
   }
   // Markdown
   if (["md", "markdown"].includes(ext)) {
     return {
       icon: FileText,
-      color: "text-purple-600 dark:text-purple-400",
-      bg: "bg-purple-100 dark:bg-purple-900/30",
+      color: "text-neutral-600 dark:text-neutral-400",
+      bg: "bg-neutral-100 dark:bg-neutral-900/30",
     };
   }
   // PDF
   if (ext === "pdf") {
     return {
       icon: FileText,
-      color: "text-red-600 dark:text-red-400",
-      bg: "bg-red-100 dark:bg-red-900/30",
+      color: "text-[var(--theme-danger-text)]",
+      bg: "bg-[var(--theme-danger-soft)]",
     };
   }
   // 默认文件
   return {
     icon: FileText,
-    color: "text-stone-600 dark:text-stone-400",
-    bg: "bg-stone-100 dark:bg-stone-800",
+    color: "text-neutral-600 dark:text-neutral-400",
+    bg: "bg-neutral-100 dark:bg-neutral-800",
   };
 }
 

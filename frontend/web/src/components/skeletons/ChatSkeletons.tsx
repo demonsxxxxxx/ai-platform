@@ -211,11 +211,11 @@ export function WelcomeSkeleton() {
       <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
         {/* Mobile icon */}
         <div className="sm:hidden relative mb-3">
-          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 rounded-full shadow-md ring-1 ring-neutral-200/60 dark:ring-neutral-700/40" />
         </div>
         {/* Greeting line — desktop icon inline */}
         <div className="max-w-[90vw] w-full flex items-center justify-center">
-          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40 mr-4" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-neutral-200/60 dark:ring-neutral-700/40 mr-4" />
           <SkeletonLine
             width="w-48 sm:w-64 md:w-72 lg:w-80 xl:w-[22rem] 2xl:w-96"
             className="!h-[1.65rem] sm:!h-8 md:!h-9 lg:!h-[2.35rem] xl:!h-[2.4rem] 2xl:!h-10 !rounded-lg"

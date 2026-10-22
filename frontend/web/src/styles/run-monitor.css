@@ -77,7 +77,7 @@
 @media (min-width: 1024px) {
   .run-monitor-list { min-height: 180px; flex-shrink: 1; overflow: hidden; }
 }
-@media (min-width: 1360px) {
+@media (min-width: 1280px) {
   .run-monitor-overview { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1.1fr); }
   .run-monitor-metrics { grid-column: auto; }
   .run-monitor-metric { padding: 0 16px; }

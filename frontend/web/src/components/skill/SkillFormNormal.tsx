@@ -37,10 +37,10 @@ export function SkillFormNormal(a: SkillFormActions) {
                 className="w-full" classNames={{ input: "font-mono" }}
               />
               {a.errors.name && (
-                <p className="text-xs text-red-500">{a.errors.name}</p>
+                <p className="text-xs text-[var(--theme-danger-text)]">{a.errors.name}</p>
               )}
               {a.isEditing && !a.errors.name && (
-                <p className="text-xs text-stone-400 dark:text-stone-500">
+                <p className="text-xs text-neutral-400 dark:text-neutral-500">
                   {t("skills.form.nameCannotChange")}
                 </p>
               )}
@@ -60,7 +60,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 className="w-full" classNames={{ input: "leading-6" }}
               />
               {a.errors.description && (
-                <p className="text-xs text-red-500">{a.errors.description}</p>
+                <p className="text-xs text-[var(--theme-danger-text)]">{a.errors.description}</p>
               )}
             </div>
 
@@ -108,7 +108,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 </div>
               </div>
               {a.errors.tags && (
-                <p className="text-xs text-red-500">{a.errors.tags}</p>
+                <p className="text-xs text-[var(--theme-danger-text)]">{a.errors.tags}</p>
               )}
             </div>
 
@@ -224,7 +224,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 <div
                   className={`relative flex flex-col overflow-hidden rounded-lg bg-[var(--theme-bg)] transition-colors duration-150 ${
                     a.errors.content
-                      ? "ring-1 ring-red-300 dark:ring-red-700"
+                      ? "ring-1 ring-[var(--theme-danger-ring)]"
                       : ""
                   }`}
                   style={{ height: "180px" }}
@@ -241,7 +241,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                   <Button type="text"
                     htmlType="button"
                     onClick={() => a.toggleFullscreen(true)}
-                    className="absolute right-3 bottom-3 flex items-center gap-1.5 rounded-lg bg-[var(--theme-primary)] px-2.5 py-1.5 text-xs font-medium text-white shadow-md transition-all duration-150 hover:scale-105 active:scale-95"
+                    className="absolute right-3 bottom-3 flex items-center gap-1.5 rounded-lg bg-[var(--theme-primary)] px-2.5 py-1.5 text-xs font-medium text-[var(--theme-primary-foreground)] shadow-md transition-all duration-150 hover:scale-105 active:scale-95"
                   >
                     <Pencil size={12} />
                     {t("skills.form.editFullscreen", "Edit")}
@@ -250,7 +250,7 @@ export function SkillFormNormal(a: SkillFormActions) {
               );
             })()}
             {(a.errors.content || a.errors.files) && (
-              <p className="mt-2 text-xs text-red-500">
+              <p className="mt-2 text-xs text-[var(--theme-danger-text)]">
                 {a.errors.content || a.errors.files}
               </p>
             )}
@@ -264,14 +264,14 @@ export function SkillFormNormal(a: SkillFormActions) {
           htmlType="button"
           onClick={a.onCancel}
           disabled={a.isLoading}
-          className="rounded-lg px-4 py-2 text-sm text-[var(--theme-text)] hover:bg-stone-50 dark:hover:bg-stone-800 disabled:opacity-50 transition-colors duration-150"
+          className="rounded-lg px-4 py-2 text-sm text-[var(--theme-text)] hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 transition-colors duration-150"
         >
           {t("common.cancel")}
         </Button>
         <Button type="text"
           htmlType="submit"
           disabled={a.isLoading}
-          className="rounded-lg bg-[var(--theme-primary)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--theme-primary-hover)] disabled:opacity-50 transition-colors duration-150 dark:text-stone-950 inline-flex items-center gap-2"
+          className="rounded-lg bg-[var(--theme-primary)] px-5 py-2 text-sm font-medium text-[var(--theme-primary-foreground)] hover:bg-[var(--theme-primary-hover)] disabled:opacity-50 transition-colors duration-150 dark:text-neutral-950 inline-flex items-center gap-2"
         >
           <span className="inline-flex h-4 w-4 items-center justify-center">
             {a.isLoading ? <Spin size={16} /> : <Save size={16} />}

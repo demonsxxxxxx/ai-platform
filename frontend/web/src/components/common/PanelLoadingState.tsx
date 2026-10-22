@@ -18,7 +18,7 @@ export function PanelLoadingState({
       <div className="text-center">
         <Spin size={32} className="mx-auto mb-4" />
         {text ? (
-          <p className="text-sm text-stone-500 dark:text-stone-400">{text}</p>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">{text}</p>
         ) : null}
       </div>
     </div>

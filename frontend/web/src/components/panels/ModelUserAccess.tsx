@@ -176,7 +176,7 @@ export function ModelUserAccess({
                   </div>
                   {directoryError ? (
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-xs text-[var(--theme-danger)]" role="alert">{directoryError}</p>
+                      <p className="text-xs text-[var(--theme-danger-text)]" role="alert">{directoryError}</p>
                       <Button data-model-access-retry disabled={disabled} icon={RefreshCw} size="small" htmlType="button" onClick={() => { if (!disabled) onDirectoryQuery(query.trim()); }}>重试</Button>
                     </div>
                   ) : null}

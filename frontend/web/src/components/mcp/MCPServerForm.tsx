@@ -282,11 +282,11 @@ export function MCPServerForm({
           disabled={isEditing}
           placeholder={t("mcp.form.serverNamePlaceholder")}
           className={`enterprise-field-control es-input ${
-            errors.name ? "!border-red-300 dark:!border-red-700" : ""
+            errors.name ? "!border-[var(--theme-danger-ring)] dark:!border-[var(--theme-danger)]" : ""
           }`}
         />
         {errors.name && (
-          <p className="es-hint" style={{ color: "#dc2626" }}>
+          <p className="es-hint text-[var(--theme-danger-text)]">
             {errors.name}
           </p>
         )}
@@ -424,7 +424,7 @@ export function MCPServerForm({
             setErrors((current) => ({ ...current, departments: "" }));
           }}
         />
-        {errors.departments ? <p className="es-hint text-[var(--theme-danger)]" role="alert">{errors.departments}</p> : null}
+        {errors.departments ? <p className="es-hint text-[var(--theme-danger-text)]" role="alert">{errors.departments}</p> : null}
       </div>
 
       {isEditing && (
@@ -442,11 +442,11 @@ export function MCPServerForm({
               onChange={(e) => setUrl(e.target.value)}
               placeholder={t("mcp.form.urlPlaceholder")}
               className={`enterprise-field-control es-input font-mono ${
-                errors.url ? "!border-red-300 dark:!border-red-700" : ""
+                errors.url ? "!border-[var(--theme-danger-ring)] dark:!border-[var(--theme-danger)]" : ""
               }`}
             />
             {errors.url && (
-              <p className="es-hint" style={{ color: "#dc2626" }}>
+              <p className="es-hint text-[var(--theme-danger-text)]">
                 {errors.url}
               </p>
             )}
@@ -489,7 +489,7 @@ export function MCPServerForm({
                   <Button type="text"
                     htmlType="button"
                     onClick={() => removeHeader(header.id)}
-                    className="hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    className="hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]"
                     aria-label={t("common.delete")}
                     icon={<Trash2 size={16} />}
                   />
@@ -499,7 +499,7 @@ export function MCPServerForm({
                 <p className="es-hint italic">{t("mcp.form.noHeaders")}</p>
               )}
               {errors.headers && (
-                <p className="es-hint" style={{ color: "#dc2626" }}>
+                <p className="es-hint text-[var(--theme-danger-text)]">
                   {errors.headers}
                 </p>
               )}

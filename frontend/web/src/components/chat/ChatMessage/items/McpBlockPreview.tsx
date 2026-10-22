@@ -146,7 +146,7 @@ function PortalImagePreview({
   if (!safeUrl && !resolving) return null;
 
   return (
-    <div className="flex items-center justify-center p-4 bg-stone-50 dark:bg-stone-900 min-h-[200px]">
+    <div className="flex items-center justify-center p-4 bg-neutral-50 dark:bg-neutral-900 min-h-[200px]">
       {safeUrl ? (
         <img
           src={safeUrl}
@@ -154,7 +154,7 @@ function PortalImagePreview({
           className="max-w-full max-h-[70vh] object-contain rounded-lg"
         />
       ) : (
-        <div className="w-48 h-32 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 animate-pulse" />
+        <div className="w-48 h-32 rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 animate-pulse" />
       )}
     </div>
   );
@@ -173,14 +173,14 @@ function FilePreviewContent({
 
   return (
     <div className="p-4 sm:p-5 space-y-3">
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-stone-100 dark:bg-stone-800 text-sm text-stone-500 dark:text-stone-400 font-mono truncate">
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-sm text-neutral-500 dark:text-neutral-400 font-mono truncate">
         <span className="truncate">{fileName}</span>
       </div>
       {canOpen && (
         <Button type="text"
           htmlType="button"
           onClick={() => void openPreviewUrl({ url: normalizedUrl })}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-stone-100 dark:bg-stone-800 text-sm text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors border border-stone-200 dark:border-stone-700"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors border border-neutral-200 dark:border-neutral-700"
         >
           <ExternalLink size={14} />
           {t("chat.message.toolOpenFile", "Open file")}
@@ -210,13 +210,13 @@ function McpImageBlockPreview({ block }: { block: McpContentBlock }) {
   return (
     <>
       {!loaded && (
-        <div className="w-48 h-32 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 animate-pulse" />
+        <div className="w-48 h-32 rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-100 dark:bg-neutral-800 animate-pulse" />
       )}
       {safeUrl && (
         <img
           src={safeUrl}
           alt={t("chat.message.toolOutput")}
-          className={`max-w-full max-h-48 rounded-md border border-stone-200 dark:border-stone-700 cursor-pointer hover:opacity-80 transition-opacity${
+          className={`max-w-full max-h-48 rounded-md border border-neutral-200 dark:border-neutral-700 cursor-pointer hover:opacity-80 transition-opacity${
             !loaded ? " hidden" : ""
           }`}
           onClick={() => openBlockPreview({ type: "image", src: safeUrl })}
@@ -240,9 +240,9 @@ function McpFileBlockPreview({ block }: { block: McpContentBlock }) {
       onClick={() => {
         if (canOpen) openBlockPreview({ type: "file", url, fileName });
       }}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-stone-100 dark:bg-stone-800 text-xs text-stone-600 dark:text-stone-300 transition-colors border border-stone-200 dark:border-stone-700${
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-xs text-neutral-600 dark:text-neutral-300 transition-colors border border-neutral-200 dark:border-neutral-700${
         canOpen
-          ? " hover:bg-stone-200 dark:hover:bg-stone-700 cursor-pointer"
+          ? " hover:bg-neutral-200 dark:hover:bg-neutral-700 cursor-pointer"
           : " opacity-60 cursor-default"
       }`}
     >
@@ -259,7 +259,7 @@ function RichResultLink({ title, url }: { title: string; url: string }) {
 
   if (!canOpen) {
     return (
-      <span className="text-xs font-medium text-stone-700 dark:text-stone-200 truncate">
+      <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
         {label}
       </span>
     );
@@ -269,7 +269,7 @@ function RichResultLink({ title, url }: { title: string; url: string }) {
     <Button type="text"
       htmlType="button"
       onClick={() => void openPreviewUrl({ url: normalizedUrl })}
-      className="text-xs font-medium text-stone-700 dark:text-stone-200 hover:underline truncate text-left"
+      className="text-xs font-medium text-neutral-700 dark:text-neutral-200 hover:underline truncate text-left"
     >
       {label}
     </Button>
@@ -310,7 +310,7 @@ export function BlockPreviewPortal() {
         <div className="flex justify-end mb-2">
           <CopyButton text={preview.text} />
         </div>
-        <pre className="text-sm text-stone-700 dark:text-stone-300 whitespace-pre-wrap break-words font-mono">
+        <pre className="text-sm text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-words font-mono">
           {preview.text}
         </pre>
       </div>
@@ -358,7 +358,7 @@ export function McpBlockPreview({ block }: { block: McpContentBlock }) {
       <div className="group/pre relative">
         <pre
           onClick={() => openBlockPreview({ type: "text", text: block.text })}
-          className="text-xs text-stone-600 dark:text-stone-300 whitespace-pre-wrap break-words overflow-y-auto min-w-0 cursor-pointer hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+          className="text-xs text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap break-words overflow-y-auto min-w-0 cursor-pointer hover:text-neutral-900 dark:hover:text-neutral-100 transition-colors"
         >
           {block.text}
         </pre>
@@ -398,7 +398,7 @@ export function ToolResultContent({
     return (
       <div className="space-y-1.5">
         {combinedText && (
-          <div className="group/result relative text-xs text-stone-600 dark:text-stone-300 overflow-y-auto">
+          <div className="group/result relative text-xs text-neutral-600 dark:text-neutral-300 overflow-y-auto">
             {isMarkdownText(combinedText) ? (
               <MarkdownContent content={combinedText} />
             ) : (
@@ -431,14 +431,14 @@ export function ToolResultContent({
       <div className="space-y-1.5">
         {mcp.text &&
           (isMarkdownText(mcp.text) ? (
-            <div className="group/result relative text-xs text-stone-600 dark:text-stone-300 overflow-y-auto">
+            <div className="group/result relative text-xs text-neutral-600 dark:text-neutral-300 overflow-y-auto">
               <MarkdownContent content={mcp.text} />
               <div className="absolute top-0.5 right-0.5 opacity-0 group-hover/result:opacity-100 transition-opacity">
                 <CopyButton text={mcp.text} size={12} />
               </div>
             </div>
           ) : (
-            <pre className="group/result relative text-xs text-stone-600 dark:text-stone-300 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
+            <pre className="group/result relative text-xs text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
               {mcp.text}
               <div className="absolute top-0.5 right-0.5 opacity-0 group-hover/result:opacity-100 transition-opacity">
                 <CopyButton text={mcp.text} size={12} />
@@ -464,29 +464,29 @@ export function ToolResultContent({
     const title = typeof result.title === "string" ? result.title : "";
     const url = typeof result.url === "string" ? result.url : "";
     return (
-      <div className="rounded-md border border-stone-200 dark:border-stone-700 overflow-hidden">
+      <div className="rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
         {(title || url) && (
-          <div className="flex items-center gap-2 px-3 py-2 bg-stone-100 dark:bg-stone-800 border-b border-stone-200 dark:border-stone-700">
+          <div className="flex items-center gap-2 px-3 py-2 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700">
             <FileText
               size={14}
-              className="shrink-0 text-stone-500 dark:text-stone-400"
+              className="shrink-0 text-neutral-500 dark:text-neutral-400"
             />
             {url ? (
               <RichResultLink title={title} url={url} />
             ) : (
-              <span className="text-xs font-medium text-stone-700 dark:text-stone-200 truncate">
+              <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
                 {title}
               </span>
             )}
             {url && canOpenPreviewUrl(url) && (
               <ExternalLink
                 size={12}
-                className="shrink-0 text-stone-400 dark:text-stone-500 ml-auto"
+                className="shrink-0 text-neutral-400 dark:text-neutral-500 ml-auto"
               />
             )}
           </div>
         )}
-        <div className="group/rich relative p-3 text-xs text-stone-600 dark:text-stone-300 max-h-96 overflow-y-auto">
+        <div className="group/rich relative p-3 text-xs text-neutral-600 dark:text-neutral-300 max-h-96 overflow-y-auto">
           <MarkdownContent content={result.content} />
           <div className="absolute top-1 right-1 opacity-0 group-hover/rich:opacity-100 transition-opacity">
             <CopyButton text={result.content} size={12} />
@@ -514,14 +514,14 @@ export function ToolResultContent({
 
   if (textContent) {
     return isMarkdownText(textContent) ? (
-      <div className="group/result relative text-xs text-stone-600 dark:text-stone-300 overflow-y-auto">
+      <div className="group/result relative text-xs text-neutral-600 dark:text-neutral-300 overflow-y-auto">
         <MarkdownContent content={textContent} />
         <div className="absolute top-0.5 right-0.5 opacity-0 group-hover/result:opacity-100 transition-opacity">
           <CopyButton text={textContent} size={12} />
         </div>
       </div>
     ) : (
-      <pre className="group/result relative text-xs text-stone-600 dark:text-stone-300 overflow-y-auto whitespace-pre-wrap break-words">
+      <pre className="group/result relative text-xs text-neutral-600 dark:text-neutral-300 overflow-y-auto whitespace-pre-wrap break-words">
         {textContent}
         <div className="absolute top-0.5 right-0.5 opacity-0 group-hover/result:opacity-100 transition-opacity">
           <CopyButton text={textContent} size={12} />
@@ -550,13 +550,13 @@ function JsonFallback({ data }: { data: unknown }) {
       <div className="absolute top-1 right-1 opacity-0 group-hover/json:opacity-100 transition-opacity z-10">
         <CopyButton text={str} size={12} />
       </div>
-      <pre className="text-xs text-stone-600 dark:text-stone-300 overflow-y-auto whitespace-pre-wrap break-words min-w-0">
+      <pre className="text-xs text-neutral-600 dark:text-neutral-300 overflow-y-auto whitespace-pre-wrap break-words min-w-0">
         {display}
       </pre>
       {needsTruncation && (
         <Button type="text"
           onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-1 mt-1 text-xs text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+          className="flex items-center gap-1 mt-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
         >
           {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           {expanded ? t("chat.message.collapse") : t("chat.message.expandAll")}

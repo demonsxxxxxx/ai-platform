@@ -95,10 +95,10 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8/);
-  assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
-  assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f8f8f8/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f8f8f8/);
+  assert.doesNotMatch(sessionList, /text-neutral-100|text-white|border-neutral-800/);
+  assert.doesNotMatch(rail, /text-neutral-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
 
 test("expanded desktop sidebar uses one primary navigation surface", () => {
@@ -182,9 +182,9 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
   assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#f7f7f8;/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8;/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#f8f8f8;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f8f8f8;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f8f8f8;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
@@ -282,7 +282,7 @@ test("post-login projection panels share workbench surface tokens", () => {
     assert.match(source, /workbenchSurface\.(?:page|statePage|compactPanel|panel)/, name);
     assert.match(source, /workbenchSurface\.(?:compactPanel|panel|catalog)/, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg\)\]/, name);
-    assert.doesNotMatch(source, /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/, name);
+    assert.doesNotMatch(source, /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/, name);
     assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
   }
 });
@@ -483,7 +483,7 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.doesNotMatch(hub, /data-skills-catalog-status-strip/);
   assert.doesNotMatch(hub, /data-skills-hub-state-detail/);
   assert.doesNotMatch(hub, /bg-emerald-500/);
-  assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
+  assert.doesNotMatch(hub, /rounded-full bg-[var(--theme-success)]/);
   assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.doesNotMatch(hub, /data-skills-catalog-status/);
@@ -571,7 +571,7 @@ test("skills and MCP action surfaces use semantic workbench state colors", () =>
     ["MCPPanel", mcp],
   ])) {
     assert.match(source, /var\(--theme-danger-soft\)/, name);
-    assert.match(source, /var\(--theme-danger\)/, name);
+    assert.match(source, /var\(--theme-danger(?:-text)?\)/, name);
     assert.doesNotMatch(source, /\b(?:bg|text|border|hover:bg|hover:text)-red-/, name);
     assert.doesNotMatch(source, /\b(?:bg|text|border)-(?:stone|slate)-/, name);
     assert.doesNotMatch(source, /dark:(?:bg|text|border)-/, name);
@@ -596,7 +596,7 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
     );
     assert.doesNotMatch(
       source,
-      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/,
       name,
     );
   }
@@ -619,12 +619,12 @@ test("launchpad and unavailable route workbenches use shared surface tokens", ()
     );
     assert.doesNotMatch(
       source,
-      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/,
       name,
     );
   }
 
-  assert.doesNotMatch(stateSurface, /dark:bg-stone-950\/70/);
+  assert.doesNotMatch(stateSurface, /dark:bg-neutral-950\/70/);
   assert.match(stateSurface, /workbenchSurface\.statusTile/);
 });
 
