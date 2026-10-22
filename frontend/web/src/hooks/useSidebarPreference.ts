@@ -2,11 +2,12 @@ import { useCallback, useRef, useState, type Dispatch, type SetStateAction } fro
 
 /** Browser-local presentation preference; it is not a user profile fact. */
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
+export const SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-management-collapsed";
 
-export function useSidebarPreference(): [boolean, Dispatch<SetStateAction<boolean>>] {
+export function useSidebarPreference(storageKey = SIDEBAR_COLLAPSED_STORAGE_KEY): [boolean, Dispatch<SetStateAction<boolean>>] {
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+      return localStorage.getItem(storageKey) === "true";
     } catch {
       return false;
     }
@@ -17,10 +18,10 @@ export function useSidebarPreference(): [boolean, Dispatch<SetStateAction<boolea
     current.current = next;
     setCollapsed(next);
     try {
-      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      localStorage.setItem(storageKey, String(next));
     } catch {
       // Keep this tab usable when persistent browser storage is unavailable.
     }
-  }, []);
+  }, [storageKey]);
   return [collapsed, setPreference];
 }

@@ -89,6 +89,7 @@ async function expectGeneralResetToBlank(params: {
   };
   const loads: string[] = [];
   localStorage.setItem("ai-platform-theme", "light");
+  localStorage.removeItem("ai-platform-sidebar-management-collapsed");
 
   authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => ({ id: "user-a", tenant_id: "tenant-test", username: "user-a",
@@ -184,7 +185,16 @@ const railEntry = (container: HTMLElement) =>
   Array.from(container.querySelectorAll<HTMLButtonElement>("[data-workbench-rail-item=\"chat\"]"))[0];
 
 test("the expanded sidebar 对话 entry starts a blank conversation", async () => {
-  await expectGeneralResetToBlank({ label: "expanded", findEntry: expandedEntry });
+  await expectGeneralResetToBlank({
+    label: "expanded",
+    findEntry: expandedEntry,
+    async verifyNavigation(container) {
+      const header = container.querySelector('[data-workbench-region="header"]')!;
+      assert.equal(container.querySelectorAll('[data-workbench-region="header"]').length, 1);
+      assert.ok(header.querySelector('[data-general-chat-header]'));
+      assert.ok(header.querySelector('[data-librechat-context-toggle]'), "identity and context action share the same header row");
+    },
+  });
 });
 
 test("the collapsed/mobile rail 对话 entry starts a blank conversation", async () => {
@@ -196,6 +206,37 @@ for (const [label, findEntry] of [["expanded", expandedEntry], ["rail", railEntr
     await expectGeneralResetToBlank({ label, findEntry, fromApps: true });
   });
 }
+
+test("management defaults open and preserves explicit choices across page owners", async () => {
+  await expectGeneralResetToBlank({
+    label: "management remount",
+    findEntry: expandedEntry,
+    isAdmin: true,
+    async verifyNavigation(container) {
+      const toggle = () => container.querySelector<HTMLButtonElement>("[data-workbench-management-nav] > button")!;
+      const goToApps = async () => {
+        await click(container.querySelector('[data-workbench-sidebar-panel] [data-workbench-nav-item="apps"]'));
+        await settle();
+      };
+      const goToChat = async () => {
+        await click(expandedEntry(container));
+        await settle();
+      };
+      assert.equal(toggle().getAttribute("aria-expanded"), "true", "management opens on first visit");
+      await goToApps();
+      assert.equal(toggle().getAttribute("aria-expanded"), "true", "navigation does not collapse management");
+      await click(toggle());
+      assert.equal(toggle().getAttribute("aria-expanded"), "false");
+      await goToChat();
+      assert.equal(toggle().getAttribute("aria-expanded"), "false", "explicit collapse survives a new page owner");
+      await goToApps();
+      assert.equal(toggle().getAttribute("aria-expanded"), "false");
+      await click(toggle());
+      await goToChat();
+      assert.equal(toggle().getAttribute("aria-expanded"), "true", "explicit expansion survives a new page owner");
+    },
+  });
+});
 
 for (const isAdmin of [false, true]) {
   test(`${isAdmin ? "admin management" : "ordinary capabilities"} stays separate from gear settings`, async () => {
@@ -214,8 +255,8 @@ for (const isAdmin of [false, true]) {
         assert.equal(toggle.textContent, isAdmin ? "管理" : "可用能力");
         assert.ok(toggle.querySelector(isAdmin ? ".lucide-shield" : ".lucide-layers"));
         assert.equal(toggle.querySelector(".lucide-settings"), null);
-        assert.equal(toggle.getAttribute("aria-expanded"), "false");
-        await click(toggle);
+        assert.equal(toggle.getAttribute("aria-expanded"), isAdmin ? "true" : "false");
+        if (!isAdmin) await click(toggle);
         assert.equal(toggle.getAttribute("aria-expanded"), "true");
         assert.equal(group.querySelector<HTMLElement>("[id]")?.hidden, false);
         const keys = Array.from(group.querySelectorAll("[data-workbench-nav-item]"), item => item.getAttribute("data-workbench-nav-item"));
