@@ -10,6 +10,8 @@ import { getAssistantUiDisplayParts } from "../assistant-ui/externalStoreRuntime
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys } from "./MessagePartRenderer";
 import { AssistantAvatar } from "./AssistantAvatar";
+import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
+import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
 import { MessageWorkActivity } from "./MessageWorkActivity";
@@ -23,8 +25,16 @@ import {
   type ArtifactDownloadScopeContext,
 } from "./items/artifactDownloadRegistry";
 
+export interface AssistantPublicIdentity {
+  agent_id: string;
+  name: string;
+  avatar_ref?: AgentProfileAvatarRef;
+  avatar_seed?: string;
+}
+
 interface ChatMessageProps {
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
+  assistantIdentity?: AssistantPublicIdentity;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
@@ -40,6 +50,7 @@ function formatDurationMs(durationMs: number): string {
 
 export const ChatMessage = memo(function ChatMessage({
   artifactDownloadScopeContext,
+  assistantIdentity,
   onOpenPreview,
 }: ChatMessageProps) {
   const { t } = useTranslation();
@@ -114,17 +125,26 @@ export const ChatMessage = memo(function ChatMessage({
       data-outline-id={createMessageAnchorId(message.id)}
       className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
     >
-      <AssistantMessageContent>
-        {/* Content */}
+      <AssistantMessageContent>        {/* Content */}
         <div className="min-h-0 min-w-0 py-1">
           {/* Header: Avatar + Role label + Stop button */}
           <div className="mb-2 flex items-center gap-2">
-            <AssistantAvatar className="size-6 shrink-0 rounded-full" />
+            {assistantIdentity ? (
+              <AgentIdentityAvatar
+                agentId={assistantIdentity.agent_id}
+                avatarRef={assistantIdentity.avatar_ref}
+                avatarSeed={assistantIdentity.avatar_seed}
+                name={assistantIdentity.name}
+                size="xs"
+              />
+            ) : (
+              <AssistantAvatar className="size-6 shrink-0 rounded-full" />
+            )}
             <span
               className="text-sm font-semibold"
               style={{ color: "var(--theme-text)" }}
             >
-              {t("chat.message.assistant")}
+              {assistantIdentity?.name ?? t("chat.message.assistant")}
             </span>
             {message.timestamp && (
               <span

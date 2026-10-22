@@ -66,8 +66,6 @@ interface SessionSidebarProps {
     name: string;
     description: string;
   };
-  /** Render Agent history in the adjacent workspace panel on desktop. */
-  agentHistoryInMainPanel?: boolean;
   /** Navigation-only shells expose Agent services without generic Chat history. */
   navigationOnly?: boolean;
   /** Allow a navigation-only shell to show global history without chat actions. */
@@ -116,7 +114,6 @@ export const SessionSidebar = forwardRef<
     sessionSource,
     globalHistorySource,
     agentWorkspace,
-    agentHistoryInMainPanel = false,
     navigationOnly = false,
     showSessionHistory = false,
     onThreadListAdapterChange,
@@ -634,7 +631,6 @@ export const SessionSidebar = forwardRef<
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
             agentWorkspace={agentWorkspace}
-            agentHistoryInMainPanel={agentHistoryInMainPanel}
             hideSessionDiscovery={agentWorkspace !== undefined}
             navigationOnly={navigationOnly}
             showSessionHistory={showSessionHistory}
@@ -684,7 +680,6 @@ export const SessionSidebar = forwardRef<
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
               agentWorkspace={agentWorkspace}
-              agentHistoryInMainPanel={agentHistoryInMainPanel}
               hideSessionDiscovery={agentWorkspace !== undefined}
               navigationOnly={navigationOnly}
               showSessionHistory={showSessionHistory}
@@ -710,7 +705,6 @@ export const SessionSidebar = forwardRef<
                 setIsRecentChatsOpen(true);
               }}
               onOpenLaunchpad={() => navigate("/apps")}
-              onOpenChat={() => navigate("/chat")}
               onOpenAgentMarket={() => navigate("/agent-market")}
               onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
@@ -754,7 +748,6 @@ export const SessionSidebar = forwardRef<
             setIsRecentChatsOpen(true);
           }}
           onOpenLaunchpad={() => navigate("/apps")}
-          onOpenChat={() => navigate("/chat")}
           onOpenAgentMarket={() => navigate("/agent-market")}
           onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}

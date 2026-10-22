@@ -951,7 +951,7 @@ export const ChatInput = memo(function ChatInput({
           if (!canSubmitOrdinary || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
         }}
         className={
-          className ?? "mx-auto max-w-[68rem] px-2"
+          className ?? "mx-auto max-w-[60rem] px-2"
         }
       >
         <div

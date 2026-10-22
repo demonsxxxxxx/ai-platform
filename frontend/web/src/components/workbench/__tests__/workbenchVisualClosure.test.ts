@@ -85,7 +85,10 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /data-workbench-sidebar-panel/);
   assert.match(sessionList, /data-workbench-primary-nav/);
   assert.match(sessionList, /LibreChatPanelSection group="tasks"/);
-  assert.match(sessionList, /LibreChatPanelSection[\s\S]*group="governance"/);
+  assert.match(sessionList, /data-workbench-management-nav/);
+  assert.match(sessionList, /aria-expanded=\{isManagementOpen\}/);
+  assert.match(sessionList, /hidden=\{!isManagementOpen\}/);
+  assert.match(sessionList, /visibleManagementNavItems\.map/);
   assert.match(panel, /data-workbench-nav-group=\{group\}/);
   assert.match(panel, /data-librechat-expanded-panel=\{group\}/);
   assert.match(sessionList, /data-workbench-session-region/);
@@ -766,7 +769,7 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
   const baseCss = read("src/styles/base.css");
   const themeDom = read("src/utils/themeDom.ts");
 
-  assert.match(surface, /expandedMinWidthPx:\s*288/);
+  assert.match(surface, /expandedMinWidthPx:\s*272/);
   assert.doesNotMatch(surface, /expandedMinWidthPx:\s*360/);
   assert.match(
     sessionSidebar,

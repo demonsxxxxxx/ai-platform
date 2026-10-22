@@ -299,10 +299,10 @@ const cases = [
   },
   {
     path: "/agent-market/agt_support/chat",
-    selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
+    selector: "[data-expert-workspace-header], [data-workbench-region='thread']",
     name: "market-workspace",
     requiredSelectors: [
-      "[data-agent-chat-opening] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
+      "[data-expert-workspace-header] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
       "textarea",
     ],
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],

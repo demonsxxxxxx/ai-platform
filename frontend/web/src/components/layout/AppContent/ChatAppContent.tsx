@@ -51,7 +51,6 @@ import {
   countEnabledSkills,
   resolveComposerSkillsAvailability,
 } from "./skillAvailability";
-import { AgentConversationPanel } from "../../../features/agent-market/AgentConversationPanel";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -1242,17 +1241,6 @@ export function ChatAppContent({
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
-      contentSidebar={
-        agentWorkspace && agentWorkspaceSessionSource ? (
-          <AgentConversationPanel
-            currentSessionId={sessionId}
-            onNewSession={handleNewSessionWithReset}
-            onSelectSession={handleSelectSessionAndClose}
-            profile={agentWorkspace}
-            source={agentWorkspaceSessionSource}
-          />
-        ) : undefined
-      }
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1287,7 +1275,7 @@ export function ChatAppContent({
                 }
               : undefined
           }
-          agentHistoryInMainPanel={agentWorkspace !== undefined}
+          navigationOnly={false}
         />
       }
     >
@@ -1371,7 +1359,7 @@ export function ChatAppContent({
                 ? "该历史会话为只读状态"
                 : agentWorkspace
                 ? `向 ${agentWorkspace.name} 描述要完成的任务…`
-                : undefined
+                : "提问、上传文件，或描述你想完成的事…"
             }
             tools={agentConversationControlsLocked ? [] : effectiveTools}
             onToggleTool={exposedMcpControls.onToggleTool}

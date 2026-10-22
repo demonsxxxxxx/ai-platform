@@ -67,7 +67,7 @@ test("sidebar transplants LibreChat rail geometry and mobile close behavior", ()
   assert.match(rail, /LibreChatRailButton/);
   assert.match(rail, /librechat-ui\/Rail/);
   assert.match(rail, /data-librechat-rail/);
-  assert.match(surface, /expandedMinWidthPx:\s*288/);
+  assert.match(surface, /expandedMinWidthPx:\s*272/);
 });
 
 test("composer and right panel expose LibreChat-style regions without backend authority imports", () => {
