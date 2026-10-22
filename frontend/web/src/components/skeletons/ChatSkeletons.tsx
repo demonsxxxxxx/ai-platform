@@ -53,7 +53,7 @@ function UserMessageSkeleton({
 }) {
   return (
     <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
-      <div className="mx-auto flex max-w-[68rem] justify-end px-1 sm:px-2">
+      <div className="mx-auto flex max-w-[60rem] justify-end px-1 sm:px-2">
         <div
           className={`flex max-w-[90%] flex-col items-stretch sm:max-w-[75%] ${msg.bubble}`}
         >
@@ -81,7 +81,7 @@ function UserMessageSkeleton({
 function AssistantMessageSkeleton() {
   return (
     <div className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg">
-      <div className="mx-auto flex max-w-[68rem] flex-col px-3 sm:px-5">
+      <div className="mx-auto flex max-w-[60rem] flex-col px-3 sm:px-5">
         {/* Avatar + name */}
         <div className="mb-2 flex items-center gap-2">
           <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 rounded-full shrink-0" />
@@ -170,7 +170,7 @@ export function ChatSkeletonMessagesOnly({ count = 3 }: { count?: number }) {
 function ChatInputSkeleton() {
   return (
     <div className="shrink-0 px-3 py-2">
-      <div className="mx-auto max-w-[68rem] px-2">
+      <div className="mx-auto max-w-[60rem] px-2">
         <div
           className="flex flex-col w-full rounded-lg px-1 border"
           style={{
@@ -195,7 +195,7 @@ function ChatInputSkeleton() {
           </div>
         </div>
         {/* Keyboard shortcut hint — desktop only */}
-        <div className="mx-auto mt-2 hidden max-w-[68rem] justify-center px-2 sm:flex">
+        <div className="mx-auto mt-2 hidden max-w-[60rem] justify-center px-2 sm:flex">
           <SkeletonLine width="w-40" className="!h-3" />
         </div>
       </div>

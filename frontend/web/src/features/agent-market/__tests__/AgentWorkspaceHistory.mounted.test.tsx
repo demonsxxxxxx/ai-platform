@@ -146,11 +146,31 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
     throw error;
   }
+  // One primary sidebar renders one history projection at a time; the scope
+  // switch changes presentation only and never merges the two server sources.
+  async function showScope(scope: "tasks" | "all") {
+    const label = scope === "tasks" ? "任务历史" : "全部对话";
+    const switchGroup = container.querySelector<HTMLElement>("[data-history-scope-switch]");
+    assert.ok(switchGroup, "expected the primary sidebar history scope switch");
+    const target = Array.from(switchGroup.querySelectorAll("button")).find(
+      (item) => item.textContent?.trim() === label,
+    );
+    assert.ok(target, `expected the ${label} scope control`);
+    if (target.getAttribute("aria-pressed") !== "true") await click(target);
+    assert.equal(
+      switchGroup.querySelector('[aria-pressed="true"]')?.textContent?.trim(),
+      label,
+    );
+  }
   const globalHistory = () => container.querySelector<HTMLElement>("[data-workbench-global-history]")!;
-  const agentHistory = () => container.querySelector<HTMLElement>("[data-agent-conversation-panel]")!;
+  const agentHistory = () => container.querySelector<HTMLElement>("[data-workbench-task-history]")!;
   return {
-    container, globalHistory, agentHistory, toastErrors, path: () => currentPath,
-    async expandGlobal() { const group = globalHistory()?.querySelector('button[aria-expanded="false"]'); if (group) await click(group); },
+    container, globalHistory, agentHistory, showScope, toastErrors, path: () => currentPath,
+    async expandGlobal() {
+      await showScope("all");
+      const group = globalHistory()?.querySelector('button[aria-expanded="false"]');
+      if (group) await click(group);
+    },
     async changeAccount(next: string) { account = next; await React.act(async () => { await auth.refreshUser(); }); await settle(); },
     async navigate(path: string | number) { await React.act(async () => { if (typeof path === "number") navigate(path); else navigate(path); }); await settle(); },
     async close() {
@@ -295,16 +315,16 @@ test("account replacement retires a pending identity failure on the same Agent s
 });
 
 
-test("an acknowledged rename still updates both lists after its editing row is collapsed", async () => {
+test("an acknowledged rename still updates both lists after another scope is shown", async () => {
   const pending = deferred<{ status: string; session: BackendSession }>();
   const view = await mountWorkspace({ update: async () => pending.promise });
   try {
     await view.expandGlobal();
     await renameTask(view.agentHistory(), "Task B", "Collapsed rename B");
-    await click(view.agentHistory().querySelector('[aria-label="收起历史会话"]'));
+    await view.showScope("all");
     await React.act(async () => pending.resolve({ status: "ok", session: row("session-b", "Collapsed rename B") }));
     assert.ok(task(view.globalHistory(), "Collapsed rename B"));
-    await click(view.agentHistory().querySelector('[aria-label="展开历史会话"]'));
+    await view.showScope("tasks");
     assert.ok(task(view.agentHistory(), "Collapsed rename B"));
   } finally { await view.close(); }
 });

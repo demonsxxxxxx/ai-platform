@@ -6,6 +6,7 @@ import { libreChatSurface } from "./surface";
 
 export interface LibreChatShellProps {
   children: ReactNode;
+  header?: ReactNode;
   composer?: ReactNode;
   rightPanel?: ReactNode;
 }
@@ -13,6 +14,7 @@ export interface LibreChatShellProps {
 /** Owns the chat-first workbench geometry while leaving data authority to ai-platform. */
 export function LibreChatShell({
   children,
+  header,
   composer,
   rightPanel,
 }: LibreChatShellProps) {
@@ -69,6 +71,14 @@ export function LibreChatShell({
                 className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
                 icon={<ContextIcon size={18} aria-hidden="true" />}
               />
+            </div>
+          )}
+          {header && (
+            <div
+              data-workbench-region="header"
+              className={libreChatSurface.threadHeader}
+            >
+              {header}
             </div>
           )}
           <div

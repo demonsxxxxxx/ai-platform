@@ -76,42 +76,53 @@ export function MessageWorkActivity({
       ? "error"
       : "complete";
 
-  return parts.map((part, index) => {
-    const isWorkActivity = isWorkActivityPart(part);
-    const renderedPart = renderPart(part, index, isWorkActivity);
-    return (
-      <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
-        {isWorkActivity ? (
-          <RunActivity
-            open={expanded}
-            onOpenChange={setExpanded}
-            status={activityStatus}
-            label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
-            itemCount={t("chat.workDetails.itemCount", { count: workActivityCount })}
-            toggleLabel={t(
-              expanded
-                ? "chat.workDetails.collapseAll"
-                : "chat.workDetails.expandAll",
-            )}
-            contentId={workActivityRegionIds[index]}
-            ariaControls={controlledWorkActivityIds}
-            showTrigger={index === firstWorkActivityIndex}
-            issueSummary={
-              index === firstWorkActivityIndex && (issueCounts.failed > 0 || issueCounts.denied > 0) ? (
-                <span className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]" data-work-activity-issue-summary>
-                  {issueCounts.failed > 0 ? <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span> : null}
-                  {issueCounts.denied > 0 ? <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span> : null}
-                  <span>查看执行详情</span>
-                </span>
-              ) : undefined
-            }
-          >
-            {renderedPart}
-          </RunActivity>
-        ) : (
-          renderedPart
-        )}
-      </Fragment>
-    );
-  });
+  const renderResultPart = (part: MessagePart, index: number) => (
+    <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
+      {renderPart(part, index, false)}
+    </Fragment>
+  );
+  // The visible result reads first; the process disclosure follows it so the
+  // user opens an execution trace only after reading the answer.
+  return (
+    <div data-message-work-activity-order="result-first">
+      {parts.map((part, index) =>
+        isWorkActivityPart(part) ? null : renderResultPart(part, index),
+      )}
+      {parts.map((part, index) => {
+        if (!isWorkActivityPart(part)) return null;
+        const isFirstWorkActivity = index === firstWorkActivityIndex;
+        const hasIssues = issueCounts.failed > 0 || issueCounts.denied > 0;
+        return (
+          <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
+            <RunActivity
+              open={expanded}
+              onOpenChange={setExpanded}
+              status={activityStatus}
+              label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+              itemCount={t("chat.workDetails.itemCount", { count: workActivityCount })}
+              toggleLabel={t(
+                expanded
+                  ? "chat.workDetails.collapseAll"
+                  : "chat.workDetails.expandAll",
+              )}
+              contentId={workActivityRegionIds[index]}
+              ariaControls={controlledWorkActivityIds}
+              showTrigger={isFirstWorkActivity}
+              issueSummary={
+                isFirstWorkActivity && hasIssues ? (
+                  <span className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]" data-work-activity-issue-summary>
+                    {issueCounts.failed > 0 ? <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span> : null}
+                    {issueCounts.denied > 0 ? <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span> : null}
+                    <span>查看执行详情</span>
+                  </span>
+                ) : undefined
+              }
+            >
+              {renderPart(part, index, true)}
+            </RunActivity>
+          </Fragment>
+        );
+      })}
+    </div>
+  );
 }

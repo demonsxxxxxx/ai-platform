@@ -202,7 +202,6 @@ test("global-history rename updates only the global source", async () => {
                     name: "专家",
                     description: "",
                   }}
-                  agentHistoryInMainPanel
                 />
               </AuthProvider>
             </LobeUiProvider>
@@ -211,10 +210,22 @@ test("global-history rename updates only the global source", async () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
+    // One primary sidebar presents one history scope at a time; the global
+    // projection stays mounted behind the 全部对话 switch.
+    const scopeSwitch = container.querySelector<HTMLElement>(
+      "[data-history-scope-switch]",
+    );
+    assert.ok(scopeSwitch);
+    const allScope = [...scopeSwitch.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "全部对话",
+    );
+    assert.ok(allScope);
+    if (allScope.getAttribute("aria-pressed") !== "true") await click(allScope);
     const globalGroup = container.querySelector<HTMLElement>(
       "[data-workbench-global-history]",
     );
     assert.ok(globalGroup);
+    assert.equal(globalGroup.hidden, false);
     const groupButton = globalGroup.querySelector<HTMLButtonElement>(
       "button[aria-expanded]",
     );

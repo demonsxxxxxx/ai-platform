@@ -132,10 +132,17 @@ test("keeps active conversations wide, readable, and visually compact", () => {
     new URL("../../../chat/assistant-ui/elements/thread.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(view, /className="mx-auto max-w-\[68rem\] px-2"/);
+  const composerRoot = readFileSync(
+    new URL("../../../chat/assistant-ui/elements/composer.tsx", import.meta.url),
+    "utf8",
+  );
+  // The approved column width lives with the Elements owners so every consumer
+  // (messages, composer, skeletons) inherits one 60rem measure.
+  assert.match(view, /className="mx-auto max-w-\[60rem\] px-2"/);
   assert.match(message, /<AssistantMessageContent/);
-  assert.match(thread, /max-w-\[68rem\]/);
-  assert.match(userMessage, /max-w-\[68rem\]/);
+  assert.match(thread, /max-w-\[60rem\]/);
+  assert.match(composerRoot, /max-w-\[60rem\]/);
+  assert.match(userMessage, /max-w-\[60rem\]/);
   assert.match(userMessage, /sm:max-w-\[75%\]/);
 });
 

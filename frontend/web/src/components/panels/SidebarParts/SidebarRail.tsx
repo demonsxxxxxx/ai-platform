@@ -15,7 +15,7 @@ import {
   Settings,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
@@ -41,7 +41,6 @@ interface SidebarRailProps {
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
-  onOpenChat: () => void;
   onOpenAgentMarket: () => void;
   onOpenAgentBuilder: () => void;
   onOpenSkills: () => void;
@@ -65,7 +64,6 @@ export function SidebarRail({
   onOpenSearch,
   onOpenRecentChats,
   onOpenLaunchpad,
-  onOpenChat,
   onOpenAgentMarket,
   onOpenAgentBuilder,
   onOpenSkills,
@@ -80,6 +78,7 @@ export function SidebarRail({
   recentChatsBtnRef,
 }: SidebarRailProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const location = useLocation();
   const activeRailItem = getWorkbenchNavItemFromPathname(location.pathname);
   const showActiveRailState = !isExpanded;
@@ -171,7 +170,14 @@ export function SidebarRail({
         ) : null}
         <LibreChatRailButton
           type="button"
-          onClick={onOpenChat}
+          onClick={() => {
+            // General 对话 is a new-conversation entry. A bare /chat push keeps
+            // the bound Session live, so the URL-sync canonicalizer rewrites
+            // /chat/<old session> and the old transcript rehydrates. From an
+            // expert workspace it exits to general Chat instead.
+            if (navigationOnly || agentWorkspace) navigate("/chat");
+            else onNewSession();
+          }}
           className={railBtn}
           aria-current={isRailItemActive("chat") ? "page" : undefined}
           title={t("nav.chat")}
@@ -179,8 +185,7 @@ export function SidebarRail({
           itemKey="chat"
           active={isRailItemActive("chat")}
         >
-          <MessageSquare size={20} />
-        </LibreChatRailButton>
+          <MessageSquare size={20} />        </LibreChatRailButton>
         <LibreChatRailButton
           type="button"
           onClick={onOpenLaunchpad}

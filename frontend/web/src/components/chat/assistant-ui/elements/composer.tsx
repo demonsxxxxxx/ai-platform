@@ -7,7 +7,7 @@ import { clsx } from "clsx";
 import { useTranslation } from "react-i18next";
 
 export function Composer({ className, ...props }: ComponentProps<typeof ComposerPrimitive.Root>) {
-  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[68rem] flex-col px-2", className)} {...props} />;
+  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[60rem] flex-col px-2", className)} {...props} />;
 }
 
 export const ComposerBar = forwardRef<HTMLDivElement, ComponentProps<"div"> & { dragActive?: boolean }>(
