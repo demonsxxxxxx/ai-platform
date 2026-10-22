@@ -13,8 +13,8 @@ const { modelUsageApi } = await import("../../../services/api/modelUsage");
 const { ApiRequestError } = await import("../../../services/api/fetch");
 const counts = { input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3, output_tokens: 4, input_total: 6, total_tokens: 10 };
 const user = (id: string | null): UsageUser => ({ ...counts, user_id: id, work_id: id, display_name: id ? `姓名${id}` : null });
-function report<T>(data: T[], status: "reported_final" | "partial" | "unavailable" = "reported_final"): UsageReport<T> {
-  return { data, total: data.length, limit: 50, offset: 0, meta: { start_date: "2026-10-01", end_date: "2026-10-20", timezone: "Asia/Shanghai", collection_started_at: "2026-10-01T00:00:00Z", coverage: { status, reason: status === "partial" ? "partial_report" : status === "unavailable" ? "not_collected" : null, scopes: 2, partial_scopes: status === "partial" ? 1 : 0 } } };
+function report<T>(data: T[], status: "reported_final" | "partial" | "unavailable" = "reported_final", summary?: UsageReport<T>["summary"]): UsageReport<T> {
+  return { data, total: data.length, limit: 50, offset: 0, meta: { start_date: "2026-10-01", end_date: "2026-10-20", timezone: "Asia/Shanghai", collection_started_at: "2026-10-01T00:00:00Z", coverage: { status, reason: status === "partial" ? "partial_report" : status === "unavailable" ? "not_collected" : null, scopes: 2, partial_scopes: status === "partial" ? 1 : 0 } }, summary };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -55,13 +55,18 @@ test("Beijing calendar dates handle midnight, leap years, invalid and reversed d
 
 test("server ranking, null identities, actual model columns and recorded zero remain distinct from coverage", async (t) => {
   const rows = [user("second"), { ...user("first"), total_tokens: 999 }, { ...user(null), ...Object.fromEntries(Object.keys(counts).map((key) => [key, 0])) }];
-  t.mock.method(modelUsageApi, "users", async () => report(rows, "partial"));
+  const wholeWindow = { ...counts, input_tokens: 20, input_total: 25, output_tokens: 15, total_tokens: 40 };
+  t.mock.method(modelUsageApi, "users", async () => report(rows, "partial", wholeWindow));
   const models = t.mock.method(modelUsageApi, "models", async () => report<UsageModel>([{ ...counts, model: "actual-model-A" }, { ...counts, model: "actual-model-B" }]));
   const view = await mount();
   try {
     const tableRows = [...view.container.querySelectorAll("tr[data-row-key]")];
     assert.deepEqual(tableRows.map((row) => row.getAttribute("data-row-key")), ["user:second", "user:first", "unassociated"]);
-    assert.match(tableRows[2].textContent!, /未提供工号.*未关联用户.*0/);
+    assert.match(tableRows[2].textContent!, /未关联用户.*未提供工号.*0/);
+    assert.match(view.container.textContent!, /已记录总 Token40/);
+    assert.match(view.container.textContent!, /输入合计25/);
+    assert.match(view.container.textContent!, /输出15/);
+    assert.match(view.container.textContent!, /用量用户数3/);
     assert.equal(tableRows[2].querySelector("button"), null);
     assert.match(view.container.textContent!, /采集不完整/);
     assert.equal(view.container.querySelector('[aria-pressed="true"]')?.textContent, "近30天");
@@ -73,7 +78,12 @@ test("server ranking, null identities, actual model columns and recorded zero re
     // JSDOM verifies the layout contract; desktop/mobile geometry is browser-owned.
     const userTable = tableRows[0].closest("table")!;
     assert.equal(userTable.style.tableLayout, "fixed");
-    assert.equal(userTable.style.width, "700px");
+    assert.equal(userTable.style.width, "900px");
+    assert.match(view.container.textContent!, /用量构成/);
+    assert.match(view.container.textContent!, /普通输入/);
+    assert.match(view.container.textContent!, /排名/);
+    const legendDots = [...view.container.querySelectorAll(".usage-composition-legend i")];
+    assert.deepEqual(legendDots.map((dot) => dot.getAttribute("style")), ["background: var(--theme-primary);", "background: rgb(124, 147, 184);", "background: rgb(179, 155, 114);", "background: rgb(110, 156, 138);"]);
     const modelScroll = view.container.querySelector<HTMLElement>('[aria-label="模型明细横向滚动区域"]')!;
     assert.equal(modelScroll.tabIndex, 0);
     assert.ok(modelScroll.classList.contains("min-w-0"));
@@ -128,12 +138,15 @@ test("query changes abort users and expanded models; ignored aborts cannot repla
   } finally { await view.close(); }
 });
 
-test("pagination requests server offsets and search resets the page", async (t) => {
-  const users = t.mock.method(modelUsageApi, "users", async () => ({ ...report([user("page")]), total: 101 }));
+test("pagination requests server offsets while whole-window summary remains stable", async (t) => {
+  const summary = { ...counts, total_tokens: 40 };
+  const users = t.mock.method(modelUsageApi, "users", async () => ({ ...report([user("page")], "reported_final", summary), total: 101 }));
   const view = await mount();
   try {
+    assert.match(view.container.textContent!, /已记录总 Token40/);
     await view.click("2");
     assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 50);
+    assert.match(view.container.textContent!, /已记录总 Token40/);
     await view.input("#usage-search", "姓名");
     assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 0);
   } finally { await view.close(); }
@@ -146,8 +159,9 @@ test("missing history is not zero, failures retry and auth errors do not offer r
   try {
     assert.match(view.container.textContent!, /加载失败/);
     assert.doesNotMatch(view.container.textContent!, /private upstream/);
-    outcome = report([], "unavailable");
+    outcome = report([], "unavailable", null);
     await view.click("重试");
+    assert.match(view.container.textContent!, /尚无已记录数据/);
     assert.match(view.container.textContent!, /未采集不代表零用量/);
     assert.match(view.container.textContent!, /尚未采集的历史区间/);
     outcome = new ApiRequestError("forbidden", 403);
@@ -193,6 +207,7 @@ test("a stale list rejection cannot replace a newer successful empty result", as
     await view.click("近7天");
     await act(async () => stale.reject(new Error("old failure")));
     assert.match(view.container.textContent!, /所选范围没有已记录用量/);
+    assert.match(view.container.textContent!, /服务端未提供整个日期范围的汇总/);
     assert.doesNotMatch(view.container.textContent!, /加载失败/);
   } finally { await view.close(); }
 });

@@ -16,7 +16,8 @@ const tokenColumns = [
 export function UsageModelDetails({ userId, dates }: { userId: string; dates: UsageDates }) {
   const load = useCallback((signal: AbortSignal) => modelUsageApi.models(userId, dates, signal), [userId, dates]);
   const { data, loading, error, retry } = useUsageReport(load);
-  return <section aria-label="实际模型用量" className="min-w-0 space-y-3 p-3">
+  return <section aria-label="实际模型用量" className="min-w-0 space-y-3 border-t border-[color-mix(in_srgb,var(--theme-text)_10%,transparent)] p-4 sm:p-5">
+    <div><h3 className="m-0 text-sm font-semibold">实际模型明细</h3><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">仅展示该用户已记录的实际模型增量。</p></div>
     {loading && <p role="status">正在加载模型用量…</p>}
     {error !== undefined && <UsageError error={error} retry={retry} />}
     {data && <>

@@ -17,7 +17,7 @@ def test_admin_routes_scope_dates_and_pagination(monkeypatch):
     class Service:
         async def query(self, conn, **kwargs):
             calls.append(kwargs)
-            return {"data": [], "total": 0, "meta": {"coverage": {"status": "unavailable"}}}
+            return {"data": [], "total": 0, "summary": None, "meta": {"coverage": {"status": "unavailable"}}}
 
     app = FastAPI()
     app.include_router(build_model_token_usage_router(
@@ -29,7 +29,9 @@ def test_admin_routes_scope_dates_and_pagination(monkeypatch):
     with TestClient(app) as client:
         assert client.get("/api/ai/admin/usage/users").status_code == 403
         principal = AuthPrincipal(user_id="admin",display_name="Admin",tenant_id="tenant",roles=["admin"])
-        assert client.get("/api/ai/admin/usage/users?start_date=2026-10-20&end_date=2026-10-20&q=12&limit=7&offset=14").status_code == 200
+        response = client.get("/api/ai/admin/usage/users?start_date=2026-10-20&end_date=2026-10-20&q=12&limit=7&offset=14")
+        assert response.status_code == 200
+        assert response.json()["summary"] is None
         assert calls[-1] == dict(tenant_id="tenant",start_date=date(2026,10,20),end_date=date(2026,10,20),q="12",limit=7,offset=14)
         assert client.get("/api/ai/admin/usage/users/user-b/models?start_date=2026-10-20").status_code == 200
         assert calls[-1]["user_id"] == "user-b" and calls[-1]["tenant_id"] == "tenant"

@@ -13,10 +13,14 @@ Management pages import `Table` and `Pagination` directly from `@lobehub/ui/base
 Complex department/role selections, market-tag autocomplete and model/Skill/MCP catalogs retain their data and authority owners while using Lobe Select/Popover/AutoComplete/Modal controls. Department selections preserve authority IDs, unresolved values, duplicate restrictions and the 128-choice limit. Expert access editing remains department-only; historical API fields are preserved.
 
 Model user access is employee-only, separate from expert department access.
-`ModelUserAccess` uses Lobe Checkbox controls and the administrator company
-employee API (`companyEmployeesApi`), not the local-user diagnostics API.
-Options and selected labels show name plus work ID; `allowed_user_ids` retains
-its historical field name but carries work IDs. Each model owns its server-side
+`ModelUserAccess` uses a compact Lobe Popover trigger with Lobe Radio, Checkbox,
+and Input controls, backed by the administrator company employee API
+(`companyEmployeesApi`), not the local-user diagnostics API. The trigger shows
+whether access is for all authenticated users or a selected-user count; the
+popover owns mode selection, search, scrollable employee results, selected-user
+summary chips, completion, focus restoration, and Escape handling. Options and
+selected labels show name plus work ID; `allowed_user_ids` retains its
+historical field name but carries work IDs. Each model owns its server-side
 search/page and abortable request; retained selections survive searches and
 pagination, and directory failures remain retryable. Publication disables all
 access controls; losing management permission clears pending directory state.

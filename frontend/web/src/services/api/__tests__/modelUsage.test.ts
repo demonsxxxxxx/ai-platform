@@ -7,12 +7,13 @@ test("usage uses cookie GET, literal search, exact dates/pagination and encoded 
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ url: String(input), init });
-    return new Response(JSON.stringify({ data: [], total: 0 }), { status: 200 });
+    return new Response(JSON.stringify({ data: [], total: 0, summary: { input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3, output_tokens: 4, input_total: 6, total_tokens: 10 } }), { status: 200 });
   });
   const signal = new AbortController().signal;
   const dates = { start_date: "2026-09-21", end_date: "2026-10-20" };
-  await modelUsageApi.users({ ...dates, q: "工号%_ 姓名", limit: 50, offset: 50 }, signal);
+  const userResponse = await modelUsageApi.users({ ...dates, q: "工号%_ 姓名", limit: 50, offset: 50 }, signal);
   await modelUsageApi.models("user/a?b", dates, signal);
+  assert.equal(userResponse.summary?.total_tokens, 10);
   const usersUrl = new URL(calls[0].url, "http://localhost");
   assert.equal(usersUrl.pathname, "/api/ai/admin/usage/users");
   assert.equal(usersUrl.searchParams.get("q"), "工号%_ 姓名");

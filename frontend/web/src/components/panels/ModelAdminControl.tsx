@@ -617,9 +617,10 @@ render: (_value, model) => (<>
                       </div>
                     </div>
 </>) },
-{ key: "access", width: 300, title: "可用用户",
+{ key: "access", width: 260, title: "可用用户",
 render: (_value, model) => (
   <ModelUserAccess
+    modelId={model.id}
     accessMode={model.access_mode ?? "all"}
     allowedUserIds={model.allowed_user_ids ?? []}
     directory={directoryByModel[model.id]?.page ?? []}

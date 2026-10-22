@@ -18,6 +18,7 @@ function changeInput(input: HTMLInputElement, value: string) {
 }
 
 function text(node: unknown): string {
+  if (!node) return "";
   const value = node as { data?: unknown; textContent?: unknown; childNodes?: unknown[] };
   if (typeof value.data === "string") return value.data;
   return typeof value.textContent === "string" && value.textContent
@@ -127,7 +128,8 @@ async function mount(
   );
 
   const find = (selector: string, attribute: string, value?: string) => {
-    const match = Array.from(container.querySelectorAll(selector)).find((node) => {
+    const nodes = [...Array.from(container.querySelectorAll(selector)), ...Array.from(document.querySelectorAll(selector))];
+    const match = nodes.find((node) => {
       if (node.getAttribute(attribute) === null) return false;
       return value === undefined || node.getAttribute(attribute) === value;
     });
@@ -150,7 +152,8 @@ async function mount(
     },
     clickBy: async (selector: string, attribute: string, value?: string) => {
       await React.act(async () => {
-        const match = Array.from(container.querySelectorAll(selector)).find((node) => {
+        const nodes = [...Array.from(container.querySelectorAll(selector)), ...Array.from(document.querySelectorAll(selector))];
+        const match = nodes.find((node) => {
           if (node.getAttribute(attribute) === null) return false;
           return value === undefined || node.getAttribute(attribute) === value;
         });
@@ -167,9 +170,11 @@ async function mount(
       await React.act(async () => {
         const rows = container.querySelectorAll("[data-model-user-access]");
         assert.ok(rows[rowIndex], `expected row ${rowIndex}`);
-        const match = Array.from((rows[rowIndex] as unknown as {
+        const rowMatches = Array.from((rows[rowIndex] as unknown as {
           querySelectorAll(selector: string): Element[];
-        }).querySelectorAll(selector)).find((node) => {
+        }).querySelectorAll(selector));
+        const matches = [...rowMatches, ...Array.from(document.querySelectorAll(selector))];
+        const match = matches.find((node) => {
           if (node.getAttribute(attribute) === null) return false;
           return value === undefined || node.getAttribute(attribute) === value;
         });
@@ -181,13 +186,12 @@ async function mount(
     /** Types into one row's directory search through its real input. */
     searchInRow: async (rowIndex: number, value: string) => {
       await React.act(async () => {
-        const rows = container.querySelectorAll("[data-model-user-access]");
-        const input = Array.from((rows[rowIndex] as unknown as {
-          querySelectorAll(selector: string): object[];
-        }).querySelectorAll("input"))
-          .find((node) => (node as unknown as Element).getAttribute("aria-label") === "搜索用户");
+        const row = container.querySelectorAll("[data-model-user-access]")[rowIndex] as Element | undefined;
+        const modelId = row?.getAttribute("data-model-user-access-model");
+        const popover = modelId ? document.querySelector(`[data-model-access-popover="${modelId}"]`) : null;
+        const input = popover?.querySelector<HTMLInputElement>('input[aria-label="搜索用户"]');
         assert.ok(input, `expected a search input in row ${rowIndex}`);
-        changeInput(input as HTMLInputElement, value);
+        changeInput(input, value);
         await Promise.resolve();
       });
     },
@@ -197,7 +201,11 @@ async function mount(
       assert.ok(input);
       await React.act(async () => { changeInput(input, value); });
     },
-    rowText: (rowIndex: number) => text(container.querySelectorAll("[data-model-user-access]")[rowIndex]),
+    rowText: (rowIndex: number) => {
+      const row = container.querySelectorAll("[data-model-user-access]")[rowIndex] as Element | undefined;
+      const modelId = row?.getAttribute("data-model-user-access-model");
+      return text(row) + text(modelId ? document.querySelector(`[data-model-access-popover="${modelId}"]`) : null);
+    },
     unmount: async () => {
       await React.act(async () => root.unmount());
       Object.assign(modelAdminApi, originalModelAdmin);
@@ -209,15 +217,17 @@ async function mount(
 test("the first selection works from a cold page: open, load, pick and save", async () => {
   const view = await mount(model());
   try {
-    // Cold state: the picker must not be the disabled-only gate to loading.
-    await view.clickBy("button", "data-model-access-mode", "selected");
+    await view.clickBy("button", "data-model-access-picker");
+    assert.equal(view.directoryCalls.length, 0, "opening all-user access does not query employees");
+    assert.doesNotMatch(text(view.container), /有未保存的修改/);
+    assert.match(text(view.container.querySelector("[data-model-user-access]")), /全部用户/);
+    await view.clickBy('[role="radio"]', "data-model-access-mode", "selected");
     await waitFor(
       view.React,
       () => view.directoryCalls.length === 1,
       "switching to a specific subset loads the directory",
     );
 
-    await view.clickBy("button", "data-model-access-picker");
     await waitFor(
       view.React,
       () => text(view.container).includes("用户 A"),
@@ -243,6 +253,40 @@ test("the first selection works from a cold page: open, load, pick and save", as
   }
 });
 
+test("permission inspection is read-only and every retained employee remains removable", async () => {
+  const React = await import("react");
+  const { ModelUserAccess } = await import("../ModelUserAccess.tsx");
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const changes: Array<[string, string[]]> = [];
+  const queries: string[] = [];
+  const props = {
+    modelId: "inspect", accessMode: "all" as const, allowedUserIds: [] as string[],
+    directory: [], directoryNames: new Map(), directoryStatus: "idle" as const,
+    directoryQuery: "", directoryTotal: 0, directoryError: null,
+    onDirectoryQuery: (query: string) => { queries.push(query); },
+    onChange: (mode: string, ids: string[]) => { changes.push([mode, ids]); },
+  };
+  try {
+    await React.act(async () => root.render(React.createElement(ModelUserAccess, props)));
+    await React.act(async () => container.querySelector<HTMLButtonElement>("[data-model-access-picker]")!.click());
+    assert.deepEqual(changes, []);
+    assert.deepEqual(queries, []);
+    await React.act(async () => document.querySelector<HTMLButtonElement>("[data-model-access-done]")!.click());
+    assert.deepEqual(changes, [], "inspection and closing never edit access");
+    await React.act(async () => root.render(React.createElement(ModelUserAccess, {
+      ...props, accessMode: "selected", allowedUserIds: ["one", "two", "three", "four"],
+      directoryStatus: "error", directoryError: "目录暂不可用",
+    })));
+    await React.act(async () => container.querySelector<HTMLButtonElement>("[data-model-access-picker]")!.click());
+    assert.equal(document.querySelectorAll("[data-model-access-user]").length, 4);
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[data-model-access-remove="four"]')!.click());
+    assert.deepEqual(changes.at(-1), ["selected", ["one", "two", "three"]]);
+    await React.act(async () => changeInput(document.querySelector<HTMLInputElement>('input[aria-label="搜索用户"]')!, "Alice "));
+    assert.equal(queries.at(-1), "Alice ", "spaces remain typable in employee names");
+  } finally { await React.act(async () => root.unmount()); }
+});
+
 test("a saved restriction echoes its users and keeps them across paging and search", async () => {
   const paged = Array.from({ length: 100 }, (_, index) =>
     user(`user-${String(index + 1).padStart(3, "0")}`, `用户 ${index + 1}`),
@@ -259,18 +303,17 @@ test("a saved restriction echoes its users and keeps them across paging and sear
     },
   );
   try {
-    // Before any load the saved users are echoed by their raw IDs.
-    assert.equal(
-      view.container.querySelectorAll("[data-model-access-user='user-101']").length,
-      1,
+    // The compact trigger preserves the saved count before the directory is opened.
+    assert.match(
+      text(view.container.querySelectorAll("[data-model-user-access]")[0]),
+      /指定 2 人/,
     );
 
-    await view.clickBy("button", "data-model-access-mode", "selected");
-    await waitFor(view.React, () => view.directoryCalls.length === 1, "first page loads");
     await view.clickBy("button", "data-model-access-picker");
+    await waitFor(view.React, () => view.directoryCalls.length === 1, "first page loads");
     await waitFor(
       view.React,
-      () => view.container.querySelectorAll("[data-model-access-directory]").length === 1,
+      () => document.querySelectorAll("[data-model-access-directory]").length === 1,
       "opening the picker renders the directory",
     );
 
@@ -314,7 +357,7 @@ test("a saved restriction echoes its users and keeps them across paging and sear
     assert.equal(view.directoryCalls[2].search, "不存在");
     assert.equal(view.directoryCalls[2].offset, 0, "a search starts from the first page");
     assert.equal(
-      view.container.querySelectorAll("[data-model-access-user='user-101']").length,
+      document.querySelectorAll("[data-model-access-user='user-101']").length,
       1,
       "searching must not drop a selected user",
     );
@@ -323,7 +366,7 @@ test("a saved restriction echoes its users and keeps them across paging and sear
     await waitFor(
       view.React,
       () => {
-        const chip = view.container
+        const chip = document
           .querySelectorAll("[data-model-access-user='user-101']")[0];
         return Boolean(chip) && text(chip).includes("用户 101");
       },
@@ -349,7 +392,8 @@ test("a failed directory load stays retryable on the same page", async () => {
     },
   });
   try {
-    await view.clickBy("button", "data-model-access-mode", "selected");
+    await view.clickBy("button", "data-model-access-picker");
+    await view.clickBy('[role="radio"]', "data-model-access-mode", "selected");
     await waitFor(
       view.React,
       () => text(view.container).includes("模型服务暂不可用"),
@@ -384,7 +428,8 @@ test("losing management permission or unmounting discards a late directory reply
     }),
   });
   try {
-    await view.clickBy("button", "data-model-access-mode", "selected");
+    await view.clickBy("button", "data-model-access-picker");
+    await view.clickBy('[role="radio"]', "data-model-access-mode", "selected");
     await waitFor(view.React, () => view.directoryCalls.length === 1, "directory request starts");
     const signal = view.directoryCalls[0].signal;
     assert.ok(signal, "the directory request must be cancellable");
@@ -479,7 +524,10 @@ test("two models keep independent searches: no cross-row results and no mixed pa
       "a fresh default query always restarts at the first page",
     );
 
-    // Row A's Alice search is untouched by B's paging.
+    // Opening B closes A's portal, so reopen A to inspect its retained page.
+    // Row A's Alice search must stay untouched by B's paging.
+    await view.clickInRow(0, "button", "data-model-access-picker");
+    await waitFor(view.React, () => view.rowText(0).includes("Alice Zhang"), "row A restores its own results");
     assert.match(view.rowText(0), /Alice Zhang/);
     assert.doesNotMatch(view.rowText(0), /Bob Li/, "row A keeps its own results");
 
@@ -487,9 +535,11 @@ test("two models keep independent searches: no cross-row results and no mixed pa
     await view.filterModels("模型 B");
     await view.filterModels("");
     await view.clickInRow(0, "button", "data-model-access-picker");
-    const search = (view.rows()[0] as unknown as {
-      querySelectorAll(selector: string): Array<{ value?: string }>;
-    }).querySelectorAll("input")[0];
+    const modelId = (view.rows()[0] as Element).getAttribute("data-model-user-access-model");
+    const search = document.querySelector<HTMLInputElement>(
+      `[data-model-access-popover="${modelId}"] input[aria-label="搜索用户"]`,
+    );
+    assert.ok(search, "remount restores the search input");
     assert.equal(search.value, "Alice", "remount restores the query alongside its results");
     await view.clickInRow(0, "button", "data-model-access-load-more");
     assert.equal(view.directoryCalls.at(-1)?.search, "Alice");
@@ -525,7 +575,7 @@ test("a late search reply cannot replace the same model's newer query", async ()
     assert.match(view.rowText(0), /新结果/);
     assert.doesNotMatch(view.rowText(0), /迟到结果/);
     assert.equal(view.container.querySelector<HTMLInputElement>('[aria-label="搜索用户"]')?.value, "new");
-    assert.equal(view.container.querySelectorAll('[data-model-access-user="user-a"]').length, 1);
+    assert.equal(document.querySelectorAll('[data-model-access-user="user-a"]').length, 1);
   } finally {
     await view.unmount();
   }
@@ -598,7 +648,7 @@ test("a saving lock disables the open picker so a selection cannot be dropped", 
     // While the request is in flight the picker is closed and its controls are gone,
     // so no click can be silently discarded by the parent's request guard.
     assert.equal(
-      view.container.querySelectorAll("[data-model-access-directory]").length,
+      document.querySelectorAll("[data-model-access-directory]").length,
       0,
       "an open picker must close while saving",
     );

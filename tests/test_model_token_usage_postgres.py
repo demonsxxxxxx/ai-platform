@@ -67,6 +67,7 @@ async def test_ledger_beijing_midnight_unknown_zero_search_pagination_and_tenant
             first = await query(repo, conn, end=datetime(2026,10,20,16,tzinfo=timezone.utc))
             second = await query(repo, conn, start=datetime(2026,10,20,16,tzinfo=timezone.utc))
             assert first["data"][0]["total_tokens"] == second["data"][0]["total_tokens"] == 20
+            assert first["summary"]["total_tokens"] == second["summary"]["total_tokens"] == 20
             assert first["data"][0]["work_id"] == "user-a"
             models = await query(repo, conn, user_id="user-a")
             assert [row["model"] for row in models["data"]] == ["actual-a","actual-b"]
@@ -74,15 +75,49 @@ async def test_ledger_beijing_midnight_unknown_zero_search_pagination_and_tenant
             assert (await query(repo, conn, q="missing"))["data"] == []
             beyond = await query(repo, conn, offset=100)
             assert beyond["total"] == 1 and beyond["data"] == []
+            assert beyond["summary"]["total_tokens"] == 40
+            assert (await query(repo, conn, q="missing"))["summary"] is None
             unknown = ModelUsageSnapshot(scope_id="unknown",observation_seq=1,baseline="unknown",models={},coverage="unavailable",reason="baseline_unknown")
             await record(repo, conn, unknown, AT+timedelta(days=2))
             result = await query(repo, conn, start=AT+timedelta(days=1),end=AT+timedelta(days=3))
             assert result["data"] == [] and result["meta"]["coverage"]["reason"] == "baseline_unknown"
+            assert result["summary"] is None
             await record(repo, conn, snapshot(n=0,scope="zero",coverage="reported_final",baseline="restored",baseline_models=asdict(snapshot(n=2))["models"]), AT+timedelta(days=4))
             result = await query(repo, conn,start=AT+timedelta(days=3),end=AT+timedelta(days=5))
             assert result["data"][0]["total_tokens"] == 0
+            assert result["summary"]["total_tokens"] == 0
             foreign = await repo.query(conn, tenant_id="other",start_at=AT-timedelta(days=1),end_at=AT+timedelta(days=5),user_id=None,q=None,limit=50,offset=0)
-            assert foreign["data"] == []
+            assert foreign["data"] == [] and foreign["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_summary_covers_all_filtered_users_independently_of_pagination():
+    async with _isolated_postgres_run() as (_, _, admin, conn):
+        repo = PostgresModelTokenUsage(provider_session=provider_session)
+        async with conn.transaction():
+            await record(repo, conn, snapshot(n=2))
+            await conn.execute("insert into users(id,tenant_id,display_name) values ('user-b','tenant-a','Employee B')")
+            await conn.execute("""insert into sessions(id,tenant_id,workspace_id,user_id,agent_id,title,status)
+                values ('session-b','tenant-a','workspace-a','user-b','agent-a','B','active')""")
+            await conn.execute("""insert into runs(id,tenant_id,workspace_id,session_id,user_id,agent_id,skill_id,status)
+                select 'run-b',tenant_id,workspace_id,'session-b','user-b',agent_id,skill_id,'running'
+                from runs where id='run-a'""")
+            await repo.record(conn, tenant_id="tenant-a", run_id="run-b", attempt_id="attempt-b",
+                snapshot=snapshot(n=1, scope="second-user", baseline="restored", baseline_models=asdict(snapshot(n=2))["models"]),
+                receipt_id=uuid4().hex, recorded_at=AT)
+            first = await query(repo, conn, limit=1)
+            second = await query(repo, conn, limit=1, offset=1)
+            assert first["total"] == second["total"] == 2
+            assert first["data"][0]["total_tokens"] == 40
+            assert second["data"][0]["total_tokens"] == 20
+            assert first["summary"] == second["summary"] == {
+                "input_tokens": 6, "cache_read_input_tokens": 12,
+                "cache_creation_input_tokens": 18, "output_tokens": 24,
+                "input_total": 36, "total_tokens": 60,
+            }
+            filtered = await query(repo, conn, q="Employee B", limit=1, offset=100)
+            assert filtered["data"] == [] and filtered["total"] == 1
+            assert filtered["summary"]["total_tokens"] == 20
 
 
 @pytest.mark.asyncio
