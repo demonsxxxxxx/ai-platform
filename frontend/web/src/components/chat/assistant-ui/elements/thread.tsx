@@ -24,7 +24,7 @@ export function ThreadMessage({ children }: { children: ReactNode }) {
 }
 
 export function AssistantMessageContent({ className, ...props }: ComponentProps<"div">) {
-  return <div data-slot="aui_assistant-message-content" className={clsx("mx-auto flex max-w-[60rem] flex-col break-words px-3 leading-relaxed text-[var(--theme-text)] sm:px-5", className)} {...props} />;
+  return <div data-slot="aui_assistant-message-content" className={clsx("mx-auto flex max-w-[76rem] flex-col break-words px-2 leading-relaxed text-[var(--theme-text)]", className)} {...props} />;
 }
 
 export function UserMessageContent({ className, ...props }: ComponentProps<"div">) {
