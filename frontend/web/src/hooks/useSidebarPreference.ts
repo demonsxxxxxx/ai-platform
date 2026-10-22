@@ -4,10 +4,10 @@ import { useCallback, useRef, useState, type Dispatch, type SetStateAction } fro
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 export const SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-management-collapsed";
 
-export function useSidebarPreference(storageKey = SIDEBAR_COLLAPSED_STORAGE_KEY): [boolean, Dispatch<SetStateAction<boolean>>] {
+export function useSidebarPreference(preferenceKey = SIDEBAR_COLLAPSED_STORAGE_KEY): [boolean, Dispatch<SetStateAction<boolean>>] {
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem(storageKey) === "true";
+      return localStorage.getItem(preferenceKey) === "true";
     } catch {
       return false;
     }
@@ -18,10 +18,10 @@ export function useSidebarPreference(storageKey = SIDEBAR_COLLAPSED_STORAGE_KEY)
     current.current = next;
     setCollapsed(next);
     try {
-      localStorage.setItem(storageKey, String(next));
+      localStorage.setItem(preferenceKey, String(next));
     } catch {
       // Keep this tab usable when persistent browser storage is unavailable.
     }
-  }, [storageKey]);
+  }, [preferenceKey]);
   return [collapsed, setPreference];
 }
