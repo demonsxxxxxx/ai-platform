@@ -102,10 +102,13 @@ performance and production acceptance remain separate from source completion
 and deployment evidence.
 
 [AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[change verification](agent-rules/change-verification.md),
 [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
-work, verification, and handoff. This cleanup does not add another approval system.
+work, verification, and handoff. Change verification owns scenario selection and
+evidence reuse; local test execution owns the pytest runner and isolation. These
+contracts do not add another approval system.
 
 [Release operations](operations/release-operations-runbook.md)
 remains the sole executable release procedure. [SSE cutover acceptance](operations/redis-streams-sse-cutover-acceptance.md)

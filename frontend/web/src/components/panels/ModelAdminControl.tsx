@@ -550,7 +550,7 @@ export function ModelAdminControl({
             ><RefreshCw size={16} aria-hidden="true" />获取候选模型</Button>
           </div>
         </div>
-        {error ? <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">{error}</p> : null}
+        {error ? <p className="mt-3 text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
         {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
       </div>
 
@@ -621,7 +621,7 @@ render: (_value, model) => (<>
 { key: "identity", width: 280, title: "平台显示名称 / 上游模型 ID",
 render: (_value, model) => (<>
 <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#eef2ff] text-[#5967e8]" aria-hidden="true">
+                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--theme-info-soft)] text-[var(--theme-info-text)]" aria-hidden="true">
                         <DatabaseZap size={16} />
                       </div>
                       <div className="min-w-0 flex-1">
@@ -705,7 +705,7 @@ render: (_value, model) => (<>
       </div>
       <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
         {publishError ? (
-          <p className="text-xs text-[var(--theme-danger)]" role="alert">{publishError}</p>
+          <p className="text-xs text-[var(--theme-danger-text)]" role="alert">{publishError}</p>
         ) : (
           <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
             已启用 {enabledCount} / {draft.length} · {hasChanges ? "有未保存的修改，保存后生效" : "已生效配置"}

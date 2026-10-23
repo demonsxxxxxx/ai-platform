@@ -13,9 +13,9 @@ Status: active CI navigation and dated local observations; not deployment eviden
 
 | 文件 | 触发条件 | 覆盖平台/内容 | 是否自动发布 | 备注 |
 |---|---|---|---|---|
-| ai-platform-backend.yml | PR→main、push main、workflow_dispatch | Linux 8 个完整文件分片 + Windows runtime 节点分片；preflight/compileall/SSE cutover + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | 镜像推送委托 packaging（push 时） |
+| ai-platform-backend.yml | PR→main、push main、workflow_dispatch | Linux 8 个完整文件分片 + Windows runtime 节点分片；preflight/compileall/SSE cutover + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | PR 时按影响范围构建镜像；main push 不构建，镜像发布由 packaging 手动触发 |
 | ai-platform-frontend.yml | PR→main、push main、workflow_dispatch | Windows 4 个 JS 测试分片、独立 Python 合同/投影审计、lint/build/trace + Linux 镜像/Trivy/provenance/启动健康 + required 聚合 | 否 | 同上 |
-| ai-platform-packaging-publish.yml | push main + dispatch（confirm_release=PUBLISH_MAIN） | 不可变镜像 + SBOM + cosign 签名/验证 + manifest + Compose 包 + 可选版本化 Release | 是（受控） | 无 PR 触发 |
+| ai-platform-packaging-publish.yml | 仅 dispatch（main，confirm_release=PUBLISH_MAIN）；合并 main 不触发 | 不可变镜像 + SBOM + cosign 签名/验证 + manifest + Compose 包 + 可选版本化 Release | 是（受控） | 无 PR 触发 |
 | ai-platform-trusted-governance-v2.yml | pull_request_target（opened/synchronize/reopened/edited） | 受信基线 + PR head 验证 + Ruff + code_governance + architecture_governance | 否 | governance 是 authority object（candidate 不可放宽自身结果） |
 
 前端 JS 分片直接执行 `package.json` 中既有的 14 个测试阶段，每个 Runner 保持 `--test-concurrency=2` 和原有进程隔离；`test:sse` 的第二次 Runner 同样保留。分片按 [main 基线运行](https://github.com/demonsxxxxxx/ai-platform/actions/runs/39191073843) 的阶段耗时均衡，纯测试历史耗时约为每片 161–164 秒，不含环境准备或排队。实际提速以新候选的 CI 结果为准。

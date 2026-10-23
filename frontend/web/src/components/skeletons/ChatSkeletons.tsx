@@ -52,8 +52,8 @@ function UserMessageSkeleton({
   msg: { bubble: string; lines: string[] };
 }) {
   return (
-    <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
-      <div className="mx-auto flex max-w-[60rem] justify-end px-1 sm:px-2">
+    <div className="group w-full py-2">
+      <div className="mx-auto flex max-w-[76rem] justify-end px-2">
         <div
           className={`flex max-w-[90%] flex-col items-stretch sm:max-w-[75%] ${msg.bubble}`}
         >
@@ -81,7 +81,7 @@ function UserMessageSkeleton({
 function AssistantMessageSkeleton() {
   return (
     <div className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg">
-      <div className="mx-auto flex max-w-[60rem] flex-col px-3 sm:px-5">
+      <div className="mx-auto flex max-w-[76rem] flex-col px-2">
         {/* Avatar + name */}
         <div className="mb-2 flex items-center gap-2">
           <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 rounded-full shrink-0" />
@@ -169,8 +169,8 @@ export function ChatSkeletonMessagesOnly({ count = 3 }: { count?: number }) {
 /** Shared ChatInput skeleton — matches real ChatInput container + toolbar */
 function ChatInputSkeleton() {
   return (
-    <div className="shrink-0 px-3 py-2">
-      <div className="mx-auto max-w-[60rem] px-2">
+    <div className="shrink-0 px-2 py-1.5 sm:px-4">
+      <div className="mx-auto max-w-[76rem] px-2">
         <div
           className="flex flex-col w-full rounded-lg px-1 border"
           style={{
@@ -195,7 +195,7 @@ function ChatInputSkeleton() {
           </div>
         </div>
         {/* Keyboard shortcut hint — desktop only */}
-        <div className="mx-auto mt-2 hidden max-w-[60rem] justify-center px-2 sm:flex">
+        <div className="mx-auto mt-2 hidden max-w-[76rem] justify-center px-2 sm:flex">
           <SkeletonLine width="w-40" className="!h-3" />
         </div>
       </div>
@@ -211,11 +211,11 @@ export function WelcomeSkeleton() {
       <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
         {/* Mobile icon */}
         <div className="sm:hidden relative mb-3">
-          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 rounded-full shadow-md ring-1 ring-neutral-200/60 dark:ring-neutral-700/40" />
         </div>
         {/* Greeting line — desktop icon inline */}
         <div className="max-w-[90vw] w-full flex items-center justify-center">
-          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40 mr-4" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-neutral-200/60 dark:ring-neutral-700/40 mr-4" />
           <SkeletonLine
             width="w-48 sm:w-64 md:w-72 lg:w-80 xl:w-[22rem] 2xl:w-96"
             className="!h-[1.65rem] sm:!h-8 md:!h-9 lg:!h-[2.35rem] xl:!h-[2.4rem] 2xl:!h-10 !rounded-lg"

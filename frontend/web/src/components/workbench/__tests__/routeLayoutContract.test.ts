@@ -10,6 +10,7 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
   const shell = read("src/components/layout/AppContent/AppShell.tsx");
   const chat = read("src/components/layout/AppContent/ChatAppContent.tsx");
   const chatView = read("src/components/layout/AppContent/ChatView.tsx");
+  const surface = read("src/librechat-ui/surface.ts");
   const skills = read("src/components/panels/SkillsHubPanel.tsx");
   const list = read("src/components/panels/SkillsPanel/SkillsList.tsx");
 
@@ -23,7 +24,8 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
     chatView,
     /messages\.length > 0 \? "overflow-hidden" : ""/,
   );
-  assert.match(chatView, /overflow-y-auto[^"]*px-4 py-3 sm:px-5/);
+  assert.match(chatView, /className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"/);
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(chatView, /data-agent-chat-opening/);
   assert.match(chatView, /<Virtuoso/);
   assert.equal((skills.match(/overflow-y-auto/g) ?? []).length, 1);

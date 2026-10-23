@@ -9,7 +9,7 @@ test("emoji icons render inside a fixed-size box with a tight line height", () =
     React.createElement(DynamicIcon, {
       name: "📁",
       size: 18,
-      className: "text-stone-500",
+      className: "text-neutral-500",
     }),
   );
 

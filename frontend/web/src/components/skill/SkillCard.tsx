@@ -153,7 +153,7 @@ export function SkillCard({
                 {skill.enabled ? (
                   <ToggleRight
                     size={15}
-                    className="text-green-600 dark:text-green-500"
+                    className="text-[var(--theme-success-text)]"
                   />
                 ) : (
                   <ToggleLeft size={15} />
@@ -197,7 +197,7 @@ export function SkillCard({
                   e.stopPropagation();
                   onDelete(skill.name);
                 }}
-                className="scb__action-btn text-[var(--theme-text-secondary)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                className="scb__action-btn text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]"
                 title={t("skills.card.delete")}
                 aria-label={t("skills.card.delete")}
               >

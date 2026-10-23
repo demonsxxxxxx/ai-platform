@@ -157,7 +157,7 @@ def test_changed_paths_uses_exact_ancestor_commits(
         changed_paths("main", head)
 
 
-def test_changed_paths_compares_diverged_exact_commits(
+def test_changed_paths_ignores_base_only_changes_of_diverged_commits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
@@ -185,4 +185,5 @@ def test_changed_paths_compares_diverged_exact_commits(
     base = _git(repo, "rev-parse", "HEAD")
 
     monkeypatch.chdir(repo)
-    assert changed_paths(base, head) == ("app/main.py", "base-only.txt")
+    assert changed_paths(base, head) == ("app/main.py",)
+    assert changed_paths(head, base) == ("base-only.txt",)

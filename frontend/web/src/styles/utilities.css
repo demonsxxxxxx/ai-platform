@@ -42,10 +42,10 @@
 .dark .token.prolog,
 .dark .token.doctype,
 .dark .token.cdata {
-  color: #6b7280;
+  color: var(--theme-text-secondary);
 }
 .dark .token.punctuation {
-  color: #9ca3af;
+  color: var(--theme-text-tertiary);
 }
 .dark .token.property,
 .dark .token.tag,
@@ -54,7 +54,7 @@
 .dark .token.constant,
 .dark .token.symbol,
 .dark .token.deleted {
-  color: #f472b6;
+  color: var(--theme-text-secondary);
 }
 .dark .token.selector,
 .dark .token.attr-name,
@@ -62,26 +62,26 @@
 .dark .token.char,
 .dark .token.builtin,
 .dark .token.inserted {
-  color: #34d399;
+  color: var(--theme-success-text);
 }
 .dark .token.operator,
 .dark .token.entity,
 .dark .token.url {
-  color: #93c5fd;
+  color: var(--theme-info-text);
 }
 .dark .token.atrule,
 .dark .token.attr-value,
 .dark .token.keyword {
-  color: #c084fc;
+  color: var(--theme-text-secondary);
 }
 .dark .token.function,
 .dark .token.class-name {
-  color: #60a5fa;
+  color: var(--theme-info-text);
 }
 .dark .token.regex,
 .dark .token.important,
 .dark .token.variable {
-  color: #fbbf24;
+  color: var(--theme-warning-text);
 }
 
 /* Auto-fill grid columns based on available container width */

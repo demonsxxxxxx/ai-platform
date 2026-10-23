@@ -201,7 +201,7 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
             )}
           </div>
           <form onSubmit={submit} className="shrink-0 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] p-4 sm:p-5">
-            {localError && <p className="mb-2 text-xs text-[var(--theme-danger)]">{localError}</p>}
+            {localError && <p className="mb-2 text-xs text-[var(--theme-danger-text)]">{localError}</p>}
             <div className="flex items-end gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-2 focus-within:border-[var(--theme-primary)] focus-within:ring-2 focus-within:ring-[var(--theme-border)]">
               <TextArea
                 value={draft}

@@ -57,8 +57,9 @@ package and install/upgrade procedure in this runbook.
 
 ## What CI publishes
 
-The Packaging workflow runs on main pushes and confirmed manual main
-runs, independently of the Backend and Frontend checks. Only formal version
+The Packaging workflow runs only on confirmed manual main runs; merging to
+main does not build or publish images. It runs independently of the Backend
+and Frontend checks. Only formal version
 publication additionally requires machine-verified `backend required` and
 `frontend required` success for that exact main commit. The gate reads the
 repository-owned Backend/Frontend workflows and their latest run attempts,
@@ -104,15 +105,14 @@ with `confirm_release=PUBLISH_MAIN` and `release_version=v0.1.1`. The optional
 version accepts only `vMAJOR.MINOR.PATCH` with no leading zeroes. Choose a version
 that does not already exist; publishing never replaces an existing version.
 A blank version keeps manual runs audit-only, with no Git tag or Release.
-Automatic main pushes also create no Git tag or Release. Both image builds
-still refresh their runtime stages on every attempt so cached APT/APK layers
-cannot retain fixed vulnerabilities. The workflow still selects the named environment; main-source, scan, signature,
+Both image builds still refresh their runtime stages on every attempt so cached
+APT/APK layers cannot retain fixed vulnerabilities. The workflow still selects the named environment; main-source, scan, signature,
 and attestation gates still apply.
 
-For a daily test package, open the successful main Packaging run's Actions
-artifacts and download `ai-platform-internal-test-<commit>-<run>-<attempt>`.
+For a test package, start a blank-version Packaging run on `main`, open its
+Actions artifacts, and download `ai-platform-internal-test-<commit>-<run>-<attempt>`.
 That artifact contains only `ai-platform-internal-test.tar.gz` and is retained for
-seven days. It is produced on main pushes and blank-version manual runs after
+seven days. It is produced only by blank-version manual runs after
 package qualification; it is a temporary test package, not a formal Release or
 production deployment approval. Separate audit evidence remains for 30 days.
 Formal version runs publish the single package in their immutable Release

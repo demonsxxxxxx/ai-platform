@@ -514,7 +514,7 @@ function ProfileDriveSourceBrowser({
 
       <div className="mt-2">
         {error ? (
-          <p role="status" className="text-xs leading-5 text-[var(--theme-danger)]">
+          <p role="status" className="text-xs leading-5 text-[var(--theme-danger-text)]">
             {error}
           </p>
         ) : connected === false ? (
@@ -540,7 +540,7 @@ function ProfileDriveSourceBrowser({
                     className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-[11px]"
                     style={{ paddingInlineStart: `${22 + row.depth * 16}px` }}
                   >
-                    <span className="min-w-0 flex-1 text-[var(--theme-danger)]">
+                    <span className="min-w-0 flex-1 text-[var(--theme-danger-text)]">
                       {row.text}
                     </span>
                     <Button type="text"

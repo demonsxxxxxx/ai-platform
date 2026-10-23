@@ -83,7 +83,7 @@ jobs:
 
       - name: Verify frontend lint and build
         working-directory: frontend/web
-        run: corepack pnpm run lint && corepack pnpm run build
+        run: corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build
 
       - name: Record frontend release traceability
         run: python tools/frontend_release_traceability.py --format json
