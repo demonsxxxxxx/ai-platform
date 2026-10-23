@@ -44,6 +44,9 @@ the owners linked below.
 
 ## Complete the affected checks
 
+- Follow [change verification](../../docs/agent-rules/change-verification.md) for
+  representative scenarios, fast iteration and evidence reuse. The rules below
+  add frontend-specific checks; they do not require a full suite after each edit.
 - Before changing a control, dependency or test command, inventory its callers,
   TypeScript/DOM tests, root Python frontend contracts, browser selectors,
   package/lock files and owning documentation. Update obsolete assertions with
@@ -56,8 +59,11 @@ the owners linked below.
   selected pnpm stages does not establish a full CI pass.
 - Mounted control tests use the real Lobe providers and shared test setup from
   the integration contract. For changed layouts, inspect actual rendered pages
-  in light/dark themes at desktop and 390px width; exercise the affected keyboard,
-  focus, portal and table-scroll behavior with synthetic fixtures. Source
-  inventory and JSDOM checks do not establish visual acceptance.
-- Report checks against the actual candidate, distinguish synthetic browser
-  evidence from real services, and retain failures or unrun checks in the PR.
+  in light/dark themes at desktop and 390px width, adding a low-height viewport
+  when vertical reachability can change. Choose data states by the changed risk;
+  table/pagination layouts include a full data page, last page and expanded rows when
+  applicable, not only a one-row fixture. Exercise affected keyboard, focus,
+  portal and scrolling behavior; do not mechanically multiply every dimension.
+- Keep synthetic browser evidence distinct from real-service results and report
+  failures or required checks not run. Source inventory, JSDOM and a passing build
+  do not establish visual acceptance.

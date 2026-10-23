@@ -24,12 +24,12 @@ directories, missing or duplicate selectors, external paths, and pytest flags.
 
 ## Selection Order
 
-Start with checks that can falsify the changed behavior. Expand to direct
-callers, grouped isolation checks, and real dependencies when risk requires it;
-there is no mandatory six-stage sequence. Broader coverage may be split into
-bounded explicit stages. Avoid full-repository execution as a routine ritual.
-Docs-only changes check affected links, entrypoints, and document contracts.
-Do not add permanent tests solely to lock editorial wording or line counts.
+[Change verification](change-verification.md) owns scenario selection, feedback
+order and evidence reuse; this document owns how local pytest executes. Select
+existing owning tests first and expand to direct callers, isolation checks or
+real dependencies when the changed risk requires them. Broader coverage may be
+split into bounded explicit stages. Do not add permanent tests solely to lock
+editorial wording or line counts.
 
 ## Execution Invariants
 
