@@ -1022,15 +1022,15 @@ def test_observability_readiness_cli_rejects_noncanonical_runtime_subject_sha():
     assert "must be a full lowercase 40-character commit SHA" in result.stderr
 
 
-def test_error_taxonomy_dashboard_readiness_cli_outputs_json_without_secret_markers():
+def test_observability_cli_includes_error_dashboard_without_secret_markers():
     result = subprocess.run(
-        [sys.executable, "tools/error_taxonomy_dashboard_readiness.py", "--format", "json"],
+        [sys.executable, "tools/observability_readiness.py", "--format", "json"],
         check=True,
         capture_output=True,
         text=True,
     )
 
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout)["domains"]["error_taxonomy"]["evidence"]["error_taxonomy_dashboard"]
     assert payload["schema_version"] == "ai-platform.error-taxonomy-dashboard-readiness.v1"
     assert payload["dashboard_contract"]["schema_version"] == "ai-platform.error-taxonomy-dashboard-contract.v1"
     assert payload["status"] == "partial_blocked"
@@ -1038,6 +1038,10 @@ def test_error_taxonomy_dashboard_readiness_cli_outputs_json_without_secret_mark
     assert "raw_storage_key" not in result.stdout
     assert "sandbox_workdir" not in result.stdout
     assert "api_key" not in result.stdout
+
+
+def test_error_dashboard_leaf_cli_stays_retired():
+    assert not (Path(__file__).resolve().parents[1] / "tools/error_taxonomy_dashboard_readiness.py").exists()
 
 
 def test_release_evidence_readiness_cli_outputs_json_without_secret_markers():

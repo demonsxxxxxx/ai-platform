@@ -8,20 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.capacity_baseline import (
+from app.capacity_baseline import (  # noqa: E402
     build_capacity_evidence_bundle,
     render_capacity_evidence_bundle_markdown,
 )
-
-
-def _read_json(path: str) -> dict[str, object]:
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"failed to read JSON input: {Path(path).name}") from exc
-    if not isinstance(payload, dict):
-        raise SystemExit(f"JSON input must be an object: {Path(path).name}")
-    return payload
+from tools.capacity_cli_inputs import read_capacity_json_object  # noqa: E402
 
 
 def main() -> int:
@@ -41,16 +32,16 @@ def main() -> int:
     args = parser.parse_args()
 
     bundle = build_capacity_evidence_bundle(
-        _read_json(args.runtime_evidence_json),
-        _read_json(args.bounded_probe_json),
+        read_capacity_json_object(args.runtime_evidence_json),
+        read_capacity_json_object(args.bounded_probe_json),
         gate=args.gate,
         start_runtime_evidence=(
-            _read_json(args.start_runtime_evidence_json)
+            read_capacity_json_object(args.start_runtime_evidence_json)
             if args.start_runtime_evidence_json
             else None
         ),
         cleanup_proof=(
-            _read_json(args.cleanup_proof_json)
+            read_capacity_json_object(args.cleanup_proof_json)
             if args.cleanup_proof_json
             else None
         ),

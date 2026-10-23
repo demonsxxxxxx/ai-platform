@@ -5,6 +5,8 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
+import pytest
+
 from app.capacity_baseline import (
     LOAD_TEST_GATES,
     build_capacity_baseline,
@@ -25,6 +27,40 @@ from app.capacity_baseline import (
     render_capacity_load_test_plan_markdown,
 )
 import app.capacity_baseline as capacity_baseline
+from tools.capacity_cli_inputs import read_capacity_json_object
+
+
+@pytest.mark.parametrize("use_string_path", [False, True])
+def test_capacity_json_reader_accepts_objects_with_path_or_string(tmp_path, use_string_path):
+    path = tmp_path / "capacity-input.json"
+    payload = {"status": "pending_review", "samples": [0, 1], "label": "容量"}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert read_capacity_json_object(str(path) if use_string_path else path) == payload
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        (None, "failed to read JSON input"),
+        ("not-json-token=secret", "failed to read JSON input"),
+        ('["token=secret"]', "JSON input must be an object"),
+        ("null", "JSON input must be an object"),
+    ],
+)
+def test_capacity_json_reader_rejects_bad_inputs_with_basename_only(tmp_path, raw, error):
+    private_dir = tmp_path / "private-parent-token=secret"
+    private_dir.mkdir()
+    path = private_dir / "capacity-input.json"
+    if raw is not None:
+        path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as caught:
+        read_capacity_json_object(path)
+
+    assert str(caught.value) == f"{error}: capacity-input.json"
+    assert "token=secret" not in str(caught.value)
+    assert str(tmp_path) not in str(caught.value)
 
 
 LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST = [
@@ -5074,7 +5110,8 @@ def test_capacity_recorded_gate_batch_snapshot_preserves_host_sandbox_diagnostic
     }
 
 
-def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_gate_values(tmp_path):
+@pytest.mark.parametrize("invalid_values", [None, "not-json-token=secret", '["token=secret"]'])
+def test_capacity_recorded_gate_batch_from_values_cli_rejects_invalid_gate_values(tmp_path, invalid_values):
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
         commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
@@ -5103,6 +5140,11 @@ def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_gate_value
         json.dumps(_b3_profile_evidence_packet()),
         encoding="utf-8",
     )
+    if invalid_values is not None:
+        slug = LOAD_TEST_GATES[-1].replace("_", "-")
+        (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
+            invalid_values, encoding="utf-8"
+        )
 
     result = subprocess.run(
         [
@@ -5133,9 +5175,12 @@ def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_gate_value
         "input_errors"
     ]
     assert "C:\\Users" not in result.stdout
+    assert "token=secret" not in result.stdout + result.stderr
+    assert "failed to read JSON input" not in result.stderr
 
 
-def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_profile_values_as_json(tmp_path):
+@pytest.mark.parametrize("invalid_values", [None, "not-json-token=secret", '["token=secret"]'])
+def test_capacity_recorded_gate_batch_from_values_cli_rejects_invalid_profile_values_as_json(tmp_path, invalid_values):
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
         commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
@@ -5159,6 +5204,11 @@ def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_profile_va
         (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
             json.dumps(_recorded_gate_evidence_values(gate)),
             encoding="utf-8",
+        )
+
+    if invalid_values is not None:
+        (values_dir / "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json").write_text(
+            invalid_values, encoding="utf-8"
         )
 
     result = subprocess.run(
@@ -5189,6 +5239,7 @@ def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_profile_va
     assert "profile_evidence_packet_result_not_ready" in payload["input_errors"]
     assert "failed to read JSON input" not in result.stderr
     assert "C:\\Users" not in result.stdout
+    assert "token=secret" not in result.stdout + result.stderr
 
 
 def test_capacity_recorded_gate_batch_from_values_cli_rejects_release_evidence_wrapper(tmp_path):

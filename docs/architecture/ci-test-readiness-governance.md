@@ -188,6 +188,25 @@ regressions, including `tests/test_context_memory_retention.py`,
 `tests/test_context_routes.py`, and `tests/test_worker_main.py`. A source-marker
 scanner is not independent erasure or runtime evidence.
 
+### Consolidated dashboard reports
+
+The standalone error-taxonomy, Skill release dashboard, and tool-policy bulk-review
+report CLIs and their exclusive Markdown renderers are retired, without compatibility
+commands. Their builders, authorization/redaction contracts, and open acceptance gaps
+remain owned by the existing composite reports:
+
+- `python tools/observability_readiness.py --format json` exposes
+  `domains.error_taxonomy.evidence.error_taxonomy_dashboard`;
+- `python tools/skill_release_readiness.py --format json` exposes
+  `admin_skill_release_dashboard`; and
+- `python tools/governance_readiness.py --format json` exposes
+  `domains.tool_permission.evidence.admin_policy_bulk_review_dashboard`.
+
+These commands also retain their composite Markdown output; they are not byte-compatible
+substitutes for the retired leaf reports. Consolidation does not close acceptance gaps,
+change Admin Runtime/Skill/tool-policy authorization, or retire the Observability G9
+quality-evaluation schema and golden-set contract.
+
 ### Retired phase reports
 
 The B5 file/tool and B6 Operations Beta phase reports are retired; their static

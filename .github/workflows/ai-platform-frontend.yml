@@ -305,10 +305,7 @@ jobs:
           python -c "import jsonschema"
 
       - name: Verify static frontend Python contracts
-        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py -q --basetemp .pytest-tmp
-
-      - name: Verify static frontend deploy helper
-        run: python tools/deploy_frontend_static.py --help
+        run: python -m pytest tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py -q --basetemp .pytest-tmp
 
       - name: Audit frontend projections
         run: python tools/frontend_projection_audit.py --format json

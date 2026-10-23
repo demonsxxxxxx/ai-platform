@@ -467,7 +467,7 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 
 test("skills route selects the ordinary catalog while retaining the admin management resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
-  const ordinarySkills = read("src/components/panels/AvailableSkillsPanel.tsx");
+  const table = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
 
@@ -489,10 +489,9 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.doesNotMatch(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
-  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
-  assert.match(ordinarySkills, /skills\.available\.title/);
-  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
-  assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
+  assert.match(table, /data-skill-management-table/);
+  assert.match(table, /skills\.managementTable\.readOnly/);
+  assert.doesNotMatch(table, /\.(?:content|files|private_manifest|storage_key|storage_path)\b/);
   assert.equal(zh.skills.available.title, "可用技能");
   assert.match(resolver, /requiredPermission: "skill:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);

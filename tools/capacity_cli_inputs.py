@@ -4,6 +4,18 @@ from pathlib import Path
 from app.capacity_baseline import CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA
 
 
+def read_capacity_json_object(path: str | Path) -> dict[str, object]:
+    """Read a capacity input object, reporting only its basename on failure."""
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"failed to read JSON input: {path.name}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"JSON input must be an object: {path.name}")
+    return payload
+
+
 def _host_sandbox_observation_error(error_code: str, path_value: str) -> dict[str, object]:
     return {
         "schema_version": CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA,

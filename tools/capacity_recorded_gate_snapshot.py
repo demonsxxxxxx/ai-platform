@@ -7,21 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.capacity_baseline import (
+from app.capacity_baseline import (  # noqa: E402
     build_capacity_recorded_gate_batch_snapshot,
     build_capacity_recorded_gate_snapshot,
     render_capacity_recorded_gate_snapshot_markdown,
 )
-
-
-def _read_json(path: str) -> dict[str, object]:
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"failed to read JSON input: {Path(path).name}") from exc
-    if not isinstance(payload, dict):
-        raise SystemExit(f"JSON input must be an object: {Path(path).name}")
-    return payload
+from tools.capacity_cli_inputs import read_capacity_json_object  # noqa: E402
 
 
 def main() -> int:
@@ -45,14 +36,14 @@ def main() -> int:
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     args = parser.parse_args()
 
-    runtime_evidence = _read_json(args.runtime_evidence_json)
+    runtime_evidence = read_capacity_json_object(args.runtime_evidence_json)
     profile_evidence = (
-        _read_json(args.profile_evidence_json)
+        read_capacity_json_object(args.profile_evidence_json)
         if args.profile_evidence_json
         else None
     )
     gate_evidence_packets = [
-        _read_json(path)
+        read_capacity_json_object(path)
         for path in args.recorded_gate_evidence_json
     ]
     if len(gate_evidence_packets) == 1:
