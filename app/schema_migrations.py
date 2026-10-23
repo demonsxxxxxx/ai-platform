@@ -49,7 +49,8 @@ PROVIDER_SESSION_IMAGES_SCHEMA_VERSION = "2026.10.14.1"
 MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
-TARGET_SCHEMA_VERSION = MODEL_TOKEN_USAGE_SCHEMA_VERSION
+MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
+TARGET_SCHEMA_VERSION = MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -111,7 +112,7 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
-    ("runs", "max_input_tokens", "int8", False),
+    ("runs", "auto_compact_window", "int8", False),
     ("runs", "max_output_tokens", "int8", False),
     ("runs", "terminalization_target", "text", False),
     ("runs", "terminalization_reason", "text", True),
@@ -161,7 +162,7 @@ CRITICAL_COLUMNS = (
     ("model_catalog_entries", "upstream_available", "bool", True),
     ("model_catalog_entries", "is_default", "bool", True),
     ("model_catalog_entries", "display_order", "int4", True),
-    ("model_catalog_entries", "max_input_tokens", "int8", False),
+    ("model_catalog_entries", "auto_compact_window", "int8", False),
     ("model_catalog_entries", "max_output_tokens", "int8", False),
     ("model_catalog_entries", "access_mode", "text", True),
     ("model_catalog_entries", "allowed_user_ids", "jsonb", True),
@@ -446,18 +447,18 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
         "runs",
         "chk_runs_model_token_limits",
         "c",
-        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
-        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
-        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "CHECK (auto_compact_window IS NULL AND max_output_tokens IS NULL OR "
+        "auto_compact_window IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "auto_compact_window >= 100000 AND auto_compact_window <= 1000000 AND "
         "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
     ),
     (
         "model_catalog_entries",
         "chk_model_catalog_token_limits",
         "c",
-        "CHECK (max_input_tokens IS NULL AND max_output_tokens IS NULL OR "
-        "max_input_tokens IS NOT NULL AND max_output_tokens IS NOT NULL AND "
-        "max_input_tokens >= 1 AND max_input_tokens <= 10000000 AND "
+        "CHECK (auto_compact_window IS NULL AND max_output_tokens IS NULL OR "
+        "auto_compact_window IS NOT NULL AND max_output_tokens IS NOT NULL AND "
+        "auto_compact_window >= 100000 AND auto_compact_window <= 1000000 AND "
         "max_output_tokens >= 1 AND max_output_tokens <= 10000000)",
     ),
     (

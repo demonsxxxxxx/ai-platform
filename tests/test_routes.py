@@ -182,7 +182,7 @@ def default_run_model_binding(monkeypatch):
             model_id="platform-default",
             model_value="provider/default",
             connection_revision=None,
-            max_input_tokens=32000,
+            auto_compact_window=200_000,
             max_output_tokens=2048,
         )
 
@@ -4612,7 +4612,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
             model_id="catalog-default",
             model_value="provider/default",
             connection_revision=9,
-            max_input_tokens=32000,
+            auto_compact_window=200_000,
             max_output_tokens=2048,
         )
 
@@ -4685,7 +4685,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "model_id": "catalog-default",
         "model_value": "provider/default",
         "connection_revision": 9,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
     }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")

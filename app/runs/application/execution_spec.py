@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Protocol
 
 from app.runs.domain.execution_spec import (
-    EXECUTION_SPEC_SCHEMA_VERSION_V2,
+    EXECUTION_SPEC_SCHEMA_VERSION_V3,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec,
@@ -41,7 +41,7 @@ async def worker_dispatch_fence(
         or row["context_snapshot_id"] != context_snapshot_id
         or any(row[key] != locked_run[key] for key in
                ("model_id", "model_value", "model_gateway_revision",
-                "max_input_tokens", "max_output_tokens"))):
+                "auto_compact_window", "max_output_tokens"))):
         return "invalid"
     return "ready"
 
@@ -67,7 +67,7 @@ def _v2_model_snapshot(snapshot: Mapping[str, Any] | None) -> dict[str, int] | N
         return None
     values = {
         "model_gateway_revision": snapshot.get("model_gateway_revision"),
-        "model_max_input_tokens": snapshot.get("max_input_tokens"),
+        "model_auto_compact_window": snapshot.get("auto_compact_window"),
         "model_max_output_tokens": snapshot.get("max_output_tokens"),
     }
     if any(value is None for value in values.values()):
@@ -108,7 +108,7 @@ def compile_execution_spec_for_dispatch(
     ):
         raise ExecutionSpecError("execution_spec_model_snapshot_mismatch")
     spec_payload: dict[str, Any] = {
-        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V2,
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V3,
         "run_payload_schema_version": queue_payload.schema_version,
         "tenant_id": run_identity["tenant_id"],
         "workspace_id": run_identity["workspace_id"],

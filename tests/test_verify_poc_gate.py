@@ -35,7 +35,7 @@ def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch)
                 "default_model_id": "gpt-5.3-codex-spark",
                 "models": [
                     {"id": "deepseek-v4-flash"},
-                    {"id": "gpt-5.3-codex-spark", "profile": {"max_input_tokens": 32000, "max_output_tokens": 2048}},
+                    {"id": "gpt-5.3-codex-spark", "profile": {"auto_compact_window": 200_000, "max_output_tokens": 2048}},
                 ],
             }
         if url.endswith("/api/auth/permissions"):
@@ -1262,7 +1262,7 @@ def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):
                 "model_id": "mdl_public",
                 "model_value": "provider/model",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "model_connection_exists": True,
                 "status": "failed",
@@ -1320,7 +1320,7 @@ def test_upload_attachment_chat_accepts_worker_started_running_run(monkeypatch):
                 "model_id": "mdl_public",
                 "model_value": "provider/model",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "model_connection_exists": True,
                 "status": "running",
@@ -1377,7 +1377,7 @@ def test_upload_attachment_chat_accepts_worker_started_terminal_sdk_failure_with
                 "model_id": "mdl_public",
                 "model_value": "provider/model",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "model_connection_exists": True,
                 "status": "failed",
@@ -1440,7 +1440,7 @@ def test_upload_attachment_chat_rejects_non_turn_limit_sdk_failure_with_context(
                 "model_id": "mdl_public",
                 "model_value": "provider/model",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "model_connection_exists": True,
                 "status": "failed",
@@ -1500,7 +1500,7 @@ def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch
                 "model_id": "mdl_public",
                 "model_value": "provider/model",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "model_connection_exists": True,
                 "status": "succeeded",
@@ -1589,7 +1589,7 @@ def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch)
 @pytest.mark.parametrize("field,value", [
     ("model_id", None), ("model_value", ""),
     ("model_gateway_revision", None), ("model_gateway_revision", True),
-    ("model_connection_exists", False), ("max_input_tokens", 0),
+    ("model_connection_exists", False), ("auto_compact_window", 0),
     ("max_output_tokens", None), ("max_output_tokens", True),
 ])
 def test_upload_gate_rejects_missing_or_invalid_model_binding(monkeypatch, field, value):
@@ -1597,7 +1597,7 @@ def test_upload_gate_rejects_missing_or_invalid_model_binding(monkeypatch, field
         "run_id": "run_upload", "status": "succeeded", "file_ids": ["file_upload"],
         "model_id": "mdl_public", "model_value": "provider/model",
         "model_gateway_revision": 7, "model_connection_exists": True,
-        "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "auto_compact_window": 200_000, "max_output_tokens": 2048,
         "worker_events": [{"executor_type": "claude-agent-worker",
                            "claude_agent_sdk_enabled": True, "claude_agent_sdk_import": "ok"}],
     }
@@ -1609,7 +1609,7 @@ def test_upload_gate_rejects_missing_or_invalid_model_binding(monkeypatch, field
         sql = args[-1]
         assert "m.revision = r.model_gateway_revision" in sql
         assert "m.active" not in sql  # Later publication must not invalidate a frozen pin.
-        assert "r.max_input_tokens" in sql and "r.max_output_tokens" in sql
+        assert "r.auto_compact_window" in sql and "r.max_output_tokens" in sql
         return [row]
 
     monkeypatch.setattr(verify_poc_gate, "psql_rows", query)

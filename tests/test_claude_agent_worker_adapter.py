@@ -556,7 +556,7 @@ def payload(**overrides):
         "model_id": "catalog-default",
         "model_value": "provider/catalog-default",
         "model_gateway_revision": 1,
-        "model_max_input_tokens": 32000,
+        "model_auto_compact_window": 200_000,
         "model_max_output_tokens": 2048,
         "schema_version": "ai-platform.run-payload.v2",
     }
@@ -624,7 +624,7 @@ def sandbox_writing_payload(**overrides):
     overrides.setdefault("model_id", "catalog-default")
     overrides.setdefault("model_value", "provider/catalog-default")
     overrides.setdefault("model_gateway_revision", 1)
-    overrides.setdefault("model_max_input_tokens", 32000)
+    overrides.setdefault("model_auto_compact_window", 200_000)
     overrides.setdefault("model_max_output_tokens", 2048)
     overrides.setdefault("schema_version", "ai-platform.run-payload.v2")
     return payload(**overrides)

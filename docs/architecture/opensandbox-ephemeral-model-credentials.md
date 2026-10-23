@@ -180,10 +180,11 @@ non-SSE responses have no
 model-side evidence. Historical Runs predating these checkpoints cannot be
 retroactively attributed.
 
-Model capacities are frozen into Run admission and ExecutionSpec v2. For Claude,
-the input capacity configures the SDK-owned automatic-compaction window; the
-model proxy does not recount `/v1/messages` requests or enforce a separate input
-limit. Explicit `/v1/messages/count_tokens` requests from Claude Code remain
+The compaction window and output cap are frozen into Run admission and
+ExecutionSpec v3. For Claude, the window configures SDK-owned automatic
+compaction; the model proxy does not recount `/v1/messages` requests or enforce
+a separate input limit, and the engine may compact earlier than the window.
+Explicit `/v1/messages/count_tokens` requests from Claude Code remain
 Run/Attempt-bound proxy traffic and retain their existing endpoint validation.
 The proxy still validates the requested output against the frozen output limit.
 

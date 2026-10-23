@@ -281,12 +281,16 @@ async def test_model_user_access_upgrade_preserves_existing_catalog(tmp_path: Pa
         assert result["status"] == "applied"
         async with factory() as conn:
             cursor = await conn.execute(
-                "select model_id, upstream_model_id, display_name, access_mode, allowed_user_ids "
+                "select model_id, upstream_model_id, display_name, access_mode, allowed_user_ids, "
+                "auto_compact_window, max_output_tokens "
                 "from model_catalog_entries where model_id = 'legacy-model'"
             )
+            # The retired input capacity becomes the window the runner derived
+            # from it, so already-admitted model behavior does not change.
             assert await cursor.fetchone() == {
                 "model_id": "legacy-model", "upstream_model_id": "upstream-model",
                 "display_name": "Saved display name", "access_mode": "all", "allowed_user_ids": [],
+                "auto_compact_window": 100_000, "max_output_tokens": 2048,
             }
             assert (await schema_migrations.schema_status(conn))["ready"] is True
             await conn.execute(

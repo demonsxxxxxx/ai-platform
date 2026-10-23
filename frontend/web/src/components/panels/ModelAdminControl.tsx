@@ -88,6 +88,16 @@ function validTokenLimit(value: number | undefined): boolean {
     && Number.isInteger(value) && value >= 1 && value <= 10_000_000;
 }
 
+// Claude Code accepts automatic-compaction windows from 100k through 1M.
+const AUTO_COMPACT_WINDOW_MIN = 100_000;
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+
+function validAutoCompactWindow(value: number | undefined): boolean {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= AUTO_COMPACT_WINDOW_MIN && value <= AUTO_COMPACT_WINDOW_MAX;
+}
+
 type ModelAdminOperation = "load" | "test" | "discover" | "publish";
 interface ModelAdminRequestOwner {
   sequence: number;
@@ -115,7 +125,7 @@ function connectionOrigin(value: string): string {
 function modelDraftSignature(models: AdminModelEntry[]): string {
   return JSON.stringify(models.map((model) => [
     model.id, model.value, model.label, model.enabled, model.is_default,
-    model.order, model.max_input_tokens ?? null, model.max_output_tokens ?? null,
+    model.order, model.auto_compact_window ?? null, model.max_output_tokens ?? null,
     model.access_mode ?? "all", [...(model.allowed_user_ids ?? [])].sort(),
   ]));
 }
@@ -126,7 +136,7 @@ function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEn
     return previous ? {
       ...candidate,
       label: previous.label, enabled: previous.enabled, is_default: previous.is_default,
-      max_input_tokens: previous.max_input_tokens, max_output_tokens: previous.max_output_tokens,
+      auto_compact_window: previous.auto_compact_window, max_output_tokens: previous.max_output_tokens,
       access_mode: previous.access_mode ?? "all",
       allowed_user_ids: [...(previous.allowed_user_ids ?? [])],
     } : candidate;
@@ -390,14 +400,17 @@ export function ModelAdminControl({
     }
     if (!enabled.length) { setPublishError("请至少启用一个模型。"); return; }
     const invalid = available.find((model) => {
-      if (!model.enabled && model.max_input_tokens === undefined
+      if (!model.enabled && model.auto_compact_window === undefined
         && model.max_output_tokens === undefined) return false;
-      return !validTokenLimit(model.max_input_tokens) || !validTokenLimit(model.max_output_tokens);
+      // An empty window takes the platform default; only a filled one must be valid.
+      return (model.auto_compact_window !== undefined
+        && !validAutoCompactWindow(model.auto_compact_window))
+        || !validTokenLimit(model.max_output_tokens);
     });
     if (invalid) {
       setPublishError(invalid.enabled
-        ? `请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`
-        : `请填写 ${invalid.label}（${invalid.value}）的最大输入和输出 Token（1–10,000,000 的整数），或将两项同时留空。`);
+        ? `请填写 ${invalid.label} 的最大输出 Token（1–10,000,000）；压缩窗口留空即默认 100,000，或填写 100,000–1,000,000。`
+        : `请填写 ${invalid.label}（${invalid.value}）的最大输出 Token（1–10,000,000）和有效的压缩窗口（100,000–1,000,000），或同时留空。`);
       return;
     }
     if (enabled.filter((model) => model.is_default).length !== 1) {
@@ -572,6 +585,12 @@ export function ModelAdminControl({
           </span>
         </div>
 
+        <p
+          className="shrink-0 border-b border-[var(--theme-border)] px-3 pb-2 text-xs text-[var(--theme-text-secondary)]"
+          id="model-admin-compaction-window-hint"
+        >
+          压缩窗口交给 Claude 自动压缩，实际触发时机由引擎决定，可能早于该值；留空按 100000。
+        </p>
         <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
           <BaseRadioGroup
           aria-label="默认模型" name="default-model"
@@ -636,19 +655,20 @@ render: (_value, model) => (
     })}
   />
 ) },
-{ key: "inputTokens", width: 160, title: "最大输入 Token",
+{ key: "inputTokens", width: 160, title: "压缩窗口",
 render: (_value, model) => (<>
 <Input
-                      aria-label={`${model.value} 最大输入 Token`}
+                      aria-label={`${model.value} 压缩窗口 Token`}
+                      aria-describedby="model-admin-compaction-window-hint"
                       size="small"
                       disabled={!model.available || busy !== null}
-                      min={1}
-                      max={10000000}
-                      onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "可同时留空"}
-                      aria-required={model.enabled}
+                      min={AUTO_COMPACT_WINDOW_MIN}
+                      max={AUTO_COMPACT_WINDOW_MAX}
+                      step={1000}
+                      onChange={(event) => updateDraft(model.id, { auto_compact_window: event.target.value ? Number(event.target.value) : undefined })}
+                      placeholder="默认 100000"
                       type="number"
-                      value={model.max_input_tokens ?? ""}
+                      value={model.auto_compact_window ?? ""}
                     />
 </>) },
 { key: "outputTokens", width: 160, title: "最大输出 Token",

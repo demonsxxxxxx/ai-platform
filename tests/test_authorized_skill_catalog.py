@@ -1068,7 +1068,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
         "model_gateway_revision": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
@@ -1145,7 +1145,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def load_frozen_model(_conn, **_kwargs):
         return {key: locked_run[key] for key in (
             "model_id", "model_value", "model_gateway_revision",
-            "max_input_tokens", "max_output_tokens",
+            "auto_compact_window", "max_output_tokens",
         )}
 
     monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)

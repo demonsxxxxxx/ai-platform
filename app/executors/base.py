@@ -10,6 +10,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
+from app.execution.api import legacy_input_capacity_to_auto_compact_window
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.skills.release_policy import validate_release_decision_lock
 from app.validation import assert_safe_id
@@ -226,7 +227,7 @@ class RunPayload:
     model_id: str = ""
     model_value: str = ""
     model_gateway_revision: int | None = None
-    model_max_input_tokens: int | None = None
+    model_auto_compact_window: int | None = None
     model_max_output_tokens: int | None = None
     agent_profile: dict[str, Any] = field(default_factory=dict)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
@@ -296,6 +297,14 @@ def project_execution_spec_to_run_payload(
     payload.pop("schema_version")
     run_payload_schema_version = str(payload.pop("run_payload_schema_version"))
     payload.pop("executor_type")
+    # Historical v2 specs froze a max-input capacity instead of a window. Decode
+    # it with the same clamp the runner applied so the DTO never sees the
+    # retired key; the immutable spec bytes and digest are not rewritten.
+    legacy_input_capacity = payload.pop("model_max_input_tokens", None)
+    if legacy_input_capacity is not None:
+        payload["model_auto_compact_window"] = (
+            legacy_input_capacity_to_auto_compact_window(legacy_input_capacity)
+        )
     return RunPayload(
         **payload,
         attempt_id=attempt_id,

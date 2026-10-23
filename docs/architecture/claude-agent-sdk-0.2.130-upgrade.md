@@ -59,7 +59,7 @@ types used by this adapter.
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
-| Automatic compaction | Bundled CLI `2.1.222` owns ongoing auto-compaction and accepts numeric windows from 100k through 1M | The runner clamps the immutable Run input capacity to that CLI range and does not issue `/compact` when opening or resuming a session |
+| Automatic compaction | Bundled CLI `2.1.222` owns ongoing auto-compaction and accepts numeric windows from 100k through 1M | The runner passes the immutable Run compaction window to `--autocompact` unchanged and does not issue `/compact` when opening or resuming a session |
 | Process context | `cwd` and `env` remain supported | The runner supplies the governed workspace and an allowlisted environment |
 | Abort/cancel | `query` has no explicit interrupt method; task cancellation closes iterator/subprocess work | Outer cancellation propagates; SDK abort terminal reasons map to cancellation |
 
@@ -153,11 +153,20 @@ existing canonical backend test files, without a separate workflow.
 
 ## SDK-native automatic compaction
 
-Execution passes the immutable Run `max_input_tokens` through
-`ClaudeAgentOptions.extra_args["autocompact"]`, clamped to Claude Code's public
-100k-1M numeric range. Claude Code owns its output reserve and safety buffer, so
-the platform does not apply an additional percentage reduction and the actual
-compaction point remains earlier than the configured window.
+Execution passes the immutable Run `auto_compact_window` through
+`ClaudeAgentOptions.extra_args["autocompact"]`. The value is validated into
+Claude Code's public 100k-1M numeric range when an administrator publishes a
+model, so the runner forwards exactly the configured window. Claude Code owns
+its output reserve and safety buffer, so the platform does not apply an
+additional percentage reduction and the actual compaction point remains
+earlier than the configured window.
+
+The window is a compaction setting, not a platform-enforced input ceiling. The
+platform stores it per model with a default of 100000 and freezes the resolved
+value on each admitted Run. Historical `ai-platform.execution-spec.v2`
+attempts froze a `model_max_input_tokens` capacity instead; those attempts stay
+byte-identical and are read through the same clamp the runner applied to
+recover their effective window.
 
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` continues to carry the independent output
 ceiling. The inherited `CLAUDE_CODE_MAX_CONTEXT_TOKENS` remains scrubbed because

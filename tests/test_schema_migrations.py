@@ -700,10 +700,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
     assert schema_migrations.MODEL_USER_ACCESS_SCHEMA_VERSION == "2026.10.20.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.20.2"
+    assert schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION == "2026.10.20.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.22.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION
+        == schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
     )
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
@@ -918,7 +919,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             *column,
             True,
         ) in schema_migrations.CRITICAL_COLUMNS
-    for column in ("max_input_tokens", "max_output_tokens"):
+    for column in ("auto_compact_window", "max_output_tokens"):
         assert ("model_catalog_entries", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
         assert ("runs", column, "int8", False) in schema_migrations.CRITICAL_COLUMNS
     assert (
@@ -1484,3 +1485,42 @@ async def test_part_lookup_index_readiness_checks_expressions():
     assert await schema_migrations._index_is_ready(Connection(), migration)
     values["key_expressions"][4] = "payload_json ->> 'source_event_id'"
     assert not await schema_migrations._index_is_ready(Connection(), migration)
+
+
+def test_checkpoint_window_upgrade_is_safe_before_its_create_table_statement():
+    """A fresh apply runs the upgrade block before the checkpoint table exists."""
+
+    sql = schema_migrations.schema_sql()
+    upgrade_at = sql.index("rename column max_input_tokens to auto_compact_window")
+    create_at = sql.index("create table if not exists conversation_context_checkpoints")
+    assert upgrade_at < create_at, "the upgrade block runs before the table is created"
+
+    window_section = sql[upgrade_at:create_at]
+    # Casting a missing relation aborts a first apply, so guard on to_regclass.
+    assert "'conversation_context_checkpoints'::regclass" not in window_section
+    assert "to_regclass('conversation_context_checkpoints')" in window_section
+
+
+def test_checkpoint_window_upgrade_clamps_legacy_rows_and_replaces_the_range_check():
+    sql = schema_migrations.schema_sql()
+    create_at = sql.index("create table if not exists conversation_context_checkpoints")
+    section = sql[:create_at]
+
+    # The rename must be followed by the same clamp the rest of the catalog uses.
+    assert (
+        "least(1000000, greatest(100000, auto_compact_window))"
+        in section
+    )
+    assert (
+        "drop constraint conversation_context_checkpoints_max_input_tokens_check"
+        in section
+    )
+    assert (
+        "add constraint conversation_context_checkpoints_auto_compact_window_check"
+        in section
+    )
+    # Fresh creation already declares the ranged window, never a bare positive.
+    assert (
+        "auto_compact_window bigint not null check "
+        "(auto_compact_window between 100000 and 1000000)"
+    ) in sql

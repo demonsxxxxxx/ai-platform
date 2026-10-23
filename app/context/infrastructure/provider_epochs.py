@@ -317,7 +317,9 @@ async def _locked_callback_epoch(
         join sandbox_leases lease on lease.tenant_id = attempt.tenant_id
           and lease.run_id = attempt.run_id and lease.attempt_id = attempt.id
         where attempt.tenant_id = %s and attempt.run_id = %s and attempt.id = %s
-          and attempt.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          -- v2 froze an input capacity, v3 the window; both stay bound here.
+          and attempt.execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
           and (
             (attempt.status = 'running'
              and lease.lease_payload_json->>'owner_generation' = attempt.owner_generation::text)
@@ -719,7 +721,8 @@ async def prepare_provider_epoch(
         """
         select execution_spec_json->'context_pack'->'conversation_context' as frozen_context
         from run_attempts where tenant_id = %s and run_id = %s
-          and status = 'running' and execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and status = 'running' and execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
         order by ordinal desc limit 1
         """, (scope.tenant_id, run_id),
     )
@@ -832,7 +835,8 @@ async def commit_provider_turn(
           and turn.run_id = runs.id and turn.attempt_id = attempt.id and turn.epoch_id = epoch.id
         where runs.tenant_id = %s and runs.id = %s
           and runs.status = 'running' and runs.cancel_requested_at is null
-          and attempt.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and attempt.execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
         for update of head, epoch, turn
         """, (attempt_id, tenant_id, run_id),
     )

@@ -1585,3 +1585,38 @@ async def test_capture_sink_failure_stderr_cannot_render_private_chain(failure, 
     assert "SYNTHETIC_SECRET_CAUSE" not in stderr
     assert original.__cause__ is cause
     assert result == {"status": "failed"}
+
+
+@pytest.mark.asyncio
+async def test_postgres_admin_snapshot_reads_the_run_window_column():
+    """The admin snapshot selects the renamed window column, not the retired one."""
+
+    class SnapshotCursor:
+        def __init__(self, row):
+            self._row = row
+
+        async def fetchone(self):
+            return self._row
+
+        async def fetchall(self):
+            return []
+
+    class SnapshotConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return SnapshotCursor({"run_id": "run-a", "auto_compact_window": 200_000, "max_output_tokens": 2048})
+
+    conn = SnapshotConnection()
+    snapshot = await PostgresRunDiagnosticsRepository().get_admin_snapshot(
+        conn, tenant_id="tenant-a", run_id="run-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "r.auto_compact_window" in sql
+    assert "r.max_input_tokens" not in sql
+    assert params == ("tenant-a", "run-a")
+    assert snapshot["run"]["auto_compact_window"] == 200_000
+    assert "max_input_tokens" not in snapshot["run"]

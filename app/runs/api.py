@@ -160,6 +160,9 @@ from app.runs.domain.execution_spec import (
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION_V2 as EXECUTION_SPEC_SCHEMA_VERSION_V2,
 )
+from app.runs.domain.execution_spec import (
+    EXECUTION_SPEC_SCHEMA_VERSION_V3 as EXECUTION_SPEC_SCHEMA_VERSION_V3,
+)
 from app.runs.domain.execution_spec import ExecutionSpec as ExecutionSpec
 from app.runs.domain.execution_spec import ExecutionSpecError as ExecutionSpecError
 from app.runs.domain.execution_spec import (

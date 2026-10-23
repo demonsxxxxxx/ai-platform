@@ -39,7 +39,7 @@ function model(overrides: Partial<AdminModelEntry> = {}): AdminModelEntry {
     enabled: true, available: true, is_default: true, order: 1,
     access_mode: "all", allowed_user_ids: [],
     last_seen_revision: 4, last_seen_at: "2026-10-09T00:00:00Z",
-    max_input_tokens: 32000, max_output_tokens: 2048,
+    auto_compact_window: 200_000, max_output_tokens: 2048,
     ...overrides,
   };
 }
@@ -597,10 +597,10 @@ test("an empty subset on a disabled available row blocks a real save of a valid 
     // Make a real, saveable draft change on the valid default model.
     const fields = Array.from(view.container.querySelectorAll("input"));
     const tokenField = fields.find(
-      (node) => node.getAttribute("aria-label") === "mock/a 最大输入 Token",
+      (node) => node.getAttribute("aria-label") === "mock/a 压缩窗口 Token",
     );
     assert.ok(tokenField, "expected a token field for the default model");
-    await view.React.act(async () => { changeInput(tokenField, "64000"); });
+    await view.React.act(async () => { changeInput(tokenField, "150000"); });
     assert.match(text(view.container), /有未保存的修改/, "the draft is genuinely dirty");
 
     await view.clickBy("button", "data-model-admin-publish");

@@ -1855,7 +1855,7 @@ async def _default_executor_runner(
             "session_store": session_store,
             "provider_session_resume_required": provider_session_resume_required,
             "model_id": model_id,
-            "model_max_input_tokens": model_limits.max_input_tokens,
+            "model_auto_compact_window": model_limits.auto_compact_window,
             "model_max_output_tokens": model_limits.max_output_tokens,
             "skills": skill_ids,
             "context_retrieval": context_retrieval,

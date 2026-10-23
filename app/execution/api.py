@@ -103,6 +103,15 @@ from app.execution.domain.public_projection import (
     sdk_failure_result_fields,
 )
 
+from app.execution.domain.model_catalog import (
+    AUTO_COMPACT_WINDOW_DEFAULT_TOKENS as AUTO_COMPACT_WINDOW_DEFAULT_TOKENS,
+    AUTO_COMPACT_WINDOW_MAX_TOKENS as AUTO_COMPACT_WINDOW_MAX_TOKENS,
+    AUTO_COMPACT_WINDOW_MIN_TOKENS as AUTO_COMPACT_WINDOW_MIN_TOKENS,
+)
+from app.execution.domain.model_catalog import (
+    legacy_input_capacity_to_auto_compact_window as legacy_input_capacity_to_auto_compact_window,
+)
+
 from typing import Any
 
 from app.execution.application.follow_up_completion import (
@@ -149,6 +158,10 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
+    "AUTO_COMPACT_WINDOW_MAX_TOKENS",
+    "AUTO_COMPACT_WINDOW_MIN_TOKENS",
+    "legacy_input_capacity_to_auto_compact_window",
     "FollowUpSuggestionResult",
     "FollowUpSuggestionService",
     "ModelTextCheckpoint",

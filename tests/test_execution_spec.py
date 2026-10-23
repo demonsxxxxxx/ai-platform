@@ -16,6 +16,7 @@ from app.runs.domain import execution_spec as execution_spec_domain
 from app.runs.api import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     EXECUTION_SPEC_SCHEMA_VERSION_V2,
+    EXECUTION_SPEC_SCHEMA_VERSION_V3,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec_for_dispatch,
@@ -35,7 +36,7 @@ async def test_worker_dispatch_fence_relocks_exact_queued_run_and_fails_closed()
                 "run_id": "run-a", "agent_id": "agent-a",
                 "execution_kind": "skill", "skill_id": "skill-a"}
     frozen = {"model_id": "model-a", "model_value": "model-a",
-              "model_gateway_revision": 3, "max_input_tokens": 32000,
+              "model_gateway_revision": 3, "auto_compact_window": 200_000,
               "max_output_tokens": 2048}
     row = {**identity, **frozen, "id": "run-a", "status": "queued",
            "cancel_requested_at": None, "context_snapshot_id": "ctx-a"}
@@ -351,10 +352,10 @@ def test_dispatch_projection_preserves_legacy_run_payload_and_keeps_attempt_sepa
         context_snapshot=payload["context_snapshot"],
         context_pack=payload["context_pack"],
         run_model_snapshot={"model_id": "model-a", "model_value": "model-a", "model_gateway_revision": 7,
-                            "max_input_tokens": 32000, "max_output_tokens": 2048},
+                            "auto_compact_window": 200_000, "max_output_tokens": 2048},
     )
 
-    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
+    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V3
     assert "attempt_id" not in spec.to_mapping()
     run_payload = project_execution_spec_to_run_payload(spec, attempt_id="attempt-a")
     assert run_payload.attempt_id == "attempt-a"
@@ -379,7 +380,7 @@ def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
         "model_id": "model-a",
         "model_value": "model-a",
         "model_gateway_revision": 7,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
     }
     def dispatch(snapshot):
@@ -396,14 +397,14 @@ def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
     spec = dispatch(locked_model)
     with pytest.raises(ExecutionSpecError, match="execution_spec_model_snapshot_missing"):
         dispatch(None)
-    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
-    assert spec.to_mapping()["model_max_input_tokens"] == 32000
+    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V3
+    assert spec.to_mapping()["model_auto_compact_window"] == 200_000
     assert spec.to_mapping()["model_max_output_tokens"] == 2048
-    assert project_execution_spec_to_run_payload(spec, attempt_id="attempt-a").model_max_input_tokens == 32000
+    assert project_execution_spec_to_run_payload(spec, attempt_id="attempt-a").model_auto_compact_window == 200_000
     assert ExecutionSpec.from_canonical_json(spec.canonical_json) == spec
     for corrupt in (
         {**locked_model, "max_output_tokens": None},
-        {**locked_model, "max_input_tokens": True},
+        {**locked_model, "auto_compact_window": True},
         {**locked_model, "model_value": "other"},
     ):
         with pytest.raises(ExecutionSpecError, match="execution_spec_model_snapshot"):
@@ -485,7 +486,209 @@ def test_dispatch_compiler_normalizes_skillless_harness_empty_string():
         context_snapshot=payload["context_snapshot"],
         context_pack=payload["context_pack"],
         run_model_snapshot={"model_id": "model-a", "model_value": "model-a", "model_gateway_revision": 7,
-                            "max_input_tokens": 32000, "max_output_tokens": 2048},
+                            "auto_compact_window": 200_000, "max_output_tokens": 2048},
     )
 
     assert spec.to_mapping()["skill_id"] is None
+
+
+def test_v3_freezes_the_compaction_window_and_v2_stays_byte_identical():
+    """The field migration must not rewrite admitted v2 canonical bytes."""
+
+    v2 = compile_execution_spec({
+        **_spec_payload(),
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V2,
+        "run_payload_schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        "model_gateway_revision": 4,
+        "model_max_input_tokens": 95_000,
+        "model_max_output_tokens": 4_096,
+    })
+    assert v2.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
+    assert "model_auto_compact_window" not in v2.to_mapping()
+    # A historical 95k input capacity produced the 100k CLI floor.
+    assert execution_spec_domain.model_auto_compact_window(v2.to_mapping()) == 100_000
+    assert ExecutionSpec.from_canonical_json(
+        v2.canonical_json, expected_sha256=v2.spec_sha256
+    ) == v2
+
+    v3 = compile_execution_spec({
+        **_spec_payload(),
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V3,
+        "run_payload_schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        "model_gateway_revision": 4,
+        "model_auto_compact_window": 200_000,
+        "model_max_output_tokens": 4_096,
+    })
+    assert v3.to_mapping()["model_auto_compact_window"] == 200_000
+    assert "model_max_input_tokens" not in v3.to_mapping()
+    assert execution_spec_domain.model_auto_compact_window(v3.to_mapping()) == 200_000
+    assert v3.canonical_json != v2.canonical_json
+
+
+def test_v3_rejects_a_window_outside_the_engine_range():
+    for window in (99_999, 1_000_001, 0, True):
+        with pytest.raises(ExecutionSpecError, match="model_auto_compact_window_invalid"):
+            compile_execution_spec({
+                **_spec_payload(),
+                "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V3,
+                "run_payload_schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+                "model_gateway_revision": 4,
+                "model_auto_compact_window": window,
+                "model_max_output_tokens": 4_096,
+            })
+
+
+def test_configured_window_reaches_the_runner_unchanged_end_to_end():
+    """The published window must survive spec, projection, and transport verbatim."""
+
+    from app.execution.domain.model_catalog import normalize_model_token_limits
+    from app.executors.claude_agent_sdk_runner import _sdk_autocompact_window
+    from app.runtime.sandbox.contracts import ModelTokenLimits
+
+    window, output_limit = normalize_model_token_limits(200_000, 36_500)
+    assert (window, output_limit) == (200_000, 36_500)
+
+    spec = compile_execution_spec_for_dispatch(
+        run_identity={
+            "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+            "session_id": "session-a", "run_id": "run-a", "agent_id": "agent-a",
+            "execution_kind": "harness_chat", "skill_id": None,
+        },
+        queue_payload=SimpleNamespace(
+            schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2, skill_id=None, file_ids=[],
+            input={"message": "hello"}, executor_type="claude-agent-worker",
+            skill_version=None, release_decision={}, skill_manifests=[],
+            model_id="model-a", model_value="claude-test", agent_profile=None,
+        ),
+        trace_id="trace-a",
+        context_snapshot_id="context-a",
+        context_snapshot={"context_snapshot_id": "context-a"},
+        context_pack={"conversation_context": {"execution_mode": "empty_start"}},
+        run_model_snapshot={
+            "model_id": "model-a", "model_value": "claude-test",
+            "model_gateway_revision": 4,
+            "auto_compact_window": window, "max_output_tokens": output_limit,
+        },
+    )
+    assert spec.to_mapping()["model_auto_compact_window"] == 200_000
+
+    run_payload = project_execution_spec_to_run_payload(spec, attempt_id="attempt-a")
+    transport = ModelTokenLimits(
+        auto_compact_window=run_payload.model_auto_compact_window,
+        max_output_tokens=run_payload.model_max_output_tokens,
+    )
+    assert transport.auto_compact_window == 200_000
+    assert _sdk_autocompact_window(transport.auto_compact_window) == 200_000
+
+
+def test_an_unconfigured_model_window_defaults_to_100000():
+    from app.execution.domain.model_catalog import (
+        AUTO_COMPACT_WINDOW_DEFAULT_TOKENS,
+        normalize_model_token_limits,
+    )
+
+    assert AUTO_COMPACT_WINDOW_DEFAULT_TOKENS == 100_000
+    assert normalize_model_token_limits(None, 36_500)[0] == 100_000
+    # A legal custom window is preserved rather than reset to the default.
+    assert normalize_model_token_limits(500_000, 36_500)[0] == 500_000
+
+
+def test_historical_v2_spec_projects_to_the_window_the_runner_derived():
+    """A frozen v2 capacity must decode into the DTO, not raise on its old key."""
+
+    from tests.support.frozen_receipts import frozen_spec
+
+    for capacity, expected in ((95_000, 100_000), (200_000, 200_000), (2_000_000, 1_000_000)):
+        spec = frozen_spec(legacy_v2_input_capacity=capacity)
+        canonical_before, digest_before = spec.canonical_json, spec.spec_sha256
+        assert "model_max_input_tokens" in spec.to_mapping()
+
+        run_payload = project_execution_spec_to_run_payload(spec, attempt_id="attempt-a")
+
+        assert run_payload.model_auto_compact_window == expected
+        assert run_payload.model_max_output_tokens == 4096
+        # The immutable spec bytes and digest are never rewritten by projection.
+        assert (spec.canonical_json, spec.spec_sha256) == (canonical_before, digest_before)
+        assert "model_max_input_tokens" in spec.to_mapping()
+
+
+def test_current_v3_spec_projects_its_own_window_without_a_legacy_key():
+    from tests.support.frozen_receipts import frozen_spec
+
+    spec = frozen_spec()
+    assert "model_max_input_tokens" not in spec.to_mapping()
+    assert project_execution_spec_to_run_payload(
+        spec, attempt_id="attempt-a"
+    ).model_auto_compact_window == 200_000
+
+
+def test_persisted_pre_rename_snapshot_restores_through_the_same_window_mapping():
+    """A stored snapshot still carrying the retired key must restore, not crash."""
+
+    from app.execution.application.executor_reconciliation import (
+        restored_sandbox_run_payload,
+    )
+    from app.executors.base import RunPayload
+
+    historical = {
+        "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+        "session_id": "session-a", "run_id": "run-a", "attempt_id": "attempt-a",
+        "agent_id": "agent-a", "skill_id": None, "file_ids": [], "input": {"message": "hi"},
+        "owner_generation": 4, "execution_kind": "harness_chat", "trace_id": "trace-a",
+        "skill_version": "", "release_decision": {}, "skill_manifests": [],
+        "context_snapshot_id": "context-a", "context_snapshot": {}, "context_pack": {},
+        "model_id": "model-a", "model_value": "claude-test", "model_gateway_revision": 3,
+        "model_max_input_tokens": 95_000, "model_max_output_tokens": 4096,
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    restored = restored_sandbox_run_payload(dict(historical), RunPayload, {})
+    assert restored.model_auto_compact_window == 100_000
+
+    versioned = {
+        "schema_version": "ai-platform.executor-reconciliation-snapshot.v2",
+        "execution_payload": dict(historical),
+        "metadata": {"agent_profile_expected": False},
+    }
+    assert restored_sandbox_run_payload(
+        versioned, RunPayload, {}
+    ).model_auto_compact_window == 100_000
+
+    # A current snapshot keeps its own window and never accepts a conflict silently.
+    current = {key: val for key, val in historical.items() if key != "model_max_input_tokens"}
+    current["model_auto_compact_window"] = 200_000
+    assert restored_sandbox_run_payload(dict(current), RunPayload, {}).model_auto_compact_window == 200_000
+    with pytest.raises(TypeError):
+        restored_sandbox_run_payload({**current, "model_bogus_tokens": 1}, RunPayload, {})
+
+
+def test_window_policy_reaches_other_contexts_only_through_the_execution_api():
+    """AGENTS: cross-context imports go through the public api, not domain modules."""
+
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for relative in (
+        "app/runs/domain/execution_spec.py",
+        "app/runs/application/attempt_lifecycle.py",
+        "app/executors/claude_agent_sdk_runner.py",
+        "app/executors/base.py",
+    ):
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("app.execution.domain."):
+                    offenders.append(f"{relative}: {node.module}")
+    assert offenders == []
+
+    from app.execution import api as execution_api
+
+    for name in (
+        "AUTO_COMPACT_WINDOW_MIN_TOKENS",
+        "AUTO_COMPACT_WINDOW_MAX_TOKENS",
+        "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
+        "legacy_input_capacity_to_auto_compact_window",
+    ):
+        assert name in execution_api.__all__
+        assert getattr(execution_api, name) is not None

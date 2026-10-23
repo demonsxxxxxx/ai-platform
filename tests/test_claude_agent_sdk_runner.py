@@ -78,22 +78,25 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
 
 
 @pytest.mark.parametrize(
-    ("model_max_input_tokens", "expected"),
+    ("model_auto_compact_window", "expected"),
     [
         (None, None),
-        (32_000, 100_000),
-        (95_000, 100_000),
         (100_000, 100_000),
         (125_000, 125_000),
         (200_000, 200_000),
         (1_000_000, 1_000_000),
-        (2_000_000, 1_000_000),
     ],
 )
-def test_sdk_autocompact_window_clamps_model_input_capacity_to_cli_bounds(
-    model_max_input_tokens, expected
+def test_sdk_autocompact_window_passes_the_admitted_window_through(
+    model_auto_compact_window, expected
 ):
-    assert _sdk_autocompact_window(model_max_input_tokens) == expected
+    assert _sdk_autocompact_window(model_auto_compact_window) == expected
+
+
+@pytest.mark.parametrize("invalid", [32_000, 99_999, 1_000_001, "200000", True])
+def test_sdk_autocompact_window_rejects_values_outside_cli_bounds(invalid):
+    with pytest.raises(ValueError, match="model_auto_compact_window_invalid"):
+        _sdk_autocompact_window(invalid)
 
 
 def test_context_limit_error_outranks_prior_tool_denial():
@@ -6643,7 +6646,7 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
         session_id="stable-provider-id",
         session_store=Store(),
         provider_session_resume_required=resume_required,
-        model_max_input_tokens=100_000,
+        model_auto_compact_window=100_000,
         model_max_output_tokens=36_500,
         client_fn=Client,
     )

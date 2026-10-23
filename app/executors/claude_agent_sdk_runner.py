@@ -63,6 +63,8 @@ from app.bootstrap.claude_client import (
     prepare_claude_result_usage,
 )
 from app.execution.api import (
+    AUTO_COMPACT_WINDOW_MAX_TOKENS,
+    AUTO_COMPACT_WINDOW_MIN_TOKENS,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
@@ -141,8 +143,6 @@ _SDK_INPUT_IMAGE_INVALID = "claude_agent_sdk_input_image_invalid"
 _SDK_EXECUTION_FAILED = "claude_agent_sdk_execution_failed"
 _SDK_OUTPUT_VALIDATION_FAILED = "claude_agent_sdk_output_validation_failed"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
-_SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
-_SDK_AUTOCOMPACT_MAX_TOKENS = 1_000_000
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
@@ -634,13 +634,24 @@ def _sdk_permission_type(sdk: object, name: str):
     return PermissionResult
 
 
-def _sdk_autocompact_window(model_max_input_tokens: int | None) -> int | None:
-    if model_max_input_tokens is None:
+def _sdk_autocompact_window(model_auto_compact_window: int | None) -> int | None:
+    """Return the CLI `--autocompact` value for this Run.
+
+    The window is already normalized to Claude Code's supported range when it
+    is admitted, so it is passed through unchanged. The engine still chooses the
+    actual compaction point, which can fall earlier than this window.
+    """
+
+    if model_auto_compact_window is None:
         return None
-    return min(
-        _SDK_AUTOCOMPACT_MAX_TOKENS,
-        max(_SDK_AUTOCOMPACT_MIN_TOKENS, model_max_input_tokens),
-    )
+    if (
+        type(model_auto_compact_window) is not int
+        or not AUTO_COMPACT_WINDOW_MIN_TOKENS
+        <= model_auto_compact_window
+        <= AUTO_COMPACT_WINDOW_MAX_TOKENS
+    ):
+        raise ValueError("model_auto_compact_window_invalid")
+    return model_auto_compact_window
 
 
 def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | None = None) -> dict[str, str]:
@@ -1587,7 +1598,7 @@ async def run_claude_agent_sdk(
     context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
-    model_max_input_tokens: int | None = None,
+    model_auto_compact_window: int | None = None,
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
@@ -1618,9 +1629,9 @@ async def run_claude_agent_sdk(
     interaction_actor = None
     if interaction_client is not None and not (run_id and attempt_id):
         raise ValueError("run_interaction_identity_invalid")
-    if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
-        value is not None and (type(value) is not int or not 1 <= value <= 10_000_000)
-        for value in (model_max_input_tokens, model_max_output_tokens)
+    if (model_auto_compact_window is None) != (model_max_output_tokens is None) or (
+        model_max_output_tokens is not None
+        and (type(model_max_output_tokens) is not int or not 1 <= model_max_output_tokens <= 10_000_000)
     ):
         raise ValueError("model_token_limits_invalid")
     settings = get_settings()
@@ -3445,8 +3456,8 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens),
         extra_args=(
-            {"autocompact": str(_sdk_autocompact_window(model_max_input_tokens))}
-            if model_max_input_tokens is not None
+            {"autocompact": str(_sdk_autocompact_window(model_auto_compact_window))}
+            if model_auto_compact_window is not None
             else {}
         ),
         skills=configured_skills,
