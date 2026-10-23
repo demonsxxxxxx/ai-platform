@@ -616,7 +616,12 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "apk add" not in dockerfile
     security_upgrade = (
         "RUN apk update \\\n"
-        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
+        "    && apk upgrade --no-cache nginx libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
+        '    && installed_nginx="$(apk list --installed nginx)" \\\n'
+        '    && installed_nginx="${installed_nginx%% *}" \\\n'
+        '    && installed_nginx="${installed_nginx#nginx-}" \\\n'
+        '    && test -n "$installed_nginx" \\\n'
+        '    && test "$(apk version -t "$installed_nginx" 1.30.6-r0)" != "<" \\\n'
         '    && installed="$(apk list --installed libexpat)" \\\n'
         '    && installed="${installed%% *}" \\\n'
         '    && installed="${installed#libexpat-}" \\\n'

@@ -33,6 +33,13 @@ index digest:
 - `node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a`
 - `nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c`
 
+The frontend runtime keeps its reviewed Nginx base identity and upgrades installed
+`nginx` alongside the existing selected Alpine security packages at build time.
+The build rejects `nginx` below `1.30.6-r0`, which is the fixed package version
+reported for `CVE-2026-15176`, `CVE-2026-93479`, and `CVE-2026-97205`.
+The existing libexpat minimum, immutable base pin, proxy configuration, provenance,
+startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain unchanged.
+
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
 observe Linux amd64 builds only and do not prove every indexed platform. Update a
