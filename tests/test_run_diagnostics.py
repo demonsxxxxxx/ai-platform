@@ -746,9 +746,11 @@ async def test_reconciliation_cause_is_private_and_diagnostic_failure_is_nonfata
             "result_json": {"runtime_diagnostics": {"sdk": _exception_diagnostic_evidence(failure)["sdk"]}},
         })
         assert "exception_chain" not in json.dumps(public)
-        for private in ("synthetic-token", "synthetic-bearer", "/private/workspace"):
-            assert private not in json.dumps(persistence.payload)
-            assert private not in json.dumps(public)
+        for secret in ("synthetic-token", "synthetic-bearer"):
+            assert secret not in json.dumps(persistence.payload)
+            assert secret not in json.dumps(public)
+        assert "/private/workspace" in json.dumps(persistence.payload)
+        assert "/private/workspace" not in json.dumps(public)
 
 
 def test_run_budget_keeps_the_first_and_latest_observations():
@@ -859,7 +861,7 @@ def test_non_finite_diagnostic_values_degrade_before_run_observation_hashing():
 
 
 @pytest.mark.asyncio
-async def test_capture_redacts_private_tool_values_before_storage_and_admin_projection():
+async def test_capture_masks_credentials_but_keeps_tool_context_for_admin_diagnostics():
     persistence = InMemoryDiagnostics()
     service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
@@ -903,16 +905,15 @@ async def test_capture_redacts_private_tool_values_before_storage_and_admin_proj
 
     serialized = str(persistence.payload)
     assert private_token not in serialized
-    assert private_path not in serialized
-    assert "private prompt" not in serialized
-    assert "tool_input" not in serialized
-    assert {
-        "field": "tool_calls",
-        "reason": "redacted",
-        "count": 1,
-    } in persistence.payload["observations"][0]["runtime_diagnostics"][
-        "normalization_losses"
-    ]
+    evidence = persistence.payload["observations"][0]["runtime_diagnostics"]
+    assert evidence["sdk"]["exception_traceback"] == f"{private_path}:42 token=[redacted-secret]"
+    assert evidence["sdk"]["errors"] == {"prompt": "private prompt", "message": "[redacted-secret]"}
+    assert evidence["tool_calls"][0]["tool_input"] == {
+        "command": f"cat {private_path}",
+        "token": "[redacted-secret]",
+    }
+    assert evidence["tool_calls"][0]["failure"] == {"message": "[redacted-secret]"}
+    assert not any(loss.get("reason") == "redacted" for loss in evidence["normalization_losses"])
 
     persistence.snapshot = {
         "run": {
@@ -951,11 +952,10 @@ async def test_capture_redacts_private_tool_values_before_storage_and_admin_proj
     response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
 
     assert private_token not in str(response)
-    assert private_path not in str(response)
-    assert "tool_input" not in str(response)
     assert "private-run-token" not in str(response)
     assert "private-attempt-token" not in str(response)
-    assert "/home/operator/private/run.py" not in str(response)
+    assert response["details"]["tool_calls"][0]["tool_input"]["command"] == f"cat {private_path}"
+    assert response["attempts"][0]["terminal_reason"] == "failed at /home/operator/private/run.py"
 
 
 @pytest.mark.asyncio
@@ -977,7 +977,10 @@ async def test_admin_read_redacts_stored_sdk_fallbacks_in_root_handling_and_expo
             sdk={
                 "exception_type": "RuntimeError",
                 "exception_message": f"retained failure token=STORED_SECRET_{index}",
-                "exception_traceback": f"https://private-{index}.example.invalid/trace",
+                "exception_traceback": (
+                    f"https://operator:STORED_SECRET_{index}@private-{index}.example.invalid/trace"
+                    f"?attempt=2&token=STORED_SECRET_{index}"
+                ),
             },
             failure_observations=(
                 [{"error_code": code, "failure_source": source, "failure_stage": stage}]
@@ -1024,15 +1027,20 @@ async def test_admin_read_redacts_stored_sdk_fallbacks_in_root_handling_and_expo
     assert response["root"]["error_code"] == "provider_timeout"
     assert len(response["handling"]) == 1
     assert response["handling"][0]["error_code"] == "terminal_reconciliation_failed"
+    # Hosts stay visible for debugging; embedded credentials do not.
+    expected_stacks = {
+        f"https://[redacted-secret]@private-{stored}.example.invalid/trace"
+        "?attempt=2&token=[redacted-secret]"
+        for stored in (0, 1)
+    }
     for failure in [response["root"], *response["handling"]]:
         assert failure["exception_type"] == "RuntimeError"
         assert failure["message"] == "retained failure token=[redacted-secret]"
-        assert failure["stack"] == "https://[redacted-host]"
+        assert failure["stack"] in expected_stacks
     for evidence in response["details"]["observations"]:
         assert evidence["sdk"]["exception_message"] == response["root"]["message"]
-        assert evidence["sdk"]["exception_traceback"] == response["root"]["stack"]
+        assert evidence["sdk"]["exception_traceback"] in expected_stacks
     assert "STORED_SECRET_" not in str(response)
-    assert ".example.invalid" not in str(response)
 
     package = build_admin_diagnostic_export(
         diagnostics=response, export_id="export-a", generated_at=NOW,
@@ -1042,7 +1050,7 @@ async def test_admin_read_redacts_stored_sdk_fallbacks_in_root_handling_and_expo
     assert exported["root"] == response["root"]
     assert exported["handling"] == response["handling"]
     assert "STORED_SECRET_" not in str(exported)
-    assert ".example.invalid" not in str(exported)
+    assert ".example.invalid" in str(exported)
 
 
 @pytest.mark.asyncio
@@ -1396,7 +1404,9 @@ async def test_admin_tool_correlation_matches_native_public_projection_without_s
     assert item["operation_id"] == public["actions"][0]["invocation_id"]
     assert item["invocation_id"] == native_id
     assert native_id not in str(candidate.payload)
-    assert "PRIVATE_MARKER" not in str(response)
+    assert item["tool_input"] == {"prompt": "PRIVATE_MARKER"}
+    assert "PRIVATE_MARKER" not in str(candidate.payload)
+    assert "PRIVATE_MARKER" not in str(public)
     assert snapshot == before
     assert "operation_id" not in normalize_sdk_runtime_diagnostics(raw)["tool_calls"][0]
     assert item["operation_id"] != public_tool_operation_id(run_id + "-other", native_id)
@@ -1620,3 +1630,155 @@ async def test_postgres_admin_snapshot_reads_the_run_window_column():
     assert params == ("tenant-a", "run-a")
     assert snapshot["run"]["auto_compact_window"] == 200_000
     assert "max_input_tokens" not in snapshot["run"]
+
+
+@pytest.mark.parametrize("key", ["password", "API_KEY", "access-token", "Authorization", "bearer", "credential", "private_key", "refresh_token", "secret", "token"])
+@pytest.mark.parametrize("key_quote", ["", "'", '"'])
+@pytest.mark.parametrize("value_quote", ["", "'", '"'])
+def test_diagnostic_assignment_redacts_quoted_keys_and_values(key, key_quote, value_quote):
+    secret = "syntheticsecret" + (" tail" if value_quote else "")
+    value = f'{key_quote}{key}{key_quote}: {value_quote}{secret}{value_quote}, status=failed'
+    expected = f"{key}=[redacted-secret], status=failed"
+    assert runs_diagnostics_contract.sanitize_run_diagnostic_text(value) == expected
+    for _ in range(4):
+        assert runs_diagnostics_contract.sanitize_run_diagnostic_text(expected) == expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    ('{"password": "syntheticsecret", "api_key": "syntheticsecond", "status": "failed"}',
+     '{password=[redacted-secret], api_key=[redacted-secret], "status": "failed"}'),
+    (r'''password="syntheticsecret\" tail\\secret"; retry=2''', 'password=[redacted-secret]; retry=2'),
+    (r"password='syntheticsecret\' tail\\secret'; retry=2", 'password=[redacted-secret]; retry=2'),
+    ('password="syntheticsecret tail', 'password=[redacted-secret]'),
+    ('password="syntheticsecret\\', 'password=[redacted-secret]'),
+    ("password='syntheticsecret\nnext diagnostic line", 'password=[redacted-secret]\nnext diagnostic line'),
+    ('password="syntheticsecret\r\nnext diagnostic line', 'password=[redacted-secret]\r\nnext diagnostic line'),
+    ('password="syntheticsecret\rnext diagnostic line', 'password=[redacted-secret]\rnext diagnostic line'),
+    ("password='syntheticsecret\rnext diagnostic line", 'password=[redacted-secret]\rnext diagnostic line'),
+    ('password="syntheticsecret\\\rnext diagnostic line', 'password=[redacted-secret]\rnext diagnostic line'),
+    ("password='syntheticsecret\\\rnext diagnostic line", 'password=[redacted-secret]\rnext diagnostic line'),
+    ('password=""; status=failed', 'password=[redacted-secret]; status=failed'),
+    ('password=[redacted-secret]}syntheticsecret', 'password=[redacted-secret]'),
+    ('password=[redacted-secret]]syntheticsecret', 'password=[redacted-secret]'),
+    ('password=[redacted-secret]}]', 'password=[redacted-secret]}]'),
+    ('password=prefix]syntheticsecret', 'password=[redacted-secret]'),
+    ('password=prefix}syntheticsecret', 'password=[redacted-secret]'),
+    ('password=abc\"syntheticsecret', 'password=[redacted-secret]'),
+    ("password=abc'syntheticsecret", 'password=[redacted-secret]'),
+    ('password=syntheticsecret}', 'password=[redacted-secret]'),
+    ('[token=syntheticsecret]', '[token=[redacted-secret]'),
+    ('status=failed, retry=2; notpassword=normal', 'status=failed, retry=2; notpassword=normal'),
+    ('Bearer syntheticsecret', 'Bearer [redacted-secret]'),
+    ('https://syntheticuser:syntheticsecret@example.invalid/path?token=syntheticsecond&page=2',
+     'https://[redacted-secret]@example.invalid/path?token=[redacted-secret]&page=2'),
+    ('postgres://syntheticuser:syntheticsecret@db.example.invalid:5432/app',
+     'postgres://[redacted-secret]@db.example.invalid:5432/app'),
+    ('https://bucket.example.invalid/a.xlsx?X-Amz-Credential=c&X-Amz-Signature=s&part=1',
+     'https://bucket.example.invalid/a.xlsx?X-Amz-Credential=[redacted-secret]&X-Amz-Signature=[redacted-secret]&part=1'),
+    ('max_tokens=4096 input_tokens=5 token_count=3', 'max_tokens=4096 input_tokens=5 token_count=3'),
+    ('sk-abcdefghijklmnopqrst', '[redacted-secret]'),
+    ('eyJabcdefghijk.abcdefghijkl.abcdefghijkl', '[redacted-secret]'),
+    ('/home/synthetic/private/tool.py', '/home/synthetic/private/tool.py'),
+    (r'C:\synthetic\private\tool.py', r'C:\synthetic\private\tool.py'),
+])
+def test_diagnostic_assignment_escapes_boundaries_and_existing_rules(value, expected):
+    for _ in range(4):
+        value = runs_diagnostics_contract.sanitize_run_diagnostic_text(value)
+        assert value == expected
+
+
+@pytest.mark.parametrize("value", [None, 12, {}, [], ""])
+def test_diagnostic_text_rejects_non_text_and_empty_values(value):
+    assert runs_diagnostics_contract.sanitize_run_diagnostic_text(value) is None
+
+
+def test_diagnostic_assignment_redacts_before_utf8_bounding_and_handles_long_values():
+    text = 'normal ' + '"password": "' + 'syntheticsecret ' * 10000 + '"; status=failed'
+    assert runs_diagnostics_contract.sanitize_run_diagnostic_text(text) == 'normal password=[redacted-secret]; status=failed'
+    for limit in (0, 1, 16, 32, 4096):
+        result = runs_diagnostics_contract.sanitize_run_diagnostic_text(text, max_bytes=limit)
+        assert 'synthetic' not in result
+        assert len(result.encode()) <= limit
+    # Unterminated, escaped tail and repeated key-like text must finish linearly.
+    text = 'password="' + ('syntheticsecret\\" password=' * 10000) + '\\'
+    assert runs_diagnostics_contract.sanitize_run_diagnostic_text(text) == 'password=[redacted-secret]'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [
+    '{"password": "syntheticsecret tail", "api_key": "syntheticsecond"}',
+    "{'password': 'syntheticsecret tail', 'api_key': 'syntheticsecond'}",
+    'password="syntheticsecret tail"; api_key=syntheticsecond',
+    'password="syntheticsecret ' + 'tail ' * 2000,
+])
+async def test_worker_diagnostic_assignment_write_and_admin_read_redaction(message):
+    from app.execution.application.worker_failure_diagnostics import executor_exception_failure
+
+    code, public_message, carrier = executor_exception_failure(RuntimeError(message))
+    assert public_message == 'Executor failed'
+    assert 'syntheticsecret' not in str(carrier)
+    assert 'syntheticsecond' not in str(carrier)
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        clock=lambda: NOW,
+    )
+    await service.capture_failure_result(
+        object(), tenant_id='tenant-a', run_id='run-a', attempt_id='attempt-a',
+        source='worker_executor', stage='terminalization', error_code=code,
+        result_json=carrier,
+    )
+    encoded = runs_diagnostics_contract.serialize_run_diagnostics_payload(persistence.payload)
+    assert 'syntheticsecret' not in encoded
+    assert 'syntheticsecond' not in encoded
+    stored = json.loads(encoded)
+    persistence.snapshot = {
+        'run': {'run_id': 'run-a', 'status': 'failed'}, 'result_json': {},
+        'diagnostic': {'diagnostic_id': 'rdiag-a', 'schema_version': RUN_DIAGNOSTICS_SCHEMA_VERSION,
+                       'revision': 1, 'payload_json': stored}, 'attempts': [],
+    }
+    response = await service.read_admin(object(), tenant_id='tenant-a', run_id='run-a')
+    assert '[redacted-secret]' in response['root']['message']
+    assert 'syntheticsecret' not in str(response)
+    assert 'syntheticsecond' not in str(response)
+
+    # Independently exercise read-time protection for old, unsanitized rows.
+    evidence = stored['observations'][0]['runtime_diagnostics']
+    evidence['sdk']['exception_message'] = message
+    evidence['sdk']['exception_traceback'] = message
+    evidence['sdk']['errors'] = {'message': message}
+    evidence['failure_observations'] = [{
+        'error_code': code, 'failure_source': 'worker_executor', 'failure_stage': 'executor',
+        'exception': {'type': 'RuntimeError', 'message': message, 'traceback': message},
+    }]
+    snapshot_before = deepcopy(persistence.snapshot)
+    response = await service.read_admin(object(), tenant_id='tenant-a', run_id='run-a')
+    assert persistence.snapshot == snapshot_before
+    assert '[redacted-secret]' in response['root']['message']
+    assert '[redacted-secret]' in response['root']['stack']
+    assert 'syntheticsecret' not in str(response)
+    assert 'syntheticsecond' not in str(response)
+
+
+def test_diagnostic_fields_mask_only_credential_values():
+    projected = runs_diagnostics_contract._sanitize_diagnostic_value({
+        "api_key": "syntheticsecret", "Authorization": "Bearer syntheticsecret",
+        "client_secret": "syntheticsecret", "x-amz-security-token": "syntheticsecret",
+        "refresh_token": "syntheticsecret", "cookie": "syntheticsecret", "password": "",
+        "input_tokens": 1200, "output_tokens": 300, "max_tokens": 4096, "token_count": 3,
+        "request_id": "req-1", "response_status": 502, "content_type": "application/json",
+        "workspace_path": "/srv/workspaces/run-a/inputs/a.xlsx", "command": "python run.py",
+        "prompt": "summarize the sheet", "tool_input": {"file": "a.xlsx", "token": "syntheticsecret"},
+    })
+    assert "syntheticsecret" not in str(projected)
+    for key in ("api_key", "Authorization", "client_secret", "x-amz-security-token",
+                "refresh_token", "cookie"):
+        assert projected[key] == "[redacted-secret]"
+    assert projected["password"] == ""
+    assert projected["tool_input"] == {"file": "a.xlsx", "token": "[redacted-secret]"}
+    for key in ("input_tokens", "output_tokens", "max_tokens", "token_count", "request_id",
+                "response_status", "content_type", "workspace_path", "command", "prompt"):
+        assert key in projected and projected[key] != "[redacted-secret]"

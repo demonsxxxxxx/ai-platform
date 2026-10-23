@@ -7165,8 +7165,11 @@ async def test_sdk_preload_cause_reaches_private_persistence(monkeypatch, tmp_pa
     assert [item["type"] for item in chain] == ["ClaudeSessionStoreTransportError", "TimeoutError"]
     assert chain[0]["relation"] == "cause"
     assert "synthetic transport cause" in chain[1]["message"]
-    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
+    for secret in ("synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(private)
+    # Admin evidence keeps the failing host; the public projection never carries it.
+    assert "https://callback.invalid/path" in json.dumps(private)
+    assert "callback.invalid" not in json.dumps(public)
     assert reason not in json.dumps(public)
     assert "synthetic transport cause" not in json.dumps(public)
 
@@ -7265,8 +7268,11 @@ async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkey
         assert private["sdk"]["errors"]["size_bytes"] > 20000
     else:
         assert private["sdk"]["errors"].startswith("final flush rejected")
-    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+    for secret in ("synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(private)
+    if not oversized:
+        assert "https://callback.invalid/path" in json.dumps(private)
+    assert "callback.invalid" not in json.dumps(public)
     assert "final flush rejected" not in json.dumps(public)
 
 
