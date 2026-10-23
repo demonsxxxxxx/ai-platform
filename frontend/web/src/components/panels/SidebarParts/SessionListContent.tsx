@@ -43,6 +43,7 @@ import {
 } from "../../governance/workbenchAccessPolicy";
 import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { isAiAdminUser } from "../capabilityAdmin";
+import { useSidebarPreference, SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY } from "../../../hooks/useSidebarPreference";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -153,7 +154,9 @@ export function SessionListContent({
   const [historyView, setHistoryView] = useState<"tasks" | "all">(
     "tasks",
   );
-  const [isManagementOpen, setIsManagementOpen] = useState(false);
+  const [managementCollapsed, setManagementCollapsed] = useSidebarPreference(SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const isManagementOpen = isAiAdmin ? !managementCollapsed : capabilitiesOpen;
   const autoExpandedSessionRef = useRef<string | null>(null);
   const autoExpandedAgentGroupsRef = useRef<string | null>(null);
   useEffect(() => {
@@ -608,9 +611,12 @@ export function SessionListContent({
             aria-expanded={isManagementOpen}
             htmlType="button"
             className="group/section flex h-8 w-full items-center justify-between rounded-md px-[9px] text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-            onClick={() => setIsManagementOpen((open) => !open)}
+            style={{ justifyContent: "flex-start", textAlign: "left" }}
+            onClick={() => isAiAdmin
+              ? setManagementCollapsed((collapsed) => !collapsed)
+              : setCapabilitiesOpen((open) => !open)}
           >
-            <span className="flex min-w-0 items-center gap-3">
+            <span className="flex min-w-0 flex-1 items-center gap-3">
               {isAiAdmin ? (
                 <Shield size={19} aria-hidden="true" />
               ) : (

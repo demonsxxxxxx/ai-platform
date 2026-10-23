@@ -18,8 +18,9 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /flex shrink-0 justify-end px-3 pt-2/);
-  assert.doesNotMatch(shell, /absolute right-3 top-2/);
+  assert.match(shell, /data-workbench-region="header"[\s\S]*className=\{libreChatSurface\.threadHeader\}[\s\S]*\{header\}[\s\S]*data-librechat-context-toggle/);
+  assert.match(surface, /threadHeader:[\s\S]*flex min-h-14 shrink-0 items-center/);
+  assert.doesNotMatch(shell, /flex shrink-0 justify-end px-3 pt-2|absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:[\s\S]*relative flex/);
@@ -206,7 +207,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
-  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
   assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
@@ -658,7 +659,7 @@ test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*112px/);
+  assert.match(css, /min-height:\s*104px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(composer, /flex w-full flex-col/);
   assert.match(composer, /PopoverPortal/);

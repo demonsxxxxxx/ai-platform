@@ -21,8 +21,8 @@ FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/icons/icon-512.png",
 )
 FRONTEND_NGINX_BASE = (
-    "FROM nginx:1.30.4-alpine@"
-    "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime"
+    "FROM nginx:1.30.6-alpine@"
+    "sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951 AS runtime"
 )
 
 

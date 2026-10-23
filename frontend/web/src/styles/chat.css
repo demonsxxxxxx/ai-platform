@@ -8,12 +8,12 @@
 
 .chat-input-shell {
   background: var(--theme-workbench-canvas);
-  padding-bottom: 0.5rem;
+  padding-bottom: 0;
 }
 
 .chat-input-container {
   border-radius: 1.25rem;
-  min-height: 112px;
+  min-height: 104px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:

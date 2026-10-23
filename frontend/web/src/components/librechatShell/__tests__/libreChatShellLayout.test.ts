@@ -112,6 +112,22 @@ test("composer and right panel expose LibreChat-style regions without backend au
   );
 });
 
+test("chat keeps aligned gutters and a compact composer without changing its controls", () => {
+  const surface = read("src/librechat-ui/surface.ts");
+  const chatInput = read("src/components/chat/ChatInput.tsx");
+  const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
+  const chatCss = read("src/styles/chat.css");
+
+  assert.match(surface, /threadBody: "[^"]*px-2[^\n]*sm:px-4/);
+  assert.match(surface, /composer: "[^"]*px-2[^\n]*sm:px-4/);
+  assert.doesNotMatch(chatInput, /chat-input-shell sm:px-2/);
+  assert.match(chatInput, /className="flex flex-col gap-0"[\s\S]{0,150}data-slot="composer-ordinary-controls"/);
+  assert.match(composer, /min-h-\[48px\]/);
+  assert.match(chatCss, /\.chat-input-container\s*\{[^}]*min-height:\s*104px/);
+  assert.match(chatCss, /max-height:\s*min\(52dvh, 420px\)/);
+  assert.match(chatCss, /env\(safe-area-inset-bottom\)/);
+});
+
 test("empty chat keeps the first task prompt reachable and context uses one quiet divider", () => {
   const welcome = read("src/components/chat/WelcomePage.tsx");
   const welcomeCss = read("src/styles/welcome.css");
