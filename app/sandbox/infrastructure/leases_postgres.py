@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from app.platform.public_payload import sanitize_public_text
-from app.identity.infrastructure.audit_postgres import append_audit_log
-from app.streaming.infrastructure.run_events_postgres import append_event
 from psycopg import AsyncConnection
 from typing import Any
 
@@ -197,61 +195,6 @@ async def list_sandbox_leases_for_run(
         (tenant_id, run_id),
     )
     return list(await cursor.fetchall())
-
-
-async def record_sandbox_runtime_cleanup_outcome(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    run_id: str,
-    trace_id: str | None = None,
-    user_id: str | None = None,
-    requested_by_role: str | None = None,
-    reason: str,
-    status: str,
-    lease_ids: list[str] | None = None,
-    failures: list[dict[str, str]] | None = None,
-) -> None:
-    payload: dict[str, Any] = {
-        "visible_to_user": False,
-        "reason": reason,
-        "status": status,
-        "lease_ids": lease_ids or [],
-        "failure_count": len(failures or []),
-    }
-    if requested_by_role:
-        payload["requested_by_role"] = requested_by_role
-    if failures:
-        payload["failures"] = failures
-    event_type = "sandbox_runtime_cleanup_failed" if status == "failed" else "sandbox_runtime_cleanup_succeeded"
-    message = "Sandbox runtime cleanup failed" if status == "failed" else "Sandbox runtime cleanup succeeded"
-    await append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        trace_id=trace_id,
-        event_type=event_type,
-        stage="sandbox",
-        message=message,
-        payload=payload,
-    )
-    await append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        action=f"sandbox.runtime.cleanup.{status}",
-        target_type="run",
-        target_id=run_id,
-        trace_id=trace_id,
-        payload_json={
-            "run_id": run_id,
-            "reason": reason,
-            "status": status,
-            "lease_ids": lease_ids or [],
-            "failures": failures or [],
-            "requested_by_role": requested_by_role,
-        },
-    )
 
 
 async def list_sandbox_leases(conn: AsyncConnection, *, tenant_id: str, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

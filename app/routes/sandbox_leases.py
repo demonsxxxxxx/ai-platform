@@ -12,7 +12,7 @@ from app.models import (
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.postgres.errors import RepositoryNotFoundError
-from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.bootstrap.sandbox_cleanup import build_sandbox_cleanup_outcomes, build_sandbox_runtime_cleanup
 from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -20,6 +20,7 @@ from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 
 _sandbox_cleanup = build_sandbox_runtime_cleanup()
+_sandbox_cleanup_outcomes = build_sandbox_cleanup_outcomes()
 
 router = APIRouter()
 
@@ -218,7 +219,7 @@ async def release_sandbox_lease(
     except SandboxRuntimeCleanupError as exc:
         try:
             async with transaction() as conn:
-                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
+                await _sandbox_cleanup_outcomes.record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
