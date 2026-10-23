@@ -290,7 +290,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         assert suite in backend_workflow
     assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
-    assert "corepack pnpm run lint && corepack pnpm run build" in workflow
+    assert "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build" in workflow
     assert "python tools/frontend_projection_audit.py --format json" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow

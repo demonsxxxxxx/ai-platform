@@ -21,6 +21,7 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& node scripts/check-style-rules.mjs "
     "&& corepack pnpm run test:auth "
     "&& corepack pnpm run test:agent-market "
     "&& corepack pnpm run test:prd-closure-smoke-source "
@@ -126,7 +127,7 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert trace["workflow"]["enforced_step_commands"] == {
-        "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run build",
+        "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build",
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
         "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
         "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
