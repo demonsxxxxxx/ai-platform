@@ -23,7 +23,7 @@ export function ShortcutRow({
             key={key}
             className="px-1.5 py-0.5 rounded text-[11px] font-mono"
             style={{
-              backgroundColor: "var(--theme-bg-hover, rgba(128,128,128,0.1))",
+              backgroundColor: "var(--theme-hover)",
               border: "1px solid var(--theme-border)",
               color: "var(--theme-text-secondary)",
             }}

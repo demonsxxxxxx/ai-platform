@@ -58,7 +58,7 @@ export function UserMessageBubble({
           {lockedSkillLabel && (
             <div
               data-locked-skill-label={lockedSkillLabel}
-              className="mb-2 rounded-full border border-sky-200/80 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300"
+              className="mb-2 rounded-full border border-[var(--theme-info-ring)] bg-[var(--theme-info-soft)] px-3 py-1 text-xs font-medium text-[var(--theme-info-text)]"
             >
               {t("chat.message.lockedSkill", { skill: lockedSkillLabel })}
             </div>

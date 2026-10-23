@@ -51,7 +51,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
               <Button type="text"
                 htmlType="button"
                 onClick={a.addFile}
-                className="w-full flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-white/5 transition-colors"
+                className="w-full flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-[color-mix(in_srgb,var(--theme-bg-card)_5%,transparent)] transition-colors"
               >
                 <Plus size={13} />
                 {t("skills.form.addFile")}
@@ -115,7 +115,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                   <div
                     className={`flex h-full flex-col overflow-hidden rounded-lg bg-[var(--theme-bg)] transition-colors duration-150 ${
                       a.errors.content
-                        ? "ring-1 ring-red-300 dark:ring-red-700"
+                        ? "ring-1 ring-[var(--theme-danger-ring)]"
                         : ""
                     } skill-editor-shell`}
                   >

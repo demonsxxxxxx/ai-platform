@@ -78,7 +78,7 @@
 /* 统一 checkbox / radio 样式 */
 input[type="checkbox"],
 input[type="radio"] {
-  @apply h-4 w-4 rounded border-stone-300 text-stone-900 focus:ring-2 focus:ring-stone-500/30 dark:border-stone-500 dark:bg-stone-800 dark:text-stone-100 dark:focus:ring-stone-400/30;
+  @apply h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-neutral-500/30 dark:border-neutral-500 dark:bg-neutral-800 dark:text-neutral-100 dark:focus:ring-neutral-400/30;
   accent-color: var(--theme-primary);
 }
 
@@ -96,8 +96,8 @@ select:-webkit-autofill:hover,
 select:-webkit-autofill:focus,
 select:-webkit-autofill:active {
   -webkit-box-shadow: 0 0 0 30px var(--theme-bg-card) inset !important;
-  -webkit-text-fill-color: #1c1917 !important;
-  caret-color: #1c1917 !important;
+  -webkit-text-fill-color: var(--theme-text) !important;
+  caret-color: var(--theme-text) !important;
   outline: none !important;
   border-color: var(--theme-border) !important;
 }
@@ -114,55 +114,61 @@ select:-webkit-autofill:active {
 .dark select:-webkit-autofill:hover,
 .dark select:-webkit-autofill:focus,
 .dark select:-webkit-autofill:active {
-  -webkit-box-shadow: 0 0 0 30px #292524 inset !important;
-  -webkit-text-fill-color: #f5f5f4 !important;
-  caret-color: #f5f5f4 !important;
+  -webkit-box-shadow: 0 0 0 30px var(--theme-sidebar-panel-muted) inset !important;
+  -webkit-text-fill-color: var(--theme-text) !important;
+  caret-color: var(--theme-text) !important;
   outline: none !important;
-  border-color: #44403c !important;
+  border-color: var(--theme-border) !important;
 }
 
 :root {
   --font-ui: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   font-family: var(--font-ui);
   /* LibreChat-style post-login shell tokens */
-  --theme-primary: #0f766e;
-  --theme-primary-hover: #115e59;
-  --theme-primary-light: #e7f4f2;
+  --theme-primary: #222222;
+  --theme-primary-hover: #333333;
+  --theme-primary-light: rgba(0, 0, 0, 0.06);
   --theme-primary-foreground: #ffffff;
   --theme-primary-foreground-muted: rgba(255, 255, 255, 0.8);
   --theme-primary-foreground-subtle: rgba(255, 255, 255, 0.72);
-  --theme-ring: #0f766e;
+  --theme-ring: #222222;
   --theme-bg: #ffffff;
   --theme-workbench-canvas: #ffffff;
   --theme-workbench-panel: #ffffff;
   --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #f7f7f8;
-  --theme-sidebar-rail: #f7f7f8;
-  --theme-sidebar-panel: #f7f7f8;
-  --theme-sidebar-panel-muted: #ececec;
-  --theme-sidebar-hover: #ececec;
-  --theme-sidebar-active: #e3e3e3;
+  --theme-bg-sidebar: #f8f8f8;
+  --theme-sidebar-rail: #f8f8f8;
+  --theme-sidebar-panel: #f8f8f8;
+  --theme-sidebar-panel-muted: #eeeeee;
+  --theme-sidebar-hover: rgba(0, 0, 0, 0.06);
+  --theme-sidebar-active: #eeeeee;
   --theme-border: #e3e3e3;
-  --theme-border-strong: #cdcdcd;
-  --theme-text: #0f172a;
-  --theme-text-secondary: #64748b;
-  --theme-text-tertiary: #94a3b8;
-  --theme-text-quaternary: #cbd5e1;
-  --theme-send-bg: #212121;
+  --theme-border-strong: #cccccc;
+  --theme-text: #080808;
+  --theme-text-secondary: #666666;
+  --theme-text-tertiary: #999999;
+  --theme-text-quaternary: #bbbbbb;
+  --theme-send-bg: #222222;
   --theme-send-fg: #ffffff;
-  --theme-success: #15803d;
-  --theme-success-soft: #f0fdf4;
-  --theme-success-ring: #bbf7d0;
-  --theme-info: #0369a1;
-  --theme-info-soft: #f0f9ff;
-  --theme-info-ring: #bae6fd;
-  --theme-warning: #a16207;
-  --theme-warning-soft: #fefce8;
-  --theme-warning-ring: #fde68a;
-  --theme-danger: #be123c;
-  --theme-danger-soft: #fff1f2;
-  --theme-danger-ring: #fecdd3;
-  --theme-hover: #f3f4f6;
+  --theme-success: #379d4a;
+  --theme-success-soft: rgba(55, 157, 74, 0.1);
+  --theme-success-ring: rgba(55, 157, 74, 0.3);
+  --theme-info: #0072f5;
+  --theme-info-soft: rgba(0, 114, 245, 0.1);
+  --theme-info-ring: rgba(0, 114, 245, 0.3);
+  --theme-warning: #ee9e0b;
+  --theme-warning-soft: rgba(238, 158, 11, 0.12);
+  --theme-warning-ring: rgba(238, 158, 11, 0.3);
+  --theme-danger: #ec5e41;
+  --theme-danger-soft: rgba(236, 94, 65, 0.1);
+  --theme-danger-ring: rgba(236, 94, 65, 0.3);
+  --theme-danger-text: #b93a22;
+  --theme-success-text: #25703a;
+  --theme-warning-text: #9a5b00;
+  --theme-info-text: #0060d0;
+  --theme-on-overlay: #ffffff;
+  --theme-overlay-solid: #000000;
+  --theme-hover: rgba(0, 0, 0, 0.04);
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
   --theme-shadow-sm: rgba(0, 0, 0, 0.04);
@@ -176,44 +182,50 @@ select:-webkit-autofill:active {
 }
 
 .dark {
-  --theme-primary: #d6d3d1; /* stone-300 */
-  --theme-primary-hover: #e7e5e4; /* stone-200 */
-  --theme-primary-light: #292524; /* stone-800 */
-  --theme-primary-foreground: #1c1917;
-  --theme-primary-foreground-muted: rgba(28, 25, 23, 0.78);
-  --theme-primary-foreground-subtle: rgba(28, 25, 23, 0.7);
-  --theme-ring: #d6d3d1; /* stone-300 */
-  --theme-bg: #151210; /* closer to sidebar */
-  --theme-workbench-canvas: #151210;
-  --theme-workbench-panel: #1c1917;
-  --theme-bg-card: #1c1917; /* stone-900 */
-  --theme-bg-sidebar: #171412; /* stone-950 variant */
-  --theme-sidebar-rail: #111827;
-  --theme-sidebar-panel: #171412;
-  --theme-sidebar-panel-muted: #292524;
-  --theme-sidebar-hover: #241f1c;
-  --theme-sidebar-active: #2c2622;
-  --theme-border: #44403c; /* stone-700 */
-  --theme-border-strong: #57534e; /* stone-600 */
-  --theme-text: #f8fafc;
-  --theme-text-secondary: #d6d3d1; /* stone-300 */
-  --theme-text-tertiary: #a8a29e;
-  --theme-text-quaternary: #78716c;
+  --theme-primary: #eeeeee;
+  --theme-primary-hover: #ffffff;
+  --theme-primary-light: rgba(255, 255, 255, 0.1);
+  --theme-primary-foreground: #111111;
+  --theme-primary-foreground-muted: rgba(17, 17, 17, 0.78);
+  --theme-primary-foreground-subtle: rgba(17, 17, 17, 0.7);
+  --theme-ring: #eeeeee;
+  --theme-bg: #000000;
+  --theme-workbench-canvas: #0d0d0d;
+  --theme-workbench-panel: #0d0d0d;
+  --theme-bg-card: #0d0d0d;
+  --theme-bg-sidebar: #000000;
+  --theme-sidebar-rail: #000000;
+  --theme-sidebar-panel: #000000;
+  --theme-sidebar-panel-muted: #1a1a1a;
+  --theme-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --theme-sidebar-active: rgba(255, 255, 255, 0.1);
+  --theme-border: #202020;
+  --theme-border-strong: #333333;
+  --theme-text: #ffffff;
+  --theme-text-secondary: #aaaaaa;
+  --theme-text-tertiary: #6f6f6f;
+  --theme-text-quaternary: #555555;
   --theme-send-bg: #ffffff;
-  --theme-send-fg: #171717;
-  --theme-success: #86efac;
-  --theme-success-soft: rgba(22, 101, 52, 0.34);
-  --theme-success-ring: rgba(134, 239, 172, 0.22);
-  --theme-info: #7dd3fc;
-  --theme-info-soft: rgba(12, 74, 110, 0.36);
-  --theme-info-ring: rgba(125, 211, 252, 0.22);
-  --theme-warning: #fde68a;
-  --theme-warning-soft: rgba(113, 63, 18, 0.36);
-  --theme-warning-ring: rgba(253, 230, 138, 0.22);
-  --theme-danger: #fda4af;
-  --theme-danger-soft: rgba(136, 19, 55, 0.36);
-  --theme-danger-ring: rgba(253, 164, 175, 0.22);
-  --theme-hover: #292524;
+  --theme-send-fg: #111111;
+  --theme-success: #c4f042;
+  --theme-success-soft: rgba(196, 240, 66, 0.12);
+  --theme-success-ring: rgba(196, 240, 66, 0.3);
+  --theme-info: #60b1ff;
+  --theme-info-soft: rgba(96, 177, 255, 0.14);
+  --theme-info-ring: rgba(96, 177, 255, 0.3);
+  --theme-warning: #ffb224;
+  --theme-warning-soft: rgba(255, 178, 36, 0.14);
+  --theme-warning-ring: rgba(255, 178, 36, 0.3);
+  --theme-danger: #f4416c;
+  --theme-danger-soft: rgba(244, 65, 108, 0.14);
+  --theme-danger-ring: rgba(244, 65, 108, 0.3);
+  --theme-danger-text: #f4416c;
+  --theme-success-text: #c4f042;
+  --theme-warning-text: #ffb224;
+  --theme-info-text: #60b1ff;
+  --theme-on-overlay: #ffffff;
+  --theme-overlay-solid: #000000;
+  --theme-hover: rgba(255, 255, 255, 0.06);
   --theme-overlay: rgba(0, 0, 0, 0.6);
   --theme-overlay-strong: rgba(0, 0, 0, 0.7);
   --theme-shadow-sm: rgba(0, 0, 0, 0.2);
@@ -221,15 +233,15 @@ select:-webkit-autofill:active {
   --theme-shadow-lg: rgba(0, 0, 0, 0.5);
 }
 
-/* Dark mode text brightness boost — shift stone-400/500/600 one step lighter */
-.dark .dark\:text-stone-400 {
-  color: #d6d3d1;
+/* Dark mode text brightness boost — shift neutral-400/500/600 one step lighter */
+.dark .dark\:text-neutral-400 {
+  color: var(--theme-text-quaternary);
 }
-.dark .dark\:text-stone-500 {
-  color: #a8a29e;
+.dark .dark\:text-neutral-500 {
+  color: var(--theme-text-tertiary);
 }
-.dark .dark\:text-stone-600 {
-  color: #a8a29e;
+.dark .dark\:text-neutral-600 {
+  color: var(--theme-text-tertiary);
 }
 
 * {
@@ -305,22 +317,22 @@ html[data-mobile-keyboard="true"] #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.08);
+  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
   border-radius: 10px;
   transition: background 0.3s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.18);
+  background: color-mix(in srgb, var(--theme-text) 18%, transparent);
 }
 
 /* Dark mode scrollbar */
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--theme-bg-card) 8%, transparent);
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: color-mix(in srgb, var(--theme-bg-card) 15%, transparent);
 }
 
 /* ── Sidebar scroll effects (disabled — solid-color overlays cause truncation) ── */

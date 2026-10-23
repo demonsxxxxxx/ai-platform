@@ -36,11 +36,11 @@ interface ProtectedRouteProps {
 function NoPermission() {
   const { t } = useTranslation();
   return (
-    <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-900">
       <div className="text-center">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--theme-danger-soft)]">
           <svg
-            className="h-8 w-8 text-red-500 dark:text-red-400"
+            className="h-8 w-8 text-[var(--theme-danger-text)]"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -53,10 +53,10 @@ function NoPermission() {
             />
           </svg>
         </div>
-        <h2 className="mb-2 text-xl font-semibold text-stone-900 dark:text-stone-100">
+        <h2 className="mb-2 text-xl font-semibold text-neutral-900 dark:text-neutral-100">
           {t("errors.noPermissionTitle")}
         </h2>
-        <p className="text-stone-500 dark:text-stone-400">
+        <p className="text-neutral-500 dark:text-neutral-400">
           {t("errors.noPermission")}
         </p>
       </div>

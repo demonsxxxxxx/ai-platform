@@ -36,7 +36,7 @@ export function ContactAdminDialog({
       footer={<Button type="primary" onClick={onClose} autoFocus>{t("common.close", "关闭")}</Button>}
     >
       <div className="flex items-start gap-3">
-        <ShieldCheck aria-hidden="true" size={24} className="shrink-0 text-amber-500" />
+        <ShieldCheck aria-hidden="true" size={24} className="shrink-0 text-[var(--theme-warning-text)]" />
         <div className="space-y-3 text-sm leading-relaxed text-[var(--theme-text-secondary)]">
           <p>{description}</p>
           <p>{t("contactAdmin.noContactInfo", "暂无管理员联系方式，请联系系统管理员。")}</p>

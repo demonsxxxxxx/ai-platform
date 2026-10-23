@@ -316,12 +316,12 @@ export function RunQuestionCard({
       </fieldset>
       <div className="flex flex-col gap-2">
         {answerAttempted && !currentAnswered && !lastStep ? (
-          <p className="text-xs text-[var(--theme-danger)]" role="alert">
+          <p className="text-xs text-[var(--theme-danger-text)]" role="alert">
             {t("chat.runInputs.answerCurrentRequired", "请先回答当前问题。")}
           </p>
         ) : null}
         {answerAttempted && lastStep && firstUnanswered >= 0 ? (
-          <p className="text-xs text-[var(--theme-danger)]" role="alert">
+          <p className="text-xs text-[var(--theme-danger-text)]" role="alert">
             {t("chat.runInputs.answerRequiredAt", "请先回答第 {{index}} 题。", {
               index: firstUnanswered + 1,
             })}
@@ -333,7 +333,7 @@ export function RunQuestionCard({
           </p>
         ) : null}
         {runInputs.submissionError === "rejected" ? (
-          <p className="text-xs text-[var(--theme-danger)]" role="alert">
+          <p className="text-xs text-[var(--theme-danger-text)]" role="alert">
             {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
           </p>
         ) : null}

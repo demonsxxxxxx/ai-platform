@@ -149,7 +149,7 @@ export function AgentConversationPanel({
       ) : null}
       <Button type="text"
         aria-label={isCollapsed ? "展开历史会话" : "收起历史会话"}
-        className="absolute -right-5 top-1/2 z-20 flex h-12 w-5 -translate-y-1/2 items-center justify-center rounded-r-lg bg-[var(--theme-text-secondary)] text-white shadow-sm transition-colors hover:bg-[var(--theme-text)]"
+        className="absolute -right-5 top-1/2 z-20 flex h-12 w-5 -translate-y-1/2 items-center justify-center rounded-r-lg bg-[var(--theme-text-secondary)] text-[var(--theme-primary-foreground)] shadow-sm transition-colors hover:bg-[var(--theme-text)]"
         onClick={() => setIsCollapsed((collapsed) => !collapsed)}
         title={isCollapsed ? "展开历史会话" : "收起历史会话"}
         htmlType="button"

@@ -65,7 +65,7 @@ WORKFLOW_TEST_STEP_COMMANDS = {
     ),
 }
 WORKFLOW_STEP_COMMANDS = {
-    "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run build",
+    "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build",
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
     "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",

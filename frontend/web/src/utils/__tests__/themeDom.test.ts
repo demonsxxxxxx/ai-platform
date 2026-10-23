@@ -109,7 +109,7 @@ test("applyThemeToDocument updates every theme-color meta tag", () => {
 
   applyThemeToDocument("dark", documentLike);
 
-  assert.deepEqual(metaValues, ["#151210", "#151210", "#151210"]);
+  assert.deepEqual(metaValues, ["#000000", "#000000", "#000000"]);
 });
 
 test("applyThemeToDocument keeps the page background in sync for system bars", () => {
@@ -140,8 +140,8 @@ test("applyThemeToDocument keeps the page background in sync for system bars", (
 
   applyThemeToDocument("dark", documentLike);
 
-  assert.equal(rootStyle.get("background-color"), "#151210");
+  assert.equal(rootStyle.get("background-color"), "#000000");
   assert.equal(rootStyle.get("color-scheme"), "dark");
-  assert.equal(bodyStyle.get("background-color"), "#151210");
+  assert.equal(bodyStyle.get("background-color"), "#000000");
   assert.equal(bodyStyle.get("color-scheme"), "dark");
 });
