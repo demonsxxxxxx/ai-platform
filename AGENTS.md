@@ -70,5 +70,6 @@ reviewers must inspect or rerun the referenced inventory.
 - Frontend implementation and checks: [web frontend instructions](frontend/web/AGENTS.md).
 - Python checks: [local test execution](docs/agent-rules/local-test-execution.md).
 - PR and review: [delivery workflow](docs/agent-rules/github-issue-pr-workflow.md).
+  Review a PR, branch, or diff with the [review skill](.agents/skills/ai-platform-review/SKILL.md).
 - Parallel work: [coordination](docs/agent-rules/multi-agent-context-workflow.md).
 - Deployment: [release runbook](docs/operations/release-operations-runbook.md).
