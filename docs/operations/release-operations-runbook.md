@@ -5,55 +5,10 @@ version publishes an immutable Deployment Release with one operator asset,
 `ai-platform-internal-test.tar.gz`,
 containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
 GitHub Actions, source checkouts, and host image builds are not part of a normal
-application install or upgrade. Development candidates follow the separate
-[s72 development workflow](#s72-development-and-testing) below, not this release path.
-The archive retains its historical `internal-test`
+application install or upgrade. The archive retains its historical `internal-test`
 name; there is no test/production package selection. The
 [single deployment guide](../../deploy/ai-platform/README.md) describes the
 configuration and commands included in that package.
-
-## s72 development and testing
-
-s72 is the project's designated development and test host. Within an authorized
-development task, developers may upload a fixed source snapshot, build candidate
-images and run integration or real-task tests there without publishing a Release
-or requesting a separate release-process exception. This standing permission
-applies to development candidates, not formal publication, another host, or an
-unrelated task. The current package, Compose project and path names keep their
-existing identities; the environment designation does not select a second
-package or change the network/security profile.
-
-Use SSH MCP for s72 access. Start with one bounded, secret-safe connection check,
-then inspect active Runs, Attempts, leases, sandbox containers, port use and
-shared resource limits. Do not treat development data as disposable or a free
-port as proof that the whole host is idle.
-
-For a candidate test:
-
-- Record the exact base commit and scoped diff, including any uncommitted source.
-  Keep it separate from unrelated worktree changes. Record the built image
-  identity and label the result as a candidate, never as a qualified Release.
-- Use a task-owned Compose project or containers, unused ports, separate
-  PostgreSQL/Redis/object-storage data and a separate workspace root. Check the
-  rendered configuration and actual mounts before admitting a Run. Use callback
-  and model-proxy endpoints that satisfy the existing runtime contracts; do not
-  weaken their allowlists to accommodate an arbitrary test port.
-- Reuse model connections and published Skills only within the task's authorized
-  scope. Keep credentials server-side, preserve login, authorization and
-  Run/Attempt fences, and keep fake providers confined to explicitly synthetic
-  tests. A real-model acceptance claim requires a real provider.
-- Set the task's duration, concurrency and model-use bounds. Preserve other
-  developers' services and active work. Replacing or restarting the shared
-  instance, changing its schema/configuration, or deleting existing data requires
-  explicit approval for that intervention and an applicable recovery route.
-- Retain sanitized results and required output files, then remove only resources
-  owned by this task and verify shared-service health and identity. Never run
-  whole-host cleanup or delete shared images, volumes, credentials or workspaces.
-
-A candidate build, ready endpoint or successful Run does not establish formal
-release readiness or artifact quality. Report each result and its actual scope.
-Formal publication and shared-instance package upgrades still use the qualified
-package and install/upgrade procedure in this runbook.
 
 ## What CI publishes
 
@@ -292,7 +247,7 @@ python3 -B "$SOURCE/tools/release_authority.py" probe-apt-mirrors \
 
 The probe performs HTTPS GET checks and does not invoke Compose. If either
 endpoint fails, use the upstream Debian endpoints rather than weakening APT
-verification. This build-only recovery is not an alternate formal deployment path.
+verification. This build-only recovery is not an alternate deployment path.
 
 ## Evidence and ownership
 
@@ -324,6 +279,5 @@ Run (or its documented turn-limit outcome); it does not prove successful model
 completion, upstream reachability or production capacity enforcement.
 
 The old repository deployment wrappers and implicit "latest" selection are
-retired. Formal installs and upgrades use the package command above; do not
-reconstruct release metadata or copy source files into the shared installation.
-Isolated s72 development candidates follow the development workflow above.
+retired. Use the package command above; do not reconstruct release metadata or
+copy source files on the target host.

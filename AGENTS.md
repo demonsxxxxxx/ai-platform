@@ -48,15 +48,9 @@ Do not weaken required checks to make a candidate pass.
 - Never copy, print, or commit real environment files, credentials, account
   identifiers, or private prompts. Use synthetic or authorized redacted data.
 - Do not mount the Docker socket in default Compose.
-- s72 is the designated development and test host. An authorized development task
-  may build and run an isolated candidate there under the
-  [s72 development workflow](docs/operations/release-operations-runbook.md#s72-development-and-testing);
-  this is not a formal release and needs no separate release-process exception.
-  Preserve shared services, existing data and other active work; host designation
-  does not authorize destructive operations or deployment to another host.
 - Access s72 only through SSH MCP, with one bounded, secret-safe connection check
   when remote work is requested. Do not substitute system SSH or local state.
-  Formal deployment requires the release runbook, fresh evidence, and explicit authority.
+  Deployment requires the release runbook, fresh evidence, and explicit authority.
 
 Behavior changes that delete, replace, migrate, or alter compatibility must carry
 an applicable retirement and compatibility disposition in the PR before review.
