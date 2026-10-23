@@ -43,12 +43,12 @@ export const WelcomePage = memo(function WelcomePage({
   return (
     <div
       data-workbench-empty-state="chat"
-      className="welcome-root welcome-chat-start chat-entry-root relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 sm:px-5"
+      className="welcome-root welcome-chat-start chat-entry-root relative flex h-full min-h-0 flex-col overflow-y-auto py-3"
     >
       <EmptyState
         data-chat-start-surface
         data-chat-composer-first
-        className="chat-start-surface flex w-full max-w-[60rem] flex-1 flex-col items-center gap-6"
+        className="chat-start-surface flex w-full max-w-[76rem] flex-1 flex-col items-center gap-6"
       >
         <div
           data-chat-start-header

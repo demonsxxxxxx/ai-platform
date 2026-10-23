@@ -313,7 +313,7 @@ Session isolation, authorization, and persistence are unchanged.
 | Bare `/chat` redirect and hidden generic Chat navigation | Replaced with the general entry and shared navigation; `/chat/:sessionId` identity recovery is unchanged. Owning regressions: `AppRouteFallback.test.ts`, `launchpadRoute.test.ts`, and sidebar navigation tests. |
 | One `管理` label and gear icon for every user's platform navigation group | Replaced by admin `管理` (shield) and ordinary `可用能力` (layers, Skill/MCP only). The footer settings gear and existing authorization policy are unchanged. `GeneralChatEntryReset.mounted.test.tsx` verifies each role's rendered destinations and independent gear action. |
 | Always-on empty-state mascot badge and time-of-day greeting | Removed from `WelcomePage`; the branded `/icons/icon.svg` asset is unchanged and still used elsewhere. |
-| `68rem` message/composer column and `288px` sidebar width | Replaced by one `60rem` column and a `272px` sidebar in `librechat-ui/surface.ts`. |
+| `68rem` / `60rem` message/composer column and `288px` sidebar width | Replaced by an aligned, responsive `76rem` maximum column for messages, composer, status and skeletons; the shared sidebar remains `272px` in `librechat-ui/surface.ts`. Only visual geometry changes; chat controls and behavior are unchanged. |
 
 Verification of the retirement is the source inventory in
 `AgentConversationPanel.test.ts` plus the mounted scope-switch coverage in
