@@ -313,15 +313,10 @@ def _required_positive_int(payload: Mapping[str, Any], field_name: str) -> int:
 
 
 def _validated_auto_compact_window(payload: Mapping[str, Any], field_name: str) -> int:
-    """Hold an admitted window to the engine range the transport also enforces."""
-
-    from app.execution.api import (
-        AUTO_COMPACT_WINDOW_MAX_TOKENS,
-        AUTO_COMPACT_WINDOW_MIN_TOKENS,
-    )
+    """Validate the frozen v3 wire range independently of live model policy."""
 
     value = _required_positive_int(payload, field_name)
-    if not AUTO_COMPACT_WINDOW_MIN_TOKENS <= value <= AUTO_COMPACT_WINDOW_MAX_TOKENS:
+    if not 100_000 <= value <= 1_000_000:
         raise ExecutionSpecError(f"execution_spec_{field_name}_invalid")
     return value
 
@@ -484,23 +479,6 @@ def _decode_canonical_json(canonical_json: bytes) -> dict[str, Any]:
     if not isinstance(decoded, dict):
         raise ExecutionSpecError("execution_spec_canonical_json_invalid")
     return decoded
-
-
-def model_auto_compact_window(spec: Mapping[str, Any]) -> int | None:
-    """Read the engine compaction window from any supported spec version.
-
-    v2 attempts froze an input capacity that the runner clamped into the CLI
-    range before passing it as `--autocompact`; mapping it back here reproduces
-    the window those attempts were admitted with. v3 stores the window itself.
-    """
-
-    from app.execution.api import legacy_input_capacity_to_auto_compact_window
-
-    if spec.get("schema_version") == EXECUTION_SPEC_SCHEMA_VERSION_V3:
-        return _required_positive_int(spec, "model_auto_compact_window")
-    return legacy_input_capacity_to_auto_compact_window(
-        spec.get("model_max_input_tokens")
-    )
 
 
 @dataclass(frozen=True, slots=True)

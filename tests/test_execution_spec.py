@@ -13,6 +13,7 @@ from app.control_plane_contracts import (
 )
 from app.executors.base import project_execution_spec_to_run_payload
 from app.runs.domain import execution_spec as execution_spec_domain
+from app.runs.application.execution_spec import model_auto_compact_window
 from app.runs.api import (
     EXECUTION_SPEC_SCHEMA_VERSION,
     EXECUTION_SPEC_SCHEMA_VERSION_V2,
@@ -506,7 +507,7 @@ def test_v3_freezes_the_compaction_window_and_v2_stays_byte_identical():
     assert v2.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V2
     assert "model_auto_compact_window" not in v2.to_mapping()
     # A historical 95k input capacity produced the 100k CLI floor.
-    assert execution_spec_domain.model_auto_compact_window(v2.to_mapping()) == 100_000
+    assert model_auto_compact_window(v2.to_mapping()) == 100_000
     assert ExecutionSpec.from_canonical_json(
         v2.canonical_json, expected_sha256=v2.spec_sha256
     ) == v2
@@ -521,8 +522,34 @@ def test_v3_freezes_the_compaction_window_and_v2_stays_byte_identical():
     })
     assert v3.to_mapping()["model_auto_compact_window"] == 200_000
     assert "model_max_input_tokens" not in v3.to_mapping()
-    assert execution_spec_domain.model_auto_compact_window(v3.to_mapping()) == 200_000
+    assert model_auto_compact_window(v3.to_mapping()) == 200_000
     assert v3.canonical_json != v2.canonical_json
+
+
+def test_frozen_spec_codec_is_independent_of_live_execution_policy(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def without_execution_policy(name, *args, **kwargs):
+        if name == "app.execution" or name.startswith("app.execution."):
+            raise AssertionError("the frozen Runs codec must not import Execution policy")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_execution_policy)
+    for window in (100_000, 1_000_000):
+        spec = compile_execution_spec({
+            **_spec_payload(),
+            "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V3,
+            "run_payload_schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+            "model_gateway_revision": 4,
+            "model_auto_compact_window": window,
+            "model_max_output_tokens": 4_096,
+        })
+        assert ExecutionSpec.from_canonical_json(
+            spec.canonical_json, expected_sha256=spec.spec_sha256
+        ) == spec
+        assert spec.to_mapping()["model_auto_compact_window"] == window
 
 
 def test_v3_rejects_a_window_outside_the_engine_range():

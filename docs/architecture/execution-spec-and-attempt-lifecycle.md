@@ -123,11 +123,16 @@ binding and output limit. The compaction window configures SDK-owned automatic
 compaction, not an additional proxy input recount. The detailed enforcement
 boundary is owned by [Model credentials](opensandbox-ephemeral-model-credentials.md).
 
+The Runs-domain codec owns the frozen v3 wire range (100000–1000000) without
+importing live Execution policy; changing that schema range requires a new
+schema version, not a model-catalog setting change.
+
 Frozen v2 attempts stay byte-identical and recoverable: every reader that needs
 the engine window maps their `model_max_input_tokens` through the clamp the
 runner applied (`min(1M, max(100k, value))`). That mapping lives with the model
-catalog policy and has no new writers; v3 is the only version the dispatcher
-compiles.
+catalog policy and has no new writers; the Runs application-layer projection
+calls it through Execution's public API, while the domain codec preserves the
+original v2 values. v3 is the only version the dispatcher compiles.
 
 Every other Run/Attempt-bound reader that gates on the specification version
 accepts both model-bearing versions rather than v2 alone, so a v3 Attempt keeps

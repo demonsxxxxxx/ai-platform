@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from app.runs.domain.execution_spec import ExecutionSpec, model_auto_compact_window
+from app.runs.application.execution_spec import model_auto_compact_window
+from app.runs.domain.execution_spec import ExecutionSpec
 
 
 class ReconciliationAuthorityError(ValueError):

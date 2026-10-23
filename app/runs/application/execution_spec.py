@@ -15,6 +15,19 @@ from app.runs.domain.execution_spec import (
 _dispatch_run_facts_loader: Callable[..., Any] | None = None
 
 
+def model_auto_compact_window(spec: Mapping[str, Any]) -> int | None:
+    """Project a validated frozen spec through the historical model policy."""
+
+    if spec.get("schema_version") == EXECUTION_SPEC_SCHEMA_VERSION_V3:
+        return spec["model_auto_compact_window"]
+    # Resolve only for legacy projection; the context APIs also compose Runs.
+    from app.execution.api import legacy_input_capacity_to_auto_compact_window
+
+    return legacy_input_capacity_to_auto_compact_window(
+        spec.get("model_max_input_tokens")
+    )
+
+
 def configure_worker_dispatch_run_facts_loader(loader: Callable[..., Any]) -> None:
     global _dispatch_run_facts_loader
     _dispatch_run_facts_loader = loader
