@@ -79,8 +79,7 @@ production Compose authority.
 ## Phase 2 publication authority
 
 `.github/workflows/ai-platform-packaging-publish.yml` is the only registry
-publisher. It accepts a trusted `push` to `main`, or a `workflow_dispatch` whose
-selected ref is `main`, whose confirmation is the fixed `PUBLISH_MAIN` value,
+publisher. It runs only from a `workflow_dispatch` whose selected ref is `main`, whose confirmation is the fixed `PUBLISH_MAIN` value,
 and whose `packaging-publish` GitHub Environment protection permits the job.
 Repository and checkout identity are rechecked before the build. Pull request,
 `pull_request_target`, fork, tag, branch, and user-supplied ref inputs have no
