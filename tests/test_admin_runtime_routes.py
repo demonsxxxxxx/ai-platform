@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import importlib.util
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,19 @@ from tests.support.db_transactions import opaque_transaction
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "app.b5_file_tool_readiness",
+        "app.b6_operations_beta_readiness",
+        "tools.b5_file_tool_readiness",
+        "tools.b6_operations_beta_readiness",
+    ],
+)
+def test_retired_phase_readiness_reports_are_not_importable(module_name):
+    assert importlib.util.find_spec(module_name) is None
 
 
 @pytest.fixture(autouse=True)

@@ -406,8 +406,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_release_authority.py",
         "tests/test_s75_opensandbox_transition.py",
         "tests/integration/run_control/test_exact_main_run_control_acceptance.py",
-        "tests/test_b5_file_tool_readiness.py",
-        "tests/test_b6_operations_beta_readiness.py",
         "tests/test_browser_runtime_config.py",
         "tests/test_capacity_bounded_load_harness.py",
         "tests/test_governed_egress_diagnostics.py",
