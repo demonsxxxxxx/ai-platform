@@ -591,8 +591,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
     )
     nginx_base = (
-        "nginx:1.30.4-alpine@"
-        "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
+        "nginx:1.30.6-alpine@"
+        "sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951"
     )
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
@@ -616,12 +616,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "apk add" not in dockerfile
     security_upgrade = (
         "RUN apk update \\\n"
-        "    && apk upgrade --no-cache nginx libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
-        '    && installed_nginx="$(apk list --installed nginx)" \\\n'
-        '    && installed_nginx="${installed_nginx%% *}" \\\n'
-        '    && installed_nginx="${installed_nginx#nginx-}" \\\n'
-        '    && test -n "$installed_nginx" \\\n'
-        '    && test "$(apk version -t "$installed_nginx" 1.30.6-r0)" != "<" \\\n'
+        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
         '    && installed="$(apk list --installed libexpat)" \\\n'
         '    && installed="${installed%% *}" \\\n'
         '    && installed="${installed#libexpat-}" \\\n'

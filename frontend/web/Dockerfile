@@ -31,15 +31,10 @@ RUN --mount=type=secret,id=VITE_RAGFLOW_SOP_SHARE_URL \
       VITE_RAGFLOW_SOP_SHARE_URL="$(cat /run/secrets/VITE_RAGFLOW_SOP_SHARE_URL 2>/dev/null || true)" \
       corepack pnpm run build
 
-FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
+FROM nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951 AS runtime
 
 RUN apk update \
-    && apk upgrade --no-cache nginx libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \
-    && installed_nginx="$(apk list --installed nginx)" \
-    && installed_nginx="${installed_nginx%% *}" \
-    && installed_nginx="${installed_nginx#nginx-}" \
-    && test -n "$installed_nginx" \
-    && test "$(apk version -t "$installed_nginx" 1.30.6-r0)" != "<" \
+    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \
     && installed="$(apk list --installed libexpat)" \
     && installed="${installed%% *}" \
     && installed="${installed#libexpat-}" \
