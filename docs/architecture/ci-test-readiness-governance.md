@@ -188,6 +188,29 @@ regressions, including `tests/test_context_memory_retention.py`,
 `tests/test_context_routes.py`, and `tests/test_worker_main.py`. A source-marker
 scanner is not independent erasure or runtime evidence.
 
+### Retired phase reports
+
+The B5 file/tool and B6 Operations Beta phase reports are retired; their static
+status, control lists, and Markdown/JSON renderers are not runtime evidence and
+have no compatibility CLI. Their removal does not close acceptance gaps, enable
+product beta or department rollout, or authorize ordinary-user high-risk tools.
+
+File/artifact acceptance still requires a named workflow proving upload, governed
+execution, tenant/owner-scoped preview and download, unauthorized denial before
+storage access, retention/expiry, cleanup, and redacted public projections. Exact
+tool acceptance still requires shell, network, filesystem, and MCP denial evidence
+for the named run. The owning artifact ACL, two-user isolation, tool-policy,
+permission-route, and Worker denial regressions remain required, not report tests.
+
+Operations Beta acceptance still requires a selected runtime subject and a named
+workflow package binding workflow/business/support owners, tenant/workspace scope,
+SLO latency thresholds, expected SDK subagent fanout, cost budget, quality
+thresholds, alert routing, rollback drill, and linked prerequisite evidence. Admin
+Runtime, trace/export redaction, alert delivery, quality evaluation, support
+handoff, owner signoff, review, and residual caveats require observed evidence;
+static status fields and retired reports cannot supply it. Existing runtime and
+offline-evidence boundaries remain unchanged.
+
 ## 6. Retirement and ownership
 
 When deleting a test or readiness surface:
