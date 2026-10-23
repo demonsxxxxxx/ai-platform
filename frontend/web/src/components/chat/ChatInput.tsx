@@ -944,14 +944,14 @@ export const ChatInput = memo(function ChatInput({
   ) : null;
 
   return (
-    <div className="chat-input-shell sm:px-2" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
+    <div className="chat-input-shell" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
       <Composer
         onSubmit={(event) => {
           // Question mode owns the surface: the hidden ordinary form never sends.
           if (!canSubmitOrdinary || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
         }}
         className={
-          className ?? "mx-auto max-w-[60rem] px-2"
+          className ?? "mx-auto max-w-[76rem] px-2"
         }
       >
         <div
@@ -987,7 +987,7 @@ export const ChatInput = memo(function ChatInput({
             {/* The ordinary controls stay mounted (draft, uploads, selectors) and are
                 only hidden, so leaving question mode restores them untouched. */}
             <div
-              className="flex flex-col gap-2"
+              className="flex flex-col gap-0"
               style={{ display: questionMode ? "none" : undefined }}
               data-slot="composer-ordinary-controls"
             >

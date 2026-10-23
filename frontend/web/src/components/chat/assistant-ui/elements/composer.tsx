@@ -7,7 +7,7 @@ import { clsx } from "clsx";
 import { useTranslation } from "react-i18next";
 
 export function Composer({ className, ...props }: ComponentProps<typeof ComposerPrimitive.Root>) {
-  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[60rem] flex-col px-2", className)} {...props} />;
+  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[76rem] flex-col px-2", className)} {...props} />;
 }
 
 export const ComposerBar = forwardRef<HTMLDivElement, ComponentProps<"div"> & { dragActive?: boolean }>(
@@ -23,7 +23,7 @@ export const ComposerInput = forwardRef<HTMLTextAreaElement, TextareaHTMLAttribu
     return <ComposerPrimitive.Input asChild submitMode="none" cancelOnEscape={false} addAttachmentOnPaste={false}
       unstable_focusOnRunStart={false} unstable_focusOnThreadSwitched={false} ref={ref} {...props}>
       <TextArea variant="borderless" className="w-full" style={{ padding: 0 }}
-        classNames={{ input: clsx("aui-composer-input min-h-[52px] max-h-48 resize-none overflow-y-auto px-2.5 py-1 text-[15px] leading-6", className) }}
+        classNames={{ input: clsx("aui-composer-input min-h-[48px] max-h-48 resize-none overflow-y-auto px-2.5 py-1 text-[15px] leading-6", className) }}
         styles={{ input: style }} />
     </ComposerPrimitive.Input>;
   },

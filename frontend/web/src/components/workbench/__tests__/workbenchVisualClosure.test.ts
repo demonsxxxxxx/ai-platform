@@ -207,7 +207,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
-  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
   assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
@@ -659,7 +659,7 @@ test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*112px/);
+  assert.match(css, /min-height:\s*104px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(composer, /flex w-full flex-col/);
   assert.match(composer, /PopoverPortal/);
