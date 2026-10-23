@@ -47,16 +47,17 @@ const failures = [];
 const counts = { inlineStyle: {}, important: {} };
 
 for (const file of walk(src)) {
+  // Match on the POSIX-relative path so exception patterns hold on Windows runners.
   const r = "src/" + rel(file).slice("src/".length);
   const ext = extname(file);
-  if (![".tsx", ".ts", ".css"].includes(ext) || isTest(file)) continue;
+  if (![".tsx", ".ts", ".css"].includes(ext) || isTest(r)) continue;
   const text = readFileSync(file, "utf8");
   const lines = text.split("\n");
 
   if (ext === ".css") {
     const important = (text.match(/!important/g) || []).length;
     if (important) counts.important[r] = important;
-    if (isRenderException(file)) continue;
+    if (isRenderException(r)) continue;
     let inShadow = false;
     lines.forEach((line, i) => {
       if (/^\s*--theme-/.test(line)) return;
@@ -76,11 +77,11 @@ for (const file of walk(src)) {
   // TSX / TS
   const inline = (text.match(/style=\{\{/g) || []).length;
   if (inline) counts.inlineStyle[r] = inline;
-  if (isRenderException(file)) continue;
+  if (isRenderException(r)) continue;
   lines.forEach((line, i) => {
     const code = line.replace(/\/\/.*$/, "");
     if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-    const literalAllowed = SHADOW_LINE.test(code) || LITERAL_EXCEPTIONS.some((re) => re.test(file));
+    const literalAllowed = SHADOW_LINE.test(code) || LITERAL_EXCEPTIONS.some((re) => re.test(r));
     for (const m of code.matchAll(RAW_PALETTE)) failures.push(`${r}:${i + 1} raw palette class "${m[0]}" (use semantic token)`);
     if (!literalAllowed && (HEX6.test(code) || HEX3.test(code) || RGBA.test(code))) {
       HEX6.lastIndex = 0; HEX3.lastIndex = 0; RGBA.lastIndex = 0;
