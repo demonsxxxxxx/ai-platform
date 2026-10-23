@@ -68,8 +68,10 @@ def changed_paths(base_ref: str, head_ref: str) -> tuple[str, ...]:
             check=True,
             stdout=subprocess.DEVNULL,
         )
+    # The image job builds the candidate head, so only paths the candidate changed
+    # since its merge base can affect that image; base-only changes are not built.
     completed = subprocess.run(
-        ["git", "diff", "--name-only", "--no-renames", "-z", base_ref, head_ref],
+        ["git", "diff", "--name-only", "--no-renames", "-z", f"{base_ref}...{head_ref}"],
         check=True,
         stdout=subprocess.PIPE,
     )
