@@ -3,7 +3,7 @@ import test from "node:test";
 import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
 import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import { usageDateRange, isUsageDateRangeValid } from "../usageDateRange";
-import type { UsageReport, UsageUser, UsageModel } from "../../../services/api/modelUsage";
+import type { UsageReport, UsageUser, UsageModel, UsageUsersQuery } from "../../../services/api/modelUsage";
 
 const fixture = installSelectTestDom();
 test.after(() => fixture.close());
@@ -24,6 +24,7 @@ function deferred<T>() {
 }
 async function mount() {
   const container = document.createElement("div");
+  document.body.append(container);
   const root = await createLobeTestRoot(container);
   await act(async () => root.render(createElement(UsagePage)));
   return {
@@ -41,7 +42,7 @@ async function mount() {
         input.dispatchEvent(new Event("change", { bubbles: true }));
       });
     },
-    async close() { await act(async () => root.unmount()); },
+    async close() { await act(async () => root.unmount()); container.remove(); },
   };
 }
 
@@ -68,17 +69,24 @@ test("server ranking, null identities, actual model columns and recorded zero re
     assert.match(view.container.textContent!, /输出15/);
     assert.match(view.container.textContent!, /用量用户数3/);
     assert.equal(tableRows[2].querySelector("button"), null);
-    assert.match(view.container.textContent!, /采集不完整/);
+    assert.doesNotMatch(view.container.textContent!, /采集不完整|采集详情|统计口径与采集说明/);
+    assert.equal(view.container.querySelector("details"), null, "usage has no collection-explanation disclosures");
+    const layout = view.container.querySelector("#usage-title")!.parentElement!.parentElement!;
+    assert.ok(layout.classList.contains("w-full"), "usage fills the available workspace");
+    assert.ok(!layout.classList.contains("mx-auto"));
+    assert.doesNotMatch(layout.className, /max-w-\[/);
     assert.equal(view.container.querySelector('[aria-pressed="true"]')?.textContent, "近30天");
     await view.click("展开second模型用量");
     assert.equal(models.mock.callCount(), 1);
     const expectedDates = usageDateRange(30);
     assert.deepEqual(models.mock.calls[0].arguments[1], { start_date: expectedDates.start, end_date: expectedDates.end });
     for (const label of ["actual-model-A", "actual-model-B", "缓存读取", "缓存创建", "输入合计", "输出"]) assert.ok(view.container.textContent!.includes(label));
+    assert.doesNotMatch(view.container.textContent!, /采集详情|统计口径与采集说明|报告范围|采集启用/);
+    assert.equal(view.container.querySelector("details"), null, "expanded model rows do not reintroduce explanations");
     // JSDOM verifies the layout contract; desktop/mobile geometry is browser-owned.
     const userTable = tableRows[0].closest("table")!;
     assert.equal(userTable.style.tableLayout, "fixed");
-    assert.equal(userTable.style.width, "900px");
+    assert.equal(userTable.style.width, "max(900px, 100%)", "empty and populated headers use the same full-width minimum");
     assert.match(view.container.textContent!, /用量构成/);
     assert.match(view.container.textContent!, /普通输入/);
     assert.match(view.container.textContent!, /排名/);
@@ -138,17 +146,63 @@ test("query changes abort users and expanded models; ignored aborts cannot repla
   } finally { await view.close(); }
 });
 
-test("pagination requests server offsets while whole-window summary remains stable", async (t) => {
+test("pagination keeps the table footer, server ranks and whole-window summary across 101 users", async (t) => {
   const summary = { ...counts, total_tokens: 40 };
-  const users = t.mock.method(modelUsageApi, "users", async () => ({ ...report([user("page")], "reported_final", summary), total: 101 }));
+  const users = t.mock.method(modelUsageApi, "users", async (query: UsageUsersQuery) => ({
+    ...report(Array.from({ length: Math.min(50, 101 - query.offset) }, (_, index) => user(String(query.offset + index + 1))), "reported_final", summary),
+    total: 101,
+    offset: query.offset,
+  }));
   const view = await mount();
+  const footer = () => view.container.querySelector('[aria-label="用量表格分页"]')!;
+  const firstRank = () => view.container.querySelector('tr[data-row-key]')!.children[1].textContent;
   try {
+    assert.match(footer().textContent!, /第1–50条，共101条/);
+    assert.match(footer().textContent!, /50条\/页/);
+    assert.equal(footer().querySelector('[role="combobox"]'), null);
+    assert.equal(firstRank(), "1");
     assert.match(view.container.textContent!, /已记录总 Token40/);
+    const nextPage = [...footer().querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "2")!;
+    nextPage.focus();
     await view.click("2");
+    assert.equal(document.activeElement, footer(), "query remount preserves keyboard position at pagination");
     assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 50);
+    assert.equal(users.mock.calls.at(-1)!.arguments[0]!.limit, 50);
+    assert.equal(firstRank(), "51");
+    assert.match(footer().textContent!, /第51–100条，共101条/);
     assert.match(view.container.textContent!, /已记录总 Token40/);
+    await view.click("3");
+    assert.equal(firstRank(), "101");
+    assert.match(footer().textContent!, /第101–101条，共101条/);
     await view.input("#usage-search", "姓名");
     assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 0);
+    assert.match(footer().textContent!, /第1–50条，共101条/);
+    await view.click("2");
+    await view.click("今天");
+    assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 0);
+    await view.click("2");
+    await view.click("自定义");
+    await view.input("#usage-start", "2026-01-01");
+    assert.equal(users.mock.calls.at(-1)!.arguments[0]!.offset, 0);
+  } finally { await view.close(); }
+});
+
+test("loading keeps the ranking and footer mounted without stale identities", async (t) => {
+  const pending = deferred<UsageReport<UsageUser>>();
+  let calls = 0;
+  t.mock.method(modelUsageApi, "users", async () => ++calls === 1 ? report([user("previous")]) : pending.promise);
+  const view = await mount();
+  try {
+    assert.match(view.container.querySelector('[aria-label="用量表格分页"]')!.textContent!, /第1–1条，共1条/);
+    await view.click("今天");
+    assert.ok(view.container.querySelector('[aria-label="用量概览"]'));
+    assert.ok(view.container.querySelector('[aria-label="用量构成"]'));
+    assert.ok(view.container.querySelector('[aria-labelledby="usage-ranking-title"]'));
+    assert.ok(view.container.querySelector('[aria-label="用量表格分页"]'));
+    assert.doesNotMatch(view.container.textContent!, /姓名previous|第1–1条/);
+    await act(async () => pending.resolve(report([])));
+    assert.match(view.container.querySelector('[aria-label="用量表格分页"]')!.textContent!, /第0–0条，共0条/);
+    assert.equal(view.container.querySelector(".lobe-table-cell-scrollbar"), null, "empty results do not get an unmeasured scrollbar column");
   } finally { await view.close(); }
 });
 
@@ -163,7 +217,7 @@ test("missing history is not zero, failures retry and auth errors do not offer r
     await view.click("重试");
     assert.match(view.container.textContent!, /尚无已记录数据/);
     assert.match(view.container.textContent!, /未采集不代表零用量/);
-    assert.match(view.container.textContent!, /尚未采集的历史区间/);
+    assert.doesNotMatch(view.container.textContent!, /采集详情|统计口径与采集说明/);
     outcome = new ApiRequestError("forbidden", 403);
     await view.click("今天");
     assert.match(view.container.textContent!, /仅管理员可访问/);

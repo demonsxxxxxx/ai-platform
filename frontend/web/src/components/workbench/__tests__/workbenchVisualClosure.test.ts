@@ -18,8 +18,9 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /flex shrink-0 justify-end px-3 pt-2/);
-  assert.doesNotMatch(shell, /absolute right-3 top-2/);
+  assert.match(shell, /data-workbench-region="header"[\s\S]*className=\{libreChatSurface\.threadHeader\}[\s\S]*\{header\}[\s\S]*data-librechat-context-toggle/);
+  assert.match(surface, /threadHeader:[\s\S]*flex min-h-14 shrink-0 items-center/);
+  assert.doesNotMatch(shell, /flex shrink-0 justify-end px-3 pt-2|absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:[\s\S]*relative flex/);
