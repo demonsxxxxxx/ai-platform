@@ -353,3 +353,35 @@ negative tests and author-triggered repair procedure live with
 T9 candidate source validation is implemented; independent review and observed CI
 remain pending. The check does not replace deletion/rename consumer inventory,
 validate external URLs, or establish semantic document freshness.
+
+## 2026-10-18: invocation-scoped input materialization candidate
+
+The Context file materializer validates the whole requested set in a private
+sibling staging directory before publishing any input bytes. Sandbox owns the
+anchored filesystem publication helper, supplied by bootstrap composition. Each
+published file is a complete same-device hard link created without replacement;
+the existing `inputs/` directory and unrelated files retain their identity.
+This is per-file atomic publication, not simultaneous whole-batch visibility.
+
+Every long storage, copy, read, and validation operation uses the existing
+physical-completion capability, injected by bootstrap together with the batch
+factory so Context does not import platform infrastructure. Cancellation and timeout wait for physical
+completion before cleanup. Rollback checks the recorded inode identity, preserves
+observed replacement files, and reports cleanup failures without replacing the
+primary error. No cross-process fence, crash transaction, or guaranteed deletion
+under filesystem failure is claimed. Secure publication requires POSIX no-follow
+directory descriptors and same-device hard links; unsupported filesystems fail
+closed rather than falling back to direct final-file copies.
+
+Retirement: direct final-file copy/write and per-file validation/publication
+interleaving are removed. The bytes-backed storage seam remains for identified
+worker test doubles; both branches share the batch publisher. Fault injection
+moves to private writes/publication. The owning regressions live in the already
+selected `test_context_file_continuity.py`; no CI selector is weakened. Storage
+API, XLSX predicate, opaque-file admission, ordered metadata, and relative paths
+remain compatible. The source-only candidate is not deployment evidence.
+
+Separate follow-up: worker workspace teardown still precedes provider reuse
+admission. It must prove the prior consumer is stopped before deleting an existing
+workspace. Invocation-local publication does not solve that older lifecycle gap,
+and does not add a persistent orphan-stage recovery protocol.
