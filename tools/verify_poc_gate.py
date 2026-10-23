@@ -465,7 +465,7 @@ def _positive_int(value: Any) -> bool:
 def _valid_model_capacity(value: Any) -> bool:
     return isinstance(value, dict) and all(
         _positive_int(value.get(field))
-        for field in ("max_input_tokens", "max_output_tokens")
+        for field in ("auto_compact_window", "max_output_tokens")
     )
 
 
@@ -1169,7 +1169,7 @@ select json_build_object(
   'model_id', r.model_id,
   'model_value', r.model_value,
   'model_gateway_revision', r.model_gateway_revision,
-  'max_input_tokens', r.max_input_tokens,
+  'auto_compact_window', r.auto_compact_window,
   'max_output_tokens', r.max_output_tokens,
   'model_connection_exists', exists (
     select 1 from model_gateway_revisions m where m.revision = r.model_gateway_revision

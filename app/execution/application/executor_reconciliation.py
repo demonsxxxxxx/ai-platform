@@ -2,6 +2,10 @@ from collections.abc import Awaitable, Callable
 import re
 from typing import Any
 
+from app.execution.domain.model_catalog import (
+    legacy_input_capacity_to_auto_compact_window,
+)
+
 
 LOCKED_RUN_SNAPSHOT_FIELDS = (
     "file_ids",
@@ -41,7 +45,7 @@ def locked_run_payload_candidate(
         and isinstance(durable_model_value, str) and durable_model_value
         and type(durable_gateway_revision) is int and durable_gateway_revision > 0
         and all(type(locked_run.get(field)) is int and locked_run[field] > 0
-                for field in ("max_input_tokens", "max_output_tokens"))
+                for field in ("auto_compact_window", "max_output_tokens"))
     ):
         return None
     candidate["model_id"] = durable_model_id
@@ -255,7 +259,7 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "model_id": payload.model_id,
             "model_value": payload.model_value,
             "model_gateway_revision": payload.model_gateway_revision,
-            "model_max_input_tokens": payload.model_max_input_tokens,
+            "model_auto_compact_window": payload.model_auto_compact_window,
             "model_max_output_tokens": payload.model_max_output_tokens,
             "schema_version": payload.schema_version,
             "agent_profile": _non_secret_agent_profile(payload.agent_profile),
@@ -289,6 +293,14 @@ def restored_sandbox_run_payload(
     if is_versioned_snapshot:
         # v2 snapshots carry a validated identity pin, never executable instructions.
         serialized["agent_profile"] = {}
+    # Snapshots persisted before the window rename froze `model_max_input_tokens`.
+    # Decode it with the same clamp the runner applied instead of handing the
+    # retired key to the strict DTO; the stored snapshot is not rewritten.
+    legacy_input_capacity = serialized.pop("model_max_input_tokens", None)
+    if legacy_input_capacity is not None and "model_auto_compact_window" not in serialized:
+        serialized["model_auto_compact_window"] = (
+            legacy_input_capacity_to_auto_compact_window(legacy_input_capacity)
+        )
     run_payload = run_payload_factory(**serialized)
     return run_payload
 

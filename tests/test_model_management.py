@@ -91,10 +91,16 @@ def _attempt_capability_verifier(secret: str):
 
 
 def test_catalog_capacity_pair_and_anthropic_proxy_contract():
-    assert normalize_model_token_limits(32000, 2048) == (32000, 2048)
-    for pair in ((32000, None), (True, 2048), (0, 2048), (10_000_001, 2048)):
+    assert normalize_model_token_limits(200_000, 2048) == (200_000, 2048)
+    # An omitted window takes the platform default; the output cap stays optional.
+    assert normalize_model_token_limits(None, 2048) == (100_000, 2048)
+    assert normalize_model_token_limits(None, None) == (100_000, None)
+    for pair in ((99_999, 2048), (1_000_001, 2048), (True, 2048), ("200000", 2048)):
         with pytest.raises(ValueError):
             normalize_model_token_limits(*pair)
+    for output in (0, 10_000_001, True):
+        with pytest.raises(ValueError):
+            normalize_model_token_limits(100_000, output)
 
     headers = {
         "anthropic-version": "2023-06-01",
@@ -137,15 +143,15 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
     assert (conflict.status_code, conflict.detail) == (
         409, "model_catalog_revision_conflict"
     )
-    for code in ("model_capacity_pair_required", "max_input_tokens_invalid", "max_output_tokens_invalid"):
+    for code in ("model_capacity_pair_required", "auto_compact_window_invalid", "max_output_tokens_invalid"):
         mapped = model_routes._translate_control_plane_error(ValueError(code))
         assert (mapped.status_code, mapped.detail) == (422, code)
-    for budget in (True, 0, 10_000_001, "32000"):
+    for budget in (True, 0, 99_999, 1_000_001, "200000"):
         with pytest.raises(ValidationError):
             model_routes.ModelPublicationEntry(
                 id="mdl_gpt", value="openai/gpt-5", display_name="GPT-5",
                 enabled=True, is_default=True, order=1,
-                max_input_tokens=budget, max_output_tokens=2048,
+                auto_compact_window=budget, max_output_tokens=2048,
             )
 
 
@@ -170,7 +176,7 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
                 "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
                 "label": "Existing GPT", "provider": "compatible", "enabled": True,
                 "available": False, "is_default": True, "order": 9,
-                "max_input_tokens": 32000, "max_output_tokens": 2048,
+                "auto_compact_window": 200_000, "max_output_tokens": 2048,
             }]
 
         async def publish_models(self, _conn, **kwargs):
@@ -212,7 +218,7 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
     entry = {
         "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
         "display_name": "GPT-5", "enabled": True, "is_default": True,
-        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "order": 1, "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     upstream_ids[:] = ["different-model"]
     with pytest.raises(ValueError, match="model_catalog_discovery_changed"):
@@ -264,7 +270,7 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
     entry = {
         "id": "mdl_gpt", "value": "openai/gpt-5", "display_name": "GPT-5",
         "enabled": True, "is_default": True, "order": 1,
-        "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     with TestClient(app) as client:
         accepted = client.get("/api/ai/admin/models")
@@ -276,7 +282,7 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
             "expected_revision": 1, "models": [entry],
         })
         invalid = client.post("/api/ai/admin/models/publish", json={
-            "base_url": "https://gateway.example", "models": [{**entry, "max_input_tokens": True}],
+            "base_url": "https://gateway.example", "models": [{**entry, "auto_compact_window": True}],
         })
         forbidden_field = client.post("/api/ai/admin/models/discover", json={
             "base_url": "https://gateway.example", "api_key": "synthetic-secret",
@@ -442,7 +448,7 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
             }
         ]
@@ -461,7 +467,7 @@ async def test_load_run_model_snapshot_locks_exact_run_for_dispatch() -> None:
         "model_id": "model-public",
         "model_value": "openai/gpt-5",
         "model_gateway_revision": 7,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
     }
 
@@ -477,7 +483,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         model_id="model-public",
         model_value="openai/gpt-5",
         connection_revision=7,
-        max_input_tokens=32000,
+        auto_compact_window=200_000,
         max_output_tokens=2048,
     )
 
@@ -489,7 +495,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
-        32000,
+        200_000,
         2048,
         "tenant-a",
         "run-child",
@@ -503,7 +509,7 @@ async def test_bind_run_model_rejects_missing_capacity_before_write() -> None:
         await bind_run_model(
             conn, tenant_id="tenant-a", run_id="run-child", model_id="model-public",
             model_value="openai/gpt-5", connection_revision=7,
-            max_input_tokens=None, max_output_tokens=2048,
+            auto_compact_window=None, max_output_tokens=2048,
         )
     assert not conn.calls
 
@@ -520,7 +526,7 @@ async def test_bind_run_model_rejects_invalid_revision_before_write() -> None:
                 model_id="model-public",
                 model_value="openai/gpt-5",
                 connection_revision=revision,
-                max_input_tokens=32000,
+                auto_compact_window=200_000,
                 max_output_tokens=2048,
             )
         assert not conn.calls
@@ -538,7 +544,7 @@ async def test_bind_run_model_fails_when_run_snapshot_update_does_not_match() ->
             model_id="model-public",
             model_value="openai/gpt-5",
             connection_revision=7,
-            max_input_tokens=32000,
+            auto_compact_window=200_000,
             max_output_tokens=2048,
         )
 
@@ -551,7 +557,7 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
                 "model_id": "model-public",
                 "model_value": "openai/gpt-5",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
             },
             {
@@ -580,7 +586,7 @@ async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child(
         "model-public",
         "openai/gpt-5",
         7,
-        32000,
+        200_000,
         2048,
         "tenant-a",
         "run-child",
@@ -593,7 +599,7 @@ async def test_inherit_run_model_rejects_legacy_source_without_capacity(operatio
     conn = _RunModelMutationConnection(
         [
             {"model_id": "model-public", "model_value": "openai/gpt-5", "model_gateway_revision": 7,
-             "max_input_tokens": None, "max_output_tokens": None},
+             "auto_compact_window": None, "max_output_tokens": None},
             {"status": "queued", "copied_from_run_id": "run-source", "model_id": None,
              "model_value": None, "model_gateway_revision": None},
         ]
@@ -741,7 +747,7 @@ async def test_publication_checks_revision_before_changing_gateway_and_writes_on
     entry = {
         "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
         "display_name": "GPT-5", "enabled": True, "is_default": True,
-        "order": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "order": 1, "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     kwargs = {
         "models": [entry], "base_url": "https://gateway.example",
@@ -760,7 +766,7 @@ async def test_publication_checks_revision_before_changing_gateway_and_writes_on
     assert revision == 3
     applied = [params for sql, params in conn.calls
                if "update model_catalog_entries" in sql and "set display_name" in sql]
-    assert applied == [("GPT-5", True, True, 1, 32000, 2048, "all", "[]",
+    assert applied == [("GPT-5", True, True, 1, 200_000, 2048, "all", "[]",
                         platform_model_id("openai/gpt-5"), "openai/gpt-5", 3)]
 
 
@@ -810,7 +816,7 @@ class _RunConnection:
                     "revision-secret", revision=4, encoded_key=_key()
                 ),
                 "key_fingerprint": "sha256:example",
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
                 "conversation_mode": "native_resume",
             }
@@ -824,7 +830,7 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
             "connection_revision": 9,
             "model_id": "mdl_public",
             "upstream_model_id": "openai/gpt-5",
-            "max_input_tokens": 32000,
+            "auto_compact_window": 200_000,
             "max_output_tokens": 2048,
         }
     )
@@ -840,7 +846,7 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
     assert selection.model_id == "mdl_public"
     assert selection.model_value == "openai/gpt-5"
     assert selection.connection_revision == 9
-    assert (selection.max_input_tokens, selection.max_output_tokens) == (32000, 2048)
+    assert (selection.auto_compact_window, selection.max_output_tokens) == (200_000, 2048)
     assert len(conn.calls) == 2
     assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
     model_query, params = conn.calls[1]
@@ -877,7 +883,7 @@ async def test_run_model_resolution_rejects_missing_capacity() -> None:
         "connection_revision": 9,
         "model_id": "mdl_public",
         "upstream_model_id": "openai/gpt-5",
-        "max_input_tokens": None,
+        "auto_compact_window": None,
         "max_output_tokens": None,
     })
     with pytest.raises(ValueError, match="model_capacity_missing"):
@@ -896,6 +902,35 @@ async def test_run_model_resolution_rejects_active_but_unavailable_catalog_entry
         )
 
     assert len(conn.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_settled_run_completion_connection_reads_the_run_window_column() -> None:
+    """A settled Run's follow-up completion reads the renamed window column."""
+
+    from app.execution.infrastructure.model_management import (
+        get_run_model_completion_connection,
+    )
+
+    conn = _ResolveConnection(row={
+        "revision": 3, "base_url": "https://gateway.example",
+        "api_key_ciphertext": encrypt_api_key(
+            "completion-secret", revision=3, encoded_key=_key()
+        ),
+        "key_fingerprint": "fingerprint",
+        "model_value": "openai/gpt-5", "auto_compact_window": 200_000,
+        "max_output_tokens": 2048,
+    })
+
+    connection = await get_run_model_completion_connection(
+        conn, tenant_id="tenant-a", user_id="user-a", session_id="session-a",
+        run_id="run_123", encryption_key=_key(),
+    )
+
+    sql, _params = conn.calls[0]
+    assert "runs.auto_compact_window" in sql
+    assert "runs.max_input_tokens" not in sql
+    assert connection is not None and connection.auto_compact_window == 200_000
 
 
 @pytest.mark.asyncio
@@ -921,8 +956,14 @@ async def test_run_connection_lookup_requires_active_status_and_exact_model_valu
     assert "sandbox_leases.status = 'active'" in sql
     assert "sandbox_leases.released_at is null" in sql
     assert "sandbox_leases.expires_at > now()" in sql
-    assert "run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v2'" in sql
-    assert "run_attempts.execution_spec_json->>'model_max_input_tokens' = runs.max_input_tokens::text" in sql
+    assert (
+        "run_attempts.execution_spec_schema_version in (\n"
+        "            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3'\n          )"
+    ) in sql
+    assert "run_attempts.execution_spec_json->>'model_auto_compact_window'" in sql
+    # Historical v2 attempts bind through the window their input capacity clamped to.
+    assert "(run_attempts.execution_spec_json->>'model_max_input_tokens')::bigint" in sql
+    assert "= runs.auto_compact_window::text" in sql
     assert connection.conversation_mode == "native_resume"
     assert params == ("run_123", "attempt_123", "attempt_123", "openai/gpt-5")
 
@@ -1174,7 +1215,7 @@ async def test_model_proxy_evidence_only_wraps_authorized_anthropic_sse(caplog) 
     async def connection(_conn, **_kwargs):
         return SimpleNamespace(
             base_url="https://gateway.example", api_key="synthetic-key",
-            max_input_tokens=32000, max_output_tokens=2048, conversation_mode="empty_start",
+            auto_compact_window=200_000, max_output_tokens=2048, conversation_mode="empty_start",
         )
 
     wire = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}\n\n'
@@ -1250,7 +1291,7 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
     async def connection(_conn, **_kwargs):
         return SimpleNamespace(
             base_url="https://gateway.example", api_key="synthetic-key",
-            max_input_tokens=32000, max_output_tokens=2048, conversation_mode="empty_start",
+            auto_compact_window=200_000, max_output_tokens=2048, conversation_mode="empty_start",
         )
 
     class FakeStream:
@@ -1325,7 +1366,7 @@ async def test_anthropic_messages_delegate_input_capacity_to_claude():
     async def connection(_conn, **_kwargs):
         return SimpleNamespace(
             base_url="https://gateway.example", api_key="synthetic-key",
-            max_input_tokens=32_000, max_output_tokens=2048, conversation_mode=mode,
+            auto_compact_window=200_000, max_output_tokens=2048, conversation_mode=mode,
         )
 
     def forbidden_count(**_kwargs):
@@ -1394,7 +1435,7 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
     async def connection(_conn, **_kwargs):
         return SimpleNamespace(
             base_url="https://gateway.example", api_key="synthetic-key",
-            max_input_tokens=5000, max_output_tokens=2048, conversation_mode="empty_start",
+            auto_compact_window=100_000, max_output_tokens=2048, conversation_mode="empty_start",
         )
 
     def missing_count(**_kwargs):
@@ -1473,7 +1514,7 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
 
     async def low_capacity_connection(_conn, **_kwargs):
         value = await connection(_conn, **_kwargs)
-        value.max_input_tokens = 4096
+        value.auto_compact_window = 100_000
         return value
 
     service._repository = SimpleNamespace(run_connection=low_capacity_connection)
@@ -1507,7 +1548,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         return SimpleNamespace(
             base_url="https://gateway.example",
             api_key="run-pinned-secret",
-            max_input_tokens=32000,
+            auto_compact_window=200_000,
             max_output_tokens=2048,
         )
 

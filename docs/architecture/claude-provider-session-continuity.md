@@ -132,9 +132,11 @@ cancellation drain qualification remains limited to native append persistence.
 6. Ordinary `/v1/messages` requests are forwarded without platform token-count
    preflight. Explicit Claude `/v1/messages/count_tokens` requests remain
    Run/Attempt-bound authorized proxy traffic.
-7. Claude automatic compaction uses the Run-frozen `max_input_tokens`, clamped
-   to the bundled CLI numeric range `100_000..1_000_000`. The platform does not
-   issue `/compact` or apply a second percentage reserve.
+7. Claude automatic compaction uses the Run-frozen `auto_compact_window`, which
+   is validated into the bundled CLI numeric range `100_000..1_000_000` at
+   publication and forwarded unchanged. Historical v2 attempts recover the same
+   window from their frozen input capacity. The platform does not issue
+   `/compact` or apply a second percentage reserve.
 8. Successful structured SDK completion may use accepted streamed assistant
    text when `ResultMessage.result` is empty; a wholly empty terminal remains
    fail-closed.

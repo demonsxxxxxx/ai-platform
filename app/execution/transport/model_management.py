@@ -80,7 +80,7 @@ class ModelPublicationEntry(BaseModel):
     order: StrictInt = Field(ge=1)
     access_mode: Literal["all", "selected"] | None = None
     allowed_user_ids: list[str] | None = Field(default=None, max_length=10_000)
-    max_input_tokens: StrictInt | None = Field(default=None, ge=1, le=10_000_000)
+    auto_compact_window: StrictInt | None = Field(default=None, ge=100_000, le=1_000_000)
     max_output_tokens: StrictInt | None = Field(default=None, ge=1, le=10_000_000)
 
 
@@ -116,7 +116,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_catalog_order_invalid",
         "model_capacity_pair_required",
         "model_catalog_identity_collision",
-        "max_input_tokens_invalid",
+        "auto_compact_window_invalid",
         "max_output_tokens_invalid",
     }:
         return HTTPException(status_code=422, detail=code)

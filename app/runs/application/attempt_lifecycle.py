@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from app.runs.application.execution_spec import model_auto_compact_window
 from app.runs.domain.execution_spec import ExecutionSpec
 
 
@@ -195,10 +196,11 @@ class RunAttemptLifecycleService:
                        {"tenant_id": tenant_id, "run_id": run_id, **scope}.items())
                 or any(str(frozen.get(key) or "") != str(run.get(key) or "")
                        for key in ("execution_kind", "skill_id", "executor_type", "context_snapshot_id", "model_id", "model_value"))
-                or any(frozen.get(key) != run.get(source) for key, source in (
-                    ("model_gateway_revision", "model_gateway_revision"),
-                    ("model_max_input_tokens", "max_input_tokens"),
-                    ("model_max_output_tokens", "max_output_tokens")))):
+                or frozen.get("model_gateway_revision") != run.get("model_gateway_revision")
+                # Historical v2 attempts froze an input capacity that the runner
+                # clamped into the CLI range to derive the same window.
+                or model_auto_compact_window(frozen) != run.get("auto_compact_window")
+                or frozen.get("model_max_output_tokens") != run.get("max_output_tokens")):
                 raise ValueError("spec binding mismatch")
         except (ValueError, TypeError, KeyError) as exc:
             raise ReconciliationAuthorityError("run_attempt_reconciliation_spec_invalid") from exc

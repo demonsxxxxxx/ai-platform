@@ -612,3 +612,89 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
             conn, tenant_id="tenant-a", run_id="run-current", attempt_id="attempt-a",
             assistant_message_id="msg-assistant", final_sequence=None,
         )
+
+
+_V2 = "ai-platform.execution-spec.v2"
+_V3 = "ai-platform.execution-spec.v3"
+
+
+def _spec_version_predicate(sql: str) -> str:
+    """Return the run_attempts schema-version predicate of one locked query."""
+
+    lines = [line for line in sql.splitlines() if "execution_spec_schema_version" in line
+             or _V2 in line or _V3 in line]
+    assert lines, sql
+    return " ".join(" ".join(lines).split())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [_V2, _V3])
+async def test_locked_callback_epoch_binds_both_frozen_spec_versions(version):
+    """A v3 attempt must reach the same authority checks as a v2 attempt."""
+
+    class RecordingCallbackConnection(CallbackConnection):
+        def __init__(self):
+            super().__init__()
+            self.calls: list[str] = []
+
+        async def execute(self, sql, params=()):
+            self.calls.append(sql)
+            return await super().execute(sql, params)
+
+    conn = RecordingCallbackConnection()
+    await _lock_callback_epoch(conn)
+    attempt_lookup = next(sql for sql in conn.calls
+                          if "attempt.execution_spec_sha256" in sql)
+    predicate = _spec_version_predicate(attempt_lookup)
+    assert " in (" in predicate
+    assert _V2 in predicate and _V3 in predicate
+    assert version in predicate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [_V2, _V3])
+async def test_prepare_epoch_finds_a_running_attempt_of_either_spec_version(version):
+    """Lineage preparation must not skip a v3 attempt when freezing the context."""
+
+    receipt = source_receipt()
+    context = {"source_sha256": receipt["source_sha256"], "message_count": 1,
+               "current_message_id": "msg-user", "messages": [],
+               "selected_message_count": 0, "selected_turn_count": 0}
+    frozen = {**context, "execution_mode": "native_resume", "provider_epoch_id": "pe-old",
+              "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685"}
+    head = {"active_run_id": "run-current", "current_epoch_id": "pe-old",
+            "next_epoch_number": 2, "state": "active",
+            "coverage_source_sha256": receipt["source_sha256"], "coverage_message_count": 0,
+            "entry_count": 10, "transcript_bytes": 1_000,
+            "writer_run_id": None, "writer_attempt_id": None, "writer_owner_generation": None,
+            "provider_session_id": frozen["provider_session_id"]}
+    conn = Connection(head=head, existing_attempt={"frozen_context": frozen})
+
+    assert await provider_epochs.prepare_provider_epoch(
+        conn, scope=SCOPE, run_id="run-current", conversation_context=context,
+    ) == frozen
+    lookup = next(sql for sql in conn.calls if "select execution_spec_json->'context_pack'" in sql)
+    predicate = _spec_version_predicate(lookup)
+    assert " in (" in predicate
+    assert _V2 in predicate and _V3 in predicate
+    assert version in predicate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [_V2, _V3])
+async def test_terminal_commit_locks_a_writer_of_either_spec_version(version):
+    """The terminal receipt fence must accept both frozen spec versions."""
+
+    conn = Connection()
+    conn.terminal_row = None
+    with pytest.raises(ProviderSessionConflictError,
+                       match="provider_session_terminal_writer_invalid"):
+        await provider_epochs.commit_provider_turn(
+            conn, tenant_id="tenant-a", run_id="run-current", attempt_id="attempt-a",
+            assistant_message_id="msg-assistant", final_sequence=1,
+        )
+    writer_lock = next(sql for sql in conn.calls if "select runs.tenant_id" in sql)
+    predicate = _spec_version_predicate(writer_lock)
+    assert " in (" in predicate
+    assert _V2 in predicate and _V3 in predicate
+    assert version in predicate

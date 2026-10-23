@@ -68,7 +68,7 @@ function deriveProviderProjections(models: ModelOption[]): ProviderProjection[] 
 }
 
 function contextWindowLabel(model: ModelOption, fallback: string): string {
-  const value = model.profile?.max_input_tokens;
+  const value = model.profile?.auto_compact_window;
   if (!value) return fallback;
   return `${value.toLocaleString()} tokens`;
 }
@@ -363,7 +363,7 @@ export function ModelCatalogPanel() {
                     </div>
                     <div className={workbenchSurface.catalog.metricTile}>
                       <dt className={workbenchSurface.catalog.label}>
-                        {t("models.contextWindow", "上下文")}
+                        {t("models.compactionWindow", "压缩窗口")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {contextWindowLabel(

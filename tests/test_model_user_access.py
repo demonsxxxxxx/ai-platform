@@ -79,7 +79,7 @@ def _entry(**overrides):
         "enabled": True,
         "is_default": True,
         "order": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
     }
     entry.update(overrides)
@@ -281,7 +281,7 @@ class _ResolveConnection:
 async def test_run_resolution_filters_by_the_calling_user_in_one_predicate():
     conn = _ResolveConnection({
         "connection_revision": 3, "model_id": "mdl", "upstream_model_id": "openai/gpt-5",
-        "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "auto_compact_window": 200_000, "max_output_tokens": 2048,
     })
     for selection in ({"id": "mdl"}, {"value": "openai/gpt-5"}, {}):
         await resolve_run_model(
@@ -302,7 +302,7 @@ def test_default_model_selection_carries_the_calling_user():
         captured.update(model_id=model_id, model_value=model_value, user_id=user_id)
         return SimpleNamespace(
             model_id="mdl", model_value="openai/gpt-5",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     import asyncio
@@ -351,7 +351,7 @@ def test_publication_transport_carries_tenant_scope(monkeypatch):
             "display_name": "GPT-5",
             "enabled": True, "is_default": True, "order": 1,
             "access_mode": "selected", "allowed_user_ids": ["user-a"],
-            "max_input_tokens": 32000, "max_output_tokens": 2048,
+            "auto_compact_window": 200_000, "max_output_tokens": 2048,
         }],
     })
     assert response.status_code == 200

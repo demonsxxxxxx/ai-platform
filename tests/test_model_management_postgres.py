@@ -24,6 +24,7 @@ from app.execution.infrastructure.model_management import (
 from app.execution.infrastructure.model_security import ModelEndpointSecurityAdapter, api_key_fingerprint
 from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService
 from app.runs.infrastructure.postgres import inherit_run_model
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_AGENT_PROFILE_TEST_DSN"
@@ -75,7 +76,7 @@ async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation
             """
             update model_catalog_entries
             set enabled = true, is_default = true,
-                max_input_tokens = 32000, max_output_tokens = 2048
+                auto_compact_window = 200000, max_output_tokens = 2048
             """
         )
 
@@ -174,11 +175,11 @@ async def test_model_inheritance_updates_child_and_failure_rolls_back() -> None:
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id,
               execution_kind, status, model_id, model_value,
-              model_gateway_revision, max_input_tokens, max_output_tokens
+              model_gateway_revision, auto_compact_window, max_output_tokens
             ) values (
               'run-source', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
               'harness_chat', 'failed', 'model-default', 'openai/gpt-5',
-              1, 32000, 2048
+              1, 200000, 2048
             )
             """
         )
@@ -205,7 +206,7 @@ async def test_model_inheritance_updates_child_and_failure_rolls_back() -> None:
         inherited_cursor = await conn.execute(
             """
             select model_id, model_value, model_gateway_revision,
-                   max_input_tokens, max_output_tokens
+                   auto_compact_window, max_output_tokens
             from runs where tenant_id = 'tenant-a' and id = 'run-child'
             """
         )
@@ -213,7 +214,7 @@ async def test_model_inheritance_updates_child_and_failure_rolls_back() -> None:
             "model_id": "model-default",
             "model_value": "openai/gpt-5",
             "model_gateway_revision": 1,
-            "max_input_tokens": 32000,
+            "auto_compact_window": 200000,
             "max_output_tokens": 2048,
         }
 
@@ -307,11 +308,11 @@ async def test_unconfigured_catalog_rows_default_to_all_users_and_stay_listable(
             """
             insert into model_catalog_entries(
               model_id, upstream_model_id, display_name, provider, enabled,
-              upstream_available, is_default, display_order, max_input_tokens,
+              upstream_available, is_default, display_order, auto_compact_window,
               max_output_tokens, first_seen_revision, last_seen_revision
             ) values (
               'legacy-model', 'openai/gpt-5', 'openai/gpt-5', 'compatible', true,
-              true, true, 1, 32000, 2048, 1, 1
+              true, true, 1, 200000, 2048, 1, 1
             )
             """
         )
@@ -338,15 +339,15 @@ async def test_persisted_selection_filters_list_and_resolution_by_user() -> None
             """
             insert into model_catalog_entries(
               model_id, upstream_model_id, display_name, provider, enabled,
-              upstream_available, is_default, display_order, max_input_tokens,
+              upstream_available, is_default, display_order, auto_compact_window,
               max_output_tokens, access_mode, allowed_user_ids,
               first_seen_revision, last_seen_revision
             ) values (
               'open-model', 'openai/gpt-5', 'Open', 'compatible', true,
-              true, true, 1, 32000, 2048, 'all', '[]'::jsonb, 1, 1
+              true, true, 1, 200000, 2048, 'all', '[]'::jsonb, 1, 1
             ), (
               'restricted-model', 'openai/gpt-6', 'Restricted', 'compatible', true,
-              true, false, 2, 32000, 2048, 'selected', '["user-a"]'::jsonb, 1, 1
+              true, false, 2, 200000, 2048, 'selected', '["user-a"]'::jsonb, 1, 1
             )
             """
         )
@@ -423,7 +424,7 @@ async def test_publication_roundtrip_preserves_access_and_rolls_back_invalid_gra
     entry = {
         "id": "publication-model", "value": "publication-model",
         "enabled": True, "is_default": True, "order": 1,
-        "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "auto_compact_window": 200000, "max_output_tokens": 2048,
     }
 
     async def publish(revision, **fields):
@@ -479,12 +480,12 @@ async def test_database_rejects_an_explicitly_empty_selection() -> None:
                 """
                 insert into model_catalog_entries(
                   model_id, upstream_model_id, display_name, provider, enabled,
-                  upstream_available, is_default, display_order, max_input_tokens,
+                  upstream_available, is_default, display_order, auto_compact_window,
                   max_output_tokens, access_mode, allowed_user_ids,
                   first_seen_revision, last_seen_revision
                 ) values (
                   'empty-model', 'openai/gpt-7', 'Empty', 'compatible', false,
-                  true, false, 3, 32000, 2048, 'selected', '[]'::jsonb, 1, 1
+                  true, false, 3, 200000, 2048, 'selected', '[]'::jsonb, 1, 1
                 )
                 """
             )
@@ -520,12 +521,12 @@ async def test_child_run_keeps_its_frozen_model_after_the_list_changes(monkeypat
             """
             insert into model_catalog_entries(
               model_id, upstream_model_id, display_name, provider, enabled,
-              upstream_available, is_default, display_order, max_input_tokens,
+              upstream_available, is_default, display_order, auto_compact_window,
               max_output_tokens, access_mode, allowed_user_ids,
               first_seen_revision, last_seen_revision
             ) values (
               'frozen-model', 'openai/gpt-8', 'Frozen', 'compatible', true,
-              true, true, 1, 32000, 2048, 'all', '[]'::jsonb, 1, 1
+              true, true, 1, 200000, 2048, 'all', '[]'::jsonb, 1, 1
             )
             """
         )
@@ -534,11 +535,11 @@ async def test_child_run_keeps_its_frozen_model_after_the_list_changes(monkeypat
             insert into runs(
               id, tenant_id, workspace_id, session_id, user_id, agent_id,
               execution_kind, status, model_id, model_value,
-              model_gateway_revision, max_input_tokens, max_output_tokens
+              model_gateway_revision, auto_compact_window, max_output_tokens
             ) values (
               'run-source', 'tenant-a', 'workspace-a', 'session-a', 'user-a', 'agent-a',
               'harness_chat', 'failed', 'frozen-model', 'openai/gpt-8',
-              1, 32000, 2048
+              1, 200000, 2048
             )
             """
         )
@@ -586,7 +587,7 @@ async def test_child_run_keeps_its_frozen_model_after_the_list_changes(monkeypat
         child_cursor = await conn.execute(
             """
             select model_id, model_value, model_gateway_revision,
-                   max_input_tokens, max_output_tokens
+                   auto_compact_window, max_output_tokens
             from runs where tenant_id = 'tenant-a' and id = 'run-child'
             """
         )
@@ -594,7 +595,7 @@ async def test_child_run_keeps_its_frozen_model_after_the_list_changes(monkeypat
             "model_id": "frozen-model",
             "model_value": "openai/gpt-8",
             "model_gateway_revision": 1,
-            "max_input_tokens": 32000,
+            "auto_compact_window": 200000,
             "max_output_tokens": 2048,
         }
         # ...while the admission gate refuses the revoked user and admits the new one.

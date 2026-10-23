@@ -23,7 +23,7 @@ class RunModelSnapshotRepository(Protocol):
         model_id: str,
         model_value: str,
         connection_revision: int,
-        max_input_tokens: int,
+        auto_compact_window: int,
         max_output_tokens: int,
     ) -> None: ...
 

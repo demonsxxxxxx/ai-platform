@@ -268,11 +268,16 @@ class ContextRetrievalScope(BaseModel):
 
 
 class ModelTokenLimits(BaseModel):
-    """Run-frozen model budget accepted by the sandbox transport."""
+    """Run-frozen model execution limits accepted by the sandbox transport.
+
+    `auto_compact_window` is the window handed to the engine's automatic
+    compaction. It is not a platform-enforced input ceiling; the engine decides
+    when to compact and may compact earlier than this window.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    auto_compact_window: int = Field(ge=100_000, le=1_000_000)
     max_output_tokens: int = Field(gt=0, le=10_000_000)
 
 

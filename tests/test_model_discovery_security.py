@@ -122,7 +122,7 @@ async def _until_set(event):
 
 def _entry():
     return dict(id="mock-model", value="mock-model", display_name="Mock", enabled=True,
-                is_default=True, order=1, max_input_tokens=32000, max_output_tokens=2048)
+                is_default=True, order=1, auto_compact_window=200_000, max_output_tokens=2048)
 
 
 @pytest.mark.asyncio

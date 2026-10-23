@@ -310,11 +310,18 @@ class ModelControlPlaneService:
         for model in models:
             if model.get("id") != platform_model_id(model["value"]):
                 raise ValueError("model_catalog_identity_collision")
-            limits = normalize_model_token_limits(
-                model.get("max_input_tokens"), model.get("max_output_tokens")
+            window, output_limit = normalize_model_token_limits(
+                model.get("auto_compact_window"), model.get("max_output_tokens")
             )
-            if model["enabled"] and limits[0] is None:
+            if model["enabled"] and output_limit is None:
                 raise ValueError("model_capacity_pair_required")
+            if output_limit is None:
+                # A row without an execution cap keeps both columns empty; the
+                # window has no meaning until the model can actually run.
+                window = None
+            # Persist the resolved window so discovery and reload never drift.
+            model["auto_compact_window"] = window
+            model["max_output_tokens"] = output_limit
         if len({model["order"] for model in models}) != len(models):
             raise ValueError("model_catalog_order_invalid")
         async with self._transaction() as conn:
@@ -441,7 +448,7 @@ class ModelControlPlaneService:
             )
         if connection is None:
             raise PermissionError("model_proxy_run_binding_invalid")
-        if connection.max_output_tokens is None or connection.max_input_tokens is None:
+        if connection.max_output_tokens is None or connection.auto_compact_window is None:
             raise PermissionError("model_capacity_missing")
         if provider == "anthropic" and upstream_path == "v1/messages":
             if connection.conversation_mode not in {"native_resume", "empty_start"}:

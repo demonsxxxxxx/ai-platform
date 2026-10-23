@@ -806,10 +806,10 @@ class ClaudeAgentWorkerAdapter:
             browser_enabled=bool(payload.input.get("browser_enabled")),
             model_token_limits=(
                 ModelTokenLimits(
-                    max_input_tokens=payload.model_max_input_tokens,
+                    auto_compact_window=payload.model_auto_compact_window,
                     max_output_tokens=payload.model_max_output_tokens,
                 )
-                if payload.model_max_input_tokens is not None
+                if payload.model_auto_compact_window is not None
                 and payload.model_max_output_tokens is not None
                 else None
             ),

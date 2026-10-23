@@ -109,17 +109,37 @@ an Agent, Skill, file, model, tool, or policy not present in the admitted facts.
 
 ### 2.3 Model-capacity expansion
 
-The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes and
-an exact-field `ai-platform.execution-spec.v2` mapping with the Run-frozen
-`model_gateway_revision`, `model_max_input_tokens`, and
-`model_max_output_tokens`. The dispatcher can compile v2 only from an
+The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes,
+the frozen `ai-platform.execution-spec.v2` mapping, and an exact-field
+`ai-platform.execution-spec.v3` mapping. Both model-bearing versions freeze the
+`model_gateway_revision` and `model_max_output_tokens`; v3 freezes
+`model_auto_compact_window` while v2 keeps its original
+`model_max_input_tokens`. The dispatcher can compile v3 only from an
 independently locked Runs-owned model snapshot matching its model identity, not
-from Redis queue fields. Worker dispatch writes v2 and rejects a missing or
+from Redis queue fields. Worker dispatch writes v3 and rejects a missing or
 mismatched durable model snapshot. The sandbox transport carries the paired
 `model_token_limits` projection; the Run/Attempt-bound proxy verifies the
-binding and output limit. Claude input capacity configures SDK-owned automatic
+binding and output limit. The compaction window configures SDK-owned automatic
 compaction, not an additional proxy input recount. The detailed enforcement
 boundary is owned by [Model credentials](opensandbox-ephemeral-model-credentials.md).
+
+The Runs-domain codec owns the frozen v3 wire range (100000–1000000) without
+importing live Execution policy; changing that schema range requires a new
+schema version, not a model-catalog setting change.
+
+Frozen v2 attempts stay byte-identical and recoverable: every reader that needs
+the engine window maps their `model_max_input_tokens` through the clamp the
+runner applied (`min(1M, max(100k, value))`). That mapping lives with the model
+catalog policy and has no new writers; the Runs application-layer projection
+calls it through Execution's public API, while the domain codec preserves the
+original v2 values. v3 is the only version the dispatcher compiles.
+
+Every other Run/Attempt-bound reader that gates on the specification version
+accepts both model-bearing versions rather than v2 alone, so a v3 Attempt keeps
+the same Context and terminal authority. Provider-session epoch, lineage and
+turn-commit lookups therefore match `v2` and `v3` while keeping their existing
+tenant, workspace, user, Run, Attempt, owner-generation and lease checks. The
+stored `execution_spec_schema_version` is never rewritten to imitate v2.
 
 ## 3. Durable attempt state machine
 

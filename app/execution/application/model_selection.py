@@ -14,7 +14,7 @@ class RunModelSelection:
     model_id: str
     model_value: str
     connection_revision: int | None
-    max_input_tokens: int | None = None
+    auto_compact_window: int | None = None
     max_output_tokens: int | None = None
 
 
@@ -36,7 +36,7 @@ async def bind_selected_run_model(
         conn, tenant_id=tenant_id, run_id=run_id,
         model_id=selected_model.model_id, model_value=selected_model.model_value,
         connection_revision=selected_model.connection_revision,
-        max_input_tokens=selected_model.max_input_tokens,
+        auto_compact_window=selected_model.auto_compact_window,
         max_output_tokens=selected_model.max_output_tokens,
     )
 
@@ -89,7 +89,7 @@ async def resolve_chat_model_selection(
         raise ValueError("model_connection_not_configured")
     if (
         governed.connection_revision is None
-        or governed.max_input_tokens is None
+        or governed.auto_compact_window is None
         or governed.max_output_tokens is None
     ):
         raise ValueError("model_capacity_missing")
