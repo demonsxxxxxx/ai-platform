@@ -263,7 +263,7 @@ export function MermaidDiagram({
     img.onload = () => {
       ctx.scale(pngScale, pngScale);
       ctx.fillStyle = document.documentElement.classList.contains("dark")
-        ? "#1c1917"
+        ? "#171717"
         : "#ffffff";
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
@@ -291,9 +291,9 @@ export function MermaidDiagram({
   // During streaming, show code block instead
   if (isStreaming) {
     return (
-      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700">
-        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-stone-200/70 dark:bg-stone-800/50">
-          <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
+      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-neutral-200/70 dark:bg-neutral-800/50">
+          <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
             mermaid
           </span>
           <Button type="text"
@@ -304,9 +304,9 @@ export function MermaidDiagram({
               <>
                 <Check
                   size={14}
-                  className="text-green-600 dark:text-green-400"
+                  className="text-[var(--theme-success-text)]"
                 />
-                <span className="text-green-600 dark:text-green-400">
+                <span className="text-[var(--theme-success-text)]">
                   {t("chat.message.copied")}
                 </span>
               </>
@@ -314,16 +314,16 @@ export function MermaidDiagram({
               <>
                 <Copy
                   size={14}
-                  className="text-stone-500 dark:text-stone-400"
+                  className="text-neutral-500 dark:text-neutral-400"
                 />
-                <span className="text-stone-500 dark:text-stone-400">
+                <span className="text-neutral-500 dark:text-neutral-400">
                   {t("chat.message.copy")}
                 </span>
               </>
             )}
           </Button>
         </div>
-        <pre className="p-3 bg-stone-50 dark:bg-stone-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-stone-700 dark:text-stone-300 font-mono">
+        <pre className="p-3 bg-neutral-50 dark:bg-neutral-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-neutral-700 dark:text-neutral-300 font-mono">
           {chart}
         </pre>
       </div>
@@ -332,9 +332,9 @@ export function MermaidDiagram({
 
   if (error) {
     return (
-      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700">
-        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-stone-200/70 dark:bg-stone-800/50">
-          <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
+      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-neutral-200/70 dark:bg-neutral-800/50">
+          <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
             mermaid
           </span>
           <Button type="text"
@@ -345,9 +345,9 @@ export function MermaidDiagram({
               <>
                 <Check
                   size={14}
-                  className="text-green-600 dark:text-green-400"
+                  className="text-[var(--theme-success-text)]"
                 />
-                <span className="text-green-600 dark:text-green-400">
+                <span className="text-[var(--theme-success-text)]">
                   {t("chat.message.copied")}
                 </span>
               </>
@@ -359,7 +359,7 @@ export function MermaidDiagram({
             )}
           </Button>
         </div>
-        <pre className="p-3 bg-stone-50 dark:bg-stone-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-stone-700 dark:text-stone-300 font-mono">
+        <pre className="p-3 bg-neutral-50 dark:bg-neutral-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-neutral-700 dark:text-neutral-300 font-mono">
           {chart}
         </pre>
       </div>
@@ -368,8 +368,8 @@ export function MermaidDiagram({
 
   if (!svg) {
     return (
-      <div className="mermaid-diagram overflow-x-auto rounded-lg bg-stone-50 p-4 dark:bg-stone-800">
-        <div className="text-sm text-stone-500 dark:text-stone-400">
+      <div className="mermaid-diagram overflow-x-auto rounded-lg bg-neutral-50 p-4 dark:bg-neutral-800">
+        <div className="text-sm text-neutral-500 dark:text-neutral-400">
           Loading diagram...
         </div>
       </div>
@@ -378,11 +378,11 @@ export function MermaidDiagram({
 
   return (
     <>
-      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700">
+      <div className="my-2 sm:my-3 max-w-full overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
         {/* Header bar with action buttons */}
-        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-stone-200/70 dark:bg-stone-800/50">
+        <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-neutral-200/70 dark:bg-neutral-800/50">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
+            <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
               mermaid
             </span>
           </div>
@@ -398,9 +398,9 @@ export function MermaidDiagram({
                 <>
                   <Check
                     size={14}
-                    className="text-green-600 dark:text-green-400"
+                    className="text-[var(--theme-success-text)]"
                   />
-                  <span className="hidden xs:inline text-green-600 dark:text-green-400">
+                  <span className="hidden xs:inline text-[var(--theme-success-text)]">
                     {t("chat.message.copied")}
                   </span>
                 </>
@@ -408,9 +408,9 @@ export function MermaidDiagram({
                 <>
                   <Copy
                     size={14}
-                    className="text-stone-500 dark:text-stone-400"
+                    className="text-neutral-500 dark:text-neutral-400"
                   />
-                  <span className="hidden xs:inline text-stone-500 dark:text-stone-400">
+                  <span className="hidden xs:inline text-neutral-500 dark:text-neutral-400">
                     {t("chat.message.copy")}
                   </span>
                 </>
@@ -432,22 +432,22 @@ export function MermaidDiagram({
                 setShowCode(true);
                 setIsFullscreen(true);
               }}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-stone-300/50 dark:hover:bg-stone-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-neutral-300/50 dark:hover:bg-neutral-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
               title={t("mermaidViewer.showCode")}
             >
-              <Code size={14} className="text-stone-500 dark:text-stone-400" />
-              <span className="hidden xs:inline text-stone-500 dark:text-stone-400">
+              <Code size={14} className="text-neutral-500 dark:text-neutral-400" />
+              <span className="hidden xs:inline text-neutral-500 dark:text-neutral-400">
                 {t("mermaidViewer.showCode")}
               </span>
             </Button>
             {/* Fullscreen button */}
             <Button type="text"
               onClick={() => setIsFullscreen(true)}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-stone-300/50 dark:hover:bg-stone-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-neutral-300/50 dark:hover:bg-neutral-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
               title={t("imageViewer.fullscreen", "Fullscreen")}
               icon={<Maximize2
                 size={14}
-                className="text-stone-500 dark:text-stone-400"
+                className="text-neutral-500 dark:text-neutral-400"
               />}
             />
           </div>
@@ -455,7 +455,7 @@ export function MermaidDiagram({
 
         {/* Mermaid's fixed default SVG theme needs a light canvas in both app themes. */}
         <div
-          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
+          className={`mermaid-diagram overflow-hidden p-4 bg-neutral-50 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
             isDragging ? "grabbing" : "grab"
           }`}
           onWheel={handleWheel}
@@ -662,21 +662,21 @@ function MermaidViewer({
   };
 
   const btnCls =
-    "flex items-center justify-center w-10 h-10 rounded-lg hover:bg-white/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
+    "flex items-center justify-center w-10 h-10 rounded-lg hover:bg-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
 
   return createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[300] flex flex-col bg-black/90"
+      className="fixed inset-0 z-[300] flex flex-col bg-[color-mix(in_srgb,var(--theme-overlay-solid)_90%,transparent)]"
     >
       {/* Top bar - close + code actions */}
-      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black">
+      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-[var(--theme-overlay-solid)]">
         <Button type="text"
           htmlType="button"
           onClick={onClose}
           className={btnCls}
           aria-label={t("common.close")}
-          icon={<X size={20} className="text-white/70" />}
+          icon={<X size={20} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />}
         />
 
         <div className="flex items-center gap-1">
@@ -686,8 +686,8 @@ function MermaidViewer({
             onClick={toggleCode}
             className={`flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer ${
               showCode
-                ? "bg-white/20 text-white/70"
-                : "hover:bg-white/10 text-white/70"
+                ? "bg-[color-mix(in_srgb,var(--theme-on-overlay)_20%,transparent)] text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]"
+                : "hover:bg-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]"
             }`}
             aria-label={
               showCode
@@ -696,9 +696,9 @@ function MermaidViewer({
             }
           >
             {showCode ? (
-              <Eye size={18} className="text-white/70" />
+              <Eye size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />
             ) : (
-              <Code size={18} className="text-white/70" />
+              <Code size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />
             )}
             <span className="hidden sm:inline">
               {showCode
@@ -711,20 +711,20 @@ function MermaidViewer({
           <Button type="text"
             htmlType="button"
             onClick={handleCopyCode}
-            className="flex items-center gap-1 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-white/10"
+            className="flex items-center gap-1 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)]"
             aria-label={t("chat.message.copyCode")}
           >
             {copied ? (
               <>
-                <Check size={18} className="text-green-400" />
-                <span className="text-green-400 hidden sm:inline">
+                <Check size={18} className="text-[var(--theme-success-text)]" />
+                <span className="text-[var(--theme-success-text)] hidden sm:inline">
                   {t("chat.message.copied")}
                 </span>
               </>
             ) : (
               <>
-                <Copy size={18} className="text-white/70" />
-                <span className="text-white/70 hidden sm:inline">
+                <Copy size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />
+                <span className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)] hidden sm:inline">
                   {t("chat.message.copy")}
                 </span>
               </>
@@ -743,10 +743,10 @@ function MermaidViewer({
               a.click();
               URL.revokeObjectURL(url);
             }}
-            className="flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-white/10 text-white/70"
+            className="flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]"
             aria-label={t("imageViewer.download")}
           >
-            <Download size={18} className="text-white/70" />
+            <Download size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />
             <span className="hidden sm:inline">
               {t("imageViewer.download")}
             </span>
@@ -776,7 +776,7 @@ function MermaidViewer({
             <img
               src={svgBlobUrl}
               alt={t("mermaidViewer.diagram")}
-              className="max-w-[90vw] max-h-[85vh] bg-stone-50 object-contain select-none"
+              className="max-w-[90vw] max-h-[85vh] bg-neutral-50 object-contain select-none"
               style={{
                 transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
                 transition: isDragging ? "none" : "transform 0.1s ease-out",
@@ -809,11 +809,11 @@ function MermaidViewer({
 
         {/* Code panel */}
         {showCode && (
-          <div className="w-full sm:w-[480px] border-l border-white/10 bg-stone-900 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-white/10">
-              <span className="text-xs font-medium text-white/50">mermaid</span>
+          <div className="w-full sm:w-[480px] border-l border-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] bg-neutral-900 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)]">
+              <span className="text-xs font-medium text-[color-mix(in_srgb,var(--theme-on-overlay)_50%,transparent)]">mermaid</span>
             </div>
-            <pre className="flex-1 overflow-auto p-4 text-sm text-stone-300 font-mono whitespace-pre-wrap break-words">
+            <pre className="flex-1 overflow-auto p-4 text-sm text-neutral-300 font-mono whitespace-pre-wrap break-words">
               {chart}
             </pre>
           </div>

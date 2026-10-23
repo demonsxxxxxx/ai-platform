@@ -42,7 +42,7 @@ export function ConfirmDialog({
           <ModalHeader><ModalTitle>{title}</ModalTitle></ModalHeader>
           <ModalContent>
             <div className="flex items-start gap-3">
-              <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger)]" : variant === "warning" ? "shrink-0 text-amber-500" : "shrink-0 text-[var(--theme-primary)]"} />
+              <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger-text)]" : variant === "warning" ? "shrink-0 text-[var(--theme-warning-text)]" : "shrink-0 text-[var(--theme-primary)]"} />
               <ModalDescription className="text-sm leading-relaxed text-[var(--theme-text-secondary)]">{message}</ModalDescription>
             </div>
           </ModalContent>

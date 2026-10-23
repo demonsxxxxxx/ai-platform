@@ -570,8 +570,8 @@ const ExcelPreview = memo(function ExcelPreview({
 
   if (error) {
     return (
-      <div role="alert" className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
-        <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+      <div role="alert" className="p-4 rounded-lg bg-[var(--theme-danger-soft)] border border-[var(--theme-danger-ring)]">
+        <p className="text-sm text-[var(--theme-danger-text)] font-medium">
           {t("documents.excelPreviewError")}: {error}
         </p>
       </div>
@@ -581,18 +581,18 @@ const ExcelPreview = memo(function ExcelPreview({
   const displayRows = totalRows;
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-stone-950">
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 dark:bg-stone-900 border-b border-stone-200 dark:border-stone-700 shrink-0">
-        <span className="text-[11px] font-bold text-stone-600 dark:text-stone-400 w-8 text-center shrink-0 italic">
+    <div className="flex flex-col h-full bg-white dark:bg-neutral-950">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-50 dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
+        <span className="text-[11px] font-bold text-neutral-600 dark:text-neutral-400 w-8 text-center shrink-0 italic">
           fx
         </span>
-        <span className="text-[12px] text-stone-500 dark:text-stone-400 truncate font-mono min-w-[3rem]">
+        <span className="text-[12px] text-neutral-500 dark:text-neutral-400 truncate font-mono min-w-[3rem]">
           {hoveredCell
             ? `${colLabel(hoveredCell.col)}${getSheetRowNumber(hoveredCell.row)}`
             : "A1"}
         </span>
-        <span className="h-4 w-px bg-stone-300 dark:bg-stone-600 shrink-0" />
-        <span className="text-[12px] text-stone-700 dark:text-stone-300 truncate">
+        <span className="h-4 w-px bg-neutral-300 dark:bg-neutral-600 shrink-0" />
+        <span className="text-[12px] text-neutral-700 dark:text-neutral-300 truncate">
           {hoveredCell
             ? getCellValue(hoveredCell.row, hoveredCell.col)
             : headerRow
@@ -601,13 +601,13 @@ const ExcelPreview = memo(function ExcelPreview({
         </span>
       </div>
 
-      <div className="flex items-center gap-0.5 px-1 py-0 bg-stone-100 dark:bg-stone-900 border-b border-stone-300 dark:border-stone-700 shrink-0">
+      <div className="flex items-center gap-0.5 px-1 py-0 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 shrink-0">
         <Button type="text"
           htmlType="button"
           onClick={() => setActiveSheet((current) => Math.max(0, current - 1))}
           disabled={activeSheet === 0}
           aria-label={t("documents.excelPreviousSheet", { defaultValue: "Previous sheet" })}
-          className="p-1 min-w-11 min-h-11 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
+          className="p-1 min-w-11 min-h-11 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
@@ -629,8 +629,8 @@ const ExcelPreview = memo(function ExcelPreview({
               onKeyDown={handleSheetKeyDown}
               className={`px-3 py-0.5 text-[11px] font-medium rounded-sm whitespace-nowrap transition-all ${
                 activeSheet === index
-                  ? "bg-white dark:bg-stone-800 text-stone-800 dark:text-stone-100 shadow-sm border border-stone-300 dark:border-stone-600"
-                  : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/50 dark:hover:bg-stone-800/50"
+                  ? "bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-100 shadow-sm border border-neutral-300 dark:border-neutral-600"
+                  : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-200/50 dark:hover:bg-neutral-800/50"
               }`}
             >
               {sheet.name}
@@ -644,7 +644,7 @@ const ExcelPreview = memo(function ExcelPreview({
           }
           disabled={activeSheet === sheets.length - 1}
           aria-label={t("documents.excelNextSheet", { defaultValue: "Next sheet" })}
-          className="p-1 min-w-11 min-h-11 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
+          className="p-1 min-w-11 min-h-11 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 6 15 12 9 18" />
@@ -653,25 +653,25 @@ const ExcelPreview = memo(function ExcelPreview({
       </div>
 
       {preview?.status === "truncated" && (
-        <p className="px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900">
+        <p className="px-3 py-1.5 text-xs text-[var(--theme-warning-text)] bg-[var(--theme-warning-soft)] border-b border-[var(--theme-warning-ring)]">
           {t("documents.excelPreviewTruncated", {
             defaultValue: "Showing a bounded table preview; download the original workbook for complete data.",
           })}
         </p>
       )}
 
-      <div id={tabPanelId} role="tabpanel" aria-labelledby={`${previewInstanceId}-xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
+      <div id={tabPanelId} role="tabpanel" aria-labelledby={`${previewInstanceId}-xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-neutral-300 dark:border-neutral-600">
         <div ref={gridSurfaceRef} className="relative w-max min-w-full">
           <table className="border-collapse w-max min-w-full text-[13px]">
           <thead>
             <tr className="sticky top-0 z-10">
-              <th scope="col" className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
+              <th scope="col" className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 border-r border-b border-neutral-300 dark:border-neutral-600 select-none" />
               {Array.from({ length: totalCols }, (_, index) => (
                 <th
                   scope="col"
                   key={index}
                   data-excel-column-index={index}
-                  className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300" : ""}`}
+                  className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300" : ""}`}
                 >
                   {colLabel(index)}
                 </th>
@@ -687,7 +687,7 @@ const ExcelPreview = memo(function ExcelPreview({
                   key={rawRowIndex}
                   data-excel-row-index={rawRowIndex}
                 >
-                  <td className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-stone-400 dark:text-stone-500" : isRowHovered ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40" : "text-stone-500 dark:text-stone-400"}`}>
+                  <td className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-neutral-100 dark:bg-neutral-800 border-r border-b border-neutral-300 dark:border-neutral-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-neutral-400 dark:text-neutral-500" : isRowHovered ? "text-[var(--theme-info-text)] bg-[var(--theme-info-soft)]" : "text-neutral-500 dark:text-neutral-400"}`}>
                     {isHeader ? "" : getSheetRowNumber(rawRowIndex)}
                   </td>
                   {Array.from({ length: totalCols }, (_, colIndex) => {
@@ -695,13 +695,13 @@ const ExcelPreview = memo(function ExcelPreview({
                     const isCellHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex && hoveredCell.col === colIndex;
                     if (isHeader) {
                       return (
-                        <th scope="col" key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-300 dark:border-stone-600 whitespace-nowrap text-left font-semibold text-stone-700 dark:text-stone-300 bg-stone-50 dark:bg-stone-800/60 ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : ""}`}>
+                        <th scope="col" key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-neutral-300 dark:border-neutral-600 whitespace-nowrap text-left font-semibold text-neutral-700 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-800/60 ${isCellHovered ? "!outline outline-2 outline-neutral-500 dark:outline-neutral-400 outline-offset-[-1px] bg-neutral-100/60 dark:bg-neutral-800/40 !border-neutral-400 dark:!border-neutral-500" : ""}`}>
                           {value || " "}
                         </th>
                       );
                     }
                     return (
-                      <td key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-200 dark:border-stone-700/80 whitespace-nowrap text-stone-800 dark:text-stone-200 ${isNumeric(value) ? "text-right tabular-nums font-mono" : "text-left"} ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : isRowHovered ? "bg-stone-50/70 dark:bg-stone-800/30" : ""}`}>
+                      <td key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-neutral-200 dark:border-neutral-700/80 whitespace-nowrap text-neutral-800 dark:text-neutral-200 ${isNumeric(value) ? "text-right tabular-nums font-mono" : "text-left"} ${isCellHovered ? "!outline outline-2 outline-neutral-500 dark:outline-neutral-400 outline-offset-[-1px] bg-neutral-100/60 dark:bg-neutral-800/40 !border-neutral-400 dark:!border-neutral-500" : isRowHovered ? "bg-neutral-50/70 dark:bg-neutral-800/30" : ""}`}>
                         {value || " "}
                       </td>
                     );
@@ -742,22 +742,22 @@ const ExcelPreview = memo(function ExcelPreview({
         </div>
 
         {displayRows === 0 && (
-          <div className="flex flex-col items-center justify-center py-20 text-stone-400 dark:text-stone-500">
+          <div className="flex flex-col items-center justify-center py-20 text-neutral-400 dark:text-neutral-500">
             <p className="text-sm">{t("documents.noData") || "No data"}</p>
           </div>
         )}
 
         {hasOverflow && (
           <div className="absolute bottom-0 left-0 right-0 h-1 z-30 pointer-events-none">
-            <div className="h-full bg-stone-300/40 dark:bg-stone-600/40" />
-            <div className="absolute top-0 h-full bg-stone-400 dark:bg-stone-500 transition-[left] duration-75" style={{ width: `${Math.max(10, (1 - progress) * 100)}%`, left: `${progress * 100}%` }} />
+            <div className="h-full bg-neutral-300/40 dark:bg-neutral-600/40" />
+            <div className="absolute top-0 h-full bg-neutral-400 dark:bg-neutral-500 transition-[left] duration-75" style={{ width: `${Math.max(10, (1 - progress) * 100)}%`, left: `${progress * 100}%` }} />
           </div>
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-3 px-3 py-1 text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-t border-stone-300 dark:border-stone-600 shrink-0">
+      <div className="flex items-center justify-between gap-3 px-3 py-1 text-[11px] text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 border-t border-neutral-300 dark:border-neutral-600 shrink-0">
         <span className="tabular-nums">
-          {sheets.length > 1 && <span className="mr-2 text-stone-400 dark:text-stone-500">{currentSheet?.name}</span>}
+          {sheets.length > 1 && <span className="mr-2 text-neutral-400 dark:text-neutral-500">{currentSheet?.name}</span>}
           {t("documents.excelRowsAndCols", { rows: dataRows.length, cols: totalCols })}
         </span>
         <span className="text-right">

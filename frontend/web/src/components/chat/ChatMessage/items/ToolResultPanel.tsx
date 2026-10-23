@@ -79,28 +79,28 @@ const statusConfig: Record<
   { bg: string; color: string; icon: React.ReactNode }
 > = {
   idle: {
-    bg: "bg-stone-100 dark:bg-stone-800",
-    color: "text-stone-500 dark:text-stone-400",
+    bg: "bg-neutral-100 dark:bg-neutral-800",
+    color: "text-neutral-500 dark:text-neutral-400",
     icon: null,
   },
   loading: {
-    bg: "bg-amber-100/80 dark:bg-amber-900/30",
-    color: "text-amber-600 dark:text-amber-400",
+    bg: "bg-[var(--theme-warning-soft)]",
+    color: "text-[var(--theme-warning-text)]",
     icon: null,
   },
   success: {
-    bg: "bg-emerald-100/80 dark:bg-emerald-900/30",
-    color: "text-emerald-600 dark:text-emerald-400",
+    bg: "bg-[var(--theme-success-soft)]",
+    color: "text-[var(--theme-success-text)]",
     icon: <CheckCircle size={16} />,
   },
   error: {
-    bg: "bg-red-100/80 dark:bg-red-900/30",
-    color: "text-red-600 dark:text-red-400",
+    bg: "bg-[var(--theme-danger-soft)]",
+    color: "text-[var(--theme-danger-text)]",
     icon: <XCircle size={16} />,
   },
   cancelled: {
-    bg: "bg-amber-100/80 dark:bg-amber-900/30",
-    color: "text-amber-600 dark:text-amber-400",
+    bg: "bg-[var(--theme-warning-soft)]",
+    color: "text-[var(--theme-warning-text)]",
     icon: <Ban size={16} />,
   },
 };
@@ -268,7 +268,7 @@ export function ToolResultPanel({
 
   const content = (
     <div
-      className={`w-full flex flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900 pointer-events-auto ${
+      className={`w-full flex flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-neutral-900 pointer-events-auto ${
         panelClass
           ? panelClass
           : isFullscreen
@@ -355,7 +355,7 @@ export function ToolResultPanel({
             <div className="flex justify-center pt-2 pb-1">
               <div
                 ref={dragHandleRef}
-                className="mobile-drag-handle w-9 h-1 rounded-full bg-stone-300 dark:bg-stone-600"
+                className="mobile-drag-handle w-9 h-1 rounded-full bg-neutral-300 dark:bg-neutral-600"
               />
             </div>
           )}
@@ -364,7 +364,7 @@ export function ToolResultPanel({
               ? customHeader({ onClose: handleUserClose })
               : customHeader
           ) : (
-            <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 sm:py-3 border-b border-stone-200 dark:border-stone-700 shrink-0 overflow-hidden">
+            <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 sm:py-3 border-b border-neutral-200 dark:border-neutral-700 shrink-0 overflow-hidden">
               {/* Back button */}
               {effectiveOnBack && (
                 <Button type="text"
@@ -377,7 +377,7 @@ export function ToolResultPanel({
                   title={t("common.back", "Back")}
                   icon={<BackIcon
                     size={15}
-                    className="text-stone-400 dark:text-stone-500"
+                    className="text-neutral-400 dark:text-neutral-500"
                   />}
                 />
               )}
@@ -390,11 +390,11 @@ export function ToolResultPanel({
                   <Spin
                     size={16}
                     className="shrink-0"
-                    color={cfg.color || "text-blue-600 dark:text-blue-400"}
+                    color={cfg.color || "text-[var(--theme-info-text)]"}
                   />
                 ) : (
                   <span
-                    className={cfg.color || "text-blue-600 dark:text-blue-400"}
+                    className={cfg.color || "text-[var(--theme-info-text)]"}
                   >
                     {cfg.icon || icon}
                   </span>
@@ -442,12 +442,12 @@ export function ToolResultPanel({
                     icon={isSidebar ? (
                       <Columns2
                         size={15}
-                        className="text-stone-400 dark:text-stone-500"
+                        className="text-neutral-400 dark:text-neutral-500"
                       />
                     ) : (
                       <PanelRight
                         size={15}
-                        className="text-stone-400 dark:text-stone-500"
+                        className="text-neutral-400 dark:text-neutral-500"
                       />
                     )}
                   />
@@ -466,12 +466,12 @@ export function ToolResultPanel({
                     icon={isFullscreen ? (
                       <Shrink
                         size={15}
-                        className="text-stone-400 dark:text-stone-500"
+                        className="text-neutral-400 dark:text-neutral-500"
                       />
                     ) : (
                       <Expand
                         size={15}
-                        className="text-stone-400 dark:text-stone-500"
+                        className="text-neutral-400 dark:text-neutral-500"
                       />
                     )}
                   />
@@ -486,7 +486,7 @@ export function ToolResultPanel({
                     title={t("common.close", "Close")}
                     icon={<X
                       size={15}
-                      className="text-stone-400 dark:text-stone-500"
+                      className="text-neutral-400 dark:text-neutral-500"
                     />}
                   />
                 </div>
@@ -501,7 +501,7 @@ export function ToolResultPanel({
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   aria-label={t("common.close")}
                   title={t("common.close", "Close")}
-                  icon={<X size={15} className="text-stone-400 dark:text-stone-500" />}
+                  icon={<X size={15} className="text-neutral-400 dark:text-neutral-500" />}
                 />
               )}
             </div>
@@ -560,12 +560,12 @@ export function ToolResultPanel({
           : isFullscreen
             ? "bg-transparent pointer-events-none"
             : isMobile && mobileFillViewport
-              ? "bg-slate-950/35"
+              ? "bg-neutral-950/35"
               : isMobile
-                ? "bg-slate-950/35 items-end justify-end"
+                ? "bg-neutral-950/35 items-end justify-end"
                 : isCenter
-                  ? "sm:items-center sm:justify-center bg-slate-950/35"
-                  : "bg-slate-950/35 sm:bg-transparent sm:pointer-events-none sm:items-end sm:justify-stretch"
+                  ? "sm:items-center sm:justify-center bg-neutral-950/35"
+                  : "bg-neutral-950/35 sm:bg-transparent sm:pointer-events-none sm:items-end sm:justify-stretch"
       }`}
       onClick={() => {
         if (!isResizing.current && !justResized.current) handleUserClose();

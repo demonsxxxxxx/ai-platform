@@ -73,7 +73,7 @@ export const AttachmentCard = memo(function AttachmentCard({
   const isQueued = attachment.uploadStatus === "queued";
   const isRetrying = attachment.uploadStatus === "retrying";
   const removeButtonClass =
-    "shrink-0 flex size-6 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] opacity-100 transition-colors duration-150 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-300";
+    "shrink-0 flex size-6 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] opacity-100 transition-colors duration-150 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]";
 
   const handleClick = () => {
     onClick?.(imageSrc);
@@ -121,7 +121,7 @@ export const AttachmentCard = memo(function AttachmentCard({
           className={clsx(
             "relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2",
             "rounded-lg border border-[var(--theme-border)]",
-            "bg-[var(--theme-bg-card)] dark:bg-stone-900",
+            "bg-[var(--theme-bg-card)] dark:bg-neutral-900",
             "shadow-[0_4px_12px_rgba(18,38,63,0.03)] cursor-pointer select-none",
             "transition-colors duration-150 ease-out",
             "hover:bg-[var(--theme-bg-sidebar)] active:opacity-90",
@@ -245,7 +245,7 @@ export const AttachmentCard = memo(function AttachmentCard({
       className={clsx(
         "group relative flex items-center overflow-hidden",
         "h-12 sm:h-14 min-w-[200px] max-w-[280px] sm:min-w-[240px] sm:max-w-[320px]",
-        "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] dark:bg-stone-900",
+        "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] dark:bg-neutral-900",
         "shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
         "text-left cursor-pointer select-none",
         "transition-colors duration-150 ease-out",

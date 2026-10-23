@@ -5,7 +5,7 @@ export const LEGACY_THEME_STORAGE_KEY = "lamb-agent-theme";
 
 const THEME_COLORS: Record<Theme, string> = {
   light: "#ffffff",
-  dark: "#151210",
+  dark: "#000000",
 };
 
 interface ThemePreferenceEnvironment {

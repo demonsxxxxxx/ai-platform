@@ -96,7 +96,7 @@ export const ChatMessage = memo(function ChatMessage({
         id={createMessageAnchorId(message.id)}
         data-outline-anchor="true"
         data-outline-id={createMessageAnchorId(message.id)}
-        className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
+        className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
       >
         <UserMessageBubble
           messageId={message.id}
@@ -123,7 +123,7 @@ export const ChatMessage = memo(function ChatMessage({
       id={createMessageAnchorId(message.id)}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
-      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
+      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] dark:data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] dark:data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
     >
       <AssistantMessageContent>        {/* Content */}
         <div className="min-h-0 min-w-0 py-1">

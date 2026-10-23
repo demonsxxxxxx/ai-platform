@@ -94,7 +94,7 @@
 
 /* Chat toolbar icon button (active/enabled state) */
 .chat-tool-btn-active {
-  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
-  background: color-mix(in srgb, #fbbf24 10%, transparent);
-  color: #fbbf24;
+  border-color: color-mix(in srgb, var(--theme-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--theme-warning) 10%, transparent);
+  color: var(--theme-warning-text);
 }

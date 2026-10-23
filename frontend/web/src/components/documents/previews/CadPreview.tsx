@@ -102,7 +102,7 @@ export default function CadPreview(props: CadPreviewProps) {
     return (
       <FileFallbackPanel
         icon={DraftingCompass}
-        iconBg="bg-slate-100 dark:bg-slate-800"
+        iconBg="bg-neutral-100 dark:bg-neutral-800"
         title={t(
           "documents.dwgPreviewUnsupported",
           "DWG preview is not supported",
@@ -126,8 +126,8 @@ export default function CadPreview(props: CadPreviewProps) {
           <div className="cad-preview__panel">
             {error ? (
               <>
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-red-100 dark:bg-red-900/30">
-                  <AlertCircle size={30} className="text-red-500" />
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--theme-danger-soft)]">
+                  <AlertCircle size={30} className="text-[var(--theme-danger-text)]" />
                 </div>
                 <h3 className="mb-2 text-base font-medium text-[var(--theme-text)]">
                   {error}
@@ -141,10 +141,10 @@ export default function CadPreview(props: CadPreviewProps) {
               </>
             ) : (
               <>
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-100 dark:bg-cyan-900/40">
+                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--theme-info-soft)]">
                   <DraftingCompass
                     size={30}
-                    className="text-cyan-700 dark:text-cyan-300"
+                    className="text-[var(--theme-info-text)]"
                   />
                 </div>
                 <h3 className="mb-4 text-base font-medium text-[var(--theme-text)]">

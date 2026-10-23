@@ -52,18 +52,18 @@ function getFileIcon(mime: string) {
 }
 
 function getIconColor(mime: string) {
-  if (isImage(mime)) return "text-emerald-500";
-  if (isVideo(mime)) return "text-purple-500";
-  if (isAudio(mime)) return "text-pink-500";
-  if (mime.includes("zip") || mime.includes("tar")) return "text-amber-500";
+  if (isImage(mime)) return "text-[var(--theme-success-text)]";
+  if (isVideo(mime)) return "text-neutral-500";
+  if (isAudio(mime)) return "text-[var(--theme-danger-text)]";
+  if (mime.includes("zip") || mime.includes("tar")) return "text-[var(--theme-warning-text)]";
   return "text-[var(--theme-text-secondary)]";
 }
 
 function getIconBg(mime: string) {
-  if (isImage(mime)) return "bg-emerald-500/10";
-  if (isVideo(mime)) return "bg-purple-500/10";
-  if (isAudio(mime)) return "bg-pink-500/10";
-  if (mime.includes("zip") || mime.includes("tar")) return "bg-amber-500/10";
+  if (isImage(mime)) return "bg-[var(--theme-success-soft)]";
+  if (isVideo(mime)) return "bg-neutral-500/10";
+  if (isAudio(mime)) return "bg-[var(--theme-danger-soft)]";
+  if (mime.includes("zip") || mime.includes("tar")) return "bg-[var(--theme-warning-soft)]";
   return "bg-[var(--theme-bg-card)]";
 }
 
@@ -132,7 +132,7 @@ export function BinaryFilePreview({
           >
             {!imageLoaded && (
               <div className="absolute inset-0 flex items-center justify-center bg-[var(--theme-bg-card)]/50 rounded-lg">
-                <div className="flex items-center gap-2 rounded-lg bg-white/80 px-3 py-2 text-xs text-stone-500 shadow-sm dark:bg-stone-800/80 dark:text-stone-400">
+                <div className="flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--theme-bg-card)_80%,transparent)] px-3 py-2 text-xs text-neutral-500 shadow-sm dark:bg-neutral-800/80 dark:text-neutral-400">
                   <Loader2 size={14} className="animate-spin" />
                   <span>{t("documents.loadingImage")}</span>
                 </div>
@@ -150,10 +150,10 @@ export function BinaryFilePreview({
 
         {/* Video preview */}
         {isVideo(mime_type) && (
-          <div className="relative flex items-center justify-center bg-stone-950 p-4 sm:p-8 min-h-full">
+          <div className="relative flex items-center justify-center bg-neutral-950 p-4 sm:p-8 min-h-full">
             {!videoLoaded && (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs text-white/60 shadow-sm">
+                <div className="flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--theme-bg-card)_10%,transparent)] px-3 py-2 text-xs text-[color-mix(in_srgb,var(--theme-primary-foreground)_60%,transparent)] shadow-sm">
                   <Loader2 size={14} className="animate-spin" />
                   <span>{t("documents.loadingVideo")}</span>
                 </div>
@@ -166,7 +166,7 @@ export function BinaryFilePreview({
               autoPlay={false}
               onLoadedData={() => setVideoLoaded(true)}
               onError={() => setVideoLoaded(true)}
-              className={`w-full max-w-4xl max-h-[60vh] rounded-lg shadow-2xl ring-1 ring-white/10 transition-opacity duration-300 ${
+              className={`w-full max-w-4xl max-h-[60vh] rounded-lg shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--theme-bg-card)_10%,transparent)] transition-opacity duration-300 ${
                 videoLoaded ? "opacity-100" : "opacity-0"
               }`}
             >
@@ -217,7 +217,7 @@ export function BinaryFilePreview({
               </div>
               <Button type="text"
                 onClick={handleDownload}
-                className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--theme-primary)] text-white text-sm font-medium hover:opacity-90 transition-all active:scale-95 cursor-pointer"
+                className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)] text-sm font-medium hover:opacity-90 transition-all active:scale-95 cursor-pointer"
               >
                 <Download size={16} />
                 {t("skills.binaryPreview.download")}

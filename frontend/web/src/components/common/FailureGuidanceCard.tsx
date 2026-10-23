@@ -30,21 +30,21 @@ export function FailureGuidanceCard({
 
   return (
     <section
-      className={`rounded-lg border border-amber-200 bg-amber-50/80 p-3 text-xs dark:border-amber-900/60 dark:bg-amber-950/20 ${className}`}
+      className={`rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] p-3 text-xs ${className}`}
       data-failure-guidance
     >
       <dl className="space-y-2.5">
         {rows.map(([label, value]) => (
           <div key={label}>
-            <dt className="font-semibold text-stone-800 dark:text-stone-100">{label}</dt>
-            <dd className="mt-0.5 leading-5 text-stone-700 dark:text-stone-300">{value}</dd>
+            <dt className="font-semibold text-neutral-800 dark:text-neutral-100">{label}</dt>
+            <dd className="mt-0.5 leading-5 text-neutral-700 dark:text-neutral-300">{value}</dd>
           </div>
         ))}
         <div>
-          <dt className="font-semibold text-stone-800 dark:text-stone-100">问题编号</dt>
+          <dt className="font-semibold text-neutral-800 dark:text-neutral-100">问题编号</dt>
           <dd className="mt-1 flex min-w-0 items-center gap-2">
             <code
-              className="min-w-0 truncate rounded bg-white/70 px-1.5 py-1 text-[11px] text-stone-700 dark:bg-stone-900/70 dark:text-stone-200"
+              className="min-w-0 truncate rounded bg-[color-mix(in_srgb,var(--theme-bg-card)_70%,transparent)] px-1.5 py-1 text-[11px] text-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-200"
               title={guidance.problemNumber ?? undefined}
             >
               {guidance.problemNumber ?? "尚未生成"}
@@ -53,7 +53,7 @@ export function FailureGuidanceCard({
               <Button type="text"
                 htmlType="button"
                 onClick={() => void copyProblemNumber()}
-                className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-300 bg-white/80 px-2 py-1 text-[11px] font-medium text-stone-700 hover:bg-white dark:border-amber-800 dark:bg-stone-900/80 dark:text-stone-200"
+                className="inline-flex shrink-0 items-center gap-1 rounded border border-[var(--theme-warning-ring)] bg-[color-mix(in_srgb,var(--theme-bg-card)_80%,transparent)] px-2 py-1 text-[11px] font-medium text-neutral-700 hover:bg-[var(--theme-bg-card)] dark:bg-neutral-900/80 dark:text-neutral-200"
                 aria-label="复制问题编号"
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}
