@@ -491,7 +491,7 @@ change. Local callback rejection records the transport's observed fixed reason;
 it does not imply knowledge of an uncollected HTTP response body.
 
 The Sandbox diagnostic normalizer owns the existing size budgets; Runs owns
-private persistence and its existing credential/URL/path redaction. Arbitrary
+private persistence and its credential-only redaction (policy v2). Arbitrary
 SDK exception strings remain administrator-private evidence under that contract:
 pattern redaction cannot guarantee removal of arbitrary business text or unknown
 secrets embedded by a provider. No prompt, callback configuration, SessionKey,

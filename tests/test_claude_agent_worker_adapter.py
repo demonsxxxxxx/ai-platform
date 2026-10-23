@@ -6021,7 +6021,7 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         assert "collect_workspace" in secondary["exception_chain"][1]["traceback"]
         assert "synthetic-bearer" not in repr(persistence.value)
         assert "synthetic-token" not in repr(persistence.value)
-        assert "/private/workspace" not in repr(persistence.value)
+        assert "/private/workspace" in repr(persistence.value)  # admin diagnostics keep paths
     logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
     assert len(logs) == (0 if collection_mode == "ok" else 2)
     assert "synthetic-token" not in repr(logs)
