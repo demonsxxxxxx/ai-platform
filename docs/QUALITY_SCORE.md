@@ -122,7 +122,7 @@ baseline: Runs lifecycle ports and Bootstrap ledger injection; Sandbox shared
 callback authority with Run-before-Attempt locking, persisted tenant, exact lease
 and token-generation checks; caller-owned replay transaction plus current principal
 reauthorization before child creation and queue admission. Source locations and
-owning selectors are recorded in the [active plan](exec-plans/active/harness-migration.md).
+owning selectors are recorded in the [archived plan](exec-plans/completed/harness-migration-2026-10.md).
 
 ## Security and verification observations
 

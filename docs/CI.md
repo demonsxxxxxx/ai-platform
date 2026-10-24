@@ -22,7 +22,7 @@ Status: active CI navigation and dated local observations; not deployment eviden
 
 Python 合同/投影审计、JS 分片、lint/build/trace 和镜像并行启动；构建 Job 的 Python 依赖仅供产物来源记录使用。`frontend required` 必须接收四类 Job 的成功结果，失败、取消、跳过或缺失均阻断；矩阵不因其他分片失败而取消剩余分片。`tests/test_frontend_ci_shards.py` 校验分片与完整本地 `ci:verify` 阶段清单完全一致，无遗漏或重复分配；原有跨阶段文件重复保持原状。`ci:verify` 仍是本地完整串行复现入口，不新增测试运行器，也不复制测试文件选择器。
 
-配置覆盖 lint/test/build、镜像扫描及发布来源验证，可作为阶段 3 的复用候选。源码中有这些 job 不等于检查已执行，也不证明 coverage、文档新鲜度、hook、结构化日志等全部 Harness 要求已满足；逐项处置见 [计划 §5.1](exec-plans/active/harness-migration.md#51-必需要求处置与验收索引)。已交付版本化 pre-commit/pre-push，使用方式见 [本地 hooks](agent-rules/local-test-execution.md#versioned-local-git-hooks)。未新增 commit-msg/Conventional Commits 机械门禁。
+配置覆盖 lint/test/build、镜像扫描及发布来源验证。源码中有这些 job 不等于检查已执行，也不证明 coverage、文档新鲜度、hook、结构化日志等要求已满足；已停止的 Harness 专项当时的逐项处置见 [归档计划 §5.1](exec-plans/completed/harness-migration-2026-10.md#51-必需要求处置与验收索引)。已交付版本化 pre-commit/pre-push，使用方式见 [本地 hooks](agent-rules/local-test-execution.md#versioned-local-git-hooks)。未新增 commit-msg/Conventional Commits 机械门禁。
 
 ### 完整 Python 文件库存与平台补充
 
@@ -69,7 +69,7 @@ fi
   -- tests/test_source_authority_docs.py
 ```
 
-这是 source-authority 文档合同测试，不是新台账事实的自动证明。新增文档还须核对本地链接、引用符号、selector 与 CLI 参数；不为固定措辞/行数新建永久测试。B3–B5 的 owning selectors 在各批 PR 中按实际 caller 选择，见 [计划 §4.1](exec-plans/active/harness-migration.md#41-b3b5-启动前的接口与装配库存)。
+这是 source-authority 文档合同测试，不是新台账事实的自动证明。新增文档还须核对本地链接、引用符号、selector 与 CLI 参数；不为固定措辞/行数新建永久测试。处理[技术债台账](exec-plans/tech-debt-tracker.md)中的迁移时，owning selectors 在 PR 中按实际 caller 选择。
 
 ### 4.2 已提交范围的本地治理诊断
 

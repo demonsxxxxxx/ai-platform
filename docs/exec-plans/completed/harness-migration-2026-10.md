@@ -1,12 +1,14 @@
 # Harness 工程化改造计划
 
+> 已停止，未竣工归档（2026-10-24）。B1/B2 产物（AGENTS 入口、ARCHITECTURE、core-beliefs、QUALITY_SCORE、文档检查器、本地 hooks、coverage 采集）已在 main 常驻；B3–B7 未执行，剩余架构债以 [技术债台账](../tech-debt-tracker.md) 为准。本文中的分支、工作区、授权和行号只描述 2026-10-19 当次会话与当时基线，不构成当前授权或源码事实。
+
 ## 0. 元信息
 
 - 项目 / 仓库：ai-platform
 - 分支 / 工作区：`fix/main-contract-convergence-20261019`，独立修复工作区；原 feature 工作区及其未提交改动保留
 - 计划版本 / 日期：v1.5 / 2026-10-19（北京时间）
 - 状态：**全范围修复已获授权；既有 B1/B2 设施已进入 main。本轮先补齐完整测试基线、D5 门槛和 hooks，再按前置条件推进 B3–B7；完成与验收分别记录。**
-- 施工图：`docs/HARNESS-RULES.md`（turn-project 版，保留全文）；固定母本与 MIT 归属见 [来源记录](../../references/harness-go.md)
+- 施工图：[归档副本](harness-rules-blueprint.md)（turn-project 版，保留全文）；固定母本与 MIT 归属见 [来源记录](harness-rules-provenance.md)
 - 本轮修复基线：`main f853a8a8cdbc4542319d8c244cefad9fb54aaeec`。既有库存基线 `f519d041f1bb155a788278abfd5e07becebe1767` 的测量仍是历史样本，不证明本轮候选或部署状态。
 - 历史证据范围：2026-10-13 的 tracked 库存、依赖图、B3–B5 有界合同比对、B1 85 包 OSV、B2 88 设施回归及 132/174 用例 coverage 样本。当时 330 个候选测试文件中 86 个无 workflow 字面引用、4 个仅 node 引用；PG/Redis 探针 7 skip、exit 6，依赖审计刷新 TLS 超时。当前完整范围、真实依赖与门槛须重新测量，不能沿用这些数值作验收。
 - 执行方式：主会话单一 writer；只读 Scout 提供分域证据，主会话复核。高风险独立 review 和正式运行验收仍按现有流程取得，不由探查报告替代。

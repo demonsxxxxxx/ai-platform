@@ -36,5 +36,6 @@ establish implemented or deployed behavior.
 [Core beliefs](docs/design-docs/core-beliefs.md) links the existing engineering
 principles. [QUALITY_SCORE](docs/QUALITY_SCORE.md) records a dated, reproducible
 source baseline, with explicit denominators and unmeasured fields. The
-[active Harness plan](docs/exec-plans/active/harness-migration.md) owns this migration's
-scope, prerequisites and pending decisions; it does not supersede these contracts.
+[debt inventory](docs/exec-plans/tech-debt-tracker.md) lists known architecture
+debt; it does not supersede these contracts. The stopped Harness migration and its
+blueprint are archived under `docs/exec-plans/completed/`.

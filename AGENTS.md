@@ -66,7 +66,7 @@ reviewers must inspect or rerun the referenced inventory.
 
 - Code ownership and product contracts: [documentation index](docs/README.md).
 - Architecture navigation and source measurements: [architecture map](ARCHITECTURE.md), [quality baseline](docs/QUALITY_SCORE.md).
-- Harness improvement work: [active plan](docs/exec-plans/active/harness-migration.md) and its full blueprint; keep its phase prerequisites and existing owning contracts.
+- Known architecture debt: [debt inventory](docs/exec-plans/tech-debt-tracker.md); confirm each entry against current source before acting.
 - Frontend implementation and checks: [web frontend instructions](frontend/web/AGENTS.md).
 - Python checks: [local test execution](docs/agent-rules/local-test-execution.md).
 - PR and review: [delivery workflow](docs/agent-rules/github-issue-pr-workflow.md).

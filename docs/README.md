@@ -123,9 +123,10 @@ and is historical unless its exact subject has been freshly verified.
 [Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
 link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
 measurement scope, denominators and unmeasured fields; its generated reports are
-dated observations. The [active Harness plan](exec-plans/active/harness-migration.md)
-and [debt inventory](exec-plans/tech-debt-tracker.md) own this improvement's progress
-and prerequisites, not product or release authority.
+dated observations. The [debt inventory](exec-plans/tech-debt-tracker.md) lists
+known architecture debt, not product or release authority. The stopped
+[Harness migration](exec-plans/completed/harness-migration-2026-10.md) and its
+blueprint are historical records, not active rules.
 
 ## Document maintenance
 

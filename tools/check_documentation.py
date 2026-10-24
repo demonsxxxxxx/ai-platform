@@ -16,11 +16,10 @@ from markdown_it import MarkdownIt
 
 ENTRYPOINTS = {"AGENTS.md", "CLAUDE.md", "README.md", "ARCHITECTURE.md", "docs/README.md"}
 HISTORICAL_ROOTS = ("docs/release-evidence/", "docs/agent-rules/history/", "docs/exec-plans/completed/")
-SNAPSHOTS = {"docs/HARNESS-RULES.md"}
 
 
 def historical(path: str) -> bool:
-    return path in SNAPSHOTS or path.startswith(HISTORICAL_ROOTS)
+    return path.startswith(HISTORICAL_ROOTS)
 
 
 def markdown_facts(text: str) -> tuple[list[tuple[int, str]], set[str]]:
