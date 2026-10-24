@@ -42,6 +42,8 @@ Linux amd64/arm64 subjects are recorded in the official
 [Docker image inventory](https://github.com/docker-library/repo-info/blob/master/repos/nginx/remote/1.30.6-alpine.md).
 The existing APK security upgrades, libexpat minimum, proxy configuration,
 provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
+The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
+later for `CVE-2026-111497`; the base image ships `1.2.0-r1`.
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
