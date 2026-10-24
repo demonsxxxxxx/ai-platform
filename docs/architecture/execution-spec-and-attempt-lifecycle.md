@@ -319,7 +319,7 @@ do not authorize an Attempt transition or replace the Run result.
 | Concern | Canonical owner | Forbidden shortcut |
 | --- | --- | --- |
 | Specification value/compiler | `app.runs.domain` / `app.runs.application` | route-built canonical bytes or queue-owned digest |
-| Specification persistence and attempt CAS | `app.runs.infrastructure.postgres` | new SQL in `app/repositories.py` |
+| Specification persistence and attempt CAS | `app.runs.infrastructure.postgres` | new SQL in a global repository module or route |
 | Queue claim and worker orchestration | `app.execution` | queue message as durable attempt truth |
 | Sandbox phases and cleanup | `app.sandbox` | Runs calling a provider or marking a lease released |
 | Live/terminal projection | `app.streaming` | Redis callback or stream entry as terminal authority |
