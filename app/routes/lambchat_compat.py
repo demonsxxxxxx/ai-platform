@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -74,31 +74,6 @@ from app.streaming.redis import (
     close_sse_authority_lease,
     get_stream_authority,
 )
-
-
-class _V4StreamBridge(Protocol):
-    async def replay_page(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        through_redis_id: str,
-    ) -> tuple[V4StreamEntry, ...]: ...
-
-    async def read_stream(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        count: int,
-        block_ms: int,
-    ) -> tuple[V4StreamEntry, ...]: ...
 
 
 router = APIRouter()
@@ -979,33 +954,6 @@ def _visible_assistant_artifacts(
         ) or preserve_unclassified_failure_artifacts:
             visible.append(artifact)
     return visible
-
-
-def _compatibility_events_for_run(
-    run: dict[str, Any],
-    run_events: list[dict[str, Any]],
-    artifacts: list[dict[str, Any]],
-    principal: AuthPrincipal,
-    *,
-    user_messages: list[dict[str, Any]] | None = None,
-    include_terminal: bool = True,
-    compact_answer_deltas: bool = False,
-) -> list[_CompatibilityWireEvent]:
-    """Build the sole public terminal wire, ordered for live and history replay."""
-    compatibility_events, _ = _compatibility_events_for_run_page(
-        run,
-        run_events,
-        artifacts,
-        principal,
-        fold_state=_CompatibilityFoldState(
-            False,
-            frozenset(),
-        ),
-        user_messages=user_messages,
-        include_terminal=include_terminal,
-        compact_answer_deltas=compact_answer_deltas,
-    )
-    return compatibility_events
 
 
 def _compatibility_events_for_run_page(

@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -580,6 +581,14 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     assert payload["schema_version"] == "ai-platform.governance-readiness.v1"
     assert payload["status"] == "partial_blocked"
     assert "tool_permission" in payload["domains"]
+    bulk_review = payload["domains"]["tool_permission"]["evidence"]["admin_policy_bulk_review_dashboard"]
+    assert bulk_review["schema_version"] == "ai-platform.tool-policy-bulk-review-readiness.v1"
+    assert bulk_review["status"] == "partial_blocked"
+    assert bulk_review["dashboard_contract"]["schema_version"] == "ai-platform.tool-policy-bulk-review-dashboard-contract.v1"
+    assert bulk_review["open_gaps"] == [
+        "admin_policy_bulk_review_visual_acceptance",
+        "admin_policy_bulk_review_controlled_host_acceptance",
+    ]
     assert "callback-secret" not in result.stdout
     assert "tenant-secret" not in result.stdout
     assert "211 verified" not in result.stdout.lower()
@@ -588,3 +597,10 @@ def test_governance_readiness_cli_outputs_json_without_secret_markers():
     ]
     assert "b1_runtime_evidence_review_against_merged_source" not in payload["open_gaps"]
     assert "gate closable" not in result.stdout.lower()
+
+
+def test_tool_policy_leaf_cli_and_renderer_stay_retired():
+    import app.tool_policy_bulk_review_readiness as bulk_review
+
+    assert not (Path(__file__).resolve().parents[1] / "tools/tool_policy_bulk_review_readiness.py").exists()
+    assert not hasattr(bulk_review, "render_tool_policy_bulk_review_readiness_markdown")

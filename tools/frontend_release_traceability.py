@@ -35,8 +35,7 @@ DIST_REMEDIATION_COMMANDS = [
     "python ../../tools/frontend_release_traceability.py --format json",
 ]
 STATIC_FRONTEND_PYTEST_COMMAND = (
-    "python -m pytest tests/test_deploy_frontend_static.py "
-    "tests/test_frontend_release_traceability.py "
+    "python -m pytest tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
@@ -67,7 +66,6 @@ WORKFLOW_TEST_STEP_COMMANDS = {
 WORKFLOW_STEP_COMMANDS = {
     "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build",
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
-    "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
     "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
     **WORKFLOW_TEST_STEP_COMMANDS,
     "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
@@ -76,7 +74,6 @@ WORKFLOW_STEP_COMMANDS = {
 WORKFLOW_STEP_JOBS = {
     "Verify frontend lint and build": "frontend",
     "Verify static frontend Python contracts": "frontend-contracts",
-    "Verify static frontend deploy helper": "frontend-contracts",
     "Audit frontend projections": "frontend-contracts",
     **dict.fromkeys(WORKFLOW_TEST_STEP_COMMANDS, "frontend-tests"),
     "Install Linux contract test dependencies": "frontend-image",
@@ -92,7 +89,6 @@ WORKFLOW_COMMANDS = [
     "python tools/frontend_projection_audit.py --format json",
     *WORKFLOW_TEST_STEP_COMMANDS.values(),
     "python tools/frontend_release_traceability.py --format json",
-    "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
     '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"',
@@ -112,7 +108,6 @@ WORKFLOW_COMMAND_JOBS = {
     "python tools/frontend_projection_audit.py --format json": "frontend-contracts",
     **dict.fromkeys(WORKFLOW_TEST_STEP_COMMANDS.values(), "frontend-tests"),
     "python tools/frontend_release_traceability.py --format json": "frontend",
-    "python tools/deploy_frontend_static.py --help": "frontend-contracts",
     "python tools/frontend_packaged_runtime_smoke.py --format json": "frontend",
     "docker build": "frontend-image",
     '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"': "frontend-image",

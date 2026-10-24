@@ -4,7 +4,6 @@
       "src/components/agent/modelIcon.tsx": 2,
       "src/components/chat/AgentOptionButton.tsx": 1,
       "src/components/chat/ChatInput.tsx": 3,
-      "src/components/chat/ChatInputShortcuts.tsx": 5,
       "src/components/chat/ChatInputToolbar.tsx": 1,
       "src/components/chat/ChatMessage/MermaidDiagram.tsx": 4,
       "src/components/chat/ChatMessage/elements/RunActivity.tsx": 1,

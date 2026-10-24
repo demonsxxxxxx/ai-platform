@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -505,33 +506,19 @@ def test_skill_release_readiness_cli_outputs_json_without_secret_markers(tmp_pat
     assert "token=secret" not in result.stdout
     assert ".claude/skills" not in result.stdout
 
-
-def test_skill_release_dashboard_readiness_cli_outputs_json_without_secret_markers():
-    env = os.environ.copy()
-    env["PRIVATE_TEST_DIRECTORY"] = ".claude/skills/token=secret"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "tools/skill_release_dashboard_readiness.py",
-            "--format",
-            "json",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    payload = json.loads(result.stdout)
-    assert payload["schema_version"] == "ai-platform.skill-release-dashboard-readiness.v1"
-    assert payload["dashboard_contract"]["schema_version"] == "ai-platform.skill-release-dashboard-contract.v1"
-    assert payload["open_gaps"] == _DASHBOARD_GAPS
-    assert "token=secret" not in result.stdout
-    assert ".claude/skills" not in result.stdout
+    dashboard = payload["admin_skill_release_dashboard"]
+    assert dashboard["dashboard_contract"]["schema_version"] == "ai-platform.skill-release-dashboard-contract.v1"
+    assert dashboard["status"] == "partial_blocked"
     assert "executor_private_payload" not in result.stdout
     assert "raw_storage_key" not in result.stdout
     assert "sandbox_workdir" not in result.stdout
+
+
+def test_skill_dashboard_leaf_cli_and_renderer_stay_retired():
+    import app.skills.release_dashboard_readiness as dashboard
+
+    assert not (Path(__file__).resolve().parents[1] / "tools/skill_release_dashboard_readiness.py").exists()
+    assert not hasattr(dashboard, "render_skill_release_dashboard_readiness_markdown")
 
 
 def test_skill_release_readiness_fails_closed_when_inventory_is_missing(tmp_path):

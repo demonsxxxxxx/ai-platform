@@ -8,6 +8,10 @@ package or a choice of deployment tracks. The assembler embeds that guide as
 Release and follow its included instructions; do not assemble it from source
 templates or mix files from different Releases.
 
+The former standalone static-frontend deployment CLI is retired. Frontend
+installation and upgrades use this same package and its image/provenance checks;
+there is no separate static-directory deployment path.
+
 See the [release operations runbook](../../docs/operations/release-operations-runbook.md)
 for publication and acceptance. The current package still enforces the
 `test` / `internal-test` configuration and Docker `bridge` / `runsc` prerequisites.

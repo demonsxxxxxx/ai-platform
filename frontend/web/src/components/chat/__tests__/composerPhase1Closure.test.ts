@@ -130,7 +130,7 @@ test("composer model selector delegates overlays to Lobe", () => {
 
 test("authenticated workbench popovers use the existing Lobe overlay owner", () => {
   for (const path of [
-    "src/components/chat/AgentOptionButton.tsx", "src/components/chat/ChatInputShortcuts.tsx",
+    "src/components/chat/AgentOptionButton.tsx",
     "src/components/layout/UserMenu.tsx", "src/components/selectors/SkillSelector.tsx", "src/components/selectors/ToolSelector.tsx",
   ]) {
     const source = read(path);
