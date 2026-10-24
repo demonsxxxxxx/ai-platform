@@ -74,14 +74,21 @@ def docker_governed_network_identity(
     attrs = docker_network_authoritative_attrs(network)
     network_id = str(attrs.get("Id") or "").strip()
     network_name = str(attrs.get("Name") or "").strip()
+    options = docker_network_options(network)
+    allowed_options = {
+        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.enable_ipv4": "true",
+        "com.docker.network.enable_ipv6": "false",
+    }
     if (
         not network_id
         or len(network_id) > 512
         or network_name != configured_name
         or attrs.get("Driver") != "bridge"
         or attrs.get("Internal") is not True
-        or docker_network_options(network)
-        != {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+        or attrs.get("EnableIPv6") not in (None, False)
+        or options.get("com.docker.network.bridge.enable_ip_masquerade") != "false"
+        or any(key not in allowed_options or allowed_options[key] != value for key, value in options.items())
     ):
         raise GovernedEgressAdmissionError() from None
     return network_id, network_name
