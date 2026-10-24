@@ -37,7 +37,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
     PublicExecutionV2Projector,

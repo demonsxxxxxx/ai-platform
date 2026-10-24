@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.streaming.api import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent
 
