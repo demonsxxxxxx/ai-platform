@@ -1,10 +1,10 @@
 # Source quality baseline
 
-Status: dated source observation and measurement guide; this is not a conformance,
+Status: archived 2026-10-13 source observation (stopped Harness migration); this is not a conformance,
 coverage, security or deployment certificate.
 
 Owner: repository quality; architectural decisions remain with the
-[authority index](README.md) and [source architecture](architecture/source-code-architecture.md).
+[authority index](../../../README.md) and [source architecture](../../../architecture/source-code-architecture.md).
 
 Baseline: **2026-10-13 (Beijing time), `f519d041f1bb155a788278abfd5e07becebe1767`**,
 branch `harnessing`. The inventory reads tracked working-tree source; its report
@@ -15,7 +15,7 @@ There were no tracked app changes when measured.
 ## Reproduce
 
 From the worktree root, prepare the locked test environment as described in
-[CI](CI.md#41-环境与文档测试). Source parsing uses the standard library; workflow
+[CI](../../../CI.md#local-reproduction). Source parsing uses the standard library; workflow
 selection inventory reuses the already-locked PyYAML dependency. The script never
 imports product code:
 
@@ -23,10 +23,10 @@ imports product code:
 "$harness_python" scripts/analysis/source_quality_inventory.py
 ```
 
-The checked-in [JSON inventory](generated/source-quality-inventory.json) is generated
+The checked-in [JSON inventory](source-quality-inventory.json) is generated
 output. Regenerate it from the same command when intentionally refreshing this
 baseline. Parse errors give exit code 2 and mean that the inventory is incomplete.
-The owning check is [test_source_quality_inventory.py](../tests/test_source_quality_inventory.py).
+The owning check is [test_source_quality_inventory.py](../../../../tests/test_source_quality_inventory.py).
 
 ## Scope and denominators
 
@@ -122,11 +122,11 @@ baseline: Runs lifecycle ports and Bootstrap ledger injection; Sandbox shared
 callback authority with Run-before-Attempt locking, persisted tenant, exact lease
 and token-generation checks; caller-owned replay transaction plus current principal
 reauthorization before child creation and queue admission. Source locations and
-owning selectors are recorded in the [archived plan](exec-plans/completed/harness-migration-2026-10.md).
+owning selectors are recorded in the [archived plan](../harness-migration-2026-10.md).
 
 ## Security and verification observations
 
-The [dependency audit](generated/dependency-audit.json) queried **OSV** for the
+The [dependency audit](dependency-audit.json) queried **OSV** for the
 85 packages in the B1 locked Windows/Python test environment, **before** the B2
 coverage extra was added.
 It found **0 known vulnerabilities and 0 skipped packages**, on 2026-10-13 Beijing
@@ -157,7 +157,7 @@ regressions, 0 skips** and **104 scoped replay/callback/transfer/persistence tes
 328-file backend test suite. The cycle orientation case was first observed failing,
 then passed after correction. Windows Git deep-path failures were reproduced and
 resolved with command-scoped longpaths, without changing assertions or gate policy.
-The observed commands and scope are in [CI §4.5](CI.md#45-windows-深路径与已观测的本地门禁).
+The observed commands and scope are in [CI §4.5](ci-observations.md#45-windows-深路径与已观测的本地门禁).
 
 | Required measurement | Disposition |
 | --- | --- |
@@ -173,7 +173,7 @@ The observed commands and scope are in [CI §4.5](CI.md#45-windows-深路径与�
 
 Status: dated sample, 2026-10-13 Beijing time. The runner now has explicit app
 statement/branch instrumentation, but the full backend suite was not executed.
-The six selectors in [CI §4.6](CI.md#46-b2-文档门禁与显式-coverage) passed **132 cases,
+The six selectors in [CI §4.6](ci-observations.md#46-b2-文档门禁与显式-coverage) passed **132 cases,
 0 skips** with pytest-cov 7.1.0 / coverage 7.16.2 on Windows/Python 3.13.2.
 The report denominator was checked against all **452** tracked app Python files,
 including unimported namespace packages. Imported definitions may count as executed
@@ -261,7 +261,7 @@ GitHub run or remote host was authorized/observed in this work.
 
 ## Extended local critical-boundary sample
 
-The twelve explicitly selected files in [CI §4.7](CI.md#47-完整范围库存与关键域补采)
+The twelve explicitly selected files in [CI §4.7](ci-observations.md#47-完整范围库存与关键域补采)
 passed **174 tests, zero skips**. Compared with the earlier six-file sample, this
 adds lifecycle, Attempt application/repository and locked/dispatch authorization
 contracts. It still does not run all critical-domain tests or real PostgreSQL/Redis.
@@ -345,11 +345,11 @@ acceptance, and three complete passing rounds remain pending.
 
 The author of a relevant source migration refreshes the inventory and explains
 changed denominators/edges in the PR. Review follows the normal
-[delivery workflow](agent-rules/github-issue-pr-workflow.md); generated output cannot
+[delivery workflow](../../../agent-rules/github-issue-pr-workflow.md); generated output cannot
 approve its own checker or relax required gates. The changed-document checker runs
 in candidate backend preflight against a full comparison SHA. Its link
 negative tests and author-triggered repair procedure live with
-[local test execution](agent-rules/local-test-execution.md#documentation-gardening).
+[local test execution](../../../agent-rules/local-test-execution.md#documentation-gardening).
 T9 candidate source validation is implemented; independent review and observed CI
 remain pending. The check does not replace deletion/rename consumer inventory,
 validate external URLs, or establish semantic document freshness.

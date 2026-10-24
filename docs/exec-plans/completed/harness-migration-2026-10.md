@@ -65,7 +65,7 @@
 - `app/skills/catalog.py:11-33` 依赖 Identity infrastructure、同域 Skills infrastructure 及 legacy 根模块；同域实现依赖不属于跨 context 越界。
 - `app/sandbox/infrastructure/leases_postgres.py:5-6` 直连 Identity/Streaming writer。
 
-本次 [全量静态库存](../../generated/source-quality-inventory.json) 解析 452 个 app Python 文件、423 个前端生产文件和测试文件索引，0 解析失败；得到 **36 条跨 context 内部导入边**，其中 Agent Apps 13 条、Runs 16 条。完整位置与分母见 [QUALITY_SCORE](../../QUALITY_SCORE.md)，B3–B5 只是首批 bounded scope，不是全部剩余架构债。静态图包含局部/条件/type-only import，不单独证明运行故障。
+本次 [全量静态库存](quality-baseline-2026-10-13/source-quality-inventory.json) 解析 452 个 app Python 文件、423 个前端生产文件和测试文件索引，0 解析失败；得到 **36 条跨 context 内部导入边**，其中 Agent Apps 13 条、Runs 16 条。完整位置与分母见 [QUALITY_SCORE](quality-baseline-2026-10-13/QUALITY_SCORE.md)，B3–B5 只是首批 bounded scope，不是全部剩余架构债。静态图包含局部/条件/type-only import，不单独证明运行故障。
 
 现有 `api.py` 未导出上述全部持久化函数，且 [source architecture](../../architecture/source-code-architecture.md) 禁止公共 API 暴露具体 infrastructure adapter。B3–B5 应先梳理用例与装配边界，复用已有 application 能力和 Bootstrap 注入方式；不能批量 re-export 数据库函数来让 import 检查变绿。
 
@@ -106,7 +106,7 @@
 
 ### 3.6 安全与可靠性（明确作用域的证据）
 
-- 已准备本工作区锁定环境：`uv sync --locked --extra test --python 3.13`，未改变锁文件。OSV 对其中 85 个包查询得到 0 个已知漏洞、0 个跳过；[原始报告](../../generated/dependency-audit.json) 和命令在 QUALITY_SCORE。此前 PyPI TLS 超时不算成功；本结果不覆盖 Linux 镜像、Node 或业务输入安全。
+- 已准备本工作区锁定环境：`uv sync --locked --extra test --python 3.13`，未改变锁文件。OSV 对其中 85 个包查询得到 0 个已知漏洞、0 个跳过；[原始报告](quality-baseline-2026-10-13/dependency-audit.json) 和命令在 QUALITY_SCORE。此前 PyPI TLS 超时不算成功；本结果不覆盖 Linux 镜像、Node 或业务输入安全。
 - 当前 [ProfileDrive adapter](../../../app/files/infrastructure/profile_drive.py:53) 已有 60 秒默认读取时限、1800 秒默认绝对总时限、有限资源关闭预算，以及流式读取/下游背压/取消的 owning 回归。撤销 `read=None` 的 D3 疑问，不据此宣称所有第三方 close 都有硬墙钟上限。
 - [Sandbox callback authority](../../../app/sandbox/application/callback_authority.py:55) 在同一 caller 连接上 Run-before-Attempt，从 persisted Run 派生 tenant，检查 session、终态、唯一 lease、Attempt 与 token generation；[Bootstrap](../../../app/bootstrap/sandbox_callbacks.py) 负责具体 query 注入。新基线已包含 #1801，不能按旧 route-owned guard 制定迁移。
 - [Run lifecycle](../../../app/runs/application/lifecycle.py:56) 通过明确的 persistence/event/audit ports 工作，[Bootstrap](../../../app/bootstrap/run_lifecycle.py:27) 注入实际 adapters；[Copy route](../../../app/routes/runs.py:1154) 和 retry/resume 的公共编排在 caller transaction 内完成当前 principal/Profile 复验、child 和 operation receipt，提交后才进入队列。
@@ -212,7 +212,7 @@
 | core-beliefs | 新 [core-beliefs](../../design-docs/core-beliefs.md)，原则摘要全部链接既有合同 |
 | 设计/决策记录 | 复用 docs/architecture 与 docs/adr，不搬动历史固定链接 |
 | 产品/语言图谱 | 复用 CONTEXT 与 workbench、Profile、Conversation owning contracts |
-| QUALITY_SCORE | 新 [QUALITY_SCORE](../../QUALITY_SCORE.md)，逐域/层公式、N/A、范围、输入/生成器摘要与未测项 |
+| QUALITY_SCORE | 新 [QUALITY_SCORE](quality-baseline-2026-10-13/QUALITY_SCORE.md)，逐域/层公式、N/A、范围、输入/生成器摘要与未测项 |
 | 开发/测试/调试 | 复用 README、local-test-execution 与 owning regression；新增本轮测量脚本及最小回归 |
 | CI / 发布 | CI.md 导航 + 现有 workflows/runbook；未新增 desktop 发布流程 |
 | 生成事实 | docs/generated 源码库存/依赖审计；均为 dated observations，不是 authority |
@@ -268,7 +268,7 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 ### 5.6 2026-10-19 当前实现与验收缺口
 
 - 2026-10-20 同步 main 后，候选库存为 348 个 Python 测试文件。所有文件在既有 Linux 分片、Agent/Skill 或前端 Python 合同中各有一个完整文件 owner；Windows 平台节点另行补充。库存缺失、重复或只选择部分 node 会被 workflow 回归拒绝。PR #1850 的 CI 已启动，完整结果待实际验收。
-- f853 app 源码的完整 Linux 选择范围已执行，结果与 owner 覆盖率见 [当前测量](../../QUALITY_SCORE.md#2026-10-19-full-linux-selection-observation)。12 个平台/真实 Sandbox 跳过仍逐项处置；原始失败已通过同输入 fixture/tool 修复重跑，不能当作 untouched-main 全绿。
+- f853 app 源码的完整 Linux 选择范围已执行，结果与 owner 覆盖率见 [当前测量](quality-baseline-2026-10-13/QUALITY_SCORE.md#2026-10-19-full-linux-selection-observation)。12 个平台/真实 Sandbox 跳过仍逐项处置；原始失败已通过同输入 fixture/tool 修复重跑，不能当作 untouched-main 全绿。
 - T1 已按 f853 的实际文件规模采用新生产代码文件 800 行上限；现有冻结文件不增长和受信 authority 保持。T2 已实现差异范围内可识别标准 logger 的窄结构化检测，保留未改日志及既有安全适配器；不是全仓日志格式迁移。两者的正反例及既有治理测试已通过；使用最终 Windows runner 的 architecture/code/source-authority 合组为 219 passed、0 skipped。
 - 版本化 hooks 已交付精确 staged/pushed 快照检查，测试在临时仓库执行；无全局或原工作区 Git 配置修改。Windows 深临时路径问题经最小用例 red→green 修复，完整 runner 回归及 Foundation 用例通过。
 - 候选全量首次为 10632 passed、58 failed、12 skipped。部门数字 authority fixture、replay mock 签名、Linux hook fixture 符号链接和旧 README 断言已修正；本地 12 文件回归为 824 passed、1 个 hook fixture 失败，修复后 hook 9 项复测通过。该证据不替代候选 Linux 全量重跑。

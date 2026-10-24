@@ -34,8 +34,8 @@ establish implemented or deployed behavior.
 ## Repository improvement
 
 [Core beliefs](docs/design-docs/core-beliefs.md) links the existing engineering
-principles. [QUALITY_SCORE](docs/QUALITY_SCORE.md) records a dated, reproducible
-source baseline, with explicit denominators and unmeasured fields. The
+principles. Source measurements (import edges, hotspots) come from running
+`scripts/analysis/source_quality_inventory.py` at the revision in question. The
 [debt inventory](docs/exec-plans/tech-debt-tracker.md) lists known architecture
-debt; it does not supersede these contracts. The stopped Harness migration and its
-blueprint are archived under `docs/exec-plans/completed/`.
+debt; it does not supersede these contracts. The stopped Harness migration, its blueprint and
+its 2026-10-13 quality baseline are archived under `docs/exec-plans/completed/`.

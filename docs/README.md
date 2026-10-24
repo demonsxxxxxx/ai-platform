@@ -121,12 +121,12 @@ and is historical unless its exact subject has been freshly verified.
 ## Repository improvement and dated inventories
 
 [Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
-link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
-measurement scope, denominators and unmeasured fields; its generated reports are
-dated observations. The [debt inventory](exec-plans/tech-debt-tracker.md) lists
+link the existing owners. Measure current source with
+`scripts/analysis/source_quality_inventory.py`. The [debt inventory](exec-plans/tech-debt-tracker.md) lists
 known architecture debt, not product or release authority. The stopped
-[Harness migration](exec-plans/completed/harness-migration-2026-10.md) and its
-blueprint are historical records, not active rules.
+[Harness migration](exec-plans/completed/harness-migration-2026-10.md), its
+blueprint and its [quality baseline](exec-plans/completed/quality-baseline-2026-10-13/QUALITY_SCORE.md)
+are historical records, not active rules.
 
 ## Document maintenance
 
