@@ -131,7 +131,6 @@
     "app/queue_payload_validation.py",
     "app/redis_client.py",
     "app/required_tool_contract.py",
-    "app/run_admission_policy.py",
     "app/run_admission_terminalization.py",
     "app/run_control_readiness.py",
     "app/run_projection.py",
