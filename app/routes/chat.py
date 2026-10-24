@@ -140,10 +140,7 @@ from app.streaming.api import WorkerV4Capabilities
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_principal_user_id
 
-# Session reads/creation are served under /api/ai; submission and stream
-# admission keep the /api paths the browser and live diagnostics call.
-router = APIRouter()
-submission_router = APIRouter()
+router, submission_router = APIRouter(), APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
 
 _MISSING = object()
