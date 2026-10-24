@@ -39,7 +39,7 @@ from app.mcp.api import (
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
-from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.streaming.api import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runs.api import (
     RunInputClosed,

@@ -34,7 +34,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     public_skill_display_label,
 )
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,

@@ -127,7 +127,6 @@
     "app/product_events.py",
     "app/projection_redaction.py",
     "app/public_context_keys.py",
-    "app/public_execution.py",
     "app/queue.py",
     "app/queue_payload_validation.py",
     "app/redis_client.py",

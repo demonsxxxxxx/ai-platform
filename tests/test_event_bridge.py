@@ -1,6 +1,6 @@
 import pytest
 
-from app.public_execution import (
+from app.streaming.domain.public_execution import (
     PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
     PublicExecutionV2Projector,
     public_execution_event_from_row,
