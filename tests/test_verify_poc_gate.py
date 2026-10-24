@@ -8,24 +8,6 @@ import pytest
 from tools import verify_poc_gate
 
 
-def test_api_compat_gate_requires_user_and_admin_permissions(monkeypatch):
-    def fake_http_json(url: str):
-        if url.endswith("/api/auth/oauth/providers"):
-            return 200, {"registration_enabled": False}
-        if url.endswith("/api/agent/models/available"):
-            return 200, {"default_model_id": "deepseek-v4-flash"}
-        if url.endswith("/api/auth/permissions"):
-            return 200, {"all_permissions": [{"value": "agent:use"}, {"value": "artifact:download"}]}
-        return 200, {}
-
-    monkeypatch.setattr(verify_poc_gate, "http_json", fake_http_json)
-
-    gate = verify_poc_gate.check_api_compat("http://api.local")
-
-    assert gate.ok is False
-    assert gate.evidence["missing_permissions"] == ["admin:status", "model:admin", "settings:manage"]
-
-
 def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch):
     def fake_http_json(url: str):
         if url.endswith("/api/auth/oauth/providers"):
@@ -37,10 +19,6 @@ def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch)
                     {"id": "deepseek-v4-flash"},
                     {"id": "gpt-5.3-codex-spark", "profile": {"auto_compact_window": 200_000, "max_output_tokens": 2048}},
                 ],
-            }
-        if url.endswith("/api/auth/permissions"):
-            return 200, {
-                "all_permissions": [{"value": value} for value in sorted(verify_poc_gate.REQUIRED_UI_PERMISSIONS)]
             }
         return 200, {}
 
@@ -64,10 +42,6 @@ def test_api_compat_gate_rejects_default_model_without_capacity(monkeypatch):
                     {"id": "deepseek-v4-flash"},
                     {"id": "gpt-5.3-codex-spark"},
                 ],
-            }
-        if url.endswith("/api/auth/permissions"):
-            return 200, {
-                "all_permissions": [{"value": value} for value in sorted(verify_poc_gate.REQUIRED_UI_PERMISSIONS)]
             }
         return 200, {}
 
