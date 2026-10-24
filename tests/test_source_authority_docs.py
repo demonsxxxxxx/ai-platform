@@ -377,7 +377,7 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
     assert "211 verified" not in active_text
 
 
-def test_release_evidence_index_names_its_only_runtime_reader():
+def test_release_evidence_index_names_its_current_readers():
     index = " ".join(read(RELEASE_EVIDENCE_INDEX).split())
 
     assert "build_skill_version_release_review" in index
@@ -385,7 +385,11 @@ def test_release_evidence_index_names_its_only_runtime_reader():
     assert "no credentials, raw environment values" in index
     assert "Actions artifacts" in index
     assert "current overall status" not in index
-    assert sorted(path.name for path in RELEASE_EVIDENCE_INDEX.parent.iterdir()) == ["README.md", "skill-release"]
+    assert sorted(path.name for path in RELEASE_EVIDENCE_INDEX.parent.iterdir()) == [
+        "README.md",
+        "frontend-shell-parity",
+        "skill-release",
+    ]
 
 
 def test_historical_status_and_manual_release_docs_are_not_retained():

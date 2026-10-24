@@ -1,9 +1,13 @@
 # Release Evidence
 
-This directory is copied into the backend image. Its only current reader is the
-Admin Skill release review for `builtin` Skill versions
-(`app/skills/release_readiness.py`, `build_skill_version_release_review`), which
-reads [skill-release](skill-release/README.md) by default.
+This directory is copied into the backend image. It holds two current records:
+
+- [skill-release](skill-release/README.md): read at runtime by the Admin Skill
+  release review for `builtin` Skill versions (`app/skills/release_readiness.py`,
+  `build_skill_version_release_review`).
+- [frontend-shell-parity](frontend-shell-parity/librechat-source.md): the pinned
+  LibreChat upstream provenance for reference-derived UI files, checked by
+  `frontend/web/src/librechat-ui/__tests__/libreChatUiUpstream.test.ts`.
 
 Entries contain no credentials, raw environment values, private executor
 payloads, storage keys, sandbox work directories, or absolute private paths.
