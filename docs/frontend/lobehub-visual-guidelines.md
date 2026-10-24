@@ -26,7 +26,7 @@
 ### 3.1 单一来源与工具类
 
 - 生产 token 在 `styles/base.css`：浅色 `:root`，深色 `.dark`。语义变量包括 `--theme-success|warning|info|danger-text`（文字用的加深同色相，见第 3.3 节）、`--theme-on-overlay` 与 `--theme-overlay-solid`（始终暗底的查看器用，与明暗主题无关），以及 `--theme-bg`、`--theme-bg-card`、`--theme-bg-sidebar`、`--theme-sidebar-*`、`--theme-border`、`--theme-border-strong`、`--theme-text`、`--theme-text-secondary|tertiary|quaternary`、`--theme-hover`、`--theme-primary*`、`--theme-danger|warning|success|info`（含 `-soft` 与 `-ring`）。
-- Tailwind 工具类中的灰阶使用 `neutral-*`（Tailwind 内置的无色相灰阶），不使用 `stone-*` 或 `slate-*`。两者已于本轮全部替换（784 处，54 个文件）。
+- Tailwind 工具类中的灰阶使用 `neutral-*`（Tailwind 内置的无色相灰阶），不使用 `stone-*` 或 `slate-*`。现有代码已全部替换。
 - 新增颜色必须先在 `:root` 与 `.dark` 定义语义变量，再在组件中引用。不得在 `.tsx` 的 `style` 或 `.css` 的规则里直接写 `#xxxxxx`、`rgb()`、`rgba()`。
 - 允许的例外（由 `scripts/check-style-rules.mjs` 强制执行，清单写在脚本的 `RENDER_EXCEPTIONS` 与 `LITERAL_EXCEPTIONS` 中）：
   1. `base.css` 的 token 定义块本身，以及 `utils/themeDom.ts`（浏览器 `theme-color` 元信息必须是字面色值）。
@@ -76,7 +76,7 @@
 ## 5. 断点
 
 - 允许的断点只有成对的标准界限（与 Tailwind 对齐）：`639/640`（手机/中等）、`767/768`（应用外壳折叠）、`1023/1024`、`1279/1280`、`1535/1536`（宽屏）。`max-width` 与 `min-width` 必须成对，不另起数值。
-- 本轮已把 480、1200、1360、1440 等非标准值并入标准界限：480 → 640，1200 与 1360 → 1280，1440 → 1536，760 → 767，520 → 639，1080 → 1023，1100 与 1180 → 1279。这些是有意的布局变化，只影响对应宽度区间。
+- 历史非标准值已并入标准界限：480 → 640，1200 与 1360 → 1280，1440 → 1536，760 → 767，520 → 639，1080 → 1023，1100 与 1180 → 1279。这些是有意的布局变化，只影响对应宽度区间。
 
 ## 6. 组件与布局
 
@@ -133,14 +133,14 @@
 
 ## 9. 重复出现的代码问题（新代码必须避免）
 
-这些问题在本轮整改中反复出现，已写入约束：
+以下问题曾在整改中反复出现，已写入约束：
 
 | 问题 | 为什么不对 | 正确做法 |
 | --- | --- | --- |
 | 同一色值在 CSS 与组件里各写一份（样稿曾复制一整套灰阶） | 深浅色易漂移，改一处漏一处 | 只引用 `--theme-*` 变量（第 3.1 节） |
 | 用有色相的灰阶（`stone-*`、`slate-*`、`mauve`） | 与 LobeHub 灰阶不一致，深浅色之间色温不统一 | 使用 `neutral-*` 与 `--theme-*`（第 3.1 节） |
 | 把品牌色写成青绿或其它彩色主按钮 | 与主动作墨色冲突，多套主色并行 | 主动作用 `--theme-primary`（墨色） |
-| 断点数值各自为政（`639/640` 重叠、`767/768`、`max-width:640` 与 `min-width:640` 同时存在） | 边界处样式跳变，难以排查 | 只用第 5 节的断点（本轮已修 `markdown.css`） |
+| 断点数值各自为政（`639/640` 重叠、`767/768`、`max-width:640` 与 `min-width:640` 同时存在） | 边界处样式跳变，难以排查 | 只用第 5 节的断点 |
 | 手机端用 `display:none` 隐藏表格列 | `<col>` 仍占宽，右侧留白 | 在 JS 中条件展开列数组（`LobeStylePreview.tsx` 的模型表） |
 | 视觉样式写在 `style={{}}` 里（生产有 66 个 `.tsx` 文件） | 无法被主题切换与断点统一管理，且覆盖顺序不可控 | 样式进入 CSS 模块或语义类；动态数值（如进度宽度）可保留 |
 | 导航/按钮的激活态用内联颜色 | 与 Lobe 的类优先级冲突，只能靠内联压过 | 用 `className` 切换 `…Active` 类，选择器限定在所属容器内（样稿侧栏已改） |

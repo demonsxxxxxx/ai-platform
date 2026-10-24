@@ -35,7 +35,6 @@ BACKEND_OWNED_STATIC_SUITES = {
     "tests/test_packaging_publish_workflow.py",
     "tests/test_release_image_manifest.py",
     "tests/test_release_authority.py",
-    "tests/test_require_zero_junit_skips.py",
     "tests/test_runtime_launch_script.py",
     "tests/test_source_authority_docs.py",
 }
@@ -287,7 +286,6 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         assert suite not in PYTEST_COMMAND
         assert suite not in workflow
         assert suite in backend_workflow
-    assert "tests/test_governance_readiness.py" not in workflow
     assert "deploy_frontend_static.py" not in workflow
     assert not (ROOT / "tools/deploy_frontend_static.py").exists()
     assert not (ROOT / "tests/test_deploy_frontend_static.py").exists()

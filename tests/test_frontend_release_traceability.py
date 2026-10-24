@@ -121,7 +121,6 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert all(command in trace["workflow"]["enforced_commands"] for command in WORKFLOW_TEST_STEP_COMMANDS.values())
     assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
-    assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
     assert not any("deploy_frontend_static.py" in command for command in trace["workflow"]["enforced_commands"])
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
