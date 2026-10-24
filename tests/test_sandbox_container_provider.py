@@ -1249,6 +1249,7 @@ def persisted_opensandbox_row(lease):
 
 
 def persisted_docker_row(lease):
+    proof = json.loads(lease.labels["ai-platform.governed_egress.proof"])
     return {
         "id": "lease-a",
         "tenant_id": lease.tenant_id,
@@ -1267,7 +1268,18 @@ def persisted_docker_row(lease):
         "runtime_handle_verified_at": datetime.now(timezone.utc),
         "lease_payload_json": {
             "attempt_id": lease.labels["ai-platform.attempt_id"],
-            "labels": dict(lease.labels),
+            "governed_egress_proof": proof,
+            "labels": {
+                key: value
+                for key, value in lease.labels.items()
+                if not key.startswith(
+                    (
+                        "ai-platform.executor.",
+                        "ai-platform.external_egress.",
+                        "ai-platform.governed_egress.",
+                    )
+                )
+            },
         },
     }
 
@@ -6923,6 +6935,22 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
     )
     lease = await launch_provider.create_or_reuse(runtime_request, workspace())
     row = persisted_docker_row(lease)
+    persisted_labels = row["lease_payload_json"]["labels"]
+    persisted_proof = row["lease_payload_json"]["governed_egress_proof"]
+    expected_scope = container_provider.governed_egress_authorized_skill_scope(
+        skill_ids=runtime_request.skill_ids,
+        mcp_tool_ids=runtime_request.mcp_tool_ids,
+    )
+    assert "ai-platform.executor.requested_image" not in persisted_labels
+    assert container_provider.GOVERNED_EGRESS_PROOF_LABEL not in persisted_labels
+    assert persisted_proof["authorized_skill_scope_sha256"] == hashlib.sha256(
+        expected_scope.encode("utf-8")
+    ).hexdigest()
+    restored_handle = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
+    assert restored_handle is not None
+    assert json.loads(
+        restored_handle.labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL]
+    ) == persisted_proof
     row["executor_reconciliation_context_json"] = {
         "schema_version": "ai-platform.executor-reconciliation.v1",
         "run_payload": {
@@ -7022,7 +7050,6 @@ async def test_expired_docker_proof_allows_owned_control_but_fails_dispatch(monk
         build_governed_egress_proof,
         governed_egress_authorized_native_tool_scope,
         governed_egress_authorized_skill_scope,
-        governed_egress_proof_label,
     )
     from app.runtime.sandbox.container_provider import DockerContainerProvider, GovernedEgressAdmissionError
 
@@ -7082,18 +7109,64 @@ async def test_expired_docker_proof_allows_owned_control_but_fails_dispatch(monk
         expires_at=now - timedelta(seconds=1),
     )
     row = persisted_docker_row(lease)
-    row["lease_payload_json"]["labels"][container_provider.GOVERNED_EGRESS_PROOF_LABEL] = (
-        governed_egress_proof_label(expired_proof)
-    )
+    row["lease_payload_json"]["governed_egress_proof"] = expired_proof
     recovered = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
     assert recovered is not None
 
     url, _headers = await provider.executor_control_endpoint(recovered, runtime_request)
 
     assert url == "http://172.30.0.3:18000"
+    expired_dispatch_lease = lease.model_copy(
+        update={
+            "labels": {
+                **lease.labels,
+                container_provider.GOVERNED_EGRESS_PROOF_LABEL: recovered.labels[
+                    container_provider.GOVERNED_EGRESS_PROOF_LABEL
+                ],
+            }
+        }
+    )
     with pytest.raises(GovernedEgressAdmissionError):
-        await provider.validate_for_dispatch(recovered, runtime_request, workspace())
+        await provider.validate_for_dispatch(expired_dispatch_lease, runtime_request, workspace())
     assert fake.containers_by_name[lease.container_name].removed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ("tampered-proof", "missing-proof", "image-drift"))
+async def test_persisted_docker_control_rejects_missing_or_drifted_identity(monkeypatch, mutation):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, GovernedEgressAdmissionError
+
+    settings = governed_docker_settings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    runtime_request = request(mcp_tool_ids=["gateway::search"])
+    lease = await provider.create_or_reuse(runtime_request, workspace())
+    row = persisted_docker_row(lease)
+
+    if mutation == "tampered-proof":
+        row["lease_payload_json"]["governed_egress_proof"]["signature"] = "f" * 64
+    elif mutation == "missing-proof":
+        row["lease_payload_json"].pop("governed_egress_proof")
+    else:
+        fake.containers_by_name[lease.container_name].labels[
+            "ai-platform.executor.requested_image_digest"
+        ] = "sha256:" + "b" * 64
+
+    recovered = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
+    assert recovered is not None
+    with pytest.raises(GovernedEgressAdmissionError):
+        await provider.executor_control_endpoint(recovered, runtime_request)
+
+    if mutation == "missing-proof":
+        stopped = await provider.stop(recovered, reason="historical_cleanup")
+        assert stopped.status == "stopped"
 
 
 @pytest.mark.asyncio

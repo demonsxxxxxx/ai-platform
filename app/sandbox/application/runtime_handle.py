@@ -92,16 +92,16 @@ class PersistedRuntimeHandleRecovery:
                 if native_required not in ("true", "false") or (native_required == "true" and not attempt_id):
                     return None
                 labels["ai-platform.native_tool_required"] = native_required
-            for label in (
-                self._egress_policy.GOVERNED_EGRESS_PROOF_LABEL,
-                "ai-platform.executor.requested_image",
-                "ai-platform.executor.requested_image_digest",
-            ):
-                value = persisted_labels.get(label)
-                if value is not None:
-                    if not isinstance(value, str):
-                        return None
-                    labels[label] = value
+            proof = lease_payload.get("governed_egress_proof")
+            if proof is not None:
+                try:
+                    labels[self._egress_policy.GOVERNED_EGRESS_PROOF_LABEL] = (
+                        self._egress_policy.governed_egress_proof_label(proof)
+                    )
+                except (TypeError, ValueError):
+                    # Cleanup remains possible for historical rows whose proof
+                    # was never persisted or is no longer usable for control.
+                    pass
         if provider == "opensandbox":
             lease_payload = row.get("lease_payload_json")
             if not isinstance(lease_payload, dict):
