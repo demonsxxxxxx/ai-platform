@@ -576,7 +576,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "- name: Upload exact shard evidence" in pytest_step
     for artifact in ("evidence.json", "junit.xml", "coverage.json"):
         assert f".pytest-tmp/test-runs/**/${{{{ matrix.shard }}}}/{artifact}" in pytest_step
-    for artifact in ("control-chain.json", "terminal-ack-fault.json", "docker-cleanup.json", "failed-state.json", "*.log"):
+    for artifact in ("control-chain.json", "terminal-ack-fault.json", "terminal-callback-loss.json", "docker-cleanup.json", "failed-state.json", "*.log"):
         assert f".pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/{artifact}" in pytest_step
     assert "if-no-files-found: error" in pytest_step
     assert "--collect-only" not in pytest_step

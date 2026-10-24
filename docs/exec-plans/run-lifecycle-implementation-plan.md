@@ -1,6 +1,6 @@
 # Run 生命周期节点实施方案
 
-状态：Phase 0 实施中，后续迁移待评审。本文将 [ADR 0016](../adr/0016-run-execution-settlement-and-reclamation.md) 拆成可独立验收的节点。当前开工范围是 N00 库存和 N01 测试夹具；ADR 仍为提议，运行行为迁移、阶段启用和部署分别验收。节点编号是施工顺序，不是新的运行状态。
+状态：Phase 0 实施中，后续迁移待评审。本文将 [ADR 0016](../adr/0016-run-execution-settlement-and-reclamation.md) 拆成可独立验收的节点。当前开工范围是 N00 库存、N01 测试夹具及 N02 首批故障基线；ADR 仍为提议，运行行为迁移、阶段启用和部署分别验收。节点编号是施工顺序，不是新的运行状态。
 
 本次规划核对代码基线为 main 4a9e1d251de9fd2a79140faeb5f0bb3ea9ecd0dd，文档输入为 PR #1879 的 c1032bef0f2037caf4c446cabfd88f4a8eaa1b22。实际开工时重新核对当前源码、调用者和合同；测试结果、人员、制品和部署记录放在实施 PR。
 
@@ -137,11 +137,13 @@ Harness 前置复核：当前 [计划 §5.6](active/harness-migration.md#56-2026
 
 C 层新增套件走现有 run_test_stage.py、明确 selectors、零跳过和现有证据格式。[整链路测试](../../tests/test_run_execution_lifecycle_integration.py) 由 `lifecycle-control-chain` shard 全文件拥有。正常答案、选中文件、交付后 Worker 重启、终态落库后 ACK 丢失四个场景均通过生产提交 API 创建 Run，再经过实际 Worker、Docker executor、callback、结算、MinIO 下载和资源回收。准入前仅构造合成身份与已发布模型；session、Run、Attempt、lease、会话回执和答案均由生产路径创建。
 
+N02 首批在同一夹具增加两个 C 层切片。R02 的 queued 取消在 Worker 启动前走真实 owner API，检查跨用户拒绝、唯一取消事实、队列及索引清理，以及没有 Attempt、沙箱或业务结果。R05 持续在真实终态 callback 写库前返回 503；先证明答案与原生会话追加已落库、终态回执尚未存在，且执行器状态接口保留结果，再由重启后的 Worker 按现行心跳过期与探测规则恢复同一回执并完成文件交付和回收。该场景保留生产 callback 重试和 probe 时限。交付后停止 Worker 的屏障同时要求 runner 已进入且 reconciliation context 已持久化。
+
 [Docker 夹具](../../tests/support/run_lifecycle_docker.py) 为每场景创建独立 PG/Redis/MinIO、网络、工作区卷和 API/Worker；使用候选源码构建镜像，确定性 runner 替代 SDK query，并显式记录 `sdk_used=false`。Worker 与 API 共用网络 namespace，以访问只包含 API 和 executor 的 owned internal bridge；这与可选 Docker Compose overlay 的控制拓扑一致。终态 ACK 故障在真实 API 成功响应后截断 HTTP body，保存指定 batch 的故障与去重重试证据。资源不存在断言在 fixture teardown 前执行，清理器按精确测试标签删除残留，保存独立清理清单。
 
 同文件保留两个接收边界场景，从合法的 seeded running Attempt 验证旧代际拒绝、重复终态和 callback 屏障处退出。该层需要 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 指向专用测试数据库，并为每场景创建独占 Redis，因为 callback 还写固定 reconciliation signal key；仅 queue prefix 不足以隔离。CI 提供 PG/Redis 镜像，完整 Docker 栈复用现有 CI 的 `bitnamilegacy/minio:2025.4.22-debian-12-r1`，按需拉取并使用镜像默认初始化入口。Docker、依赖缺失直接失败。
 
-这些用例建立 C 层夹具与四个基线切片；实际通过结果以 runner evidence 和 PR 为准。L 层实际 SDK/provider、跨沙箱 native_resume 及 N02 其余故障场景继续待验收，不能据此宣布 N01 两层验收、十四场景或 Phase 0 完成。维护者已要求实际 SDK 验收在提交 PR 后于真实环境执行。
+这些用例建立 C 层夹具及 N02 首批切片；实际通过结果以 runner evidence 和 PR 为准。R02 的执行中取消、回执后取消和 stop 失败，R05 的探测不可达及迟到冲突，以及 N02 其余故障变体继续待验收。L 层实际 SDK/provider、跨沙箱 native_resume 由维护者在提交 PR 后于真实环境执行；N01 两层验收、十四场景和 Phase 0 尚未完成。
 
 新文件由一个 CI shard 全文件拥有；该 shard 测试预算 1200 秒、job 预算 30 分钟，其他 shard 保留原预算。已有测试不为新门禁重复跑进第二个 shard。现有全量 required checks 保持，C 层纳入 backend required；首版不靠狭窄路径过滤绕过未知影响。依赖缺失、未收集测试、skip 或错误制品均不能返回通过。门禁要以一个故意破坏不变量的候选证明能够阻断，随后恢复候选。
 
