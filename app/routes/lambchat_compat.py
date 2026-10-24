@@ -1,4 +1,12 @@
 # ruff: noqa: B008
+"""Current browser chat-session API: sessions, run history replay and SSE stream.
+
+The module name is historical (the frontend shell was ported from LambChat).
+These routes are the live paths used by ``frontend/web/src/services/api/session.ts``
+and ``hooks/useAgent/sseConnection.ts``; they are not a retirable compatibility
+layer. Migration into the owning contexts is tracked as TD-CONV-001 in
+``docs/exec-plans/tech-debt-tracker.md``.
+"""
 
 import asyncio
 import base64
