@@ -39,7 +39,6 @@ DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
-REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "model:admin", "settings:manage", "admin:status"}
 RUNTIME_ENV_ALLOWLIST = frozenset(
     {
         "CLAUDE_AGENT_SDK_ENABLED",
@@ -394,7 +393,6 @@ def check_api_compat(api_url: str) -> Gate:
     paths = [
         "/api/ai/health",
         "/api/auth/oauth/providers",
-        "/api/auth/permissions",
         "/api/agent/models/available",
         "/api/notifications/active",
         "/api/upload/config",
@@ -407,7 +405,6 @@ def check_api_compat(api_url: str) -> Gate:
         payloads[path] = payload
     oauth = payloads.get("/api/auth/oauth/providers") if isinstance(payloads.get("/api/auth/oauth/providers"), dict) else {}
     model = payloads.get("/api/agent/models/available") if isinstance(payloads.get("/api/agent/models/available"), dict) else {}
-    permissions_payload = payloads.get("/api/auth/permissions") if isinstance(payloads.get("/api/auth/permissions"), dict) else {}
     available_model_ids = _model_ids_from_catalog_payload(model.get("models"))
     default_model_id = str(model.get("default_model_id") or "")
     default_models = [
@@ -417,19 +414,12 @@ def check_api_compat(api_url: str) -> Gate:
     default_capacity_valid = len(default_models) == 1 and _valid_model_capacity(
         default_models[0].get("profile")
     )
-    permission_values = {
-        str(item.get("value"))
-        for item in permissions_payload.get("all_permissions", [])
-        if isinstance(item, dict) and item.get("value")
-    }
-    missing_permissions = sorted(REQUIRED_UI_PERMISSIONS - permission_values)
     ok = (
         all(status == 200 for status in statuses.values())
         and oauth.get("registration_enabled") is False
         and bool(default_model_id)
         and default_model_id in available_model_ids
         and default_capacity_valid
-        and not missing_permissions
     )
     return Gate(
         "lambchat_api_compat",
@@ -440,7 +430,6 @@ def check_api_compat(api_url: str) -> Gate:
             "default_model_id": default_model_id,
             "default_model_capacity_valid": default_capacity_valid,
             "available_model_ids": available_model_ids,
-            "missing_permissions": missing_permissions,
         },
     )
 

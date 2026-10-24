@@ -140,7 +140,7 @@ from app.streaming.api import WorkerV4Capabilities
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_principal_user_id
 
-router = APIRouter()
+router, submission_router = APIRouter(), APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
 
 _MISSING = object()
@@ -1191,7 +1191,7 @@ async def list_messages(
     )
 
 
-@router.post("/chat/stream", response_model=ChatStreamResponse)
+@submission_router.post("/chat/stream", response_model=ChatStreamResponse)
 async def chat_stream(
     request: ChatStreamRequest,
     http_request: Request,
@@ -2323,14 +2323,14 @@ async def retry_chat_submission_admission(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
 
 
-router.add_api_route(
+submission_router.add_api_route(
     "/chat/submissions/{submission_id}",
     get_chat_submission,
     methods=["GET"],
     response_model=ChatSubmissionResponse,
     route_class_override=_ChatSubmissionNoStoreRoute,
 )
-router.add_api_route(
+submission_router.add_api_route(
     "/chat/submissions/{submission_id}/retry-admission",
     retry_chat_submission_admission,
     methods=["POST"],

@@ -164,7 +164,7 @@ def authorized_default_model_for_chat_routes(monkeypatch):
 
 @pytest.fixture
 def chat_submission_client(monkeypatch):
-    """Exercise the mounted aliases and their route-local response wrapper."""
+    """Exercise the mounted routes and their route-local response wrapper."""
 
     monkeypatch.setattr(
         "app.auth.get_settings",
@@ -185,11 +185,35 @@ def chat_submission_client(monkeypatch):
         yield client
 
 
-_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api", "/api/ai")
+# Submission resolution and admission retry are served only under /api.
+_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api",)
 _CHAT_SUBMISSION_CLIENT_HEADERS = {
     "x-ai-user-id": "user-a",
     "x-ai-tenant-id": "tenant-a",
 }
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/ai/chat/stream"),
+        ("get", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"),
+        ("post", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission"),
+        ("post", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/latency"),
+        ("get", "/api/chat/sessions"),
+        ("post", "/api/chat/sessions"),
+        ("get", "/api/chat/sessions/ses_a"),
+        ("get", "/api/chat/sessions/ses_a/messages"),
+    ],
+)
+def test_chat_routes_are_not_served_under_the_retired_duplicate_prefix(
+    chat_submission_client, method, path
+):
+    response = getattr(chat_submission_client, method)(
+        path, headers=_CHAT_SUBMISSION_CLIENT_HEADERS
+    )
+
+    assert response.status_code in {404, 405}
 
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)

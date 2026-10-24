@@ -21,11 +21,11 @@ and message projection semantics.
 ## Session navigation and local unread presentation
 
 History restoration starts with the existing scoped Session projections. It
-must not wait for a read-mark request: the legacy `/sessions/{session_id}/mark-read`
-endpoint only acknowledges a request and never persists unread state. The current
-frontend removes that API method and all navigation, send, terminal and task-
-notification calls. Request-generation, authentication, Session/Run ownership,
-and stale-navigation fences still guard every asynchronous history result.
+must not wait for a read-mark request. The former `/sessions/{session_id}/mark-read`
+endpoint only acknowledged a request and never persisted unread state; it and its
+frontend calls are removed, and unread presentation stays browser-local.
+Request-generation, authentication, Session/Run ownership, and stale-navigation
+fences still guard every asynchronous history result.
 
 Sidebar unread presentation and the active-session task-notification callback
 remain local UI state. Removing the empty HTTP request must not clear another
