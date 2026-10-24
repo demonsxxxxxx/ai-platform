@@ -1216,7 +1216,10 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
         user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]
     )
 
-    records = lambchat_compat._compatibility_events_for_run(run, [row], [], principal)
+    records = lambchat_compat._compatibility_events_for_run_page(
+        run, [row], [], principal,
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert records == []
 

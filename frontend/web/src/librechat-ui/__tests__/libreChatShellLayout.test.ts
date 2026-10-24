@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -11,7 +11,6 @@ function read(path: string): string {
 
 test("workbench shell is owned by the local LibreChat shell layer", () => {
   const libreShell = read("src/librechat-ui/Shell.tsx");
-  const legacyShell = read("src/components/librechatShell/LibreChatShell.tsx");
   const workbenchShell = read("src/components/workbench/WorkbenchShell.tsx");
   const chatApp = read("src/components/layout/AppContent/ChatAppContent.tsx");
 
@@ -19,7 +18,6 @@ test("workbench shell is owned by the local LibreChat shell layer", () => {
   assert.match(libreShell, /data-workbench-region="thread"/);
   assert.match(libreShell, /data-workbench-region="composer"/);
   assert.match(libreShell, /data-workbench-region="context"/);
-  assert.match(legacyShell, /\.\.\/\.\.\/librechat-ui/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(workbenchShell, /librechat-ui\/Shell/);
   assert.match(chatApp, /WorkbenchShell/);
@@ -72,9 +70,6 @@ test("sidebar transplants LibreChat rail geometry and mobile close behavior", ()
 
 test("composer and right panel expose LibreChat-style regions without backend authority imports", () => {
   const sidePanel = read("src/librechat-ui/SidePanel.tsx");
-  const legacySidePanel = read(
-    "src/components/librechatShell/LibreChatSidePanel.tsx",
-  );
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
   const driveBrowser = read(
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
@@ -96,7 +91,6 @@ test("composer and right panel expose LibreChat-style regions without backend au
   assert.match(driveBrowser, /role="tablist"/);
   assert.match(driveBrowser, /role="tab"/);
   assert.match(driveBrowser, /activeSource|setActiveSource/);
-  assert.match(legacySidePanel, /\.\.\/\.\.\/librechat-ui/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
   assert.match(chatInput, /<ComposerBar/);
@@ -150,4 +144,10 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);
+});
+
+test("unused legacy shell re-exports have no compatibility entrypoint", () => {
+  for (const name of ["LibreChatPanel.tsx", "LibreChatRail.tsx", "LibreChatShell.tsx", "LibreChatSidePanel.tsx", "libreChatSurface.ts"]) {
+    assert.equal(existsSync(join(root, "src/components/librechatShell", name)), false, name);
+  }
 });

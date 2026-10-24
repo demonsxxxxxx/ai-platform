@@ -121,36 +121,3 @@ def build_skill_release_dashboard_readiness() -> dict[str, Any]:
         "forbidden_payload_classes": list(_FORBIDDEN_PAYLOAD_CLASSES),
         "open_gaps": list(_OPEN_GAPS),
     }
-
-
-def render_skill_release_dashboard_readiness_markdown(readiness: dict[str, Any]) -> str:
-    """Render the Admin Skill release dashboard contract as operator-readable Markdown."""
-    contract = readiness["dashboard_contract"]
-    runtime_acceptance = readiness["runtime_acceptance"]
-    gaps = "\n".join(f"- {gap}" for gap in readiness["open_gaps"]) or "- none"
-    controls = "\n".join(f"- {item}" for item in contract["required_dashboard_controls"])
-    inputs = "\n".join(f"- {item}" for item in contract["required_inputs"])
-    source_tests = "\n".join(f"- {item}" for item in runtime_acceptance["source_tests"])
-    return (
-        "# ai-platform Skill Release Dashboard Readiness\n\n"
-        f"Schema: `{readiness['schema_version']}`\n\n"
-        f"Status: `{readiness['status']}`\n\n"
-        f"Policy: `{readiness['policy']}`\n\n"
-        f"Dashboard contract: `{contract['schema_version']}`\n\n"
-        "## Runtime Acceptance\n\n"
-        f"Schema: `{runtime_acceptance['schema_version']}`\n\n"
-        f"Status: `{runtime_acceptance['status']}`\n\n"
-        f"Evidence strength: `{runtime_acceptance['evidence_strength']}`\n\n"
-        f"Does not close deployed-runtime acceptance: `{runtime_acceptance['does_not_close_runtime_acceptance']}`\n\n"
-        "Source tests:\n\n"
-        f"{source_tests}\n\n"
-        "## Required Inputs\n\n"
-        f"{inputs}\n\n"
-        "## Required Dashboard Controls\n\n"
-        f"{controls}\n\n"
-        "## Open Gaps\n\n"
-        f"{gaps}\n\n"
-        "This is a contract-only readiness snapshot. It does not close G6, "
-        "does not expose raw Skill package internals, and does not grant ordinary "
-        "users raw Skill selection or staging access.\n"
-    )

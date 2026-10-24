@@ -48,8 +48,7 @@ FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/icons/icon-512.png",
 )
 EXPECTED_WORKFLOW_PYTEST = (
-    "python -m pytest tests/test_deploy_frontend_static.py "
-    "tests/test_frontend_release_traceability.py "
+    "python -m pytest tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
@@ -123,13 +122,12 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
     assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
-    assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
+    assert not any("deploy_frontend_static.py" in command for command in trace["workflow"]["enforced_commands"])
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert trace["workflow"]["enforced_step_commands"] == {
         "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build",
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
-        "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
         "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
         **WORKFLOW_TEST_STEP_COMMANDS,
         "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",

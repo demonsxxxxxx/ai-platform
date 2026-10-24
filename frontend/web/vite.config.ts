@@ -165,7 +165,6 @@ export default defineConfig({
             "remark-breaks",
             "remark-math",
             "rehype-katex",
-            "rehype-highlight",
           ],
           "vendor-mermaid": ["mermaid"],
           "vendor-katex": ["katex"],

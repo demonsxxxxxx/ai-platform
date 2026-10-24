@@ -7,27 +7,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.capacity_baseline import (
+from app.capacity_baseline import (  # noqa: E402
     LOAD_TEST_GATES,
     build_capacity_profile_evidence_packet_result,
     build_capacity_recorded_gate_batch_snapshot,
     build_capacity_recorded_gate_evidence_packet_result,
 )
-
-
-def _read_json(path: Path) -> dict[str, object]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"failed to read JSON input: {path.name}") from exc
-    if not isinstance(payload, dict):
-        raise SystemExit(f"JSON input must be an object: {path.name}")
-    return payload
+from tools.capacity_cli_inputs import read_capacity_json_object  # noqa: E402
 
 
 def _read_optional_json(path: Path) -> dict[str, object]:
     try:
-        return _read_json(path)
+        return read_capacity_json_object(path)
     except SystemExit:
         return {}
 
@@ -65,7 +56,7 @@ def main() -> int:
     args = parser.parse_args()
 
     input_dir = Path(args.operator_input_dir)
-    runtime_evidence = _read_json(Path(args.runtime_evidence_json))
+    runtime_evidence = read_capacity_json_object(Path(args.runtime_evidence_json))
     profile_values_path = (
         Path(args.profile_evidence_json)
         if args.profile_evidence_json
