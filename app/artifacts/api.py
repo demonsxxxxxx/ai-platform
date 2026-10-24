@@ -11,3 +11,7 @@ from app.artifacts.domain.manifest_projection import (
     artifact_download_url as artifact_download_url,
     sanitize_artifact_manifest as sanitize_artifact_manifest,
 )
+from app.artifacts.domain.preview import (
+    artifact_preview_allowed as artifact_preview_allowed,
+    artifact_preview_url as artifact_preview_url,
+)

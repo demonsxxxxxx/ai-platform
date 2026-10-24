@@ -129,6 +129,9 @@ from app.execution.application.model_selection import (
     bind_selected_run_model as bind_selected_run_model,
     parse_requested_model_selection as parse_requested_model_selection,
 )
+from app.execution.domain.office_execution_tier import (
+    route_office_execution_tier as route_office_execution_tier,
+)
 
 
 async def list_public_models(conn: Any, *, user_id: str) -> dict[str, object]:
@@ -158,6 +161,7 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "route_office_execution_tier",
     "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
     "AUTO_COMPACT_WINDOW_MAX_TOKENS",
     "AUTO_COMPACT_WINDOW_MIN_TOKENS",

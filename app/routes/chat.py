@@ -118,7 +118,7 @@ from app.required_tool_contract import (
     attach_required_tool_declaration,
     public_required_tool_detail,
 )
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_platform_multi_agent_control,
 )

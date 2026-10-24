@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
+from app.artifacts.api import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
