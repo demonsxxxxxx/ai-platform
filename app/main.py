@@ -222,6 +222,8 @@ def create_app() -> FastAPI:
     app.include_router(build_identity_profile_router(), prefix="/api")
     app.include_router(lambchat_compat_router, prefix="/api")
     app.include_router(mcp_router, prefix="/api")
+    # Chat session reads stay under /api/ai; submission and stream admission
+    # keep the /api paths the browser and live diagnostics call.
     app.include_router(chat_submission_router, prefix="/api")
     app.include_router(submission_latency_router, prefix="/api")
     return app
