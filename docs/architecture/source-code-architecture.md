@@ -856,3 +856,24 @@ That follow-up must preserve the current process-wide two-slot admission,
 physical completion/reaper policy, callable identities and public JSON/error
 contracts. Presentation preview remains separately authorized; this does not
 introduce Run attachment preprocessing or expand parser admission.
+
+### Chat intent file metadata ownership
+
+`conversations.application.intent_files` owns intent file-summary enrichment:
+attachment metadata precedence, ordered lookup deduplication, exact existing
+scope filtering and metadata merging. `conversations.api` exposes the canonical
+`FileSummary` and `resolve_intent_files` contracts. The legacy intent classifier
+consumes that canonical summary; it no longer defines a duplicate type.
+
+`routes/chat.py` decodes the request and passes the effective workspace and
+principal identifiers plus the existing file reader. Enrichment uses the same
+caller-owned transaction connection and does not admit or bind files. Missing
+rows, error/cancellation propagation, client metadata precedence and the current
+unbound-or-matching-session rule remain unchanged. File admission, authorization,
+Run creation and post-commit enqueue retain their existing owners.
+
+The route-local enrichment helpers are retired. The generic route row accessor
+remains for unrelated continuation reads; there is no forwarding enrichment
+facade. `test_intent_router.py` covers the application contract directly, and
+`test_chat_routes.py` retains end-to-end admission and file-scope coverage. Both
+remain whole-file backend CI selectors.

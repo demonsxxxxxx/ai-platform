@@ -44,6 +44,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.conversations.api import (
+    resolve_intent_files,
     capability_authorization_error_code as _capability_authorization_error_code,
     safe_submission_code as _safe_submission_code,
     new_submission_diagnostic_id as _new_submission_diagnostic_id,
@@ -68,7 +69,6 @@ from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
 from app.intent_router import (
-    FileSummary,
     classify_execution_polarity,
     route_intent,
 )
@@ -143,7 +143,6 @@ from app.validation import assert_safe_principal_user_id
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
 
-_MISSING = object()
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
@@ -925,18 +924,6 @@ def _has_legacy_client_mcp_selector(value: object) -> bool:
     return "mcp_tool_ids" in value or "mcpToolIds" in value
 
 
-def _file_ids_for_intent_lookup(request: ChatStreamRequest) -> list[str]:
-    file_ids: list[str] = []
-    for value in request.file_ids:
-        if value not in file_ids:
-            file_ids.append(value)
-    for attachment in request.attachments:
-        value = attachment.get("file_id") or attachment.get("key") or attachment.get("id")
-        if isinstance(value, str) and value.startswith("file_") and value not in file_ids:
-            file_ids.append(value)
-    return file_ids
-
-
 def _row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
     if hasattr(row, "get"):
         return row.get(key, default)
@@ -944,98 +931,6 @@ def _row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
         return row[key]
     except (KeyError, TypeError):
         return default
-
-
-def _file_row_matches_request_scope(
-    row: dict[str, Any],
-    request: ChatStreamRequest,
-    principal: AuthPrincipal,
-    *,
-    workspace_id: str,
-) -> bool:
-    tenant_id = _row_value(row, "tenant_id", _MISSING)
-    if tenant_id != principal.tenant_id:
-        return False
-    row_workspace_id = _row_value(row, "workspace_id", _MISSING)
-    if row_workspace_id != workspace_id:
-        return False
-    user_id = _row_value(row, "user_id", _MISSING)
-    if user_id != principal.user_id:
-        return False
-    session_id = _row_value(row, "session_id", _MISSING)
-    if session_id is _MISSING:
-        return False
-    if session_id and session_id != request.session_id:
-        return False
-    run_id = _row_value(row, "run_id", _MISSING)
-    return not (run_id is _MISSING or run_id)
-
-
-def _file_summaries_from_request(request: ChatStreamRequest) -> list[FileSummary]:
-    summaries: list[FileSummary] = []
-    for attachment in request.attachments:
-        value = attachment.get("file_id") or attachment.get("key") or attachment.get("id") or ""
-        summaries.append(
-            FileSummary(
-                file_id=str(value),
-                name=str(attachment.get("name") or attachment.get("filename") or ""),
-                content_type=str(attachment.get("mimeType") or attachment.get("mime_type") or ""),
-            )
-        )
-    return summaries
-
-
-def _merge_file_summary(existing: FileSummary, incoming: FileSummary) -> FileSummary:
-    return FileSummary(
-        file_id=existing.file_id or incoming.file_id,
-        name=existing.name or incoming.name,
-        content_type=existing.content_type or incoming.content_type,
-    )
-
-
-def _merge_file_summaries(summaries: list[FileSummary], incoming: FileSummary) -> list[FileSummary]:
-    if not incoming.file_id:
-        return [*summaries, incoming]
-    merged: list[FileSummary] = []
-    replaced = False
-    for item in summaries:
-        if item.file_id == incoming.file_id:
-            merged.append(_merge_file_summary(item, incoming))
-            replaced = True
-        else:
-            merged.append(item)
-    if not replaced:
-        merged.append(incoming)
-    return merged
-
-
-def _file_summary_from_row(file_id: str, row: dict[str, Any]) -> FileSummary:
-    return FileSummary(
-        file_id=str(_row_value(row, "id") or file_id),
-        name=str(_row_value(row, "original_name") or _row_value(row, "name") or ""),
-        content_type=str(_row_value(row, "content_type") or _row_value(row, "mime_type") or ""),
-    )
-
-
-async def _file_summaries_for_intent(
-    conn,
-    request: ChatStreamRequest,
-    principal: AuthPrincipal,
-    *,
-    workspace_id: str,
-) -> list[FileSummary]:
-    summaries = _file_summaries_from_request(request)
-    for file_id in _file_ids_for_intent_lookup(request):
-        existing = next((item for item in summaries if item.file_id == file_id), None)
-        if existing and (existing.name or existing.content_type):
-            continue
-        row = await files_run_bindings.get_file(conn, tenant_id=principal.tenant_id, file_id=file_id)
-        if not row or not _file_row_matches_request_scope(
-            row, request, principal, workspace_id=workspace_id
-        ):
-            continue
-        summaries = _merge_file_summaries(summaries, _file_summary_from_row(file_id, row))
-    return summaries
 
 
 def _intent_response(payload: dict[str, object], principal: AuthPrincipal) -> IntentDecisionResponse:
@@ -1596,11 +1491,15 @@ async def chat_stream(
             if explicit_payload is None:
                 decision = route_intent(
                     request.message,
-                    await _file_summaries_for_intent(
+                    await resolve_intent_files(
                         conn,
-                        request,
-                        principal,
+                        file_ids=request.file_ids,
+                        attachments=request.attachments,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        session_id=request.session_id,
                         workspace_id=effective_workspace_id,
+                        get_file=files_run_bindings.get_file,
                     ),
                     confirmed_capability_id=request.confirmed_capability_id,
                     execution_polarity=execution_polarity,
