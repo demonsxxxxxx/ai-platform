@@ -94,7 +94,7 @@ before stop, replay dedupe and final selection across live/history recovery.
 
 ## Change Contract: Compact terminal history hydration
 
-- **Owner:** LambChat compatibility history projection owns lossless historical answer compaction; the frontend session API owns opting browser history reads into that projection.
+- **Owner:** The browser chat-session history projection (`app/routes/lambchat_compat.py`) owns lossless historical answer compaction; the frontend session API owns opting browser history reads into that projection.
 - **Bounded paths:** `app/routes/lambchat_compat.py`, `frontend/web/src/services/api/session.ts`, their owning tests, and this contract.
 - **Invariants:** SSE v4 bytes, Redis live/replay authority, Run/Attempt and authorization ownership, strict public projection, cross-chunk sanitization, terminal status, event ordering, and accepted sequence fences remain unchanged. Compaction occurs only for a terminal Run, after persisted-v4 validation, and only across answer deltas with the same public message identity and stream incarnation and no intervening public event.
 - **Acceptance:** an opted-in terminal history read returns the same public assistant text with consecutive v4 answer deltas represented by one `message:chunk`; active Run history retains its existing incremental projection. The compacted chunk retains the last included delta's public identity, sequence, and timestamp so reconnect suppresses the omitted prefix without lowering its watermark. Existing clients that omit the query flag retain the uncompressed response.
@@ -114,7 +114,7 @@ before stop, replay dedupe and final selection across live/history recovery.
 
 ## Change Contract: bounded SSE admission barrier
 
-- **Owner:** Streaming execution-control owns the startup admission barrier; the existing LambChat compatibility route remains the HTTP/SSE adapter and the existing frontend retains its bounded retry fallback.
+- **Owner:** Streaming execution-control owns the startup admission barrier; the browser chat-session API (`app/routes/lambchat_compat.py`) remains the HTTP/SSE adapter and the existing frontend retains its bounded retry fallback.
 - **Bounded paths:** `app/routes/lambchat_compat.py`, this contract, and the owning SSE route tests. Worker admission, Redis publication, frontend protocol handling, cursor recovery, and terminal hydration are outside this change.
 - **Invariants:** Run, Attempt, queue Worker lease, stream authority, authorization epoch, and SSE lease boundaries remain unchanged. Redis Streams remains the sole live/replay authority. A pending authority never receives an SSE lease, and no PostgreSQL transaction remains open across Redis I/O. SSE v4 bytes, stream incarnation, cursor semantics, and public event projection remain unchanged.
 - **Acceptance:** an authorized SSE request encountering a missing or `admission_pending` authority waits in short independent transactions for a bounded startup window; once the existing authority becomes `confirmed`, `degraded`, or `terminal`, the route acquires the existing lease and enters the unchanged replay/live path. The observed admission-confirmation race no longer produces repeated client-visible 409 responses within that window.

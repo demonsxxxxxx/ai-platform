@@ -655,7 +655,7 @@ ledger. It names the target owner for future bounded migrations.
 | `app/runtime/sandbox/**` and Sandbox Runtime routes | `sandbox` |
 | `app/db.py`, `app/storage.py`, and connection/client construction | `platform.postgres`, `platform.object_storage`, and `bootstrap` wiring; no business repository logic |
 | `app/schema.sql` and `app/schema_migrations.py` | versioned `platform.postgres.migrations`; every business table/change still names its bounded-context owner |
-| `app/routes/lambchat_compat.py` and retired wire aliases | `compat/lambchat` delegating to domain transports/APIs |
+| `app/routes/lambchat_compat.py` (current browser chat-session API; historical name, not a compatibility layer) | `conversations` transport for sessions, history replay and SSE; browser bootstrap config to `identity`, `execution` and `files` transports. Sequenced by TD-CONV-001 |
 | Other `app/persistence/**` modules | split into each owning domain's `infrastructure/postgres`; temporary facades may delegate |
 | former `app/repositories.py` responsibilities | domain repository adapters; consumers use the owning API or adapter |
 | `app/models.py` and `app/validation.py` | domain values, application contracts, transport DTOs, and persistence records in their owner |
