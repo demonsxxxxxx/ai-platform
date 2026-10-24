@@ -29,7 +29,7 @@ from app.models import (
 )
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.main import create_app
-from app.validation import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+from app.execution.domain.input_limits import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
 def test_agent_profile_draft_accepts_extended_builtin_avatar_style():

@@ -18,7 +18,7 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.runs.api import RunAttemptLifecycleService, RunLifecycleService, WorkerOutcome
 from app.streaming.api import WorkerV4Capabilities, publish_run_event
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 async def reconcile_executor_terminal_result(

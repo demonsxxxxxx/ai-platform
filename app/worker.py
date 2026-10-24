@@ -22,7 +22,7 @@ from app.runs.api import (
 from app.streaming.api import (
     WorkerV4Capabilities, admit_v4_stream, persist_worker_event, publish_run_event,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 class WorkerDirectAssistantDeltaError(RuntimeError):

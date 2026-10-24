@@ -15,7 +15,7 @@ from app.models import (
     WorkbenchUserResponse,
     WorkbenchUserWriteRequest,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

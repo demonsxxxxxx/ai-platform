@@ -26,10 +26,7 @@ from app.sandbox.api import SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
-from app.validation import (
-    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
-)
+from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 

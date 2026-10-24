@@ -60,7 +60,7 @@ from app.runtime.sandbox.executor_app import (
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
-from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
 TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"

@@ -658,7 +658,7 @@ ledger. It names the target owner for future bounded migrations.
 | `app/routes/lambchat_compat.py` and retired wire aliases | `compat/lambchat` delegating to domain transports/APIs |
 | Other `app/persistence/**` modules | split into each owning domain's `infrastructure/postgres`; temporary facades may delegate |
 | former `app/repositories.py` responsibilities | domain repository adapters; consumers use the owning API or adapter |
-| `app/models.py` and `app/validation.py` | domain values, application contracts, transport DTOs, and persistence records in their owner |
+| `app/models.py` | domain values, application contracts, transport DTOs, and persistence records in their owner |
 | `app/routes/**` | each context's `transport/http`; shared root router assembly only in `bootstrap.api` |
 | readiness, audit, acceptance, baseline and evidence generators in `app/` | supported runtime health belongs to its domain; source/release/evidence tools move to `tools/` or `scripts/`; obsolete POCs are deleted |
 | fake providers, deterministic adapters, and executor stubs | `tests/support` unless the capability is explicitly supported and registered in production |
