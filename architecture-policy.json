@@ -94,6 +94,7 @@
     "events"
   ],
   "public_kernel_modules": [
+    "identifiers",
     "memory_redaction",
     "runtime_debug"
   ],
