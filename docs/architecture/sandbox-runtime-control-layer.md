@@ -358,7 +358,12 @@ Worker when replacing the API outside Compose. Dependency restart does not
 provide in-flight recovery across API container replacement.
 
 Recovery verifies the current-key signature and immutable Run/Attempt, image,
-lease, network and callback binding. The signed launch-time Skill/MCP scope is
+lease, network and callback binding. Docker recovery reads the proof from the
+persisted top-level `governed_egress_proof`; runtime labels are filtered before
+storage. Image subjects come from the inspected, exact-owned container and must
+match that signed proof. Missing proof prevents private control while preserving
+historical resource cleanup under its existing ownership checks.
+The signed launch-time Skill/MCP scope is
 retained, because a reconciliation request is not a new capability admission.
 Proof expiry does not prevent status/cancel of that exact owned executor;
 create, reuse and dispatch still require a fresh admission proof. Key rotation

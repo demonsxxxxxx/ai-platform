@@ -2094,6 +2094,11 @@ class DockerContainerProvider(DockerLeaseRegistry):
             callback_base_url=callback.base_url,
             expected_source=runtime_commit,
         )
+        inspected_labels = _container_labels(primary)
+        image_subject = inspected_labels.get("ai-platform.executor.requested_image", "")
+        image_digest = inspected_labels.get("ai-platform.executor.requested_image_digest", "")
+        if not image_subject or not image_digest:
+            raise GovernedEgressAdmissionError() from None
         expected_binding = {
             "tenant_id": request.tenant_id,
             "workspace_id": request.workspace_id,
@@ -2101,8 +2106,8 @@ class DockerContainerProvider(DockerLeaseRegistry):
             "session_id": request.session_id,
             "run_id": request.run_id,
             "attempt_id": request.attempt_id,
-            "image_subject": lease.labels.get("ai-platform.executor.requested_image", ""),
-            "image_digest": lease.labels.get("ai-platform.executor.requested_image_digest", ""),
+            "image_subject": image_subject,
+            "image_digest": image_digest,
             "lease_identity": f"docker:{lease.container_name}:{lease.container_id}",
             "runtime_subject": "docker-internal-bridge",
             "policy_subject": f"{network_id}:{network_name}:internal",
