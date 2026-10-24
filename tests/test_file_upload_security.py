@@ -1400,3 +1400,123 @@ async def test_session_bound_upload_requires_exact_requested_workspace(
         assert "quota" in target_mutations
         assert ("put" if kind == "direct" else "multipart") in target_mutations
     assert calls == [("default", "user-a", "session-a", "default")]
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename,content_type", [("empty.txt", "text/plain"), ("empty.bin", "application/octet-stream")])
+async def test_direct_upload_rejects_empty_content_before_side_effects(monkeypatch, filename, content_type):
+    install_forbidden_repository_side_effects(monkeypatch)
+
+    def forbidden_storage(*args, **kwargs):
+        raise AssertionError("empty upload must reject before storage access")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", forbidden_storage)
+    upload = FakeUploadFile(filename, content_type, b"")
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(file=upload, workspace_id="default", session_id=None, principal=upload_principal())
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "empty_file_not_supported"
+    assert upload.read_calls == [files_routes.MAX_DIRECT_UPLOAD_BYTES + 1]
+
+
+@pytest.mark.asyncio
+async def test_direct_empty_upload_checks_permission_before_read(monkeypatch):
+    install_forbidden_repository_side_effects(monkeypatch)
+    upload = FakeUploadFile("empty.txt", "text/plain", b"")
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(file=upload, workspace_id="default", session_id=None, principal=upload_principal(permissions=[]))
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "missing_permission:file:upload"
+    assert upload.read_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename,content_type,content", [("small.txt", "text/plain", b"x"), ("small.bin", "application/octet-stream", b"\x00")])
+async def test_direct_upload_accepts_one_byte(monkeypatch, filename, content_type, content):
+    sessions = install_basic_upload_fakes(monkeypatch)
+    writes = []
+
+    class RecordingStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            writes.append((content, content_type))
+            return StoredObject(storage_key=storage_key, sha256=hashlib.sha256(content).hexdigest(), size_bytes=len(content))
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", RecordingStorage)
+    response = await files_routes.upload_file(file=FakeUploadFile(filename, content_type, content), workspace_id="default", session_id=None, principal=upload_principal())
+    assert response.size_bytes == 1
+    assert response.sha256 == hashlib.sha256(content).hexdigest()
+    assert writes == [(content, content_type)]
+    reservation = next(iter(sessions.values()))
+    assert reservation["expected_size_bytes"] == 1
+    assert reservation["state"] == "completed"
+
+
+def test_direct_empty_upload_requires_authentication(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    install_forbidden_repository_side_effects(monkeypatch)
+
+    async def forbidden_read(_file):
+        raise AssertionError("unauthenticated upload must not reach endpoint body read")
+
+    monkeypatch.setattr(files_routes, "_read_bounded_upload", forbidden_read)
+    app = FastAPI()
+    app.include_router(files_routes.router)
+    with TestClient(app) as client:
+        response = client.post("/files", files={"file": ("empty.txt", b"", "text/plain")})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing_authenticated_principal"
+
+
+@pytest.mark.asyncio
+async def test_direct_empty_upload_validates_filename_before_read(monkeypatch):
+    install_forbidden_repository_side_effects(monkeypatch)
+    upload = FakeUploadFile("../empty.txt", "text/plain", b"")
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(
+            file=upload,
+            workspace_id="default",
+            session_id=None,
+            principal=upload_principal(),
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_file_name"
+    assert upload.read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_direct_empty_upload_validates_workspace_before_read(monkeypatch):
+    install_forbidden_repository_side_effects(monkeypatch)
+    upload = FakeUploadFile("empty.txt", "text/plain", b"")
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(
+            file=upload,
+            workspace_id="../other",
+            session_id=None,
+            principal=upload_principal(),
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "workspace_id contains unsupported characters"
+    assert upload.read_calls == []
+
+
+@pytest.mark.parametrize("filename,content_type", [("empty.txt", "text/plain"), ("empty.bin", "application/octet-stream")])
+def test_direct_empty_upload_http_response(monkeypatch, filename, content_type):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    install_forbidden_repository_side_effects(monkeypatch)
+
+    def forbidden_storage(*args, **kwargs):
+        raise AssertionError("empty upload must not initialize storage")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", forbidden_storage)
+    app = FastAPI()
+    app.include_router(files_routes.router)
+    app.dependency_overrides[files_routes.require_principal] = upload_principal
+    with TestClient(app) as client:
+        response = client.post("/files", files={"file": (filename, b"", content_type)})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "empty_file_not_supported"}
