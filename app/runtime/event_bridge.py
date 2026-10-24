@@ -2,7 +2,7 @@ import re
 
 from app.control_plane_contracts import sanitize_public_payload
 from app.platform.public_payload import sanitize_public_answer_text
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
     validate_public_agent_progress_payload,

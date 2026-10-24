@@ -20,8 +20,8 @@ from tests.support.claude_sdk import native_client_factory
 
 from app.execution.api import ClaudeAgentEventCandidate, ModelTextCheckpoint
 from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable
-from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
-from app.public_execution import (
+from app.streaming.domain.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
+from app.streaming.domain.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
     validate_versioned_public_execution_step_payload,

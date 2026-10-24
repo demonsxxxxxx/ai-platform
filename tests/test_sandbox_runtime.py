@@ -588,7 +588,7 @@ async def test_runtime_logs_only_safe_opensandbox_startup_evidence(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
-    from app.public_execution import public_execution_event_from_row
+    from app.streaming.domain.public_execution import public_execution_event_from_row
 
     class StubSettings:
         sandbox_container_provider = "docker"

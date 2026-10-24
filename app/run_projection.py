@@ -23,7 +23,7 @@ from app.runs.api import (
     public_terminal_detail as public_terminal_detail,
     public_terminal_projection as public_terminal_projection,
 )
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
 )
