@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 
-from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
+from app.artifacts.api import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
