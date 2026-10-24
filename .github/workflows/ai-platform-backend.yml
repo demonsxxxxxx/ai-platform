@@ -541,6 +541,7 @@ jobs:
             .pytest-tmp/test-runs/**/${{ matrix.shard }}/coverage.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/control-chain.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/terminal-ack-fault.json
+            .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/terminal-callback-loss.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/docker-cleanup.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/failed-state.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/*.log

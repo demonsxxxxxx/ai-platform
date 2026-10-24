@@ -15,7 +15,10 @@ from urllib.parse import quote
 from urllib.request import ProxyHandler, build_opener
 import uuid
 
-from tests.support.run_lifecycle_faults import TERMINAL_ACK_FAULT_MARKER_PATH
+from tests.support.run_lifecycle_faults import (
+    TERMINAL_ACK_FAULT_MARKER_PATH,
+    TERMINAL_CALLBACK_LOSS_MARKER_PATH,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -238,6 +241,7 @@ class LifecycleDockerStack:
         *,
         timeout_seconds: float = 120.0,
         drop_terminal_ack_once: bool = False,
+        reject_terminal_callbacks: bool = False,
     ) -> str:
         if self._client is None or self._network is None:
             raise RuntimeError("LifecycleDockerStack must be entered before starting services")
@@ -262,6 +266,15 @@ class LifecycleDockerStack:
                     {
                         "N01_DROP_TERMINAL_ACK_ONCE": "true",
                         "N01_TERMINAL_ACK_MARKER_PATH": TERMINAL_ACK_FAULT_MARKER_PATH,
+                    }
+                )
+            if reject_terminal_callbacks:
+                env.update(
+                    {
+                        "N02_REJECT_TERMINAL_CALLBACKS": "true",
+                        "N02_TERMINAL_CALLBACK_LOSS_MARKER_PATH": (
+                            TERMINAL_CALLBACK_LOSS_MARKER_PATH
+                        ),
                     }
                 )
             container = self._client.containers.create(
@@ -754,7 +767,7 @@ class LifecycleDockerStack:
                         and payload.get("dependencies", {}).get("redis") == "ok"
                     ):
                         return
-            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            except (HTTPError, URLError, TimeoutError, ConnectionError, json.JSONDecodeError):
                 pass
             time.sleep(0.25)
         raise TimeoutError(
@@ -768,7 +781,7 @@ class LifecycleDockerStack:
                 with _direct_urlopen(url, timeout=2) as response:
                     if response.status == 200:
                         return
-            except (HTTPError, URLError, TimeoutError):
+            except (HTTPError, URLError, TimeoutError, ConnectionError):
                 pass
             time.sleep(0.25)
         raise TimeoutError("lifecycle object storage did not become ready")

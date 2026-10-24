@@ -13,9 +13,55 @@ from typing import Any
 _EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 TERMINAL_ACK_FAULT_MARKER_PATH = "/tmp/n01-terminal-ack-fault.json"
+TERMINAL_CALLBACK_LOSS_MARKER_PATH = "/tmp/n02-terminal-callback-loss.json"
+
+_TERMINAL_RESULT_HASH_FIELDS = (
+    "status",
+    "run_id",
+    "answer_receipt",
+    "response_files",
+    "response_file_descriptors",
+    "provider_session_final_sequence",
+)
 
 
-def _terminal_request_metadata(body: bytes) -> dict[str, str | None] | None:
+async def _read_asgi_request(receive) -> tuple[list[dict[str, Any]], bytes]:
+    request_messages: list[dict[str, Any]] = []
+    request_body = bytearray()
+    while True:
+        message = await receive()
+        request_messages.append(message)
+        if message.get("type") != "http.request":
+            break
+        request_body.extend(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+    return request_messages, bytes(request_body)
+
+
+async def _call_with_replayed_request(
+    app: Any,
+    scope,
+    request_messages: list[dict[str, Any]],
+    receive,
+    send,
+) -> None:
+    message_index = 0
+
+    async def replay_receive():
+        nonlocal message_index
+        if message_index < len(request_messages):
+            message = request_messages[message_index]
+            message_index += 1
+            return message
+        return await receive()
+
+    await app(scope, replay_receive, send)
+
+
+def _terminal_request_payload(
+    body: bytes,
+) -> tuple[dict[str, str | None], dict[str, Any]] | None:
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -39,12 +85,35 @@ def _terminal_request_metadata(body: bytes) -> dict[str, str | None] | None:
         or (batch_id is not None and not isinstance(batch_id, str))
     ):
         return None
-    return {
-        "run_id": run_id,
-        "attempt_id": attempt_id,
-        "batch_id": batch_id,
-        "status": status,
+    return (
+        {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "batch_id": batch_id,
+            "status": status,
+        },
+        terminal_result,
+    )
+
+
+def _terminal_request_metadata(body: bytes) -> dict[str, str | None] | None:
+    details = _terminal_request_payload(body)
+    return details[0] if details is not None else None
+
+
+def _terminal_result_fields_sha256(terminal_result: dict[str, Any]) -> str:
+    fields = {
+        key: terminal_result[key]
+        for key in _TERMINAL_RESULT_HASH_FIELDS
+        if key in terminal_result
     }
+    canonical = json.dumps(
+        fields,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class DropTerminalAckOnce:
@@ -67,20 +136,12 @@ class DropTerminalAckOnce:
             await self.app(scope, receive, send)
             return
 
-        request_messages: list[dict[str, Any]] = []
-        request_body = bytearray()
-        while True:
-            message = await receive()
-            request_messages.append(message)
-            if message.get("type") != "http.request":
-                break
-            request_body.extend(message.get("body", b""))
-            if not message.get("more_body", False):
-                break
+        request_messages, request_body = await _read_asgi_request(receive)
 
-        request_metadata = _terminal_request_metadata(bytes(request_body))
+        request_metadata = _terminal_request_metadata(request_body)
         if request_metadata is None:
-            await self._call_with_replayed_request(
+            await _call_with_replayed_request(
+                self.app,
                 scope,
                 request_messages,
                 receive,
@@ -94,7 +155,8 @@ class DropTerminalAckOnce:
             response_messages.append(message)
 
         try:
-            await self._call_with_replayed_request(
+            await _call_with_replayed_request(
+                self.app,
                 scope,
                 request_messages,
                 receive,
@@ -158,7 +220,7 @@ class DropTerminalAckOnce:
         if not await self._claim_fault(fault_record):
             await self._record_retry(
                 request_metadata,
-                request_body=bytes(request_body),
+                request_body=request_body,
                 response_body=response_body,
                 response_status=response_start["status"],
                 acknowledgment=acknowledgment,
@@ -264,21 +326,87 @@ class DropTerminalAckOnce:
                 return
             self._retry_recorded = True
 
-    async def _call_with_replayed_request(
-        self,
-        scope,
-        request_messages: list[dict[str, Any]],
-        receive,
-        send,
-    ) -> None:
-        message_index = 0
 
-        async def replay_receive():
-            nonlocal message_index
-            if message_index < len(request_messages):
-                message = request_messages[message_index]
-                message_index += 1
-                return message
-            return await receive()
+class RejectTerminalCallbacks:
+    """Return 503 for terminal callbacks while passing all other API traffic through."""
 
-        await self.app(scope, replay_receive, send)
+    def __init__(self, app: Any, *, marker_path: Path) -> None:
+        self.app = app
+        self.marker_path = Path(marker_path)
+        self._marker_lock = asyncio.Lock()
+        self._count = 0
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") != _EXECUTOR_CALLBACK_PATH
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        request_messages, request_body = await _read_asgi_request(receive)
+        details = _terminal_request_payload(request_body)
+        if details is None:
+            await _call_with_replayed_request(
+                self.app,
+                scope,
+                request_messages,
+                receive,
+                send,
+            )
+            return
+
+        request_metadata, terminal_result = details
+        async with self._marker_lock:
+            self._count += 1
+            marker = {
+                "scope": {
+                    "run_id": request_metadata["run_id"],
+                    "attempt_id": request_metadata["attempt_id"],
+                },
+                "batch_id": request_metadata["batch_id"],
+                "status": request_metadata["status"],
+                "count": self._count,
+                "body_sha256": hashlib.sha256(request_body).hexdigest(),
+                "terminal_result_fields_sha256": _terminal_result_fields_sha256(
+                    terminal_result
+                ),
+                "http_status": 503,
+                "fault_type": "terminal_callback_rejected",
+            }
+            self.marker_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self.marker_path.with_name(
+                f".{self.marker_path.name}.tmp"
+            )
+            marker_fd = os.open(
+                temporary_path,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
+            with os.fdopen(marker_fd, "w", encoding="utf-8") as marker_file:
+                marker_file.write(
+                    json.dumps(marker, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                )
+                marker_file.write("\n")
+                marker_file.flush()
+            os.replace(temporary_path, self.marker_path)
+
+        response_body = b'{"detail":"terminal_callback_temporarily_unavailable"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 503,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(response_body)).encode("ascii")),
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": response_body,
+                "more_body": False,
+            }
+        )

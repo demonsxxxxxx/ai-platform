@@ -363,8 +363,15 @@ def lifecycle_control_image(tmp_path_factory):
         (True, None),
         (True, "worker_restart"),
         (False, "terminal_ack_loss"),
+        (True, "terminal_callback_loss"),
     ],
-    ids=["answer", "selected-files", "worker-restart", "terminal-ack-loss"],
+    ids=[
+        "answer",
+        "selected-files",
+        "worker-restart",
+        "terminal-ack-loss",
+        "terminal-callback-loss",
+    ],
 )
 def test_admission_worker_settlement_delivery_reclamation(
     lifecycle_control_image, tmp_path, selected_files, fault,
@@ -383,7 +390,10 @@ def test_admission_worker_settlement_delivery_reclamation(
     from tests.support.run_lifecycle_executor import (
         SELECTED_FILE_CONTENTS, SELECTED_FILES, TEST_ANSWER,
     )
-    from tests.support.run_lifecycle_faults import TERMINAL_ACK_FAULT_MARKER_PATH
+    from tests.support.run_lifecycle_faults import (
+        TERMINAL_ACK_FAULT_MARKER_PATH,
+        TERMINAL_CALLBACK_LOSS_MARKER_PATH,
+    )
     from tests.support.run_lifecycle_seed import seed_admission
 
     async def scenario(stack):
@@ -413,6 +423,7 @@ def test_admission_worker_settlement_delivery_reclamation(
         await asyncio.to_thread(
             stack.start_api,
             drop_terminal_ack_once=fault == "terminal_ack_loss",
+            reject_terminal_callbacks=fault == "terminal_callback_loss",
         )
         headers = {
             "X-AI-User-ID": stack.user_id, "X-AI-Tenant-ID": stack.tenant_id,
@@ -441,7 +452,9 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "and event_type='capability_not_authorized') as denials, "
                         "a.id as attempt_id, a.status as attempt_status, a.owner_generation, "
                         "l.status as lease_status, l.executor_status, "
-                        "l.executor_reconciliation_status, l.executor_terminal_json "
+                        "l.executor_reconciliation_status, l.executor_terminal_json, "
+                        "l.executor_reconciliation_context_json is not null "
+                        "as has_reconciliation_context "
                         "from runs r left join run_attempts a on a.run_id = r.id "
                         "left join sandbox_leases l on l.attempt_id = a.id "
                         "where r.id = %s", (run_id,),
@@ -484,6 +497,22 @@ def test_admission_worker_settlement_delivery_reclamation(
                 raw = result.output.decode("utf-8") if isinstance(result.output, bytes) else result.output
                 return json.loads(raw)
 
+            async def read_terminal_callback_loss_marker():
+                api = stack._containers["api"]
+                result = await asyncio.to_thread(
+                    api.exec_run,
+                    [
+                        "python", "-c",
+                        "from pathlib import Path; import sys; "
+                        "p=Path(sys.argv[1]); "
+                        "print(p.read_text() if p.is_file() else '{}')",
+                        TERMINAL_CALLBACK_LOSS_MARKER_PATH,
+                    ],
+                )
+                assert result.exit_code == 0, result.output
+                raw = result.output.decode("utf-8") if isinstance(result.output, bytes) else result.output
+                return json.loads(raw)
+
             async def read_executor_task_status(executor_container):
                 script = "\n".join((
                     "import json, os, sys",
@@ -492,7 +521,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "headers = {'X-AI-Platform-Executor-Credential': os.environ['AI_PLATFORM_EXECUTOR_AUTH_TOKEN']}",
                     "with urlopen(Request(url, headers=headers), timeout=5) as response:",
                     "    payload = json.load(response)",
-                    "print(json.dumps({key: payload.get(key) for key in ('status', 'run_id', 'attempt_id', 'error_message')}))",
+                    "print(json.dumps({key: payload.get(key) for key in ('status', 'run_id', 'attempt_id', 'error_message', 'terminal_result')}))",
                 ))
                 result = await asyncio.to_thread(
                     executor_container.exec_run,
@@ -505,7 +534,10 @@ def test_admission_worker_settlement_delivery_reclamation(
             await asyncio.to_thread(stack.start_worker)
 
             async def entered(snapshot):
-                if snapshot["executor_status"] not in {"accepted", "running"}:
+                if (
+                    snapshot["executor_status"] not in {"accepted", "running"}
+                    or snapshot["has_reconciliation_context"] is not True
+                ):
                     return None
                 containers = await asyncio.to_thread(
                     stack._client.containers.list, all=True,
@@ -528,9 +560,11 @@ def test_admission_worker_settlement_delivery_reclamation(
             executor = await poll(entered)
             running = await state()
             assert running["run_status"] == running["attempt_status"] == "running"
+            assert running["has_reconciliation_context"] is True
             restart_evidence = None
             terminal_ack_evidence = None
             executor_ack_evidence = None
+            terminal_callback_loss_evidence = None
             worker = stack._containers["worker"]
 
             if fault == "worker_restart":
@@ -575,7 +609,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "attempt_id_before_and_after": running["attempt_id"],
                     "runner_barrier_held_during_restart": True,
                 }
-            elif fault == "terminal_ack_loss":
+            elif fault in {"terminal_ack_loss", "terminal_callback_loss"}:
                 stopped_id = await asyncio.to_thread(
                     stack.stop_worker, timeout_seconds=5,
                 )
@@ -666,6 +700,168 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "attempt_id_before_and_after": running["attempt_id"],
                     "terminal_receipt_persisted_before_reconciliation": True,
                 }
+            elif fault == "terminal_callback_loss":
+                deadline = time.monotonic() + 45
+                terminal_callback_marker = {}
+                executor_task_status = {}
+                while time.monotonic() < deadline:
+                    terminal_callback_marker = await read_terminal_callback_loss_marker()
+                    executor_task_status = await read_executor_task_status(executor)
+                    if (
+                        terminal_callback_marker.get("count", 0) >= 1
+                        and executor_task_status.get("status") == "completed"
+                        and isinstance(executor_task_status.get("terminal_result"), dict)
+                        and str(executor_task_status.get("error_message") or "").startswith(
+                            "HTTPStatusError:"
+                        )
+                        and "503 Service Unavailable" in str(
+                            executor_task_status.get("error_message") or ""
+                        )
+                    ):
+                        break
+                    await asyncio.sleep(0.2)
+
+                assert terminal_callback_marker.get("scope") == {
+                    "run_id": run_id,
+                    "attempt_id": running["attempt_id"],
+                }
+                assert terminal_callback_marker.get("status") == "completed"
+                assert isinstance(terminal_callback_marker.get("batch_id"), str)
+                assert terminal_callback_marker.get("count", 0) >= 1
+                assert terminal_callback_marker.get("fault_type") == (
+                    "terminal_callback_rejected"
+                )
+                assert terminal_callback_marker.get("http_status") == 503
+                assert len(terminal_callback_marker.get("body_sha256", "")) == 64
+                assert len(
+                    terminal_callback_marker.get(
+                        "terminal_result_fields_sha256", ""
+                    )
+                ) == 64
+                assert not any(
+                    "token" in key.casefold() for key in terminal_callback_marker
+                )
+                assert executor_task_status["run_id"] == run_id
+                assert executor_task_status["attempt_id"] == running["attempt_id"]
+                transport_error = str(
+                    executor_task_status.get("error_message") or ""
+                )
+                assert transport_error.startswith("HTTPStatusError:")
+                assert "503 Service Unavailable" in transport_error
+                terminal_result = executor_task_status["terminal_result"]
+                assert terminal_result["status"] == "completed"
+                assert terminal_result["run_id"] == run_id
+                assert terminal_result["sdk_used"] is False
+                assert terminal_result["answer_receipt"]["delta_count"] == 1
+                assert terminal_result["response_files"] == list(SELECTED_FILES)
+                assert terminal_result["provider_session_final_sequence"] >= 2
+                terminal_result_key_fields = {
+                    key: terminal_result[key]
+                    for key in (
+                        "status",
+                        "run_id",
+                        "answer_receipt",
+                        "response_files",
+                        "response_file_descriptors",
+                        "provider_session_final_sequence",
+                    )
+                    if key in terminal_result
+                }
+                terminal_result_key_digest = hashlib.sha256(
+                    json.dumps(
+                        terminal_result_key_fields,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                assert terminal_callback_marker["terminal_result_fields_sha256"] == (
+                    terminal_result_key_digest
+                )
+
+                before_probe = await state()
+                assert before_probe["run_status"] == "running"
+                assert before_probe["attempt_status"] == "running"
+                assert before_probe["attempt_id"] == running["attempt_id"]
+                assert before_probe["lease_status"] == "active"
+                assert before_probe["executor_terminal_json"] is None
+                assert before_probe["has_reconciliation_context"] is True
+                async with connection() as conn:
+                    persisted_before_probe = await (await conn.execute(
+                        "select "
+                        "(select count(*) from run_events where tenant_id=%s "
+                        "and run_id=%s and event_type='message.delta') as answer_deltas, "
+                        "(select count(*) from run_events where tenant_id=%s "
+                        "and run_id=%s and event_type='message.completed') as answer_completions, "
+                        "(select count(*) from provider_session_entries entry "
+                        "join provider_session_epochs epoch on epoch.id=entry.epoch_id "
+                        "where epoch.tenant_id=%s and epoch.writer_run_id=%s "
+                        "and epoch.writer_attempt_id=%s) as session_entries, "
+                        "(select count(*) from provider_session_append_receipts receipt "
+                        "join provider_session_epochs epoch on epoch.id=receipt.epoch_id "
+                        "where epoch.tenant_id=%s and epoch.writer_run_id=%s "
+                        "and epoch.writer_attempt_id=%s) as session_append_receipts",
+                        (
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id, running["attempt_id"],
+                            stack.tenant_id, run_id, running["attempt_id"],
+                        ),
+                    )).fetchone()
+                assert persisted_before_probe == {
+                    "answer_deltas": 1,
+                    "answer_completions": 1,
+                    "session_entries": 2,
+                    "session_append_receipts": 1,
+                }
+
+                retry_deadline = time.monotonic() + 20
+                while time.monotonic() < retry_deadline:
+                    terminal_callback_marker = (
+                        await read_terminal_callback_loss_marker()
+                    )
+                    if terminal_callback_marker.get("count", 0) >= 2:
+                        break
+                    await asyncio.sleep(0.2)
+                assert terminal_callback_marker.get("count", 0) >= 2
+                terminal_callback_loss_evidence = {
+                    "marker_before_probe": terminal_callback_marker,
+                    "executor_status_before_probe": {
+                        "status": executor_task_status["status"],
+                        "run_id": executor_task_status["run_id"],
+                        "attempt_id": executor_task_status["attempt_id"],
+                        "terminal_callback_http_503_observed": True,
+                        "terminal_result_fields_sha256": terminal_result_key_digest,
+                    },
+                    "postgres_before_probe": {
+                        "run_status": before_probe["run_status"],
+                        "attempt_status": before_probe["attempt_status"],
+                        "lease_status": before_probe["lease_status"],
+                        "executor_terminal_json_present": False,
+                        "has_reconciliation_context": before_probe[
+                            "has_reconciliation_context"
+                        ],
+                        **persisted_before_probe,
+                    },
+                }
+                (tmp_path / "terminal-callback-loss.json").write_text(
+                    json.dumps(terminal_callback_loss_evidence, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                restarted_id = await asyncio.to_thread(stack.start_worker)
+                worker.reload()
+                assert restarted_id == stopped_id
+                assert worker.status == "running"
+                restart_evidence = {
+                    "worker_container_id": stopped_id,
+                    "worker_status_after_restart": worker.status,
+                    "attempt_id_before_and_after": running["attempt_id"],
+                    "terminal_callback_rejection_remains_enabled": True,
+                    "retry_rejections_observed_before_probe": terminal_callback_marker[
+                        "count"
+                    ],
+                }
 
             async def reclaimed(snapshot):
                 if (snapshot["run_status"], snapshot["attempt_status"], snapshot["lease_status"],
@@ -679,6 +875,37 @@ def test_admission_worker_settlement_delivery_reclamation(
             settled = await poll(reclaimed, timeout=300 if fault else 120)
             assert settled["attempt_id"] == running["attempt_id"]
             assert settled["executor_status"] == "completed"
+            if fault == "terminal_callback_loss":
+                persisted_terminal_result = settled["executor_terminal_json"]
+                assert isinstance(persisted_terminal_result, dict)
+                for key in (
+                    "status",
+                    "run_id",
+                    "answer_receipt",
+                    "response_files",
+                    "response_file_descriptors",
+                    "provider_session_final_sequence",
+                    "sdk_used",
+                ):
+                    assert persisted_terminal_result.get(key) == terminal_result.get(key)
+                marker_after_probe = await read_terminal_callback_loss_marker()
+                assert marker_after_probe.get("count", 0) >= terminal_callback_marker[
+                    "count"
+                ]
+                terminal_callback_loss_evidence["marker_after_probe"] = (
+                    marker_after_probe
+                )
+                terminal_callback_loss_evidence["postgres_after_probe"] = {
+                    "run_status": settled["run_status"],
+                    "attempt_status": settled["attempt_status"],
+                    "lease_status": settled["lease_status"],
+                    "executor_status": settled["executor_status"],
+                    "executor_reconciliation_status": settled[
+                        "executor_reconciliation_status"
+                    ],
+                    "executor_terminal_json_present": True,
+                    "persisted_terminal_result_fields_match_executor_status": True,
+                }
 
             readback = await http.get(f"/api/ai/runs/{run_id}")
             assert readback.status_code == 200, readback.text
@@ -765,8 +992,270 @@ def test_admission_worker_settlement_delivery_reclamation(
                 "worker_restart": restart_evidence,
                 "terminal_ack_fault": terminal_ack_evidence,
                 "executor_ack_delivery": executor_ack_evidence,
+                "terminal_callback_loss": terminal_callback_loss_evidence,
                 "production_resources_absent_before_teardown": True,
             }, indent=2) + "\n", encoding="utf-8")
+
+    with LifecycleDockerStack(*lifecycle_control_image, evidence_dir=tmp_path) as stack:
+        asyncio.run(scenario(stack))
+
+
+def test_queued_run_owner_cancel_clears_queue_and_persists_once(
+    lifecycle_control_image, tmp_path,
+):
+    """C layer: a queued Run cancels before Worker admission or Attempt creation."""
+    from contextlib import asynccontextmanager
+
+    import httpx
+    import psycopg
+    from psycopg.rows import dict_row
+    from redis.asyncio import Redis
+
+    from app import schema_migrations
+    from tests.support.run_lifecycle_docker import LifecycleDockerStack
+    from tests.support.run_lifecycle_seed import seed_admission
+
+    async def scenario(stack):
+        @asynccontextmanager
+        async def connection():
+            async with await psycopg.AsyncConnection.connect(
+                stack.postgres_dsn, row_factory=dict_row,
+            ) as conn:
+                yield conn
+
+        async def index_connection():
+            return await psycopg.AsyncConnection.connect(
+                stack.postgres_dsn, autocommit=True, row_factory=dict_row,
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=connection,
+            index_connection_factory=index_connection,
+        )
+        async with connection() as conn:
+            await seed_admission(
+                conn,
+                workspace_id=stack.workspace_id,
+                user_id=stack.user_id,
+                encryption_key=stack.encryption_key,
+            )
+            for table in ("sessions", "runs", "run_attempts", "sandbox_leases"):
+                count = await (await conn.execute(
+                    f"select count(*) as n from {table}"
+                )).fetchone()
+                assert count["n"] == 0
+
+        await asyncio.to_thread(stack.start_api)
+        headers = {
+            "X-AI-User-ID": stack.user_id,
+            "X-AI-Tenant-ID": stack.tenant_id,
+            "X-AI-User-Name": "N02",
+            "X-AI-Gateway-Secret": stack.gateway_secret,
+            "X-AI-Permissions": "artifact:download",
+        }
+        async with httpx.AsyncClient(
+            base_url=stack.api_base,
+            headers=headers,
+            trust_env=False,
+            timeout=30,
+        ) as http:
+            admission = await http.post("/api/ai/runs", json={
+                "tenant_id": stack.tenant_id,
+                "workspace_id": stack.workspace_id,
+                "agent_id": "general-agent",
+                "capability_id": "general_chat",
+                "title": "N02 queued cancellation",
+                "input": {"message": "Cancel before Worker admission."},
+            })
+            assert admission.status_code == 200, admission.text
+            admitted = admission.json()
+            assert admitted["status"] == "queued"
+            run_id = admitted["run_id"]
+
+            async def persisted_facts():
+                async with connection() as conn:
+                    return await (await conn.execute(
+                        "select r.status, r.cancel_requested_at, r.cancel_requested_by, "
+                        "(select count(*) from run_events where tenant_id=%s and run_id=%s) "
+                        "as run_event_count, "
+                        "(select count(*) from run_events where tenant_id=%s and run_id=%s "
+                        "and event_type='cancel_requested') as cancel_requested_events, "
+                        "(select count(*) from run_events where tenant_id=%s and run_id=%s "
+                        "and event_type='run_cancelled') as run_cancelled_events, "
+                        "(select count(*) from run_attempts where tenant_id=%s and run_id=%s) "
+                        "as attempts, "
+                        "(select count(*) from sandbox_leases where tenant_id=%s and run_id=%s) "
+                        "as leases, "
+                        "(select count(*) from provider_turn_receipts where tenant_id=%s and run_id=%s) "
+                        "as provider_turns, "
+                        "(select count(*) from messages where tenant_id=%s and run_id=%s "
+                        "and role='assistant') as assistant_messages, "
+                        "(select count(*) from artifacts where tenant_id=%s and run_id=%s) "
+                        "as artifacts, "
+                        "(select count(*) from audit_logs where tenant_id=%s and target_type='run' "
+                        "and target_id=%s and action in ('run.cancel', 'run.cancelled')) "
+                        "as cancellation_audits "
+                        "from runs r where r.tenant_id=%s and r.id=%s",
+                        (
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                            stack.tenant_id, run_id,
+                        ),
+                    )).fetchone()
+
+            async def redis_queue_facts():
+                prefix = stack.environment["QUEUE_KEY_PREFIX"]
+                queued_key = f"{prefix}:queued"
+                index_key = f"{prefix}:queued-run-index"
+                metadata_key = f"{prefix}:queued-meta"
+                order_key = f"{prefix}:queued-order"
+                async with Redis.from_url(stack.redis_url) as redis:
+                    queued = [
+                        json.loads(raw)
+                        for raw in await redis.lrange(queued_key, 0, -1)
+                    ]
+                    index_value = await redis.hget(
+                        index_key, f"{stack.tenant_id}:{run_id}"
+                    )
+                    # Read metadata independently of the index so an orphaned
+                    # entry cannot disappear from the cleanup assertion.
+                    metadata = {
+                        message_id.decode("utf-8"): json.loads(raw_metadata)
+                        for message_id, raw_metadata in (
+                            await redis.hgetall(metadata_key)
+                        ).items()
+                    }
+                    order_ids = {
+                        item.decode("utf-8") if isinstance(item, bytes) else str(item)
+                        for item in await redis.zrange(order_key, 0, -1)
+                    }
+                    return queued, index_value, metadata, order_ids
+
+            (
+                queued_before,
+                run_index_before,
+                metadata_before,
+                order_before,
+            ) = await redis_queue_facts()
+            queued_for_run = [
+                payload for payload in queued_before
+                if payload.get("tenant_id") == stack.tenant_id
+                and payload.get("run_id") == run_id
+            ]
+            assert len(queued_for_run) == 1
+            assert run_index_before is not None
+            indexed_message_ids = json.loads(run_index_before)
+            assert len(indexed_message_ids) == 1
+            indexed_message_id = str(indexed_message_ids[0])
+            assert metadata_before[indexed_message_id]["run_id"] == run_id
+            assert metadata_before[indexed_message_id]["tenant_id"] == stack.tenant_id
+            assert indexed_message_id in order_before
+            before_unauthorized = await persisted_facts()
+            assert before_unauthorized["status"] == "queued"
+            assert before_unauthorized["cancel_requested_at"] is None
+            assert before_unauthorized["cancel_requested_by"] is None
+
+            foreign_cancel = await http.post(
+                f"/api/ai/runs/{run_id}/cancel",
+                headers={**headers, "X-AI-User-ID": "88000002"},
+            )
+            assert foreign_cancel.status_code == 404, foreign_cancel.text
+            assert foreign_cancel.json() == {"detail": "active_run_not_found"}
+            assert await persisted_facts() == before_unauthorized
+            (
+                queued_after_foreign,
+                foreign_run_index,
+                metadata_after_foreign,
+                order_after_foreign,
+            ) = await redis_queue_facts()
+            assert [
+                payload for payload in queued_after_foreign
+                if payload.get("tenant_id") == stack.tenant_id
+                and payload.get("run_id") == run_id
+            ] == queued_for_run
+            assert foreign_run_index == run_index_before
+            assert metadata_after_foreign == metadata_before
+            assert indexed_message_id in order_after_foreign
+
+            owner_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
+            assert owner_cancel.status_code == 200, owner_cancel.text
+            assert owner_cancel.json() == {
+                "run_id": run_id, "session_id": None, "status": "cancelled",
+            }
+            cancelled = await persisted_facts()
+            assert cancelled["status"] == "cancelled"
+            assert cancelled["cancel_requested_at"] is not None
+            assert cancelled["cancel_requested_by"] == stack.user_id
+            assert cancelled["attempts"] == 0
+            assert cancelled["leases"] == 0
+            assert cancelled["provider_turns"] == 0
+            assert cancelled["assistant_messages"] == 0
+            assert cancelled["artifacts"] == 0
+            assert cancelled["cancel_requested_events"] == 1
+            assert cancelled["run_cancelled_events"] == 1
+            assert cancelled["cancellation_audits"] >= 1
+
+            (
+                queued_after_cancel,
+                run_index_after,
+                metadata_after_cancel,
+                order_after_cancel,
+            ) = await redis_queue_facts()
+            assert not any(
+                payload.get("tenant_id") == stack.tenant_id
+                and payload.get("run_id") == run_id
+                for payload in queued_after_cancel
+            )
+            assert run_index_after is None
+            assert indexed_message_id not in metadata_after_cancel
+            assert indexed_message_id not in order_after_cancel
+
+            readback = await http.get(f"/api/ai/runs/{run_id}")
+            assert readback.status_code == 200, readback.text
+            assert readback.json()["status"] == "cancelled"
+
+            repeated_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
+            assert repeated_cancel.status_code == 404, repeated_cancel.text
+            assert repeated_cancel.json() == {"detail": "active_run_not_found"}
+            assert await persisted_facts() == cancelled
+            (
+                queued_after_repeat,
+                run_index_after_repeat,
+                metadata_after_repeat,
+                order_after_repeat,
+            ) = await redis_queue_facts()
+            assert not any(
+                payload.get("tenant_id") == stack.tenant_id
+                and payload.get("run_id") == run_id
+                for payload in queued_after_repeat
+            )
+            assert run_index_after_repeat is None
+            assert indexed_message_id not in metadata_after_repeat
+            assert indexed_message_id not in order_after_repeat
+            assert "worker" not in stack._containers
+            await asyncio.to_thread(stack.assert_no_run_resources, run_id)
+            (tmp_path / "control-chain.json").write_text(json.dumps({
+                "schema_version": "ai-platform.lifecycle-control-evidence.v1",
+                "source_commit": lifecycle_control_image[1],
+                "image_id": lifecycle_control_image[0],
+                "run_id": run_id,
+                "sdk_used": False,
+                "fault_scenario": "queued_cancel",
+                "facts_before_cancel": before_unauthorized,
+                "facts_after_cancel": cancelled,
+                "foreign_cancel_http_status": foreign_cancel.status_code,
+                "repeated_cancel_http_status": repeated_cancel.status_code,
+                "queue_delivery_and_indexes_absent": True,
+                "worker_started": False,
+                "production_resources_absent_before_teardown": True,
+            }, indent=2, default=str) + "\n", encoding="utf-8")
 
     with LifecycleDockerStack(*lifecycle_control_image, evidence_dir=tmp_path) as stack:
         asyncio.run(scenario(stack))
