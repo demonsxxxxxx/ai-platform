@@ -139,7 +139,7 @@ C 层新增套件走现有 run_test_stage.py、明确 selectors、零跳过和�
 
 [Docker 夹具](../../tests/support/run_lifecycle_docker.py) 为每场景创建独立 PG/Redis/MinIO、网络、工作区卷和 API/Worker；使用候选源码构建镜像，确定性 runner 替代 SDK query，并显式记录 `sdk_used=false`。Worker 与 API 共用网络 namespace，以访问只包含 API 和 executor 的 owned internal bridge；这与可选 Docker Compose overlay 的控制拓扑一致。终态 ACK 故障在真实 API 成功响应后截断 HTTP body，保存指定 batch 的故障与去重重试证据。资源不存在断言在 fixture teardown 前执行，清理器按精确测试标签删除残留，保存独立清理清单。
 
-同文件保留两个接收边界场景，从合法的 seeded running Attempt 验证旧代际拒绝、重复终态和 callback 屏障处退出。该层需要 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 指向专用测试数据库，并为每场景创建独占 Redis，因为 callback 还写固定 reconciliation signal key；仅 queue prefix 不足以隔离。CI 提供 PG/Redis 镜像，完整 Docker 栈按需拉取固定 MinIO tag。Docker、依赖缺失直接失败。
+同文件保留两个接收边界场景，从合法的 seeded running Attempt 验证旧代际拒绝、重复终态和 callback 屏障处退出。该层需要 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 指向专用测试数据库，并为每场景创建独占 Redis，因为 callback 还写固定 reconciliation signal key；仅 queue prefix 不足以隔离。CI 提供 PG/Redis 镜像，完整 Docker 栈复用现有 CI 的 `bitnamilegacy/minio:2025.4.22-debian-12-r1`，按需拉取并使用镜像默认初始化入口。Docker、依赖缺失直接失败。
 
 这些用例建立 C 层夹具与四个基线切片；实际通过结果以 runner evidence 和 PR 为准。L 层实际 SDK/provider、跨沙箱 native_resume 及 N02 其余故障场景继续待验收，不能据此宣布 N01 两层验收、十四场景或 Phase 0 完成。维护者已要求实际 SDK 验收在提交 PR 后于真实环境执行。
 
