@@ -36,7 +36,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:document-previews "
     "&& corepack pnpm run test:pwa "
     "&& corepack pnpm run test:browser-preferences "
-    "&& eslint . && tsc -b && vite build "
+    "&& corepack pnpm run lint && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
 EXPECTED_PYTHON_DEPENDENCIES = "python tools/frontend_ci_dependencies.py --subset windows-contracts"
