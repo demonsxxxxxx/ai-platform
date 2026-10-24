@@ -246,6 +246,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_streaming_schema_postgres.py",
         "tests/test_s0a_schema_postgres.py",
     ),
+    "lifecycle-control-chain": (
+        "tests/test_run_execution_lifecycle_integration.py",
+    ),
     "model-control-plane": (
         "tests/test_model_management.py",
         "tests/test_model_user_access.py",
@@ -450,7 +453,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "runs-on: ${{ matrix.runner }}" in tests_job
     assert "shell: bash" in tests_job
     assert "needs: backend-preflight" in tests_job
-    assert "timeout-minutes: 15" in tests_job
+    assert "timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 30 || 15 }}" in tests_job
     assert "fail-fast: false" in tests_job
     assert "ref: ${{ env.BACKEND_TEST_SOURCE_COMMIT }}" in tests_job
     assert "fetch-depth: 0" in tests_job
@@ -474,6 +477,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         for name in BACKEND_TEST_SHARDS
     }
     assert actual_redis == {
+        "lifecycle-control-chain": ("redis:7.4-alpine", "redis://localhost:6379/15"),
         "windows-runtime": ("", ""),
         "sandbox-runtime": ("redis:7.4-alpine", "redis://localhost:6379/15"),
         "repository-worker-streaming": (
@@ -491,6 +495,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     assert actual_postgres == {
+        "lifecycle-control-chain": (
+            "postgres:16-alpine",
+            "postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform",
+        ),
         "windows-runtime": ("", ""),
         "sandbox-runtime": ("", ""),
         "repository-worker-streaming": (
@@ -533,7 +541,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("tools/run_test_stage.py")
     assert "uv run --locked --extra test python tools/run_test_stage.py" in pytest_step
-    assert '--stage "${{ matrix.shard }}" --timeout-seconds 600 --coverage' in pytest_step
+    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 1200 || 600 }} --coverage' in pytest_step
     assert '"${zero_skips[@]}" -- ${{ matrix.test_files }}' in pytest_step
     assert (
         'if [[ "${{ matrix.shard }}" != "sandbox-runtime" && '
@@ -544,6 +552,8 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "- name: Upload exact shard evidence" in pytest_step
     for artifact in ("evidence.json", "junit.xml", "coverage.json"):
         assert f".pytest-tmp/test-runs/**/${{{{ matrix.shard }}}}/{artifact}" in pytest_step
+    for artifact in ("control-chain.json", "terminal-ack-fault.json", "terminal-callback-loss.json", "docker-cleanup.json", "failed-state.json", "*.log"):
+        assert f".pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/{artifact}" in pytest_step
     assert "if-no-files-found: error" in pytest_step
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
