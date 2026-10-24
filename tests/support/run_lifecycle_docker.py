@@ -510,13 +510,13 @@ class LifecycleDockerStack:
             ),
             (
                 "minio",
-                "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+                "bitnamilegacy/minio:2025.4.22-debian-12-r1",
                 {
                     "MINIO_ROOT_USER": self._minio_root_user,
                     "MINIO_ROOT_PASSWORD": self._minio_root_password,
                 },
                 "9000/tcp",
-                ["server", "/data"],
+                None,
             ),
         )
         for role, image, environment, port, command in services:
