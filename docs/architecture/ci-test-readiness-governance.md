@@ -82,8 +82,8 @@ Rules:
    forbidden.
 6. A test appears in one required lane unless another lane verifies an
    independent subject.
-7. Integration lanes write JUnit XML and run
-   `tools/require_zero_junit_skips.py` against the exact report.
+7. Integration lanes run `tools/run_test_stage.py --require-zero-skips`, which
+   fails the stage on any skipped test in its exact JUnit report.
 8. Image jobs retain a stable successful result when an exact diff is
    `not_affected`; they do not disappear from branch protection.
 9. CI success is CI evidence only.
@@ -133,102 +133,22 @@ The following stay outside live request paths:
 Offline checks belong under `tools/` or `scripts/`. A runtime endpoint may link
 to an operator command but does not execute or project its historical output.
 
-### Offline acceptance summary contracts
+### Retired offline gate reports
 
-Foundation concurrency evidence is produced by
-`tools/verify_multiuser_poc.py` and accepted by
-`app/foundation_runtime_concurrency.py`. A section's `status: passed` does not
-replace its samples. All required counts must be explicit non-negative integers;
-booleans, strings, missing values, and negative counts cannot become zero proof.
-Owner downloads require HTTP 200 and aligned positive `owner_bytes` samples;
-playback requires HTTP 200 samples for all runs. Skill snapshot evidence includes
-`run_sample_count` so one run's extra snapshots cannot cover another run with no
-valid pinned snapshot. `used_count` may be zero: availability is not execution.
-The producer always emits `failed_case_count` and `failed_cases`, including zero
-and an empty list after a successful run.
+The Foundation Alpha, capacity load-gate, sandbox hardening, Office context,
+governance, observability, tool-policy, Skill release and release-evidence
+readiness reports, their evidence wrappers and POC verifiers were retired on
+2026-10-24 without compatibility commands, together with their archived
+evidence under `docs/release-evidence/`. They produced static or historical
+summaries, not runtime observations. Their removal does not close any
+acceptance gap or authorize a release.
 
-Historical concurrency summaries lacking these observations are retained as
-archives but cannot pass the current acceptance contract. Do not backfill success
-values into them; collect fresh evidence using the current producer. The owning
-regressions are `tests/test_foundation_runtime_concurrency.py` and
-`tests/test_verify_multiuser_poc.py`; Foundation Alpha and capacity consumers use
-the same validator rather than a compatibility bypass.
-
-Sandbox hardening acceptance belongs to `app/sandbox_hardening_contract.py` and
-`scripts/verify_sandbox_runtime.py`. Their shared
-`SANDBOX_HARDENING_ACCEPTANCE_BLOCKER` names the unavailable bounded-error
-projection observer. Office readiness projects this blocker and leaves
-`sandbox_cold_start_latency_split_runtime_acceptance` open. It no longer parses
-the historical nested sandbox contract or treats stored verifier pass flags as
-current proof. Observed executor context-pack acceptance remains independent.
-
-The Sandbox Runtime owner can restore sandbox acceptance only after a live,
-same-run, same-runtime-subject observer establishes the bounded-error projection
-and the current verifier validates it. The observable exit condition is fresh
-current-subject evidence passing the authoritative verifier plus an Office
-consumer regression proving both acceptance and rejection of failed, missing,
-and malformed observations. Wire Office to that shared current contract; do not
-restore its retired nested validator or remove the blocker based on a stored
-boolean. `tests/test_sandbox_runtime_evidence_script.py` owns nested verifier
-validation, while `tests/test_office_context_readiness.py` owns projection of the
-blocker and rejection of historical wrappers.
-
-### Archived inventory acceptance
-
-The governance and alert/trace inventory probes are retired. Current Admin
-Runtime exposes offline references, not source inventories. Foundation and Skill
-release readers retain the recorded verifier/schema identities to interpret
-archived evidence; the Foundation wrapper may package that existing output but
-cannot refresh it. Their missing-evidence blockers remain open. Define an owned
-current-runtime observation before introducing any replacement acceptance;
-producer retirement alone never closes a stage or authorizes release.
-
-Memory erasure behavior is owned by Context persistence/routes and Worker cleanup
-regressions, including `tests/test_context_memory_retention.py`,
-`tests/test_context_routes.py`, and `tests/test_worker_main.py`. A source-marker
-scanner is not independent erasure or runtime evidence.
-
-### Consolidated dashboard reports
-
-The standalone error-taxonomy, Skill release dashboard, and tool-policy bulk-review
-report CLIs and their exclusive Markdown renderers are retired, without compatibility
-commands. Their builders, authorization/redaction contracts, and open acceptance gaps
-remain owned by the existing composite reports:
-
-- `python tools/observability_readiness.py --format json` exposes
-  `domains.error_taxonomy.evidence.error_taxonomy_dashboard`;
-- `python tools/skill_release_readiness.py --format json` exposes
-  `admin_skill_release_dashboard`; and
-- `python tools/governance_readiness.py --format json` exposes
-  `domains.tool_permission.evidence.admin_policy_bulk_review_dashboard`.
-
-These commands also retain their composite Markdown output; they are not byte-compatible
-substitutes for the retired leaf reports. Consolidation does not close acceptance gaps,
-change Admin Runtime/Skill/tool-policy authorization, or retire the Observability G9
-quality-evaluation schema and golden-set contract.
-
-### Retired phase reports
-
-The B5 file/tool and B6 Operations Beta phase reports are retired; their static
-status, control lists, and Markdown/JSON renderers are not runtime evidence and
-have no compatibility CLI. Their removal does not close acceptance gaps, enable
-product beta or department rollout, or authorize ordinary-user high-risk tools.
-
-File/artifact acceptance still requires a named workflow proving upload, governed
-execution, tenant/owner-scoped preview and download, unauthorized denial before
-storage access, retention/expiry, cleanup, and redacted public projections. Exact
-tool acceptance still requires shell, network, filesystem, and MCP denial evidence
-for the named run. The owning artifact ACL, two-user isolation, tool-policy,
-permission-route, and Worker denial regressions remain required, not report tests.
-
-Operations Beta acceptance still requires a selected runtime subject and a named
-workflow package binding workflow/business/support owners, tenant/workspace scope,
-SLO latency thresholds, expected SDK subagent fanout, cost budget, quality
-thresholds, alert routing, rollback drill, and linked prerequisite evidence. Admin
-Runtime, trace/export redaction, alert delivery, quality evaluation, support
-handoff, owner signoff, review, and residual caveats require observed evidence;
-static status fields and retired reports cannot supply it. Existing runtime and
-offline-evidence boundaries remain unchanged.
+What remains at runtime: Admin Runtime projects the configured capacity
+baseline from `app/capacity_baseline.py` (configuration, not load-test proof),
+and the Admin Skill release review reads `docs/release-evidence/skill-release/`
+for `builtin` Skill versions. `tools/verify_poc_gate.py` stays as the optional
+live diagnostic described in the release runbook. A new acceptance check must
+observe a named live subject; do not restore a source-scanning report.
 
 ## 6. Retirement and ownership
 

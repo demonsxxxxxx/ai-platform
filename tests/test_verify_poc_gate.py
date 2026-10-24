@@ -81,12 +81,10 @@ def test_api_compat_gate_rejects_default_model_without_capacity(monkeypatch):
 
 def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
     script_text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
-    watcher_text = Path("tools/watch_poc_gate.py").read_text(encoding="utf-8")
 
     required = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))'
     assert "import sys" in script_text
     assert required in script_text
-    assert required in watcher_text
 
 
 def test_default_runtime_paths_are_repository_relative():
