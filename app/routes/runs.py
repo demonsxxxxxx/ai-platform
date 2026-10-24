@@ -71,7 +71,7 @@ from app.queue import (
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
