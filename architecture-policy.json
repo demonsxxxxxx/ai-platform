@@ -100,7 +100,6 @@
   "approved_root_modules": [
     "app/__init__.py",
     "app/agent_profile_execution_validation.py",
-    "app/artifact_preview.py",
     "app/auth.py",
     "app/auth_sessions.py",
     "app/capabilities.py",
