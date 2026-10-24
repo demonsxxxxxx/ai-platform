@@ -4,6 +4,9 @@ Apply the root [repository instructions](../../AGENTS.md). This file is the
 frontend implementation and verification entry; detailed contracts stay with
 the owners linked below.
 
+Coding rules and lint/style gates are indexed by the
+[coding standards](../../docs/agent-rules/coding-standards.md).
+
 ## Components and page styling
 
 - Use Lobe UI as the primary general React UI library. Follow the

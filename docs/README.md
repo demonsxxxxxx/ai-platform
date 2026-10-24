@@ -102,6 +102,7 @@ performance and production acceptance remain separate from source completion
 and deployment evidence.
 
 [AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[coding standards](agent-rules/coding-standards.md),
 [change verification](agent-rules/change-verification.md),
 [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and

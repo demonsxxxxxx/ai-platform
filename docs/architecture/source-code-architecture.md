@@ -386,81 +386,10 @@ does not create a new service.
 
 ## 5. Naming and coding rules
 
-### 5.1 Packages and modules
-
-- Package and module names MUST be `snake_case` and describe one business
-  concept or adapter responsibility.
-- New global dumping modules named `models.py`, `repositories.py`, `service.py`,
-  `services.py`, `utils.py`, `helpers.py`, `common.py`, or `manager.py` are
-  forbidden at `app/` root and discouraged inside a context. Use the concept,
-  such as `run_admission.py`, `profile_revision.py`, or
-  `postgres_run_repository.py`.
-- Delivery-phase, ticket, and evidence labels such as `b1`, `phase2`, `211`,
-  `poc`, `readiness`, or `acceptance` MUST NOT name production modules unless
-  that term is a lasting product concept.
-- A module SHOULD have one reason to change. Adding a second business domain to
-  an existing hot module is forbidden even when splitting that module is not in
-  the current PR.
-
-### 5.2 Types and operations
-
-| Meaning | Naming rule |
-| --- | --- |
-| Domain concept | noun, for example `RunAttempt`, `ProfileRevision` |
-| Transport input/output | `...Request`, `...Response` |
-| Application intent | `...Command`; read intent is `...Query` |
-| Handler/use case | explicit verb, for example `AdmitRun`, `PublishProfile` |
-| Persisted row shape | `...Record` |
-| Safe read model | `...Projection` |
-| Application port | capability noun, for example `RunRepository`, `EventPublisher`, `Clock` |
-| Concrete adapter | technology plus port, for example `PostgresRunRepository`, `RedisEventPublisher`, `S3ArtifactStore` |
-| Business decision owner | `...Authority`, only when it is the single authoritative policy decision |
-| Compatibility boundary | `<subject>_compat.py` or a module under `compat/<subject>/` |
-| Stable error | typed error plus lower-snake-case `code` owned by the boundary |
-
-Functions MUST use a precise verb. Names such as `process`, `handle`, `manage`,
-`execute`, `data`, `payload`, or `item` require a boundary-specific qualifier.
-Async functions do not add `_async`; the return type and implementation express
-that property.
-
-Identifiers end in `_id`; SHA-256 digests end in `_sha256`; byte counts end in
-`_bytes`; durations include their unit such as `_seconds`; timestamps end in
-`_at`. A field whose unit or identity is ambiguous MUST NOT cross a boundary.
-
-### 5.3 Configuration, constants, and hard-coded values
-
-- Environment parsing and process defaults belong to `bootstrap.settings`.
-  Domain code receives typed configuration and MUST NOT read environment
-  variables directly.
-- Endpoint URLs, credentials, ports, model/provider selection, retention
-  windows, and deployment-specific workspace values MUST NOT be embedded in
-  routes or business logic.
-- Stable protocol identifiers and business constants MAY be code constants only
-  in their owning context. Other contexts import the public constant or derive
-  a projection; they MUST NOT duplicate its literal.
-- Every protocol/business literal that crosses a context boundary MUST have one
-  named canonical symbol exported by the owner's `api.py` or `events.py`. The
-  architecture policy keeps an explicit governed-symbol/owner inventory and
-  rejects a definition of that governed literal outside its owner; it does not
-  attempt to ban harmless repeated prose strings.
-- A default that changes authorization, tenant/workspace scope, provider, model,
-  or persistence target MUST be explicit at admission/configuration and fail
-  closed in production. Compatibility defaults require a named legacy
-  consumer.
-- Provider, parser, Skill, model, and executor mappings MUST have one canonical
-  registry and a consistency test. Parallel hand-built dictionaries are
-  forbidden.
-
-### 5.4 Errors and projections
-
-Domain/application errors carry a stable machine code and safe structured
-facts. HTTP status, SSE shape, and compatibility wording are mapped in
-transport. Raw database errors, SDK exceptions, commands, secrets, storage keys,
-and private paths MUST NOT cross a public projection.
-
-An ordinary-user projection MUST be intentionally smaller than its admin or
-internal record. Serialization of a persistence record is not a projection
-strategy.
+Naming, types, configuration and constants, errors, projections and logging
+rules, together with the enforcement level of every coding constraint, are owned
+by [coding standards](../agent-rules/coding-standards.md). This document keeps
+placement, layering and dependency direction.
 
 ## 6. What belongs in the repository
 
