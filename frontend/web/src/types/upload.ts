@@ -56,3 +56,11 @@ export interface UploadResult {
   mimeType: string;
   size: number;
 }
+
+/** Durable deletion status; a queued request is not physical deletion completion. */
+export interface FileDeletionResponse {
+  file_id: string;
+  lifecycle_state: "delete_pending" | "deleted";
+  deletion_state: "pending" | "processing" | "failed" | "dead_letter" | "deleted";
+  reconcile_required: boolean;
+}
