@@ -11,7 +11,7 @@ from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.bootstrap.run_inputs import RunInputSubmissionRequest
-from app.capabilities import get_capability
+from app.agent_apps.api import get_capability
 from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
