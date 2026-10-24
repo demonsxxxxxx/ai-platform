@@ -26,7 +26,7 @@ from app.models import (
     SelectedAgentProfileRequest,
 )
 from app.platform.postgres import errors as platform_errors
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 from app.control_plane_contracts import ThinkingEffort, normalize_thinking_effort
 
 router = APIRouter()

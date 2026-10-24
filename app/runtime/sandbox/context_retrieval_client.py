@@ -20,7 +20,7 @@ from app.runtime.sandbox.contracts import (
     PROFILE_DRIVE_STAGE_TOOL,
     ContextRetrievalScope,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 _logger = logging.getLogger(__name__)

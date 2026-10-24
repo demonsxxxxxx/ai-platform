@@ -97,7 +97,7 @@ from app.storage import (
     StoredObject,
     run_storage_io,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 MAX_DIRECT_UPLOAD_BYTES = 32 * 1024 * 1024

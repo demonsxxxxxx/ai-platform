@@ -82,7 +82,7 @@ from app.skills.packages import (
     ParsedSkillPackage,
     parse_skill_package_zip,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024

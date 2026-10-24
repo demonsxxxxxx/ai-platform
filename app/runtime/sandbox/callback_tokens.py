@@ -2,7 +2,7 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 def executor_callback_url(settings: object) -> str:

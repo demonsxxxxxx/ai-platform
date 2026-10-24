@@ -18,7 +18,7 @@ from app.bootstrap.department_authority import resolve_department_authority
 from app.identity.api import DepartmentAuthority
 from app.platform.jwt_validation import JwtValidationError, decode_hs256_jwt, encode_hs256_jwt
 from app.settings import get_settings
-from app.validation import assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_principal_user_id
 
 
 CURRENT_PRINCIPAL_DENIAL_REASON = "current_principal_authority_denied"

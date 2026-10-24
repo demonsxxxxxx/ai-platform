@@ -132,7 +132,7 @@ from app.streaming.api import (
     WorkerV4Capabilities,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_principal_user_id
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
