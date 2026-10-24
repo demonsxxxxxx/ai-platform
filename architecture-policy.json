@@ -141,7 +141,6 @@
     "app/session_actions.py",
     "app/settings.py",
     "app/storage.py",
-    "app/tool_policy.py",
     "app/validation.py",
     "app/worker.py",
     "app/worker_main.py",
