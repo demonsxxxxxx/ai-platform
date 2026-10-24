@@ -120,7 +120,6 @@
     "app/intent_router.py",
     "app/main.py",
     "app/models.py",
-    "app/office_execution_tier.py",
     "app/path_safety.py",
     "app/principal_authority.py",
     "app/product_events.py",
