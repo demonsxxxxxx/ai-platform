@@ -259,7 +259,8 @@ generation, timestamps, and reconciliation ownership in one migration.
    locked by the first. Cancellation or a database write/commit failure rolls
    back that transaction and leaves the leases eligible for retry.
    Restoring a Docker cleanup handle preserves the authoritative attempt binding
-   (with payload fallback for historical rows) and the native-tool requirement.
+   (with payload fallback for historical rows), the native-tool requirement,
+   signed egress proof and requested image identity for control-channel recovery.
    Conflicting attempt projections fail closed. Cleanup uses only verified
    runtime handle fields and derived owned-resource identities, never a
    payload-supplied container or host path.
@@ -335,6 +336,35 @@ Renaming these methods is not a correctness requirement. Consolidating their
 invocation and durable receipts behind the application control authority is.
 
 ### Docker asynchronous I/O boundary
+
+The Docker provider keeps a valid published executor endpoint when available.
+An internal bridge may have no published host port even when one was requested.
+In that case the provider resolves port 18000 on the executor's private IPv4
+address only after fresh Docker inspection verifies the exact Run/Attempt
+container, owned internal bridge, API witness, two-member topology, and matching
+container/network attachment addresses. The network must disable masquerading;
+Docker's explicit IPv4-enabled/IPv6-disabled defaults are accepted, while other
+options and IPv6 remain rejected.
+
+The optional Docker Compose overlay shares the API network namespace with the
+trusted Worker so both can reach each Attempt's internal bridge. It removes the
+Worker's separate host aliases and starts it after the API is healthy; Compose
+API replacement also restarts the dependent Worker. API and Worker remain
+separate processes, and the executor remains in its own container and network
+namespace. This coupling belongs only to the Docker overlay. Operators must
+drain active Runs/Attempts/leases before replacing the API, whose container
+identity is part of the existing callback proof, and recreate the dependent
+Worker when replacing the API outside Compose. Dependency restart does not
+provide in-flight recovery across API container replacement.
+
+Recovery verifies the current-key signature and immutable Run/Attempt, image,
+lease, network and callback binding. The signed launch-time Skill/MCP scope is
+retained, because a reconciliation request is not a new capability admission.
+Proof expiry does not prevent status/cancel of that exact owned executor;
+create, reuse and dispatch still require a fresh admission proof. Key rotation
+revokes control identity, and invalid signatures or scope/ownership drift fail
+closed. These checks retain the caller's durable reconciliation claim and do not
+replace Attempt authority or grant execution permission.
 
 Docker's synchronous SDK lifecycle runs on provider-owned worker loops rather
 than the application event loop. The provider has eight lifecycle slots, eight
