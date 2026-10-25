@@ -69,7 +69,11 @@ from app.sandbox.api import (
 from app.schema_migrations import require_schema_current
 from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
-from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
+from app.runs.api import (
+    cancel_run_terminalization,
+    fail_run_terminalization,
+    finish_run_terminalization,
+)
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
@@ -832,7 +836,7 @@ async def _terminalize_escaped_process_exception(
                 run_id=run_id,
                 attempt_id=validated_attempt_id,
             )
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn,
                 lifecycle=lifecycle,
                 capabilities=v4_capabilities,
@@ -841,7 +845,7 @@ async def _terminalize_escaped_process_exception(
                 result_json={"message": "任务已取消"},
             )
         else:
-            progress = await fail_run_with_v4(
+            progress = await fail_run_terminalization(
                 conn,
                 lifecycle=lifecycle,
                 capabilities=v4_capabilities,

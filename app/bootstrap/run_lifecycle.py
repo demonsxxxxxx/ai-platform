@@ -14,9 +14,8 @@ from app.runs.application.cancellation import (
     RunCancellationPostProcessor,
     RunCancellationUseCase,
 )
-from app.runs.api import RunAttemptLifecycleService
+from app.runs.api import RunAttemptLifecycleService, progress_run_terminalization
 from app.runs.application.lifecycle import RunLifecycleService
-from app.runs.application.provider_terminalization import progress_run_terminalization_with_context
 from app.runs.infrastructure.postgres import (
     PostgresRunCancellationPersistence,
     load_current_terminal_event_fact,
@@ -62,9 +61,9 @@ def build_run_cancellation_use_case(
     lifecycle: RunLifecycleService,
 ) -> RunCancellationUseCase:
     async def progress_terminalization(conn: object, *, tenant_id: str, run_id: str):
-        return await progress_run_terminalization_with_context(
+        return await progress_run_terminalization(
             conn,
-            progress_terminalization=lifecycle.progress_run_terminalization,
+            lifecycle=lifecycle,
             tenant_id=tenant_id,
             run_id=run_id,
         )

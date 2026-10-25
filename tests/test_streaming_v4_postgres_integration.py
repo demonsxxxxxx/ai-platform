@@ -22,13 +22,13 @@ from app import schema_migrations
 from app.bootstrap import run_lifecycle
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
-from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
+from app.run_admission_terminalization import terminalize_enqueue_failure
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-from app.runs.api import cancel_run_with_v4, complete_run_with_v4, fail_run_with_v4
+from app.runs.api import cancel_run_terminalization, complete_run_terminalization, fail_run_terminalization
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities, admit_v4_stream, publish_run_event
 from app.streaming.api import build_v4_control, stream_key
 from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
@@ -642,7 +642,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
         )
         with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
             async with factory() as conn:
-                await terminalize_enqueue_failure_with_v4(
+                await terminalize_enqueue_failure(
                     rollback_capabilities,
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
@@ -680,7 +680,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
             publication_transport=object(),
         )
         async with factory() as conn:
-            progress = await terminalize_enqueue_failure_with_v4(
+            progress = await terminalize_enqueue_failure(
                 capabilities,
                 conn,
                 lifecycle=run_lifecycle.build_run_lifecycle_service(),
@@ -1222,7 +1222,7 @@ async def test_complete_run_writes_one_v4_terminal_row_from_the_run_fact():
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, _attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
-            assert await complete_run_with_v4(
+            assert await complete_run_terminalization(
                 conn,
                 lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn_value, schema_name),
@@ -1260,7 +1260,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
         tenant, run, attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
             if status == "failed":
-                progress = await fail_run_with_v4(
+                progress = await fail_run_terminalization(
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),
@@ -1270,7 +1270,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
                     error_message="private path C:/tenant/secret",
                 )
             else:
-                progress = await cancel_run_with_v4(
+                progress = await cancel_run_terminalization(
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),

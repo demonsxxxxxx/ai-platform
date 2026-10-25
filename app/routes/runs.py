@@ -77,7 +77,7 @@ from app.runs.api import (
     contains_platform_multi_agent_control,
 )
 from app.run_admission_terminalization import (
-    terminalize_enqueue_failure_with_v4,
+    terminalize_enqueue_failure,
 )
 from app.run_control_readiness import run_control_readiness_snapshot
 from app.run_projection import (
@@ -589,7 +589,7 @@ async def _compensate_enqueue_failure(
     """Leave a committed run in a truthful terminal state when queue admission fails."""
 
     async with transaction() as conn:
-        await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
+        await terminalize_enqueue_failure(v4_capabilities, conn,
             lifecycle=run_lifecycle,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,

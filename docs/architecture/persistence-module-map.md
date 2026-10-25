@@ -44,7 +44,7 @@ Ordinary Run transitions are orchestrated by
 `app.runs.application.lifecycle.RunLifecycleService` with explicit persistence,
 event, and audit ports. API and Worker composition inject the service;
 committed-v4 and provider-lineage coordination lives in
-`app.runs.application.terminalization_v4`. Stale-run recovery continues through
+`app.runs.application.run_terminalization`. Stale-run recovery continues through
 the execution application, including its queue fence and executor terminal
 receipt checks. These application boundaries coexist with the cross-domain
 adapter calls described above.

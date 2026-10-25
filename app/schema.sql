@@ -637,6 +637,15 @@ create table if not exists runs (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
   ),
+  constraint chk_runs_status check (
+    status is not null
+    and status = any (array[
+      'queued'::text, 'running'::text, 'cancel_requested'::text,
+      'succeeded'::text, 'failed'::text, 'cancelled'::text,
+      'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+      'dead-lettered'::text
+    ])
+  ),
   constraint chk_runs_model_token_limits check (
     (auto_compact_window is null and max_output_tokens is null)
     or (auto_compact_window is not null and max_output_tokens is not null
@@ -3428,3 +3437,61 @@ where id = 'ragflow-knowledge-search';
 update tool_policies
 set status = 'disabled', visible_to_user = false
 where tool_id = 'ragflow-knowledge-search';
+
+-- Run status constraint upgrade: install after all historical schema transforms.
+do $$
+declare
+  status_constraint_oid oid;
+  status_constraint_type "char";
+  status_constraint_validated boolean;
+  status_constraint_definition text;
+  expected_definition constant text := $definition$CHECK (status IS NOT NULL AND (status = ANY (ARRAY[
+    'queued'::text, 'running'::text, 'cancel_requested'::text,
+    'succeeded'::text, 'failed'::text, 'cancelled'::text,
+    'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+    'dead-lettered'::text])))$definition$;
+  previous_lock_timeout text;
+begin
+  select oid, contype, convalidated,
+         regexp_replace(pg_get_constraintdef(oid, true), ' NOT VALID$', '')
+  into status_constraint_oid, status_constraint_type,
+       status_constraint_validated, status_constraint_definition
+  from pg_constraint
+  where conrelid = 'runs'::regclass
+    and conname = 'chk_runs_status';
+
+  if status_constraint_oid is not null then
+    if status_constraint_type <> 'c'
+       or regexp_replace(
+         regexp_replace(lower(status_constraint_definition), '\s+', '', 'g'),
+         '^check\(\((.*)\)\)$', 'check(\1)'
+       ) <> regexp_replace(
+         regexp_replace(lower(expected_definition), '\s+', '', 'g'),
+         '^check\(\((.*)\)\)$', 'check(\1)'
+       ) then
+      raise exception 'runs_status_constraint_definition_mismatch';
+    end if;
+  end if;
+
+  previous_lock_timeout := current_setting('lock_timeout');
+  perform set_config('lock_timeout', '2s', true);
+  if status_constraint_oid is null then
+    alter table runs add constraint chk_runs_status check (
+      status is not null
+      and status = any (array[
+        'queued'::text, 'running'::text, 'cancel_requested'::text,
+        'succeeded'::text, 'failed'::text, 'cancelled'::text,
+        'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+        'dead-lettered'::text
+      ])
+    ) not valid;
+    status_constraint_validated := false;
+  end if;
+
+  if not status_constraint_validated then
+    alter table runs validate constraint chk_runs_status;
+  end if;
+
+  perform set_config('lock_timeout', previous_lock_timeout, true);
+end
+$$;

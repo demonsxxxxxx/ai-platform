@@ -822,7 +822,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
         fake_record_terminal,
     )
     monkeypatch.setattr(
-        runtime_callbacks, "fail_run_with_v4", unexpected_fail_run, raising=False
+        runtime_callbacks, "fail_run_terminalization", unexpected_fail_run, raising=False
     )
     monkeypatch.setattr(
         runtime_callbacks.sandbox_lease_repository,

@@ -13,6 +13,7 @@ from app.runs.application.cancellation import (
     RunCancellationQueueCleanupError,
     RunCancellationUseCase,
 )
+from app.runs.application import run_terminalization
 
 
 class _TransactionFactory:
@@ -145,6 +146,68 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
         "v4.admission_pending",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
+        "v4.run.terminal",
+        "audit",
+        "transaction.commit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_composition_uses_its_independent_terminal_append_once(monkeypatch):
+    order: list[str] = []
+    lifecycle = SimpleNamespace()
+
+    async def progress_run(conn, *, tenant_id, run_id):
+        order.append("run.progress")
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return RunTerminalizationProgress(True, "cancelled", True)
+
+    lifecycle.progress_run_terminalization = progress_run
+
+    async def release_lineage(_conn, *, tenant_id, run_id):
+        order.append("provider.release")
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+
+    async def unexpected_v4_append(*_args, **_kwargs):
+        pytest.fail("the cancellation event writer owns this terminal append")
+
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.release_provider_lineage",
+        release_lineage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.append_run_terminal_v4_row",
+        unexpected_v4_append,
+    )
+
+    async def progress_terminalization(conn, *, tenant_id, run_id):
+        return await run_terminalization.progress_run_terminalization(
+            conn,
+            lifecycle=lifecycle,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority()),
+        event_writer=_EventWriter(order),
+        progress_terminalization=progress_terminalization,
+    )
+
+    result = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a"
+    )
+
+    assert result is not None and result.status == "cancelled"
+    assert order.count("v4.run.terminal") == 1
+    assert order == [
+        "transaction.begin",
+        "legacy.cancel_requested",
+        "v4.admission_pending",
+        "v4.run.cancel_requested",
+        "run.progress",
+        "provider.release",
         "v4.run.terminal",
         "audit",
         "transaction.commit",

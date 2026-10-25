@@ -101,12 +101,14 @@ from app.runs.application.worker_result_commit import (
     WorkerResultCommitService as WorkerResultCommitService,
 )
 from app.runs.application.lifecycle import RunLifecycleService as RunLifecycleService
-from app.runs.application.terminalization_v4 import (
-    cancel_run_with_v4 as cancel_run_with_v4,
-    complete_run_with_v4 as complete_run_with_v4,
-    fail_run_with_v4 as fail_run_with_v4,
+from app.runs.application.run_terminalization import (
+    cancel_run_terminalization as cancel_run_terminalization,
+    complete_run_terminalization as complete_run_terminalization,
+    fail_run_terminalization as fail_run_terminalization,
     finish_run_terminalization as finish_run_terminalization,
-    progress_run_terminalization_with_v4 as progress_run_terminalization_with_v4,
+    persist_assistant_with_provider_coverage as persist_assistant_with_provider_coverage,
+    progress_run_terminalization as progress_run_terminalization,
+    record_run_terminalization as record_run_terminalization,
 )
 from app.runs.application.cancellation import (
     CancelRequestResult as CancelRequestResult,
@@ -117,15 +119,6 @@ from app.runs.application.cancellation import (
 from app.runs.application.execution_spec import (
     compile_execution_spec_for_dispatch as compile_execution_spec_for_dispatch,
     worker_dispatch_fence as worker_dispatch_fence,
-)
-from app.runs.application.provider_terminalization import (
-    cancel_run_with_context as cancel_run_with_context,
-    complete_run_with_context as complete_run_with_context,
-    converge_terminal_provider_lineage as converge_terminal_provider_lineage,
-    fail_run_with_context as fail_run_with_context,
-    mark_run_enqueue_failed_with_context as mark_run_enqueue_failed_with_context,
-    persist_assistant_with_provider_coverage as persist_assistant_with_provider_coverage,
-    progress_run_terminalization_with_context as progress_run_terminalization_with_context,
 )
 from app.runs.domain.attempt_lifecycle import (
     OPEN_RUN_ATTEMPT_STATUSES as OPEN_RUN_ATTEMPT_STATUSES,
@@ -178,6 +171,7 @@ from app.runs.application.model_snapshot import (
     load_run_model_snapshot as load_run_model_snapshot,
 )
 from app.runs.domain.retry import (
+    RUN_RETRYABLE_STATUSES as RUN_RETRYABLE_STATUSES,
     RUN_CONTROL_RETRY_PREVIEW_STATUSES as RUN_CONTROL_RETRY_PREVIEW_STATUSES,
 )
 from app.runs.domain.retry import run_retry_block_reason as run_retry_block_reason
@@ -195,6 +189,12 @@ from app.runs.domain.public_terminal import (
 )
 from app.runs.domain.public_terminal import (
     normalize_run_status as normalize_run_status,
+)
+from app.runs.domain.run_status import (
+    ACTIVE_RUN_STATUSES as ACTIVE_RUN_STATUSES,
+    is_terminal_run_status as is_terminal_run_status,
+    normalize_public_run_status as normalize_public_run_status,
+    RUN_STATUS_VALUES as RUN_STATUS_VALUES,
 )
 from app.runs.domain.public_terminal import (
     public_terminal_detail as public_terminal_detail,

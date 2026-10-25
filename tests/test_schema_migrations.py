@@ -702,7 +702,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_USER_ACCESS_SCHEMA_VERSION == "2026.10.20.1"
     assert schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION == "2026.10.20.2"
     assert schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION == "2026.10.22.1"
-    assert schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION == "2026.10.25.1"
+    assert schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION == "2026.10.25.2"
     assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
@@ -710,6 +710,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("run_delivery_intents", "chk_run_delivery_intents_state") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("idx_run_delivery_intents_due", False) in schema_migrations.CRITICAL_INDEXES
     assert ("uq_run_delivery_intents_queue_identity", True) in schema_migrations.CRITICAL_INDEXES
+    assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -1067,6 +1068,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "runs",
+            "chk_runs_status",
+            "c",
+            "CHECK (status IS NOT NULL AND (status = ANY (ARRAY["
+            "'queued'::text, 'running'::text, 'cancel_requested'::text, "
+            "'succeeded'::text, 'failed'::text, 'cancelled'::text, "
+            "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, "
+            "'dead-lettered'::text])))",
+        ),
         (
             "users",
             "chk_users_metadata_json_object",

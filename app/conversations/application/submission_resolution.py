@@ -3,17 +3,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-
-_PUBLIC_RUN_STATUSES = frozenset(
-    {"queued", "running", "succeeded", "failed", "cancelled"}
-)
-
-
-def normalize_submission_run_status(value: object) -> str | None:
-    status = str(value or "").strip().lower()
-    if status == "canceled":
-        status = "cancelled"
-    return status if status in _PUBLIC_RUN_STATUSES else None
+from app.runs.api import normalize_public_run_status as normalize_submission_run_status
 
 
 def submission_resolution_projection(

@@ -187,7 +187,7 @@ def _install_route_cancellation_adapter(monkeypatch):
     monkeypatch.setattr("app.routes.runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr("app.routes.admin_runs._require_run_cancellation_use_case", lambda _request: adapter)
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release_provider_lineage,
     )
 

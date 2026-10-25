@@ -41,14 +41,23 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.runs.api import (
-    ReconciliationAuthorityError, RunAttemptLifecycleService, RunDiagnosticsService, RunLifecycleService,
+    ReconciliationAuthorityError,
+    RunAttemptLifecycleService,
+    RunDiagnosticsService,
+    RunLifecycleService,
+    is_terminal_run_status,
+    TERMINAL_RUN_STATUSES,
 )
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     SandboxExecutorHttpError,
     exception_chain_from_error,
 )
-from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
+from app.runs.api import (
+    cancel_run_terminalization,
+    fail_run_terminalization,
+    finish_run_terminalization,
+)
 from app.storage import run_storage_io
 from app.bootstrap.executor_terminal_reconciliation import reconcile_executor_terminal_result
 from app.streaming.api import WorkerV4Capabilities, publish_run_event
@@ -63,7 +72,6 @@ _RECONCILIATION_FALLBACK_SECONDS = 2.0
 _RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS = 5.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
-_TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 _logger = logging.getLogger(__name__)
 
 
@@ -287,7 +295,7 @@ async def _terminalize_reconciliation_failure(
                 ) if reconciliation_error is not None else None,
                 lease_id=str(lease_row["id"]),
             )
-        if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
+        if is_terminal_run_status(run.get("status")):
             run_was_terminal = True
         else:
             cancel_requested = bool(run.get("cancel_requested_at")) or str(
@@ -301,7 +309,7 @@ async def _terminalize_reconciliation_failure(
                     attempt_id=attempt_id,
                 )
             if cancel_requested:
-                progress = await cancel_run_with_v4(
+                progress = await cancel_run_terminalization(
                     conn,
                     lifecycle=lifecycle,
                     capabilities=v4_capabilities,
@@ -310,7 +318,7 @@ async def _terminalize_reconciliation_failure(
                     result_json={"message": "任务已取消"},
                 )
             else:
-                progress = await fail_run_with_v4(
+                progress = await fail_run_terminalization(
                     conn,
                     lifecycle=lifecycle,
                     capabilities=v4_capabilities,
@@ -910,7 +918,7 @@ async def reconcile_pending_executor_terminals_once(
                     )
                 if run is None:
                     raise ValueError("executor_reconciliation_run_missing")
-                if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
+                if is_terminal_run_status(run.get("status")):
                     _context_and_payload(lease_row)
                     if _sandbox_cleanup.container_lease_from_persisted_row(lease_row) is None:
                         raise _permanent_reconciliation_error(
@@ -940,7 +948,7 @@ async def reconcile_pending_executor_terminals_once(
                     )
                     if (
                         outcome.run_id != str(lease_row["run_id"])
-                        or outcome.status not in _TERMINAL_RUN_STATUSES
+                        or outcome.status not in TERMINAL_RUN_STATUSES
                     ):
                         # A stale dispatch fence can mean cancellation intent,
                         # not a committed terminal Run. Keep the receipt as the
