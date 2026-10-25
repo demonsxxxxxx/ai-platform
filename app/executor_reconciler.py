@@ -15,10 +15,7 @@ from app.bootstrap.worker_maintenance import maintenance_phase_until_done
 from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
-from app.execution.application.supervision import (
-    capacities_from_settings,
-    run_current_domain_work,
-)
+from app.bootstrap.execution_supervision import run_worker_scheduled_domain_operation
 from app.execution.domain.supervision import SupervisionDomain
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -1107,10 +1104,6 @@ async def run_executor_terminal_reconciler(
     concurrency = max(int(concurrency), 1)
     domain_worker_id = worker_id or f"executor-reconciler:{uuid.uuid4().hex}"
     domain_settings = get_settings()
-    domain_capacities = capacities_from_settings(domain_settings)
-    domain_claim_ttl_seconds = int(
-        getattr(domain_settings, "supervision_claim_ttl_seconds", 3600)
-    )
     wake = asyncio.Event()
     cleanup_wake = asyncio.Event()
     active: set[asyncio.Task[int]] = set()
@@ -1139,18 +1132,19 @@ async def run_executor_terminal_reconciler(
 
     async def reconcile() -> int:
         try:
-            result = await run_current_domain_work(
-                lambda: reconcile_pending_executor_terminals_once(
+            async def operation() -> int:
+                return await reconcile_pending_executor_terminals_once(
                     lease_port=lease_port,
                     registry=registry, worker_id=worker_id,
-                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
+                    v4_capabilities=v4_capabilities,
+                    attempt_lifecycle=attempt_lifecycle,
                     lifecycle=lifecycle, run_diagnostics=run_diagnostics,
-                ),
-                transaction_factory=transaction,
+                )
+            result = await run_worker_scheduled_domain_operation(
+                operation,
+                settings=domain_settings,
                 domain=SupervisionDomain.SETTLEMENT,
                 worker_id=domain_worker_id,
-                ttl_seconds=domain_claim_ttl_seconds,
-                capacities=domain_capacities,
             )
             return int(result or 0)
         except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
@@ -1162,15 +1156,16 @@ async def run_executor_terminal_reconciler(
             cleanup_wake.clear()
             try:
                 async with asyncio.timeout(_RECONCILIATION_WORK_TIMEOUT_SECONDS):
-                    released = await run_current_domain_work(
-                        lambda: _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
+                    async def operation() -> int:
+                        return await _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
                             provider_factory=create_container_provider,
-                        ),
-                        transaction_factory=transaction,
+                        )
+
+                    released = await run_worker_scheduled_domain_operation(
+                        operation,
+                        settings=domain_settings,
                         domain=SupervisionDomain.CLEANUP,
                         worker_id=domain_worker_id,
-                        ttl_seconds=domain_claim_ttl_seconds,
-                        capacities=domain_capacities,
                     )
                 if released:
                     await asyncio.sleep(0)
@@ -1186,13 +1181,15 @@ async def run_executor_terminal_reconciler(
         probe_kwargs = {"lease_port": lease_port}
         if run_diagnostics is not None:
             probe_kwargs["run_diagnostics"] = run_diagnostics
-        probed = await run_current_domain_work(
-            lambda: probe_suspect_executor_tasks_once(**probe_kwargs),
-            transaction_factory=transaction,
+
+        async def operation() -> int:
+            return await probe_suspect_executor_tasks_once(**probe_kwargs)
+
+        probed = await run_worker_scheduled_domain_operation(
+            operation,
+            settings=domain_settings,
             domain=SupervisionDomain.PROBE,
             worker_id=domain_worker_id,
-            ttl_seconds=domain_claim_ttl_seconds,
-            capacities=domain_capacities,
         )
         probed = int(probed or 0)
         if probed:

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 import uuid
 
-from app.execution.domain.supervision import SupervisionCandidate, SupervisionDomain
-
-
-OwnerMode = Literal["legacy", "unified"]
+from app.execution.domain.supervision import OwnerMode, SupervisionCandidate, SupervisionDomain
 
 
 def _candidate(row: dict[str, Any], domain: SupervisionDomain) -> SupervisionCandidate:
@@ -19,7 +16,7 @@ def _candidate(row: dict[str, Any], domain: SupervisionDomain) -> SupervisionCan
         candidate_id=str(row["candidate_id"]),
         action=str(row["action"]),
         deadline_at=row["deadline_at"],
-        priority=int(row.get("priority") or 100),
+        priority=int(100 if row.get("priority") is None else row["priority"]),
         facts=tuple(sorted((str(key), str(value)) for key, value in facts.items())),
     )
 
@@ -99,12 +96,17 @@ async def observe_persisted_candidates(
         connection,
         domain=SupervisionDomain.PROBE,
         limit=batch_limits[SupervisionDomain.PROBE],
-        parameters=(probe_stale_seconds, probe_stale_seconds, now),
+        parameters=(probe_stale_seconds, probe_stale_seconds, now, probe_stale_seconds, now),
         query="""
           with due as (
-            select 'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
+            select (case when runs.cancel_requested_at is not null then '0.' else '1.' end) ||
+                   'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
                    lease.id as candidate_id, 'probe_executor'::text as action,
-                   coalesce(lease.executor_heartbeat_at, lease.created_at) +
+                   (case when lease.executor_reconciliation_status = 'claimed'
+                     then coalesce(lease.executor_reconciliation_claimed_at,
+                                   lease.updated_at, lease.created_at)
+                     else coalesce(lease.executor_heartbeat_at,
+                                   lease.updated_at, lease.created_at) end) +
                      (%s * interval '1 second') as deadline_at,
                    case when runs.cancel_requested_at is not null then 0 else 100 end as priority,
                    jsonb_build_object('cancel_requested', runs.cancel_requested_at is not null,
@@ -112,10 +114,18 @@ async def observe_persisted_candidates(
             from sandbox_leases lease
             join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
             where lease.status = 'active'
-              and lease.executor_status in ('accepted', 'running')
               and lease.executor_terminal_json is null
-              and coalesce(lease.executor_heartbeat_at, lease.created_at) +
-                    (%s * interval '1 second') <= %s
+              and lease.executor_reconciliation_context_json is not null
+              and (
+                (lease.executor_reconciliation_status = 'waiting_terminal'
+                 and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) +
+                     (%s * interval '1 second') <= %s)
+                or
+                (lease.executor_reconciliation_status = 'claimed'
+                 and coalesce(lease.executor_reconciliation_claimed_at,
+                              lease.updated_at, lease.created_at) +
+                     (%s * interval '1 second') <= %s)
+              )
           )
           select * from due
           order by (scan_key > coalesce(%s, '')) desc, scan_key
@@ -226,7 +236,7 @@ async def claim_domain_work(
         return None
     if owner_mode == "unified":
         cursor = await connection.execute(
-            "select count(*) as inflight_count from execution_supervision_claims where domain = %s",
+            "select count(*) as inflight_count from execution_supervision_claims where domain = %s and recovered_at is null",
             (domain.value,),
         )
         claim_count = await cursor.fetchone()
@@ -255,6 +265,7 @@ async def claim_is_current(connection: Any, claim: dict[str, Any]) -> bool:
                and claim.worker_id = %s and claim.owner_version = %s
                and claim.owner_mode = domain.mode
                and claim.owner_version = domain.owner_version
+               and claim.recovered_at is null
                and claim.expires_at > clock_timestamp()
            ) as current""",
         (claim["domain"], claim["claim_token"], claim["worker_id"], claim["owner_version"]),
@@ -265,10 +276,59 @@ async def claim_is_current(connection: Any, claim: dict[str, Any]) -> bool:
 
 async def release_domain_work(connection: Any, claim: dict[str, Any]) -> bool:
     cursor = await connection.execute(
-        "delete from execution_supervision_claims where domain = %s and claim_token = %s and worker_id = %s returning claim_token",
+        "delete from execution_supervision_claims where domain = %s and claim_token = %s and worker_id = %s and recovered_at is null returning claim_token",
         (claim["domain"], claim["claim_token"], claim["worker_id"]),
     )
     return await cursor.fetchone() is not None
+
+
+async def recover_expired_domain_claim(
+    connection: Any,
+    *,
+    domain: SupervisionDomain,
+    expected_domain_version: int,
+    expected_claim_owner_version: int,
+    claim_token: uuid.UUID | str,
+    worker_id: str,
+    operator_id: str,
+    stop_evidence: str,
+) -> dict[str, Any] | None:
+    """Fence and record operator recovery after the exact owner is confirmed stopped."""
+    if (
+        expected_domain_version < 1
+        or expected_claim_owner_version < 1
+        or not worker_id.strip()
+        or not operator_id.strip()
+        or not stop_evidence.strip()
+        or len(stop_evidence) > 2048
+    ):
+        raise ValueError("execution_supervision_recovery_evidence_required")
+    try:
+        token = uuid.UUID(str(claim_token))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("execution_supervision_claim_token_invalid") from exc
+    cursor = await connection.execute(
+        """update execution_supervision_claims as claim
+           set recovered_at = clock_timestamp(), recovered_by = %s,
+               recovery_evidence = %s
+           from execution_supervision_domains as control
+           where claim.domain = %s and claim.claim_token = %s
+             and claim.worker_id = %s
+             and claim.owner_version = %s
+             and claim.recovered_at is null
+             and claim.expires_at <= clock_timestamp()
+             and control.domain = claim.domain
+             and control.owner_version = %s
+           returning claim.domain, claim.claim_token, claim.owner_mode,
+                     claim.worker_id, claim.owner_version, claim.recovered_at,
+                     claim.recovered_by, claim.recovery_evidence""",
+        (
+            operator_id.strip(), stop_evidence.strip(), domain.value, token,
+            worker_id, expected_claim_owner_version, expected_domain_version,
+        ),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
 
 
 async def request_domain_drain(
@@ -299,7 +359,7 @@ async def activate_unified_domain(
                drain_started_at = null, updated_at = clock_timestamp()
            where control.domain = %s and control.mode = 'draining' and control.owner_version = %s
              and not exists (select 1 from execution_supervision_claims claim
-               where claim.domain = control.domain)
+               where claim.domain = control.domain and claim.recovered_at is null)
            returning owner_version""",
         (domain.value, expected_version),
     )
@@ -316,7 +376,7 @@ async def return_domain_to_legacy(
                drain_started_at = null, updated_at = clock_timestamp()
            where control.domain = %s and control.mode = 'draining' and control.owner_version = %s
              and not exists (select 1 from execution_supervision_claims claim
-               where claim.domain = control.domain)
+               where claim.domain = control.domain and claim.recovered_at is null)
            returning owner_version""",
         (domain.value, expected_version),
     )

@@ -347,6 +347,25 @@ work. Final hydration converges even when Redis publication fails. Test doubles 
 application ports and are injected by tests; they are not production registries
 or global monkeypatch requirements.
 
+Execution supervision is composed through `bootstrap.execution_supervision`,
+which injects the PostgreSQL store and transaction boundary into the
+application-level domain scheduler. Existing delivery, probe, settlement and
+Sandbox cleanup action owners remain the only executors. Their existing loops
+keep independent scan limits, polling cadence, I/O budget and domain capacity.
+The persisted domain mode selects which owner may claim: `legacy` admits only
+the legacy path, `unified` invokes the same action owner through a unified claim,
+and `draining` admits neither path. A mode/version change fences new claims
+across replicas. An active action keeps its claim until its operation completes;
+cancellation waits for that completion before releasing the slot.
+
+Supervision and shadow observation default to disabled. Enabling the feature does
+not change domain ownership by itself; the operator must request drain and
+activate each domain separately. An expired claim is not proof that its process
+or remote I/O stopped. Claim recovery requires a human operator to supply the
+exact domain and owner versions, claim token, worker identity, operator identity
+and stop evidence; the application records that evidence but does not verify it.
+The claim TTL is not an external exactly-once guarantee.
+
 ### Forbidden dependency mechanisms
 
 The Runs lifecycle MUST NOT use:

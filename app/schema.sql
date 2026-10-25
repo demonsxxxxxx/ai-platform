@@ -972,14 +972,38 @@ create table if not exists execution_supervision_claims (
   owner_version bigint not null,
   expires_at timestamptz not null,
   started_at timestamptz not null default clock_timestamp(),
+  recovered_at timestamptz,
+  recovered_by text,
+  recovery_evidence text,
   constraint execution_supervision_claims_pkey primary key (claim_token),
   constraint chk_execution_supervision_claim_mode check (
     owner_mode in ('legacy', 'unified')
   ),
   constraint chk_execution_supervision_claim_identity check (
     worker_id <> '' and owner_version > 0 and expires_at > started_at
+  ),
+  constraint chk_execution_supervision_claim_recovery check (
+    (recovered_at is null and recovered_by is null and recovery_evidence is null)
+    or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
   )
 );
+alter table execution_supervision_claims add column if not exists recovered_at timestamptz;
+alter table execution_supervision_claims add column if not exists recovered_by text;
+alter table execution_supervision_claims add column if not exists recovery_evidence text;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_execution_supervision_claim_recovery'
+      and conrelid = 'execution_supervision_claims'::regclass
+  ) then
+    alter table execution_supervision_claims
+      add constraint chk_execution_supervision_claim_recovery check (
+        (recovered_at is null and recovered_by is null and recovery_evidence is null)
+        or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
+      );
+  end if;
+end $$;
 create index if not exists idx_execution_supervision_claims_domain
   on execution_supervision_claims(domain, expires_at, claim_token);
 

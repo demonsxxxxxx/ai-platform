@@ -55,7 +55,8 @@ RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
 SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION = "2026.10.25.3"
 RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION = "2026.10.25.4"
 EXECUTION_SUPERVISION_SCHEMA_VERSION = "2026.10.25.5"
-TARGET_SCHEMA_VERSION = EXECUTION_SUPERVISION_SCHEMA_VERSION
+EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION = "2026.10.25.6"
+TARGET_SCHEMA_VERSION = EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -240,6 +241,9 @@ CRITICAL_COLUMNS = (
     ("execution_supervision_claims", "owner_version", "int8", True),
     ("execution_supervision_claims", "expires_at", "timestamptz", True),
     ("execution_supervision_claims", "started_at", "timestamptz", True),
+    ("execution_supervision_claims", "recovered_at", "timestamptz", False),
+    ("execution_supervision_claims", "recovered_by", "text", False),
+    ("execution_supervision_claims", "recovery_evidence", "text", False),
     ("run_input_sessions", "tenant_id", "text", True),
     ("run_input_sessions", "run_id", "text", True),
     ("run_input_sessions", "attempt_id", "text", True),
@@ -491,6 +495,7 @@ CRITICAL_CONSTRAINTS = (
     ("execution_supervision_domains", "execution_supervision_domains_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_domain_fkey"),
+    ("execution_supervision_claims", "chk_execution_supervision_claim_recovery"),
     ("run_input_sessions", "run_input_sessions_pkey"),
     ("run_input_sessions", "fk_run_input_sessions_run"),
     ("run_input_sessions", "chk_run_input_sessions_identity"),

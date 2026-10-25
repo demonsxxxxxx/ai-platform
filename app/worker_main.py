@@ -55,8 +55,8 @@ from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.bootstrap.executor_reconciliation import run_executor_terminal_reconciler
 from app.bootstrap.execution_supervision import (
+    bind_worker_supervision_operation,
     observe_worker_supervision_candidates,
-    run_worker_domain_operation,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.storage import ObjectStorage, run_storage_io
@@ -639,24 +639,6 @@ def _worker_recovery_phases(
     return phases
 
 
-def _supervision_domain_operation(
-    operation: Callable[[], Any],
-    *,
-    domain: SupervisionDomain,
-    worker_id: str,
-    settings: object,
-) -> Callable[[], Any]:
-    async def run_claimed() -> Any:
-        return await run_worker_domain_operation(
-            operation,
-            settings=settings,
-            domain=domain,
-            worker_id=worker_id,
-        )
-
-    return run_claimed
-
-
 async def _observe_supervision_candidates(settings: object) -> int:
     candidates = await observe_worker_supervision_candidates(settings)
     if candidates:
@@ -723,20 +705,21 @@ async def _maintenance_until_done(
     ):
         operations["run_delivery_intents"] = run_delivery_intents.scan_once
     if "sandbox_cleanup" in operations:
-        operations["sandbox_cleanup"] = _supervision_domain_operation(
+        operations["sandbox_cleanup"] = bind_worker_supervision_operation(
             operations["sandbox_cleanup"],
             domain=SupervisionDomain.CLEANUP,
             worker_id=resolved_worker_id,
             settings=settings,
         )
     if "run_delivery_intents" in operations:
-        operations["run_delivery_intents"] = _supervision_domain_operation(
+        operations["run_delivery_intents"] = bind_worker_supervision_operation(
             operations["run_delivery_intents"],
             domain=SupervisionDomain.DELIVERY,
             worker_id=resolved_worker_id,
             settings=settings,
         )
-    operations["supervision_shadow"] = lambda: _observe_supervision_candidates(settings)
+    if bool(getattr(settings, "execution_supervision_shadow_enabled", False)):
+        operations["supervision_shadow"] = lambda: _observe_supervision_candidates(settings)
     phase_tasks = [
         asyncio.create_task(
             maintenance_phase_until_done(

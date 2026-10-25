@@ -416,10 +416,10 @@ async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(at
     connect, original_generation, first, second, status = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
     assert first["status"] == "applied"
-    assert first["version"] == "2026.10.25.5"
+    assert first["version"] == "2026.10.25.6"
     assert second["status"] == "current"
     assert status["ready"] is True
-    assert status["target_version"] == "2026.10.25.5"
+    assert status["target_version"] == "2026.10.25.6"
 
     async with connect() as conn, conn.transaction():
         await conn.execute(

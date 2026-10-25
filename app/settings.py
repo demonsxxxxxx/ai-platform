@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     supervision_probe_capacity: int = Field(default=1, ge=1, le=100)
     supervision_settlement_capacity: int = Field(default=2, ge=1, le=100)
     supervision_cleanup_capacity: int = Field(default=1, ge=1, le=100)
+    execution_supervision_enabled: bool = Field(default=False)
+    execution_supervision_shadow_enabled: bool = Field(default=False)
     # One switch controls both transactional intent writers and the Worker
     # recovery scanner so they cannot be enabled independently.
     run_delivery_intents_enabled: bool = Field(default=False)
