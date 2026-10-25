@@ -78,22 +78,25 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
 
 
 @pytest.mark.parametrize(
-    ("model_max_input_tokens", "expected"),
+    ("model_auto_compact_window", "expected"),
     [
         (None, None),
-        (32_000, 100_000),
-        (95_000, 100_000),
         (100_000, 100_000),
         (125_000, 125_000),
         (200_000, 200_000),
         (1_000_000, 1_000_000),
-        (2_000_000, 1_000_000),
     ],
 )
-def test_sdk_autocompact_window_clamps_model_input_capacity_to_cli_bounds(
-    model_max_input_tokens, expected
+def test_sdk_autocompact_window_passes_the_admitted_window_through(
+    model_auto_compact_window, expected
 ):
-    assert _sdk_autocompact_window(model_max_input_tokens) == expected
+    assert _sdk_autocompact_window(model_auto_compact_window) == expected
+
+
+@pytest.mark.parametrize("invalid", [32_000, 99_999, 1_000_001, "200000", True])
+def test_sdk_autocompact_window_rejects_values_outside_cli_bounds(invalid):
+    with pytest.raises(ValueError, match="model_auto_compact_window_invalid"):
+        _sdk_autocompact_window(invalid)
 
 
 def test_context_limit_error_outranks_prior_tool_denial():
@@ -2818,7 +2821,7 @@ async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(
 @pytest.mark.parametrize(
     "execution_policy", ["worker_local_legacy", "sandbox_brokered"]
 )
-async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering_user_stream(
+async def test_sdk_current_profile_uses_file_task_system_without_entering_user_stream(
     monkeypatch,
     tmp_path,
     execution_policy,
@@ -2840,11 +2843,19 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
         tool_policy_subjects=[_subject()],
     )
 
+    from app.executors.claude.prompts import FILE_TASK_SYSTEM_PROMPT
+
     assert captured["system_prompt"] == {
-        "type": "preset",
-        "preset": "claude_code",
-        "append": "Private profile instruction",
+        "type": "custom",
+        "prompt": FILE_TASK_SYSTEM_PROMPT + "\n\nPrivate profile instruction",
+        "snapshot": False,
     }
+    assert json.loads(captured["settings"]) == {
+        "autoMemoryEnabled": False,
+        "includeGitInstructions": False,
+        "attribution": {"commit": "", "pr": ""},
+    }
+    assert captured["setting_sources"] == ["project"]
     sdk_prompt = _captured_sdk_prompt(captured)
     assert sdk_prompt.startswith("User supplied question")
     assert "Private profile instruction" not in sdk_prompt
@@ -6635,7 +6646,7 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
         session_id="stable-provider-id",
         session_store=Store(),
         provider_session_resume_required=resume_required,
-        model_max_input_tokens=100_000,
+        model_auto_compact_window=100_000,
         model_max_output_tokens=36_500,
         client_fn=Client,
     )
@@ -7154,8 +7165,11 @@ async def test_sdk_preload_cause_reaches_private_persistence(monkeypatch, tmp_pa
     assert [item["type"] for item in chain] == ["ClaudeSessionStoreTransportError", "TimeoutError"]
     assert chain[0]["relation"] == "cause"
     assert "synthetic transport cause" in chain[1]["message"]
-    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
+    for secret in ("synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(private)
+    # Admin evidence keeps the failing host; the public projection never carries it.
+    assert "https://callback.invalid/path" in json.dumps(private)
+    assert "callback.invalid" not in json.dumps(public)
     assert reason not in json.dumps(public)
     assert "synthetic transport cause" not in json.dumps(public)
 
@@ -7254,8 +7268,11 @@ async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkey
         assert private["sdk"]["errors"]["size_bytes"] > 20000
     else:
         assert private["sdk"]["errors"].startswith("final flush rejected")
-    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+    for secret in ("synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(private)
+    if not oversized:
+        assert "https://callback.invalid/path" in json.dumps(private)
+    assert "callback.invalid" not in json.dumps(public)
     assert "final flush rejected" not in json.dumps(public)
 
 
@@ -7288,3 +7305,36 @@ async def test_sdk_response_registration_keeps_private_cause_only_when_required(
     assert "synthetic decorator cause" in json.dumps(private)
     assert "synthetic-secret" not in json.dumps(private)
     assert "synthetic response registration failed" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+async def test_actual_model_usage_reports_each_result_before_final_and_keeps_private_scope(monkeypatch, tmp_path):
+    sdk = _fake_sdk({}, hook_invocations=[])
+    original_query = sdk.query
+    observed = []
+
+    async def query(**kwargs):
+        async for message in original_query(**kwargs):
+            if isinstance(message, sdk.ResultMessage):
+                message.model_usage = {"actual-model": {
+                    "inputTokens": 1, "cacheReadInputTokens": 2,
+                    "cacheCreationInputTokens": 3, "outputTokens": 4,
+                }}
+            yield message
+
+    sdk.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    async def snapshot(value):
+        observed.append(value)
+        return True
+
+    result = await run_claude_agent_sdk(prompt="start",cwd=tmp_path,skill_id=None,
+        run_id="run-a",attempt_id="attempt-a",on_model_usage_snapshot=snapshot)
+    assert observed[0]["coverage"] == "unavailable"
+    assert observed[-1]["models"]["actual-model"]["input_tokens"] == 1
+    assert observed[-1]["coverage"] == "partial"
+    assert result.model_usage_snapshot["coverage"] == "reported_final"
+    assert result.model_usage_snapshot["scope_id"] == observed[-1]["scope_id"]
+    assert result.model_usage_snapshot["observation_seq"] > observed[-1]["observation_seq"]

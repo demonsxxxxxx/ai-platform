@@ -12,6 +12,10 @@ from typing import Any
 
 EXECUTION_SPEC_SCHEMA_VERSION_V1 = "ai-platform.execution-spec.v1"
 EXECUTION_SPEC_SCHEMA_VERSION_V2 = "ai-platform.execution-spec.v2"
+# v3 replaces the former max-input capacity with the engine-owned compaction
+# window. v2 stays a frozen decoder: admitted attempts keep their exact
+# canonical bytes, digest, and recovery semantics.
+EXECUTION_SPEC_SCHEMA_VERSION_V3 = "ai-platform.execution-spec.v3"
 # Keep the legacy public constant for historical readers; dispatch selects v2 explicitly.
 EXECUTION_SPEC_SCHEMA_VERSION = EXECUTION_SPEC_SCHEMA_VERSION_V1
 _RUN_PAYLOAD_SCHEMA_VERSION_V1 = "ai-platform.run-payload.v1"
@@ -113,6 +117,19 @@ _EXECUTION_SPEC_FIELDS_V2 = _EXECUTION_SPEC_FIELDS_V1 | frozenset(
         "model_gateway_revision",
         "model_max_input_tokens",
         "model_max_output_tokens",
+    }
+)
+_EXECUTION_SPEC_FIELDS_V3 = (_EXECUTION_SPEC_FIELDS_V1 - {"model_max_input_tokens"}) | frozenset(
+    {
+        "model_gateway_revision",
+        "model_auto_compact_window",
+        "model_max_output_tokens",
+    }
+)
+_MODEL_SPEC_SCHEMA_VERSIONS = frozenset(
+    {
+        EXECUTION_SPEC_SCHEMA_VERSION_V2,
+        EXECUTION_SPEC_SCHEMA_VERSION_V3,
     }
 )
 
@@ -295,12 +312,23 @@ def _required_positive_int(payload: Mapping[str, Any], field_name: str) -> int:
     return value
 
 
+def _validated_auto_compact_window(payload: Mapping[str, Any], field_name: str) -> int:
+    """Validate the frozen v3 wire range independently of live model policy."""
+
+    value = _required_positive_int(payload, field_name)
+    if not 100_000 <= value <= 1_000_000:
+        raise ExecutionSpecError(f"execution_spec_{field_name}_invalid")
+    return value
+
+
 def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
     schema_version = payload.get("schema_version")
     if schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V1:
         expected_fields = _EXECUTION_SPEC_FIELDS_V1
     elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V2:
         expected_fields = _EXECUTION_SPEC_FIELDS_V2
+    elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V3:
+        expected_fields = _EXECUTION_SPEC_FIELDS_V3
     else:
         raise ExecutionSpecError("execution_spec_schema_version_invalid")
     if set(payload) != expected_fields:
@@ -384,6 +412,16 @@ def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
         normalized["model_max_input_tokens"] = _required_positive_int(
             payload, "model_max_input_tokens"
+        )
+        normalized["model_max_output_tokens"] = _required_positive_int(
+            payload, "model_max_output_tokens"
+        )
+    elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V3:
+        normalized["model_gateway_revision"] = _required_positive_int(
+            payload, "model_gateway_revision"
+        )
+        normalized["model_auto_compact_window"] = _validated_auto_compact_window(
+            payload, "model_auto_compact_window"
         )
         normalized["model_max_output_tokens"] = _required_positive_int(
             payload, "model_max_output_tokens"

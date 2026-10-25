@@ -114,7 +114,7 @@ export function RecentChatsDialog({
                 </div>
               </div>
               {session.unread_count != null && session.unread_count > 0 && (
-                <span className="shrink-0 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+                <span className="shrink-0 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
                   {session.unread_count}
                 </span>
               )}

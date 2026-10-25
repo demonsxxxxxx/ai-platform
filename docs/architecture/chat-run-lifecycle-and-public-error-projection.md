@@ -21,11 +21,11 @@ and message projection semantics.
 ## Session navigation and local unread presentation
 
 History restoration starts with the existing scoped Session projections. It
-must not wait for a read-mark request: the legacy `/sessions/{session_id}/mark-read`
-endpoint only acknowledges a request and never persists unread state. The current
-frontend removes that API method and all navigation, send, terminal and task-
-notification calls. Request-generation, authentication, Session/Run ownership,
-and stale-navigation fences still guard every asynchronous history result.
+must not wait for a read-mark request. The former `/sessions/{session_id}/mark-read`
+endpoint only acknowledged a request and never persisted unread state; it and its
+frontend calls are removed, and unread presentation stays browser-local.
+Request-generation, authentication, Session/Run ownership, and stale-navigation
+fences still guard every asynchronous history result.
 
 Sidebar unread presentation and the active-session task-notification callback
 remain local UI state. Removing the empty HTTP request must not clear another
@@ -613,6 +613,26 @@ retroactively. Operator logs remain separate from the admin Run diagnostic API.
 
 ## Private diagnostics and reconciliation
 
+### Credential-only redaction (`run-diagnostics-redaction.v2`)
+
+Runs domain diagnostics own the redaction of private, platform-admin Run
+evidence. Policy v2 masks credential values only: values of credential-named
+fields (`api_key`, `password`, `client_secret`, `authorization`, `cookie`,
+`*_token`, `private_key` and similar) become `[redacted-secret]` while the
+field name stays visible; quoted or unquoted secret assignments, Bearer values,
+JWTs, provider tokens, URL user-info and credential query parameters (including
+pre-signed signatures) are masked in text. Counters such as `input_tokens`,
+request identifiers, statuses, hosts, full paths, commands, prompts and tool
+`tool_input`/`failure` are retained as debugging evidence within the existing
+size and Run budgets.
+
+Policy v1 dropped whole fields whose names contained words such as `token`,
+`input`, `path`, `request` or `content`, replaced URL hosts and reduced paths to
+file names, while JSON-quoted credential keys were not masked. Rows already
+stored under v1 keep that loss; reads apply v2 to whatever was retained. These
+diagnostics stay administrator-private: ordinary-user projections are derived
+only from fixed public detail codes and never from this evidence.
+
 ### Administrator trajectory replay
 
 `ai-platform.admin-run-trajectory.v1` is an additive, read-only administrator
@@ -772,8 +792,9 @@ stay in the private administrator response, never the ordinary-user event.
 Different tool names sharing one invocation ID are ambiguous and receive no
 new correlation key. The Run Monitor indexes explicit public and legacy native
 aliases, excludes blank keys and conflicting tool identities, and performs no
-hash reconstruction. This repair neither restores raw tool input/failure text
-nor changes authorization, failure classification or retry behavior.
+hash reconstruction. This repair did not change tool input/failure retention,
+authorization, failure classification or retry behavior; redaction policy v2
+later retained credential-masked tool input and failure evidence.
 
 ## Workspace collection after an executor failure
 

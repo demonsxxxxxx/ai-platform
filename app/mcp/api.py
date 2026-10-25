@@ -45,6 +45,12 @@ from app.mcp.domain.tool_references import (
     mcp_runtime_metadata_usable,
     parse_mcp_tool_reference,
 )
+from app.mcp.domain.tool_policy import (
+    BUILTIN_TOOL_IDENTITIES as BUILTIN_TOOL_IDENTITIES,
+    BUILTIN_TOOL_PARAMETER_CONTRACTS as BUILTIN_TOOL_PARAMETER_CONTRACTS,
+    RISK_ORDER as RISK_ORDER,
+    evaluate_tool_policy as evaluate_tool_policy,
+)
 
 
 _LIVE_CATALOG_PROXY = LiveMcpCatalogProxy()
@@ -176,6 +182,10 @@ async def toggle_mcp_server_distribution(conn: Any, **kwargs: Any) -> dict[str, 
 
 
 __all__ = [
+    "BUILTIN_TOOL_IDENTITIES",
+    "BUILTIN_TOOL_PARAMETER_CONTRACTS",
+    "RISK_ORDER",
+    "evaluate_tool_policy",
     "LiveMcpServerResult",
     "McpCatalogFailure",
     "LiveMcpTool",

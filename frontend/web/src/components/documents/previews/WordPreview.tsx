@@ -145,7 +145,7 @@ const wordContentStyles = `
     background: rgba(31, 41, 55, 0.5);
   }
   .word-preview-content tr:hover td {
-    background: #f5f5f4;
+    background: #f5f5f5;
   }
   .dark .word-preview-content tr:hover td {
     background: rgba(120, 113, 108, 0.08);
@@ -400,21 +400,21 @@ const WordPreview = memo(function WordPreview({
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[300px] p-4 sm:p-6">
         <div className="max-w-sm sm:max-w-md w-full">
-          <div className="flex items-start gap-3 p-3 sm:p-4 mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+          <div className="flex items-start gap-3 p-3 sm:p-4 mb-4 rounded-lg bg-[var(--theme-danger-soft)] border border-[var(--theme-danger-ring)]">
             <AlertCircle
               size={24}
-              className="text-red-500 flex-shrink-0 mt-0.5"
+              className="text-[var(--theme-danger-text)] flex-shrink-0 mt-0.5"
             />
             <div className="min-w-0">
-              <p className="text-sm font-medium text-red-600 dark:text-red-400">
+              <p className="text-sm font-medium text-[var(--theme-danger-text)]">
                 {t("documents.wordPreviewError")}
               </p>
-              <p className="text-xs text-red-500 dark:text-red-400/80 mt-1 break-words">
+              <p className="text-xs text-[var(--theme-danger-text)] mt-1 break-words">
                 {error}
               </p>
             </div>
           </div>
-          <div className="flex items-center justify-center gap-2 text-stone-400 dark:text-stone-500">
+          <div className="flex items-center justify-center gap-2 text-neutral-400 dark:text-neutral-500">
             <FileText size={16} />
             <span className="text-xs">
               {t("documents.supportedFormats") || "Word documents (.docx)"}
@@ -446,8 +446,8 @@ const WordPreview = memo(function WordPreview({
   }
 
   return (
-    <div className="h-full overflow-auto bg-stone-200 px-3 py-4 dark:bg-stone-950 sm:px-5 sm:py-5">
-      <div className="mx-auto min-h-full max-w-3xl rounded-sm border border-stone-300/60 bg-white px-4 py-6 shadow-lg dark:border-stone-700/60 dark:bg-stone-900 sm:px-8 sm:py-10">
+    <div className="h-full overflow-auto bg-neutral-200 px-3 py-4 dark:bg-neutral-950 sm:px-5 sm:py-5">
+      <div className="mx-auto min-h-full max-w-3xl rounded-sm border border-neutral-300/60 bg-white px-4 py-6 shadow-lg dark:border-neutral-700/60 dark:bg-neutral-900 sm:px-8 sm:py-10">
         {processedHtml && (
           <div
             className={`word-preview-content ${isDark ? "dark" : ""}`}

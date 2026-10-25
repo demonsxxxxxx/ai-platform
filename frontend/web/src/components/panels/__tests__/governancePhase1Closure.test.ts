@@ -22,13 +22,13 @@ test("retired chat feedback and unowned browser smokes are absent", () => {
   const useAgent = read("src/hooks/useAgent.ts");
   const message = read("src/types/message.ts");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
-  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const skillTable = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   assert.doesNotMatch(useAgent, /feedbackApi|feedbackList|feedbackPromise/);
   assert.doesNotMatch(message, /feedbackId|feedback\?:/);
-  assert.doesNotMatch(`${skillsList}\n${skillCard}`, /marketplace\.(?:clearFilters|files)/);
+  assert.doesNotMatch(`${skillsList}\n${skillTable}`, /marketplace\.(?:clearFilters|files)/);
   assert.match(skillsList, /fileLibrary\.clearFilters/);
-  assert.match(skillCard, /fileLibrary\.files/);
+  assert.match(skillTable, /skills\.managementTable/);
   assert.equal(zh.feedback, undefined);
   assert.deepEqual(Object.keys(zh.adminMarketplace).sort(), [
     "tags",
@@ -185,7 +185,7 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   const toolsHook = read("src/hooks/useTools.ts");
   const skillsHook = read("src/hooks/useSkills.ts");
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
-  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const skillTable = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
 
   for (const apiName of [
     "getServer",
@@ -266,19 +266,19 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   assert.match(skillsList, /canEditSkills/);
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /const uploadAction = canImportSkills/);
-  assert.match(skillCard, /hasWriteActions/);
-  assert.match(skillCard, /canEdit/);
+  assert.match(skillTable, /hasActions/);
+  assert.match(skillTable, /rowCanEdit/);
   assert.doesNotMatch(
     skillsList,
     /disabled=\{governedUnavailable \|\| !canWrite\}/,
   );
-  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
-  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+  assert.doesNotMatch(skillTable, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillTable, /disabled=\{!canDelete\}/);
 });
 
 test("read-only skills catalog removes write controls instead of showing disabled placeholders", () => {
   const skillsList = read("src/components/panels/SkillsPanel/SkillsList.tsx");
-  const skillCard = read("src/components/skill/SkillCard.tsx");
+  const skillTable = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
   const batchActionBar = read(
     "src/components/panels/SkillsPanel/BatchActionBar.tsx",
   );
@@ -295,15 +295,18 @@ test("read-only skills catalog removes write controls instead of showing disable
     /disabled=\{governedUnavailable \|\| !canWrite\}/,
   );
 
-  assert.match(skillCard, /hasWriteActions/);
-  assert.match(skillCard, /footer=\{\s*hasWriteActions/);
-  assert.match(skillCard, /\{canWrite && \(/);
-  assert.match(skillCard, /\{canEdit && \(/);
-  assert.match(skillCard, /\{canDelete && \(/);
-  assert.doesNotMatch(skillCard, /onPublish|publishToMarketplace|republish/);
-  assert.doesNotMatch(skillCard, /disabled=\{!canWrite\}/);
-  assert.doesNotMatch(skillCard, /disabled=\{!canEdit\}/);
-  assert.doesNotMatch(skillCard, /disabled=\{!canDelete\}/);
+  assert.match(skillTable, /hasActions/);
+  assert.match(skillTable, /\{hasActions \? \(/);
+  for (const permission of ["Toggle", "Edit", "Export", "Publish", "Delete"]) {
+    assert.match(skillTable, new RegExp(`rowCan${permission} = can${permission} && canAct`));
+  }
+  assert.match(skillTable, /rowCanToggle \? \{ key: "toggle"/);
+  assert.match(skillTable, /rowCanEdit \? \{ key: "edit"/);
+  assert.match(skillTable, /rowCanDelete \? \{ key: "archive"/);
+  assert.doesNotMatch(skillTable, /onPublish|publishToMarketplace|republish/);
+  assert.doesNotMatch(skillTable, /disabled=\{!canWrite\}/);
+  assert.doesNotMatch(skillTable, /disabled=\{!canEdit\}/);
+  assert.doesNotMatch(skillTable, /disabled=\{!canDelete\}/);
 
   assert.match(batchActionBar, /canWrite: boolean/);
   assert.match(batchActionBar, /canDelete: boolean/);

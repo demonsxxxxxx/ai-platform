@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
+
+from app.runs.api import normalize_model_usage_snapshot
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -24,11 +26,8 @@ from app.mcp.api import assert_mcp_tool_reference
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.sandbox.api import AssistantAnswerReceipt
-from app.validation import (
-    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
-    assert_safe_id,
-    assert_safe_principal_user_id,
-)
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
 
 SandboxMode = Literal["ephemeral", "persistent"]
@@ -266,11 +265,16 @@ class ContextRetrievalScope(BaseModel):
 
 
 class ModelTokenLimits(BaseModel):
-    """Run-frozen model budget accepted by the sandbox transport."""
+    """Run-frozen model execution limits accepted by the sandbox transport.
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    `auto_compact_window` is the window handed to the engine's automatic
+    compaction. It is not a platform-enforced input ceiling; the engine decides
+    when to compact and may compact earlier than this window.
+    """
 
-    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    auto_compact_window: int = Field(ge=100_000, le=1_000_000)
     max_output_tokens: int = Field(gt=0, le=10_000_000)
 
 
@@ -776,6 +780,24 @@ def normalize_executor_terminal_status(
     return None
 
 
+class ModelUsageSnapshotPayload(BaseModel):
+    """Private callback wire DTO; Runs receives only normalized standard values."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scope_id: str
+    observation_seq: int
+    baseline: Literal["fresh", "restored", "unknown"]
+    models: dict[str, dict[str, int]]
+    coverage: Literal["reported_final", "partial", "unavailable"]
+    provider_session_id: str | None = None
+    baseline_models: dict[str, dict[str, int]] | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_usage(self):
+        normalize_model_usage_snapshot(self.model_dump())
+        return self
+
+
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -792,6 +814,8 @@ class ExecutorCallbackEvent(BaseModel):
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list, max_length=100)
     terminal_result: ExecutorTerminalResult | None = None
+    # Private platform-to-callback carrier; never projected to public events.
+    model_usage_snapshot: ModelUsageSnapshotPayload | None = None
 
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "ExecutorCallbackEvent":

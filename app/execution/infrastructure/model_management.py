@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -11,6 +12,7 @@ from app.execution.application.model_selection import RunModelSelection
 from app.execution.domain.model_catalog import (
     admin_model_projection,
     discovered_model_mapping,
+    model_visible_to_user,
     public_model_projection,
 )
 
@@ -26,7 +28,7 @@ class ActiveConnection:
     base_url: str
     api_key: str
     key_fingerprint: str
-    max_input_tokens: int | None = None
+    auto_compact_window: int | None = None
     max_output_tokens: int | None = None
     conversation_mode: str | None = None
     model_value: str | None = None
@@ -83,7 +85,7 @@ async def get_run_connection(
     cursor = await conn.execute(
         """
         select revision, base_url, api_key_ciphertext, key_fingerprint,
-               runs.max_input_tokens, runs.max_output_tokens,
+               runs.auto_compact_window, runs.max_output_tokens,
                run_attempts.execution_spec_json #>> '{context_pack,conversation_context,execution_mode}' as conversation_mode
         from runs
         join model_gateway_revisions
@@ -95,9 +97,18 @@ async def get_run_connection(
          and sandbox_leases.tenant_id = runs.tenant_id
         where runs.id = %s
           and run_attempts.id = %s
-          and run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and run_attempts.execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3'
+          )
           and run_attempts.execution_spec_json->>'model_value' = runs.model_value
-          and run_attempts.execution_spec_json->>'model_max_input_tokens' = runs.max_input_tokens::text
+          -- v3 froze the window itself; v2 froze an input capacity the runner
+          -- clamped into the CLI range to derive that same window.
+          and case run_attempts.execution_spec_schema_version
+                when 'ai-platform.execution-spec.v3'
+                  then run_attempts.execution_spec_json->>'model_auto_compact_window'
+                else (least(1000000, greatest(100000,
+                       (run_attempts.execution_spec_json->>'model_max_input_tokens')::bigint)))::text
+              end = runs.auto_compact_window::text
           and run_attempts.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
           and sandbox_leases.attempt_id = %s
           and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
@@ -133,7 +144,7 @@ async def get_run_model_completion_connection(
         """
         select runs.model_gateway_revision as revision, gateway.base_url,
                gateway.api_key_ciphertext, gateway.key_fingerprint,
-               runs.model_value, runs.max_input_tokens, runs.max_output_tokens
+               runs.model_value, runs.auto_compact_window, runs.max_output_tokens
         from runs
         join sessions on sessions.id = runs.session_id
           and sessions.tenant_id = runs.tenant_id
@@ -155,7 +166,7 @@ async def get_run_model_completion_connection(
           and runs.model_gateway_revision is not null
           and catalog.enabled = true
           and catalog.upstream_available = true
-          and runs.max_input_tokens is not null
+          and runs.auto_compact_window is not null
           and runs.max_output_tokens is not null
         limit 1
         """,
@@ -256,7 +267,8 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
         """
         select model_id, upstream_model_id, display_name, provider, enabled,
                upstream_available, is_default, display_order, last_seen_revision,
-               last_seen_at, max_input_tokens, max_output_tokens
+               last_seen_at, auto_compact_window, max_output_tokens,
+               access_mode, allowed_user_ids
         from model_catalog_entries
         order by display_order, model_id
         """
@@ -264,7 +276,9 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
     return [admin_model_projection(row) for row in await cursor.fetchall()]
 
 
-async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
+async def list_public_models(
+    conn: AsyncConnection, *, user_id: str
+) -> dict[str, Any] | None:
     configured = await conn.execute(
         "select 1 from model_gateway_revisions where active = true limit 1"
     )
@@ -273,12 +287,20 @@ async def list_public_models(conn: AsyncConnection) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id, display_name, provider, is_default,
-               max_input_tokens, max_output_tokens
+               auto_compact_window, max_output_tokens
         from model_catalog_entries
         where enabled = true and upstream_available = true
-          and max_input_tokens is not null and max_output_tokens is not null
+          and auto_compact_window is not null and max_output_tokens is not null
+          and (
+            access_mode = 'all'
+            or (
+              access_mode = 'selected'
+              and allowed_user_ids ? %s
+            )
+          )
         order by is_default desc, display_order, model_id
-        """
+        """,
+        (user_id,),
     )
     return public_model_projection(await cursor.fetchall())
 
@@ -306,15 +328,19 @@ async def publish_models(
             """
             update model_catalog_entries
             set display_name = %s, enabled = %s, is_default = %s,
-                display_order = %s, max_input_tokens = %s, max_output_tokens = %s
+                display_order = %s, auto_compact_window = %s, max_output_tokens = %s,
+                access_mode = %s, allowed_user_ids = %s::jsonb
             where model_id = %s and upstream_model_id = %s
               and upstream_available = true and last_seen_revision = %s
             returning model_id
             """,
             (
                 model["display_name"], model["enabled"], model["is_default"],
-                model["order"], model.get("max_input_tokens"),
-                model.get("max_output_tokens"), model["id"], model["value"], revision,
+                model["order"], model.get("auto_compact_window"),
+                model.get("max_output_tokens"),
+                model.get("access_mode") or "all",
+                json.dumps(model.get("allowed_user_ids") or []),
+                model["id"], model["value"], revision,
             ),
         )
         if await cursor.fetchone() is None:
@@ -322,11 +348,36 @@ async def publish_models(
     return revision, await list_admin_models(conn)
 
 
+async def model_access_excludes_user(
+    conn: AsyncConnection, *, model_id: str, user_id: str
+) -> bool:
+    """Return whether a *new* Run may not use this model for this user.
+
+    Fail closed when the catalog row is gone: a new child Run must not be
+    admitted against a model the catalog no longer exposes. Existing Runs and
+    Attempts never call this; they keep their frozen snapshot.
+    """
+
+    cursor = await conn.execute(
+        """
+        select access_mode, allowed_user_ids
+        from model_catalog_entries
+        where model_id = %s
+        """,
+        (model_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return True
+    return not model_visible_to_user(row, user_id=user_id)
+
+
 async def resolve_run_model(
     conn: AsyncConnection,
     *,
     model_id: str | None,
     model_value: str | None,
+    user_id: str,
 ) -> RunModelSelection | None:
     await conn.execute("select pg_advisory_xact_lock_shared(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
@@ -341,13 +392,17 @@ async def resolve_run_model(
         select active_gateway.revision as connection_revision,
                catalog.model_id,
                catalog.upstream_model_id,
-               catalog.max_input_tokens,
+               catalog.auto_compact_window,
                catalog.max_output_tokens
         from active_gateway
         left join model_catalog_entries catalog
           on catalog.enabled = true
          and catalog.upstream_available = true
          and catalog.last_seen_revision = active_gateway.revision
+         and (
+           catalog.access_mode = 'all'
+           or (catalog.access_mode = 'selected' and catalog.allowed_user_ids ? %s)
+         )
          and (%s::text is null or catalog.model_id = %s)
          and (%s::text is null or catalog.upstream_model_id = %s)
         order by catalog.is_default desc nulls last,
@@ -355,22 +410,22 @@ async def resolve_run_model(
                  catalog.model_id asc nulls last
         limit 1
         """,
-        (model_id, model_id, model_value, model_value),
+        (user_id, model_id, model_id, model_value, model_value),
     )
     row = await cursor.fetchone()
     if row is None:
         return None
     if row.get("model_id") is None or row.get("upstream_model_id") is None:
         raise ValueError("model_id_not_available")
-    if row.get("max_input_tokens") is None or row.get("max_output_tokens") is None:
+    if row.get("auto_compact_window") is None or row.get("max_output_tokens") is None:
         raise ValueError("model_capacity_missing")
     return RunModelSelection(
         model_id=str(row["model_id"]),
         model_value=str(row["upstream_model_id"]),
         connection_revision=int(row["connection_revision"]),
-        max_input_tokens=(
-            int(row["max_input_tokens"])
-            if row.get("max_input_tokens") is not None
+        auto_compact_window=(
+            int(row["auto_compact_window"])
+            if row.get("auto_compact_window") is not None
             else None
         ),
         max_output_tokens=(
@@ -399,11 +454,33 @@ class PostgresModelManagementRepository:
     async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
         return await list_admin_models(conn)
 
-    async def public_models(self, conn: AsyncConnection) -> dict[str, Any] | None:
-        return await list_public_models(conn)
+    async def public_models(
+        self, conn: AsyncConnection, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        return await list_public_models(conn, **kwargs)
 
     async def activate_and_sync(self, conn: AsyncConnection, **kwargs: Any) -> Any:
         return await activate_connection_and_sync(conn, **kwargs)
+
+    async def catalog_access(self, conn: AsyncConnection) -> dict[str, dict[str, Any]]:
+        """Return saved display name and access per model for update inheritance."""
+
+        cursor = await conn.execute(
+            """
+            select model_id, display_name, access_mode, allowed_user_ids
+            from model_catalog_entries
+            """
+        )
+        return {
+            str(row["model_id"]): {
+                "display_name": str(row["display_name"]),
+                "access_mode": str(row.get("access_mode") or "all"),
+                "allowed_user_ids": [
+                    str(item) for item in (row.get("allowed_user_ids") or [])
+                ],
+            }
+            for row in await cursor.fetchall()
+        }
 
     async def publish_models(self, conn: AsyncConnection, **kwargs: Any) -> Any:
         return await publish_models(conn, **kwargs)
@@ -414,6 +491,11 @@ class PostgresModelManagementRepository:
         **kwargs: Any,
     ) -> RunModelSelection | None:
         return await resolve_run_model(conn, **kwargs)
+
+    async def model_access_excludes_user(
+        self, conn: AsyncConnection, **kwargs: Any
+    ) -> bool:
+        return await model_access_excludes_user(conn, **kwargs)
 
 
 def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveConnection:
@@ -427,9 +509,9 @@ def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveC
             encoded_key=encryption_key,
         ),
         key_fingerprint=str(row["key_fingerprint"]),
-        max_input_tokens=(
-            int(row["max_input_tokens"])
-            if row.get("max_input_tokens") is not None
+        auto_compact_window=(
+            int(row["auto_compact_window"])
+            if row.get("auto_compact_window") is not None
             else None
         ),
         max_output_tokens=(

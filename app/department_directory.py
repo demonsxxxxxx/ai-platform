@@ -9,11 +9,9 @@ import httpx
 
 from app.identity.api import is_department_id
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
-from app.settings import get_settings
-from app.validation import assert_safe_department_authority_id
+from app.settings import get_settings, resolve_dingtalk_directory_base_url
+from app.identity.api import assert_safe_department_authority_id
 
-PURE_DEPARTMENT_DIRECTORY_URL = "http://10.56.0.25:5033/api/DingTalk/departs/pure"
-PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS = 5.0
 MAX_DIRECTORY_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_DIRECTORY_NODES = 5_000
 MAX_DIRECTORY_DEPTH = 12
@@ -146,14 +144,18 @@ def department_parent_ids(directory: DepartmentDirectoryResponse) -> dict[str, s
     return parents
 
 
-async def fetch_department_directory(*, base_url: str | None = None) -> DepartmentDirectoryResponse:
+async def fetch_department_directory(
+    *, base_url: str | None = None, timeout_seconds: float | None = None,
+) -> DepartmentDirectoryResponse:
     """Fetch only the pure endpoint without redirects, ambient proxy, or data leakage."""
 
-    configured_base = base_url if base_url is not None else get_settings().dingtalk_department_authority_base_url
-    url = f"{configured_base.rstrip('/')}/api/DingTalk/departs/pure" if configured_base else PURE_DEPARTMENT_DIRECTORY_URL
+    settings = get_settings()
+    configured_base = base_url if base_url is not None else settings.dingtalk_department_authority_base_url
+    timeout_seconds = timeout_seconds if timeout_seconds is not None else settings.dingtalk_department_authority_timeout_seconds
+    url = f"{resolve_dingtalk_directory_base_url(configured_base)}/api/DingTalk/departs/pure"
     try:
         async with httpx.AsyncClient(
-            timeout=PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
             follow_redirects=False,
             trust_env=False,
         ) as client:

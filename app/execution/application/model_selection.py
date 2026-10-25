@@ -14,7 +14,7 @@ class RunModelSelection:
     model_id: str
     model_value: str
     connection_revision: int | None
-    max_input_tokens: int | None = None
+    auto_compact_window: int | None = None
     max_output_tokens: int | None = None
 
 
@@ -25,6 +25,7 @@ class GovernedModelResolver(Protocol):
         *,
         model_id: str | None,
         model_value: str | None,
+        user_id: str,
     ) -> RunModelSelection | None: ...
 
 
@@ -35,7 +36,7 @@ async def bind_selected_run_model(
         conn, tenant_id=tenant_id, run_id=run_id,
         model_id=selected_model.model_id, model_value=selected_model.model_value,
         connection_revision=selected_model.connection_revision,
-        max_input_tokens=selected_model.max_input_tokens,
+        auto_compact_window=selected_model.auto_compact_window,
         max_output_tokens=selected_model.max_output_tokens,
     )
 
@@ -71,6 +72,7 @@ async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
+    user_id: str,
     resolve_governed_model: GovernedModelResolver,
 ) -> RunModelSelection:
     """Resolve only the configured, Run-budgeted model for new execution."""
@@ -81,12 +83,13 @@ async def resolve_chat_model_selection(
         conn,
         model_id=model_id,
         model_value=model_value,
+        user_id=user_id,
     )
     if governed is None:
         raise ValueError("model_connection_not_configured")
     if (
         governed.connection_revision is None
-        or governed.max_input_tokens is None
+        or governed.auto_compact_window is None
         or governed.max_output_tokens is None
     ):
         raise ValueError("model_capacity_missing")

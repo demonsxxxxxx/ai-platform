@@ -800,6 +800,37 @@ async def test_prompt_treats_catalog_description_as_data_and_never_injects_skill
     assert "Skill(skill-a)" in prompt
 
 
+@pytest.mark.asyncio
+async def test_model_catalog_render_is_unicode_metadata_without_changing_snapshot(monkeypatch):
+    from dataclasses import replace
+    from app.skills.catalog import render_authorized_skill_catalog_prompt
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=[_skill_row("skill-a", description="审核数值与单位")],
+        distributions=[_distribution("skill-a")],
+    )
+    snapshot = resolution.snapshot
+    before = snapshot.to_runtime_payload()
+    rendered = render_authorized_skill_catalog_prompt(snapshot)
+    metadata = json.loads(rendered.split("AUTHORIZED_SKILL_CATALOG_JSON=", 1)[1])
+    assert "审核数值与单位" in rendered
+    assert "\\u5ba1" not in rendered
+    assert metadata["skills"] == [{
+        "name": snapshot.entries[0].name,
+        "description": "审核数值与单位",
+        "availability": snapshot.entries[0].availability,
+        "invocation_handle": "Skill(skill-a)",
+    }]
+    assert snapshot.to_runtime_payload() == before
+    truncated = render_authorized_skill_catalog_prompt(
+        replace(snapshot, entries=(), truncated=True, omitted_count=3)
+    )
+    assert json.loads(truncated.split("AUTHORIZED_SKILL_CATALOG_JSON=", 1)[1]) == {
+        "skills": [], "truncated": True, "omitted_count": 3,
+    }
+
+
 @dataclass
 class _FakeQueuePayload:
     input: dict[str, Any]
@@ -1037,7 +1068,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
         "model_gateway_revision": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
@@ -1114,7 +1145,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def load_frozen_model(_conn, **_kwargs):
         return {key: locked_run[key] for key in (
             "model_id", "model_value", "model_gateway_revision",
-            "max_input_tokens", "max_output_tokens",
+            "auto_compact_window", "max_output_tokens",
         )}
 
     monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
@@ -1519,7 +1550,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     assert prepared.staged_skill_names == []
     assert list((workspace / ".claude" / "skills").iterdir()) == []
     assert prepared.prompt == "hello"
-    assert '"skills":[]' in prepared.system_prompt
+    assert "AUTHORIZED_SKILL_CATALOG_JSON=" not in prepared.system_prompt
 
 
 def _sdk_settings():

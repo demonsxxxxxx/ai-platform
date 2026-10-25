@@ -99,7 +99,7 @@ test("Agent workspace exposes global history beside task history and keeps both 
 
   assert.match(source, /groupSessionsByAgent\(globalSessions\)/);
   assert.match(source, /data-workbench-global-history/);
-  assert.match(source, /data-workbench-mobile-history/);
+  assert.match(source, /data-history-scope-switch/);
   assert.match(source, /全部对话/);
   assert.match(source, /任务历史/);
   assert.match(source, /onSelectGlobalSession\(session\)/);

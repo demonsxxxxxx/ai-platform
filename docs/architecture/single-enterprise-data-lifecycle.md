@@ -11,6 +11,18 @@ AI Platform is a single-enterprise, multi-user, concurrent system. The existing
 queries, queues, leases, and storage paths scoped consistently. It is not a
 customer-selectable tenant and does not introduce tenant management.
 
+Local `users` rows record authenticated business identities; they are not the
+company employee inventory and must not gate pre-login employee grants. Identity
+reads the company DingTalk employee directory for administrator model access
+selection, projects only employee work ID and name, and validates new grants
+against that same source. The historical model `allowed_user_ids` values are
+company work IDs matching `AuthPrincipal.user_id`; DingTalk user IDs and department
+IDs are never substituted. Employee selection shares the existing read-only
+department directory's default origin and optional address override; it requires
+no separate configuration. Directory reads use the fixed deployment scope and
+fail closed without falling back to local users. The [model access contract](opensandbox-ephemeral-model-credentials.md#per-model-user-access)
+owns eligibility, ambiguity handling, bounds and compatibility.
+
 Role and permission facts come from the existing company login and user-info
 authority; department grants come from the DingTalk membership source below.
 Ordinary clients cannot choose them. A trusted gateway may inject principal
@@ -69,7 +81,11 @@ Platform login validation, trusted work-ID binding and downstream ACL checks
 remain required.
 
 `DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` and the bounded timeout configure API and
-Worker together. The same source provides `/api/DingTalk/departs/pure`. Canonical
+Worker together. `DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS` (default 5 seconds,
+maximum 30) applies to each membership, employee-directory and pure-department
+HTTP request; the pure directory has no independent hard-coded timeout. A membership
+lookup passes the same timeout to its ancestor-directory read. The same source
+provides `/api/DingTalk/departs/pure`. Canonical
 IDs are non-zero-leading ASCII decimal strings of at most ten digits. Identity
 combines all direct memberships with their ancestors; missing parents, cycles,
 overlong paths or unknown IDs reject the complete department scope. Names and

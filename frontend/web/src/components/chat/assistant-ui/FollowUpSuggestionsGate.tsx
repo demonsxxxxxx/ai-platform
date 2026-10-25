@@ -17,7 +17,7 @@ export function FollowUpSuggestionsGate() {
   );
   if (!available) return null;
   return (
-    <div className="mx-auto mb-2 w-full max-w-[68rem] px-2" data-follow-up-suggestions-host>
+    <div className="mx-auto mb-2 w-full max-w-[76rem] px-2" data-follow-up-suggestions-host>
       <p className="mb-1 text-xs font-medium text-[var(--theme-text-secondary)]">
         {t("chat.followUpSuggestions")}
       </p>

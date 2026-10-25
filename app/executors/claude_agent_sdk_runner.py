@@ -14,7 +14,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from app.context.api import MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
+from app.context.api import ARTIFACT_TRANSFER_SAFE_ERRORS, MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
 from app.context_manifest import truncate_utf8_text
 from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
@@ -49,6 +49,8 @@ from app.executors.claude.capability_policy import (
     internal_response_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
+    FILE_TASK_SYSTEM_PROMPT,
+    compose_system_prompt,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
 )
@@ -61,6 +63,8 @@ from app.bootstrap.claude_client import (
     prepare_claude_result_usage,
 )
 from app.execution.api import (
+    AUTO_COMPACT_WINDOW_MAX_TOKENS,
+    AUTO_COMPACT_WINDOW_MIN_TOKENS,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
@@ -103,7 +107,7 @@ from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.api import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _SDK_ENV_ALLOWLIST = {
@@ -139,8 +143,6 @@ _SDK_INPUT_IMAGE_INVALID = "claude_agent_sdk_input_image_invalid"
 _SDK_EXECUTION_FAILED = "claude_agent_sdk_execution_failed"
 _SDK_OUTPUT_VALIDATION_FAILED = "claude_agent_sdk_output_validation_failed"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
-_SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
-_SDK_AUTOCOMPACT_MAX_TOKENS = 1_000_000
 SDK_TURN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-turn-diagnostics.v1"
 _MAX_TURN_DIAGNOSTIC_COUNTER = 1_000_000
 _MAX_PUBLIC_DIAGNOSTIC_SKILLS = 16
@@ -213,6 +215,7 @@ class ClaudeAgentSdkRunResult:
     answer_receipt: dict[str, Any] | None = None
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    model_usage_snapshot: dict[str, Any] | None = None
     error: str | None = None
     # ResultMessage.stop_reason is meaningful only on a non-error SDK terminal
     # result. Keep it separate from the failure text.
@@ -631,13 +634,24 @@ def _sdk_permission_type(sdk: object, name: str):
     return PermissionResult
 
 
-def _sdk_autocompact_window(model_max_input_tokens: int | None) -> int | None:
-    if model_max_input_tokens is None:
+def _sdk_autocompact_window(model_auto_compact_window: int | None) -> int | None:
+    """Return the CLI `--autocompact` value for this Run.
+
+    The window is already normalized to Claude Code's supported range when it
+    is admitted, so it is passed through unchanged. The engine still chooses the
+    actual compaction point, which can fall earlier than this window.
+    """
+
+    if model_auto_compact_window is None:
         return None
-    return min(
-        _SDK_AUTOCOMPACT_MAX_TOKENS,
-        max(_SDK_AUTOCOMPACT_MIN_TOKENS, model_max_input_tokens),
-    )
+    if (
+        type(model_auto_compact_window) is not int
+        or not AUTO_COMPACT_WINDOW_MIN_TOKENS
+        <= model_auto_compact_window
+        <= AUTO_COMPACT_WINDOW_MAX_TOKENS
+    ):
+        raise ValueError("model_auto_compact_window_invalid")
+    return model_auto_compact_window
 
 
 def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | None = None) -> dict[str, str]:
@@ -693,12 +707,25 @@ async def _sdk_user_prompt_stream(
     }
 
 
-def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
+def _context_retrieval_tool_response(payload: dict[str, Any], *, action: str | None = None) -> dict[str, Any]:
     sanitized = sanitize_public_payload(payload)
     if isinstance(sanitized, dict):
-        workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
-        if workspace_path:
-            sanitized["workspace_path"] = workspace_path
+        if action == "stage_run_artifact_to_workspace":
+            from app.context.api import artifact_workspace_parts, ArtifactTransferError
+            try:
+                expected_path = "/".join(artifact_workspace_parts(payload.get("artifact_id"), payload.get("name")))
+            except (ArtifactTransferError, TypeError, ValueError) as exc:
+                raise ContextRetrievalDenied("context_scope_denied") from exc
+            if payload.get("workspace_path") != expected_path or sanitized.get("name") != payload.get("name"):
+                raise ContextRetrievalDenied("context_scope_denied")
+            sanitized["workspace_path"] = expected_path
+            source_run_id = payload.get("source_run_id")
+            if source_run_id and (not isinstance(source_run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", source_run_id)):
+                sanitized.pop("source_run_id", None)
+        else:
+            workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
+            if workspace_path:
+                sanitized["workspace_path"] = workspace_path
     return {
         "content": [
             {
@@ -800,7 +827,7 @@ def _build_context_retrieval_mcp_server(
         tool_args = args if isinstance(args, dict) else {}
         try:
             return _context_retrieval_tool_response(
-                await retrieval.execute(action, identity, tool_args)
+                await retrieval.execute(action, identity, tool_args), action=action,
             )
         except ContextRetrievalInputError as exc:
             return _context_retrieval_tool_error(str(exc), action=audit_action)
@@ -809,6 +836,7 @@ def _build_context_retrieval_mcp_server(
             if reason not in {
                 "context_file_too_large",
                 "context_file_size_required",
+                *ARTIFACT_TRANSFER_SAFE_ERRORS,
                 "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
@@ -1437,7 +1465,7 @@ def _filtered_workspace_search_output(
             "numFiles": len(filtered_filenames),
             "filenames": filtered_filenames,
             "truncated": tool_response.get("truncated") is True,
-            # Recompute the SDK's optional count fields from
+            # The SDK accepts these fields as optional; recompute them from
             # the visible result so private paths never survive as counts.
             "totalMatches": len(filtered_filenames),
             "countIsComplete": True,
@@ -1570,7 +1598,7 @@ async def run_claude_agent_sdk(
     context_retrieval: ContextRetrievalAuthority | None = None,
     context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
-    model_max_input_tokens: int | None = None,
+    model_auto_compact_window: int | None = None,
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
@@ -1583,6 +1611,8 @@ async def run_claude_agent_sdk(
     on_subagent_lifecycle: Callable[[dict[str, str]], Awaitable[None] | None]
     | None = None,
     on_agent_event: Callable[[tuple[Any, ...]], Awaitable[bool | None] | bool | None]
+    | None = None,
+    on_model_usage_snapshot: Callable[[dict[str, Any]], Awaitable[bool | None] | bool | None]
     | None = None,
     run_id: str | None = None,
     attempt_id: str | None = None,
@@ -1599,9 +1629,9 @@ async def run_claude_agent_sdk(
     interaction_actor = None
     if interaction_client is not None and not (run_id and attempt_id):
         raise ValueError("run_interaction_identity_invalid")
-    if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
-        value is not None and (type(value) is not int or not 1 <= value <= 10_000_000)
-        for value in (model_max_input_tokens, model_max_output_tokens)
+    if (model_auto_compact_window is None) != (model_max_output_tokens is None) or (
+        model_max_output_tokens is not None
+        and (type(model_max_output_tokens) is not int or not 1 <= model_max_output_tokens <= 10_000_000)
     ):
         raise ValueError("model_token_limits_invalid")
     settings = get_settings()
@@ -3395,11 +3425,12 @@ async def run_claude_agent_sdk(
         if interaction_actor is not None:
             # A question may remain pending for the Run's execution deadline.
             hooks["PreToolUse"][0].timeout = timeout_seconds or 86_400.0
-    # The installed SDK's SystemPromptPreset preserves Claude Code's default
-    # system prompt while adding only server-owned profile instructions.
-    sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
-    if system_prompt:
-        sdk_system_prompt["append"] = system_prompt
+    # A resumed Run must use its current Profile and material authorization, not the first prompt.
+    sdk_system_prompt = {
+        "type": "custom",
+        "prompt": compose_system_prompt(FILE_TASK_SYSTEM_PROMPT, system_prompt or ""),
+        "snapshot": False,
+    }
     thinking_options: dict[str, Any] = {
         "thinking": {"type": "adaptive", "display": "omitted"}
     }
@@ -3412,6 +3443,11 @@ async def run_claude_agent_sdk(
         or settings.anthropic_model
         or None,
         system_prompt=sdk_system_prompt,
+        settings=json.dumps({
+            "autoMemoryEnabled": False,
+            "includeGitInstructions": False,
+            "attribution": {"commit": "", "pr": ""},
+        }),
         tools=sdk_tools,
         mcp_servers=mcp_servers,
         strict_mcp_config=True,
@@ -3420,8 +3456,8 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens),
         extra_args=(
-            {"autocompact": str(_sdk_autocompact_window(model_max_input_tokens))}
-            if model_max_input_tokens is not None
+            {"autocompact": str(_sdk_autocompact_window(model_auto_compact_window))}
+            if model_auto_compact_window is not None
             else {}
         ),
         skills=configured_skills,
@@ -3448,6 +3484,10 @@ async def run_claude_agent_sdk(
     result_usage = prepare_claude_result_usage(
         session_id=session_id, prompt=sdk_prompt, resumed_entries=main_transcript,
     )
+    if on_model_usage_snapshot is not None:
+        initial_usage_result = on_model_usage_snapshot(result_usage.model_usage_snapshot(terminal=False))
+        if isawaitable(initial_usage_result):
+            await initial_usage_result
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3489,6 +3529,7 @@ async def run_claude_agent_sdk(
             answer_receipt=answer_receipt,
             session_id=result_session_id,
             usage=result_usage.project(usage or continuation_usage, terminal_result=terminal_result_message is not None),
+            model_usage_snapshot=result_usage.model_usage_snapshot(terminal=terminal_result_message is not None),
             error=error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
@@ -3624,6 +3665,12 @@ async def run_claude_agent_sdk(
                         continue
                     if isinstance(message, ResultMessage):
                         result_usage.observe_result(message)
+                        if on_model_usage_snapshot is not None:
+                            snapshot_result = on_model_usage_snapshot(
+                                result_usage.model_usage_snapshot(terminal=False)
+                            )
+                            if isawaitable(snapshot_result):
+                                await snapshot_result
                         permission_denials = getattr(message, "permission_denials", None)
                         if isinstance(permission_denials, list):
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)

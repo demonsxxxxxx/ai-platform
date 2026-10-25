@@ -197,7 +197,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
           label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
           provider: 'compatible', enabled: index < 2, available: true, is_default: index === 0,
           order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
-          max_input_tokens: index < 2 ? 32000 : undefined,
+          auto_compact_window: index < 2 ? 200000 : undefined,
           max_output_tokens: index < 2 ? 2048 : undefined
         }))
       });
@@ -229,6 +229,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
         preview_url: '/api/ai/files/file-synthetic/preview?session_id=session-synthetic', download_url: '/api/ai/files/file-synthetic/download?session_id=session-synthetic'
       }] });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
+      if (url.pathname === '/api/ai/chat/follow-up-suggestions' && method === 'POST') return json({ suggestions: [] });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.startsWith('/api/')) {
         state.errors.push('unstubbed_api:' + method + ':' + url.pathname);
@@ -298,10 +299,10 @@ const cases = [
   },
   {
     path: "/agent-market/agt_support/chat",
-    selector: "[data-agent-workspace-welcome], [data-workbench-region='thread']",
+    selector: "[data-expert-workspace-header], [data-workbench-region='thread']",
     name: "market-workspace",
     requiredSelectors: [
-      "[data-agent-chat-opening] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
+      "[data-expert-workspace-header] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
       "textarea",
     ],
     requiredRequests: ["/api/ai/agent-profiles/agt_support"],
@@ -589,7 +590,7 @@ async function runCase(viewport, scenario) {
           fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
           rows: table.querySelectorAll('[data-model-admin-model]').length,
           enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
-          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输入 Token"]')?.getAttribute('placeholder') === '必填',
+          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
           actionBottomGap: Math.round(innerHeight - bar.bottom),

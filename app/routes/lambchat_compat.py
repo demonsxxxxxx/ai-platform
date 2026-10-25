@@ -1,4 +1,12 @@
 # ruff: noqa: B008
+"""Current browser chat-session API: sessions, run history replay and SSE stream.
+
+The module name is historical (the frontend shell was ported from LambChat).
+These routes are the live paths used by ``frontend/web/src/services/api/session.ts``
+and ``hooks/useAgent/sseConnection.ts``; they are not a retirable compatibility
+layer. Migration into the owning contexts is tracked as TD-CONV-001 in
+``docs/exec-plans/tech-debt-tracker.md``.
+"""
 
 import asyncio
 import base64
@@ -9,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -34,7 +42,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     public_skill_display_label,
 )
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
@@ -74,31 +82,6 @@ from app.streaming.redis import (
     close_sse_authority_lease,
     get_stream_authority,
 )
-
-
-class _V4StreamBridge(Protocol):
-    async def replay_page(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        through_redis_id: str,
-    ) -> tuple[V4StreamEntry, ...]: ...
-
-    async def read_stream(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        count: int,
-        block_ms: int,
-    ) -> tuple[V4StreamEntry, ...]: ...
 
 
 router = APIRouter()
@@ -981,33 +964,6 @@ def _visible_assistant_artifacts(
     return visible
 
 
-def _compatibility_events_for_run(
-    run: dict[str, Any],
-    run_events: list[dict[str, Any]],
-    artifacts: list[dict[str, Any]],
-    principal: AuthPrincipal,
-    *,
-    user_messages: list[dict[str, Any]] | None = None,
-    include_terminal: bool = True,
-    compact_answer_deltas: bool = False,
-) -> list[_CompatibilityWireEvent]:
-    """Build the sole public terminal wire, ordered for live and history replay."""
-    compatibility_events, _ = _compatibility_events_for_run_page(
-        run,
-        run_events,
-        artifacts,
-        principal,
-        fold_state=_CompatibilityFoldState(
-            False,
-            frozenset(),
-        ),
-        user_messages=user_messages,
-        include_terminal=include_terminal,
-        compact_answer_deltas=compact_answer_deltas,
-    )
-    return compatibility_events
-
-
 def _compatibility_events_for_run_page(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -1475,33 +1431,6 @@ async def oauth_providers() -> dict[str, object]:
     }
 
 
-UI_PERMISSIONS = [
-    "agent:use",
-    "artifact:download",
-    "model:admin",
-    "settings:manage",
-    "admin:status",
-    "chat:read",
-    "chat:write",
-    "session:read",
-    "session:write",
-    "file:upload",
-    "file:upload:document",
-    "skill:read",
-    "skill:write",
-    "skill:delete",
-    "skill:admin",
-    "marketplace:read",
-    "marketplace:publish",
-    "marketplace:admin",
-    "user:read",
-    "user:admin",
-    "feedback:read",
-    "feedback:admin",
-    "notification:read",
-    "notification:admin",
-]
-
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {
     "run_succeeded",
     "run_failed",
@@ -1509,24 +1438,14 @@ CHAT_STREAM_TERMINAL_EVENT_TYPES = {
     "run_canceled",
 }
 
-@router.get("/auth/permissions")
-async def permissions() -> dict[str, object]:
-    permission_infos = [
-        {"value": item, "label": item, "description": item} for item in UI_PERMISSIONS
-    ]
-    return {
-        "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
-        "all_permissions": permission_infos,
-    }
-
 @router.get("/agent/models/available")
 async def available_models(
     response: Response,
-    _principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
-        return await list_public_models(conn)
+        return await list_public_models(conn, user_id=principal.user_id)
 
 
 @router.get("/upload/config")
@@ -2115,12 +2034,6 @@ async def generate_title(
         except session_actions.SessionActionNotFoundError as exc:
             raise HTTPException(status_code=404, detail="session_not_found") from exc
     return {"session_id": session_id, "title": str(session["title"])}
-
-
-@router.post("/sessions/{session_id}/mark-read")
-async def mark_read(session_id: str) -> dict[str, bool]:
-    """Acknowledge older clients without persisting or authorizing unread state."""
-    return {"success": True}
 
 
 @router.get("/chat/sessions/{session_id}/status")

@@ -27,12 +27,12 @@ visual similarity.
 
 ## Verification and cleanup
 
-Cover changed behavior with an owning regression test; reuse existing coverage
-when sufficient. Use `python tools/run_test_stage.py` for local pytest. Choose
-additional checks by affected risk, not a fixed sequence or whole-repo ritual.
-Documentation-only edits need relevant document checks, not invented runtime
-proof. Report checks run, results, and limits; never present a patch as pushed,
-a build as deployed, or an unobserved test or review as passed.
+Follow [change verification](docs/agent-rules/change-verification.md): choose
+representative acceptance scenarios before editing, cover changed behavior with
+an owning regression, and rerun only checks whose evidence the change invalidates.
+Use `python tools/run_test_stage.py` for local pytest. Preserve mandatory checks
+and report observed results and limits; never present a patch as pushed, a build
+as deployed, or an unobserved test or review as passed.
 
 Finish a migration by updating callers, tests, selectors, and owning docs and
 removing the replaced path. Keep compatibility only for identified consumers.
@@ -65,10 +65,12 @@ reviewers must inspect or rerun the referenced inventory.
 ## Read when relevant
 
 - Code ownership and product contracts: [documentation index](docs/README.md).
-- Architecture navigation and source measurements: [architecture map](ARCHITECTURE.md), [quality baseline](docs/QUALITY_SCORE.md).
-- Harness improvement work: [active plan](docs/exec-plans/active/harness-migration.md) and its full blueprint; keep its phase prerequisites and existing owning contracts.
+- Coding rules and the enforcement level of every constraint: [coding standards](docs/agent-rules/coding-standards.md).
+- Architecture navigation: [architecture map](ARCHITECTURE.md). Measure current source with `scripts/analysis/source_quality_inventory.py` rather than citing old counts.
+- Known architecture debt: [debt inventory](docs/exec-plans/tech-debt-tracker.md); confirm each entry against current source before acting.
 - Frontend implementation and checks: [web frontend instructions](frontend/web/AGENTS.md).
 - Python checks: [local test execution](docs/agent-rules/local-test-execution.md).
 - PR and review: [delivery workflow](docs/agent-rules/github-issue-pr-workflow.md).
+  Review a PR, branch, or diff with the [review skill](.agents/skills/ai-platform-review/SKILL.md).
 - Parallel work: [coordination](docs/agent-rules/multi-agent-context-workflow.md).
 - Deployment: [release runbook](docs/operations/release-operations-runbook.md).

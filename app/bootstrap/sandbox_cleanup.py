@@ -10,7 +10,7 @@ from app.sandbox.api import SandboxCleanupOutcomes, SandboxRuntimeCleanup
 from app.sandbox.application.runtime_handle import PersistedRuntimeHandleRecovery
 from app.settings import get_settings
 from app.streaming.infrastructure import run_events_postgres
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 def build_sandbox_cleanup_outcomes() -> SandboxCleanupOutcomes:

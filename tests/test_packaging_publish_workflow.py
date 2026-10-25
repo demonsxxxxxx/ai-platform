@@ -48,8 +48,8 @@ def test_publish_is_reachable_only_from_trusted_main_events():
     workflow = _workflow()
     triggers = workflow["on"]
 
-    assert set(triggers) == {"push", "workflow_dispatch"}
-    assert triggers["push"] == {"branches": ["main"]}
+    # Packaging is released by explicit dispatch only; merging to main does not publish.
+    assert set(triggers) == {"workflow_dispatch"}
     assert set(triggers["workflow_dispatch"]["inputs"]) == {
         "confirm_release", "release_version"
     }
@@ -351,8 +351,7 @@ def test_temporary_internal_test_package_is_run_bound_and_short_lived():
         step for step in steps if step.get("name") == "Publish explicit versioned Release"
     )
     assert upload["if"] == (
-        "github.event_name == 'push' || "
-        "(github.event_name == 'workflow_dispatch' && inputs.release_version == '')"
+        "github.event_name == 'workflow_dispatch' && inputs.release_version == ''"
     )
     assert upload["uses"] == evidence["uses"]
     assert upload["with"] == {
@@ -381,8 +380,8 @@ def test_publish_permissions_are_job_scoped_and_environment_selected():
     }
     assert publish["environment"] == "packaging-publish"
     assert publish["if"] == (
-        "github.ref == 'refs/heads/main' && (github.event_name == 'push' || "
-        "(github.event_name == 'workflow_dispatch' && inputs.confirm_release == 'PUBLISH_MAIN'))"
+        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+        "inputs.confirm_release == 'PUBLISH_MAIN'"
     )
 
     manifest = workflow["jobs"]["release-manifest"]

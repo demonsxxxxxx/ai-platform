@@ -102,10 +102,14 @@ performance and production acceptance remain separate from source completion
 and deployment evidence.
 
 [AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[coding standards](agent-rules/coding-standards.md),
+[change verification](agent-rules/change-verification.md),
 [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
-work, verification, and handoff. This cleanup does not add another approval system.
+work, verification, and handoff. Change verification owns scenario selection and
+evidence reuse; local test execution owns the pytest runner and isolation. These
+contracts do not add another approval system.
 
 [Release operations](operations/release-operations-runbook.md)
 remains the sole executable release procedure. [SSE cutover acceptance](operations/redis-streams-sse-cutover-acceptance.md)
@@ -118,11 +122,12 @@ and is historical unless its exact subject has been freshly verified.
 ## Repository improvement and dated inventories
 
 [Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
-link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
-measurement scope, denominators and unmeasured fields; its generated reports are
-dated observations. The [active Harness plan](exec-plans/active/harness-migration.md)
-and [debt inventory](exec-plans/tech-debt-tracker.md) own this improvement's progress
-and prerequisites, not product or release authority.
+link the existing owners. Measure current source with
+`scripts/analysis/source_quality_inventory.py`. The [debt inventory](exec-plans/tech-debt-tracker.md) lists
+known architecture debt, not product or release authority. The stopped
+[Harness migration](exec-plans/completed/harness-migration-2026-10.md), its
+blueprint and its [quality baseline](exec-plans/completed/quality-baseline-2026-10-13/QUALITY_SCORE.md)
+are historical records, not active rules.
 
 ## Document maintenance
 

@@ -228,3 +228,58 @@ test("archive menu action keyboard activation does not select its containing row
     await React.act(async () => root.unmount());
   }
 });
+
+test("read-only Skill rows omit write actions and private file payloads", async () => {
+  const React = await import("react");
+  const { SkillManagementTable } = await import("../SkillsPanel/SkillManagementTable.tsx");
+  const [entry] = buildSkillCatalogEntries([
+    {
+      name: "public-review-skill",
+      expected_version: "version-1",
+      description: "Public review description",
+      tags: [],
+      enabled: true,
+      source: "marketplace",
+      content: "PRIVATE_SKILL_CONTENT",
+      files: { "PRIVATE_FILE_PATH": "PRIVATE_FILE_CONTENT" },
+      file_count: 1,
+      installed_from: "marketplace",
+      is_published: true,
+      marketplace_is_active: true,
+    },
+  ], []);
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const forbidWrite = () => assert.fail("read-only rows cannot invoke write actions");
+  try {
+    await React.act(async () => root.render(
+      React.createElement(SkillManagementTable, {
+        entries: [entry!],
+        canBatch: false,
+        canDelete: false,
+        canEdit: false,
+        canExport: false,
+        canPublish: false,
+        canToggle: false,
+        onDelete: forbidWrite,
+        onEdit: forbidWrite,
+        onExportZip: forbidWrite,
+        onToggle: forbidWrite,
+        onUploadVersion: forbidWrite,
+        onSelectAll: forbidWrite,
+        onSelectSkill: forbidWrite,
+        onSelectDetail: () => {},
+        selectedNames: new Set<string>(),
+        selectedSkillId: null,
+      }),
+    ));
+    assert.match(container.textContent ?? "", /public-review-skill/);
+    assert.doesNotMatch(container.innerHTML, /PRIVATE_SKILL_CONTENT|PRIVATE_FILE_PATH|PRIVATE_FILE_CONTENT/);
+    assert.equal(container.querySelector('[aria-haspopup="menu"]'), null);
+    assert.equal(container.querySelector('input[type="checkbox"]'), null);
+    assert.equal(container.querySelector('.skill-management-table__actions button'), null);
+    assert.match(container.textContent ?? "", new RegExp((await import("../../../i18n")).default.t("skills.managementTable.readOnly")));
+  } finally {
+    await React.act(async () => root.unmount());
+  }
+});

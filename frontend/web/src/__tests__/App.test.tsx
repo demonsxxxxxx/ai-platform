@@ -41,3 +41,9 @@ test("retired settings route redirects administrators to governed model configur
   );
   assert.doesNotMatch(source, /activeTab="settings"/);
 });
+
+test("App registers usage as an admin-only authenticated route", () => {
+  const source = readFileSync(join(process.cwd(), "src/App.tsx"), "utf8");
+  assert.match(source, /path=\{APP_ROUTE_PATHS\.usage\}/);
+  assert.match(source, /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<UsagePage \/>\s*<\/ProtectedRoute>/);
+});

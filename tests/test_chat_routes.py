@@ -147,12 +147,12 @@ def _stub_terminal_provider_lineage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def authorized_default_model_for_chat_routes(monkeypatch):
-    async def governed_model(_conn, *, selection):
+    async def governed_model(_conn, *, selection, user_id):
         if selection is not None:
             raise ValueError("model_id_not_available")
         return RunModelSelection(
             model_id="test-model", model_value="provider/test-model",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     async def no_model_binding(_conn, **_kwargs):
@@ -164,7 +164,7 @@ def authorized_default_model_for_chat_routes(monkeypatch):
 
 @pytest.fixture
 def chat_submission_client(monkeypatch):
-    """Exercise the mounted aliases and their route-local response wrapper."""
+    """Exercise the mounted routes and their route-local response wrapper."""
 
     monkeypatch.setattr(
         "app.auth.get_settings",
@@ -185,11 +185,35 @@ def chat_submission_client(monkeypatch):
         yield client
 
 
-_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api", "/api/ai")
+# Submission resolution and admission retry are served only under /api.
+_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api",)
 _CHAT_SUBMISSION_CLIENT_HEADERS = {
     "x-ai-user-id": "user-a",
     "x-ai-tenant-id": "tenant-a",
 }
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/ai/chat/stream"),
+        ("get", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"),
+        ("post", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission"),
+        ("post", "/api/ai/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/latency"),
+        ("get", "/api/chat/sessions"),
+        ("post", "/api/chat/sessions"),
+        ("get", "/api/chat/sessions/ses_a"),
+        ("get", "/api/chat/sessions/ses_a/messages"),
+    ],
+)
+def test_chat_routes_are_not_served_under_the_retired_duplicate_prefix(
+    chat_submission_client, method, path
+):
+    response = getattr(chat_submission_client, method)(
+        path, headers=_CHAT_SUBMISSION_CLIENT_HEADERS
+    )
+
+    assert response.status_code in {404, 405}
 
 
 @pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
@@ -792,7 +816,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
@@ -1312,7 +1336,7 @@ async def test_keyed_replay_uses_original_intent_before_mutable_mcp_admission(mo
         return RunModelSelection(
             model_id="test-model",
             model_value="provider/test-model",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     async def claim_submission(*_args, **kwargs):
@@ -2893,12 +2917,13 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 ):
     calls = []
 
-    async def fake_resolve_chat_model_selection(_conn, *, selection):
+    async def fake_resolve_chat_model_selection(_conn, *, selection, user_id):
         assert selection == {"id": "deepseek-v4-pro"}
+        assert user_id == "user-a", "model access must use the trusted employee work ID"
         return RunModelSelection(
             model_id="deepseek-v4-pro",
             model_value="deepseek-v4-pro",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -3032,6 +3057,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
             agent_id="document-review",
             selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "0.1.0"},
             message=current_message,
+            user_id="forged-authorized-employee",
             agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),
@@ -3554,13 +3580,13 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
-    async def fake_resolve_chat_model_selection(conn, *, selection):
+    async def fake_resolve_chat_model_selection(conn, *, selection, user_id):
         assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
         return RunModelSelection(
             model_id="pro-tier",
             model_value="openai/gpt-5",
             connection_revision=7,
-            max_input_tokens=32000,
+            auto_compact_window=200_000,
             max_output_tokens=2048,
         )
 
@@ -3648,7 +3674,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         "model_id": "pro-tier",
         "model_value": "openai/gpt-5",
         "connection_revision": 7,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
     }
     assert connections["create_run"] is connections["bind_run_model"]
@@ -5271,7 +5297,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return RunModelSelection(
             model_id="profile-model",
             model_value="provider/profile-model",
-            connection_revision=1, max_input_tokens=32000, max_output_tokens=2048,
+            connection_revision=1, auto_compact_window=200_000, max_output_tokens=2048,
         )
 
     monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)

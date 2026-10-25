@@ -85,7 +85,7 @@ test("generic Chat creation and history are available to authenticated users", (
   const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
 
   assert.doesNotMatch(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
-  assert.doesNotMatch(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
+  assert.match(chat, /navigationOnly=\{false\}/);
   assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
   assert.match(menuHost, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
 });

@@ -32,9 +32,9 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
       />
     ) : (
       <div data-user-avatar
-        className={`flex ${sizeClass} items-center justify-center rounded-full bg-teal-700`}
+        className={`flex ${sizeClass} items-center justify-center rounded-full bg-neutral-700`}
       >
-        <span className="text-xs font-semibold text-white">
+        <span className="text-xs font-semibold text-[var(--theme-primary-foreground)]">
           {displayName.charAt(0).toUpperCase()}
         </span>
       </div>

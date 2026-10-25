@@ -1,7 +1,26 @@
 """Identity-owned DingTalk department scope; names never grant access."""
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Mapping
+
+
+MAX_DEPARTMENT_AUTHORITY_ID_CHARS = 160
+
+
+def assert_safe_department_authority_id(
+    value: str,
+    field_name: str = "department_id",
+) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > MAX_DEPARTMENT_AUTHORITY_ID_CHARS
+        or "," in value
+        or any(unicodedata.category(character).startswith("C") for character in value)
+    ):
+        raise ValueError(f"{field_name} contains unsupported characters")
+    return value
 
 
 def is_department_id(value: object) -> bool:

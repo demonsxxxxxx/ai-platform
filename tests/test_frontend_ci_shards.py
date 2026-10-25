@@ -104,3 +104,42 @@ def test_projection_and_python_contracts_are_independent_of_js_setup():
     assert "if" not in audit and "continue-on-error" not in audit
     tests = workflow["jobs"]["frontend-tests"]
     assert all("setup-python" not in step.get("uses", "") and "setup-uv" not in step.get("uses", "") for step in tests["steps"])
+
+
+def _ci_verify_steps_without_workflow_owner(workflow, scripts):
+    def expand(command, seen=()):
+        command = command.strip()
+        yield command
+        script = re.fullmatch(r"corepack pnpm run ([\w:-]+)", command)
+        if script and script[1] in scripts and script[1] not in seen:
+            for item in scripts[script[1]].split("&&"):
+                yield from expand(item, (*seen, script[1]))
+
+    def normalize(command):
+        # The local runner resolves the repository Python; CI calls Python directly.
+        return re.sub(r"^node scripts/run-python-tool\.mjs \.\./\.\./tools/", "python tools/", command)
+
+    owned = {
+        normalize(item)
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        for command in step.get("run", "").split("&&")
+        for item in expand(command)
+    }
+    return [
+        command.strip()
+        for command in scripts["ci:verify"].split("&&")
+        if normalize(command.strip()) not in owned
+    ]
+
+
+def test_every_local_ci_verify_step_runs_in_the_frontend_workflow():
+    assert _ci_verify_steps_without_workflow_owner(*_inputs()) == []
+
+
+def test_ci_verify_ownership_rejects_a_local_only_step():
+    workflow, scripts = copy.deepcopy(_inputs())
+    scripts["ci:verify"] += " && node scripts/local-only-gate.mjs"
+    assert _ci_verify_steps_without_workflow_owner(workflow, scripts) == [
+        "node scripts/local-only-gate.mjs"
+    ]

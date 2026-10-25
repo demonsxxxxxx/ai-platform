@@ -12,6 +12,7 @@ export type TabType =
   | "feedback"
   | "models"
   | "runs"
+  | "usage"
   | "notifications"
   | "memory";
 

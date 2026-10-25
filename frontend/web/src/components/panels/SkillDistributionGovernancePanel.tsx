@@ -249,7 +249,7 @@ export function SkillDistributionGovernancePanel({
 
       {loadError ? (
         <div
-          className="mt-3 border-l-2 border-[var(--theme-danger)] px-3 py-2 text-sm text-[var(--theme-danger)]"
+          className="mt-3 border-l-2 border-[var(--theme-danger)] px-3 py-2 text-sm text-[var(--theme-danger-text)]"
           role="alert"
         >
           {loadError}
@@ -432,7 +432,7 @@ export function SkillDistributionGovernancePanel({
                   </span>
                 ) : null}
                 {saveError ? (
-                  <span className="text-sm text-[var(--theme-danger)]" role="alert">
+                  <span className="text-sm text-[var(--theme-danger-text)]" role="alert">
                     {saveError}
                   </span>
                 ) : null}
