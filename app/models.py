@@ -28,12 +28,9 @@ from app.skills.release_policy import (
     validate_release_decision_payload,
 )
 from app.mcp.api import assert_mcp_tool_reference
-from app.validation import (
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_safe_department_authority_id,
-    assert_safe_id,
-    assert_safe_principal_user_id,
-    assert_upstream_model_id,
-)
+from app.execution.api import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_upstream_model_id
+from app.identity.api import assert_safe_department_authority_id
+from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
 
 def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:

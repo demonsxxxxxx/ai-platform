@@ -19,7 +19,7 @@ from app.models import (
     RevealedFileSessionResponse,
 )
 from app.persistence import artifacts as artifact_persistence
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

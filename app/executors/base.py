@@ -13,7 +13,7 @@ from app.control_plane_contracts import (
 from app.execution.api import legacy_input_capacity_to_auto_compact_window
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.skills.release_policy import validate_release_decision_lock
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 ADAPTER_RESULT_SCHEMA_VERSION = "ai-platform.executor-result.v1"

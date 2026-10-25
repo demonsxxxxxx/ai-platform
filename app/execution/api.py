@@ -132,6 +132,11 @@ from app.execution.application.model_selection import (
 from app.execution.domain.office_execution_tier import (
     route_office_execution_tier as route_office_execution_tier,
 )
+from app.execution.domain.input_limits import (
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS as MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS as MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    assert_upstream_model_id as assert_upstream_model_id,
+)
 
 
 async def list_public_models(conn: Any, *, user_id: str) -> dict[str, object]:
@@ -161,6 +166,9 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS",
+    "assert_upstream_model_id",
     "route_office_execution_tier",
     "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
     "AUTO_COMPACT_WINDOW_MAX_TOKENS",

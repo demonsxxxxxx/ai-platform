@@ -81,7 +81,7 @@ from app.runtime.sandbox.contracts import (
     executor_callback_receipt_event_count,
 )
 from app.settings import get_settings
-from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
