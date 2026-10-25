@@ -4,7 +4,7 @@ import json
 import logging
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
@@ -79,7 +79,11 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
-from app.sandbox.api import SandboxCallbackAuthorityError
+from app.sandbox.api import (
+    ProviderSessionAppendIdentity,
+    SandboxCallbackAuthorityError,
+    SandboxCallbackIdentity,
+)
 from app.settings import get_settings
 from app.storage import ObjectStorage, run_storage_io
 from app.streaming.api import (
@@ -105,10 +109,32 @@ _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
 MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES = context_api.MAX_PROVIDER_SESSION_BATCH_BYTES + 64 * 1024
 
 
+class _CallbackIdentityEnvelope(Protocol):
+    run_id: str
+    attempt_id: str
+    callback_token_id: str
 
 
+def _callback_identity(callback: _CallbackIdentityEnvelope) -> SandboxCallbackIdentity:
+    values = dict(
+        run_id=callback.run_id,
+        attempt_id=callback.attempt_id,
+        callback_token_id=callback.callback_token_id,
+        session_id=getattr(callback, "session_id", None),
+    )
+    if isinstance(callback, ProviderSessionCallbackRequest) and callback.action == "append":
+        return ProviderSessionAppendIdentity(**values)
+    return SandboxCallbackIdentity(**values)
 
 
+def _receive_callback_identity(
+    provided_token: str | None,
+    callback: _CallbackIdentityEnvelope,
+) -> SandboxCallbackIdentity:
+    """Authenticate one callback envelope before its operation-specific work."""
+    identity = _callback_identity(callback)
+    _require_valid_callback_token(provided_token, identity)
+    return identity
 
 
 async def _enforce_provider_session_callback_body_limit(request: Request) -> bytes:
@@ -181,10 +207,16 @@ async def record_executor_callback(
     callback: ExecutorCallbackEvent,
     *,
     capabilities: WorkerV4Capabilities,
+    callback_identity: SandboxCallbackIdentity | None = None,
     run_diagnostics: RunDiagnosticsService | None = None,
     model_token_usage: ModelTokenUsageService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
+    expected_identity = _callback_identity(callback)
+    if callback_identity is None:
+        callback_identity = expected_identity
+    elif callback_identity != expected_identity:
+        raise HTTPException(status_code=409, detail="callback_identity_mismatch")
 
     # Compatibility fields are retained in the private callback receipt only;
     # v4 public rows come from the typed post-bridge event subset.
@@ -478,9 +510,7 @@ async def record_executor_callback(
         await _recheck_callback_authority(
             conn,
             tenant_id=tenant_id,
-            run_id=callback.run_id,
-            attempt_id=callback.attempt_id,
-            callback_token_id=callback.callback_token_id,
+            identity=callback_identity,
         )
         return committed_rows, authority, callback_deduplicated
 
@@ -496,10 +526,7 @@ async def record_executor_callback(
         async with transaction() as conn:
             run_identity, lease = await _lock_callback_authority(
                 conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                session_id=callback.session_id,
+                identity=callback_identity,
             )
             if str(lease.get("provider") or "").strip().lower() == "opensandbox":
                 if lease.get("executor_terminal_json") is not None:
@@ -538,10 +565,7 @@ async def record_executor_callback(
         async with transaction() as conn:
             run_identity, lease = await _lock_callback_authority(
                 conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                session_id=callback.session_id,
+                identity=callback_identity,
             )
             if lease.get("executor_terminal_json") is not None:
                 raise HTTPException(
@@ -574,10 +598,7 @@ async def record_executor_callback(
             async with transaction() as conn:
                 run_identity, lease = await _lock_callback_authority(
                     conn,
-                    run_id=callback.run_id,
-                    attempt_id=callback.attempt_id,
-                    callback_token_id=callback.callback_token_id,
-                    session_id=callback.session_id,
+                    identity=callback_identity,
                 )
                 committed_rows, authority, callback_deduplicated = await persist_callback(
                     conn, run_identity, lease
@@ -665,12 +686,7 @@ async def run_inputs_callback(
 ) -> dict[str, Any]:
     """Apply one Run input operation through the existing callback authority."""
 
-    _require_valid_callback_token(
-        callback_token,
-        callback.callback_token_id,
-        run_id=callback.run_id,
-        attempt_id=callback.attempt_id,
-    )
+    identity = _receive_callback_identity(callback_token, callback)
     service = getattr(request.app.state, "run_inputs_service", None)
     if not isinstance(service, RunInputsService):
         raise HTTPException(status_code=503, detail="run_inputs_unavailable")
@@ -678,9 +694,7 @@ async def run_inputs_callback(
         async with transaction() as conn:
             run_identity, _lease = await _lock_callback_authority(
                 conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
+                identity=identity,
             )
             return await service.callback(
                 conn,
@@ -714,30 +728,25 @@ async def mcp_credential_callback(
     response: Response,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
 ) -> dict[str, str]:
-    _require_valid_callback_token(
-        callback_token, callback.callback_token_id,
-        run_id=callback.run_id, attempt_id=callback.attempt_id,
-    )
-    authority = dict(run_id=callback.run_id, attempt_id=callback.attempt_id,
-                     callback_token_id=callback.callback_token_id)
+    identity = _receive_callback_identity(callback_token, callback)
     async with transaction() as conn:
-        identity, lease = await _lock_callback_authority(conn, **authority)
+        run_identity, lease = await _lock_callback_authority(conn, identity=identity)
         payload = lease.get("lease_payload_json") or {}
         bindings = payload.get(MCP_CREDENTIAL_SUBJECTS_LEASE_KEY) or {}
         subject = bindings.get(callback.server_id)
         if not isinstance(subject, dict):
             raise HTTPException(status_code=403, detail="mcp_credential_not_authorized")
         subject = dict(subject)
-        scope = {key: str(identity.get(key) or "") for key in ("tenant_id", "user_id")}
+        scope = {key: str(run_identity.get(key) or "") for key in ("tenant_id", "user_id")}
         lease_id = lease.get("id")
     try:
         jwt = await read_mcp_execution_credential(**scope, credential_subject=subject)
     except McpRuntimeContextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
     async with transaction() as conn:
-        final_identity, final_lease = await _lock_callback_authority(conn, **authority)
+        final_run_identity, final_lease = await _lock_callback_authority(conn, identity=identity)
         final_bindings = (final_lease.get("lease_payload_json") or {}).get(MCP_CREDENTIAL_SUBJECTS_LEASE_KEY) or {}
-        if (any(str(final_identity.get(key) or "") != value for key, value in scope.items())
+        if (any(str(final_run_identity.get(key) or "") != value for key, value in scope.items())
             or final_lease.get("id") != lease_id
             or final_bindings.get(callback.server_id) != subject):
             raise HTTPException(status_code=409, detail="mcp_credential_scope_changed")
@@ -757,12 +766,7 @@ async def provider_session_callback(
 ) -> ProviderSessionCallbackWireResponse:
     """Broker one exact-run Claude SessionStore operation."""
 
-    _require_valid_callback_token(
-        callback_token,
-        callback.callback_token_id,
-        run_id=callback.run_id,
-        attempt_id=callback.attempt_id,
-    )
+    identity = _receive_callback_identity(callback_token, callback)
     include_children = (
         callback.action == "list_subkeys"
         and provider_read_view == PROVIDER_SESSION_CHILD_READ_VIEW
@@ -771,10 +775,7 @@ async def provider_session_callback(
         async with transaction() as conn:
             run_identity, _lease = await _lock_callback_authority(
                 conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                allow_provider_tail=callback.action == "append",
+                identity=identity,
             )
             binding = {
                 "tenant_id": str(run_identity.get("tenant_id") or ""),
@@ -794,9 +795,7 @@ async def provider_session_callback(
         await context_api.transfer_provider_session_media(media)
         async with transaction() as conn:
             final_identity, _lease = await _lock_callback_authority(
-                conn, run_id=callback.run_id, attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                allow_provider_tail=callback.action == "append",
+                conn, identity=identity,
             )
             if any(str(final_identity.get(key) or "") != value for key, value in binding.items()):
                 raise context_api.ProviderSessionConflictError("provider_session_scope_invalid")
@@ -818,16 +817,42 @@ async def provider_session_callback(
         raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc
 
 
-async def _recheck_callback_authority(conn, **binding) -> dict[str, Any]:
+async def _recheck_callback_authority(
+    conn,
+    *,
+    tenant_id: str,
+    identity: SandboxCallbackIdentity | None = None,
+    **binding,
+) -> dict[str, Any]:
+    if identity is None:
+        identity = SandboxCallbackIdentity(**binding)
+    elif binding:
+        raise TypeError("callback identity cannot be combined with legacy binding fields")
     try:
-        return await _sandbox_callback_authority.recheck_attempt(conn, **binding)
+        if isinstance(identity, ProviderSessionAppendIdentity):
+            return await _sandbox_callback_authority.recheck_provider_session_append(
+                conn, tenant_id=tenant_id, identity=identity,
+            )
+        return await _sandbox_callback_authority.recheck_attempt(
+            conn, tenant_id=tenant_id, identity=identity,
+        )
     except SandboxCallbackAuthorityError as exc:
         raise _callback_authority_http_error(exc) from exc
 
 
-async def _lock_callback_authority(conn, **binding) -> tuple[dict[str, Any], dict[str, Any]]:
+async def _lock_callback_authority(
+    conn,
+    identity: SandboxCallbackIdentity | None = None,
+    **binding,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if identity is None:
+        identity = SandboxCallbackIdentity(**binding)
+    elif binding:
+        raise TypeError("callback identity cannot be combined with legacy binding fields")
     try:
-        return await _sandbox_callback_authority.lock_run_then_attempt(conn, **binding)
+        if isinstance(identity, ProviderSessionAppendIdentity):
+            return await _sandbox_callback_authority.lock_provider_session_append(conn, identity)
+        return await _sandbox_callback_authority.lock_run_then_attempt(conn, identity)
     except SandboxCallbackAuthorityError as exc:
         raise _callback_authority_http_error(exc) from exc
 
@@ -839,10 +864,7 @@ def _callback_authority_http_error(exc: SandboxCallbackAuthorityError) -> HTTPEx
 
 def _require_valid_callback_token(
     provided_token: str | None,
-    callback_token_id: str,
-    *,
-    run_id: str,
-    attempt_id: str,
+    identity: SandboxCallbackIdentity,
 ) -> None:
     expected_token = get_settings().sandbox_callback_token
     if not expected_token:
@@ -851,7 +873,7 @@ def _require_valid_callback_token(
             detail="callback_token_not_configured",
         )
     if not callback_token_id_matches_attempt(
-        callback_token_id, run_id=run_id, attempt_id=attempt_id
+        identity.callback_token_id, run_id=identity.run_id, attempt_id=identity.attempt_id
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -859,7 +881,7 @@ def _require_valid_callback_token(
         )
     if not callback_token_matches(
         secret=expected_token,
-        token_id=callback_token_id,
+        token_id=identity.callback_token_id,
         provided_token=provided_token,
     ):
         raise HTTPException(
@@ -876,16 +898,12 @@ async def executor_callback(
         default=None, alias="X-AI-Platform-Callback-Token"
     ),
 ) -> dict[str, object]:
-    _require_valid_callback_token(
-        callback_token,
-        callback.callback_token_id,
-        run_id=callback.run_id,
-        attempt_id=callback.attempt_id,
-    )
+    callback_identity = _receive_callback_identity(callback_token, callback)
     runtime = request.app.state.run_stream_runtime
     return await record_executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
+        callback_identity=callback_identity,
         run_diagnostics=request.app.state.run_diagnostics_service,
         model_token_usage=request.app.state.model_token_usage_service,
     )
@@ -893,6 +911,7 @@ async def executor_callback(
 
 async def _profile_drive_file_response(
     request: ExecutorContextRetrievalRequest,
+    identity: SandboxCallbackIdentity,
 ) -> Any:
     arguments = request.arguments
     path = arguments.get("path") if set(arguments) == {"path"} else None
@@ -907,10 +926,7 @@ async def _profile_drive_file_response(
     async with transaction() as conn:
         run_identity, lease = await _lock_callback_authority(
             conn,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            session_id=request.session_id,
+            identity=identity,
         )
         lease_payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
         if not isinstance(lease_payload, dict) or lease_payload.get(PROFILE_DRIVE_STAGE_LEASE_FLAG) is not True:
@@ -950,9 +966,7 @@ async def _profile_drive_file_response(
                 await _recheck_callback_authority(
                     conn,
                     tenant_id=tenant_id,
-                    run_id=request.run_id,
-                    attempt_id=request.attempt_id,
-                    callback_token_id=request.callback_token_id,
+                    identity=identity,
                 )
                 await streaming_run_events.append_event(
                     conn,
@@ -983,14 +997,9 @@ async def executor_context_retrieval_callback(
 ) -> Any:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
-    _require_valid_callback_token(
-        callback_token,
-        request.callback_token_id,
-        run_id=request.run_id,
-        attempt_id=request.attempt_id,
-    )
+    callback_identity = _receive_callback_identity(callback_token, request)
     if request.action == PROFILE_DRIVE_STAGE_TOOL:
-        return await _profile_drive_file_response(request)
+        return await _profile_drive_file_response(request, callback_identity)
     if request.action == "stage_run_artifact_to_workspace" and accept == "application/octet-stream":
         try:
             return await build_artifact_transfer_response(
@@ -1012,10 +1021,7 @@ async def executor_context_retrieval_callback(
     async with transaction() as conn:
         run_identity, _lease = await _lock_callback_authority(
             conn,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            session_id=request.session_id,
+            identity=callback_identity,
         )
         tenant_id = str(run_identity.get("tenant_id") or "")
         workspace_id = str(run_identity.get("workspace_id") or "")
@@ -1035,7 +1041,7 @@ async def executor_context_retrieval_callback(
         manifest = payload.get("context_manifest") if isinstance(payload, dict) else None
         if request.action not in available_context_retrieval_tools(manifest):
             raise HTTPException(status_code=403, detail="context_retrieval_not_authorized")
-        identity = {
+        context_identity = {
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
             "user_id": user_id,
@@ -1049,7 +1055,7 @@ async def executor_context_retrieval_callback(
             storage_io=run_storage_io,
         )
         try:
-            result = await retrieval.execute(request.action, identity, request.arguments)
+            result = await retrieval.execute(request.action, context_identity, request.arguments)
         except ContextRetrievalInputError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ContextRetrievalDenied as exc:
@@ -1082,8 +1088,6 @@ async def executor_context_retrieval_callback(
         await _recheck_callback_authority(
             conn,
             tenant_id=tenant_id,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
+            identity=callback_identity,
         )
     return {"result": result}

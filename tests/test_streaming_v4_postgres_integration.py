@@ -1706,9 +1706,14 @@ async def test_assembled_callback_authority_holds_real_run_attempt_and_lease_loc
             run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
         ))
         async with _connection_factory(dsn, schema_name) as conn:
+            from app.sandbox.api import SandboxCallbackIdentity
+
             identity, lease = await build_sandbox_callback_authority().lock_run_then_attempt(
-                conn, run_id=run, attempt_id=attempt, callback_token_id=token_id,
-                session_id=f"s_{run[2:]}",
+                conn,
+                SandboxCallbackIdentity(
+                    run_id=run, attempt_id=attempt, callback_token_id=token_id,
+                    session_id=f"s_{run[2:]}",
+                ),
             )
             assert identity["tenant_id"] == tenant and lease["id"] == "lease"
             for table, identifier in (("runs", run), ("run_attempts", attempt), ("sandbox_leases", "lease")):

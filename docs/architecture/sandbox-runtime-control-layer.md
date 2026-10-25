@@ -112,14 +112,17 @@ generation, timestamps, and reconciliation ownership in one migration.
    compatibility payload must carry the same value. Historical rows may be read
    through the previous payload field until they expire.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
-   one current active lease. Shared durable admission and rechecks are owned by
+   one current active lease. Callback identity and token authentication share
+   one typed reception path. Durable admission and rechecks are owned by
    `sandbox.api.SandboxCallbackAuthority`, assembled in
    `bootstrap.sandbox_callbacks` with the existing Run and lease queries. It
    locks Run before the exact Attempt using the caller's connection and
    transaction, derives tenant from persisted Run identity, and preserves
-   session, terminal, Attempt and token-generation fences. Only provider-session
-   append opts into the cancelling provider-tail fallback. HTTP token parsing
-   and rejection status/detail mapping remain in the callback route, as do
+   session, terminal, Attempt and token-generation fences. Only the dedicated
+   `ProviderSessionAppendIdentity` can use the cancelling provider-tail
+   fallback; ordinary executor, input, context and credential callbacks cannot
+   request that lease scope. HTTP token parsing and rejection status/detail
+   mapping remain in the callback route, as do
    receipt persistence, renewal sequencing and post-commit publication. The MCP
    credential callback uses this same authority and the selected Server's
    platform-recorded lease binding; the [MCP execution contract](mcp-tool-execution.md#principal-credential-lifetime)
