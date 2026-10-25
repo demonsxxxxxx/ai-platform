@@ -577,7 +577,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     from app.bootstrap.run_lifecycle import build_run_lifecycle_service
     from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
-    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
     from app.runs.application import attempt_lifecycle
     from app.runs.infrastructure import postgres as run_attempt_persistence
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases

@@ -16,14 +16,14 @@ from app.executor_reconciler import (
     _context_payload,
     _reconciliation_request,
     _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
-    _persist_probe_terminal,
+    _persist_probe_terminal as _persist_probe_terminal_impl,
     _terminalize_reconciliation_failure as _terminalize_reconciliation_failure_impl,
-    probe_suspect_executor_tasks_once,
+    probe_suspect_executor_tasks_once as probe_suspect_executor_tasks_once_impl,
     reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
     run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
 from app.executors.base import ExecutorResult
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
 from app.runtime.sandbox.executor_signals import (
@@ -79,6 +79,7 @@ _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
 
 
 async def _terminalize_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
@@ -87,6 +88,7 @@ async def _terminalize_reconciliation_failure(*args, **kwargs):
 
 
 async def _finish_terminal_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
@@ -94,15 +96,27 @@ async def _finish_terminal_reconciliation_failure(*args, **kwargs):
 
 
 async def reconcile_pending_executor_terminals_once(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
 
 
 async def run_executor_terminal_reconciler(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await run_executor_terminal_reconciler_impl(*args, **kwargs)
+
+
+async def probe_suspect_executor_tasks_once(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
+    return await probe_suspect_executor_tasks_once_impl(*args, **kwargs)
+
+
+async def _persist_probe_terminal(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
+    return await _persist_probe_terminal_impl(*args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +124,7 @@ def _fake_executor_signal_cursor(monkeypatch):
     async def initialize():
         return ExecutorReconciliationSignalCursor("0-0")
 
-    async def no_retry():
+    async def no_retry(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr("app.executor_reconciler._next_terminal_retry_delay", no_retry)
@@ -383,7 +397,7 @@ async def test_reconciler_retries_at_due_time_without_notification_or_fallback_d
             stop.set()
         return 0
 
-    async def retry_delay():
+    async def retry_delay(*_args, **_kwargs):
         return 0.025
 
     async def no_work(**_kwargs):
@@ -891,7 +905,7 @@ async def test_reconciler_entrypoint_rejects_identity_mismatch_before_workspace_
         lambda *_args: SimpleNamespace(**payload_identity),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -980,7 +994,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -996,7 +1010,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
     )
     monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1028,7 +1042,7 @@ async def test_probe_persists_private_diagnostics_before_bounded_terminal_receip
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
     private = {
@@ -1080,7 +1094,7 @@ async def test_probe_persists_only_structural_protocol_evidence(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
     reported_result = {
@@ -1148,7 +1162,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
 
@@ -1244,7 +1258,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -1322,7 +1336,7 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
@@ -1336,7 +1350,7 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
         lambda _provider_name: Provider(),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1378,7 +1392,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
@@ -1396,7 +1410,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     )
     monkeypatch.setattr("app.executor_reconciler._persist_probe_terminal", persist)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1447,7 +1461,7 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects", claim
+        sandbox_lease_repository, "claim_sandbox_executor_suspects", claim
     )
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
@@ -1460,7 +1474,7 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
         lambda _provider_name: Provider(),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim", release
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim", release
     )
 
     assert await probe_suspect_executor_tasks_once() == 0
@@ -1540,17 +1554,17 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
 
     monkeypatch.setattr("app.executor_reconciler.transaction", fenced_transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler.reconcile_executor_terminal_result", terminalize)
-    monkeypatch.setattr("app.executor_reconciler.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending", release)
+    monkeypatch.setattr(sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending", release)
 
     processed = await reconcile_pending_executor_terminals_once(
         worker_id="worker-a",
@@ -1593,12 +1607,12 @@ async def test_reconciler_cancellation_releases_entire_claimed_batch(monkeypatch
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -1640,13 +1654,13 @@ async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -1708,14 +1722,14 @@ async def test_reconciler_times_out_work_before_stale_claim_takeover(monkeypatch
         0.001,
     )
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
     monkeypatch.setattr(executor_reconciler, "_collect_workspace_and_convert_result", collect)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "retry_sandbox_executor_reconciliation",
         retry,
     )
@@ -1769,7 +1783,7 @@ async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(
 
     monkeypatch.setattr(executor_reconciler, "transaction", _transaction)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "claim_sandbox_executor_reconciliations",
         claim,
     )
@@ -1781,7 +1795,7 @@ async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(
         lambda *_args, **_kwargs: pytest.fail("transient failure must remain retryable"),
     )
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "retry_sandbox_executor_reconciliation",
         retry,
     )
@@ -2542,14 +2556,14 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler._finish_terminal_reconciliation_failure", finish)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -2630,7 +2644,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
@@ -2744,7 +2758,7 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -2812,7 +2826,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -2849,7 +2863,7 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
@@ -2883,7 +2897,7 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     monkeypatch.setattr(f"{owner}._terminalize_reconciliation_failure", terminalize)
     monkeypatch.setattr(f"{owner}._sandbox_cleanup.container_lease_from_persisted_row", lambda _row: None)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.quarantine_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "quarantine_sandbox_executor_reconciliation",
         quarantine,
     )
 
@@ -2945,11 +2959,11 @@ async def test_terminal_failure_hands_off_cleanup_without_provider_io(monkeypatc
         provider_factory,
     )
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending",
+        sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending",
         cleanup_pending,
     )
 
@@ -3223,7 +3237,7 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler.reconcile_executor_terminal_result", terminalize)
-    monkeypatch.setattr("app.executor_reconciler.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending", release)
+    monkeypatch.setattr(sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending", release)
 
     assert await reconcile_pending_executor_terminals_once() == 1
     if expected_release:

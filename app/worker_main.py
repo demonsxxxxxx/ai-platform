@@ -51,7 +51,7 @@ from app.control_plane_contracts import (
 from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
-from app.executor_reconciler import run_executor_terminal_reconciler
+from app.bootstrap.executor_reconciliation import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.storage import ObjectStorage, run_storage_io
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup

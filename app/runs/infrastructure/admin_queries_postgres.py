@@ -24,7 +24,7 @@ from app.runs.domain.run_status import ACTIVE_RUN_STATUSES, is_terminal_run_stat
 from app.runs.application.admin_run_monitor import build_admin_runtime_health
 from app.runs.infrastructure.postgres import get_latest_run_attempt, get_run
 from app.runs.infrastructure.steps_postgres import list_run_steps
-from app.sandbox.infrastructure.leases_postgres import list_sandbox_leases_for_run
+from app.sandbox.api import SandboxRunLeaseReader
 from app.skills.infrastructure.run_snapshots_postgres import _attach_skill_usage
 from app.skills.infrastructure.run_snapshots_postgres import _sanitize_skill_snapshot
 from app.skills.infrastructure.run_snapshots_postgres import list_run_skill_snapshots
@@ -540,7 +540,13 @@ def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+async def get_admin_run_detail(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    sandbox_lease_reader: SandboxRunLeaseReader,
+) -> dict[str, Any] | None:
     run = await get_run(conn, tenant_id=tenant_id, run_id=run_id)
     if run is None:
         return None
@@ -554,7 +560,9 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     events = await list_run_events(conn, tenant_id=tenant_id, run_id=run_id)
     steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     artifacts = await list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
-    sandbox_leases = await list_sandbox_leases_for_run(conn, tenant_id=tenant_id, run_id=run_id)
+    sandbox_leases = await sandbox_lease_reader.list_sandbox_leases_for_run(
+        conn, tenant_id=tenant_id, run_id=run_id
+    )
     latest_attempt = (
         await get_latest_run_attempt(conn, tenant_id=tenant_id, run_id=run_id)
         if run["status"] == "running" else None

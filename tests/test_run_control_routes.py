@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from app.auth import AuthPrincipal
 import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 import app.runs.infrastructure.replay_postgres as replay_persistence
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
@@ -5710,7 +5711,7 @@ async def test_admin_run_detail_includes_run_steps(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_list_run_steps)
 
-    detail = await _repo_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
+    detail = await _repo_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
     assert detail["run"]["cancel_requested_at"] == "2026-05-27T01:02:03Z"
     assert detail["run"]["cancel_requested_by"] == "admin-a"

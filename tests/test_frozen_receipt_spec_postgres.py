@@ -225,7 +225,7 @@ async def full_receipt_db():
     deliberately includes every production constraint and lifecycle trigger.
     """
     from pathlib import Path
-    from app.platform.postgres import sandbox_leases
+    from app.sandbox.infrastructure import leases_postgres as sandbox_leases
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN")
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -335,7 +335,7 @@ async def test_full_schema_real_cancellation_cas_rejects_old_success_and_rolls_b
 
 @pytest.mark.asyncio
 async def test_full_schema_lost_claim_cannot_adopt_new_receipt_owner_or_write_terminal(full_receipt_db):
-    from app.platform.postgres import sandbox_leases
+    from app.sandbox.infrastructure import leases_postgres as sandbox_leases
     connect, args, _spec = full_receipt_db
     async with connect() as conn:
         await restore(conn, **args)

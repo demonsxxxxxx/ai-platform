@@ -17,7 +17,14 @@ from app.runtime.sandbox.container_provider import (
     OpenSandboxContainerProvider,
 )
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest
-from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
+from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+
+
+class SandboxRuntime(_SandboxRuntime):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("lease_port", sandbox_lease_repository)
+        super().__init__(*args, **kwargs)
 
 
 class _Cursor:

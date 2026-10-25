@@ -36,7 +36,11 @@ from app.mcp.api import (
     get_mcp_principal_jwt_store,
     read_mcp_execution_credential,
 )
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.api import (
+    SandboxExecutorCallbackLeasePort,
+    SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError,
+)
 from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.streaming.api import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
@@ -181,6 +185,7 @@ async def record_executor_callback(
     callback: ExecutorCallbackEvent,
     *,
     capabilities: WorkerV4Capabilities,
+    lease_port: SandboxExecutorCallbackLeasePort,
     run_diagnostics: RunDiagnosticsService | None = None,
     model_token_usage: ModelTokenUsageService | None = None,
 ) -> dict[str, object]:
@@ -402,7 +407,7 @@ async def record_executor_callback(
                 ) from exc
             terminal_was_new = lease.get("executor_terminal_json") is None
             try:
-                await sandbox_lease_repository.record_sandbox_executor_terminal(
+                await lease_port.record_sandbox_executor_terminal(
                     conn,
                     tenant_id=tenant_id,
                     run_id=callback.run_id,
@@ -412,8 +417,8 @@ async def record_executor_callback(
                     terminal_result=terminal_receipt,
                 )
             except (
-                sandbox_lease_repository.SandboxExecutorTerminalConflictError,
-                sandbox_lease_repository.SandboxLeaseReleaseScopeMismatchError,
+                SandboxExecutorTerminalConflictError,
+                SandboxLeaseReleaseScopeMismatchError,
                 ValueError,
             ) as exc:
                 raise HTTPException(
@@ -437,7 +442,7 @@ async def record_executor_callback(
                 )
         elif lease_id:
             settings = get_settings()
-            heartbeat = await sandbox_lease_repository.record_sandbox_executor_heartbeat(
+            heartbeat = await lease_port.record_sandbox_executor_heartbeat(
                 conn,
                 tenant_id=tenant_id,
                 run_id=callback.run_id,
@@ -462,7 +467,7 @@ async def record_executor_callback(
                         status_code=503,
                         detail="sandbox_runtime_renewal_failed",
                     )
-                receipt = await sandbox_lease_repository.record_opensandbox_renewal_receipt(
+                receipt = await lease_port.record_opensandbox_renewal_receipt(
                     conn,
                     tenant_id=tenant_id,
                     run_id=callback.run_id,
@@ -886,6 +891,7 @@ async def executor_callback(
     return await record_executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
+        lease_port=request.app.state.sandbox_executor_callback_leases,
         run_diagnostics=request.app.state.run_diagnostics_service,
         model_token_usage=request.app.state.model_token_usage_service,
     )

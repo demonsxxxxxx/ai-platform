@@ -25,6 +25,7 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
 )
 from app.streaming.infrastructure import v4 as streaming_v4
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
@@ -354,7 +355,7 @@ def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities):
+    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
         raise AssertionError("foreign run token must be rejected before recording")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -567,7 +568,7 @@ def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities):
+    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
         raise AssertionError("callback must fail closed when token is not configured")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -597,6 +598,7 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             callback,
             *,
             capabilities,
+            lease_port,
             run_diagnostics=None,
             model_token_usage=None,
         ):
@@ -687,7 +689,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -817,7 +819,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
         _owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event
     )
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -825,7 +827,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
         runtime_callbacks, "fail_run_terminalization", unexpected_fail_run, raising=False
     )
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "release_sandbox_lease",
         unexpected_release,
     )
@@ -912,7 +914,7 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -1562,6 +1564,7 @@ async def test_executor_callback_requires_batch_identity_for_text_checkpoint() -
     with pytest.raises(HTTPException) as exc_info:
         await runtime_callbacks.record_executor_callback(
             callback, capabilities=callback_event_capabilities(),
+            lease_port=sandbox_lease_reader,
         )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "callback_batch_id_required"
@@ -1655,7 +1658,7 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
     monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'list_current_sandbox_runtime_leases_for_attempt', exact_lease)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
@@ -1720,7 +1723,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
@@ -1848,14 +1851,14 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_opensandbox_renewal_receipt",
         fake_receipt,
     )
@@ -1934,7 +1937,7 @@ def test_opensandbox_callback_renewal_failure_leaves_callback_unpersisted(monkey
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append)
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_lease_repository,
+        _owner_sandbox_infrastructure_leases_postgres,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
@@ -2032,8 +2035,8 @@ async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_termin
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: object())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", unexpected_write)
-    monkeypatch.setattr(runtime_callbacks.sandbox_lease_repository, "record_sandbox_executor_heartbeat", unexpected_write)
-    monkeypatch.setattr(runtime_callbacks.sandbox_lease_repository, "record_opensandbox_renewal_receipt", unexpected_write)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "record_sandbox_executor_heartbeat", unexpected_write)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "record_opensandbox_renewal_receipt", unexpected_write)
 
     callback = ExecutorCallbackEvent.model_validate(
         callback_payload(new_message=None, state_patch={"executor_heartbeat": True})
@@ -2042,6 +2045,7 @@ async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_termin
         await runtime_callbacks.record_executor_callback(
             callback,
             capabilities=callback_event_capabilities(),
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.status_code == 409
@@ -2292,6 +2296,7 @@ async def test_executor_callback_requires_batch_identity_for_public_progress() -
         await runtime_callbacks.record_executor_callback(
             callback,
             capabilities=callback_event_capabilities(),
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.status_code == 409
@@ -2329,6 +2334,7 @@ async def test_executor_callback_requires_batch_identity_for_thinking_summary() 
         await runtime_callbacks.record_executor_callback(
             callback,
             capabilities=callback_event_capabilities(),
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.status_code == 409
@@ -2417,6 +2423,7 @@ async def test_record_executor_callback_rolls_back_receipt_and_v4_rows_after_fin
         await runtime_callbacks.record_executor_callback(
             callback,
             capabilities=capabilities,
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
@@ -2510,6 +2517,7 @@ async def test_record_executor_callback_enforces_v4_batch_authority_attempt_and_
         await runtime_callbacks.record_executor_callback(
             callback,
             capabilities=capabilities,
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.detail == expected_detail
