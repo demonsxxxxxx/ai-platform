@@ -640,7 +640,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_delivery_intents",
         "chk_run_delivery_intents_state",
         "c",
-        "CHECK (state = ANY (ARRAY['pending'::text, 'claimed'::text, '
+        "CHECK (state = ANY (ARRAY['pending'::text, 'claimed'::text, "
         "'delivered'::text, 'suppressed'::text]))",
     ),
     (
