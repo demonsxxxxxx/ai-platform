@@ -28,6 +28,7 @@ from app.bootstrap.run_lifecycle import (
     build_run_cancellation_use_case,
     build_run_lifecycle_service,
 )
+from app.bootstrap.run_delivery_intents import build_run_delivery_intents
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_inputs import build_run_inputs_service
@@ -185,6 +186,7 @@ def create_app() -> FastAPI:
     app.state.run_inputs_service = build_run_inputs_service()
     app.state.model_token_usage_service = build_model_token_usage_service()
     settings = get_settings()
+    app.state.run_delivery_intents = build_run_delivery_intents(settings, transaction)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(settings.cors_allow_origins),

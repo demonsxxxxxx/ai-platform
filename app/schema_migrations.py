@@ -50,7 +50,8 @@ MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
-TARGET_SCHEMA_VERSION = MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
+RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.1"
+TARGET_SCHEMA_VERSION = RUN_DELIVERY_INTENTS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -82,6 +83,7 @@ CRITICAL_RELATIONS = (
     "file_upload_sessions",
     "artifacts",
     "object_deletion_outbox",
+    "run_delivery_intents",
     "audit_logs",
     "sandbox_leases",
     "mcp_servers",
@@ -332,6 +334,29 @@ CRITICAL_COLUMNS = (
     ("provider_turn_receipts", "epoch_id", "text", True),
     ("provider_turn_receipts", "execution_spec_sha256", "text", True),
     ("provider_turn_receipts", "committed_coverage_sha256", "text", False),
+    ("run_delivery_intents", "tenant_id", "text", True),
+    ("run_delivery_intents", "run_id", "text", True),
+    ("run_delivery_intents", "session_id", "text", True),
+    ("run_delivery_intents", "source", "text", True),
+    ("run_delivery_intents", "submission_id", "uuid", False),
+    ("run_delivery_intents", "user_message_id", "text", False),
+    ("run_delivery_intents", "queue_payload_json", "text", True),
+    ("run_delivery_intents", "queue_message_id", "text", True),
+    ("run_delivery_intents", "payload_sha256", "text", True),
+    ("run_delivery_intents", "state", "text", True),
+    ("run_delivery_intents", "claim_token", "uuid", False),
+    ("run_delivery_intents", "claimed_at", "timestamptz", False),
+    ("run_delivery_intents", "claim_expires_at", "timestamptz", False),
+    ("run_delivery_intents", "attempt_count", "int4", True),
+    ("run_delivery_intents", "next_retry_at", "timestamptz", True),
+    ("run_delivery_intents", "last_error_code", "text", False),
+    ("run_delivery_intents", "queue_position", "int4", False),
+    ("run_delivery_intents", "queue_admission_ordinal", "int8", False),
+    ("run_delivery_intents", "queue_admission_source", "text", False),
+    ("run_delivery_intents", "delivered_at", "timestamptz", False),
+    ("run_delivery_intents", "suppressed_at", "timestamptz", False),
+    ("run_delivery_intents", "created_at", "timestamptz", True),
+    ("run_delivery_intents", "updated_at", "timestamptz", True),
 )
 CRITICAL_CONSTRAINTS = (
     ("model_token_usage_scopes", "model_token_usage_scopes_pkey"),
@@ -368,6 +393,15 @@ CRITICAL_CONSTRAINTS = (
     ("run_diagnostics", "chk_run_diagnostics_revision"),
     ("run_diagnostics", "chk_run_diagnostics_payload"),
     ("run_diagnostics", "run_diagnostics_tenant_id_run_id_key"),
+    ("run_delivery_intents", "run_delivery_intents_pkey"),
+    ("run_delivery_intents", "fk_run_delivery_intents_run"),
+    ("run_delivery_intents", "chk_run_delivery_intents_source"),
+    ("run_delivery_intents", "chk_run_delivery_intents_state"),
+    ("run_delivery_intents", "chk_run_delivery_intents_identity"),
+    ("run_delivery_intents", "chk_run_delivery_intents_attempt_count"),
+    ("run_delivery_intents", "chk_run_delivery_intents_claim"),
+    ("run_delivery_intents", "chk_run_delivery_intents_receipt"),
+    ("run_delivery_intents", "chk_run_delivery_intents_suppressed"),
     ("run_attempts", "fk_run_attempts_run"),
     ("run_attempts", "chk_run_attempts_ordinal"),
     ("run_attempts", "chk_run_attempts_owner_generation"),
@@ -589,6 +623,25 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_diagnostics_tenant_id_run_id_key",
         "u",
         "UNIQUE (tenant_id, run_id)",
+    ),
+    (
+        "run_delivery_intents",
+        "run_delivery_intents_pkey",
+        "p",
+        "PRIMARY KEY (tenant_id, run_id)",
+    ),
+    (
+        "run_delivery_intents",
+        "fk_run_delivery_intents_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_state",
+        "c",
+        "CHECK (state = ANY (ARRAY['pending'::text, 'claimed'::text, '
+        "'delivered'::text, 'suppressed'::text]))",
     ),
     (
         "mcp_servers",
@@ -1027,6 +1080,19 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ),
 )
 STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "idx_run_delivery_intents_due",
+        "run_delivery_intents",
+        ("state", "next_retry_at", "created_at", "run_id"),
+        (False, False, False, False),
+    ),
+    StaticIndexDefinition(
+        "uq_run_delivery_intents_queue_identity",
+        "run_delivery_intents",
+        ("queue_message_id",),
+        (False,),
+        unique=True,
+    ),
     StaticIndexDefinition(
         "idx_model_token_usage_coverage_window", "model_token_usage_coverage",
         ("tenant_id", "recorded_at"), (False, False),

@@ -557,6 +557,19 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
     )
 
 
+def _run_delivery_intents(request: Request):
+    return getattr(request.app.state, "run_delivery_intents", None)
+
+
+def _queue_metadata_from_delivery(receipt) -> QueueAdmissionMetadata:
+    return QueueAdmissionMetadata(
+        queue_position=int(receipt.queue_position),
+        queue_admission_ordinal=int(receipt.queue_admission_ordinal),
+        message_id=str(receipt.message_id),
+        source=str(receipt.source),
+    )
+
+
 async def queue_insight_for_status(status: str, tenant_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
     if normalize_run_status(status) != "queued":
         return None
@@ -1124,6 +1137,13 @@ async def create_run(
                         skill_id=resolved_skill_id,
                     ),
                 )
+            delivery_intents = _run_delivery_intents(http_request)
+            if delivery_intents is not None and delivery_intents.enabled:
+                await delivery_intents.record(
+                    conn,
+                    queue_payload,
+                    source="create_run",
+                )
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
@@ -1133,6 +1153,31 @@ async def create_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    delivery_intents = _run_delivery_intents(http_request)
+    if delivery_intents is not None and delivery_intents.enabled:
+        delivery = await delivery_intents.deliver_one(tenant_id=tenant_id, run_id=run_id)
+        if delivery.receipt is not None:
+            return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
+        if delivery.error_code == "queue_payload_invalid":
+            exc = QueueAdmissionRejected("queue_payload_invalid")
+            await _compensate_enqueue_failure(
+                principal=principal,
+                run_id=run_id,
+                run_lifecycle=http_request.app.state.run_lifecycle,
+                v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
+                diagnostic_error=exc,
+                run_diagnostics=getattr(
+                    http_request.app.state,
+                    "run_diagnostics_service",
+                    None,
+                ),
+            )
+            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+        return CreateRunResponse(
+            run_id=run_id,
+            session_id=session_id,
+            status="accepted_pending_enqueue",
+        )
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
@@ -1201,6 +1246,13 @@ async def copy_run(
                     source="copy_run",
                     authorized_source_run_id=run_id,
                 )
+                delivery_intents = _run_delivery_intents(request)
+                if delivery_intents is not None and delivery_intents.enabled:
+                    await delivery_intents.record(
+                        conn,
+                        queue_payload,
+                        source="copy",
+                    )
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
@@ -1250,40 +1302,51 @@ async def copy_run(
             await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
             raise
         raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
-    try:
-        queue_position = await enqueue_run(queue_payload)
-    except Exception as exc:
-        if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
-            "queue_payload_invalid",
-            "run_reconciliation_in_progress",
-        }:
-            await _compensate_enqueue_failure(
-                principal=principal,
-                run_id=str(copied["run_id"]),
-                run_lifecycle=request.app.state.run_lifecycle,
-                v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
-                diagnostic_error=exc,
-                run_diagnostics=getattr(
-                    request.app.state,
-                    "run_diagnostics_service",
-                    None,
-                ),
-            )
-            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
-        # The enqueue may have committed before its reply was lost. Keep the
-        # committed child and return its identity even if Redis is unavailable
-        # for readback, so the caller can observe the eventual Run outcome.
-        try:
-            admission = await read_queue_admission(queue_payload)
-        except Exception:
-            admission = None
-        if admission is None:
+    delivery_intents = _run_delivery_intents(request)
+    if delivery_intents is not None and delivery_intents.enabled:
+        delivery = await delivery_intents.deliver_one(
+            tenant_id=principal.tenant_id,
+            run_id=str(copied["run_id"]),
+        )
+        if delivery.receipt is None:
             return RunControlResponse(
                 run_id=copied["run_id"],
                 session_id=copied["session_id"],
                 status="accepted_pending_enqueue",
             )
-        queue_position = int(admission.queue_position)
+        queue_position = int(delivery.receipt.queue_position)
+    else:
+        try:
+            queue_position = await enqueue_run(queue_payload)
+        except Exception as exc:
+            if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
+                "queue_payload_invalid",
+                "run_reconciliation_in_progress",
+            }:
+                await _compensate_enqueue_failure(
+                    principal=principal,
+                    run_id=str(copied["run_id"]),
+                    run_lifecycle=request.app.state.run_lifecycle,
+                    v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+                    diagnostic_error=exc,
+                    run_diagnostics=getattr(
+                        request.app.state,
+                        "run_diagnostics_service",
+                        None,
+                    ),
+                )
+                raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+            try:
+                admission = await read_queue_admission(queue_payload)
+            except Exception:
+                admission = None
+            if admission is None:
+                return RunControlResponse(
+                    run_id=copied["run_id"],
+                    session_id=copied["session_id"],
+                    status="accepted_pending_enqueue",
+                )
+            queue_position = int(admission.queue_position)
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1320,8 +1383,25 @@ async def _ensure_run_control_queue_admission(
     *,
     check_existing: bool,
     principal: AuthPrincipal,
+    run_delivery_intents=None,
 ) -> QueueAdmissionMetadata:
     """Recover or idempotently admit one immutable committed control child."""
+
+    if run_delivery_intents is not None and run_delivery_intents.enabled:
+        async with transaction() as conn:
+            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
+                conn,
+                principal=principal,
+                run_id=str(queue_payload["run_id"]),
+            )
+        delivery = await run_delivery_intents.deliver_one(
+            tenant_id=principal.tenant_id,
+            run_id=str(queue_payload["run_id"]),
+        )
+        if delivery.receipt is not None:
+            return _queue_metadata_from_delivery(delivery.receipt)
+        if delivery.error_code != "delivery_intent_missing":
+            raise HTTPException(status_code=503, detail="queue_admission_unconfirmed")
 
     async with transaction() as conn:
         await _agent_profile_authority.reauthorize_pinned_run_for_replay(
@@ -1380,6 +1460,7 @@ async def _mutate_run_control_child(
     run_id: str,
     action: Literal["retry", "resume"],
     operation_id: UUID4,
+    request: Request,
     principal: AuthPrincipal,
     v4_capabilities: WorkerV4Capabilities,
 ) -> RunControlMutationResponse:
@@ -1464,6 +1545,13 @@ async def _mutate_run_control_child(
                         source=f"{action}_run",
                         authorized_source_run_id=run_id,
                     )
+                    delivery_intents = _run_delivery_intents(request)
+                    if delivery_intents is not None and delivery_intents.enabled:
+                        await delivery_intents.record(
+                            conn,
+                            queue_payload,
+                            source=action,
+                        )
                     await runs_control_operations.record_run_control_operation(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1501,6 +1589,7 @@ async def _mutate_run_control_child(
                 queue_payload,
                 check_existing=not created,
                 principal=principal,
+                run_delivery_intents=_run_delivery_intents(request),
             )
         except HTTPException as exc:
             await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
@@ -1548,6 +1637,7 @@ async def retry_run(
         run_id=run_id,
         action="retry",
         operation_id=operation_id or uuid4(),
+        request=request,
         principal=principal,
         v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
@@ -1567,6 +1657,7 @@ async def resume_run(
         run_id=run_id,
         action="resume",
         operation_id=operation_id or uuid4(),
+        request=request,
         principal=principal,
         v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )

@@ -11,6 +11,13 @@ from app.execution.application.worker_skill_evidence import (
     skill_manifests_for_persistence as skill_manifests_for_persistence,
     skill_snapshot_from_result as skill_snapshot_from_result,
 )
+from app.execution.application.run_delivery_intents import (
+    DeliveryAttemptResult as DeliveryAttemptResult,
+    DeliveryScanResult as DeliveryScanResult,
+    QueueDeliveryError as QueueDeliveryError,
+    QueueDeliveryReceipt as QueueDeliveryReceipt,
+    RunDeliveryIntents as RunDeliveryIntents,
+)
 from app.execution.application.worker_terminal_projection import (
     WorkerExecutorResult as WorkerExecutorResult,
     WorkerTerminalProjection as WorkerTerminalProjection,
@@ -167,6 +174,11 @@ async def resolve_chat_model_selection(
 
 __all__ = [
     "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "DeliveryAttemptResult",
+    "DeliveryScanResult",
+    "QueueDeliveryError",
+    "QueueDeliveryReceipt",
+    "RunDeliveryIntents",
     "MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS",
     "assert_upstream_model_id",
     "route_office_execution_tier",
