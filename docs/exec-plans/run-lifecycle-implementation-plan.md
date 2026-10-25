@@ -293,7 +293,20 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 比对：身份、原回执摘要、accepted 合并、结算含义、取消/generation、next-retry 和 cleanup 归属；不要求不同表示的时间戳字节相等。影子写失败造成的事务影响也必须测量。
 - 回退：停止 shadow 写；旧事实未被修改。回填不执行旧任务、不重写 Spec 或原 terminal receipt。
 
-当前 N30/N31 投影切片（schema `2026.10.25.4`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果不提供全局 ready 状态，也不得授权切读；未来切读前须增加固定快照边界和全分母累计的扫描证明。旧 Sandbox writer 尚未接入该端口，普通写入、读路径和监督调度仍由现有 owner 负责；接入须由 N13 owner 在既有锁序的同一事务中完成。
+当前 N30/N31 投影切片（schema `2026.10.25.4`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果不提供全局 ready 状态，也不得授权切读。shadow writer 由 `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` 显式启用，默认关闭；旧 Sandbox writer仍是唯一业务权威。
+
+同事务 hook 与锁序：
+
+| Hook | 受影子化的源字段 | 锁序/边界 |
+|---|---|---|
+| Attempt 创建、Sandbox lease 创建 | Attempt 状态/代际快照、source lease identity | Attempt 创建遵守现有 Run/Attempt owner；lease 创建从调用事务读当前事实并写 detail，不另取源行锁 |
+| Sandbox accepted 与 terminal receipt、dispatch intent | `dispatch_state`、accepted context、receipt identity/content/digest/generation、phase/attempt count | 先锁 Run，再按 lease id 锁该 Attempt 的 lease 集合，再锁 Attempt；写旧 lease 后经 `AttemptSettlementProjectionService.persist_in_transaction` 写 detail |
+| terminal reconciliation claim 与 retry | `settlement_phase`、claim/token/time、retry clock/count | 有界 claim 先持有其选中的 Sandbox lease；hook 只读源行并写 Runs detail，不再请求 Run/Attempt 锁；单条 retry 也以无锁源读回避 lease→Run 逆序 |
+| Run/Attempt terminalize | Run/Attempt 状态、结果、取消与 owner-generation 快照 | 复用现有 Run/Attempt terminalization 事务，再写 detail；detail 写入本身不迁移 Attempt、不增加 generation |
+| executor heartbeat、cleanup claim、lease release | heartbeat 时间与 Sandbox 资源/清理事实 | 不写 settlement detail；清理状态由 Sandbox lease 保持权威，比较时仍纳入全分母 cleanup 统计 |
+| cleanup pending、cleanup finalize / reconciliation failed | 仅当底层 reconciliation status 改变 settlement phase 时刷新；cleanup claim/retry 字段仍不投影 | 更新前由原 Sandbox writer持有其 lease；hook 只读 source facts 并写 detail，不再请求 Run/Attempt 锁 |
+
+调用方事务中的 shadow SQL 失败会使源写与 detail 一起回滚。页级 compare 保持 page scope。新增 `compare_snapshot` 只在 caller transaction 为 `REPEATABLE READ` 或 `SERIALIZABLE` 时扫描全部分页，返回完整分母和快照身份；它不返回 `switch_ready`。未来 N40 必须在新的 `READ COMMITTED` 切换事务里用 `snapshot_is_current` 重验 Attempt 数量和最高 key；该检查用短暂 `SHARE` 表锁阻止事务提交前出现并发 Attempt 插入，证明失效时拒绝启用。该扫描只保留逐页计数、无行锁和外部 I/O，但单个 MVCC snapshot 的持续时间随全量扫描增长；切换事务的表锁范围限于 `run_attempts` 且不跨越外部 I/O。
 
 **N32：统一监督调度的只读决策阶段 — Execution scheduler + 各决策 owner。依赖 N21/N23/N31。**
 

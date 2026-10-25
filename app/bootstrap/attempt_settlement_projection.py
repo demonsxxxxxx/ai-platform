@@ -6,8 +6,12 @@ from app.runs.api import (
 )
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (
     backfill_attempt_settlement_projections,
+    attempt_settlement_snapshot_is_current,
     compare_attempt_settlement_projections,
+    compare_attempt_settlement_snapshot,
+    lock_attempt_settlement_projection_sources,
     persist_attempt_settlement_projection,
+    refresh_attempt_settlement_projection,
 )
 
 
@@ -19,6 +23,10 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
             backfill=backfill_attempt_settlement_projections,
             compare=compare_attempt_settlement_projections,
             persist=persist_attempt_settlement_projection,
+            lock_sources=lock_attempt_settlement_projection_sources,
+            refresh=refresh_attempt_settlement_projection,
+            compare_snapshot=compare_attempt_settlement_snapshot,
+            snapshot_is_current=attempt_settlement_snapshot_is_current,
         )
     )
 

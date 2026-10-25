@@ -725,6 +725,315 @@ async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(at
         }
 
 
+@pytest.mark.asyncio
+async def test_real_postgres_shadow_writers_and_stable_snapshot(
+    attempt_settlement_db, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_callback_lease_port
+    from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
+
+    connect, *_ = attempt_settlement_db
+    projection_service = build_attempt_settlement_projection_service()
+    monkeypatch.setattr(
+        sandbox_lease_ports,
+        "get_settings",
+        lambda: SimpleNamespace(run_attempt_settlement_shadow_enabled=True),
+    )
+    lease_port = build_sandbox_executor_callback_lease_port()
+
+    async def create_attempt(conn, run_id: str, context_id: str, queue_id: str):
+        await conn.execute(
+            """
+            insert into runs(id, tenant_id, workspace_id, user_id, session_id, agent_id,
+              execution_kind, status, model_id, model_value, model_gateway_revision,
+              auto_compact_window, max_output_tokens)
+            values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'agent-a',
+              'harness_chat', 'queued', 'model-a', 'claude-test', 3, 200000, 4096)
+            """,
+            (run_id,),
+        )
+        await conn.execute(
+            """
+            insert into run_context_snapshots(id, tenant_id, workspace_id, user_id, session_id, run_id)
+            values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s)
+            """,
+            (context_id, run_id),
+        )
+        await conn.execute(
+            """
+            update runs set context_snapshot_id = %s, input_json = %s::jsonb where id = %s
+            """,
+            (
+                context_id,
+                json.dumps({
+                    "executor_type": "claude-agent-worker",
+                    "context_snapshot_id": context_id,
+                    "context_snapshot": {"context_snapshot_id": context_id},
+                }),
+                run_id,
+            ),
+        )
+        return await attempt_postgres.start_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id=run_id,
+            queue_attempt_id=queue_id,
+            worker_id=f"worker-{run_id}",
+            execution_spec=frozen_spec(
+                run_id=run_id,
+                context_snapshot_id=context_id,
+                context_snapshot={"context_snapshot_id": context_id},
+            ),
+        )
+
+    async def create_lease(conn, *, run_id: str, attempt_id: str, lease_id: str, generation: int):
+        await conn.execute(
+            """
+            insert into sandbox_leases(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+              sandbox_mode, provider, status, lease_payload_json, executor_status,
+              executor_reconciliation_status, executor_terminal_reconciliation_attempt_count
+            ) values (
+              %s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s, %s,
+              'ephemeral', 'fake', 'active', %s::jsonb, 'accepted', 'waiting_terminal', 0
+            )
+            """,
+            (lease_id, run_id, attempt_id, json.dumps({"owner_generation": generation})),
+        )
+
+    async with connect() as conn, conn.transaction():
+        live_attempt = await create_attempt(conn, "run-d", "context-d", "qat-d")
+        await create_lease(
+            conn,
+            run_id="run-d",
+            attempt_id=live_attempt["id"],
+            lease_id="lease-d",
+            generation=live_attempt["owner_generation"],
+        )
+
+    accepted_context = {"adapter_name": "test", "accepted_context": "persisted"}
+
+    async def accept_on_own_connection():
+        async with connect() as conn, conn.transaction():
+            return await lease_port.record_sandbox_executor_accepted(
+                conn,
+                tenant_id="tenant-a",
+                run_id="run-d",
+                attempt_id=live_attempt["id"],
+                lease_id="lease-d",
+                reconciliation_context=accepted_context,
+            )
+
+    accepted, repeated_accept = await asyncio.gather(
+        accept_on_own_connection(), accept_on_own_connection()
+    )
+    assert accepted["executor_terminal_json"] is None
+    assert repeated_accept["executor_reconciliation_context_json"] == accepted_context
+    async with connect() as conn, conn.transaction():
+        detail = await (
+            await conn.execute(
+                "select * from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-d'"
+            )
+        ).fetchone()
+        source = await (
+            await conn.execute("select owner_generation from run_attempts where id=%s", (live_attempt["id"],))
+        ).fetchone()
+        assert detail["dispatch_state"] == "accepted"
+        assert detail["settlement_phase"] == "awaiting_receipt"
+        assert detail["accepted_context_json"] == accepted_context
+        assert detail["receipt_identity"] is None
+        assert source["owner_generation"] == live_attempt["owner_generation"]
+
+        terminal_attempt = await create_attempt(conn, "run-e", "context-e", "qat-e")
+        await create_lease(
+            conn,
+            run_id="run-e",
+            attempt_id=terminal_attempt["id"],
+            lease_id="lease-e",
+            generation=terminal_attempt["owner_generation"],
+        )
+
+    async with connect() as conn, conn.transaction():
+        receipt = {"run_id": "run-e", "status": "succeeded", "answer": "early"}
+        await lease_port.record_sandbox_executor_terminal(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-e",
+            attempt_id=terminal_attempt["id"],
+            lease_id="lease-e",
+            executor_status="completed",
+            terminal_result=receipt,
+        )
+        early = await (
+            await conn.execute(
+                "select * from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-e'"
+            )
+        ).fetchone()
+        assert early["dispatch_state"] == "receipt_before_acceptance"
+        assert early["settlement_phase"] == "awaiting_context"
+
+    from app.runs.application.attempt_settlement_projection import AttemptSettlementProjectionService
+
+    async def fail_shadow(self, conn, projection, *, insert_only=False):
+        raise RuntimeError("injected_attempt_settlement_shadow_failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(AttemptSettlementProjectionService, "persist_in_transaction", fail_shadow)
+        with pytest.raises(RuntimeError, match="injected_attempt_settlement_shadow_failure"):
+            async with connect() as conn, conn.transaction():
+                await lease_port.record_sandbox_executor_accepted(
+                    conn,
+                    tenant_id="tenant-a",
+                    run_id="run-e",
+                    attempt_id=terminal_attempt["id"],
+                    lease_id="lease-e",
+                    reconciliation_context={"adapter_name": "test", "accepted_context": "late"},
+                )
+    async with connect() as conn, conn.transaction():
+        source = await (
+            await conn.execute("select executor_reconciliation_context_json from sandbox_leases where id='lease-e'")
+        ).fetchone()
+        detail = await (
+            await conn.execute(
+                "select dispatch_state, accepted_context_json, settlement_phase "
+                "from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-e'"
+            )
+        ).fetchone()
+        assert source["executor_reconciliation_context_json"] is None
+        assert detail == {
+            "dispatch_state": "receipt_before_acceptance",
+            "accepted_context_json": None,
+            "settlement_phase": "awaiting_context",
+        }
+
+        await lease_port.record_sandbox_executor_accepted(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-e",
+            attempt_id=terminal_attempt["id"],
+            lease_id="lease-e",
+            reconciliation_context={"adapter_name": "test", "accepted_context": "late"},
+        )
+        from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+
+        reconciler_port = build_sandbox_executor_reconciliation_port()
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_retry_not_before=now() + interval '1 day' "
+            "where id='lease-a'"
+        )
+        claims = await reconciler_port.claim_sandbox_executor_reconciliations(
+            conn, claim_token="claim-e", limit=10, stale_after_seconds=60,
+        )
+        assert any(row["id"] == "lease-e" for row in claims)
+        claimed_detail = await (
+            await conn.execute(
+                "select settlement_phase, settlement_claim_token from run_attempt_settlements "
+                "where tenant_id='tenant-a' and run_id='run-e'"
+            )
+        ).fetchone()
+        assert claimed_detail == {"settlement_phase": "claimed", "settlement_claim_token": "claim-e"}
+
+    async with connect() as conn, conn.transaction():
+        assert await reconciler_port.retry_sandbox_executor_reconciliation(
+            conn, lease_id="lease-e", claim_token="claim-e", error="transient",
+        ) is True
+        retry_detail = await (
+            await conn.execute(
+                "select settlement_phase, next_retry_at, settlement_attempt_count "
+                "from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-e'"
+            )
+        ).fetchone()
+        assert retry_detail["settlement_phase"] == "retry"
+        assert retry_detail["next_retry_at"] is not None
+        assert retry_detail["settlement_attempt_count"] == 1
+        await conn.execute("update sandbox_leases set status='released', released_at=now() where id='lease-e'")
+        released_compare = await projection_service.compare(conn, limit=800)
+        assert released_compare["released_pending_settlement_count"] >= 1
+
+    async with connect() as conn, conn.transaction():
+        run = await attempt_postgres.get_run(
+            conn, tenant_id="tenant-a", run_id="run-d", for_update=True
+        )
+        assert run is not None
+        lifecycle = RunAttemptLifecycleService(
+            persistence=attempt_postgres,
+            settlement_projection=projection_service,
+        )
+        before_generation = live_attempt["owner_generation"]
+        await lifecycle.terminalize(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-d",
+            attempt_id=live_attempt["id"],
+            status="succeeded",
+            terminal_reason="run_succeeded",
+        )
+        terminal = await (
+            await conn.execute("select status, owner_generation from run_attempts where id=%s", (live_attempt["id"],))
+        ).fetchone()
+        detail = await (
+            await conn.execute(
+                "select attempt_status_snapshot, attempt_owner_generation_snapshot, run_status_snapshot "
+                "from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-d'"
+            )
+        ).fetchone()
+        assert terminal == {"status": "succeeded", "owner_generation": before_generation + 1}
+        assert detail == {
+            "attempt_status_snapshot": "succeeded",
+            "attempt_owner_generation_snapshot": before_generation + 1,
+            "run_status_snapshot": "succeeded",
+        }
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute("set transaction isolation level repeatable read")
+        snapshot = await projection_service.compare_snapshot(conn, page_limit=1)
+        assert snapshot["comparison_scope"] == "stable_snapshot"
+        assert snapshot["snapshot_complete"] is True
+        assert snapshot["attempt_count"] == snapshot["snapshot_attempt_count"]
+        assert "switch_ready" not in snapshot
+
+    async with connect() as conn, conn.transaction():
+        page_proof = await projection_service.compare(conn, limit=1)
+        assert await projection_service.snapshot_is_current(
+            conn, tenant_id=None, snapshot=page_proof
+        ) is False
+        assert await projection_service.snapshot_is_current(
+            conn,
+            tenant_id=None,
+            snapshot=snapshot,
+        ) is True
+
+    async with connect() as conn, conn.transaction():
+        extra_attempt = await create_attempt(conn, "run-f", "context-f", "qat-f")
+        assert extra_attempt["status"] == "running"
+        await create_lease(
+            conn,
+            run_id="run-f",
+            attempt_id=extra_attempt["id"],
+            lease_id="lease-f1",
+            generation=extra_attempt["owner_generation"],
+        )
+        await create_lease(
+            conn,
+            run_id="run-f",
+            attempt_id=extra_attempt["id"],
+            lease_id="lease-f2",
+            generation=extra_attempt["owner_generation"],
+        )
+    async with connect() as conn, conn.transaction():
+        assert await projection_service.snapshot_is_current(
+            conn,
+            tenant_id=None,
+            snapshot=snapshot,
+        ) is False
+        comparison = await projection_service.compare(conn, limit=800)
+        assert comparison["conflict_count"] == 1
+        assert comparison["unknown_count"] >= 1
+
+
 @pytest.mark.parametrize(
     "constraint_name",
     [

@@ -319,11 +319,26 @@ inserts can fall behind an already-scanned key, so a future cutover requires a
 stable snapshot boundary and a summary over the complete denominator. Backfill
 inserts only and is safe to repeat; it never overwrites an existing receipt.
 For each Attempt its lock order is Run, matching Sandbox leases ordered by lease
-id, Attempt, then settlement detail. The single future same-transaction writer
-port is `AttemptSettlementProjectionService.persist_in_transaction`; the N13
-Sandbox owner can call it after its legacy write is locked in that order. This
-slice does not connect that port to the current writer, settlement readers,
-events or a scheduler.
+id, Attempt, then settlement detail. Sandbox accepted, dispatch intent, and
+terminal-receipt writers use this order before changing source facts, then call
+the Runs-owned `AttemptSettlementProjectionService.persist_in_transaction` in
+the same transaction. Bounded legacy reconciliation claims already hold their
+selected Sandbox leases; their hook reads source facts without acquiring Run or
+Attempt locks and writes the detail. Run/Attempt terminalization refreshes its
+detail in the same transaction. `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` is
+explicit and defaults to false. Heartbeats that only change executor heartbeat
+facts, cleanup claims, and resource release do not write the detail. Cleanup
+pending/finalize/failure writes refresh the detail only when their legacy
+reconciliation status changes the derived settlement phase; cleanup ownership
+and cleanup claim facts remain Sandbox-owned and visible in comparison counts.
+
+Page comparison remains page-scoped. Full comparison is available only inside a
+caller-owned `REPEATABLE READ` or `SERIALIZABLE` transaction and returns the
+complete Attempt denominator plus its count/high-key fence. It does not claim
+cutover readiness. A future reader switch must revalidate the fence in a fresh
+`READ COMMITTED` transaction before enabling reads; the validator holds a short
+`SHARE` lock on `run_attempts` through that transaction so concurrent Attempt
+inserts cannot make the proof stale before commit.
 
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds

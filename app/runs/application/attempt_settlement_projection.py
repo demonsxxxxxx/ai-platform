@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +22,10 @@ class AttemptSettlementProjectionPorts:
     backfill: Callable[..., Awaitable[dict[str, Any]]]
     compare: Callable[..., Awaitable[dict[str, Any]]]
     persist: Callable[..., Awaitable[bool]]
+    lock_sources: Callable[..., Awaitable[bool]]
+    refresh: Callable[..., Awaitable[AttemptSettlementProjection | None]]
+    compare_snapshot: Callable[..., Awaitable[dict[str, Any]]]
+    snapshot_is_current: Callable[..., Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,34 @@ class AttemptSettlementProjectionService:
             conn, tenant_id=tenant_id, after=after, limit=limit
         )
 
+    async def compare_snapshot(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str | None = None,
+        page_limit: int = 100,
+    ) -> dict[str, Any]:
+        """Compare the complete denominator using one stable MVCC snapshot."""
+
+        return await self.ports.compare_snapshot(
+            conn, tenant_id=tenant_id, page_limit=page_limit
+        )
+
+    async def snapshot_is_current(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str | None,
+        snapshot: Mapping[str, Any],
+    ) -> bool:
+        """Check a previously scanned denominator before a future cutover."""
+
+        return await self.ports.snapshot_is_current(
+            conn,
+            tenant_id=tenant_id,
+            snapshot=snapshot,
+        )
+
     async def persist_in_transaction(
         self,
         conn: Any,
@@ -68,6 +100,38 @@ class AttemptSettlementProjectionService:
         return await self.ports.persist(
             conn, projection, insert_only=insert_only
         )
+
+    async def lock_sources_in_transaction(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> bool:
+        """Lock Run, exact lease set by id, then Attempt before a legacy write."""
+
+        return await self.ports.lock_sources(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id
+        )
+
+    async def refresh_in_transaction(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> bool:
+        """Persist the latest source projection through the single write port."""
+
+        projection = await self.ports.refresh(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id
+        )
+        if projection is None:
+            return False
+        await self.persist_in_transaction(conn, projection)
+        return True
 
 
 __all__ = [

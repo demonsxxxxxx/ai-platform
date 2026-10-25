@@ -130,4 +130,6 @@ class SandboxCallbackAuthority:
             identity=identity,
             allow_provider_tail=allow_provider_tail,
         )
+        # The PostgreSQL lease selector locks the lease set first and then the
+        # exact Attempt, preserving Run -> lease -> Attempt ordering.
         return locked_run, lease

@@ -165,6 +165,47 @@ async def _load_locked_attempt_facts(
     )
 
 
+async def lock_attempt_settlement_projection_sources(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> bool:
+    """Acquire the source-row locks in the shared lifecycle order.
+
+    Sandbox writers call this before changing any lease fact represented by the
+    settlement detail.  The bounded identity targets one Attempt; the lease
+    query locks only that Attempt's rows and orders them by lease id.
+    """
+
+    attempt, run, _leases = await _load_locked_attempt_facts(
+        conn,
+        key=(tenant_id, run_id, attempt_id),
+        lock=True,
+    )
+    return attempt is not None and run is not None
+
+
+async def refresh_attempt_settlement_projection(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> AttemptSettlementProjection | None:
+    """Project the current source rows after the caller's transaction write."""
+
+    attempt, run, leases = await _load_locked_attempt_facts(
+        conn,
+        key=(tenant_id, run_id, attempt_id),
+        lock=False,
+    )
+    if attempt is None or run is None:
+        return None
+    return project_legacy_attempt_settlement(attempt, run, leases)
+
+
 def _json_value(value: Any) -> Any:
     if value is None or isinstance(value, str):
         return value
@@ -389,4 +430,144 @@ async def compare_attempt_settlement_projections(
     counts["comparison_scope"] = "page"
     counts["next_after"] = _cursor_after(keys, limit)
     return counts
+
+
+async def _attempt_snapshot_identity(
+    conn: Any,
+    *,
+    tenant_id: str | None,
+) -> dict[str, Any]:
+    row = await (
+        await conn.execute(
+            """
+            select count(*) over ()::bigint as attempt_count,
+                   tenant_id as max_tenant_id,
+                   run_id as max_run_id,
+                   id as max_attempt_id
+            from run_attempts
+            where (%s::text is null or tenant_id = %s)
+            order by tenant_id desc, run_id desc, id desc
+            limit 1
+            """,
+            (tenant_id, tenant_id),
+        )
+    ).fetchone()
+    max_key = None
+    if row and row.get("max_tenant_id") is not None:
+        max_key = (
+            str(row["max_tenant_id"]),
+            str(row["max_run_id"]),
+            str(row["max_attempt_id"]),
+        )
+    return {
+        "attempt_count": int(row.get("attempt_count") or 0) if row else 0,
+        "max_key": tuple(max_key) if max_key is not None else None,
+    }
+
+
+async def compare_attempt_settlement_snapshot(
+    conn: Any,
+    *,
+    tenant_id: str | None = None,
+    page_limit: int = DEFAULT_ATTEMPT_SETTLEMENT_PAGE_SIZE,
+) -> dict[str, Any]:
+    """Aggregate every page under the caller's stable MVCC snapshot.
+
+    Callers must begin a REPEATABLE READ or SERIALIZABLE transaction before
+    issuing any other query. This scan takes no row locks and performs no
+    external I/O; it keeps only page counters in memory.
+    """
+
+    isolation = await (
+        await conn.execute("select current_setting('transaction_isolation') as level")
+    ).fetchone()
+    isolation_level = str(isolation.get("level") or "") if isolation else ""
+    if isolation_level not in {"repeatable read", "serializable"}:
+        raise ValueError("attempt_settlement_snapshot_requires_stable_transaction")
+    page_limit = _page_limit(page_limit)
+    snapshot_identity = await _attempt_snapshot_identity(conn, tenant_id=tenant_id)
+    summary: dict[str, Any] = {
+        "attempt_count": 0,
+        "mapped_count": 0,
+        "missing_count": 0,
+        "unknown_count": 0,
+        "conflict_count": 0,
+        "mismatch_count": 0,
+        "cleanup_lease_count": 0,
+        "released_lease_count": 0,
+        "cleanup_pending_count": 0,
+        "cleanup_failed_count": 0,
+        "cleanup_claim_count": 0,
+        "released_pending_settlement_count": 0,
+    }
+    cursor = None
+    while True:
+        page = await compare_attempt_settlement_projections(
+            conn, tenant_id=tenant_id, after=cursor, limit=page_limit
+        )
+        for field in summary:
+            summary[field] += int(page[field])
+        cursor = page["next_after"]
+        if cursor is None:
+            break
+    ending_identity = await _attempt_snapshot_identity(conn, tenant_id=tenant_id)
+    summary.update(
+        cleanup_owner="sandbox_leases",
+        comparison_scope="stable_snapshot",
+        snapshot_isolation=isolation_level,
+        snapshot_attempt_count=snapshot_identity["attempt_count"],
+        snapshot_max_key=snapshot_identity["max_key"],
+        snapshot_complete=(
+            summary["attempt_count"] == snapshot_identity["attempt_count"]
+            and ending_identity == snapshot_identity
+        ),
+        next_after=None,
+    )
+    return summary
+
+
+async def attempt_settlement_snapshot_is_current(
+    conn: Any,
+    *,
+    tenant_id: str | None,
+    snapshot: Mapping[str, Any],
+) -> bool:
+    """Revalidate and briefly fence Attempt inserts in a cutover transaction."""
+
+    if (
+        snapshot.get("comparison_scope") != "stable_snapshot"
+        or snapshot.get("snapshot_complete") is not True
+        or snapshot.get("attempt_count") != snapshot.get("snapshot_attempt_count")
+    ):
+        return False
+    snapshot_attempt_count = snapshot.get("snapshot_attempt_count")
+    snapshot_max_key = snapshot.get("snapshot_max_key")
+    if (
+        isinstance(snapshot_attempt_count, bool)
+        or not isinstance(snapshot_attempt_count, int)
+        or snapshot_attempt_count < 0
+        or (
+            snapshot_max_key is not None
+            and (
+                not isinstance(snapshot_max_key, tuple)
+                or len(snapshot_max_key) != 3
+                or any(not isinstance(value, str) or not value for value in snapshot_max_key)
+            )
+        )
+    ):
+        return False
+    isolation = await (
+        await conn.execute("select current_setting('transaction_isolation') as level")
+    ).fetchone()
+    if str(isolation.get("level") or "") != "read committed":
+        raise ValueError("attempt_settlement_snapshot_validation_requires_fresh_transaction")
+    # SHARE conflicts with new Attempt INSERT/UPDATE/DELETE row-exclusive
+    # locks. The future N40 caller keeps this table-specific fence only through
+    # its short enablement transaction and performs no external I/O inside it.
+    await conn.execute("lock table run_attempts in share mode")
+    current = await _attempt_snapshot_identity(conn, tenant_id=tenant_id)
+    return (
+        current["attempt_count"] == snapshot_attempt_count
+        and current["max_key"] == snapshot_max_key
+    )
 

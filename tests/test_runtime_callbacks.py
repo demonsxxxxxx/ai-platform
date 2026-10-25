@@ -207,6 +207,9 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
         async def fetchall(self):
             return [{"id": "lease-attempt-b"}]
 
+        async def fetchone(self):
+            return {"id": "attempt-b"}
+
     class Connection:
         async def execute(self, query, parameters):
             observed.append((query, parameters))
@@ -224,7 +227,7 @@ async def test_current_runtime_lease_query_locks_only_the_exact_attempt():
     assert "sandbox_leases.lease_payload_json ->> 'attempt_id' = %s" in query
     assert "sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text" in query
     assert "run_attempts.status in ('running', 'cancel_requested')" in query
-    assert "sandbox_leases.status = 'active'" in query and "for update of sandbox_leases, run_attempts" in query
+    assert "sandbox_leases.status = 'active'" in query and "for update of sandbox_leases" in query
     assert parameters == ("tenant-a", "run-a", "attempt-b")
 
 

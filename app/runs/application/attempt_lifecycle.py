@@ -145,6 +145,7 @@ class RunAttemptLifecycleService:
     """Own attempt orchestration while a configured adapter owns SQL details."""
 
     persistence: RunAttemptPersistence
+    settlement_projection: Any | None = None
 
     async def restore_reconciliation(
         self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
@@ -231,7 +232,15 @@ class RunAttemptLifecycleService:
         return await self.persistence.lock_queued_run_for_attempt(conn, **kwargs)
 
     async def start_worker(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
-        return await self.persistence.start_worker_run_attempt(conn, **kwargs)
+        attempt = await self.persistence.start_worker_run_attempt(conn, **kwargs)
+        if self.settlement_projection is not None:
+            await self.settlement_projection.refresh_in_transaction(
+                conn,
+                tenant_id=str(attempt["tenant_id"]),
+                run_id=str(attempt["run_id"]),
+                attempt_id=str(attempt["id"]),
+            )
+        return attempt
 
     async def assert_worker_current(
         self,
@@ -288,7 +297,15 @@ class RunAttemptLifecycleService:
         conn: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        return await self.persistence.terminalize_run_attempt(conn, **kwargs)
+        attempt = await self.persistence.terminalize_run_attempt(conn, **kwargs)
+        if attempt is not None and self.settlement_projection is not None:
+            await self.settlement_projection.refresh_in_transaction(
+                conn,
+                tenant_id=str(attempt["tenant_id"]),
+                run_id=str(attempt["run_id"]),
+                attempt_id=str(attempt["id"]),
+            )
+        return attempt
 
     async def prepare_stale_reconciliation(
         self,
@@ -329,7 +346,7 @@ class RunAttemptLifecycleService:
             )
             if attempt is None:
                 return None
-        return await self.persistence.terminalize_run_attempt(
+        return await self.terminalize(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
