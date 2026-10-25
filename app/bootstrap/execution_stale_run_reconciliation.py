@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from app.bootstrap.attempt_settlement_projection import (
+    require_attempt_settlement_reader_active,
+)
 from app.db import transaction
 from app.execution.application.stale_run_reconciliation import (
     StaleRunReconciliationService,
 )
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.runs.api import RunAttemptLifecycleService, RunLifecycleService
+from app.schema_migrations import require_schema_current
 from app.streaming.api import WorkerV4Capabilities
 from app.streaming.infrastructure.run_events_postgres import append_event
 
@@ -41,6 +45,8 @@ async def reconcile_worker_stale_runs_with_postgres_claims(
 ) -> list[dict[str, object]]:
     """Run the Execution application service with worker-owned configuration."""
 
+    await require_schema_current()
+    await require_attempt_settlement_reader_active()
     service = build_stale_run_reconciliation_service(
         lifecycle=lifecycle,
         attempt_lifecycle=attempt_lifecycle,

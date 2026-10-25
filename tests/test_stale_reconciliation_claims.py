@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 
 from app import queue
 from app import schema_migrations
+from app.bootstrap import execution_stale_run_reconciliation as stale_reconciliation_bootstrap
 from app.models import QueueRunPayload
 from app import worker_main
 from app.execution.application.stale_terminalization import stage_stale_run_reconciliation
@@ -255,67 +256,59 @@ async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim()
 
 
 @pytest.mark.asyncio
-async def test_enabled_pg_claim_path_requires_n40_marker_before_scanning(monkeypatch):
-    class Settings:
-        stale_run_reconciliation_postgres_claims_enabled = True
-
+async def test_stale_reconciliation_bootstrap_fails_closed_when_attempt_storage_marker_is_missing(monkeypatch):
     async def current_schema():
         return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
 
-    async def missing_n40():
+    async def missing_attempt_storage_marker():
         raise RuntimeError("attempt_settlement_reader_not_active")
 
-    async def legacy_must_not_run(*_args, **_kwargs):
-        raise AssertionError("missing N40 marker must fail closed")
+    def service_must_not_build(*_args, **_kwargs):
+        raise AssertionError("inactive attempt storage must block stale maintenance")
 
-    monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
-    monkeypatch.setattr(worker_main, "require_attempt_settlement_reader_active", missing_n40)
-    monkeypatch.setattr(worker_main, "_reconcile_stale_runs_with_redis_fence", legacy_must_not_run)
+    monkeypatch.setattr(stale_reconciliation_bootstrap, "require_schema_current", current_schema)
+    monkeypatch.setattr(
+        stale_reconciliation_bootstrap,
+        "require_attempt_settlement_reader_active",
+        missing_attempt_storage_marker,
+    )
+    monkeypatch.setattr(
+        stale_reconciliation_bootstrap,
+        "build_stale_run_reconciliation_service",
+        service_must_not_build,
+    )
 
     with pytest.raises(RuntimeError, match="attempt_settlement_reader_not_active"):
-        await worker_main.reconcile_stale_runs_for_worker(
-            Settings(),
+        await stale_reconciliation_bootstrap.reconcile_worker_stale_runs_with_postgres_claims(
+            object(),
             v4_capabilities=object(),
             attempt_lifecycle=object(),
             lifecycle=object(),
+            worker_id="worker-a",
+            cancel_requested_after_seconds=5,
         )
 
 
 @pytest.mark.asyncio
-async def test_enabled_pg_claim_path_dispatches_only_after_n40_and_n42_markers(monkeypatch):
+async def test_worker_stale_reconciliation_always_uses_pg_claim_bootstrap(monkeypatch):
     calls = []
-
-    class Settings:
-        stale_run_reconciliation_postgres_claims_enabled = True
-
-    async def current_schema():
-        calls.append("n42")
-        return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
-
-    async def n40_marker():
-        calls.append(("n40", "attempt.v1"))
 
     async def postgres_owner(*_args, **kwargs):
         calls.append(("postgres_owner", kwargs["worker_id"]))
         return []
 
-    monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
-    monkeypatch.setattr(worker_main, "require_attempt_settlement_reader_active", n40_marker)
+    monkeypatch.setattr(worker_main, "default_worker_id", lambda: "worker-a")
     monkeypatch.setattr(worker_main, "reconcile_worker_stale_runs_with_postgres_claims", postgres_owner)
 
     result = await worker_main.reconcile_stale_runs_for_worker(
-        Settings(),
+        object(),
         v4_capabilities=object(),
         attempt_lifecycle=object(),
         lifecycle=object(),
     )
 
     assert result == []
-    assert calls[:2] == [
-        "n42",
-        ("n40", "attempt.v1"),
-    ]
-    assert calls[2][0] == "postgres_owner"
+    assert calls == [("postgres_owner", "worker-a")]
 
 
 @pytest.mark.asyncio

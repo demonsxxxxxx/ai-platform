@@ -234,9 +234,10 @@ server time. A heartbeat normalizes future-skewed Redis lease and worker activit
 timestamps. Reclaim independently normalizes an abandoned future-dated lease in
 both matching metadata hashes, grants one fresh visibility window, and only
 requeues or dead-letters it on a later expired pass. The reclaim mutation
-atomically rechecks lease identity, reconciliation fence, and visibility expiry
-against that same Redis clock before changing queue state; the caller clock is
-only a scan hint.
+atomically rechecks queue lease identity and visibility expiry against that same
+Redis clock before changing queue state; the caller clock is only a scan hint.
+Business stale-Run adjudication uses the Execution PostgreSQL claim path and is
+not part of Redis queue lease mutation.
 
 Protocol-v2 leases store their owner credential in `owner_token_v2` with
 `lease_protocol_version = 2` and omit the legacy `owner_token` projection. A v1

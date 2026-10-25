@@ -197,7 +197,7 @@ flowchart LR
 
 S3 同批必须处理补投与 `reconcile_stale_runs_for_worker` 的竞争：明确哪些“从未开始执行、仍在有效准入恢复窗口内”的记录由补投器拥有，stale selector 和最终 CAS 都使用同一判定，防止扫描后状态变化。窗口外也必须先对账队列和执行权，不能无限豁免 pending Run 的收敛。
 
-补投器保留 Redis reconciliation fence 检查；领取失败、所有权未知或其他 owner 正在收敛时退避。若当前 queue 原语不能原子覆盖所需竞争条件，先补齐该原语和对应真实依赖测试，再启用扫描器。
+补投器通过自身持久化投递 claim 与当前 Runs/Attempt 状态重新核验；领取失败、所有权未知或其他 owner 正在收敛时退避，不依赖 Redis 业务 reconciliation fence。若当前持久化 claim 与 queue admission 原语不能原子覆盖所需竞争条件，先补齐对应原语和真实依赖测试，再启用扫描器。
 
 最初复用 Worker 的受监督生命周期，设置批量、并发、单次 deadline、退避上限及公平调度预算。关键发布/恢复有独立调度预算，bulk cleanup 卡住不能阻断它们。终止超时任务时必须继续核算仍未结束的 I/O，不能不断启动替代任务。预算应按 owning settings 定义并测试边界，不为同一含义再添加多套 env 别名。
 

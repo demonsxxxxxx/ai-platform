@@ -97,8 +97,6 @@ class Settings(BaseSettings):
     worker_maintenance_interval_seconds: float = Field(default=30.0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
-    stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
-    stale_run_reconciliation_postgres_claims_enabled: bool = Field(default=False)
     stale_run_reconciliation_claim_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     executor_heartbeat_stale_seconds: int = Field(default=45, ge=1, le=3600)
     executor_reconciliation_claim_stale_seconds: int = Field(default=300, ge=1, le=3600)
