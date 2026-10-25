@@ -89,7 +89,13 @@ def _execution_spec(*, tenant_id: str, run_id: str, suffix: str):
     )
 
 
-async def _seed_running_attempt(conn: psycopg.AsyncConnection, *, suffix: str):
+async def _seed_running_attempt(
+    conn: psycopg.AsyncConnection,
+    *,
+    suffix: str,
+    queue_attempt_id: str | None = None,
+    queue_message_id: str | None = None,
+):
     tenant_id = f"tenant-{suffix}"
     run_id = f"run-{suffix}"
     worker_id = f"worker-{suffix}"
@@ -138,7 +144,7 @@ async def _seed_running_attempt(conn: psycopg.AsyncConnection, *, suffix: str):
         ordinal=1,
         owner_kind="queue_worker",
         owner_id=worker_id,
-        queue_attempt_id=f"queue-attempt-{suffix}",
+        queue_attempt_id=queue_attempt_id or f"queue-attempt-{suffix}",
         execution_spec=_execution_spec(tenant_id=tenant_id, run_id=run_id, suffix=suffix),
     )
     for expected, requested, generation, lease in (
@@ -156,7 +162,9 @@ async def _seed_running_attempt(conn: psycopg.AsyncConnection, *, suffix: str):
             expected_owner_kind="queue_worker",
             expected_owner_id=worker_id,
             expected_owner_generation=generation,
-            queue_message_id="a" * 64 if requested == "queued" else None,
+            queue_message_id=(
+                queue_message_id if queue_message_id is not None else "a" * 64
+            ) if requested == "queued" else None,
             last_heartbeat_at=old,
             lease_expires_at=lease,
         )
@@ -787,10 +795,6 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
             transaction_factory=transaction_factory,
             index_connection_factory=index_connection_factory,
         )
-        async with transaction_factory() as conn:
-            tenant_id, run_id, attempt_id, seeded_worker_id, _old = await _seed_running_attempt(
-                conn, suffix=suffix
-            )
         payload = QueueRunPayload(
             tenant_id=tenant_id,
             workspace_id=f"workspace-{suffix}",
@@ -817,7 +821,6 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
                 }
             ],
         )
-        assert seeded_worker_id == worker_id
         await queue.enqueue_run(payload.model_dump())
         message = await queue.lease_run(worker_id=worker_id, lease_scan_limit=10)
         assert message is not None
@@ -825,12 +828,22 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
         redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
 
         async with transaction_factory() as conn:
-            await conn.execute(
-                """update run_attempts
-                   set queue_attempt_id=%s, queue_message_id=%s
-                   where tenant_id=%s and run_id=%s and id=%s""",
-                (message.attempt_id, message.queue_message_id, tenant_id, run_id, attempt_id),
+            tenant_id, run_id, attempt_id, seeded_worker_id, _old = await _seed_running_attempt(
+                conn,
+                suffix=suffix,
+                queue_attempt_id=message.attempt_id,
+                queue_message_id=message.queue_message_id,
             )
+            assert seeded_worker_id == worker_id
+            attempt_identity = await (await conn.execute(
+                """select queue_attempt_id, queue_message_id
+                   from run_attempts where tenant_id=%s and run_id=%s and id=%s""",
+                (tenant_id, run_id, attempt_id),
+            )).fetchone()
+            assert attempt_identity == {
+                "queue_attempt_id": message.attempt_id,
+                "queue_message_id": message.queue_message_id,
+            }
             candidates = await list_stale_run_reconciliation_candidates(
                 conn,
                 stale_after_seconds=60,
@@ -850,13 +863,16 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
                 claim_ttl_seconds=300,
             )
             assert claim is not None
-            await prepare_stale_run_attempt_reconciliation(
+            reconciled_attempt = await prepare_stale_run_attempt_reconciliation(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 terminal_status="failed",
                 reconciler_id="stale-run-maintenance",
             )
+            assert reconciled_attempt is not None
+            assert reconciled_attempt["status"] == "expired"
+            assert reconciled_attempt["owner_kind"] == "reconciler"
 
         redis_heartbeat = await queue.heartbeat_run(
             message.message_id,
