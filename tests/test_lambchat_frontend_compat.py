@@ -509,20 +509,15 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     assert len(copied) == 3
 
 
-def test_read_mark_compatibility_route_keeps_its_noop_acknowledgement(monkeypatch):
-    def unexpected_transaction():
-        raise AssertionError("legacy read-mark must not read or persist unread state")
-
+def test_retired_read_mark_and_static_permission_routes_are_not_served(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.lambchat_compat.transaction", unexpected_transaction)
     client = TestClient(create_app())
 
-    for session_id in ("session-older-client", "session-not-present"):
-        response = client.post(
-            f"/api/sessions/{session_id}/mark-read", headers=action_headers()
-        )
-        assert response.status_code == 200
-        assert response.json() == {"success": True}
+    read_mark = client.post("/api/sessions/session-a/mark-read", headers=action_headers())
+    permissions = client.get("/api/auth/permissions")
+
+    assert read_mark.status_code in {404, 405}
+    assert permissions.status_code in {404, 405}
 
 
 def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
@@ -821,7 +816,6 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
-        "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
         "/api/notifications/active": {"notifications": []},
         "/api/upload/config": {
@@ -1016,22 +1010,6 @@ def test_lambchat_upload_check_route_is_retired():
     )
 
     assert response.status_code == 404
-
-
-def test_lambchat_permissions_include_user_and_admin_capabilities():
-    client = TestClient(create_app())
-
-    response = client.get("/api/auth/permissions")
-
-    assert response.status_code == 200
-    values = {item["value"] for item in response.json()["all_permissions"]}
-    assert {
-        "agent:use",
-        "artifact:download",
-        "model:admin",
-        "settings:manage",
-        "admin:status",
-    }.issubset(values)
 
 
 def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):

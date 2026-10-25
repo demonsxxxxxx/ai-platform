@@ -134,7 +134,7 @@ def test_chat_api_rejects_retired_platform_multi_agent_input_before_persistence(
     monkeypatch.setattr("app.routes.chat.transaction", fail_transaction)
 
     response = client.post(
-        "/api/ai/chat/stream",
+        "/api/chat/stream",
         headers=USER_HEADERS,
         json={
             "workspace_id": "default",
