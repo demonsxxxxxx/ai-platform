@@ -293,6 +293,8 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 比对：身份、原回执摘要、accepted 合并、结算含义、取消/generation、next-retry 和 cleanup 归属；不要求不同表示的时间戳字节相等。影子写失败造成的事务影响也必须测量。
 - 回退：停止 shadow 写；旧事实未被修改。回填不执行旧任务、不重写 Spec 或原 terminal receipt。
 
+当前 N30/N31 投影切片（schema `2026.10.25.4`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果不提供全局 ready 状态，也不得授权切读；未来切读前须增加固定快照边界和全分母累计的扫描证明。旧 Sandbox writer 尚未接入该端口，普通写入、读路径和监督调度仍由现有 owner 负责；接入须由 N13 owner 在既有锁序的同一事务中完成。
+
 **N32：统一监督调度的只读决策阶段 — Execution scheduler + 各决策 owner。依赖 N21/N23/N31。**
 
 - 产出：逐类 deadline、时钟来源、候选索引/上限、互斥规则、外部 I/O 预算和恢复 action。复用 Worker 生命周期，不新增独立进程部署前提；结算与 bulk cleanup 有独立容量。

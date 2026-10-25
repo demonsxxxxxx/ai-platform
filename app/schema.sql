@@ -819,7 +819,8 @@ create table if not exists run_attempts (
     )
   ),
   unique (tenant_id, run_id, ordinal),
-  unique (tenant_id, run_id, queue_attempt_id)
+  unique (tenant_id, run_id, queue_attempt_id),
+  constraint run_attempts_tenant_id_run_id_id_key unique (tenant_id, run_id, id)
 );
 
 create unique index if not exists uq_run_attempts_one_open
@@ -832,6 +833,110 @@ create index if not exists idx_run_attempts_run_created
 create index if not exists idx_run_attempts_lease_reconcile
   on run_attempts(lease_expires_at asc, tenant_id, run_id, id)
   where status in ('claimed', 'running', 'cancel_requested', 'expired');
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'run_attempts'::regclass
+      and conname = 'run_attempts_tenant_id_run_id_id_key'
+  ) then
+    alter table run_attempts
+      add constraint run_attempts_tenant_id_run_id_id_key unique (tenant_id, run_id, id);
+  end if;
+end
+$$;
+
+-- One Runs-owned settlement detail belongs to the original Attempt. Sandbox
+-- resource stop/release claims remain on sandbox_leases and are not projected
+-- into this execution-settlement record.
+create table if not exists run_attempt_settlements (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  schema_version text not null default 'ai-platform.run-attempt-settlement.v1',
+  mapping_state text not null,
+  source_lease_id text,
+  receipt_identity text,
+  receipt_json jsonb,
+  receipt_sha256 text,
+  receipt_owner_generation bigint,
+  dispatch_state text not null,
+  accepted_context_json jsonb,
+  attempt_status_snapshot text not null,
+  attempt_owner_generation_snapshot bigint not null,
+  run_status_snapshot text not null,
+  cancel_requested_at_snapshot timestamptz,
+  settlement_phase text not null,
+  settlement_claim_token text,
+  settlement_claimed_at timestamptz,
+  next_retry_at timestamptz,
+  settlement_attempt_count integer not null default 0,
+  result_status text,
+  result_json jsonb,
+  result_sha256 text,
+  settlement_error_code text,
+  settled_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlements_pkey primary key (tenant_id, run_id, attempt_id),
+  constraint fk_run_attempt_settlements_attempt foreign key (tenant_id, run_id, attempt_id)
+    references run_attempts(tenant_id, run_id, id),
+  constraint chk_run_attempt_settlements_schema_version check (
+    schema_version = 'ai-platform.run-attempt-settlement.v1'
+  ),
+  constraint chk_run_attempt_settlements_mapping_state check (
+    mapping_state in ('mapped', 'unknown', 'conflict')
+  ),
+  constraint chk_run_attempt_settlements_dispatch_state check (
+    dispatch_state in ('unknown', 'accepted', 'receipt_before_acceptance')
+  ),
+  constraint chk_run_attempt_settlements_phase check (
+    settlement_phase in (
+      'awaiting_receipt', 'awaiting_context', 'pending', 'claimed', 'retry',
+      'settled', 'failed', 'unknown'
+    )
+  ),
+  constraint chk_run_attempt_settlements_identity check (
+    tenant_id <> '' and run_id <> '' and attempt_id <> ''
+    and attempt_status_snapshot <> '' and run_status_snapshot <> ''
+    and attempt_owner_generation_snapshot > 0
+    and (source_lease_id is null or source_lease_id <> '')
+  ),
+  constraint chk_run_attempt_settlements_receipt check (
+    (receipt_identity is null and receipt_json is null and receipt_sha256 is null
+      and receipt_owner_generation is null)
+    or (receipt_identity is not null and receipt_identity <> ''
+      and jsonb_typeof(receipt_json) = 'object'
+      and receipt_sha256 ~ '^[0-9a-f]{64}$'
+      and receipt_owner_generation > 0)
+  ),
+  constraint chk_run_attempt_settlements_claim check (
+    (settlement_phase = 'claimed'
+      and settlement_claim_token is not null and settlement_claim_token <> ''
+      and settlement_claimed_at is not null)
+    or (settlement_phase <> 'claimed'
+      and settlement_claim_token is null and settlement_claimed_at is null)
+  ),
+  constraint chk_run_attempt_settlements_retry check (
+    (settlement_phase = 'retry' and next_retry_at is not null)
+    or (settlement_phase <> 'retry' and next_retry_at is null)
+  ),
+  constraint chk_run_attempt_settlements_attempt_count check (
+    settlement_attempt_count >= 0
+  ),
+  constraint chk_run_attempt_settlements_result check (
+    (result_status is null and result_json is null and result_sha256 is null
+      and settled_at is null)
+    or (result_status is not null and result_status <> ''
+      and jsonb_typeof(result_json) = 'object'
+      and result_sha256 ~ '^[0-9a-f]{64}$'
+      and settled_at is not null)
+  )
+);
+
+create index if not exists idx_run_attempt_settlements_mapping
+  on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
 
 create table if not exists run_input_sessions (
   tenant_id text not null,

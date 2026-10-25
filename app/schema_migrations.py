@@ -52,7 +52,9 @@ MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
 RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
 RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
-TARGET_SCHEMA_VERSION = RUN_DELIVERY_INTENTS_SCHEMA_VERSION
+# N21 reserves 2026.10.25.3; this schema expansion is deliberately .4.
+RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION = "2026.10.25.4"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -72,6 +74,7 @@ CRITICAL_RELATIONS = (
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
+    "run_attempt_settlements",
     "run_input_sessions",
     "run_input_questions",
     "run_inputs",
@@ -192,6 +195,34 @@ CRITICAL_COLUMNS = (
     ("run_attempts", "error_code", "text", False),
     ("run_attempts", "created_at", "timestamptz", True),
     ("run_attempts", "updated_at", "timestamptz", True),
+    ("run_attempt_settlements", "tenant_id", "text", True),
+    ("run_attempt_settlements", "run_id", "text", True),
+    ("run_attempt_settlements", "attempt_id", "text", True),
+    ("run_attempt_settlements", "schema_version", "text", True),
+    ("run_attempt_settlements", "mapping_state", "text", True),
+    ("run_attempt_settlements", "source_lease_id", "text", False),
+    ("run_attempt_settlements", "receipt_identity", "text", False),
+    ("run_attempt_settlements", "receipt_json", "jsonb", False),
+    ("run_attempt_settlements", "receipt_sha256", "text", False),
+    ("run_attempt_settlements", "receipt_owner_generation", "int8", False),
+    ("run_attempt_settlements", "dispatch_state", "text", True),
+    ("run_attempt_settlements", "accepted_context_json", "jsonb", False),
+    ("run_attempt_settlements", "attempt_status_snapshot", "text", True),
+    ("run_attempt_settlements", "attempt_owner_generation_snapshot", "int8", True),
+    ("run_attempt_settlements", "run_status_snapshot", "text", True),
+    ("run_attempt_settlements", "cancel_requested_at_snapshot", "timestamptz", False),
+    ("run_attempt_settlements", "settlement_phase", "text", True),
+    ("run_attempt_settlements", "settlement_claim_token", "text", False),
+    ("run_attempt_settlements", "settlement_claimed_at", "timestamptz", False),
+    ("run_attempt_settlements", "next_retry_at", "timestamptz", False),
+    ("run_attempt_settlements", "settlement_attempt_count", "int4", True),
+    ("run_attempt_settlements", "result_status", "text", False),
+    ("run_attempt_settlements", "result_json", "jsonb", False),
+    ("run_attempt_settlements", "result_sha256", "text", False),
+    ("run_attempt_settlements", "settlement_error_code", "text", False),
+    ("run_attempt_settlements", "settled_at", "timestamptz", False),
+    ("run_attempt_settlements", "created_at", "timestamptz", True),
+    ("run_attempt_settlements", "updated_at", "timestamptz", True),
     ("run_input_sessions", "tenant_id", "text", True),
     ("run_input_sessions", "run_id", "text", True),
     ("run_input_sessions", "attempt_id", "text", True),
@@ -416,6 +447,19 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempts", "chk_run_attempts_terminal_time"),
     ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
     ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
+    ("run_attempts", "run_attempts_tenant_id_run_id_id_key"),
+    ("run_attempt_settlements", "run_attempt_settlements_pkey"),
+    ("run_attempt_settlements", "fk_run_attempt_settlements_attempt"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_schema_version"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_mapping_state"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_dispatch_state"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_phase"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_identity"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_receipt"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_claim"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_retry"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_attempt_count"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_result"),
     ("run_input_sessions", "run_input_sessions_pkey"),
     ("run_input_sessions", "fk_run_input_sessions_run"),
     ("run_input_sessions", "chk_run_input_sessions_identity"),
@@ -635,6 +679,108 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_diagnostics_tenant_id_run_id_key",
         "u",
         "UNIQUE (tenant_id, run_id)",
+    ),
+    (
+        "run_attempts",
+        "run_attempts_tenant_id_run_id_id_key",
+        "u",
+        "UNIQUE (tenant_id, run_id, id)",
+    ),
+    (
+        "run_attempt_settlements",
+        "run_attempt_settlements_pkey",
+        "p",
+        "PRIMARY KEY (tenant_id, run_id, attempt_id)",
+    ),
+    (
+        "run_attempt_settlements",
+        "fk_run_attempt_settlements_attempt",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id, attempt_id) "
+        "REFERENCES run_attempts(tenant_id, run_id, id)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_schema_version",
+        "c",
+        "CHECK (schema_version = 'ai-platform.run-attempt-settlement.v1'::text)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_mapping_state",
+        "c",
+        "CHECK (mapping_state = ANY (ARRAY['mapped'::text, 'unknown'::text, 'conflict'::text]))",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_dispatch_state",
+        "c",
+        "CHECK (dispatch_state = ANY (ARRAY['unknown'::text, 'accepted'::text, "
+        "'receipt_before_acceptance'::text]))",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_phase",
+        "c",
+        "CHECK (settlement_phase = ANY (ARRAY['awaiting_receipt'::text, "
+        "'awaiting_context'::text, 'pending'::text, 'claimed'::text, 'retry'::text, "
+        "'settled'::text, 'failed'::text, 'unknown'::text]))",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_identity",
+        "c",
+        "CHECK (tenant_id <> ''::text AND run_id <> ''::text "
+        "AND attempt_id <> ''::text AND attempt_status_snapshot <> ''::text "
+        "AND run_status_snapshot <> ''::text "
+        "AND attempt_owner_generation_snapshot > 0 "
+        "AND (source_lease_id IS NULL OR source_lease_id <> ''::text))",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_receipt",
+        "c",
+        "CHECK (receipt_identity IS NULL AND receipt_json IS NULL "
+        "AND receipt_sha256 IS NULL AND receipt_owner_generation IS NULL "
+        "OR receipt_identity IS NOT NULL AND receipt_identity <> ''::text "
+        "AND jsonb_typeof(receipt_json) = 'object'::text "
+        "AND receipt_sha256 ~ '^[0-9a-f]{64}$'::text "
+        "AND receipt_owner_generation > 0)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_claim",
+        "c",
+        "CHECK (settlement_phase = 'claimed'::text "
+        "AND settlement_claim_token IS NOT NULL "
+        "AND settlement_claim_token <> ''::text "
+        "AND settlement_claimed_at IS NOT NULL "
+        "OR settlement_phase <> 'claimed'::text "
+        "AND settlement_claim_token IS NULL AND settlement_claimed_at IS NULL)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_retry",
+        "c",
+        "CHECK (settlement_phase = 'retry'::text AND next_retry_at IS NOT NULL "
+        "OR settlement_phase <> 'retry'::text AND next_retry_at IS NULL)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_attempt_count",
+        "c",
+        "CHECK (settlement_attempt_count >= 0)",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_result",
+        "c",
+        "CHECK (result_status IS NULL AND result_json IS NULL "
+        "AND result_sha256 IS NULL AND settled_at IS NULL "
+        "OR result_status IS NOT NULL AND result_status <> ''::text "
+        "AND jsonb_typeof(result_json) = 'object'::text "
+        "AND result_sha256 ~ '^[0-9a-f]{64}$'::text "
+        "AND settled_at IS NOT NULL)",
     ),
     (
         "run_delivery_intents",
@@ -1148,6 +1294,12 @@ STATIC_INDEX_DEFINITIONS = (
         ("lease_expires_at", "tenant_id", "run_id", "id"),
         (False, False, False, False),
         "status = any array['claimed', 'running', 'cancel_requested', 'expired']",
+    ),
+    StaticIndexDefinition(
+        "idx_run_attempt_settlements_mapping",
+        "run_attempt_settlements",
+        ("mapping_state", "tenant_id", "run_id", "attempt_id"),
+        (False, False, False, False),
     ),
     StaticIndexDefinition(
         "idx_provider_entry_view",
