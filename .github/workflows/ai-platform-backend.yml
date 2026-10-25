@@ -287,6 +287,8 @@ jobs:
               tests/test_run_performance_postgres.py
               tests/test_streaming_schema_postgres.py
               tests/test_s0a_schema_postgres.py
+              tests/test_run_delivery_intents.py
+              tests/test_run_delivery_intents_postgres.py
           - shard: lifecycle-control-chain
             runner: ubuntu-latest
             postgres_image: postgres:16-alpine

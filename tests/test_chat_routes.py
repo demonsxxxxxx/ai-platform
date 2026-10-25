@@ -33,6 +33,7 @@ import app.platform.postgres.errors as _repo_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
 import app.skills.infrastructure.resolution_postgres as _repo_app_skills_infrastructure_resolution_postgres
 from app.auth import AuthPrincipal
+from app.control_plane_contracts import HARNESS_CHAT_EXECUTOR_TYPE
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
 from app.execution.api import RunModelSelection
@@ -765,7 +766,9 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     ]
 
 
-def test_keyed_chat_retry_admission_route_persists_durable_receipt(monkeypatch, chat_submission_client):
+def test_keyed_chat_retry_admission_route_persists_durable_receipt(
+    monkeypatch, chat_submission_client
+):
     submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
     submission = {
         "submission_id": submission_id,
@@ -782,7 +785,7 @@ def test_keyed_chat_retry_admission_route_persists_durable_receipt(monkeypatch, 
     intent_payload = {
         "file_ids": [],
         "input": {"message": "accepted once"},
-        "executor_type": "harness-chat",
+        "executor_type": HARNESS_CHAT_EXECUTOR_TYPE,
         "execution_kind": "harness_chat",
         "skill_version": None,
         "release_decision": {},
@@ -863,11 +866,11 @@ def test_keyed_chat_retry_admission_route_persists_durable_receipt(monkeypatch, 
     chat_submission_client.app.state.run_delivery_intents = DeliveryIntents()
 
     response = chat_submission_client.post(
-        f"/api/ai/chat/submissions/{submission_id}/retry-admission",
+        f"/api/chat/submissions/{submission_id}/retry-admission",
         headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json()["state"] == "queued"
     assert response.json()["outcome"]["queue_position"] == 2
     assert calls == [("deliver", "tenant-a", "run-history"), ("finalize", {
@@ -1760,7 +1763,14 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
             "outcome_json": _pending_submission_row()["outcome_json"],
         }, False
 
-    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities, run_lifecycle):
+    async def admit(
+        *,
+        principal: AuthPrincipal,
+        submission_id: str,
+        v4_capabilities,
+        run_lifecycle,
+        delivery_intents=None,
+    ):
         assert principal.user_id == "user-a"
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         admitted.append(submission_id)
@@ -2231,6 +2241,12 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     async def forbidden_failure_transition(*_args, **_kwargs):
         raise AssertionError("concurrent success must not be replaced by enqueue_failed")
 
+    finalized = []
+
+    async def finalize_queue_success(_conn, **kwargs):
+        finalized.append(kwargs)
+        submission.update(kwargs)
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
@@ -2238,7 +2254,7 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
-    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_queue_success, raising=False)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -2247,6 +2263,8 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
 
     assert response.state == "queued"
     assert calls == ["read", "enqueue", "read"]
+    assert finalized[0]["state"] == "queued"
+    assert finalized[0]["queue_message_id"] == "stable-message-id"
 
 
 @pytest.mark.asyncio

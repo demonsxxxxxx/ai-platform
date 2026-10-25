@@ -1,4 +1,4 @@
-"""Persist Conversations projections after an accepted Run is delivered."""
+"""Persist Conversations projections for accepted queue deliveries."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
-
-from app.models import ChatStreamResponse
 
 
 @dataclass(frozen=True)
@@ -18,13 +16,33 @@ class ChatQueueAdmission:
     source: str
 
 
+def queued_outcome_projection(
+    outcome: Mapping[str, Any],
+    *,
+    queue_position: int,
+    submission_id: str | None,
+) -> dict[str, Any]:
+    """Project a saved accepted response after the queue receipt is committed."""
+
+    projected = dict(outcome)
+    projected.update(
+        {
+            "status": "queued",
+            "queue_position": int(queue_position) or None,
+        }
+    )
+    if submission_id is not None:
+        projected["submission_id"] = submission_id
+    return projected
+
+
 async def persist_chat_queue_success(
     connection: Any,
     *,
     tenant_id: str,
     run_id: str,
     queue_admission: Any,
-    outcome: ChatStreamResponse | None,
+    outcome: Mapping[str, Any] | None,
     submission_id: str | None,
     user_id: str | None,
     append_event: Callable[..., Awaitable[Any]],
@@ -58,7 +76,7 @@ async def persist_chat_queue_success(
             user_id=user_id,
             submission_id=submission_id,
             state="queued",
-            outcome_json=outcome.model_dump(mode="json"),
+            outcome_json=dict(outcome),
             queue_position=queue_position or None,
             queue_admission_ordinal=queue_ordinal or None,
             queue_message_id=str(queue_admission.message_id),
@@ -74,29 +92,27 @@ async def record_accepted_chat_delivery_receipt(
     append_event: Callable[..., Awaitable[Any]],
     finalize_submission: Callable[..., Awaitable[Any]],
 ) -> None:
-    """Apply a durable Chat receipt in the same transaction as Execution's receipt."""
+    """Apply an exact durable Chat receipt in Execution's receipt transaction."""
 
     if str(intent.source) != "chat":
         return
-    try:
-        payload = json.loads(intent.payload_json)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("chat_delivery_payload_invalid") from exc
+    payload = _intent_payload(intent)
+    user_id = payload.get("user_id")
     if (
-        not isinstance(payload, dict)
-        or payload.get("tenant_id") != intent.tenant_id
-        or payload.get("run_id") != intent.run_id
-        or not isinstance(payload.get("user_id"), str)
-        or not payload["user_id"]
+        payload.get("tenant_id") != str(intent.tenant_id)
+        or payload.get("run_id") != str(intent.run_id)
+        or not isinstance(user_id, str)
+        or not user_id
     ):
         raise ValueError("chat_delivery_payload_identity_invalid")
+    if str(receipt.message_id) != str(intent.message_id):
+        raise ValueError("chat_delivery_receipt_identity_invalid")
+
     tenant_id = str(intent.tenant_id)
-    user_id = str(payload["user_id"])
-    submission_id = (
-        str(intent.submission_id) if intent.submission_id is not None else None
-    )
+    run_id = str(intent.run_id)
+    submission_id = str(intent.submission_id) if intent.submission_id is not None else None
     queue_admission = _queue_admission_from_receipt(receipt)
-    outcome: ChatStreamResponse | None = None
+    outcome: dict[str, Any] | None = None
     if submission_id is not None:
         submission = await get_submission(
             connection,
@@ -105,30 +121,43 @@ async def record_accepted_chat_delivery_receipt(
             submission_id=submission_id,
             for_update=True,
         )
-        if submission is None or str(submission.get("run_id") or "") != str(intent.run_id):
+        if submission is None or str(submission.get("run_id") or "") != run_id:
             raise ValueError("chat_delivery_submission_identity_invalid")
-        state = str(submission.get("state") or "")
+        row = dict(submission)
+        state = str(row.get("state") or "")
         if state == "queued":
-            if str(submission.get("queue_message_id") or "") != str(receipt.message_id):
+            saved_message_id = str(row.get("queue_message_id") or "")
+            if saved_message_id and saved_message_id != str(receipt.message_id):
                 raise ValueError("chat_delivery_submission_receipt_conflict")
+            if not saved_message_id:
+                raw_outcome = row.get("outcome_json")
+                await finalize_submission(
+                    connection,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    submission_id=submission_id,
+                    state="queued",
+                    outcome_json=dict(raw_outcome) if isinstance(raw_outcome, Mapping) else {},
+                    queue_position=int(receipt.queue_position) or None,
+                    queue_admission_ordinal=int(receipt.queue_admission_ordinal) or None,
+                    queue_message_id=str(receipt.message_id),
+                )
             return
         if state != "accepted_pending_enqueue":
             return
-        raw_outcome = submission.get("outcome_json")
-        if not isinstance(raw_outcome, dict) or not raw_outcome:
+        raw_outcome = row.get("outcome_json")
+        if not isinstance(raw_outcome, Mapping) or not raw_outcome:
             raise ValueError("chat_delivery_submission_outcome_missing")
-        outcome = ChatStreamResponse.model_validate(raw_outcome).model_copy(
-            update={
-                "status": "queued",
-                "queue_position": int(receipt.queue_position) or None,
-                "submission_id": submission_id,
-            }
+        outcome = queued_outcome_projection(
+            raw_outcome,
+            queue_position=int(receipt.queue_position),
+            submission_id=submission_id,
         )
 
     await persist_chat_queue_success(
         connection,
         tenant_id=tenant_id,
-        run_id=str(intent.run_id),
+        run_id=run_id,
         queue_admission=queue_admission,
         outcome=outcome,
         submission_id=submission_id,
@@ -150,28 +179,32 @@ async def record_accepted_chat_delivery_rejection(
 
     if str(intent.source) != "chat" or intent.submission_id is None:
         return
-    try:
-        payload = json.loads(intent.payload_json)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("chat_delivery_payload_invalid") from exc
-    user_id = payload.get("user_id") if isinstance(payload, dict) else None
-    if not isinstance(user_id, str) or not user_id:
+    payload = _intent_payload(intent)
+    user_id = payload.get("user_id")
+    tenant_id = str(intent.tenant_id)
+    run_id = str(intent.run_id)
+    if (
+        payload.get("tenant_id") != tenant_id
+        or payload.get("run_id") != run_id
+        or not isinstance(user_id, str)
+        or not user_id
+    ):
         raise ValueError("chat_delivery_payload_identity_invalid")
     submission_id = str(intent.submission_id)
     submission = await get_submission(
         connection,
-        tenant_id=str(intent.tenant_id),
+        tenant_id=tenant_id,
         user_id=user_id,
         submission_id=submission_id,
         for_update=True,
     )
-    if submission is None or str(submission.get("run_id") or "") != str(intent.run_id):
+    if submission is None or str(submission.get("run_id") or "") != run_id:
         raise ValueError("chat_delivery_submission_identity_invalid")
     if str(submission.get("state") or "") != "accepted_pending_enqueue":
         return
     await finalize_submission(
         connection,
-        tenant_id=str(intent.tenant_id),
+        tenant_id=tenant_id,
         user_id=user_id,
         submission_id=submission_id,
         state="enqueue_failed",
@@ -179,7 +212,17 @@ async def record_accepted_chat_delivery_rejection(
     )
 
 
-def _queue_admission_from_receipt(receipt: Any) -> Any:
+def _intent_payload(intent: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(intent.payload_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("chat_delivery_payload_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("chat_delivery_payload_invalid")
+    return payload
+
+
+def _queue_admission_from_receipt(receipt: Any) -> ChatQueueAdmission:
     return ChatQueueAdmission(
         queue_position=int(receipt.queue_position),
         queue_admission_ordinal=int(receipt.queue_admission_ordinal),

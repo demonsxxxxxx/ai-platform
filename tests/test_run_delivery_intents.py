@@ -77,12 +77,15 @@ class Store:
         self.receipt_intents: list[str] = []
         self.historical_candidates: list[dict[str, Any]] = []
         self.inserted: list[dict[str, Any]] = []
+        self.historical_limits: list[int] = []
 
     async def lock_historical_backfill(self, connection):
         return None
 
-    async def list_historical_candidates(self, connection):
-        candidates, self.historical_candidates = self.historical_candidates, []
+    async def list_historical_candidates(self, connection, *, limit):
+        self.historical_limits.append(limit)
+        candidates = self.historical_candidates[:limit]
+        self.historical_candidates = self.historical_candidates[limit:]
         return candidates
 
     async def insert(self, connection, **kwargs):
@@ -97,7 +100,7 @@ class Store:
             return self.read_record
         return self.claims[0] if self.claims else None
 
-    async def claim_is_current(self, connection, intent):
+    async def claim_is_current(self, connection, intent, *, for_enqueue=True):
         return self.current
 
     async def record_receipt(self, connection, *, intent, receipt):
@@ -229,6 +232,10 @@ def historical_candidate(*, source: str = "chat_stream") -> dict[str, Any]:
         "chat_submission_records": [
             {
                 "submission_id": "submission-history",
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": run_id,
                 "state": "accepted_pending_enqueue",
                 "queue_message_id": None,
             }
@@ -280,6 +287,33 @@ async def test_historical_chat_backfill_uses_frozen_input_and_submission_origin(
     assert payload["input"] == {"message": "from persisted input"}
     assert payload["model_value"] == "provider/frozen"
     assert payload["agent_profile"]["content_hash"] == "old-profile-hash"
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_pages_candidates_in_bounded_batches():
+    store = Store()
+    store.historical_candidates = []
+    for run_id in ("run-history-a", "run-history-b", "run-history-c"):
+        candidate = historical_candidate()
+        candidate["run_id"] = run_id
+        candidate["chat_submission_records"][0]["run_id"] = run_id
+        store.historical_candidates.append(candidate)
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=Queue(),
+        transaction=transaction,
+        scan_batch_size=1,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    assert await manager.prepare_historical_delivery_intents() == 3
+    assert len(store.inserted) == 3
+    assert store.historical_limits == [1, 1, 1, 1]
 
 
 @pytest.mark.asyncio
@@ -363,6 +397,30 @@ async def test_historical_backfill_reads_existing_redis_receipt_without_second_e
     assert result.state == "delivered"
     assert queue.enqueues == []
     assert queue.readbacks == [(inserted["payload_json"], inserted["message_id"])]
+
+
+@pytest.mark.asyncio
+async def test_queued_historical_submission_without_receipt_identity_maps_by_original_run_facts():
+    candidate = historical_candidate()
+    candidate["chat_submission_records"][0]["state"] = "queued"
+    candidate["chat_submission_records"][0]["queue_message_id"] = None
+    store = Store()
+    store.historical_candidates = [candidate]
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=Queue(),
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    assert await manager.prepare_historical_delivery_intents() == 1
+    assert store.inserted[0]["submission_id"] == "submission-history"
 
 
 @pytest.mark.asyncio

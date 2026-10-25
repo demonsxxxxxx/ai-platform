@@ -245,6 +245,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_performance_postgres.py",
         "tests/test_streaming_schema_postgres.py",
         "tests/test_s0a_schema_postgres.py",
+        "tests/test_run_delivery_intents.py",
+        "tests/test_run_delivery_intents_postgres.py",
     ),
     "lifecycle-control-chain": (
         "tests/test_run_execution_lifecycle_integration.py",

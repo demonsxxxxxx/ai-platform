@@ -9,8 +9,10 @@ import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructu
 import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
+import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -796,6 +798,8 @@ def test_existing_control_operation_route_uses_frozen_delivery_without_reauthori
         roles=["user"],
     )
     app.state.run_delivery_intents = DeliveryIntents()
+    app.state.run_stream_runtime = SimpleNamespace(worker_capabilities=object())
+    app.state.run_lifecycle = object()
 
     response = TestClient(app).post(
         run_control_url("run-parent", action),

@@ -22,7 +22,11 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
 )
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
-from app.sandbox.api import SandboxDispatchIntentService, SandboxExecutorHttpError
+from app.sandbox.api import (
+    SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown,
+    SandboxExecutorHttpError,
+)
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
@@ -1410,6 +1414,7 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
 
     events = []
     status_reads = []
+    release_calls = []
     in_transaction = False
 
     class StubSettings:
@@ -1462,6 +1467,9 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
         status_reads.append((run_id, attempt_id))
         return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
 
+    async def release_lease(lease, reason, lease_record_id=None):
+        release_calls.append((lease, reason, lease_record_id))
+
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(runtime_module, "transaction", transaction)
@@ -1475,14 +1483,22 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
         execute_task=execute,
         get_executor_status=get_status,
         callback_token_resolver=lambda _token_id: "secret-token",
+        release_lease=release_lease,
     )
 
     if commit_fails:
-        with pytest.raises(RuntimeError, match="synthetic acceptance commit failure"):
+        with pytest.raises(
+            SandboxDispatchOutcomeUnknown,
+            match="sandbox_dispatch_outcome_unknown",
+        ) as raised:
             await runtime.submit(request(attempt_id="a"))
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "synthetic acceptance commit failure"
         assert "rollback" in events
         assert "wake" not in events
         assert status_reads == [("run-a", "a")]
+        assert release_calls == []
+        assert len(await provider.list_runtime_containers({})) == 1
         return
     if signal_unavailable == "cancelled" and state == "pending":
         with pytest.raises(asyncio.CancelledError):

@@ -161,7 +161,7 @@ class RunDeliveryIntentStore(Protocol):
     ) -> list[Mapping[str, Any]]: ...
 
     async def claim_is_current(
-        self, connection: Any, intent: RunDeliveryIntent
+        self, connection: Any, intent: RunDeliveryIntent, *, for_enqueue: bool = True
     ) -> bool: ...
 
     async def record_receipt(
@@ -189,7 +189,9 @@ class RunDeliveryIntentStore(Protocol):
         reason: str,
     ) -> bool: ...
 
-    async def list_historical_candidates(self, connection: Any) -> list[Mapping[str, Any]]: ...
+    async def list_historical_candidates(
+        self, connection: Any, *, limit: int
+    ) -> list[Mapping[str, Any]]: ...
 
     async def lock_historical_backfill(self, connection: Any) -> None: ...
 
@@ -248,70 +250,56 @@ class RunDeliveryIntents:
             raise RuntimeError("run_delivery_history_preflight_unavailable")
 
         mapped = 0
-        unprovable = 0
-        async with self._transaction() as connection:
-            lock = getattr(self._store, "lock_historical_backfill", None)
-            if lock is not None:
-                await lock(connection)
-            records = await list_candidates(connection)
-            for record in records:
-                mapped_facts = _historical_delivery_facts(record)
-                if mapped_facts is None:
-                    unprovable += 1
-                    continue
-                payload, source, submission_id, user_message_id = mapped_facts
-                try:
-                    frozen = self._codec.freeze(payload)
-                    digest = sha256(frozen.payload_json.encode("utf-8")).hexdigest()
-                    if digest != frozen.message_id:
-                        unprovable += 1
-                        continue
-                except Exception:
-                    unprovable += 1
-                    continue
-                submission_records = record.get("chat_submission_records") or []
-                if submission_records:
-                    submission_record = (
-                        submission_records[0]
-                        if len(submission_records) == 1
-                        and isinstance(submission_records[0], Mapping)
-                        else None
-                    )
-                    if (
-                        submission_record is None
-                        or submission_record.get("state")
-                        not in {"queued", "accepted_pending_enqueue"}
-                        or (
-                            submission_record.get("state") == "queued"
-                            and submission_record.get("queue_message_id")
-                            != frozen.message_id
-                        )
-                        or (
-                            submission_record.get("state")
-                            == "accepted_pending_enqueue"
-                            and submission_record.get("queue_message_id")
-                            not in {None, frozen.message_id}
-                        )
-                    ):
-                        unprovable += 1
-                        continue
-                await self._store.insert(
-                    connection,
-                    tenant_id=str(payload["tenant_id"]),
-                    run_id=str(payload["run_id"]),
-                    session_id=str(payload["session_id"]),
-                    source=source,
-                    submission_id=submission_id,
-                    user_message_id=user_message_id,
-                    payload_json=frozen.payload_json,
-                    message_id=frozen.message_id,
-                    payload_sha256=digest,
+        while True:
+            page_unprovable = 0
+            async with self._transaction() as connection:
+                lock = getattr(self._store, "lock_historical_backfill", None)
+                if lock is not None:
+                    await lock(connection)
+                records = await list_candidates(
+                    connection, limit=self._scan_batch_size
                 )
-                mapped += 1
-        if unprovable:
-            raise RuntimeError(
-                f"run_delivery_history_unprovable:{unprovable}"
-            )
+                for record in records:
+                    mapped_facts = _historical_delivery_facts(record)
+                    if mapped_facts is None:
+                        page_unprovable += 1
+                        continue
+                    payload, source, submission_id, user_message_id = mapped_facts
+                    try:
+                        frozen = self._codec.freeze(payload)
+                        digest = sha256(frozen.payload_json.encode("utf-8")).hexdigest()
+                        if digest != frozen.message_id:
+                            page_unprovable += 1
+                            continue
+                    except Exception:
+                        page_unprovable += 1
+                        continue
+                    if not _historical_submission_identity_matches(
+                        record,
+                        submission_id=submission_id,
+                        message_id=frozen.message_id,
+                    ):
+                        page_unprovable += 1
+                        continue
+                    await self._store.insert(
+                        connection,
+                        tenant_id=str(payload["tenant_id"]),
+                        run_id=str(payload["run_id"]),
+                        session_id=str(payload["session_id"]),
+                        source=source,
+                        submission_id=submission_id,
+                        user_message_id=user_message_id,
+                        payload_json=frozen.payload_json,
+                        message_id=frozen.message_id,
+                        payload_sha256=digest,
+                    )
+                    mapped += 1
+            if not records:
+                break
+            if page_unprovable:
+                raise RuntimeError(
+                    f"run_delivery_history_unprovable:{page_unprovable}"
+                )
         return mapped
 
     async def record(
@@ -452,7 +440,7 @@ class RunDeliveryIntents:
             )
 
         async with self._transaction() as connection:
-            eligible = await self._store.claim_is_current(connection, intent)
+            eligible = await self._store.claim_is_current(connection, intent, for_enqueue=False)
         if not eligible:
             suppressed = await self._suppress(intent, "run_not_eligible_for_delivery")
             return DeliveryAttemptResult(
@@ -477,13 +465,7 @@ class RunDeliveryIntents:
             async with self._transaction() as connection:
                 eligible = await self._store.claim_is_current(connection, intent)
             if not eligible:
-                suppressed = await self._suppress(
-                    intent, "run_not_eligible_for_delivery"
-                )
-                return DeliveryAttemptResult(
-                    state="suppressed" if suppressed else "pending",
-                    error_code=None if suppressed else "delivery_claim_stale",
-                )
+                return await self._reschedule(intent, "queue_receipt_not_yet_observed")
             try:
                 receipt = await self._enqueue(intent)
             except QueueDeliveryError as exc:
@@ -633,6 +615,39 @@ _HISTORICAL_SNAPSHOT_FIELDS = (
     "model_value",
     "schema_version",
 )
+
+
+def _historical_submission_identity_matches(
+    record: Mapping[str, Any],
+    *,
+    submission_id: str | None,
+    message_id: str,
+) -> bool:
+    submission_ids = record.get("chat_submission_ids") or []
+    submission_records = record.get("chat_submission_records") or []
+    if submission_id is None:
+        return not submission_ids and not submission_records
+    if (
+        not isinstance(submission_ids, list)
+        or len(submission_ids) != 1
+        or str(submission_ids[0]) != submission_id
+        or not isinstance(submission_records, list)
+        or len(submission_records) != 1
+        or not isinstance(submission_records[0], Mapping)
+    ):
+        return False
+    submission = submission_records[0]
+    if any(
+        str(submission.get(key) or "") != str(record.get(key) or "")
+        for key in ("tenant_id", "user_id", "session_id", "run_id")
+    ):
+        return False
+    if str(submission.get("submission_id") or "") != submission_id:
+        return False
+    if submission.get("state") not in {"queued", "accepted_pending_enqueue"}:
+        return False
+    saved_message_id = str(submission.get("queue_message_id") or "")
+    return not saved_message_id or saved_message_id == message_id
 
 
 def _historical_delivery_facts(

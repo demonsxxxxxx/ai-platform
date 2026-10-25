@@ -103,15 +103,22 @@ async def lock_historical_backfill(connection: Any) -> None:
     )
 
 
-async def list_historical_candidates(connection: Any) -> list[dict[str, Any]]:
-    """Return accepted queued Runs whose frozen queue identity has no mapping."""
+async def list_historical_candidates(
+    connection: Any, *, limit: int
+) -> list[dict[str, Any]]:
+    """Return one bounded page of accepted queued Runs without an intent."""
 
     cursor = await connection.execute(
         """
         select runs.*,
+               runs.id::text as run_id,
                coalesce((
                  select jsonb_agg(jsonb_build_object(
                    'submission_id', submission.submission_id::text,
+                   'tenant_id', submission.tenant_id,
+                   'user_id', submission.user_id,
+                   'session_id', submission.session_id,
+                   'run_id', submission.run_id,
                    'state', submission.state,
                    'queue_message_id', submission.queue_message_id
                  ))
@@ -153,8 +160,10 @@ async def list_historical_candidates(connection: Any) -> list[dict[str, Any]]:
             where delivery.tenant_id = runs.tenant_id and delivery.run_id = runs.id
           )
         order by runs.created_at, runs.tenant_id, runs.id
+        limit %s
         for update of runs
-        """
+        """,
+        (max(1, min(int(limit), 100)),),
     )
     return [dict(row) for row in await cursor.fetchall()]
 
@@ -167,32 +176,27 @@ async def claim_due(
     tenant_id: str | None = None,
     run_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Suppress ineligible rows, then claim a fair bounded page with SKIP LOCKED."""
+    """Claim delivery or receipt recovery; an existing Attempt only forbids enqueue."""
 
     filters = "(%s::text is null or intent.tenant_id = %s) and (%s::text is null or intent.run_id = %s)"
     await connection.execute(
         f"""
         with candidates as (
           select intent.tenant_id, intent.run_id,
-                 case
-                   when exists (
-                     select 1 from run_attempts attempt
-                     where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
-                   ) then 'attempt_already_exists'
-                   else 'run_not_queued'
-                 end as reason
+                 'run_not_queued' as reason
           from run_delivery_intents as intent
           join runs on runs.tenant_id = intent.tenant_id and runs.id = intent.run_id
           where intent.state in ('pending', 'claimed')
             and {filters}
+            and (intent.state = 'pending' or intent.claim_expires_at <= now())
+            and not exists (
+              select 1 from run_attempts attempt
+              where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
+            )
             and (
               runs.status <> 'queued'
               or runs.cancel_requested_at is not null
               or runs.terminalization_target is not null
-              or exists (
-                select 1 from run_attempts attempt
-                where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
-              )
             )
           order by intent.updated_at, intent.created_at, intent.tenant_id, intent.run_id
           limit %s
@@ -221,13 +225,16 @@ async def claim_due(
           where intent.state in ('pending', 'claimed')
             and intent.next_retry_at <= now()
             and (intent.state = 'pending' or intent.claim_expires_at <= now())
-            and runs.status = 'queued'
+            and ((runs.status = 'queued'
             and runs.cancel_requested_at is null
             and runs.terminalization_target is null
             and not exists (
               select 1 from run_attempts attempt
               where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
-            )
+            )) or exists (
+              select 1 from run_attempts attempt
+              where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
+            ))
             and {filters}
           order by intent.next_retry_at, intent.created_at, intent.tenant_id, intent.run_id
           limit %s
@@ -256,7 +263,9 @@ async def claim_due(
     return [dict(row) for row in await cursor.fetchall()]
 
 
-async def claim_is_current(connection: Any, intent: RunDeliveryIntent) -> bool:
+async def claim_is_current(
+    connection: Any, intent: RunDeliveryIntent, *, for_enqueue: bool = True
+) -> bool:
     cursor = await connection.execute(
         """
         select exists (
@@ -266,16 +275,16 @@ async def claim_is_current(connection: Any, intent: RunDeliveryIntent) -> bool:
           where delivery.tenant_id = %s and delivery.run_id = %s
             and delivery.state = 'claimed' and delivery.claim_token = %s::uuid
             and delivery.claim_expires_at > now()
-            and runs.status = 'queued'
+            and (not %s or (runs.status = 'queued'
             and runs.cancel_requested_at is null
             and runs.terminalization_target is null
             and not exists (
               select 1 from run_attempts attempt
               where attempt.tenant_id = delivery.tenant_id and attempt.run_id = delivery.run_id
-            )
+            )))
         ) as current
         """,
-        (intent.tenant_id, intent.run_id, intent.claim_token),
+        (intent.tenant_id, intent.run_id, intent.claim_token, for_enqueue),
     )
     row = await cursor.fetchone()
     return bool(row and row.get("current"))
@@ -304,17 +313,10 @@ async def record_receipt(
         where delivery.tenant_id = %s and delivery.run_id = %s
           and delivery.state = 'claimed' and delivery.claim_token = %s::uuid
           and delivery.claim_expires_at > now()
-          and exists (
-            select 1 from runs
-            where runs.tenant_id = delivery.tenant_id and runs.id = delivery.run_id
-              and runs.status = 'queued'
-              and runs.cancel_requested_at is null
-              and runs.terminalization_target is null
-          )
-          and not exists (
-            select 1 from run_attempts attempt
-            where attempt.tenant_id = delivery.tenant_id and attempt.run_id = delivery.run_id
-          )
+          and delivery.queue_payload_json = %s
+          and delivery.queue_message_id = %s
+          and delivery.payload_sha256 = %s
+          and %s = %s
         returning delivery.run_id
         """,
         (
@@ -325,6 +327,11 @@ async def record_receipt(
             intent.tenant_id,
             intent.run_id,
             intent.claim_token,
+            intent.payload_json,
+            intent.message_id,
+            intent.payload_sha256,
+            receipt.message_id,
+            intent.message_id,
         ),
     )
     return await cursor.fetchone() is not None
@@ -347,6 +354,10 @@ async def reschedule(
         """
         update run_delivery_intents as delivery
         set state = case
+              when exists (
+                select 1 from run_attempts attempt
+                where attempt.tenant_id = delivery.tenant_id and attempt.run_id = delivery.run_id
+              ) then 'pending'
               when runs.status = 'queued'
                 and runs.cancel_requested_at is null
                 and runs.terminalization_target is null
@@ -360,21 +371,12 @@ async def reschedule(
             claimed_at = null,
             claim_expires_at = null,
             next_retry_at = now() + (%s * interval '1 second'),
-            last_error_code = case
-              when runs.status = 'queued'
-                and runs.cancel_requested_at is null
-                and runs.terminalization_target is null
-                and not exists (
-                  select 1 from run_attempts attempt
-                  where attempt.tenant_id = delivery.tenant_id and attempt.run_id = delivery.run_id
-                ) then %s
+            last_error_code = %s,
+            suppressed_at = case
               when exists (
                 select 1 from run_attempts attempt
                 where attempt.tenant_id = delivery.tenant_id and attempt.run_id = delivery.run_id
-              ) then 'attempt_already_exists'
-              else 'run_not_queued'
-            end,
-            suppressed_at = case
+              ) then null
               when runs.status = 'queued'
                 and runs.cancel_requested_at is null
                 and runs.terminalization_target is null
