@@ -28,15 +28,22 @@ async def _scan_domain(
     limit: int,
     query: str,
     parameters: tuple[Any, ...],
+    cursor_column: str = "scan_cursor",
 ) -> list[SupervisionCandidate]:
+    if cursor_column not in {
+        "scan_cursor",
+        "probe_cancel_scan_cursor",
+        "probe_normal_scan_cursor",
+    }:
+        raise ValueError("execution_supervision_cursor_invalid")
     cursor = await connection.execute(
-        "select scan_cursor from execution_supervision_domains where domain = %s for update",
+        f"select {cursor_column} from execution_supervision_domains where domain = %s for update",
         (domain.value,),
     )
     control = await cursor.fetchone()
     if control is None:
         raise RuntimeError("execution_supervision_domain_missing")
-    scan_cursor = control.get("scan_cursor")
+    scan_cursor = control.get(cursor_column)
     cursor = await connection.execute(
         query,
         (*parameters, scan_cursor, max(int(limit), 1)),
@@ -44,8 +51,8 @@ async def _scan_domain(
     rows = [dict(row) for row in await cursor.fetchall()]
     if rows:
         await connection.execute(
-            """update execution_supervision_domains
-               set scan_cursor = %s, updated_at = clock_timestamp()
+            f"""update execution_supervision_domains
+               set {cursor_column} = %s, updated_at = clock_timestamp()
                where domain = %s""",
             (rows[-1]["scan_key"], domain.value),
         )
@@ -66,41 +73,61 @@ async def observe_persisted_candidates(
         connection,
         domain=SupervisionDomain.DELIVERY,
         limit=batch_limits[SupervisionDomain.DELIVERY],
-        parameters=(now, now),
+        parameters=(now, now, now),
         query="""
           with due as (
             select encode(convert_to(intent.tenant_id, 'UTF8'), 'hex') || '.' ||
                    encode(convert_to(intent.run_id, 'UTF8'), 'hex') as scan_key,
                    intent.tenant_id || '/' || intent.run_id as candidate_id,
-                   'recover_delivery'::text as action,
+                   case
+                     when attempt.id is not null then 'readback_delivery_receipt'
+                     when runs.status <> 'queued' or runs.cancel_requested_at is not null
+                       or runs.terminalization_target is not null then 'suppress_delivery'
+                     else 'recover_delivery'
+                   end::text as action,
                    intent.next_retry_at as deadline_at,
                    100::integer as priority,
                    jsonb_build_object('intent_state', intent.state,
-                     'message_id', intent.queue_message_id) as facts
+                     'message_id', intent.queue_message_id,
+                     'run_status', runs.status,
+                     'attempt_id', attempt.id,
+                     'attempt_status', attempt.status,
+                     'enqueue_permitted', attempt.id is null
+                       and runs.status = 'queued'
+                       and runs.cancel_requested_at is null
+                       and runs.terminalization_target is null) as facts
             from run_delivery_intents intent
             join runs on runs.tenant_id = intent.tenant_id and runs.id = intent.run_id
+            left join lateral (
+              select candidate_attempt.id, candidate_attempt.status
+              from run_attempts candidate_attempt
+              where candidate_attempt.tenant_id = intent.tenant_id
+                and candidate_attempt.run_id = intent.run_id
+              order by candidate_attempt.ordinal desc, candidate_attempt.created_at desc
+              limit 1
+            ) attempt on true
             where intent.state in ('pending', 'claimed')
-              and intent.next_retry_at <= %s
               and (intent.state = 'pending' or intent.claim_expires_at <= %s)
-              and runs.status = 'queued' and runs.cancel_requested_at is null
-              and runs.terminalization_target is null
-              and not exists (select 1 from run_attempts attempt
-                where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id)
+              and (
+                (attempt.id is not null and intent.next_retry_at <= %s)
+                or (attempt.id is null and (
+                  (runs.status = 'queued' and runs.cancel_requested_at is null
+                    and runs.terminalization_target is null
+                    and intent.next_retry_at <= %s)
+                  or runs.status <> 'queued'
+                  or runs.cancel_requested_at is not null
+                  or runs.terminalization_target is not null
+                ))
+              )
           )
           select * from due
           order by (scan_key > coalesce(%s, '')) desc, scan_key
           limit %s
         """,
     ))
-    candidates.extend(await _scan_domain(
-        connection,
-        domain=SupervisionDomain.PROBE,
-        limit=batch_limits[SupervisionDomain.PROBE],
-        parameters=(probe_stale_seconds, probe_stale_seconds, now, probe_stale_seconds, now),
-        query="""
+    probe_query = """
           with due as (
-            select (case when runs.cancel_requested_at is not null then '0.' else '1.' end) ||
-                   'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
+            select 'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
                    lease.id as candidate_id, 'probe_executor'::text as action,
                    (case when lease.executor_reconciliation_status = 'claimed'
                      then coalesce(lease.executor_reconciliation_claimed_at,
@@ -126,14 +153,35 @@ async def observe_persisted_candidates(
                               lease.updated_at, lease.created_at) +
                      (%s * interval '1 second') <= %s)
               )
+              and {lane_filter}
           )
           select * from due
           order by (scan_key > coalesce(%s, '')) desc, scan_key
           limit %s
-        """,
-    ))
-    # The probe statement has explicit parameters ordered around its due expression.
-    # Keep it separate from caller-provided business thresholds.
+        """
+    # Give cancellations and ordinary probes separate fair cursors and the same
+    # per-lane page budget. The total observation page can be twice the setting;
+    # execution capacity remains a separate owner budget.
+    probe_parameters = (
+        probe_stale_seconds,
+        probe_stale_seconds,
+        now,
+        probe_stale_seconds,
+        now,
+    )
+    for cursor_column, lane_filter in (
+        ("probe_cancel_scan_cursor", "runs.cancel_requested_at is not null"),
+        ("probe_normal_scan_cursor", "runs.cancel_requested_at is null"),
+    ):
+        candidates.extend(await _scan_domain(
+            connection,
+            domain=SupervisionDomain.PROBE,
+            limit=batch_limits[SupervisionDomain.PROBE],
+            parameters=probe_parameters,
+            query=probe_query.format(lane_filter=lane_filter),
+            cursor_column=cursor_column,
+        ))
+
     candidates.extend(await _scan_domain(
         connection,
         domain=SupervisionDomain.SETTLEMENT,
