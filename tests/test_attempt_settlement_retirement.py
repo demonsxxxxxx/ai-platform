@@ -23,8 +23,9 @@ from app.runs.infrastructure.attempt_settlement_retirement_postgres import (
     prepare_attempt_settlement_retirement,
     retire_attempt_settlement_legacy_columns,
 )
-from tests.test_attempt_settlement_projection import attempt_settlement_db
+from tests import test_attempt_settlement_projection as projection_tests
 
+attempt_settlement_db = projection_tests.attempt_settlement_db
 
 _CONFIRMATIONS = {
     "legacy_binaries_stopped": True,
@@ -240,7 +241,8 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
                 )
             ).fetchone()
             actual = str(actual_row["definition"]) if actual_row else "<missing>"
-            normalize = lambda value: re.sub(r"^check\(\((.*)\)\)$", r"check(\1)", re.sub(r"\s+", "", value.lower()))
+            def normalize(value):
+                return re.sub(r"^check\(\((.*)\)\)$", r"check(\1)", re.sub(r"\s+", "", value.lower()))
             if normalize(actual) != normalize(expected):
                 mismatches.append((name, expected, actual))
         assert not mismatches, mismatches

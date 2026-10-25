@@ -236,6 +236,7 @@ async def observe_persisted_candidates(
              and detail.attempt_id = lease.attempt_id
              and detail.source_lease_id = lease.id
             where detail.mapping_state = 'mapped'
+              and lease.status <> 'quarantined'
               and detail.receipt_json is not null
               and detail.accepted_context_json is not null
               and detail.settlement_phase in ('pending', 'retry', 'claimed')

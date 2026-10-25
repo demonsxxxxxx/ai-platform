@@ -9,7 +9,6 @@ from typing import Any
 
 from app.runs.domain.attempt_settlement_projection import (
     ATTEMPT_SETTLEMENT_PROJECTION_FIELDS,
-    ATTEMPT_SETTLEMENT_SCHEMA_VERSION,
     CleanupObservation,
     AttemptSettlementProjectionConflict,
     AttemptSettlementProjection,
@@ -709,9 +708,17 @@ async def list_due_attempt_settlements(
     rows = await (
         await conn.execute(
             """
-            select * from run_attempt_settlements
+            select * from run_attempt_settlements detail
             where receipt_json is not null
               and intent_recovery_context_json is not null
+              and not exists (
+                select 1 from sandbox_leases lease
+                where lease.tenant_id = detail.tenant_id
+                  and lease.run_id = detail.run_id
+                  and lease.attempt_id = detail.attempt_id
+                  and lease.id = detail.source_lease_id
+                  and lease.status = 'quarantined'
+              )
               and (
                 mapping_state <> 'mapped'
                 or settlement_phase = 'pending'

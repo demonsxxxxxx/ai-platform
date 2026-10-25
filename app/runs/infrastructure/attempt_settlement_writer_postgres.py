@@ -13,7 +13,6 @@ from app.runs.domain.attempt_settlement_projection import (
     CleanupObservation,
 )
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    ATTEMPT_SETTLEMENT_PROJECTION_FIELDS,
     ATTEMPT_SETTLEMENT_WRITER_VERSIONS,
     _ATTEMPT_FIELDS,
     _RUN_FIELDS,
@@ -441,6 +440,8 @@ async def claim_due_attempt_settlements(
         )
         if not lease:
             raise AttemptSettlementProjectionConflict("attempt_settlement_source_lease_missing")
+        if lease.get("status") == "quarantined":
+            continue
         phase = str(detail.get("settlement_phase") or "")
         claimable = phase == "pending" or (
             phase == "retry" and detail.get("next_retry_at") is not None

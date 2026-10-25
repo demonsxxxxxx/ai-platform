@@ -16,9 +16,10 @@ from app.runs.infrastructure.attempt_settlement_projection_postgres import (
 )
 from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
 from app.runs.infrastructure import attempt_settlement_writer_cutover_postgres as cutover
-from tests.test_attempt_settlement_projection import attempt_settlement_db
+from tests import test_attempt_settlement_projection as projection_tests
 from tests.support.frozen_receipts import frozen_spec
 
+attempt_settlement_db = projection_tests.attempt_settlement_db
 
 _READER_CONFIRMATIONS = {
     "run_and_sandbox_writers_drained": True,

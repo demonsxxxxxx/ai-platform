@@ -591,6 +591,16 @@ async def test_expired_settlement_claim_cannot_quarantine_after_takeover(
         "executor_probe_claim_token": None,
         "released_at": None,
     }
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_attempt_settlements set settlement_claimed_at=now() - interval '2 minutes' "
+            "where tenant_id='tenant-a' and run_id='run-a' and attempt_id=%s",
+            (attempt_id,),
+        )
+        claim_c = await lease_port.claim_sandbox_executor_reconciliations(
+            conn, claim_token="settlement-c", limit=10, stale_after_seconds=30,
+        )
+        assert claim_c == []
 
 
 @pytest.mark.asyncio
