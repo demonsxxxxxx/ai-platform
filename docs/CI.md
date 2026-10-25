@@ -35,9 +35,10 @@ Windows runtime 分片只补充 Linux 无法执行的 Job Object、host-bind 和
 
 后端和 Agent/Skill 均使用 `tools/run_test_stage.py`、显式 branch coverage
 及每分片 evidence、JUnit 和 coverage JSON。后端常规分片使用 600 秒 stage
-deadline；`lifecycle-control-chain` 使用 1,800 秒 stage deadline 和 50 分钟 Job
-deadline，完整生命周期 evidence 与其绑定的源码、镜像、依赖版本和 profile
-artifact 一同上传。
+deadline；`lifecycle-control-chain` 由同一逻辑 owner 下的两个并行 runner 子阶段
+各运行 1,800 秒以内、Job deadline 为 50 分钟。两阶段 selector 不重叠且合起来覆盖
+整个集成测试文件；各自上传零跳过结果、coverage JSON 和生命周期 manifest 及其绑定的
+源码、镜像、依赖版本和 profile artifact。
 PG/Redis 必需分片和 Windows 分片保持 zero-skips；sandbox-runtime 与 release-governance-authority
 仍可能报告另一个平台的 skip。真实 OpenSandbox 凭据隔离是独立 governed 环境验收，
 其未执行状态不能由普通 CI 的 skip 或镜像构建成功替代。没有 coverage 阈值门禁。

@@ -14,6 +14,7 @@ _EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 TERMINAL_ACK_FAULT_MARKER_PATH = "/tmp/n01-terminal-ack-fault.json"
 TERMINAL_CALLBACK_LOSS_MARKER_PATH = "/tmp/n02-terminal-callback-loss.json"
+EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH = "/tmp/n01-executor-timeout-callback.json"
 
 _TERMINAL_RESULT_HASH_FIELDS = (
     "status",
@@ -409,4 +410,84 @@ class RejectTerminalCallbacks:
                 "body": response_body,
                 "more_body": False,
             }
+        )
+
+
+class CaptureExecutorTimeoutCallback:
+    """Capture allowlisted executor timeout fields, then forward the callback."""
+
+    def __init__(self, app: Any, *, marker_path: Path) -> None:
+        self.app = app
+        self.marker_path = Path(marker_path)
+        self._marker_lock = asyncio.Lock()
+        self._captured = False
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") != _EXECUTOR_CALLBACK_PATH
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        request_messages, request_body = await _read_asgi_request(receive)
+        details = _terminal_request_payload(request_body)
+        if details is not None:
+            request_metadata, terminal_result = details
+            requested_max_seconds = terminal_result.get("requested_max_seconds")
+            timeout_elapsed_ms = terminal_result.get("timeout_elapsed_ms")
+            if (
+                request_metadata["status"] == "failed"
+                and terminal_result.get("status") == "failed"
+                and terminal_result.get("error_code") == "executor_deadline_exceeded"
+                and isinstance(requested_max_seconds, (int, float))
+                and not isinstance(requested_max_seconds, bool)
+                and isinstance(timeout_elapsed_ms, int)
+                and not isinstance(timeout_elapsed_ms, bool)
+            ):
+                marker = {
+                    "schema_version": "ai-platform.executor-timeout-callback.v1",
+                    "source": "original_executor_terminal_callback",
+                    "run_id": request_metadata["run_id"],
+                    "attempt_id": request_metadata["attempt_id"],
+                    "status": request_metadata["status"],
+                    "terminal_result": {
+                        "status": "failed",
+                        "error_code": "executor_deadline_exceeded",
+                        "requested_max_seconds": requested_max_seconds,
+                        "timeout_elapsed_ms": timeout_elapsed_ms,
+                    },
+                }
+                async with self._marker_lock:
+                    if not self._captured:
+                        self.marker_path.parent.mkdir(parents=True, exist_ok=True)
+                        temporary_path = self.marker_path.with_name(
+                            f".{self.marker_path.name}.tmp"
+                        )
+                        marker_fd = os.open(
+                            temporary_path,
+                            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                            0o600,
+                        )
+                        with os.fdopen(marker_fd, "w", encoding="utf-8") as marker_file:
+                            marker_file.write(
+                                json.dumps(
+                                    marker,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                )
+                            )
+                            marker_file.write("\n")
+                            marker_file.flush()
+                        os.replace(temporary_path, self.marker_path)
+                        self._captured = True
+
+        await _call_with_replayed_request(
+            self.app,
+            scope,
+            request_messages,
+            receive,
+            send,
         )
