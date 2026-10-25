@@ -7391,7 +7391,7 @@ async def test_docker_provider_uses_loopback_executor_url_and_private_auth_heade
 
 
 def test_executor_published_endpoint_resolves_one_pinned_host_gateway_ipv4(monkeypatch):
-    from app.platform.sandbox import docker_executor_connection
+    from app.runtime.sandbox import container_provider
 
     calls: list[tuple[object, ...]] = []
 
@@ -7399,11 +7399,9 @@ def test_executor_published_endpoint_resolves_one_pinned_host_gateway_ipv4(monke
         calls.append((host, port, family, type))
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))]
 
-    monkeypatch.setattr(docker_executor_connection.socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", getaddrinfo)
 
-    endpoint = docker_executor_connection.resolve_executor_published_endpoint(
-        "host.docker.internal"
-    )
+    endpoint = container_provider._resolve_executor_published_endpoint("host.docker.internal")
 
     assert endpoint.published_host == "host.docker.internal"
     assert endpoint.bind_ip == "172.17.0.1"
@@ -7412,34 +7410,31 @@ def test_executor_published_endpoint_resolves_one_pinned_host_gateway_ipv4(monke
 
 @pytest.mark.parametrize("published_host", ["", "0.0.0.0", "::"])
 def test_executor_published_endpoint_rejects_empty_or_wildcard_host(published_host):
-    from app.platform.sandbox.docker_executor_connection import resolve_executor_published_endpoint
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint"):
-        resolve_executor_published_endpoint(published_host)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint(published_host)
 
 
 def test_executor_published_endpoint_rejects_unresolvable_host(monkeypatch):
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
     def fail_resolution(*_args, **_kwargs):
         raise socket.gaierror("resolver detail must stay private")
 
-    monkeypatch.setattr(docker_executor_connection.socket, "getaddrinfo", fail_resolution)
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", fail_resolution)
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint") as exc_info:
-        docker_executor_connection.resolve_executor_published_endpoint("missing.internal")
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint") as exc_info:
+        container_provider._resolve_executor_published_endpoint("missing.internal")
 
     assert "resolver detail" not in str(exc_info.value)
 
 
 def test_executor_published_endpoint_rejects_multiple_resolved_addresses(monkeypatch):
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
     monkeypatch.setattr(
-        docker_executor_connection.socket,
+        container_provider.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0)),
@@ -7447,52 +7442,49 @@ def test_executor_published_endpoint_rejects_multiple_resolved_addresses(monkeyp
         ],
     )
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint"):
-        docker_executor_connection.resolve_executor_published_endpoint("host.docker.internal")
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint("host.docker.internal")
 
 
 def test_executor_published_endpoint_rejects_hostname_resolving_to_loopback(monkeypatch):
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
     monkeypatch.setattr(
-        docker_executor_connection.socket,
+        container_provider.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
     )
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint"):
-        docker_executor_connection.resolve_executor_published_endpoint("host.docker.internal")
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint("host.docker.internal")
 
 
 @pytest.mark.parametrize("published_host", ["8.8.8.8", "1.1.1.1"])
 def test_executor_published_endpoint_rejects_global_or_non_private_literal(published_host):
-    from app.platform.sandbox.docker_executor_connection import resolve_executor_published_endpoint
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint"):
-        resolve_executor_published_endpoint(published_host)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint(published_host)
 
 
 def test_executor_published_endpoint_rejects_hostname_resolving_to_global_address(monkeypatch):
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
     monkeypatch.setattr(
-        docker_executor_connection.socket,
+        container_provider.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))],
     )
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint"):
-        docker_executor_connection.resolve_executor_published_endpoint(
-            "executor-gateway.example"
-        )
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint("executor-gateway.example")
 
 
-def test_published_executor_url_does_not_fallback_from_wildcard_inspect_binding():
-    from app.platform.sandbox import docker_executor_connection
+def test_published_executor_url_does_not_fallback_from_wildcard_inspect_binding(monkeypatch):
+    from app.runtime.sandbox import container_provider
 
+    settings = type("StubSettings", (), {"sandbox_executor_published_host": "host.docker.internal"})()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     container = type(
         "StubContainer",
         (),
@@ -7505,14 +7497,13 @@ def test_published_executor_url_does_not_fallback_from_wildcard_inspect_binding(
         },
     )()
 
-    assert docker_executor_connection.published_executor_url_from_container(container) is None
+    assert container_provider._published_executor_url_from_container(container) is None
 
 
 def test_published_executor_url_rejects_additional_inspect_binding():
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
-    endpoint = docker_executor_connection.DockerExecutorPublishedEndpoint(
+    endpoint = container_provider._ExecutorPublishedEndpoint(
         published_host="host.docker.internal",
         bind_ip="172.17.0.1",
     )
@@ -7533,16 +7524,15 @@ def test_published_executor_url_rejects_additional_inspect_binding():
         },
     )()
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint mismatch"):
-        docker_executor_connection.published_executor_url_from_container(container, endpoint)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint mismatch"):
+        container_provider._published_executor_url_from_container(container, endpoint)
 
 
 @pytest.mark.parametrize("host_port", ["", "0", "65536", "not-a-port"])
 def test_published_executor_url_rejects_invalid_inspect_host_port(host_port):
-    from app.platform.sandbox import docker_executor_connection
-    from app.platform.sandbox.errors import ContainerStartFailedError
+    from app.runtime.sandbox import container_provider
 
-    endpoint = docker_executor_connection.DockerExecutorPublishedEndpoint(
+    endpoint = container_provider._ExecutorPublishedEndpoint(
         published_host="host.docker.internal",
         bind_ip="172.17.0.1",
     )
@@ -7558,8 +7548,8 @@ def test_published_executor_url_rejects_invalid_inspect_host_port(host_port):
         },
     )()
 
-    with pytest.raises(ContainerStartFailedError, match="published endpoint mismatch"):
-        docker_executor_connection.published_executor_url_from_container(container, endpoint)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint mismatch"):
+        container_provider._published_executor_url_from_container(container, endpoint)
 
 
 @pytest.mark.asyncio
@@ -7567,7 +7557,6 @@ async def test_docker_provider_publishes_configured_hostname_without_governed_ho
     from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.contracts import EXECUTOR_AUTH_HEADER
     from app.runtime.sandbox.container_provider import DockerContainerProvider
-    from app.platform.sandbox import docker_executor_connection
 
     settings = type(
         "StubSettings",
@@ -7592,7 +7581,7 @@ async def test_docker_provider_publishes_configured_hostname_without_governed_ho
         resolution_calls += 1
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))]
 
-    monkeypatch.setattr(docker_executor_connection.socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", getaddrinfo)
     probes: list[tuple[str, dict[str, str]]] = []
     fake = FakeDockerClient(host_port="43123")
     provider = DockerContainerProvider(
@@ -7630,7 +7619,6 @@ async def test_docker_provider_publishes_configured_hostname_without_governed_ho
 async def test_docker_provider_rebuilds_instead_of_reusing_when_inspected_bind_ip_drifted(monkeypatch):
     from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider
-    from app.platform.sandbox import docker_executor_connection
 
     settings = type(
         "StubSettings",
@@ -7649,7 +7637,7 @@ async def test_docker_provider_rebuilds_instead_of_reusing_when_inspected_bind_i
     )()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(
-        docker_executor_connection.socket,
+        container_provider.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))],
     )

@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import hashlib
 import hmac
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import stat
 import threading
 import time
@@ -51,7 +53,6 @@ from app.runtime.sandbox.contracts import (
 )
 from app.platform.sandbox.docker_governed_network import (
     DockerGovernedEgressAdmission as _DockerGovernedEgressAdmission,
-    GOVERNED_DOCKER_NETWORK_OWNER as _GOVERNED_DOCKER_NETWORK_OWNER,
     attach_api_callback_witness as _attach_api_callback_witness,
     container_labels as _container_labels,
     docker_api_callback_witness as _docker_api_callback_witness,
@@ -63,12 +64,16 @@ from app.platform.sandbox.docker_governed_network import (
     docker_network_authoritative_attrs as _docker_network_authoritative_attrs,
     docker_owned_api_callback_container as _docker_owned_api_callback_container,
     docker_owned_governed_network as _docker_owned_governed_network,
+    docker_complete_governed_network_members as _docker_complete_governed_network_members,
+    is_exact_owned_remote_container,
+    lease_from_owned_governed_network as _lease_from_owned_governed_network,
     get_or_create_governed_docker_network as _get_or_create_governed_docker_network,
     governed_docker_network_labels as _governed_docker_network_labels,  # noqa: F401
     governed_docker_network_name as _governed_docker_network_name,
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
+from app.platform.sandbox.docker_private_executor import governed_private_executor_ipv4
 from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
@@ -135,7 +140,6 @@ from app.platform.sandbox.docker_operations import (
     DockerOwnedResourceScope as _DockerOwnedResourceScope,
     stop_and_remove_docker_container as _stop_and_remove_container,
 )
-from app.platform.sandbox import docker_executor_connection
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
@@ -241,15 +245,80 @@ def _executor_url() -> str:
     return f"http://{host}:18000"
 
 
-def _docker_readiness_snapshot(
+@dataclass(frozen=True)
+class _ExecutorPublishedEndpoint:
+    published_host: str
+    bind_ip: str
+
+
+def _resolve_executor_published_endpoint(raw_host: str) -> _ExecutorPublishedEndpoint:
+    host = str(raw_host or "").strip()
+    if not host or host in {"0.0.0.0", "::"}:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if literal.version != 4 or literal.is_unspecified:
+            raise ContainerStartFailedError("executor published endpoint is invalid")
+        if not literal.is_loopback and not literal.is_private:
+            raise ContainerStartFailedError("executor published endpoint is invalid")
+        return _ExecutorPublishedEndpoint(published_host=host, bind_ip=str(literal))
+    try:
+        addresses = {
+            str(ipaddress.IPv4Address(result[4][0]))
+            for result in socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError, IndexError, TypeError) as exc:
+        raise ContainerStartFailedError("executor published endpoint is invalid") from exc
+    if len(addresses) != 1:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    bind_ip = next(iter(addresses))
+    resolved_ip = ipaddress.IPv4Address(bind_ip)
+    if not resolved_ip.is_loopback and not resolved_ip.is_private:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    if resolved_ip.is_loopback and host.lower() != "localhost":
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    return _ExecutorPublishedEndpoint(published_host=host, bind_ip=bind_ip)
+
+
+def _published_executor_url_from_container(
     container: Any,
-    endpoint: docker_executor_connection.DockerExecutorPublishedEndpoint | None = None,
+    endpoint: _ExecutorPublishedEndpoint | None = None,
+) -> str | None:
+    ports = getattr(container, "attrs", {}).get("NetworkSettings", {}).get("Ports", {})
+    bindings = ports.get("18000/tcp") or []
+    if len(bindings) != 1:
+        if endpoint is not None and bindings:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    binding = bindings[0]
+    host_port = str(binding.get("HostPort") or "").strip()
+    try:
+        port_number = int(host_port)
+    except ValueError:
+        port_number = 0
+    if not 1 <= port_number <= 65535:
+        if endpoint is not None:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    host = str(binding.get("HostIp") or "").strip()
+    if endpoint is not None:
+        if host != endpoint.bind_ip:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return f"http://{endpoint.published_host}:{port_number}"
+    if host in {"", "0.0.0.0", "::"}:
+        return None
+    return f"http://{host}:{port_number}"
+
+
+def _docker_readiness_snapshot(
+    container: Any, endpoint: _ExecutorPublishedEndpoint | None = None
 ) -> tuple[object, object, bool]:
     try:
         container.reload()
-        published = endpoint is None or bool(
-            docker_executor_connection.published_executor_url_from_container(container, endpoint)
-        )
+        published = endpoint is None or bool(_published_executor_url_from_container(container, endpoint))
         return container.attrs, container.status, published
     except Exception:
         return None, None, endpoint is None
@@ -341,7 +410,7 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
         executor_url=(
             None
             if owner == "sandbox-native-tool"
-            else docker_executor_connection.published_executor_url_from_container(container)
+            else _published_executor_url_from_container(container)
         ),
         detail={"labels": labels},
     )
@@ -580,7 +649,6 @@ def _authorized_staged_skill_names(request: SandboxRuntimeRequest) -> set[str]:
         if isinstance(allowed, list):
             names.update(name for name in allowed if isinstance(name, str) and name)
     return names
-
 
 
 def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
@@ -1201,7 +1269,6 @@ def _requested_executor_image_digest(settings: Any) -> str:
     return _opensandbox_requested_image(settings)[1]
 
 
-
 def _opensandbox_lease_labels(
     settings: Any,
     request: SandboxRuntimeRequest,
@@ -1331,48 +1398,6 @@ _OPENSANDBOX_CONFIRMED_STOP_STATUSES = frozenset({"running", "created", "removed
 _OPENSANDBOX_ACTIVE_USE_STATUSES = frozenset({"running", "created", "paused"})
 
 
-def _lease_from_owned_governed_network(network: Any) -> ContainerLease | None:
-    """Recover only the non-secret lease identity necessary to clean an orphan bridge."""
-    attrs = _docker_network_authoritative_attrs(network)
-    labels = attrs.get("Labels")
-    if not isinstance(labels, dict) or labels.get("ai-platform.owner") != _GOVERNED_DOCKER_NETWORK_OWNER:
-        return None
-    values = {
-        key: str(labels.get(key) or "").strip()
-        for key in (
-            "ai-platform.tenant_id",
-            "ai-platform.workspace_id",
-            "ai-platform.user_id",
-            "ai-platform.session_id",
-            "ai-platform.run_id",
-            "ai-platform.attempt_id",
-            "ai-platform.container_name",
-        )
-    }
-    if not all(values.values()) or values["ai-platform.container_name"] != f"executor-exec-{values['ai-platform.run_id']}":
-        return None
-    lease = ContainerLease(
-        container_id=f"exec-{values['ai-platform.run_id']}",
-        container_name=values["ai-platform.container_name"],
-        provider="docker",
-        executor_url="http://sandbox-runtime.invalid",
-        tenant_id=values["ai-platform.tenant_id"],
-        workspace_id=values["ai-platform.workspace_id"],
-        user_id=values["ai-platform.user_id"],
-        session_id=values["ai-platform.session_id"],
-        run_id=values["ai-platform.run_id"],
-        sandbox_mode="ephemeral",
-        browser_enabled=False,
-        workspace_host_path="",
-        labels={"ai-platform.attempt_id": values["ai-platform.attempt_id"]},
-    )
-    try:
-        _docker_owned_governed_network(network, lease)
-    except GovernedEgressAdmissionError:
-        return None
-    return lease
-
-
 def _seal_docker_governed_egress_after_readback(
     client: Any,
     settings: Any,
@@ -1392,7 +1417,7 @@ def _seal_docker_governed_egress_after_readback(
     container_id, _attachment = _docker_network_attachment(container, network_name, network_id)
     if container_id != lease.container_id:
         raise GovernedEgressAdmissionError() from None
-    docker_executor_connection.complete_governed_network_members(
+    _docker_complete_governed_network_members(
         client,
         network=network,
         lease=lease,
@@ -1673,6 +1698,17 @@ def _executor_auth_headers(
     return resolved
 
 
+def _executor_connect_base_url(executor_url: str, endpoint: _ExecutorPublishedEndpoint) -> str:
+    parsed = urlsplit(executor_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ContainerStartFailedError("executor published endpoint mismatch") from exc
+    if parsed.scheme != "http" or not port:
+        raise ContainerStartFailedError("executor published endpoint mismatch")
+    return f"http://{endpoint.bind_ip}:{port}"
+
+
 def _container_environment(container: Any) -> dict[str, str]:
     raw_environment = getattr(container, "environment", None)
     if isinstance(raw_environment, dict):
@@ -1863,7 +1899,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         self,
         container: Any,
         timeout_seconds: int,
-        endpoint: docker_executor_connection.DockerExecutorPublishedEndpoint,
+        endpoint: _ExecutorPublishedEndpoint,
         *,
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
@@ -1884,24 +1920,35 @@ class DockerContainerProvider(DockerLeaseRegistry):
             await asyncio.sleep(0.25)
         raise ExecutorHealthTimeoutError()
 
+
     def _resolve_executor_connection(
         self,
         container: Any,
-        endpoint: docker_executor_connection.DockerExecutorPublishedEndpoint,
+        endpoint: _ExecutorPublishedEndpoint,
         *,
         lease: ContainerLease,
         request: SandboxRuntimeRequest,
         settings: Any,
     ) -> tuple[str, str]:
-        return docker_executor_connection.resolve_executor_connection(
+        executor_url = _published_executor_url_from_container(container, endpoint)
+        if executor_url is not None:
+            return executor_url, _executor_connect_base_url(executor_url, endpoint)
+        private_ip = governed_private_executor_ipv4(
+            self._get_client(),
             container,
-            endpoint,
-            lease=lease,
-            request=request,
-            settings=settings,
-            client=self._get_client(),
-            proof_identity_resolver=governed_egress_identity_proof_from_labels,
+            lease,
+            request,
+            settings,
+            identity_proof_matches=lambda labels, binding: governed_egress_identity_proof_from_labels(
+                "docker",
+                labels,
+                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=_governed_egress_proof_key_id(settings),
+                expected_binding=binding,
+            ) is not None,
         )
+        private_url = f"http://{private_ip}:18000"
+        return private_url, private_url
 
     def _elapsed_ms(self, started_at: float) -> int:
         return readiness_evidence.bounded_elapsed_ms(started_at, self._monotonic())
@@ -2329,7 +2376,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         self,
         lease: ContainerLease,
         timeout_seconds: int,
-        endpoint: docker_executor_connection.DockerExecutorPublishedEndpoint,
+        endpoint: _ExecutorPublishedEndpoint,
         request: SandboxRuntimeRequest,
     ) -> ContainerLease | None:
         try:
@@ -2485,18 +2532,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
     ) -> bool:
         return _governed_egress_labels_match("docker", lease.labels, expected_labels, signing_key)
 
-    @staticmethod
-    def _is_exact_owned_remote_container(
-        container: Any,
-        lease: ContainerLease,
-        *,
-        require_lease_identity: bool = False,
-    ) -> bool:
-        return docker_executor_connection.is_exact_owned_remote_container(
-            container,
-            lease,
-            require_lease_identity=require_lease_identity,
-        )
+    _is_exact_owned_remote_container = staticmethod(is_exact_owned_remote_container)
 
     async def _recover_remote_docker_lease(
         self,
@@ -2508,7 +2544,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         settings: Any,
         admission: _DockerGovernedEgressAdmission,
         timeout_seconds: int,
-        endpoint: docker_executor_connection.DockerExecutorPublishedEndpoint,
+        endpoint: _ExecutorPublishedEndpoint,
     ) -> ContainerLease | None:
         """Adopt only a readback-verified remote lease or clean it before reuse."""
         try:
@@ -2585,9 +2621,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
-        endpoint = docker_executor_connection.resolve_executor_published_endpoint(
-            settings.sandbox_executor_published_host
-        )
+        endpoint = _resolve_executor_published_endpoint(settings.sandbox_executor_published_host)
         client = self._get_client()
         try:
             client.ping()
@@ -2745,11 +2779,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
                         candidate = client.containers.get(recovered_existing.container_name)
                     except Exception:
                         candidate = None
-                    if self._is_exact_owned_remote_container(
-                        candidate,
-                        recovered_existing,
-                        require_lease_identity=True,
-                    ):
+                    if self._is_exact_owned_remote_container(candidate, recovered_existing, require_lease_identity=True):
                         owned_resources.primary = candidate
                     owned_resources.native = self._owned_native_tool_container(recovered_existing)
                     owned_resources.native_socket_owned = owned_resources.native is not None
@@ -2785,11 +2815,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
                         candidate = client.containers.get(recovered.container_name)
                     except Exception:
                         candidate = None
-                    if self._is_exact_owned_remote_container(
-                        candidate,
-                        recovered,
-                        require_lease_identity=True,
-                    ):
+                    if self._is_exact_owned_remote_container(candidate, recovered, require_lease_identity=True):
                         owned_resources.primary = candidate
                     owned_resources.native = self._owned_native_tool_container(recovered)
                     owned_resources.native_socket_owned = owned_resources.native is not None
@@ -3132,7 +3158,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
             network_id, verified_name = _docker_owned_governed_network(network, lease)
             if verified_name != network_name:
                 raise GovernedEgressAdmissionError()
-            primary, _api = docker_executor_connection.complete_governed_network_members(
+            primary, _api = _docker_complete_governed_network_members(
                 client,
                 network=network,
                 lease=lease,
@@ -3234,7 +3260,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
             token = _container_executor_auth_token(container)
             if not token:
                 raise ContainerStartFailedError("executor control credential unavailable")
-            endpoint = docker_executor_connection.resolve_executor_published_endpoint(
+            endpoint = _resolve_executor_published_endpoint(
                 settings.sandbox_executor_published_host
             )
             executor_url, connect_base_url = self._resolve_executor_connection(
