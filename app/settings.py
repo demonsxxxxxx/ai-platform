@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    executor_heartbeat_stale_seconds: int = Field(default=45, ge=1, le=3600)
+    executor_reconciliation_claim_stale_seconds: int = Field(default=300, ge=1, le=3600)
+    supervision_claim_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
+    supervision_delivery_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_probe_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_settlement_capacity: int = Field(default=2, ge=1, le=100)
+    supervision_cleanup_capacity: int = Field(default=1, ge=1, le=100)
     # One switch controls both transactional intent writers and the Worker
     # recovery scanner so they cannot be enabled independently.
     run_delivery_intents_enabled: bool = Field(default=False)

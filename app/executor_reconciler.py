@@ -15,6 +15,11 @@ from app.bootstrap.worker_maintenance import maintenance_phase_until_done
 from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
+from app.execution.application.supervision import (
+    capacities_from_settings,
+    run_current_domain_work,
+)
+from app.execution.domain.supervision import SupervisionDomain
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.tracing import TerminalStageTiming
@@ -53,6 +58,7 @@ from app.sandbox.api import (
     SandboxExecutorHttpError,
     exception_chain_from_error,
 )
+from app.settings import get_settings
 from app.runs.api import (
     cancel_run_terminalization,
     fail_run_terminalization,
@@ -715,7 +721,9 @@ async def probe_suspect_executor_tasks_once(
         claimed = await lease_port.claim_sandbox_executor_suspects(
             conn,
             claim_token=claim_token,
-            stale_after_seconds=_EXECUTOR_HEARTBEAT_STALE_SECONDS,
+            stale_after_seconds=int(
+                getattr(get_settings(), "executor_heartbeat_stale_seconds", _EXECUTOR_HEARTBEAT_STALE_SECONDS)
+            ),
             limit=limit,
         )
     persisted_count = 0
@@ -908,7 +916,13 @@ async def reconcile_pending_executor_terminals_once(
         claimed = await lease_port.claim_sandbox_executor_reconciliations(
             conn,
             claim_token=claim_token,
-            stale_after_seconds=_RECONCILIATION_CLAIM_STALE_SECONDS,
+            stale_after_seconds=int(
+                getattr(
+                    get_settings(),
+                    "executor_reconciliation_claim_stale_seconds",
+                    _RECONCILIATION_CLAIM_STALE_SECONDS,
+                )
+            ),
             limit=min(max(limit, 0), _RECONCILIATION_BATCH_SIZE),
         )
     if not claimed:
@@ -1091,6 +1105,12 @@ async def run_executor_terminal_reconciler(
     concurrency: int = 2,
 ) -> None:
     concurrency = max(int(concurrency), 1)
+    domain_worker_id = worker_id or f"executor-reconciler:{uuid.uuid4().hex}"
+    domain_settings = get_settings()
+    domain_capacities = capacities_from_settings(domain_settings)
+    domain_claim_ttl_seconds = int(
+        getattr(domain_settings, "supervision_claim_ttl_seconds", 3600)
+    )
     wake = asyncio.Event()
     cleanup_wake = asyncio.Event()
     active: set[asyncio.Task[int]] = set()
@@ -1119,12 +1139,20 @@ async def run_executor_terminal_reconciler(
 
     async def reconcile() -> int:
         try:
-            return await reconcile_pending_executor_terminals_once(
-                lease_port=lease_port,
-                registry=registry, worker_id=worker_id,
-                v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
-                lifecycle=lifecycle, run_diagnostics=run_diagnostics,
+            result = await run_current_domain_work(
+                lambda: reconcile_pending_executor_terminals_once(
+                    lease_port=lease_port,
+                    registry=registry, worker_id=worker_id,
+                    v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
+                    lifecycle=lifecycle, run_diagnostics=run_diagnostics,
+                ),
+                transaction_factory=transaction,
+                domain=SupervisionDomain.SETTLEMENT,
+                worker_id=domain_worker_id,
+                ttl_seconds=domain_claim_ttl_seconds,
+                capacities=domain_capacities,
             )
+            return int(result or 0)
         except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
             _logger.exception("executor_terminal_reconciliation_scan_failed")
             return 0
@@ -1134,8 +1162,15 @@ async def run_executor_terminal_reconciler(
             cleanup_wake.clear()
             try:
                 async with asyncio.timeout(_RECONCILIATION_WORK_TIMEOUT_SECONDS):
-                    released = await _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
-                        provider_factory=create_container_provider,
+                    released = await run_current_domain_work(
+                        lambda: _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
+                            provider_factory=create_container_provider,
+                        ),
+                        transaction_factory=transaction,
+                        domain=SupervisionDomain.CLEANUP,
+                        worker_id=domain_worker_id,
+                        ttl_seconds=domain_claim_ttl_seconds,
+                        capacities=domain_capacities,
                     )
                 if released:
                     await asyncio.sleep(0)
@@ -1151,7 +1186,15 @@ async def run_executor_terminal_reconciler(
         probe_kwargs = {"lease_port": lease_port}
         if run_diagnostics is not None:
             probe_kwargs["run_diagnostics"] = run_diagnostics
-        probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
+        probed = await run_current_domain_work(
+            lambda: probe_suspect_executor_tasks_once(**probe_kwargs),
+            transaction_factory=transaction,
+            domain=SupervisionDomain.PROBE,
+            worker_id=domain_worker_id,
+            ttl_seconds=domain_claim_ttl_seconds,
+            capacities=domain_capacities,
+        )
+        probed = int(probed or 0)
         if probed:
             wake.set()
         return probed

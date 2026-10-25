@@ -58,7 +58,7 @@
 |---|---|
 | 提交幂等与队列未知 | [chat_submissions](../../app/persistence/chat_submissions.py)、[queue_admission](../../app/conversations/application/queue_admission.py)、[chat route](../../app/routes/chat.py) |
 | Spec/Attempt 创建与执行绑定 | [worker_dispatch_binding](../../app/runs/application/worker_dispatch_binding.py)、[worker_attempt_lifecycle](../../app/execution/application/worker_attempt_lifecycle.py)、[Attempt persistence](../../app/runs/infrastructure/postgres.py) |
-| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[当前 lease repository](../../app/platform/postgres/sandbox_leases.py)、[callback route](../../app/routes/runtime_callbacks.py) |
+| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[当前 lease repository](../../app/sandbox/infrastructure/leases_postgres.py)、[callback route](../../app/routes/runtime_callbacks.py) |
 | 结算、结果与对象补偿 | [executor_reconciler](../../app/executor_reconciler.py)、[worker_result_commit](../../app/runs/application/worker_result_commit.py)、[artifact_storage](../../app/execution/application/artifact_storage.py)、[artifact persistence](../../app/persistence/artifacts.py) |
 | 原生会话结算 | [provider_epochs.commit_provider_turn](../../app/context/infrastructure/provider_epochs.py)、[run_terminalization.persist_assistant_with_provider_coverage](../../app/runs/application/run_terminalization.py) |
 | 取消、发布与清理 | [cancellation](../../app/runs/application/cancellation.py)、[worker_publication_v4](../../app/streaming/application/worker_publication_v4.py)、[runtime_cleanup](../../app/sandbox/application/runtime_cleanup.py) |
@@ -95,7 +95,7 @@
 | sandbox 创建/dispatch/资源 | Settings：create 30s、executor health 60s、dispatch 30s、lease TTL 1800s、cleanup 30s；OpenSandbox request 30s、lifetime 1800s | 本地单次 I/O 预算与 provider/PG lease 到期不同；取消等待不证明远端已停止 |
 | executor 心跳及总时间 | [create_executor_app](../../app/runtime/sandbox/executor_app.py)：heartbeat 15s；执行预算读取冻结请求 `resource_limits.max_seconds` | 单调时钟控制单次等待；不把 SDK 默认 timeout=0 解释为所有任务无截止时间 |
 | probe 与 terminal reconciliation | [executor_reconciler](../../app/executor_reconciler.py)：心跳 stale 45s、probe client 10s、连续失败阈值 3；batch 1、claim stale 300s、work 240s、idle 30s、fallback 2s | candidate 读 PG 持久时间，认领后复核 claim；provider 不可达不是权威 not_found；已有回执走结算 |
-| 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/platform/postgres/sandbox_leases.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
+| 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/sandbox/infrastructure/executor_reconciliation_postgres.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
 
 Harness 前置复核：当前 [计划 §5.6](completed/harness-migration-2026-10.md#56-2026-10-19-当前实现与验收缺口) 仍记录 D5、完整基线/可信覆盖阻断等未闭环。本切片新增测试和库存，不改变事务、身份或删除字段；不能据此宣布 B3–B5 或后续生命周期迁移已满足前置条件。
 
@@ -308,6 +308,8 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 切换：停止旧域领取、确认或交接其在途 claim、启用新域；多副本通过 PG claim/CAS 工作。候选选择和最终写入复核一致，不能靠每进程布尔开关保证 fleet 互斥。
 - 验收：R02–R07/R09–R13，双副本和进程崩溃；旧处理者迟到写回拒绝，远端在途 stop 用精确资源身份/幂等保障。长清理不阻塞结算，永久/暂时错误及取消权限语义不变。
 - 回退：仅在旧版本能读取当前事实且已排空/交接新 claim 后切回，保留新持久记录；无法证明这一点则停止启用并修复，不同时开启两套裁决。
+
+当前监督基础切片（schema `2026.10.25.5`）新增 `execution_supervision_domains` 与在途 claim 记录，四个责任域均初始化为 `legacy`。Worker maintenance 读取持久候选并按既有 deadline/owner 预算分类，只记录 typed candidate，不调用候选动作；delivery 依据 intent retry 时间，不读取旧队列 lease expiry，probe 排除已有 terminal receipt 且把取消请求置于普通探测之前。现有 delivery、probe、settlement、sandbox cleanup 扫描经过 PostgreSQL domain claim；`draining` 阻止新 claim，激活要求旧 claim 全部显式排空，claim 过期本身不会释放在途槽位，版本变更后旧 claim 不再 current。切换接口和执行 gate 已具备，但四域仍默认 legacy；尚未接受真实环境验收，不得把任何责任域激活写成已验收。真实 PG 双副本、排空竞态、超 batch 公平性以及独立 Docker 控制链仍是本切片退出前的验证项。
 
 ### Phase 4：切读、停写与退役
 

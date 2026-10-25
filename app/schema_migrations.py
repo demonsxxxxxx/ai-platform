@@ -54,7 +54,8 @@ RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
 RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
 SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION = "2026.10.25.3"
 RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION = "2026.10.25.4"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION
+EXECUTION_SUPERVISION_SCHEMA_VERSION = "2026.10.25.5"
+TARGET_SCHEMA_VERSION = EXECUTION_SUPERVISION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -75,6 +76,8 @@ CRITICAL_RELATIONS = (
     "model_catalog_entries",
     "run_attempts",
     "run_attempt_settlements",
+    "execution_supervision_domains",
+    "execution_supervision_claims",
     "run_input_sessions",
     "run_input_questions",
     "run_inputs",
@@ -224,6 +227,19 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlements", "settled_at", "timestamptz", False),
     ("run_attempt_settlements", "created_at", "timestamptz", True),
     ("run_attempt_settlements", "updated_at", "timestamptz", True),
+    ("execution_supervision_domains", "domain", "text", True),
+    ("execution_supervision_domains", "mode", "text", True),
+    ("execution_supervision_domains", "owner_version", "int8", True),
+    ("execution_supervision_domains", "scan_cursor", "text", False),
+    ("execution_supervision_domains", "drain_started_at", "timestamptz", False),
+    ("execution_supervision_domains", "updated_at", "timestamptz", True),
+    ("execution_supervision_claims", "claim_token", "uuid", True),
+    ("execution_supervision_claims", "domain", "text", True),
+    ("execution_supervision_claims", "owner_mode", "text", True),
+    ("execution_supervision_claims", "worker_id", "text", True),
+    ("execution_supervision_claims", "owner_version", "int8", True),
+    ("execution_supervision_claims", "expires_at", "timestamptz", True),
+    ("execution_supervision_claims", "started_at", "timestamptz", True),
     ("run_input_sessions", "tenant_id", "text", True),
     ("run_input_sessions", "run_id", "text", True),
     ("run_input_sessions", "attempt_id", "text", True),
@@ -472,6 +488,9 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempt_settlements", "chk_run_attempt_settlements_retry"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_attempt_count"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_result"),
+    ("execution_supervision_domains", "execution_supervision_domains_pkey"),
+    ("execution_supervision_claims", "execution_supervision_claims_pkey"),
+    ("execution_supervision_claims", "execution_supervision_claims_domain_fkey"),
     ("run_input_sessions", "run_input_sessions_pkey"),
     ("run_input_sessions", "fk_run_input_sessions_run"),
     ("run_input_sessions", "chk_run_input_sessions_identity"),
@@ -801,6 +820,24 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "AND jsonb_typeof(result_json) = 'object'::text "
         "AND result_sha256 ~ '^[0-9a-f]{64}$'::text "
         "AND settled_at IS NOT NULL)",
+    ),
+    (
+        "execution_supervision_domains",
+        "execution_supervision_domains_pkey",
+        "p",
+        "PRIMARY KEY (domain)",
+    ),
+    (
+        "execution_supervision_claims",
+        "execution_supervision_claims_pkey",
+        "p",
+        "PRIMARY KEY (claim_token)",
+    ),
+    (
+        "execution_supervision_claims",
+        "execution_supervision_claims_domain_fkey",
+        "f",
+        "FOREIGN KEY (domain) REFERENCES execution_supervision_domains(domain)",
     ),
     (
         "run_delivery_intents",
@@ -1354,6 +1391,12 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ),
 )
 STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "idx_execution_supervision_claims_domain",
+        "execution_supervision_claims",
+        ("domain", "expires_at", "claim_token"),
+        (False, False, False),
+    ),
     StaticIndexDefinition(
         "idx_run_delivery_intents_due",
         "run_delivery_intents",
