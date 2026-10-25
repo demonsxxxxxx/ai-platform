@@ -52,7 +52,8 @@ MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
 RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
 RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
-TARGET_SCHEMA_VERSION = RUN_DELIVERY_INTENTS_SCHEMA_VERSION
+SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION = "2026.10.25.3"
+TARGET_SCHEMA_VERSION = SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -87,6 +88,7 @@ CRITICAL_RELATIONS = (
     "run_delivery_intents",
     "audit_logs",
     "sandbox_leases",
+    "sandbox_execution_dispatches",
     "mcp_servers",
     "mcp_server_credentials",
     "mcp_tools",
@@ -268,6 +270,17 @@ CRITICAL_COLUMNS = (
     ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
+    ("sandbox_execution_dispatches", "dispatch_id", "text", True),
+    ("sandbox_execution_dispatches", "tenant_id", "text", True),
+    ("sandbox_execution_dispatches", "run_id", "text", True),
+    ("sandbox_execution_dispatches", "attempt_id", "text", True),
+    ("sandbox_execution_dispatches", "owner_generation", "int8", True),
+    ("sandbox_execution_dispatches", "lease_id", "text", True),
+    ("sandbox_execution_dispatches", "provider", "text", True),
+    ("sandbox_execution_dispatches", "provider_task_id", "text", True),
+    ("sandbox_execution_dispatches", "status", "text", True),
+    ("sandbox_execution_dispatches", "created_at", "timestamptz", True),
+    ("sandbox_execution_dispatches", "updated_at", "timestamptz", True),
     ("mcp_server_credentials", "credential_envelope", "text", True),
     ("run_context_snapshots", "conversation_authority_json", "jsonb", False),
     ("conversation_context_checkpoints", "id", "text", True),
@@ -444,6 +457,14 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
+    ("sandbox_execution_dispatches", "sandbox_execution_dispatches_pkey"),
+    ("sandbox_execution_dispatches", "sandbox_execution_dispatches_attempt_id_fkey"),
+    ("sandbox_execution_dispatches", "sandbox_execution_dispatches_lease_id_fkey"),
+    ("sandbox_execution_dispatches", "fk_sandbox_execution_dispatches_run"),
+    ("sandbox_execution_dispatches", "uq_sandbox_execution_dispatches_attempt"),
+    ("sandbox_execution_dispatches", "sandbox_execution_dispatches_lease_id_key"),
+    ("sandbox_execution_dispatches", "chk_sandbox_execution_dispatches_identity"),
+    ("sandbox_execution_dispatches", "chk_sandbox_execution_dispatches_status"),
     ("mcp_servers", "mcp_servers_endpoint_not_persisted"),
     ("mcp_tools", "mcp_tools_endpoint_not_persisted"),
     ("conversation_context_checkpoints", "fk_context_checkpoint_session"),
@@ -898,6 +919,58 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
         "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
         "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "sandbox_execution_dispatches_pkey",
+        "p",
+        "PRIMARY KEY (dispatch_id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "sandbox_execution_dispatches_attempt_id_fkey",
+        "f",
+        "FOREIGN KEY (attempt_id) REFERENCES run_attempts(id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "sandbox_execution_dispatches_lease_id_fkey",
+        "f",
+        "FOREIGN KEY (lease_id) REFERENCES sandbox_leases(id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "fk_sandbox_execution_dispatches_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "uq_sandbox_execution_dispatches_attempt",
+        "u",
+        "UNIQUE (tenant_id, run_id, attempt_id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "sandbox_execution_dispatches_lease_id_key",
+        "u",
+        "UNIQUE (lease_id)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "chk_sandbox_execution_dispatches_identity",
+        "c",
+        "CHECK (dispatch_id <> ''::text AND tenant_id <> ''::text "
+        "AND run_id <> ''::text AND attempt_id <> ''::text "
+        "AND owner_generation > 0 AND lease_id <> ''::text "
+        "AND provider <> ''::text AND provider_task_id <> ''::text)",
+    ),
+    (
+        "sandbox_execution_dispatches",
+        "chk_sandbox_execution_dispatches_status",
+        "c",
+        "CHECK (status = ANY (ARRAY['intent'::text, 'accepted'::text, "
+        "'rejected'::text, 'unknown'::text]))",
     ),
 )
 

@@ -19,6 +19,7 @@ from app.runs.api import (
     InvalidLeasedQueueEnvelope, LeasedQueueEnvelope,
     parse_leased_queue_envelope as _parse_leased_queue_envelope,
 )
+from app.sandbox.api import SandboxDispatchOutcomeUnknown
 from app.streaming.api import (
     WorkerV4Capabilities, admit_v4_stream, persist_worker_event, publish_run_event,
 )
@@ -162,6 +163,11 @@ async def process_run_payload(
             latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         except WorkerRunCancelled:
             return await completion.cancel()
+        except SandboxDispatchOutcomeUnknown:
+            # Keep the original Run/Attempt for the persisted lease's status
+            # probe. Uncertain provider I/O cannot grant Worker terminal authority.
+            runtime_sandbox_execution_detached = True
+            return WorkerOutcome(status="running", run_id=run_payload.run_id)
         except Exception as exc:  # noqa: BLE001 - worker executor boundary.
             return await completion.fail(exc)
         return await completion.complete(result, latency_ms=latency_ms)

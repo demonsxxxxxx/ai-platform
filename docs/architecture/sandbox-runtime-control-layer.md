@@ -159,17 +159,32 @@ generation, timestamps, and reconciliation ownership in one migration.
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
-   The terminal callback may commit before the Worker records the asynchronous
-   dispatch acceptance. That later acceptance preserves the terminal executor
-   status and makes a `waiting_terminal` receipt `pending` once its reconciliation
-   context exists. It cannot reset an existing reconciliation claim or outcome.
+   Before the executor POST, Sandbox commits the exact tenant/Run/Attempt,
+   owner-generation, lease, provider and provider-task identity to the
+   Attempt-scoped `sandbox_execution_dispatches` row and places the immutable
+   reconciliation context on that same lease. Its `intent`, `accepted`,
+   `rejected` and `unknown` values record provider-boundary evidence; they do
+   not create another Run or Attempt authority. A lost POST acknowledgement is
+   resolved by querying the same lease's authenticated status endpoint with its
+   original Run and Attempt identity. A persisted intent is never POSTed again.
+   If the status endpoint cannot prove acceptance, the dispatch stays unknown
+   and the resource remains available for recovery. The Worker handles that
+   typed result as detached work: it acknowledges the queue item while preserving
+   the original running Run/Attempt and lease, without terminalizing or releasing
+   the Worker binding. The existing stale executor probe reads that lease and may
+   persist the task's terminal receipt; uncertainty does not authorize dispatch
+   retry. A terminal callback may commit before dispatch acceptance; the
+   precommitted context makes the receipt
+   immediately eligible for reconciliation. Later acceptance preserves terminal
+   executor status and any existing reconciliation claim or outcome.
    After that transaction commits, the runtime emits a second fixed Redis wake
    for a `pending` terminal receipt. Notification has a one-second cooperative
    budget; failure leaves the accepted dispatch and PostgreSQL receipt intact.
    Cancellation during notification propagates without stopping the committed
    receipt's runtime before collection; the local execution-owner stop callback
-   honors the same cleanup handoff. `record_sandbox_executor_accepted` owns
-   that context write. The uncalled
+   honors the same cleanup handoff. `record_sandbox_executor_accepted` records
+   post-acceptance timing and the terminal wake; the pre-dispatch intent writer
+   owns the initial context write. The uncalled
    standalone `record_sandbox_executor_reconciliation_context` helper is removed;
    it had no production, test, or lazy-export consumer. The context column,
    accepted writer, claim fencing, and terminal reconciliation readers remain.

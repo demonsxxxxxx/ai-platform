@@ -1390,6 +1390,7 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
     from app.runtime.sandbox.executor_signals import ExecutorSignalUnavailable
 
     events = []
+    status_reads = []
     in_transaction = False
 
     class StubSettings:
@@ -1438,6 +1439,10 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
     async def execute(_executor_url, task_request):
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
+    async def get_status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(runtime_module, "transaction", transaction)
@@ -1449,6 +1454,7 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=provider,
         execute_task=execute,
+        get_executor_status=get_status,
         callback_token_resolver=lambda _token_id: "secret-token",
     )
 
@@ -1457,6 +1463,7 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
             await runtime.submit(request(attempt_id="a"))
         assert "rollback" in events
         assert "wake" not in events
+        assert status_reads == [("run-a", "a")]
         return
     if signal_unavailable == "cancelled" and state == "pending":
         with pytest.raises(asyncio.CancelledError):
@@ -1702,6 +1709,199 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
                 "sandbox_total_latency_ms",
             },
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lost_dispatch_ack_recovers_exact_task_without_resubmitting(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+
+    executions = []
+    status_reads = []
+    outcomes = []
+    accepted = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-dispatch-a"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert identity.attempt_id == "qat_test-runtime-attempt"
+        assert identity.owner_generation == 1
+        assert identity.lease_id == "lease-dispatch-a"
+        assert reconciliation_context["adapter_name"] == "claude-agent-worker"
+        return {"dispatch_id": "dispatch-a", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-a", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        accepted.append(kwargs)
+        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+
+    async def execute(_url, task_request, **_kwargs):
+        executions.append((task_request.run_id, task_request.attempt_id))
+        raise RuntimeError("acknowledgement lost after provider accepted")
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id, dict(executor_headers)))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+    )
+
+    result = await runtime.submit(request())
+
+    assert result.status == "accepted"
+    assert executions == [("run-a", "qat_test-runtime-attempt")]
+    assert status_reads[0][:2] == ("run-a", "qat_test-runtime-attempt")
+    assert status_reads[0][2]
+    assert outcomes == [("lease-dispatch-a", "accepted")]
+    assert accepted[0]["lease_id"] == "lease-dispatch-a"
+
+
+@pytest.mark.asyncio
+async def test_lost_dispatch_ack_with_failed_status_probe_is_typed_unknown(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+    from app.sandbox.api import SandboxDispatchOutcomeUnknown
+
+    posts = []
+    status_reads = []
+    outcomes = []
+    accepted = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-dispatch-unknown"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert identity.lease_id == "lease-dispatch-unknown"
+        assert reconciliation_context["adapter_name"] == "claude-agent-worker"
+        return {"dispatch_id": "dispatch-unknown", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-unknown", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        accepted.append(kwargs)
+        raise AssertionError("unconfirmed acceptance must not be recorded")
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        raise TimeoutError("POST acknowledgement lost")
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id, dict(executor_headers)))
+        raise TimeoutError("first exact-task probe unavailable")
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+    )
+
+    with pytest.raises(SandboxDispatchOutcomeUnknown, match="sandbox_dispatch_outcome_unknown"):
+        await runtime.submit(request())
+
+    assert posts == [("run-a", "qat_test-runtime-attempt")]
+    assert len(status_reads) == 1
+    assert status_reads[0][:2] == posts[0]
+    assert status_reads[0][2]
+    assert outcomes == [("lease-dispatch-unknown", "unknown")]
+    assert accepted == []
+
+
+@pytest.mark.asyncio
+async def test_accepted_commit_retry_returns_accepted_after_exact_task_probe(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+
+    posts = []
+    status_reads = []
+    outcomes = []
+    accepted_attempts = 0
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-accepted-retry"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        return {"dispatch_id": "dispatch-retry", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-retry", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        nonlocal accepted_attempts
+        accepted_attempts += 1
+        if accepted_attempts == 1:
+            raise RuntimeError("first acceptance transaction failed")
+        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        return {"status": "accepted", "run_id": task_request.run_id, "attempt_id": task_request.attempt_id}
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
+    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+    )
+
+    result = await runtime.submit(request())
+
+    assert result.status == "accepted"
+    assert posts == [("run-a", "qat_test-runtime-attempt")]
+    assert status_reads == [("run-a", "qat_test-runtime-attempt")]
+    assert accepted_attempts == 2
+    assert outcomes == [
+        ("lease-accepted-retry", "accepted"),
+        ("lease-accepted-retry", "accepted"),
     ]
 
 

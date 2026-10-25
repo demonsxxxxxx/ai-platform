@@ -2777,6 +2777,33 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconcilia
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
 
+-- Attempt-owned evidence for one exact provider dispatch. This is an
+-- observation ledger, not a second Run/Attempt execution authority.
+create table if not exists sandbox_execution_dispatches (
+  dispatch_id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null references run_attempts(id),
+  owner_generation bigint not null,
+  lease_id text not null unique references sandbox_leases(id),
+  provider text not null,
+  provider_task_id text not null,
+  status text not null default 'intent',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_sandbox_execution_dispatches_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  constraint uq_sandbox_execution_dispatches_attempt
+    unique (tenant_id, run_id, attempt_id),
+  constraint chk_sandbox_execution_dispatches_identity check (
+    dispatch_id <> '' and tenant_id <> '' and run_id <> '' and attempt_id <> ''
+    and owner_generation > 0 and lease_id <> '' and provider <> '' and provider_task_id <> ''
+  ),
+  constraint chk_sandbox_execution_dispatches_status check (
+    status in ('intent', 'accepted', 'rejected', 'unknown')
+  )
+);
+
 -- Rollback for the additive OpenSandbox renewal observations (after callers retire):
 -- alter table sandbox_leases drop column if exists provider_renewed_at;
 -- alter table sandbox_leases drop column if exists provider_expires_at;

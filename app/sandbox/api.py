@@ -13,6 +13,14 @@ from app.sandbox.application.diagnostic_capture import (
     capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
 )
 
+from app.sandbox.application.dispatch_intent import (
+    DispatchOutcome as DispatchOutcome,
+    SandboxDispatchIdentity as SandboxDispatchIdentity,
+    SandboxDispatchIntentRepository as SandboxDispatchIntentRepository,
+    SandboxDispatchIntentService as SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown as SandboxDispatchOutcomeUnknown,
+)
+
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
 )
