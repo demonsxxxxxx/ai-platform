@@ -11,6 +11,7 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from app import schema_migrations
 from app.execution.application.run_delivery_intents import (
     QueueDeliveryReceipt,
     RunDeliveryIntent,
@@ -73,6 +74,8 @@ async def delivery_db():
 
         schema = f"delivery_{uuid4().hex}"
         await admin.execute(f'create schema "{schema}"')
+        schema_name = f"delivery_actual_{uuid4().hex}"
+        await admin.execute(f'create schema "{schema_name}"')
 
         @asynccontextmanager
         async def connect():
@@ -133,8 +136,56 @@ async def delivery_db():
             """)
             await conn.commit()
 
+        @asynccontextmanager
+        async def full_connect():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn,
+                options=f"-c search_path={schema_name}",
+                row_factory=dict_row,
+            )
+            try:
+                yield conn
+            finally:
+                await conn.close()
+
+        @asynccontextmanager
+        async def full_transaction():
+            async with full_connect() as conn, conn.transaction():
+                yield conn
+
+        async def full_index_connection():
+            return await psycopg.AsyncConnection.connect(
+                dsn,
+                autocommit=True,
+                options=f"-c search_path={schema_name}",
+                row_factory=dict_row,
+            )
+
+        async with full_transaction() as conn:
+            await schema_migrations._ensure_ledger(conn)
+            await conn.execute(
+                "insert into schema_migrations(version, checksum_sha256) values (%s, %s)",
+                (
+                    schema_migrations.RUN_STATUS_SCHEMA_VERSION,
+                    "5c62a5067c6d3554a600f1cdb34322888afd424c88c42ab4cafda5e4718691b1",
+                ),
+            )
+        upgraded = await schema_migrations.apply_migrations(
+            transaction_factory=full_transaction,
+            index_connection_factory=full_index_connection,
+        )
+        repeated = await schema_migrations.apply_migrations(
+            transaction_factory=full_transaction,
+            index_connection_factory=full_index_connection,
+        )
+        assert upgraded["version"] == schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION
+        assert repeated["status"] == "current"
+        connect.full_schema = full_transaction
+        connect.full_schema_name = schema_name
+
         yield connect
         await admin.execute(f'drop schema "{schema}" cascade')
+        await admin.execute(f'drop schema "{schema_name}" cascade')
         await admin.close()
     finally:
         subprocess.run(
@@ -312,3 +363,85 @@ async def test_stale_claim_cannot_write_receipt_after_reclaim(delivery_db):
         ).fetchone()
         assert row["state"] == "claimed"
         assert str(row["claim_token"]) == str(replacement["claim_token"])
+
+
+@pytest.mark.asyncio
+async def test_real_migration_upgrade_repeat_constraints_and_readiness(delivery_db):
+    async with delivery_db.full_schema() as conn, conn.transaction():
+        ledger = await (
+            await conn.execute(
+                "select version from schema_migrations where version = any(%s) order by version",
+                ([
+                    schema_migrations.RUN_STATUS_SCHEMA_VERSION,
+                    schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION,
+                ],),
+            )
+        ).fetchall()
+        assert [row["version"] for row in ledger] == [
+            schema_migrations.RUN_STATUS_SCHEMA_VERSION,
+            schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION,
+        ]
+        status = await schema_migrations.schema_status(conn)
+        assert status["ready"] is True
+        assert status["constraint_definitions_current"] is True
+        assert status["static_index_definitions_current"] is True
+
+        await conn.execute(
+            "insert into sessions(id, tenant_id, workspace_id, agent_id) "
+            "values ('delivery-schema-session', 'default', 'default', 'general-agent')"
+        )
+        await conn.execute(
+            "insert into runs(id, tenant_id, workspace_id, session_id, agent_id, "
+            "execution_kind, skill_id, status) values "
+            "('delivery-schema-run', 'default', 'default', 'delivery-schema-session', "
+            "'general-agent', 'harness_chat', null, 'queued')"
+        )
+
+        async def invalid_insert(*, source="create_run", state="pending", session_id="session", message_id="a" * 64, attempts=0):
+            await conn.execute(
+                "insert into run_delivery_intents(tenant_id, run_id, session_id, source, "
+                "queue_payload_json, queue_message_id, payload_sha256, state, attempt_count) "
+                "values ('default', 'delivery-schema-run', %s, %s, '{}', %s, %s, %s, %s)",
+                (session_id, source, message_id, "a" * 64, state, attempts),
+            )
+
+        invalid_rows = (
+            ({"source": "other"}, "chk_run_delivery_intents_source"),
+            ({"state": "other"}, "chk_run_delivery_intents_state"),
+            ({"session_id": ""}, "chk_run_delivery_intents_identity"),
+            ({"message_id": "invalid"}, "chk_run_delivery_intents_identity"),
+            ({"attempts": -1}, "chk_run_delivery_intents_attempt_count"),
+            ({"state": "claimed"}, "chk_run_delivery_intents_claim"),
+            ({"state": "delivered"}, "chk_run_delivery_intents_receipt"),
+            ({"state": "suppressed"}, "chk_run_delivery_intents_suppressed"),
+        )
+        for values, constraint_name in invalid_rows:
+            with pytest.raises(psycopg.errors.CheckViolation) as raised:
+                async with conn.transaction():
+                    await invalid_insert(**values)
+            assert raised.value.diag.constraint_name == constraint_name
+
+        await invalid_insert()
+        await conn.execute(
+            "insert into sessions(id, tenant_id, workspace_id, agent_id) "
+            "values ('delivery-schema-session-2', 'default', 'default', 'general-agent')"
+        )
+        await conn.execute(
+            "insert into runs(id, tenant_id, workspace_id, session_id, agent_id, "
+            "execution_kind, skill_id, status) values "
+            "('delivery-schema-run-2', 'default', 'default', 'delivery-schema-session-2', "
+            "'general-agent', 'harness_chat', null, 'queued')"
+        )
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            async with conn.transaction():
+                await conn.execute(
+                    "insert into run_delivery_intents(tenant_id, run_id, session_id, source, "
+                    "queue_payload_json, queue_message_id, payload_sha256) values "
+                    "('default', 'delivery-schema-run-2', 'session-2', 'copy', '{}', %s, %s)",
+                    ("a" * 64, "a" * 64),
+                )
+
+        await conn.execute("drop index idx_run_delivery_intents_due")
+        not_ready = await schema_migrations.schema_status(conn)
+        assert not_ready["ready"] is False
+        assert not_ready["static_index_definitions_current"] is False

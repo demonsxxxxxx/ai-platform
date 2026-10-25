@@ -157,6 +157,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.run_lifecycle,
     )
     app.state.run_stream_runtime = run_stream_runtime
+    app.state.run_delivery_intents = build_run_delivery_intents(
+        get_settings(),
+        transaction,
+        lifecycle=app.state.run_lifecycle,
+        capabilities=run_stream_runtime.worker_capabilities,
+    )
     app.state.run_cancellation_use_case = build_run_cancellation_use_case(
         attempt_lifecycle=app.state.run_attempt_lifecycle,
         lifecycle=app.state.run_lifecycle,
@@ -186,7 +192,6 @@ def create_app() -> FastAPI:
     app.state.run_inputs_service = build_run_inputs_service()
     app.state.model_token_usage_service = build_model_token_usage_service()
     settings = get_settings()
-    app.state.run_delivery_intents = build_run_delivery_intents(settings, transaction)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(settings.cors_allow_origins),

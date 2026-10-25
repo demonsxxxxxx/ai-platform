@@ -656,6 +656,50 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "'delivered'::text, 'suppressed'::text]))",
     ),
     (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_source",
+        "c",
+        "CHECK (source = ANY (ARRAY['chat'::text, 'create_run'::text, "
+        "'copy'::text, 'retry'::text, 'resume'::text]))",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_identity",
+        "c",
+        "CHECK (session_id <> ''::text AND queue_message_id ~ "
+        "'^[0-9a-f]{64}$'::text AND payload_sha256 ~ '^[0-9a-f]{64}$'::text)",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_attempt_count",
+        "c",
+        "CHECK (attempt_count >= 0)",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_claim",
+        "c",
+        "CHECK (state = 'claimed'::text AND claim_token IS NOT NULL "
+        "AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL "
+        "AND claim_expires_at > claimed_at OR state <> 'claimed'::text "
+        "AND claim_token IS NULL AND claimed_at IS NULL "
+        "AND claim_expires_at IS NULL)",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_receipt",
+        "c",
+        "CHECK (state = 'delivered'::text AND delivered_at IS NOT NULL "
+        "OR state <> 'delivered'::text AND delivered_at IS NULL)",
+    ),
+    (
+        "run_delivery_intents",
+        "chk_run_delivery_intents_suppressed",
+        "c",
+        "CHECK (state = 'suppressed'::text AND suppressed_at IS NOT NULL "
+        "OR state <> 'suppressed'::text AND suppressed_at IS NULL)",
+    ),
+    (
         "mcp_servers",
         "mcp_servers_endpoint_not_persisted",
         "c",

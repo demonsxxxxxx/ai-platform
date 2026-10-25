@@ -740,43 +740,8 @@ async def _admit_chat_submission(
                 if profile_resolution is None:
                     raise HTTPException(status_code=409, detail="chat_submission_not_admitted")
                 return profile_resolution
-            # Historical admitted submissions may predate the expanded schema;
-            # retain the explicit replay path from their frozen Run snapshot.
-            queue_admission, profile_enqueue_error = await _attempt_chat_queue_admission(
-                queue_payload,
-                check_existing=True,
-            )
-            if queue_admission is not None:
-                async with transaction() as conn:
-                    submission = await persistence_chat_submissions.get_chat_submission(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        submission_id=submission_id,
-                        for_update=True,
-                    )
-                    if submission is None:
-                        raise HTTPException(status_code=404, detail="chat_submission_not_found")
-                    prior_outcome = _chat_stream_response_from_submission(submission)
-                    queued_outcome = prior_outcome.model_copy(
-                        update={
-                            "status": "queued",
-                            "queue_position": int(queue_admission.queue_position) or None,
-                            "submission_id": submission_id,
-                        }
-                    )
-                    if str(submission.get("state")) != "queued":
-                        await _persist_chat_queue_success(
-                            conn,
-                            principal=principal,
-                            run_id=run_id,
-                            queue_admission=queue_admission,
-                            outcome=queued_outcome,
-                            submission_id=submission_id,
-                        )
-                        submission["state"] = "queued"
-                        submission["outcome_json"] = queued_outcome.model_dump(mode="json")
-                return _chat_submission_resolution(submission)
+            # An enabled writer never reconstructs an old queue message. A missing
+            # intent stays pending until an owner can prove the original identity.
         if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
             profile_enqueue_error
         ):
@@ -798,11 +763,6 @@ async def _admit_chat_submission(
                 source=delivery.receipt.source,
             )
             enqueue_error = None
-        elif delivery.error_code == "delivery_intent_missing":
-            queue_admission, enqueue_error = await _attempt_chat_queue_admission(
-                queue_payload,
-                check_existing=True,
-            )
         else:
             return _chat_submission_resolution(submission)
     else:
@@ -2358,11 +2318,6 @@ async def chat_stream(
                 source=delivery.receipt.source,
             )
             enqueue_error = None
-        elif delivery.error_code == "delivery_intent_missing":
-            queue_admission, enqueue_error = await _attempt_chat_queue_admission(
-                queue_payload,
-                check_existing=False,
-            )
         else:
             return ChatStreamResponse(
                 session_id=session_id,

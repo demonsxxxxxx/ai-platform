@@ -908,7 +908,12 @@ async def run_once(
     configure_worker_services()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
-    run_delivery_intents = build_run_delivery_intents(settings, transaction)
+    run_delivery_intents = build_run_delivery_intents(
+        settings,
+        transaction,
+        lifecycle=lifecycle,
+        capabilities=v4_capabilities,
+    )
     if _worker_role(settings) == "finalizer":
         raise ValueError("finalizer workers cannot execute a single queue run")
     if run_initial_maintenance:
@@ -1219,7 +1224,12 @@ async def _run_worker_process(
         attempt_lifecycle = attempt_lifecycle or build_run_attempt_lifecycle_service()
         lifecycle = lifecycle or build_run_lifecycle_service()
         worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
-        run_delivery_intents = build_run_delivery_intents(settings, transaction)
+        run_delivery_intents = build_run_delivery_intents(
+            settings,
+            transaction,
+            lifecycle=lifecycle,
+            capabilities=worker_runtime.capabilities,
+        )
         process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
         if role in {"integrated", "finalizer"}:
             background_tasks.append(asyncio.create_task(
