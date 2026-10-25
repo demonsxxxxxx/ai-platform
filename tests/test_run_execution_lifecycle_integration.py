@@ -413,6 +413,7 @@ def test_admission_worker_settlement_delivery_reclamation(
         resume_executor_process,
     )
     from tests.support.run_lifecycle_faults import (
+        EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH,
         TERMINAL_ACK_FAULT_MARKER_PATH,
         TERMINAL_CALLBACK_LOSS_MARKER_PATH,
     )
@@ -446,6 +447,7 @@ def test_admission_worker_settlement_delivery_reclamation(
             stack.start_api,
             drop_terminal_ack_once=fault == "terminal_ack_loss",
             reject_terminal_callbacks=fault == "terminal_callback_loss",
+            capture_executor_timeout_callback=fault == "executor_timeout",
         )
         headers = {
             "X-AI-User-ID": stack.user_id, "X-AI-Tenant-ID": stack.tenant_id,
@@ -549,6 +551,22 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "p=Path(sys.argv[1]); "
                         "print(p.read_text() if p.is_file() else '{}')",
                         TERMINAL_CALLBACK_LOSS_MARKER_PATH,
+                    ],
+                )
+                assert result.exit_code == 0, result.output
+                raw = result.output.decode("utf-8") if isinstance(result.output, bytes) else result.output
+                return json.loads(raw)
+
+            async def read_executor_timeout_callback_marker():
+                api = stack._containers["api"]
+                result = await asyncio.to_thread(
+                    api.exec_run,
+                    [
+                        "python", "-c",
+                        "from pathlib import Path; import sys; "
+                        "p=Path(sys.argv[1]); "
+                        "print(p.read_text() if p.is_file() else '{}')",
+                        EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH,
                     ],
                 )
                 assert result.exit_code == 0, result.output
@@ -896,12 +914,39 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert timed_out["executor_status"] == "failed"
                 assert receipt["status"] == "failed"
                 assert receipt["error_code"] == "executor_deadline_exceeded"
-                assert receipt["requested_max_seconds"] == SHORT_EXECUTION_MAX_SECONDS
+                timeout_callback = await read_executor_timeout_callback_marker()
+                assert timeout_callback["schema_version"] == (
+                    "ai-platform.executor-timeout-callback.v1"
+                )
+                assert timeout_callback["source"] == (
+                    "original_executor_terminal_callback"
+                )
+                assert timeout_callback["run_id"] == run_id
+                assert timeout_callback["attempt_id"] == running["attempt_id"]
+                assert timeout_callback["status"] == "failed"
+                timeout_result = timeout_callback["terminal_result"]
+                assert set(timeout_callback) == {
+                    "schema_version",
+                    "source",
+                    "run_id",
+                    "attempt_id",
+                    "status",
+                    "terminal_result",
+                }
+                assert set(timeout_result) == {
+                    "status",
+                    "error_code",
+                    "requested_max_seconds",
+                    "timeout_elapsed_ms",
+                }
+                assert timeout_result["status"] == "failed"
+                assert timeout_result["error_code"] == "executor_deadline_exceeded"
+                assert timeout_result["requested_max_seconds"] == SHORT_EXECUTION_MAX_SECONDS
                 # This executor-reported monotonic interval starts immediately before
                 # the runner call; it excludes container startup and polling time.
                 assert (
                     (SHORT_EXECUTION_MAX_SECONDS - 1.0) * 1_000
-                    <= receipt["timeout_elapsed_ms"]
+                    <= timeout_result["timeout_elapsed_ms"]
                     <= 40_000
                 )
                 assert timed_out["attempt_id"] == running["attempt_id"]
@@ -925,6 +970,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "fault_scenario": fault,
                         "admitted_resource_limits": admitted_limits["resource_limits"],
                         "executor_terminal_receipt": receipt,
+                        "original_executor_terminal_callback": timeout_callback,
                         "final_state": timed_out,
                         "counts": facts,
                         "production_resources_absent_before_teardown": True,

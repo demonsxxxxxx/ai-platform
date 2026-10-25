@@ -19,6 +19,7 @@ import uuid
 from tests.support.run_lifecycle_faults import (
     TERMINAL_ACK_FAULT_MARKER_PATH,
     TERMINAL_CALLBACK_LOSS_MARKER_PATH,
+    EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH,
 )
 from tests.support.lifecycle_candidate_evidence import (
     capture_candidate_source_binding,
@@ -447,6 +448,7 @@ class LifecycleDockerStack:
         timeout_seconds: float = 120.0,
         drop_terminal_ack_once: bool = False,
         reject_terminal_callbacks: bool = False,
+        capture_executor_timeout_callback: bool = False,
     ) -> str:
         if self._client is None or self._network is None:
             raise RuntimeError("LifecycleDockerStack must be entered before starting services")
@@ -487,6 +489,15 @@ class LifecycleDockerStack:
                         "N02_REJECT_TERMINAL_CALLBACKS": "true",
                         "N02_TERMINAL_CALLBACK_LOSS_MARKER_PATH": (
                             TERMINAL_CALLBACK_LOSS_MARKER_PATH
+                        ),
+                    }
+                )
+            if capture_executor_timeout_callback:
+                env.update(
+                    {
+                        "N01_CAPTURE_EXECUTOR_TIMEOUT_CALLBACK": "true",
+                        "N01_EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH": (
+                            EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH
                         ),
                     }
                 )
