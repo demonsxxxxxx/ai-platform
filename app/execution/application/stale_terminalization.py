@@ -19,6 +19,9 @@ async def stage_stale_run_reconciliation(
     terminal_status: str,
     error_code: str | None,
     error_message: str | None,
+    claim_token: str | None = None,
+    expected_attempt_id: str | None = None,
+    expected_owner_generation: int = 0,
     append_event: Any,
     append_audit_log: Any,
 ) -> dict[str, Any] | None:
@@ -51,9 +54,21 @@ async def stage_stale_run_reconciliation(
           and user_id is not distinct from %s
           and id = %s
           and status = %s
-          and terminalization_target is null
+          and (terminalization_target is null
+               or (terminalization_target = 'cancel_requested' and %s = 'cancelled'))
           and (%s <> 'cancelled' or cancel_requested_at is not null)
           and (%s <> 'failed' or cancel_requested_at is null)
+          and (
+            %s::uuid is null
+            or exists (
+              select 1 from run_stale_reconciliation_claims claim
+              where claim.tenant_id = runs.tenant_id and claim.run_id = runs.id
+                and claim.claim_token = %s::uuid
+                and claim.expected_attempt_id is not distinct from %s
+                and claim.expected_owner_generation = %s
+                and claim.claim_deadline_at > clock_timestamp()
+            )
+          )
           and not exists (
             select 1 from sandbox_leases
             where sandbox_leases.tenant_id = runs.tenant_id
@@ -94,6 +109,11 @@ async def stage_stale_run_reconciliation(
             terminal_status,
             terminal_status,
             terminal_status,
+            claim_token,
+            claim_token,
+            expected_attempt_id,
+            expected_owner_generation,
+            terminal_status,
             cancel_requested_before,
             terminal_status,
             stale_before,
@@ -101,7 +121,45 @@ async def stage_stale_run_reconciliation(
     )
     staged = await cursor.fetchone()
     if staged is None:
-        return None
+        if claim_token is None:
+            return None
+        cursor = await conn.execute(
+            """
+            select runs.id, runs.trace_id, runs.terminalization_target
+            from runs
+            where runs.tenant_id = %s and runs.workspace_id = %s
+              and runs.user_id is not distinct from %s and runs.id = %s
+              and runs.status = %s
+              and runs.terminalization_target = %s
+              and runs.terminalization_reason = 'stale_run_no_owner'
+              and exists (
+                select 1 from run_stale_reconciliation_claims claim
+                where claim.tenant_id = runs.tenant_id and claim.run_id = runs.id
+                  and claim.claim_token = %s::uuid
+                  and claim.expected_attempt_id is not distinct from %s
+                  and claim.expected_owner_generation = %s
+                  and claim.claim_deadline_at > clock_timestamp()
+              )
+            """,
+            (
+                tenant_id,
+                workspace_id,
+                user_id,
+                run_id,
+                expected_status,
+                terminal_status,
+                claim_token,
+                expected_attempt_id,
+                expected_owner_generation,
+            ),
+        )
+        staged = await cursor.fetchone()
+        if staged is None:
+            return None
+        staged = {**staged, "already_staged": True}
+
+    if staged.get("already_staged"):
+        return dict(staged)
 
     event_payload: dict[str, Any] = {
         "visible_to_user": True,

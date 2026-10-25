@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+import os
+from typing import Any
+import uuid
+
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
+import pytest
+
+from app import schema_migrations
+from app import worker_main
+from app.execution.application.stale_terminalization import stage_stale_run_reconciliation
+from app.runs.domain.execution_spec import EXECUTION_SPEC_SCHEMA_VERSION, compile_execution_spec
+from app.runs.infrastructure.lifecycle_postgres import (
+    claim_stale_run_reconciliation,
+    list_stale_run_reconciliation_candidates,
+    release_stale_run_reconciliation_claim,
+    stale_run_reconciliation_claim_is_current,
+)
+from app.runs.infrastructure.postgres import (
+    create_run_attempt,
+    prepare_stale_run_attempt_reconciliation,
+    transition_run_attempt,
+)
+
+
+class _Cursor:
+    def __init__(self, row: dict[str, Any] | None = None):
+        self.row = row
+
+    async def fetchone(self):
+        return self.row
+
+    async def fetchall(self):
+        return self.row if isinstance(self.row, list) else []
+
+
+class _Connection:
+    def __init__(self, rows: list[dict[str, Any] | None]):
+        self.rows = list(rows)
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, query: str, params: tuple[Any, ...]):
+        self.calls.append((" ".join(query.split()).lower(), params))
+        return _Cursor(self.rows.pop(0) if self.rows else None)
+
+
+def _execution_spec(*, tenant_id: str, run_id: str, suffix: str):
+    return compile_execution_spec(
+        {
+            "schema_version": EXECUTION_SPEC_SCHEMA_VERSION,
+            "run_payload_schema_version": "ai-platform.run-payload.v1",
+            "tenant_id": tenant_id,
+            "workspace_id": f"workspace-{suffix}",
+            "user_id": f"user-{suffix}",
+            "session_id": f"session-{suffix}",
+            "run_id": run_id,
+            "agent_id": f"agent-{suffix}",
+            "execution_kind": "skill",
+            "skill_id": f"skill-{suffix}",
+            "file_ids": [],
+            "input": {"message": "stale reconciliation"},
+            "executor_type": "fake",
+            "trace_id": f"trace-{suffix}",
+            "skill_version": "version-a",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "selected_version": "version-a",
+            },
+            "skill_manifests": [
+                {"skill_id": f"skill-{suffix}", "content_hash": "version-a"}
+            ],
+            "context_snapshot_id": f"context-{suffix}",
+            "context_snapshot": {"context_snapshot_id": f"context-{suffix}"},
+            "context_pack": {},
+            "model_id": "model-a",
+            "model_value": "model-a",
+            "agent_profile": {},
+        }
+    )
+
+
+async def _seed_running_attempt(conn: psycopg.AsyncConnection, *, suffix: str):
+    tenant_id = f"tenant-{suffix}"
+    run_id = f"run-{suffix}"
+    worker_id = f"worker-{suffix}"
+    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    await conn.execute("insert into tenants(id, name) values (%s, %s)", (tenant_id, suffix))
+    await conn.execute(
+        "insert into workspaces(id, tenant_id, name) values (%s, %s, %s)",
+        (f"workspace-{suffix}", tenant_id, suffix),
+    )
+    await conn.execute(
+        "insert into users(id, tenant_id, display_name) values (%s, %s, %s)",
+        (f"user-{suffix}", tenant_id, suffix),
+    )
+    await conn.execute(
+        "insert into agents(id, tenant_id, name, agent_type) values (%s, %s, %s, 'chat')",
+        (f"agent-{suffix}", tenant_id, suffix),
+    )
+    await conn.execute(
+        "insert into skills(id, name, version, executor_type) values (%s, %s, '1', 'fake')",
+        (f"skill-{suffix}", suffix),
+    )
+    await conn.execute(
+        """insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title)
+           values (%s, %s, %s, %s, %s, %s)""",
+        (
+            f"session-{suffix}", tenant_id, f"workspace-{suffix}",
+            f"user-{suffix}", f"agent-{suffix}", suffix,
+        ),
+    )
+    await conn.execute(
+        """insert into runs(
+             id, tenant_id, workspace_id, session_id, user_id, agent_id,
+             skill_id, status, created_at, queued_at, started_at
+           ) values (%s, %s, %s, %s, %s, %s, %s, 'queued', %s, %s, %s)""",
+        (
+            run_id, tenant_id, f"workspace-{suffix}", f"session-{suffix}",
+            f"user-{suffix}", f"agent-{suffix}", f"skill-{suffix}", old, old, old,
+        ),
+    )
+    attempt_id = f"attempt-{suffix}"
+    await create_run_attempt(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        ordinal=1,
+        owner_kind="queue_worker",
+        owner_id=worker_id,
+        queue_attempt_id=f"queue-attempt-{suffix}",
+        execution_spec=_execution_spec(tenant_id=tenant_id, run_id=run_id, suffix=suffix),
+    )
+    for expected, requested, generation, lease in (
+        ("created", "queued", 1, old),
+        ("queued", "claimed", 2, old),
+        ("claimed", "running", 3, old),
+    ):
+        await transition_run_attempt(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_status=expected,
+            requested_status=requested,
+            expected_owner_kind="queue_worker",
+            expected_owner_id=worker_id,
+            expected_owner_generation=generation,
+            queue_message_id="a" * 64 if requested == "queued" else None,
+            last_heartbeat_at=old,
+            lease_expires_at=lease,
+        )
+    await conn.execute(
+        "update runs set status = 'running' where tenant_id = %s and id = %s",
+        (tenant_id, run_id),
+    )
+    return tenant_id, run_id, attempt_id, worker_id, old
+
+
+@pytest.mark.asyncio
+async def test_postgres_stale_candidates_bind_attempt_and_exclude_queued_delivery():
+    conn = _Connection([[]])
+    rows = await list_stale_run_reconciliation_candidates(
+        conn,
+        stale_after_seconds=900,
+        cancel_requested_after_seconds=5,
+        limit=25,
+        postgres_claim_mode=True,
+    )
+
+    statement, params = conn.calls[0]
+    assert rows == []
+    assert "runs.status = 'running'" in statement
+    assert "latest_attempt.id as expected_attempt_id" in statement
+    assert "latest_attempt.owner_generation" in statement
+    assert "claim_expires_at > clock_timestamp()" in statement
+    assert "executor_reconciliation_status is distinct from 'finalized'" in statement
+    assert "for update of runs skip locked" in statement
+    assert params == (5, 900, 25)
+
+
+@pytest.mark.asyncio
+async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim():
+    candidate = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "run_id": "run-a",
+        "status": "running",
+        "expected_attempt_id": "attempt-a",
+        "expected_owner_generation": 4,
+    }
+    conn = _Connection(
+        [
+            {
+                "id": "run-a", "tenant_id": "tenant-a", "status": "running",
+                "cancel_requested_at": None, "terminalization_target": None,
+                "terminalization_reason": None, "stale": True,
+                "stale_before": "2026-07-21T11:00:00Z",
+            },
+            {
+                "id": "attempt-a", "owner_generation": 4, "status": "running",
+                "lease_live": False,
+            },
+            {"active_lease": False},
+            {"pending_terminal_receipt": False},
+            {"delivery_inflight": False},
+            {
+                "tenant_id": "tenant-a", "run_id": "run-a",
+                "expected_attempt_id": "attempt-a", "expected_owner_generation": 4,
+                "claim_token": uuid.uuid4(), "claimed_by": "worker-a",
+                "claim_deadline_at": "2026-07-21T11:05:00Z",
+            },
+        ]
+    )
+
+    claim = await claim_stale_run_reconciliation(
+        conn,
+        candidate=candidate,
+        worker_id="worker-a",
+        stale_after_seconds=900,
+        cancel_requested_after_seconds=5,
+        claim_ttl_seconds=300,
+    )
+
+    assert claim is not None
+    assert claim["expected_attempt_id"] == "attempt-a"
+    assert claim["expected_owner_generation"] == 4
+    assert claim["stale_before"] == "2026-07-21T11:00:00Z"
+    assert "for update of runs" in conn.calls[0][0]
+    assert "for update" in conn.calls[1][0]
+    assert "on conflict (tenant_id, run_id) do update" in conn.calls[-1][0]
+    assert "claim_deadline_at <= clock_timestamp()" in conn.calls[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_enabled_pg_claim_path_requires_n40_marker_before_scanning(monkeypatch):
+    class Settings:
+        stale_run_reconciliation_postgres_claims_enabled = True
+
+    async def current_schema():
+        return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
+
+    async def missing_n40(_version):
+        raise schema_migrations.SchemaMigrationError("schema_marker_not_applied")
+
+    async def legacy_must_not_run(*_args, **_kwargs):
+        raise AssertionError("missing N40 marker must fail closed")
+
+    monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
+    monkeypatch.setattr(worker_main, "require_schema_marker_applied", missing_n40)
+    monkeypatch.setattr(worker_main, "_reconcile_stale_runs_with_redis_fence", legacy_must_not_run)
+
+    with pytest.raises(schema_migrations.SchemaMigrationError, match="schema_marker_not_applied"):
+        await worker_main.reconcile_stale_runs_for_worker(
+            Settings(),
+            v4_capabilities=object(),
+            attempt_lifecycle=object(),
+            lifecycle=object(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_enabled_pg_claim_path_dispatches_only_after_n40_and_n42_markers(monkeypatch):
+    calls = []
+
+    class Settings:
+        stale_run_reconciliation_postgres_claims_enabled = True
+
+    async def current_schema():
+        calls.append("n42")
+        return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
+
+    async def n40_marker(version):
+        calls.append(("n40", version))
+
+    async def postgres_owner(*_args, **kwargs):
+        calls.append(("postgres_owner", kwargs["worker_id"]))
+        return []
+
+    monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
+    monkeypatch.setattr(worker_main, "require_schema_marker_applied", n40_marker)
+    monkeypatch.setattr(worker_main, "_reconcile_stale_runs_with_postgres_claims", postgres_owner)
+
+    result = await worker_main.reconcile_stale_runs_for_worker(
+        Settings(),
+        v4_capabilities=object(),
+        attempt_lifecycle=object(),
+        lifecycle=object(),
+    )
+
+    assert result == []
+    assert calls[:2] == [
+        "n42",
+        ("n40", schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION),
+    ]
+    assert calls[2][0] == "postgres_owner"
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_claim_takeover_fences_old_attempt_writeback():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"stale_run_claim_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        suffix = uuid.uuid4().hex[:12]
+        async with transaction_factory() as conn:
+            tenant_id, run_id, attempt_id, worker_id, old = await _seed_running_attempt(
+                conn, suffix=suffix
+            )
+
+        async with transaction_factory() as conn:
+            candidates = await list_stale_run_reconciliation_candidates(
+                conn,
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                limit=10,
+                postgres_claim_mode=True,
+            )
+        candidate = next(row for row in candidates if row["run_id"] == run_id)
+
+        async def take_claim(owner: str):
+            async with transaction_factory() as conn:
+                return await claim_stale_run_reconciliation(
+                    conn,
+                    candidate=candidate,
+                    worker_id=owner,
+                    stale_after_seconds=60,
+                    cancel_requested_after_seconds=5,
+                    claim_ttl_seconds=300,
+                )
+
+        first, second = await asyncio.gather(take_claim("worker-a"), take_claim("worker-b"))
+        claims = [claim for claim in (first, second) if claim is not None]
+        assert len(claims) == 1
+        old_claim = claims[0]
+        assert old_claim["expected_attempt_id"] == attempt_id
+        assert old_claim["expected_owner_generation"] == candidate["expected_owner_generation"]
+
+        async with transaction_factory() as conn:
+            staged = await stage_stale_run_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=f"workspace-{suffix}",
+                user_id=f"user-{suffix}",
+                run_id=run_id,
+                expected_status="running",
+                stale_before=old_claim["stale_before"],
+                terminal_status="failed",
+                error_code="stale_run_interrupted",
+                error_message="stale",
+                claim_token=str(old_claim["claim_token"]),
+                expected_attempt_id=attempt_id,
+                expected_owner_generation=int(old_claim["expected_owner_generation"]),
+                append_event=_noop,
+                append_audit_log=_noop,
+            )
+            assert staged is not None
+            prepared = await prepare_stale_run_attempt_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_status="failed",
+                reconciler_id="stale-run-maintenance",
+            )
+            assert prepared is not None and prepared["status"] == "expired"
+            assert int(prepared["owner_generation"]) == int(old_claim["expected_owner_generation"]) + 1
+
+        with pytest.raises(Exception, match="run_attempt_transition_conflict"):
+            async with transaction_factory() as conn:
+                await transition_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    expected_status="running",
+                    requested_status="failed",
+                    expected_owner_kind="queue_worker",
+                    expected_owner_id=worker_id,
+                    expected_owner_generation=int(old_claim["expected_owner_generation"]),
+                    terminal_reason="stale_owner_writeback",
+                )
+
+        async with transaction_factory() as conn:
+            await conn.execute(
+                """update run_stale_reconciliation_claims
+                   set claimed_at = clock_timestamp() - interval '2 seconds',
+                       claim_deadline_at = clock_timestamp() - interval '1 second'
+                   where tenant_id = %s and run_id = %s""",
+                (tenant_id, run_id),
+            )
+        async with transaction_factory() as conn:
+            retry_candidate = next(
+                row
+                for row in await list_stale_run_reconciliation_candidates(
+                    conn,
+                    stale_after_seconds=60,
+                    cancel_requested_after_seconds=5,
+                    limit=10,
+                    postgres_claim_mode=True,
+                )
+                if row["run_id"] == run_id
+            )
+        async with transaction_factory() as conn:
+            new_claim = await claim_stale_run_reconciliation(
+                conn,
+                candidate=retry_candidate,
+                worker_id="worker-c",
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                claim_ttl_seconds=300,
+            )
+            assert new_claim is not None
+            assert new_claim["expected_attempt_id"] == attempt_id
+            assert int(new_claim["expected_owner_generation"]) == int(old_claim["expected_owner_generation"]) + 1
+            resumed = await stage_stale_run_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=f"workspace-{suffix}",
+                user_id=f"user-{suffix}",
+                run_id=run_id,
+                expected_status="running",
+                stale_before=new_claim["stale_before"],
+                terminal_status="failed",
+                error_code="stale_run_interrupted",
+                error_message="stale",
+                claim_token=str(new_claim["claim_token"]),
+                expected_attempt_id=attempt_id,
+                expected_owner_generation=int(new_claim["expected_owner_generation"]),
+                append_event=_noop,
+                append_audit_log=_noop,
+            )
+            assert resumed is not None and resumed["already_staged"] is True
+            resumed_attempt = await prepare_stale_run_attempt_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_status="failed",
+                reconciler_id="stale-run-maintenance",
+            )
+            assert resumed_attempt is not None and resumed_attempt["status"] == "expired"
+            assert not await stale_run_reconciliation_claim_is_current(conn, claim=old_claim)
+            assert await stale_run_reconciliation_claim_is_current(conn, claim=new_claim)
+            assert not await release_stale_run_reconciliation_claim(conn, claim=old_claim)
+            assert await release_stale_run_reconciliation_claim(conn, claim=new_claim)
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+async def _noop(*_args, **_kwargs):
+    return None

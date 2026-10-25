@@ -348,6 +348,10 @@ N33 执行入口使用现有 Worker maintenance 和 executor reconciler 循环�
 - 验收：旧 lease/v1-v2 消费矩阵、PG commit 后投递前崩溃、重复/迟到 enqueue、旧 reclaim 与新接管竞争；当前执行权只能由持久 authority 授予。R03/R07/R09/R10 及真实 PG/Redis 竞态必过。
 - 回退/退役：先停用已替代逻辑再处理旧键；只清理明确测试/部署命名空间的目标键，不作 Redis 通配删除。旧版本依赖已删 fence 时不属于可回滚版本。
 
+当前代码准备（尚未启用）：schema `2026.10.25.9` 增加 `run_stale_reconciliation_claims`，绑定 tenant/Run、观察到的 Attempt 与 `owner_generation`、opaque claim token 和截止时间。Worker 的 PG 路径按 Run → Attempt 锁序重验 stale 条件，在同一事务写 claim、Run terminalization intent 与 Attempt takeover；后续终态事务按 token/CAS 检查 claim。Attempt owner generation 变化使旧执行者写回失败。重试可接管过期 claim；这只约束 PostgreSQL 写入，不证明 TTL 外部副作用 exactly-once。新路径只处理 `running` Run；queued Run 继续由 N23 delivery intent 处理，未确认的执行接受事实不借用 Redis fence 推断。
+
+`STALE_RUN_RECONCILIATION_POSTGRES_CLAIMS_ENABLED` 默认关闭；打开时 Worker 必须通过 schema `.9` readiness 并确认 N40 `.8` schema marker。N41 的 fleet 停写、在途任务排空与部署复核仍是启用前置条件，由部署方明确执行。切换前，当前二进制保留 Redis fence 作为 legacy owner；切换后不创建该业务 fence。Queue 的投递 lease、owner token、heartbeat、ACK/requeue、限流与 SSE 控制继续独立生效。本代码变更没有读取、删除或清理生产 Redis 键。
+
 **N43：删除旧执行/对账列并完成退役 — schema/Sandbox/Runs owner。依赖 N41/N42。**
 
 - 产出：逐列处置，保留资源 lifecycle/stop/release 字段；包含历史 receipt、context、claims、attempt counters、retry time、诊断与索引的去向。更新 schema、readiness、历史读取和所有 owning 文档。

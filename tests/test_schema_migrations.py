@@ -778,7 +778,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION == "2026.10.25.5"
     assert schema_migrations.EXECUTION_SUPERVISION_SCHEMA_VERSION == "2026.10.25.6"
     assert schema_migrations.EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION == "2026.10.25.7"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION
+    assert schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION == "2026.10.25.8"
+    assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION
     assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
@@ -787,6 +789,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("idx_run_delivery_intents_due", False) in schema_migrations.CRITICAL_INDEXES
     assert ("uq_run_delivery_intents_queue_identity", True) in schema_migrations.CRITICAL_INDEXES
     assert "run_attempt_settlements" in schema_migrations.CRITICAL_RELATIONS
+    assert "run_stale_reconciliation_claims" in schema_migrations.CRITICAL_RELATIONS
     assert "execution_supervision_domains" in schema_migrations.CRITICAL_RELATIONS
     assert "execution_supervision_claims" in schema_migrations.CRITICAL_RELATIONS
     assert ("execution_supervision_domains", "mode", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -798,6 +801,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("run_attempt_settlements", "intent_recovery_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_attempt_settlements", "chk_run_attempt_settlements_receipt") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("idx_run_attempt_settlements_mapping", False) in schema_migrations.CRITICAL_INDEXES
+    assert ("run_stale_reconciliation_claims", "expected_owner_generation", "int8", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_stale_reconciliation_claims", "claim_token", "uuid", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_generation") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_run_stale_reconciliation_claims_deadline", False) in schema_migrations.CRITICAL_INDEXES
     assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
@@ -828,6 +835,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_catalog_entries",
         "run_attempts",
         "run_attempt_settlements",
+        "run_stale_reconciliation_claims",
         "execution_supervision_domains",
         "execution_supervision_claims",
         "run_input_sessions",
@@ -1238,6 +1246,30 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "f",
             "FOREIGN KEY (tenant_id, run_id, attempt_id) "
             "REFERENCES run_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "run_stale_reconciliation_claims_pkey",
+            "p",
+            "PRIMARY KEY (tenant_id, run_id)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "run_stale_reconciliation_claims_token_key",
+            "u",
+            "UNIQUE (claim_token)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "fk_run_stale_reconciliation_claims_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id) ON DELETE CASCADE",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "chk_run_stale_reconciliation_claims_deadline",
+            "c",
+            "CHECK (claim_deadline_at > claimed_at)",
         ),
         (
             "run_attempt_settlements",

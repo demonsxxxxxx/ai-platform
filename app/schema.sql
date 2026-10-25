@@ -943,6 +943,36 @@ alter table run_attempt_settlements
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
 
+-- A per-Run claim fences stale reconciliation in PostgreSQL. It binds the
+-- exact Attempt owner generation observed before takeover; Attempt CAS remains
+-- the authority that rejects late executor writes.
+create table if not exists run_stale_reconciliation_claims (
+  tenant_id text not null,
+  run_id text not null,
+  expected_attempt_id text,
+  expected_owner_generation bigint not null,
+  claim_token uuid not null,
+  claimed_by text not null,
+  claimed_at timestamptz not null default clock_timestamp(),
+  claim_deadline_at timestamptz not null,
+  constraint run_stale_reconciliation_claims_pkey primary key (tenant_id, run_id),
+  constraint run_stale_reconciliation_claims_token_key unique (claim_token),
+  constraint fk_run_stale_reconciliation_claims_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id) on delete cascade,
+  constraint chk_run_stale_reconciliation_claims_identity check (
+    tenant_id <> '' and run_id <> '' and claimed_by <> ''
+  ),
+  constraint chk_run_stale_reconciliation_claims_generation check (
+    (expected_attempt_id is null and expected_owner_generation = 0)
+    or (expected_attempt_id is not null and expected_owner_generation > 0)
+  ),
+  constraint chk_run_stale_reconciliation_claims_deadline check (
+    claim_deadline_at > claimed_at
+  )
+);
+create index if not exists idx_run_stale_reconciliation_claims_deadline
+  on run_stale_reconciliation_claims(claim_deadline_at, tenant_id, run_id);
+
 -- Durable handoff state for the legacy and unified supervisors. Every domain
 -- starts on the current owner; the observation cursor does not authorize work.
 create table if not exists execution_supervision_domains (
