@@ -709,6 +709,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
 
     assert result == _result()
@@ -742,6 +743,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
     collection_diagnostics = terminal_results[-1]["runtime_diagnostics"]
     assert terminal_results[-1]["status"] == "failed"
@@ -761,6 +763,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
             await executor_reconciler._collect_workspace_and_convert_result(
                 {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
                 registry=Registry(), claim_token="claim-a",
+                lease_port=sandbox_lease_repository,
             )
         if isinstance(failure, ValueError):
             assert caught.value.__cause__ is failure
