@@ -91,13 +91,15 @@ Rules:
 ### Run lifecycle acceptance evidence
 
 The `lifecycle-control-chain` backend shard owns the complete
-`tests/test_run_execution_lifecycle_integration.py` selector set. It runs with
+`tests/test_run_execution_lifecycle_integration.py` selector set. Two explicit,
+non-overlapping runner stages execute that set in parallel. Each stage uses
 PostgreSQL and Redis services, `--require-zero-skips`, a 1,800-second test
-budget, and a 50-minute shard budget. It remains inside
+budget, and a 50-minute job budget. Both matrix results remain inside
 `backend-tests`, which `backend required` already requires. Keep the workflow's
-selectors and zero-skip rule explicit; a missing selector, dependency, or
-fixture is a failure. The local runner's `evidence.json` and JUnit report bind
-the executed selectors and outcomes to the exact checkout.
+selector batches and zero-skip rule explicit; a missing selector, dependency, or
+fixture is a failure. Each local runner's `evidence.json`, JUnit report, and
+coverage JSON records its exact selector subset and checkout; both artifacts are
+required for the logical shard to pass.
 
 Each C-layer `control-chain.json` manifest binds the source commit, complete
 non-ignored worktree digest, lockfile digest, inspected candidate image ID and
