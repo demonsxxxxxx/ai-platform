@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.auth import AuthPrincipal
 from app.main import create_app
 from app.platform.postgres.errors import RepositoryConflictError
-from app.run_admission_policy import (
+from app.runs.domain.multi_agent_admission import (
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
 )
