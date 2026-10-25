@@ -9,6 +9,8 @@ from hashlib import sha256
 import json
 from typing import Any, Awaitable, Callable, Literal, Protocol
 
+from app.execution.application.task_completion import gather_completed
+
 
 DeliveryState = Literal["pending", "claimed", "delivered", "suppressed"]
 _MAX_CONCURRENT_QUEUE_IO = 8
@@ -409,7 +411,7 @@ class RunDeliveryIntents:
                 claim_ttl_seconds=self._claim_ttl_seconds,
             )
         intents = [RunDeliveryIntent.from_record(record) for record in claimed_records]
-        outcomes = await asyncio.gather(
+        outcomes = await gather_completed(
             *(self._deliver_claim(intent) for intent in intents)
         )
         return DeliveryScanResult(

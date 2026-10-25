@@ -107,22 +107,21 @@ from app.runs.api import (
     RunInputsService,
     RunCancellationUseCase,
     RunCancellationQueueCleanupError,
-    RunDiagnosticsService,
     bind_run_model,
     inherit_run_model,
     public_run_outcome,
     run_retry_block_reason,
     run_unconfirmed_execution_block_reason,
 )
-from app.runs.transport.run_delivery import (
+from app.bootstrap.run_transport import (
     bind_queue_insight,
     PermanentQueueDeliveryRejected,
     delivery_service,
     ensure_control_queue_admission_http,
     require_immediate_delivery,
     record_accepted_run,
+    compensate_queue_rejection,
 )
-from app.runs.transport.run_failure import compensate_queue_rejection
 from app.runs.infrastructure import (
     capability_admission_postgres as runs_capability_admission,
 )
