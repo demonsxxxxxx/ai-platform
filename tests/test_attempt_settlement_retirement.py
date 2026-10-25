@@ -55,7 +55,7 @@ def _digest(value: object) -> str:
 
 async def _retire(conn):
     return await retire_attempt_settlement_legacy_columns(
-        conn,
+        conn, schema_authority=schema_migrations,
         operator_confirmations=_CONFIRMATIONS,
         minimum_compatible_version="attempt.v1 / ai-platform 2026.10.25.11",
     )
@@ -196,7 +196,7 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
             "executor_cleanup_retry_not_before = null where id = 'lease-a'"
         )
     async with connect() as conn, conn.transaction():
-        prepared = await prepare_attempt_settlement_retirement(conn)
+        prepared = await prepare_attempt_settlement_retirement(conn, schema_authority=schema_migrations)
         assert prepared["status"] == "ready", prepared
         assert prepared["compatibility_counts"]["unretained_legacy_history_count"] == 0
         assert prepared["fenced"] is False
@@ -220,7 +220,7 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
         assert reader_activated["status"] == "already_active"
     async with connect() as conn, conn.transaction():
         await conn.execute(schema_migrations.schema_sql())
-        status = await attempt_settlement_retirement_status(conn)
+        status = await attempt_settlement_retirement_status(conn, schema_authority=schema_migrations)
         assert status["status"] == "current"
         assert status["retirement_state"] == "retired"
         schema_status = await schema_migrations.schema_status(conn)
@@ -450,7 +450,7 @@ async def test_retirement_ignores_receipt_diagnostics_only_differences(attempt_s
             "update run_attempt_settlement_writer set writer_version = 'attempt.v1'"
         )
         await _mark_fixture_drained(conn)
-        prepared = await prepare_attempt_settlement_retirement(conn)
+        prepared = await prepare_attempt_settlement_retirement(conn, schema_authority=schema_migrations)
 
     assert prepared["status"] == "ready", prepared
     assert prepared["compatibility_counts"]["unretained_legacy_history_count"] == 0

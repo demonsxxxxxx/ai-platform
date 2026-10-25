@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.db import close_pool, transaction  # noqa: E402
+from app import schema_migrations  # noqa: E402
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (  # noqa: E402
     activate_attempt_settlement_storage,
     get_attempt_settlement_storage_version,
@@ -106,10 +107,10 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
             }
         if args.command == "retirement-status":
             async with transaction() as conn:
-                return await attempt_settlement_retirement_status(conn)
+                return await attempt_settlement_retirement_status(conn, schema_authority=schema_migrations)
         if args.command == "prepare-retirement":
             async with transaction() as conn:
-                return await prepare_attempt_settlement_retirement(conn)
+                return await prepare_attempt_settlement_retirement(conn, schema_authority=schema_migrations)
         if args.command == "retire":
             confirmations = {
                 "legacy_binaries_stopped": args.confirm_legacy_binaries_stopped,
@@ -119,6 +120,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
             async with transaction() as conn:
                 return await retire_attempt_settlement_legacy_columns(
                     conn,
+                    schema_authority=schema_migrations,
                     operator_confirmations=confirmations,
                     minimum_compatible_version=args.minimum_compatible_version,
                     max_attempts=args.max_attempts,

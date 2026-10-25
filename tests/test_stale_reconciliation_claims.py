@@ -833,10 +833,10 @@ async def test_real_stale_run_terminalization_after_legacy_receipt_columns_retir
                 },
             )
             assert writer["status"] == "activated"
-            assert (await prepare_attempt_settlement_retirement(conn))["status"] == "ready"
+            assert (await prepare_attempt_settlement_retirement(conn, schema_authority=schema_migrations))["status"] == "ready"
         async with transaction_factory() as conn:
             retired = await retire_attempt_settlement_legacy_columns(
-                conn,
+                conn, schema_authority=schema_migrations,
                 operator_confirmations={
                     "legacy_binaries_stopped": True,
                     "runs_and_resource_claims_drained": True,

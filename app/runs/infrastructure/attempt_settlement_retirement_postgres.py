@@ -4,15 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import json
-from typing import Any
+from typing import Any, Protocol
 
-from app import schema_migrations
+from app.runs.domain.settlement_retirement import (
+    LEGACY_ATTEMPT_SETTLEMENT_COLUMNS,
+    LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT,
+    LEGACY_ATTEMPT_SETTLEMENT_INDEXES,
+    RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+)
 
 
-LEGACY_COLUMNS = schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_COLUMNS
-LEGACY_INDEXES = tuple(sorted(schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_INDEXES))
-LEGACY_CONSTRAINT = schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT[1]
-RETIREMENT_VERSION = schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+LEGACY_COLUMNS = LEGACY_ATTEMPT_SETTLEMENT_COLUMNS
+LEGACY_INDEXES = tuple(sorted(LEGACY_ATTEMPT_SETTLEMENT_INDEXES))
+LEGACY_CONSTRAINT = LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT[1]
+RETIREMENT_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+
+
+class RetirementSchemaAuthority(Protocol):
+    """Schema readiness and coordinator locks supplied by the operator entry point."""
+
+    TARGET_SCHEMA_VERSION: str
+    INDEX_MIGRATION_LOCK_ID: int
+    MIGRATION_LOCK_ID: int
+
+    async def schema_status(self, conn: Any) -> dict[str, object]: ...
 
 _FENCE_TABLES = (
     "runs",
@@ -216,7 +231,9 @@ def _eligibility_ready(
     )
 
 
-async def attempt_settlement_retirement_status(conn: Any) -> dict[str, Any]:
+async def attempt_settlement_retirement_status(
+    conn: Any, *, schema_authority: RetirementSchemaAuthority,
+) -> dict[str, Any]:
     marker = await _marker(conn)
     state = str(marker.get("state") or "") if marker else ""
     layout = await _layout(conn)
@@ -225,7 +242,7 @@ async def attempt_settlement_retirement_status(conn: Any) -> dict[str, Any]:
     schema_marker = await (
         await conn.execute(
             "select state from schema_migrations where version = %s",
-            (schema_migrations.TARGET_SCHEMA_VERSION,),
+            (schema_authority.TARGET_SCHEMA_VERSION,),
         )
     ).fetchone()
     schema_current = bool(schema_marker and schema_marker.get("state") == "applied")
@@ -243,8 +260,10 @@ async def attempt_settlement_retirement_status(conn: Any) -> dict[str, Any]:
     }
 
 
-async def prepare_attempt_settlement_retirement(conn: Any) -> dict[str, Any]:
-    status = await attempt_settlement_retirement_status(conn)
+async def prepare_attempt_settlement_retirement(
+    conn: Any, *, schema_authority: RetirementSchemaAuthority,
+) -> dict[str, Any]:
+    status = await attempt_settlement_retirement_status(conn, schema_authority=schema_authority)
     if status["retirement_state"] == "retired":
         return {
             **status,
@@ -275,6 +294,7 @@ async def prepare_attempt_settlement_retirement(conn: Any) -> dict[str, Any]:
 async def retire_attempt_settlement_legacy_columns(
     conn: Any,
     *,
+    schema_authority: RetirementSchemaAuthority,
     operator_confirmations: Mapping[str, bool],
     minimum_compatible_version: str,
     max_attempts: int = 10000,
@@ -313,8 +333,8 @@ async def retire_attempt_settlement_legacy_columns(
     await conn.execute("set transaction isolation level read committed")
     await conn.execute(f"set local lock_timeout = '{lock_timeout_seconds}s'")
     await conn.execute(f"set local statement_timeout = '{statement_timeout_seconds}s'")
-    await conn.execute("select pg_advisory_xact_lock(%s)", (schema_migrations.INDEX_MIGRATION_LOCK_ID,))
-    await conn.execute("select pg_advisory_xact_lock(%s)", (schema_migrations.MIGRATION_LOCK_ID,))
+    await conn.execute("select pg_advisory_xact_lock(%s)", (schema_authority.INDEX_MIGRATION_LOCK_ID,))
+    await conn.execute("select pg_advisory_xact_lock(%s)", (schema_authority.MIGRATION_LOCK_ID,))
     # Match the schema coordinator's INDEX -> core advisory lock order and the
     # writer's Run -> Sandbox -> Attempt -> dispatch -> detail/marker table order.
     for table in _FENCE_TABLES:
@@ -327,7 +347,7 @@ async def retire_attempt_settlement_legacy_columns(
         marker is None
         or marker.get("retirement_version") != RETIREMENT_VERSION
         or marker.get("state") not in {"expanded", "retired"}
-        or not (await schema_migrations.schema_status(conn)).get("ready")
+        or not (await schema_authority.schema_status(conn)).get("ready")
     ):
         return {
             "status": "blocked", "reason": "retirement_schema_not_ready",

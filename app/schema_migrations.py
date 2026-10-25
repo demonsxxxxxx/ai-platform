@@ -13,6 +13,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
+from app.runs.domain.settlement_retirement import (
+    LEGACY_ATTEMPT_SETTLEMENT_COLUMNS,
+    LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT,
+    LEGACY_ATTEMPT_SETTLEMENT_INDEXES,
+    RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+)
 
 
 V4_PUBLICATION_SCHEMA_VERSION = "2026.08.24.1"
@@ -62,29 +68,10 @@ RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
 N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
 RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION = "2026.10.25.10"
-RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION = "2026.10.25.11"
 TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
-LEGACY_ATTEMPT_SETTLEMENT_COLUMNS = (
-    "executor_terminal_json",
-    "executor_reconciliation_context_json",
-    "executor_reconciliation_intent_context_json",
-    "executor_reconciliation_status",
-    "executor_reconciliation_claim_token",
-    "executor_reconciliation_claimed_at",
-    "executor_reconciliation_retry_not_before",
-    "executor_terminal_reconciliation_attempt_count",
-)
-LEGACY_ATTEMPT_SETTLEMENT_INDEXES = frozenset({
-    "idx_sandbox_leases_executor_reconcile",
-    "idx_sandbox_leases_executor_reconcile_due",
-    "idx_sandbox_leases_executor_watch",
-})
-LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT = (
-    "sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"
-)
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 RUN_STATUS_CONSTRAINT_NAME = "chk_runs_status"
 RUN_STATUS_LOCK_TIMEOUT = "2s"
