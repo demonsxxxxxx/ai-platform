@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     supervision_probe_capacity: int = Field(default=1, ge=1, le=100)
     supervision_settlement_capacity: int = Field(default=2, ge=1, le=100)
     supervision_cleanup_capacity: int = Field(default=1, ge=1, le=100)
+    # PostgreSQL domain claims are mandatory in every mode. This switch only
+    # permits this replica to execute work while a domain is unified.
     execution_supervision_enabled: bool = Field(default=False)
     execution_supervision_shadow_enabled: bool = Field(default=False)
     # One switch controls both transactional intent writers and the Worker

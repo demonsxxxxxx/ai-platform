@@ -16,7 +16,7 @@ from app.context.api import ProviderSessionConflictError, ProviderSessionContinu
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
 from app.bootstrap.execution_supervision import run_worker_scheduled_domain_operation
-from app.execution.domain.supervision import SupervisionDomain
+from app.execution.api import SupervisionDomain
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.tracing import TerminalStageTiming

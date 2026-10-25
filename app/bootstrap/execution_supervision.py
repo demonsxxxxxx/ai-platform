@@ -37,8 +37,9 @@ async def run_worker_domain_operation(
     expected_mode: OwnerMode,
     worker_id: str,
 ) -> T | None:
-    if not bool(getattr(settings, "execution_supervision_enabled", False)):
-        return await operation()
+    unified_execution_enabled = bool(
+        getattr(settings, "execution_supervision_enabled", False)
+    )
     return await run_current_domain_work(
         operation,
         transaction_factory=transaction,
@@ -48,6 +49,7 @@ async def run_worker_domain_operation(
         worker_id=worker_id,
         ttl_seconds=int(getattr(settings, "supervision_claim_ttl_seconds", 3600)),
         capacities=capacities_from_settings(settings),
+        unified_execution_enabled=unified_execution_enabled,
     )
 
 
@@ -67,7 +69,7 @@ async def run_worker_scheduled_domain_operation(
         worker_id=worker_id,
         ttl_seconds=int(getattr(settings, "supervision_claim_ttl_seconds", 3600)),
         capacities=capacities_from_settings(settings),
-        supervision_enabled=bool(
+        unified_execution_enabled=bool(
             getattr(settings, "execution_supervision_enabled", False)
         ),
     )

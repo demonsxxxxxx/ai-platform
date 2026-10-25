@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 import os
 import uuid
 
@@ -11,13 +13,176 @@ import pytest
 
 from app import schema_migrations
 from app.execution.application.supervision import run_current_domain_work, run_scheduled_domain_work
-from app.execution.domain.supervision import SupervisionCapacities, SupervisionDomain
-from app.execution.infrastructure import supervision_postgres
+from app.execution.application.run_delivery_intents import (
+    QueueDeliveryReceipt,
+    RunDeliveryIntents,
+)
+from app.execution.domain.supervision import (
+    SupervisionCapacities,
+    SupervisionDomain,
+    select_supervision_candidates,
+)
+from app.execution.infrastructure import (
+    run_delivery_intents_postgres as delivery_store,
+    supervision_postgres,
+)
 
 
 async def _record_call(target, value="called"):
     target.append(value)
     return value
+
+
+@asynccontextmanager
+async def _isolated_schema():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"execution_supervision_case_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(
+        dsn, autocommit=True, row_factory=dict_row
+    )
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            connection = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with connection.transaction():
+                    yield connection
+            finally:
+                await connection.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn,
+                autocommit=True,
+                options=f"-c search_path={schema}",
+                row_factory=dict_row,
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        yield transaction_factory
+    finally:
+        await admin.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema))
+        )
+        await admin.close()
+
+
+async def _seed_run(
+    transaction_factory,
+    run_id: str,
+    *,
+    status: str = "queued",
+    attempt_status: str | None = None,
+) -> str | None:
+    async with transaction_factory() as connection:
+        await connection.execute(
+            "insert into tenants(id, name) values ('tenant', 'Tenant') on conflict (id) do nothing"
+        )
+        await connection.execute(
+            "insert into workspaces(id, tenant_id, name) values ('workspace', 'tenant', 'Workspace') on conflict (id) do nothing"
+        )
+        await connection.execute(
+            "insert into users(id, tenant_id, display_name) values ('user', 'tenant', 'User') on conflict (id) do nothing"
+        )
+        await connection.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('agent', 'tenant', 'Agent', 'chat') on conflict (tenant_id, id) do nothing"
+        )
+        await connection.execute(
+            "insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title) "
+            "values ('session', 'tenant', 'workspace', 'user', 'agent', 'Session') "
+            "on conflict (id) do nothing"
+        )
+        await connection.execute(
+            "insert into runs(id, tenant_id, workspace_id, session_id, user_id, agent_id, "
+            "execution_kind, status) values (%s, 'tenant', 'workspace', 'session', 'user', "
+            "'agent', 'harness_chat', %s)",
+            (run_id, status),
+        )
+        if attempt_status is None:
+            return None
+        spec_version = "ai-platform.execution-spec.v1"
+        spec_json = json.dumps(
+            {
+                "schema_version": spec_version,
+                "tenant_id": "tenant",
+                "run_id": run_id,
+                "workspace_id": "workspace",
+                "user_id": "user",
+                "session_id": "session",
+                "agent_id": "agent",
+                "execution_kind": "harness_chat",
+                "skill_id": None,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        attempt_id = f"attempt-{run_id}"
+        await connection.execute(
+            """insert into run_attempts(
+                 id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                 queue_attempt_id, execution_spec_schema_version, execution_spec_json,
+                 execution_spec_canonical_json, execution_spec_sha256)
+               values (%s, 'tenant', %s, 1, 'created', 'queue_worker', 'worker-a',
+                 %s, %s, %s::jsonb, %s, %s)""",
+            (
+                attempt_id,
+                run_id,
+                f"queue-{attempt_id}",
+                spec_version,
+                spec_json,
+                spec_json,
+                sha256(spec_json.encode("utf-8")).hexdigest(),
+            ),
+        )
+        transition_path = ["queued", "claimed", "running"]
+        if attempt_status in {"succeeded", "failed", "cancelled"}:
+            transition_path.append(attempt_status)
+        elif attempt_status != "running":
+            raise ValueError(f"unsupported attempt status: {attempt_status}")
+        for next_status in transition_path:
+            await connection.execute(
+                """update run_attempts
+                   set status = %s,
+                       owner_generation = owner_generation + 1,
+                       queue_message_id = case when status = 'created'
+                         then 'message-' || id else queue_message_id end,
+                       finished_at = case when %s in ('succeeded', 'failed', 'cancelled')
+                         then clock_timestamp() else null end
+                   where id = %s""",
+                (next_status, next_status, attempt_id),
+            )
+        return attempt_id
+
+
+async def _seed_delivery_intent(transaction_factory, run_id: str) -> None:
+    payload_json = json.dumps(
+        {"tenant_id": "tenant", "run_id": run_id, "session_id": "session"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    message_id = sha256(payload_json.encode("utf-8")).hexdigest()
+    async with transaction_factory() as connection:
+        await delivery_store.insert(
+            connection,
+            tenant_id="tenant",
+            run_id=run_id,
+            session_id="session",
+            source="create_run",
+            submission_id=None,
+            user_message_id=None,
+            payload_json=payload_json,
+            message_id=message_id,
+            payload_sha256=message_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -209,7 +374,7 @@ async def test_two_worker_claims_drain_before_domain_switch_and_expiry_stays_in_
                 capacities=SupervisionCapacities(
                     delivery=1, probe=1, settlement=1, cleanup=1
                 ),
-                supervision_enabled=True,
+                unified_execution_enabled=True,
             )
 
         legacy_started = []
@@ -290,6 +455,7 @@ async def test_two_worker_claims_drain_before_domain_switch_and_expiry_stays_in_
                 expected_mode="legacy",
                 worker_id="legacy-too-late",
                 ttl_seconds=60,
+                unified_execution_enabled=False,
             ) is None
         unified_b = asyncio.create_task(unified_owner("unified-b"))
         assert await asyncio.wait_for(unified_b, timeout=2) is None
@@ -426,3 +592,250 @@ async def test_two_worker_claims_drain_before_domain_switch_and_expiry_stays_in_
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_delivery_shadow_eligibility_matches_attempt_readback_store_rules():
+    async with _isolated_schema() as transaction_factory:
+        for run_id, attempt_status in (
+            ("queued-no-attempt", None),
+            ("running-attempt", "running"),
+            ("terminal-attempt", "succeeded"),
+        ):
+            await _seed_run(
+                transaction_factory,
+                run_id,
+                attempt_status=attempt_status,
+            )
+            await _seed_delivery_intent(transaction_factory, run_id)
+
+        observed_at = datetime.now(timezone.utc)
+        async with transaction_factory() as connection:
+            candidates = await supervision_postgres.observe_persisted_candidates(
+                connection,
+                now=observed_at,
+                batch_limits={
+                    SupervisionDomain.DELIVERY: 10,
+                    SupervisionDomain.PROBE: 1,
+                    SupervisionDomain.SETTLEMENT: 1,
+                    SupervisionDomain.CLEANUP: 1,
+                },
+                probe_stale_seconds=45,
+                settlement_claim_stale_seconds=300,
+            )
+
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    queued = by_id["tenant/queued-no-attempt"]
+    running = by_id["tenant/running-attempt"]
+    terminal = by_id["tenant/terminal-attempt"]
+    assert queued.action == "recover_delivery"
+    assert dict(queued.facts)["enqueue_permitted"] == "True"
+    assert running.action == "readback_delivery_receipt"
+    assert dict(running.facts)["run_status"] == "running"
+    assert dict(running.facts)["attempt_status"] == "running"
+    assert dict(running.facts)["enqueue_permitted"] == "False"
+    assert terminal.action == "readback_delivery_receipt"
+    assert dict(terminal.facts)["run_status"] == "succeeded"
+    assert dict(terminal.facts)["attempt_status"] == "succeeded"
+    assert dict(terminal.facts)["enqueue_permitted"] == "False"
+
+
+@pytest.mark.asyncio
+async def test_probe_observation_has_fair_cancel_and_normal_lanes():
+    async with _isolated_schema() as transaction_factory:
+        async def seed_probe(run_id: str, *, cancelled: bool = False) -> None:
+            attempt_id = await _seed_run(
+                transaction_factory, run_id, attempt_status="running"
+            )
+            async with transaction_factory() as connection:
+                if cancelled:
+                    await connection.execute(
+                        "update runs set cancel_requested_at = clock_timestamp() "
+                        "where tenant_id = 'tenant' and id = %s",
+                        (run_id,),
+                    )
+                await connection.execute(
+                    """insert into sandbox_leases(
+                         id, tenant_id, workspace_id, user_id, session_id, run_id,
+                         attempt_id, sandbox_mode, status, executor_status,
+                         executor_heartbeat_at, executor_reconciliation_context_json)
+                       values (%s, 'tenant', 'workspace', 'user', 'session', %s,
+                         %s, 'chat', 'active', 'running',
+                         clock_timestamp() - interval '1 hour', '{}'::jsonb)""",
+                    (f"lease-{run_id}", run_id, attempt_id),
+                )
+
+        await seed_probe("normal-a")
+        await seed_probe("normal-b")
+        await seed_probe("normal-c")
+
+        async def observe_probe_page():
+            observed_at = datetime.now(timezone.utc)
+            async with transaction_factory() as connection:
+                return await supervision_postgres.observe_persisted_candidates(
+                    connection,
+                    now=observed_at,
+                    batch_limits={
+                        SupervisionDomain.DELIVERY: 1,
+                        SupervisionDomain.PROBE: 1,
+                        SupervisionDomain.SETTLEMENT: 1,
+                        SupervisionDomain.CLEANUP: 1,
+                    },
+                    probe_stale_seconds=45,
+                    settlement_claim_stale_seconds=300,
+                )
+
+        first_page = await observe_probe_page()
+        first_probe = [item for item in first_page if item.domain is SupervisionDomain.PROBE]
+        assert [item.candidate_id for item in first_probe] == ["lease-normal-a"]
+
+        await seed_probe("cancel-a", cancelled=True)
+        second_page = await observe_probe_page()
+        second_probe = [item for item in second_page if item.domain is SupervisionDomain.PROBE]
+        assert [item.candidate_id for item in second_probe] == [
+            "lease-cancel-a",
+            "lease-normal-b",
+        ]
+        assert [item.priority for item in second_probe] == [0, 100]
+        assert len(select_supervision_candidates(
+            second_probe,
+            now=datetime.now(timezone.utc),
+            capacities=SupervisionCapacities(delivery=1, probe=1, settlement=1, cleanup=1),
+        )) == 1
+
+        third_page = await observe_probe_page()
+        third_probe = [item for item in third_page if item.domain is SupervisionDomain.PROBE]
+        assert "lease-normal-c" in {item.candidate_id for item in third_probe}
+
+
+@pytest.mark.asyncio
+async def test_delivery_domain_claim_waits_for_failed_receipt_and_blocked_enqueue():
+    async with _isolated_schema() as transaction_factory:
+        for run_id in ("receipt-error", "blocked-enqueue"):
+            await _seed_run(transaction_factory, run_id)
+            await _seed_delivery_intent(transaction_factory, run_id)
+
+        async with transaction_factory() as connection:
+            await connection.execute(
+                """create function fail_supervision_test_receipt()
+                   returns trigger language plpgsql as $$
+                   begin
+                     if new.run_id = 'receipt-error' and new.state = 'delivered' then
+                       raise exception 'supervision_test_receipt_failure';
+                     end if;
+                     return new;
+                   end;
+                   $$"""
+            )
+            await connection.execute(
+                """create trigger fail_supervision_test_receipt
+                   before update on run_delivery_intents
+                   for each row execute function fail_supervision_test_receipt()"""
+            )
+
+        enqueue_started = asyncio.Event()
+        finish_enqueue = asyncio.Event()
+        receipt_database_error = asyncio.Event()
+        receipt_errors: list[str] = []
+
+        class Queue:
+            async def readback(self, payload_json: str, *, message_id: str):
+                run_id = json.loads(payload_json)["run_id"]
+                if run_id == "receipt-error":
+                    return QueueDeliveryReceipt(1, 1, message_id, "test")
+                return None
+
+            async def enqueue(self, payload_json: str, *, message_id: str):
+                run_id = json.loads(payload_json)["run_id"]
+                assert run_id == "blocked-enqueue"
+                enqueue_started.set()
+                await finish_enqueue.wait()
+                return QueueDeliveryReceipt(2, 2, message_id, "test")
+
+        class DeliveryStore:
+            def __getattr__(self, name):
+                return getattr(delivery_store, name)
+
+            async def record_receipt(self, connection, *, intent, receipt):
+                try:
+                    return await delivery_store.record_receipt(
+                        connection, intent=intent, receipt=receipt
+                    )
+                except psycopg.Error:
+                    receipt_errors.append(intent.run_id)
+                    receipt_database_error.set()
+                    raise
+
+        async def permanent_rejection_owner(*_args, **_kwargs):
+            return True
+
+        delivery = RunDeliveryIntents(
+            enabled=True,
+            store=DeliveryStore(),
+            codec=object(),
+            queue=Queue(),
+            transaction=transaction_factory,
+            scan_batch_size=2,
+            claim_ttl_seconds=60,
+            retry_base_seconds=1,
+            retry_cap_seconds=10,
+            permanent_rejection_owner=permanent_rejection_owner,
+        )
+        scan = asyncio.create_task(
+            run_scheduled_domain_work(
+                delivery.scan_once,
+                transaction_factory=transaction_factory,
+                store=supervision_postgres,
+                domain=SupervisionDomain.DELIVERY,
+                worker_id="legacy-delivery-worker",
+                ttl_seconds=60,
+                capacities=SupervisionCapacities(
+                    delivery=1, probe=1, settlement=1, cleanup=1
+                ),
+                unified_execution_enabled=False,
+            )
+        )
+        try:
+            await asyncio.wait_for(enqueue_started.wait(), timeout=3)
+            await asyncio.wait_for(receipt_database_error.wait(), timeout=3)
+            assert receipt_errors == ["receipt-error"]
+            assert not scan.done()
+
+            async with transaction_factory() as connection:
+                cursor = await connection.execute(
+                    "select count(*) as count from execution_supervision_claims "
+                    "where domain = 'delivery' and recovered_at is null"
+                )
+                assert (await cursor.fetchone())["count"] == 1
+                draining_version = await supervision_postgres.request_domain_drain(
+                    connection,
+                    domain=SupervisionDomain.DELIVERY,
+                    expected_version=1,
+                )
+                assert draining_version == 2
+                assert await supervision_postgres.activate_unified_domain(
+                    connection,
+                    domain=SupervisionDomain.DELIVERY,
+                    expected_version=draining_version,
+                ) is None
+        finally:
+            finish_enqueue.set()
+            if not scan.done():
+                try:
+                    await asyncio.wait_for(scan, timeout=5)
+                except BaseException:
+                    pass
+
+        with pytest.raises(psycopg.Error, match="supervision_test_receipt_failure"):
+            await scan
+        async with transaction_factory() as connection:
+            cursor = await connection.execute(
+                "select count(*) as count from execution_supervision_claims "
+                "where domain = 'delivery' and recovered_at is null"
+            )
+            assert (await cursor.fetchone())["count"] == 0
+            assert await supervision_postgres.activate_unified_domain(
+                connection,
+                domain=SupervisionDomain.DELIVERY,
+                expected_version=2,
+            ) == 3

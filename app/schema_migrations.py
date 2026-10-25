@@ -262,6 +262,8 @@ CRITICAL_COLUMNS = (
     ("execution_supervision_domains", "mode", "text", True),
     ("execution_supervision_domains", "owner_version", "int8", True),
     ("execution_supervision_domains", "scan_cursor", "text", False),
+    ("execution_supervision_domains", "probe_cancel_scan_cursor", "text", False),
+    ("execution_supervision_domains", "probe_normal_scan_cursor", "text", False),
     ("execution_supervision_domains", "drain_started_at", "timestamptz", False),
     ("execution_supervision_domains", "updated_at", "timestamptz", True),
     ("execution_supervision_claims", "claim_token", "uuid", True),

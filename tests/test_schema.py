@@ -381,6 +381,8 @@ def test_schema_supervision_claims_keep_operator_recovery_evidence():
     assert "recovered_by text" in schema
     assert "recovery_evidence text" in schema
     assert "chk_execution_supervision_claim_recovery" in schema
+    assert "add column if not exists probe_cancel_scan_cursor text" in schema
+    assert "add column if not exists probe_normal_scan_cursor text" in schema
 
 
 def test_schema_declares_tenant_scoped_workspace_guards_for_sessions_and_runs():
