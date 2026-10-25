@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.db import SCHEMA_PATH, close_pool, connect, transaction
-from app.runs.domain.settlement_retirement import (
+from app.runs.api import (
     LEGACY_ATTEMPT_SETTLEMENT_COLUMNS,
     LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT,
     LEGACY_ATTEMPT_SETTLEMENT_INDEXES,
