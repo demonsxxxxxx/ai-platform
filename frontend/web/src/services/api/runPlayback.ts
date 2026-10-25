@@ -150,19 +150,6 @@ export interface RunPlaybackResponse {
   context_ref?: RunPlaybackContextRef | null;
 }
 
-const DANGEROUS_KEYS = new Set([
-  "payload",
-  "manifest",
-  snakeKey("storage", "key"),
-  snakeKey("runtime", "path"),
-  snakeKey("work", "dir"),
-  snakeKey("command", "sha256"),
-  snakeKey("sandbox", "mode"),
-  snakeKey("mcp", "tool", "ids"),
-  snakeKey("used", "skills", "source"),
-  snakeKey("resource", "limits"),
-]);
-
 const PUBLIC_LINEAGE_KEYS = new Set([
   "source_event_id",
   "source_step_id",
@@ -241,6 +228,9 @@ export async function fetchRunPlayback(
   return normalizeRunPlayback(response);
 }
 
+// Normalize untrusted playback wire JSON. `unknown` permits validation of malformed
+// data; it does not promise traversal or callback semantics for arbitrary objects
+// with getters, proxies, or custom prototypes.
 export function normalizeRunPlayback(
   response: unknown,
 ): RunPlaybackResponse {
@@ -638,40 +628,6 @@ function asTime(value: string | null | undefined): number | undefined {
   return Number.isFinite(time) ? time : undefined;
 }
 
-function sanitizePublicJsonValue(
-  value: unknown,
-): RunPlaybackJsonValue | undefined {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return Number.isNaN(value) ? undefined : value;
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizePublicJsonValue(item))
-      .filter((item): item is RunPlaybackJsonValue => item !== undefined);
-  }
-
-  const source = asRecord(value);
-  if (!source) return undefined;
-
-  const output: { [key: string]: RunPlaybackJsonValue } = {};
-  for (const [key, childValue] of Object.entries(source)) {
-    if (DANGEROUS_KEYS.has(key)) {
-      continue;
-    }
-    const sanitizedValue = sanitizePublicJsonValue(childValue);
-    if (sanitizedValue !== undefined) {
-      output[key] = sanitizedValue;
-    }
-  }
-  return output;
-}
-
 function normalizeLineage(
   value: unknown,
 ): { [key: string]: RunPlaybackJsonValue } | undefined {
@@ -692,18 +648,14 @@ function normalizeLineage(
 }
 
 function sanitizeLineageValue(value: unknown): RunPlaybackJsonValue | undefined {
-  const sanitizedValue = sanitizePublicJsonValue(value);
-  if (
-    sanitizedValue === undefined ||
-    Array.isArray(sanitizedValue) ||
-    (typeof sanitizedValue === "object" && sanitizedValue !== null)
-  ) {
-    return undefined;
+  // Lineage exposes scalars only; rejected JSON containers need no traversal.
+  if (typeof value === "string") {
+    return isSafeLineageString(value) ? value : undefined;
   }
-  if (typeof sanitizedValue === "string" && !isSafeLineageString(sanitizedValue)) {
-    return undefined;
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return Number.isNaN(value) ? undefined : value;
   }
-  return sanitizedValue;
+  return undefined;
 }
 
 function isSafeLineageString(value: string): boolean {
