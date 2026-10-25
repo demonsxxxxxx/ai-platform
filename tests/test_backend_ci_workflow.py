@@ -400,6 +400,130 @@ BACKEND_TEST_SHARDS = {
         "tests/test_governed_egress_diagnostics.py",
     ),
 }
+LIFECYCLE_CONTROL_CHAIN_BATCHES = {
+    "lifecycle-control-chain-core": (
+        "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[terminal_receipt]",
+        "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[kill_at_barrier]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[answer]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[selected-files]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[worker-restart]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[terminal-ack-loss]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[terminal-callback-loss]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[running-cancel]",
+    ),
+    "lifecycle-control-chain-recovery": (
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[receipt-cancel]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[stop-retry]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[executor-timeout]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[executor-kill]",
+        "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[provider-unreachable]",
+        "tests/test_run_execution_lifecycle_integration.py::test_queued_run_owner_cancel_clears_queue_and_persists_once",
+    ),
+}
+
+
+def _ast_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _ast_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix is not None else None
+    return None
+
+
+def _lifecycle_integration_test_selectors() -> set[str]:
+    """Read statically declared lifecycle pytest selectors from the source file."""
+
+    source_path = ROOT / "tests" / "test_run_execution_lifecycle_integration.py"
+    module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "pytest_generate_tests"
+        for node in module.body
+    ):
+        raise AssertionError(
+            "lifecycle selector ownership needs review when dynamic parametrization is added"
+        )
+
+    selectors: set[str] = set()
+    for node in module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                if any(
+                    isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name.startswith("test_")
+                    for member in node.body
+                ):
+                    raise AssertionError(
+                        "lifecycle selector ownership needs review for class-based tests"
+                    )
+            continue
+        if not node.name.startswith("test_"):
+            continue
+
+        parametrize_calls = [
+            decorator
+            for decorator in node.decorator_list
+            if isinstance(decorator, ast.Call)
+            and _ast_name(decorator.func) == "pytest.mark.parametrize"
+        ]
+        if not parametrize_calls:
+            selectors.add(
+                "tests/test_run_execution_lifecycle_integration.py::" + node.name
+            )
+            continue
+        if len(parametrize_calls) != 1:
+            raise AssertionError(
+                f"lifecycle selector ownership needs review for stacked parametrization: {node.name}"
+            )
+
+        parametrize = parametrize_calls[0]
+        if len(parametrize.args) < 2 or not isinstance(
+            parametrize.args[1], (ast.List, ast.Tuple)
+        ):
+            raise AssertionError(
+                f"lifecycle selector ownership needs literal parameter cases: {node.name}"
+            )
+        cases = parametrize.args[1].elts
+        ids_keyword = next(
+            (keyword for keyword in parametrize.keywords if keyword.arg == "ids"),
+            None,
+        )
+        if ids_keyword is not None:
+            try:
+                case_ids = ast.literal_eval(ids_keyword.value)
+            except (ValueError, TypeError) as error:
+                raise AssertionError(
+                    f"lifecycle selector IDs must be literal strings: {node.name}"
+                ) from error
+            if (
+                not isinstance(case_ids, (list, tuple))
+                or len(case_ids) != len(cases)
+                or any(not isinstance(case_id, str) for case_id in case_ids)
+            ):
+                raise AssertionError(
+                    f"lifecycle selector IDs must name every case: {node.name}"
+                )
+        else:
+            case_ids = []
+            for case in cases:
+                if not isinstance(case, ast.Constant) or not isinstance(
+                    case.value, str
+                ):
+                    raise AssertionError(
+                        "lifecycle parametrized cases need explicit literal IDs: "
+                        + node.name
+                    )
+                case_ids.append(case.value)
+
+        selectors.update(
+            "tests/test_run_execution_lifecycle_integration.py::"
+            + node.name
+            + f"[{case_id}]"
+            for case_id in case_ids
+        )
+
+    return selectors
 
 
 def _workflow_job_block(workflow: str, job_id: str) -> str:
@@ -468,9 +592,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     matrix_entries = workflow_document["jobs"]["backend-tests"]["strategy"]["matrix"][
         "include"
     ]
-    actual_shards = {
-        entry["shard"]: tuple(entry["test_files"].split()) for entry in matrix_entries
-    }
+    actual_shards = {}
+    for entry in matrix_entries:
+        actual_shards.setdefault(entry["shard"], []).extend(entry["test_files"].split())
+    actual_shards = {shard: tuple(files) for shard, files in actual_shards.items()}
     actual_redis = {
         entry["shard"]: (entry["redis_image"], entry["redis_url"])
         for entry in matrix_entries
@@ -480,6 +605,26 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         for entry in matrix_entries
     }
     assert actual_shards == BACKEND_TEST_SHARDS
+    lifecycle_rows = [
+        entry for entry in matrix_entries
+        if entry.get("stage", "").startswith("lifecycle-control-chain-")
+    ]
+    actual_lifecycle_batches = {
+        entry["stage"]: tuple(entry["test_selectors"].split())
+        for entry in lifecycle_rows
+    }
+    assert actual_lifecycle_batches == LIFECYCLE_CONTROL_CHAIN_BATCHES
+    lifecycle_selectors = [
+        selector for batch in actual_lifecycle_batches.values() for selector in batch
+    ]
+    assert len(lifecycle_selectors) == len(set(lifecycle_selectors))
+    assert all(
+        selector.startswith("tests/test_run_execution_lifecycle_integration.py::")
+        for selector in lifecycle_selectors
+    )
+    assert set(lifecycle_selectors) == _lifecycle_integration_test_selectors()
+    assert sum(bool(entry["test_files"]) for entry in lifecycle_rows) == 1
+    assert all(entry["shard"] == "lifecycle-control-chain" for entry in lifecycle_rows)
     assert {entry["shard"]: entry["runner"] for entry in matrix_entries} == {
         name: "windows-latest" if name == "windows-runtime" else "ubuntu-latest"
         for name in BACKEND_TEST_SHARDS
@@ -549,8 +694,14 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("tools/run_test_stage.py")
     assert "uv run --locked --extra test python tools/run_test_stage.py" in pytest_step
-    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 1800 || 600 }} --coverage' in pytest_step
-    assert '"${zero_skips[@]}" -- ${{ matrix.test_files }}' in pytest_step
+    assert "selected_tests='${{ matrix.test_selectors || matrix.test_files }}'" in pytest_step
+    assert 'read -r -a test_selectors <<< "$selected_tests"' in pytest_step
+    assert (
+        "name: backend-tests-${{ matrix.stage || matrix.shard }}-"
+        "${{ github.run_id }}-${{ github.run_attempt }}"
+    ) in tests_job
+    assert '--stage "${{ matrix.stage || matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 1800 || 600 }} --coverage' in pytest_step
+    assert '"${zero_skips[@]}" -- "${test_selectors[@]}"' in pytest_step
     assert (
         'if [[ "${{ matrix.shard }}" != "sandbox-runtime" && '
         '"${{ matrix.shard }}" != "release-governance-authority" ]]'
@@ -559,7 +710,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "zero_skips=(--require-zero-skips)" in pytest_step
     assert "- name: Upload exact shard evidence" in pytest_step
     for artifact in ("evidence.json", "junit.xml", "coverage.json"):
-        assert f".pytest-tmp/test-runs/**/${{{{ matrix.shard }}}}/{artifact}" in pytest_step
+        assert f".pytest-tmp/test-runs/**/${{{{ matrix.stage || matrix.shard }}}}/{artifact}" in pytest_step
     for artifact in (
         "control-chain.json",
         "candidate-source-binding.json",
@@ -572,7 +723,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "failed-state.json",
         "*.log",
     ):
-        assert f".pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/{artifact}" in pytest_step
+        assert f".pytest-tmp/test-runs/**/${{{{ matrix.stage || matrix.shard }}}}/basetemp/**/{artifact}" in pytest_step
     assert "if-no-files-found: error" in pytest_step
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
