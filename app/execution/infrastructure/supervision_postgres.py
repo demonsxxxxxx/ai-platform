@@ -140,8 +140,25 @@ async def observe_persisted_candidates(
                      'executor_status', lease.executor_status) as facts
             from sandbox_leases lease
             join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+            left join run_attempt_settlements detail
+              on detail.tenant_id = lease.tenant_id
+             and detail.run_id = lease.run_id
+             and detail.attempt_id = lease.attempt_id
+             and detail.source_lease_id = lease.id
             where lease.status = 'active'
-              and lease.executor_status in ('accepted', 'running')
+              and (
+                lease.executor_status in ('accepted', 'running')
+                or (
+                  lease.executor_status = 'pending'
+                  and detail.mapping_state = 'mapped'
+                  and detail.dispatch_state in ('unknown', 'accepted')
+                  and detail.intent_recovery_context_json is not null
+                  and detail.accepted_context_json is null
+                  and detail.receipt_json is null
+                )
+              )
+              and detail.receipt_json is null
+              and (detail.attempt_id is not null or lease.executor_terminal_json is null)
               and (
                 (lease.executor_probe_claim_token is null
                  and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) +
@@ -238,6 +255,19 @@ async def observe_persisted_candidates(
             from sandbox_leases lease
             where ((lease.executor_cleanup_status in ('cleanup_pending', 'retry', 'failed')
                     and coalesce(lease.executor_cleanup_retry_not_before, '-infinity'::timestamptz) <= %s)
+                or (lease.executor_cleanup_status = 'waiting_settlement'
+                    and exists (
+                      select 1 from run_attempt_settlements detail
+                      where detail.tenant_id = lease.tenant_id
+                        and detail.run_id = lease.run_id
+                        and detail.attempt_id = lease.attempt_id
+                        and detail.source_lease_id = lease.id
+                        and detail.mapping_state = 'mapped'
+                        and detail.settlement_phase = 'settled'
+                        and detail.result_status in ('succeeded', 'failed', 'cancelled', 'canceled')
+                        and detail.result_json is not null
+                        and detail.settled_at is not null
+                    ))
                 or (lease.status = 'active' and lease.expires_at is not null
                     and lease.expires_at <= %s
                     and lease.executor_cleanup_status in ('not_required', 'finalized')))

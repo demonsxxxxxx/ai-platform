@@ -64,7 +64,10 @@ class AttemptSettlementShadowLeaseRepository:
         result = dict(row)
         if not all(result.get(key) for key in ("tenant_id", "run_id", "attempt_id")):
             return result
-        if await self._settlement.storage_version(conn) != "attempt.v1":
+        if (
+            await self._settlement.storage_version(conn) != "attempt.v1"
+            and not await self._writer_active(conn)
+        ):
             return result
         detail = await self._settlement.read_attempt(
             conn,
@@ -100,19 +103,17 @@ class AttemptSettlementShadowLeaseRepository:
             # context when Runs has no accepted context and project its probe claim.
             result.update(
                 executor_terminal_json=None,
+                executor_reconciliation_context_json=detail.get(
+                    "accepted_context_json"
+                ),
+                executor_reconciliation_intent_context_json=detail.get(
+                    "intent_recovery_context_json"
+                ),
                 executor_terminal_reconciliation_attempt_count=detail.get(
                     "settlement_attempt_count"
                 ),
                 executor_reconciliation_retry_not_before=detail.get("next_retry_at"),
             )
-            if detail.get("accepted_context_json") is not None:
-                result["executor_reconciliation_context_json"] = detail[
-                    "accepted_context_json"
-                ]
-            if detail.get("intent_recovery_context_json") is not None:
-                result["executor_reconciliation_intent_context_json"] = detail[
-                    "intent_recovery_context_json"
-                ]
             probe_claim = result.get("executor_probe_claim_token")
             if probe_claim:
                 result.update(
@@ -384,7 +385,7 @@ class AttemptSettlementShadowLeaseRepository:
             }
             for key in sorted(actual_scopes):
                 await self._refresh(conn, actual_scopes[key])
-        if storage_version == "attempt.v1" and use_attempt_candidates:
+        if storage_version == "attempt.v1" or writer_active:
             return [
                 await self._settlement_view(conn, row, require_mapped=True)
                 for row in rows
@@ -425,6 +426,24 @@ class AttemptSettlementShadowLeaseRepository:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
         if await self._writer_active(conn):
+            if scope is None:
+                return False
+            detail = await self._settlement.read_attempt(
+                conn, **scope, require_mapped=True,
+            )
+            if (
+                detail is None or detail.get("source_lease_id") != str(kwargs["lease_id"])
+                or int(detail.get("settlement_attempt_count") or 0) < 1
+                or detail.get("receipt_json") is None
+                or detail.get("settlement_phase") != "claimed"
+                or detail.get("settlement_claim_token") != str(kwargs["claim_token"])
+            ):
+                return False
+            # Run terminalization may commit before the Sandbox handoff. Refresh
+            # only the exact Runs-owned snapshot while its settlement claim and
+            # source locks are current, then make the resource handoff in this
+            # same transaction.
+            await self._settlement.refresh_snapshot_in_transaction(conn, **scope)
             detail = await self._settlement.read_attempt(
                 conn, **scope, require_mapped=True,
             )
@@ -529,7 +548,10 @@ class AttemptSettlementShadowLeaseRepository:
     ) -> bool:
         scope = await self._scope_for_lease(conn, lease_id)
         await self._write_enabled(conn, scope)
-        if await self._settlement.storage_version(conn) != "attempt.v1":
+        if (
+            await self._settlement.storage_version(conn) != "attempt.v1"
+            and not await self._writer_active(conn)
+        ):
             return await self._repository.is_sandbox_executor_reconciliation_claim_current(
                 conn, lease_id=lease_id, claim_token=claim_token
             )
@@ -546,7 +568,10 @@ class AttemptSettlementShadowLeaseRepository:
     async def has_sandbox_executor_reconciliation_claim(
         self, conn: Any, *, lease_id: str, claim_token: str
     ) -> bool:
-        if await self._settlement.storage_version(conn) != "attempt.v1":
+        if (
+            await self._settlement.storage_version(conn) != "attempt.v1"
+            and not await self._writer_active(conn)
+        ):
             return await self._repository.has_sandbox_executor_reconciliation_claim(
                 conn, lease_id=lease_id, claim_token=claim_token
             )

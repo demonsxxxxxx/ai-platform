@@ -22,6 +22,17 @@ _RESOURCE_CLEANUP_FIELDS = """
   executor_cleanup_retry_not_before, expires_at, released_at, release_reason,
   created_at, updated_at
 """
+_RESOURCE_CLEANUP_FIELDS_FOR_LEASE = """
+  lease.id, lease.tenant_id, lease.workspace_id, lease.user_id, lease.session_id,
+  lease.run_id, lease.attempt_id, lease.trace_id, lease.sandbox_mode, lease.provider,
+  lease.status, lease.browser_enabled, lease.lease_payload_json, lease.runtime_container_id,
+  lease.runtime_container_name, lease.runtime_executor_url,
+  lease.runtime_workspace_container_path, lease.executor_status, lease.executor_heartbeat_at,
+  lease.executor_terminal_received_at, lease.executor_cleanup_status,
+  lease.executor_cleanup_claim_token, lease.executor_cleanup_claimed_at,
+  lease.executor_cleanup_retry_not_before, lease.expires_at, lease.released_at,
+  lease.release_reason, lease.created_at, lease.updated_at
+"""
 
 
 def _validate_terminal_observation(
@@ -258,7 +269,7 @@ async def claim_sandbox_executor_suspects(
     candidate_lease_ids: list[str] | None = None,
     legacy_settlement_compat: bool = True,
 ) -> list[dict[str, Any]]:
-    """Claim accepted tasks whose executor heartbeat has gone stale."""
+    """Claim stale accepted tasks and exact unknown dispatch intents for probing."""
 
     compatibility_assignments = ""
     if legacy_settlement_compat:
@@ -272,17 +283,38 @@ async def claim_sandbox_executor_suspects(
         f"""
         with candidates as (
           select id
-          from sandbox_leases
-          where status = 'active'
+          from sandbox_leases lease
+          left join run_attempt_settlements detail
+            on detail.tenant_id = lease.tenant_id
+           and detail.run_id = lease.run_id
+           and detail.attempt_id = lease.attempt_id
+           and detail.source_lease_id = lease.id
+          where lease.status = 'active'
             and (%s::text[] is null or id = any(%s::text[]))
-            and executor_status in ('accepted', 'running')
             and (
-              executor_probe_claim_token is null
-              or coalesce(executor_probe_claimed_at, updated_at, created_at)
-                   < now() - make_interval(secs => %s)
+              lease.executor_status in ('accepted', 'running')
+              or (
+                lease.executor_status = 'pending'
+                and detail.mapping_state = 'mapped'
+                and detail.dispatch_state in ('unknown', 'accepted')
+                and detail.intent_recovery_context_json is not null
+                and detail.accepted_context_json is null
+                and detail.receipt_json is null
+              )
             )
-          order by coalesce(executor_heartbeat_at, updated_at, created_at), id
-          for update skip locked
+            and detail.receipt_json is null
+            and (detail.attempt_id is not null or lease.executor_terminal_json is null)
+            and (
+              (lease.executor_probe_claim_token is null
+               and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at)
+                    < now() - make_interval(secs => %s))
+              or
+              (lease.executor_probe_claim_token is not null
+               and coalesce(lease.executor_probe_claimed_at, lease.updated_at, lease.created_at)
+                    < now() - make_interval(secs => %s))
+            )
+          order by coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at), lease.id
+          for update of lease skip locked
           limit %s
         )
         update sandbox_leases as lease
@@ -299,6 +331,7 @@ async def claim_sandbox_executor_suspects(
         (
             candidate_lease_ids,
             candidate_lease_ids,
+            stale_after_seconds,
             stale_after_seconds,
             limit,
             claim_token,
@@ -333,7 +366,21 @@ async def release_sandbox_executor_probe_claim(
             updated_at = now()
         where id = %s
           and status = 'active'
-          and executor_status in ('accepted', 'running')
+          and (
+            executor_status in ('accepted', 'running')
+            or exists (
+              select 1 from run_attempt_settlements detail
+              where detail.tenant_id = sandbox_leases.tenant_id
+                and detail.run_id = sandbox_leases.run_id
+                and detail.attempt_id = sandbox_leases.attempt_id
+                and detail.source_lease_id = sandbox_leases.id
+                and detail.mapping_state = 'mapped'
+                and detail.dispatch_state in ('unknown', 'accepted')
+                and detail.intent_recovery_context_json is not null
+                and detail.accepted_context_json is null
+                and detail.receipt_json is null
+            )
+          )
           and executor_probe_claim_token = %s
         returning id
         """,
@@ -413,19 +460,40 @@ async def list_sandbox_executor_suspect_candidate_scopes(
 
     cursor = await connection.execute(
         """
-        select id, tenant_id, run_id, attempt_id
-        from sandbox_leases
-        where status = 'active'
-          and executor_status in ('accepted', 'running')
+        select lease.id, lease.tenant_id, lease.run_id, lease.attempt_id
+        from sandbox_leases lease
+        left join run_attempt_settlements detail
+          on detail.tenant_id = lease.tenant_id
+         and detail.run_id = lease.run_id
+         and detail.attempt_id = lease.attempt_id
+         and detail.source_lease_id = lease.id
+        where lease.status = 'active'
           and (
-            executor_probe_claim_token is null
-            or coalesce(executor_probe_claimed_at, updated_at, created_at)
-                 < now() - make_interval(secs => %s)
+            lease.executor_status in ('accepted', 'running')
+            or (
+              lease.executor_status = 'pending'
+              and detail.mapping_state = 'mapped'
+              and detail.dispatch_state in ('unknown', 'accepted')
+              and detail.intent_recovery_context_json is not null
+              and detail.accepted_context_json is null
+              and detail.receipt_json is null
+            )
           )
-        order by coalesce(executor_heartbeat_at, updated_at, created_at), id
+          and detail.receipt_json is null
+          and (detail.attempt_id is not null or lease.executor_terminal_json is null)
+          and (
+            (lease.executor_probe_claim_token is null
+             and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at)
+                  < now() - make_interval(secs => %s))
+            or
+            (lease.executor_probe_claim_token is not null
+             and coalesce(lease.executor_probe_claimed_at, lease.updated_at, lease.created_at)
+                  < now() - make_interval(secs => %s))
+          )
+        order by coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at), lease.id
         limit %s
         """,
-        (stale_after_seconds, limit),
+        (stale_after_seconds, stale_after_seconds, limit),
     )
     return [dict(row) for row in await cursor.fetchall()]
 
@@ -644,19 +712,34 @@ async def claim_failed_sandbox_executor_reconciliation_cleanups(
     cursor = await connection.execute(
         f"""
         with candidates as (
-          select id
-          from sandbox_leases
-          where status in ('active', 'released')
-            and executor_cleanup_status in ('failed', 'cleanup_pending', 'retry', 'claimed')
-            and coalesce(executor_cleanup_retry_not_before, '-infinity'::timestamptz) <= now()
+          select lease.id
+          from sandbox_leases lease
+          left join run_attempt_settlements detail
+            on detail.tenant_id = lease.tenant_id
+           and detail.run_id = lease.run_id
+           and detail.attempt_id = lease.attempt_id
+           and detail.source_lease_id = lease.id
+          where lease.status in ('active', 'released')
             and (
-              executor_cleanup_claim_token is null
-              or executor_cleanup_claimed_at is null
-              or executor_cleanup_claimed_at < now() - make_interval(secs => %s)
+              (lease.executor_cleanup_status in ('failed', 'cleanup_pending', 'retry', 'claimed')
+               and coalesce(lease.executor_cleanup_retry_not_before, '-infinity'::timestamptz) <= now())
+              or (
+                lease.executor_cleanup_status = 'waiting_settlement'
+                and detail.mapping_state = 'mapped'
+                and detail.settlement_phase = 'settled'
+                and detail.result_status in ('succeeded', 'failed', 'cancelled', 'canceled')
+                and detail.result_json is not null
+                and detail.settled_at is not null
+              )
             )
-            and (%s::text is null or tenant_id = %s)
-          order by coalesce(executor_cleanup_claimed_at, executor_terminal_received_at, created_at) asc, id asc
-          for update skip locked
+            and (
+              lease.executor_cleanup_claim_token is null
+              or lease.executor_cleanup_claimed_at is null
+              or lease.executor_cleanup_claimed_at < now() - make_interval(secs => %s)
+            )
+            and (%s::text is null or lease.tenant_id = %s)
+          order by coalesce(lease.executor_cleanup_claimed_at, lease.executor_terminal_received_at, lease.created_at) asc, lease.id asc
+          for update of lease skip locked
           limit %s
         )
         update sandbox_leases as lease
@@ -668,7 +751,7 @@ async def claim_failed_sandbox_executor_reconciliation_cleanups(
             updated_at = now()
         from candidates
         where lease.id = candidates.id
-        returning {_RESOURCE_CLEANUP_FIELDS}
+        returning {_RESOURCE_CLEANUP_FIELDS_FOR_LEASE}
         """,
         (stale_after_seconds, tenant_id, tenant_id, limit, claim_token,
          *([claim_token] if legacy_settlement_compat else [])),
@@ -729,8 +812,7 @@ async def release_failed_sandbox_executor_reconciliation_cleanup_claim(
           and executor_cleanup_claim_token = %s
         returning id
         """,
-        ((claim_token, error[:1000], lease_id, claim_token)
-         if legacy_settlement_compat else (error[:1000], lease_id, claim_token)),
+        (error[:1000], lease_id, claim_token),
     )
     return await cursor.fetchone() is not None
 

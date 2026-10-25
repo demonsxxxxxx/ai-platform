@@ -467,3 +467,480 @@ async def test_receiptless_probe_view_keeps_resource_claim_and_context():
     assert retry_row["executor_reconciliation_retry_not_before"] == now
     assert retry_row["executor_probe_claim_token"] == "probe-token"
     assert retry_row["executor_cleanup_claim_token"] == "cleanup-token"
+
+
+@pytest.mark.asyncio
+async def test_attempt_writer_probes_unknown_intent_through_claim_and_respects_heartbeat(
+    sandbox_attempt_authority_db, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+    from app.execution.domain.supervision import SupervisionDomain
+    from app.execution.infrastructure.supervision_postgres import observe_persisted_candidates
+    from app.executors.base import RUN_PAYLOAD_SCHEMA_VERSION_V2
+    import app.executor_reconciler as executor_reconciler
+
+    connect, attempt_id, owner_generation = sandbox_attempt_authority_db
+    lease_port = build_sandbox_executor_reconciliation_port()
+    context = {
+        "adapter_name": "test",
+        "adapter_context": {},
+        "run_payload": {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "attempt_id": attempt_id,
+            "agent_id": "agent-a",
+            "skill_id": None,
+            "file_ids": [],
+            "input": {},
+            "owner_generation": owner_generation,
+            "execution_kind": "harness_chat",
+            "trace_id": "trace-a",
+            "skill_manifests": [],
+            "schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        },
+    }
+    legacy_updated = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    legacy_retry = datetime(2026, 10, 26, tzinfo=timezone.utc)
+    legacy_values = {
+        "executor_terminal_json": {"legacy": "terminal"},
+        "executor_reconciliation_context_json": {"legacy": "accepted"},
+        "executor_reconciliation_intent_context_json": {"legacy": "intent"},
+        "executor_reconciliation_status": "failed",
+        "executor_reconciliation_claim_token": "legacy-claim",
+        "executor_reconciliation_claimed_at": legacy_updated,
+        "executor_reconciliation_retry_not_before": legacy_retry,
+        "executor_terminal_reconciliation_attempt_count": 17,
+    }
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version='attempt.v1' where singleton=true"
+        )
+        await conn.execute(
+            "update run_attempt_settlements set dispatch_state='unknown', "
+            "accepted_context_json=null, intent_recovery_context_json=%s::jsonb, "
+            "settlement_phase='awaiting_receipt' where tenant_id='tenant-a' and run_id='run-a'",
+            (json.dumps(context),),
+        )
+        await conn.execute(
+            "update sandbox_leases set executor_status='pending', "
+            "executor_heartbeat_at=now() - interval '2 minutes', executor_probe_claim_token=null, "
+            "executor_probe_claimed_at=null, executor_terminal_json=%s::jsonb, "
+            "executor_reconciliation_context_json=%s::jsonb, "
+            "executor_reconciliation_intent_context_json=%s::jsonb, "
+            "executor_reconciliation_status=%s, executor_reconciliation_claim_token=%s, "
+            "executor_reconciliation_claimed_at=%s, executor_reconciliation_retry_not_before=%s, "
+            "executor_terminal_reconciliation_attempt_count=%s where id='lease-a'",
+            (
+                json.dumps(legacy_values["executor_terminal_json"]),
+                json.dumps(legacy_values["executor_reconciliation_context_json"]),
+                json.dumps(legacy_values["executor_reconciliation_intent_context_json"]),
+                legacy_values["executor_reconciliation_status"],
+                legacy_values["executor_reconciliation_claim_token"],
+                legacy_values["executor_reconciliation_claimed_at"],
+                legacy_values["executor_reconciliation_retry_not_before"],
+                legacy_values["executor_terminal_reconciliation_attempt_count"],
+            ),
+        )
+
+    @asynccontextmanager
+    async def transaction_factory():
+        async with connect() as conn, conn.transaction():
+            yield conn
+
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction_factory)
+    monkeypatch.setattr(
+        executor_reconciler._sandbox_cleanup,
+        "container_lease_from_persisted_row",
+        lambda *_args, **_kwargs: SimpleNamespace(provider="fake"),
+    )
+    requests = []
+    claims_seen = []
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, request):
+            requests.append(request)
+            async with connect() as conn, conn.transaction():
+                row = await (
+                    await conn.execute(
+                        "select executor_probe_claim_token, executor_probe_claimed_at "
+                        "from sandbox_leases where id='lease-a'"
+                    )
+                ).fetchone()
+            claims_seen.append(row)
+            return "http://executor.test", {}
+
+    class Client:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 10.0
+
+        async def get_status(self, *_args, **_kwargs):
+            return {"status": "pending"}
+
+        async def cancel(self, *_args, **_kwargs):
+            raise AssertionError("queued Run must not cancel the executor")
+
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
+    monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", Client)
+
+    batch_limits = {domain: 10 for domain in SupervisionDomain}
+    async with connect() as conn, conn.transaction():
+        observed = await observe_persisted_candidates(
+            conn,
+            now=datetime.now(timezone.utc),
+            batch_limits=batch_limits,
+            probe_stale_seconds=45,
+            settlement_claim_stale_seconds=30,
+        )
+    assert any(
+        candidate.domain == SupervisionDomain.PROBE
+        and candidate.candidate_id == "lease-a"
+        for candidate in observed
+    )
+
+    assert await executor_reconciler.probe_suspect_executor_tasks_once(
+        lease_port=lease_port,
+    ) == 0
+    assert len(requests) == len(claims_seen) == 1
+    assert requests[0].run_id == "run-a" and requests[0].attempt_id == attempt_id
+    assert claims_seen[0]["executor_probe_claim_token"]
+    assert claims_seen[0]["executor_probe_claimed_at"] is not None
+
+    async with connect() as conn, conn.transaction():
+        persisted = await (
+            await conn.execute(
+                "select executor_terminal_json, executor_reconciliation_context_json, "
+                "executor_reconciliation_intent_context_json, executor_reconciliation_status, "
+                "executor_reconciliation_claim_token, executor_reconciliation_claimed_at, "
+                "executor_reconciliation_retry_not_before, "
+                "executor_terminal_reconciliation_attempt_count, executor_probe_claim_token "
+                "from sandbox_leases where id='lease-a'"
+            )
+        ).fetchone()
+        assert persisted == {
+            **legacy_values,
+            "executor_probe_claim_token": None,
+        }
+        await conn.execute(
+            "update sandbox_leases set executor_heartbeat_at=now(), updated_at=now() where id='lease-a'"
+        )
+        await conn.execute(
+            "update execution_supervision_domains set probe_normal_scan_cursor=null where domain='probe'"
+        )
+        fresh_candidates = await observe_persisted_candidates(
+            conn,
+            now=datetime.now(timezone.utc),
+            batch_limits=batch_limits,
+            probe_stale_seconds=45,
+            settlement_claim_stale_seconds=30,
+        )
+    assert not any(
+        candidate.domain == SupervisionDomain.PROBE
+        and candidate.candidate_id == "lease-a"
+        for candidate in fresh_candidates
+    )
+    assert await executor_reconciler.probe_suspect_executor_tasks_once(
+        lease_port=lease_port,
+    ) == 0
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciler_refreshes_cancelled_facts_and_cleanup_recovers_handoff_gap(
+    sandbox_attempt_authority_db, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+    from app.execution.domain.supervision import SupervisionDomain
+    from app.execution.infrastructure.supervision_postgres import observe_persisted_candidates
+    from app.executors.base import RUN_PAYLOAD_SCHEMA_VERSION_V2
+    from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
+    import app.executor_reconciler as executor_reconciler
+    from app.bootstrap.run_lifecycle import build_run_lifecycle_service
+
+    connect, attempt_id, owner_generation = sandbox_attempt_authority_db
+    lease_port = build_sandbox_executor_reconciliation_port()
+    context = {
+        "adapter_name": "test",
+        "adapter_context": {},
+        "run_payload": {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "attempt_id": attempt_id,
+            "agent_id": "agent-a",
+            "skill_id": None,
+            "file_ids": [],
+            "input": {},
+            "owner_generation": owner_generation,
+            "execution_kind": "harness_chat",
+            "trace_id": "trace-a",
+            "skill_manifests": [],
+            "schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        },
+    }
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version='attempt.v1' where singleton=true"
+        )
+        await conn.execute(
+            "update run_attempt_settlements set accepted_context_json=%s::jsonb, "
+            "dispatch_state='accepted' where tenant_id='tenant-a' and run_id='run-a'",
+            (json.dumps(context),),
+        )
+        projection = build_attempt_settlement_projection_service()
+        attempt_lifecycle = RunAttemptLifecycleService(
+            persistence=attempt_postgres,
+            settlement_projection=projection,
+        )
+        lifecycle = build_run_lifecycle_service()
+        await conn.execute(
+            "update runs set cancel_requested_at=now() where id='run-a'"
+        )
+        requested = await attempt_lifecycle.request_cancel(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id=attempt_id,
+        )
+        assert requested is not None and requested["status"] == "cancel_requested"
+        cancellation = await lifecycle.cancel_run(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            result_json={"message": "cancelled"},
+        )
+        assert cancellation.is_terminal()
+        terminal_attempt = await attempt_lifecycle.terminalize(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id=attempt_id,
+            status="cancelled",
+            terminal_reason="run_cancelled",
+        )
+        assert terminal_attempt is not None and terminal_attempt["status"] == "cancelled"
+        pre_receipt = await (
+            await conn.execute(
+                "select settlement_phase, settlement_claim_token "
+                "from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-a'"
+            )
+        ).fetchone()
+        assert pre_receipt == {"settlement_phase": "settled", "settlement_claim_token": None}
+
+    async with connect() as conn, conn.transaction():
+        await lease_port.record_sandbox_executor_terminal(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id=attempt_id,
+            lease_id="lease-a",
+            executor_status="cancelled",
+            terminal_result={
+                "run_id": "run-a",
+                "status": "cancelled",
+                "message": "cancelled",
+            },
+        )
+        await conn.execute(
+            "update sandbox_leases set executor_terminal_json=%s::jsonb, "
+            "executor_reconciliation_context_json=%s::jsonb, "
+            "executor_reconciliation_intent_context_json=%s::jsonb, "
+            "executor_reconciliation_status='failed', executor_reconciliation_claim_token='legacy-claim', "
+            "executor_reconciliation_claimed_at='2026-10-20T00:00:00Z', "
+            "executor_reconciliation_retry_not_before='2026-10-26T00:00:00Z', "
+            "executor_terminal_reconciliation_attempt_count=17 where id='lease-a'",
+            (
+                json.dumps({"legacy": "terminal"}),
+                json.dumps({"legacy": "accepted"}),
+                json.dumps({"legacy": "intent"}),
+            ),
+        )
+
+    @asynccontextmanager
+    async def transaction_factory():
+        async with connect() as conn, conn.transaction():
+            yield conn
+
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction_factory)
+    monkeypatch.setattr(
+        executor_reconciler._sandbox_cleanup,
+        "container_lease_from_persisted_row",
+        lambda *_args, **_kwargs: SimpleNamespace(provider="fake"),
+    )
+    reconciled = await executor_reconciler.reconcile_pending_executor_terminals_once(
+        lease_port=lease_port,
+        attempt_lifecycle=None,
+        lifecycle=None,
+    )
+    assert reconciled == 1
+
+    async with connect() as conn, conn.transaction():
+        detail = await (
+            await conn.execute(
+                "select settlement_phase, settlement_claim_token, result_status, result_json "
+                "from run_attempt_settlements where tenant_id='tenant-a' and run_id='run-a'"
+            )
+        ).fetchone()
+        lease = await (
+            await conn.execute(
+                "select status, executor_cleanup_status, executor_cleanup_claim_token, "
+                "executor_terminal_json, executor_reconciliation_context_json, "
+                "executor_reconciliation_intent_context_json, executor_reconciliation_status, "
+                "executor_reconciliation_claim_token, executor_reconciliation_claimed_at, "
+                "executor_reconciliation_retry_not_before, "
+                "executor_terminal_reconciliation_attempt_count "
+                "from sandbox_leases where id='lease-a'"
+            )
+        ).fetchone()
+        business = await (
+            await conn.execute(
+                "select runs.status as run_status, runs.result_json, attempts.status as attempt_status "
+                "from runs join run_attempts attempts on attempts.run_id=runs.id where runs.id='run-a'"
+            )
+        ).fetchone()
+    assert detail["settlement_phase"] == "settled"
+    assert detail["settlement_claim_token"] is None
+    assert detail["result_status"] == "cancelled"
+    assert detail["result_json"] == {"message": "cancelled"}
+    assert lease["executor_cleanup_status"] == "cleanup_pending"
+    assert lease["executor_cleanup_claim_token"] is None
+    assert lease["status"] == "active"
+    assert lease["executor_terminal_json"] == {"legacy": "terminal"}
+    assert lease["executor_reconciliation_context_json"] == {"legacy": "accepted"}
+    assert lease["executor_reconciliation_intent_context_json"] == {"legacy": "intent"}
+    assert lease["executor_reconciliation_status"] == "failed"
+    assert lease["executor_reconciliation_claim_token"] == "legacy-claim"
+    assert lease["executor_reconciliation_claimed_at"] is not None
+    assert lease["executor_reconciliation_retry_not_before"] is not None
+    assert lease["executor_terminal_reconciliation_attempt_count"] == 17
+    assert business == {
+        "run_status": "cancelled",
+        "result_json": {"message": "cancelled"},
+        "attempt_status": "cancelled",
+    }
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status='waiting_settlement', "
+            "executor_cleanup_claim_token=null, executor_cleanup_claimed_at=null, "
+            "executor_cleanup_retry_not_before=null where id='lease-a'"
+        )
+        await conn.execute(
+            "update execution_supervision_domains set scan_cursor=null where domain='cleanup'"
+        )
+        candidates = await observe_persisted_candidates(
+            conn,
+            now=datetime.now(timezone.utc),
+            batch_limits={domain: 10 for domain in SupervisionDomain},
+            probe_stale_seconds=45,
+            settlement_claim_stale_seconds=30,
+        )
+    assert any(
+        candidate.domain == SupervisionDomain.CLEANUP
+        and candidate.candidate_id == "lease-a"
+        for candidate in candidates
+    )
+
+    cleanup = executor_reconciler._sandbox_cleanup
+
+    async def stopped(_provider, _lease):
+        return SimpleNamespace(status="stopped")
+
+    async def no_event(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        cleanup,
+        "container_lease_from_persisted_row",
+        lambda *_args, **_kwargs: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr(cleanup, "_stop_failed_reconciliation_lease", stopped)
+    monkeypatch.setattr(cleanup, "_append_event", no_event)
+    released = await cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
+        provider_factory=lambda _provider: object(),
+        transaction_factory=transaction_factory,
+    )
+    assert [row["id"] for row in released] == ["lease-a"]
+
+    async with connect() as conn, conn.transaction():
+        final = await (
+            await conn.execute(
+                "select status, executor_cleanup_status, executor_terminal_json, "
+                "executor_reconciliation_context_json, executor_reconciliation_intent_context_json, "
+                "executor_reconciliation_status, executor_reconciliation_claim_token, "
+                "executor_reconciliation_claimed_at, executor_reconciliation_retry_not_before, "
+                "executor_terminal_reconciliation_attempt_count from sandbox_leases where id='lease-a'"
+            )
+        ).fetchone()
+        business = await (
+            await conn.execute(
+                "select runs.status as run_status, runs.result_json, attempts.status as attempt_status "
+                "from runs join run_attempts attempts on attempts.run_id=runs.id where runs.id='run-a'"
+            )
+        ).fetchone()
+    assert final["status"] == "released"
+    assert final["executor_cleanup_status"] == "finalized"
+    assert final["executor_terminal_json"] == {"legacy": "terminal"}
+    assert final["executor_reconciliation_context_json"] == {"legacy": "accepted"}
+    assert final["executor_reconciliation_intent_context_json"] == {"legacy": "intent"}
+    assert final["executor_reconciliation_status"] == "failed"
+    assert final["executor_reconciliation_claim_token"] == "legacy-claim"
+    assert final["executor_reconciliation_claimed_at"] is not None
+    assert final["executor_reconciliation_retry_not_before"] is not None
+    assert final["executor_terminal_reconciliation_attempt_count"] == 17
+    assert business == {
+        "run_status": "cancelled",
+        "result_json": {"message": "cancelled"},
+        "attempt_status": "cancelled",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_settlement_compat", [True, False])
+async def test_cleanup_claim_release_binds_three_parameters_in_both_compatibility_modes(
+    sandbox_attempt_authority_db, legacy_settlement_compat,
+):
+    from app.sandbox.infrastructure import leases_postgres as repository
+
+    connect, _attempt_id, _owner_generation = sandbox_attempt_authority_db
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status='claimed', "
+            "executor_cleanup_claim_token='cleanup-claim', executor_cleanup_claimed_at=now(), "
+            "executor_reconciliation_status='claimed', "
+            "executor_reconciliation_claim_token='legacy-claim', "
+            "executor_reconciliation_claimed_at=now(), "
+            "executor_reconciliation_retry_not_before=null where id='lease-a'"
+        )
+        assert await repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+            conn,
+            lease_id="lease-a",
+            claim_token="cleanup-claim",
+            error="stop_failed",
+            legacy_settlement_compat=legacy_settlement_compat,
+        )
+        row = await (
+            await conn.execute(
+                "select executor_cleanup_status, executor_cleanup_claim_token, "
+                "executor_reconciliation_status, executor_reconciliation_claim_token, "
+                "executor_reconciliation_retry_not_before from sandbox_leases where id='lease-a'"
+            )
+        ).fetchone()
+    assert row["executor_cleanup_status"] == "retry"
+    assert row["executor_cleanup_claim_token"] is None
+    if legacy_settlement_compat:
+        assert row["executor_reconciliation_status"] == "claimed"
+        assert row["executor_reconciliation_claim_token"] is None
+        assert row["executor_reconciliation_retry_not_before"] is not None
+    else:
+        assert row["executor_reconciliation_status"] == "claimed"
+        assert row["executor_reconciliation_claim_token"] == "legacy-claim"
+        assert row["executor_reconciliation_retry_not_before"] is None

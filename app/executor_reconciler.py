@@ -113,8 +113,16 @@ def _reconciliation_failure_is_terminal(exc: Exception) -> bool:
 def _context_payload(
     lease_row: dict[str, Any],
     terminal_result: dict[str, Any] | None = None,
+    *,
+    allow_dispatch_intent: bool = False,
 ) -> tuple[dict[str, Any], RunPayload]:
     context = lease_row.get("executor_reconciliation_context_json")
+    if (
+        context is None
+        and allow_dispatch_intent
+        and lease_row.get("settlement_dispatch_state") in {"unknown", "accepted"}
+    ):
+        context = lease_row.get("executor_reconciliation_intent_context_json")
     if not isinstance(context, dict):
         raise ReconciliationAuthorityError("executor_reconciliation_context_missing")
     adapter_context = context.get("adapter_context")
@@ -806,7 +814,9 @@ async def probe_suspect_executor_tasks_once(
         lease_id = str(lease_row["id"])
         failure_stage = "attempt_reconstruction"
         try:
-            _context, run_payload = _context_payload(lease_row)
+            _context, run_payload = _context_payload(
+                lease_row, allow_dispatch_intent=True,
+            )
             request = _reconciliation_request(lease_row, run_payload)
             lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
             if lease is None:
