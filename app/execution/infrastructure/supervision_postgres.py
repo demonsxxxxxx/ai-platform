@@ -150,15 +150,28 @@ async def observe_persisted_candidates(
                 lease.executor_status in ('accepted', 'running')
                 or (
                   lease.executor_status = 'pending'
-                  and detail.mapping_state = 'mapped'
-                  and detail.dispatch_state in ('unknown', 'accepted')
-                  and detail.intent_recovery_context_json is not null
-                  and detail.accepted_context_json is null
-                  and detail.receipt_json is null
+                  and (
+                    (detail.mapping_state = 'mapped'
+                    and detail.dispatch_state in ('unknown', 'accepted')
+                    and detail.intent_recovery_context_json is not null
+                    and detail.accepted_context_json is null
+                    and detail.receipt_json is null)
+                    or (
+                      detail.attempt_id is null
+                      and to_jsonb(lease)->>'executor_reconciliation_intent_context_json' is not null
+                      and exists (
+                        select 1 from sandbox_execution_dispatches dispatch
+                        where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
+                          and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
+                          and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+                          and dispatch.status in ('intent', 'unknown', 'accepted')
+                      )
+                    )
+                  )
                 )
               )
               and detail.receipt_json is null
-              and (detail.attempt_id is not null or lease.executor_terminal_json is null)
+              and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
               and (
                 (lease.executor_probe_claim_token is null
                  and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) +

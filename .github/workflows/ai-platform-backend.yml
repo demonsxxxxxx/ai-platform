@@ -365,6 +365,7 @@ jobs:
               tests/test_execution_supervision.py
               tests/test_attempt_settlement_projection.py
               tests/test_attempt_settlement_authority.py
+              tests/test_attempt_settlement_retirement.py
               tests/test_sandbox_attempt_authority.py
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py

@@ -435,15 +435,20 @@ class AttemptSettlementShadowLeaseRepository:
                 detail is None or detail.get("source_lease_id") != str(kwargs["lease_id"])
                 or int(detail.get("settlement_attempt_count") or 0) < 1
                 or detail.get("receipt_json") is None
-                or detail.get("settlement_phase") != "claimed"
-                or detail.get("settlement_claim_token") != str(kwargs["claim_token"])
+                or detail.get("settlement_phase") not in {"claimed", "settled"}
+                or (detail.get("settlement_phase") == "claimed"
+                    and detail.get("settlement_claim_token") != str(kwargs["claim_token"]))
             ):
                 return False
             # Run terminalization may commit before the Sandbox handoff. Refresh
             # only the exact Runs-owned snapshot while its settlement claim and
             # source locks are current, then make the resource handoff in this
             # same transaction.
-            await self._settlement.refresh_snapshot_in_transaction(conn, **scope)
+            if detail.get("settlement_phase") == "claimed":
+                await self._settlement.refresh_snapshot_in_transaction(conn, **scope)
+            # Once business settlement consumed its claim, the durable settled
+            # fact authorizes the idempotent resource handoff. The resource CAS
+            # below cannot reset an already claimed or completed cleanup.
             detail = await self._settlement.read_attempt(
                 conn, **scope, require_mapped=True,
             )
