@@ -7,6 +7,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.execution.api import (
+    deliver_run_delivery_intent,
+    record_run_delivery_intent,
+)
 from app.runs.application.control_queue_admission import (
     QueueAdmissionRecoveryFailed,
     QueueAdmissionUnconfirmed,
@@ -41,8 +45,12 @@ async def record_accepted_run(
     *,
     source: str,
 ) -> None:
-    if service is not None and service.enabled:
-        await service.record(connection, payload, source=source)
+    await record_run_delivery_intent(
+        service,
+        connection,
+        payload,
+        source=source,
+    )
 
 
 def admission_from_receipt(receipt: Any) -> RunQueueAdmission:
@@ -64,7 +72,11 @@ async def require_immediate_delivery(
     tenant_id: str,
     run_id: str,
 ) -> int | None:
-    delivery = await service.deliver_one(tenant_id=tenant_id, run_id=run_id)
+    delivery = await deliver_run_delivery_intent(
+        service,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
     if delivery.receipt is not None:
         return int(delivery.receipt.queue_position)
     if delivery.error_code == "queue_payload_invalid":

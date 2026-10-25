@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - main
+      - feat/n01-lifecycle-control-chain
+      - feat/lifecycle-phase-*
   push:
     branches:
       - main
@@ -69,7 +71,7 @@ jobs:
     name: backend tests (${{ matrix.shard }})
     runs-on: ${{ matrix.runner }}
     needs: backend-preflight
-    timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 30 || 15 }}
+    timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 50 || 15 }}
     defaults:
       run:
         shell: bash
@@ -285,6 +287,8 @@ jobs:
               tests/test_run_performance_postgres.py
               tests/test_streaming_schema_postgres.py
               tests/test_s0a_schema_postgres.py
+              tests/test_run_delivery_intents.py
+              tests/test_run_delivery_intents_postgres.py
           - shard: lifecycle-control-chain
             runner: ubuntu-latest
             postgres_image: postgres:16-alpine
@@ -527,7 +531,7 @@ jobs:
             zero_skips=(--require-zero-skips)
           fi
           uv run --locked --extra test python tools/run_test_stage.py \
-            --stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == 'lifecycle-control-chain' && 1200 || 600 }} --coverage \
+            --stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == 'lifecycle-control-chain' && 1800 || 600 }} --coverage \
             "${zero_skips[@]}" -- ${{ matrix.test_files }}
 
       - name: Upload exact shard evidence
@@ -541,6 +545,10 @@ jobs:
             .pytest-tmp/test-runs/**/${{ matrix.shard }}/junit.xml
             .pytest-tmp/test-runs/**/${{ matrix.shard }}/coverage.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/control-chain.json
+            .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/candidate-source-binding.json
+            .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/candidate-image-inspect.json
+            .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/runtime-dependency-versions.json
+            .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/sandbox-security-profile.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/terminal-ack-fault.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/terminal-callback-loss.json
             .pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/docker-cleanup.json

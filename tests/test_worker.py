@@ -3559,6 +3559,7 @@ async def test_worker_keeps_attempt_running_across_dispatch_recovery(monkeypatch
     from app.runtime.sandbox.container_provider import FakeContainerProvider
     from app.runtime.sandbox.contracts import SandboxRuntimeRequest
     from app.runtime.sandbox.runtime import SandboxRuntime
+    from app.sandbox.api import SandboxDispatchIntentService
 
     calls = []
     posts = []
@@ -3604,6 +3605,8 @@ async def test_worker_keeps_attempt_running_across_dispatch_recovery(monkeypatch
                 execute_task=execute,
                 get_executor_status=get_status,
                 callback_token_resolver=lambda _token_id: "synthetic-token",
+                lease_port=lease_port,
+                dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
             )
 
             async def runtime_event_sink(event):
@@ -3687,13 +3690,21 @@ async def test_worker_keeps_attempt_running_across_dispatch_recovery(monkeypatch
         calls.append(("lease", kwargs["attempt_id"]))
         return {"id": "worker-runtime-lease"}
 
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "worker-runtime-lease",
+        create_sandbox_lease=create_runtime_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=release_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_dispatch_outcome,
+    )
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(runtime_module, "get_settings", lambda: Settings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
     monkeypatch.setattr(SandboxRuntime, "_record_runtime_lease", record_runtime_lease)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_dispatch_outcome)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
     _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(

@@ -358,7 +358,10 @@ def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
+    async def fail_record_executor_callback(
+        callback, *, capabilities, lease_port, callback_identity=None,
+        run_diagnostics=None, model_token_usage=None,
+    ):
         raise AssertionError("foreign run token must be rejected before recording")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -575,7 +578,10 @@ def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
+    async def fail_record_executor_callback(
+        callback, *, capabilities, lease_port, callback_identity=None,
+        run_diagnostics=None, model_token_usage=None,
+    ):
         raise AssertionError("callback must fail closed when token is not configured")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -605,8 +611,8 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             callback,
             *,
             capabilities,
-            callback_identity,
             lease_port,
+            callback_identity=None,
             run_diagnostics=None,
             model_token_usage=None,
         ):

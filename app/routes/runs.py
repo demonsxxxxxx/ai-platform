@@ -1224,39 +1224,40 @@ async def copy_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    try:
-        async with transaction() as conn:
-            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
-                conn,
-                principal=principal,
-                run_id=str(copied["run_id"]),
-            )
-    except Exception as exc:
-        # The child is committed, but Redis has not been touched. A rejected or
-        # unavailable replay authorization must not strand it as queued.
-        await _compensate_enqueue_failure(
-            principal=principal, run_id=str(copied["run_id"]),
-            run_lifecycle=request.app.state.run_lifecycle,
-            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
-            diagnostic_error=exc,
-            run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
-        )
-        if isinstance(exc, platform_errors.RepositoryAuthorizationError):
-            await _audit_capability_denial(principal, exc, source="copy_run")
-            raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-        if isinstance(exc, SkillVersionMaterializationError):
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if isinstance(exc, RepositoryNotFoundError):
-            _raise_if_capability_revoked(exc)
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if isinstance(exc, RepositoryConflictError):
-            _raise_if_capability_revoked(exc)
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if isinstance(exc, HTTPException):
-            await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
-            raise
-        raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
     delivery_intents = delivery_service(request)
+    if delivery_intents is None or not delivery_intents.enabled:
+        try:
+            async with transaction() as conn:
+                await _agent_profile_authority.reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=str(copied["run_id"]),
+                )
+        except Exception as exc:
+            # The legacy path still validates the committed child immediately
+            # before its first queue admission.
+            await _compensate_enqueue_failure(
+                principal=principal, run_id=str(copied["run_id"]),
+                run_lifecycle=request.app.state.run_lifecycle,
+                v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+                diagnostic_error=exc,
+                run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
+            )
+            if isinstance(exc, platform_errors.RepositoryAuthorizationError):
+                await _audit_capability_denial(principal, exc, source="copy_run")
+                raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+            if isinstance(exc, SkillVersionMaterializationError):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if isinstance(exc, RepositoryNotFoundError):
+                _raise_if_capability_revoked(exc)
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if isinstance(exc, RepositoryConflictError):
+                _raise_if_capability_revoked(exc)
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if isinstance(exc, HTTPException):
+                await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
+                raise
+            raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
     if delivery_intents is not None and delivery_intents.enabled:
         try:
             queue_position = await require_immediate_delivery(

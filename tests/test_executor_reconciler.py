@@ -709,6 +709,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
 
     assert result == _result()
@@ -742,6 +743,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
     collection_diagnostics = terminal_results[-1]["runtime_diagnostics"]
     assert terminal_results[-1]["status"] == "failed"
@@ -761,6 +763,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
             await executor_reconciler._collect_workspace_and_convert_result(
                 {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
                 registry=Registry(), claim_token="claim-a",
+                lease_port=sandbox_lease_repository,
             )
         if isinstance(failure, ValueError):
             assert caught.value.__cause__ is failure
@@ -1278,6 +1281,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     assert await probe_suspect_executor_tasks_once() == 1
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
     protocol_failure = persisted[0][1].pop("protocol_failure", None)
@@ -1419,6 +1423,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert processed == 1
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
     terminal_result = persisted[0][1].pop("terminal_result")
@@ -1824,7 +1829,7 @@ async def test_reconciler_drains_ready_rows_without_idle_wait(monkeypatch):
     async def no_work(**_kwargs):
         return []
 
-    async def no_probe():
+    async def no_probe(**_kwargs):
         return 0
 
     async def unexpected_wait(**_kwargs):
@@ -1858,7 +1863,7 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
         calls.append("cleanup")
         return []
 
-    async def running_probe():
+    async def running_probe(**_kwargs):
         calls.append("probe")
         return 0
 
@@ -2011,7 +2016,7 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
         calls.append("cleanup")
         return []
 
-    async def persisted_probe():
+    async def persisted_probe(**_kwargs):
         calls.append("probe")
         if calls.count("probe") == 1:
             return 1

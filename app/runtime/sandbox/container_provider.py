@@ -53,7 +53,6 @@ from app.runtime.sandbox.contracts import (
 )
 from app.platform.sandbox.docker_governed_network import (
     DockerGovernedEgressAdmission as _DockerGovernedEgressAdmission,
-    GOVERNED_DOCKER_NETWORK_OWNER as _GOVERNED_DOCKER_NETWORK_OWNER,
     attach_api_callback_witness as _attach_api_callback_witness,
     container_labels as _container_labels,
     docker_api_callback_witness as _docker_api_callback_witness,
@@ -65,12 +64,16 @@ from app.platform.sandbox.docker_governed_network import (
     docker_network_authoritative_attrs as _docker_network_authoritative_attrs,
     docker_owned_api_callback_container as _docker_owned_api_callback_container,
     docker_owned_governed_network as _docker_owned_governed_network,
+    docker_complete_governed_network_members as _docker_complete_governed_network_members,
+    is_exact_owned_remote_container,
+    lease_from_owned_governed_network as _lease_from_owned_governed_network,
     get_or_create_governed_docker_network as _get_or_create_governed_docker_network,
     governed_docker_network_labels as _governed_docker_network_labels,  # noqa: F401
     governed_docker_network_name as _governed_docker_network_name,
     governed_egress_proof_key_id as _governed_egress_proof_key_id,
     runtime_release_commit as _runtime_release_commit,
 )
+from app.platform.sandbox.docker_private_executor import governed_private_executor_ipv4
 from app.platform.sandbox.errors import (
     ContainerCleanupFailedError,
     ContainerStartFailedError,
@@ -308,25 +311,6 @@ def _published_executor_url_from_container(
     if host in {"", "0.0.0.0", "::"}:
         return None
     return f"http://{host}:{port_number}"
-
-
-def _private_docker_executor_ipv4(value: object) -> str:
-    raw = str(value or "").strip()
-    try:
-        address = ipaddress.ip_interface(raw).ip
-    except ValueError as exc:
-        raise GovernedEgressAdmissionError() from exc
-    if (
-        not isinstance(address, ipaddress.IPv4Address)
-        or not address.is_private
-        or address.is_unspecified
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-    ):
-        raise GovernedEgressAdmissionError() from None
-    return str(address)
 
 
 def _docker_readiness_snapshot(
@@ -665,7 +649,6 @@ def _authorized_staged_skill_names(request: SandboxRuntimeRequest) -> set[str]:
         if isinstance(allowed, list):
             names.update(name for name in allowed if isinstance(name, str) and name)
     return names
-
 
 
 def _native_tool_required(request: SandboxRuntimeRequest) -> bool:
@@ -1286,7 +1269,6 @@ def _requested_executor_image_digest(settings: Any) -> str:
     return _opensandbox_requested_image(settings)[1]
 
 
-
 def _opensandbox_lease_labels(
     settings: Any,
     request: SandboxRuntimeRequest,
@@ -1414,86 +1396,6 @@ _OPENSANDBOX_COLLECT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 _OPENSANDBOX_CONFIRMED_STOP_STATUSES = frozenset({"running", "created", "removed", "exited", "paused"})
 _OPENSANDBOX_ACTIVE_USE_STATUSES = frozenset({"running", "created", "paused"})
-
-
-def _lease_from_owned_governed_network(network: Any) -> ContainerLease | None:
-    """Recover only the non-secret lease identity necessary to clean an orphan bridge."""
-    attrs = _docker_network_authoritative_attrs(network)
-    labels = attrs.get("Labels")
-    if not isinstance(labels, dict) or labels.get("ai-platform.owner") != _GOVERNED_DOCKER_NETWORK_OWNER:
-        return None
-    values = {
-        key: str(labels.get(key) or "").strip()
-        for key in (
-            "ai-platform.tenant_id",
-            "ai-platform.workspace_id",
-            "ai-platform.user_id",
-            "ai-platform.session_id",
-            "ai-platform.run_id",
-            "ai-platform.attempt_id",
-            "ai-platform.container_name",
-        )
-    }
-    if not all(values.values()) or values["ai-platform.container_name"] != f"executor-exec-{values['ai-platform.run_id']}":
-        return None
-    lease = ContainerLease(
-        container_id=f"exec-{values['ai-platform.run_id']}",
-        container_name=values["ai-platform.container_name"],
-        provider="docker",
-        executor_url="http://sandbox-runtime.invalid",
-        tenant_id=values["ai-platform.tenant_id"],
-        workspace_id=values["ai-platform.workspace_id"],
-        user_id=values["ai-platform.user_id"],
-        session_id=values["ai-platform.session_id"],
-        run_id=values["ai-platform.run_id"],
-        sandbox_mode="ephemeral",
-        browser_enabled=False,
-        workspace_host_path="",
-        labels={"ai-platform.attempt_id": values["ai-platform.attempt_id"]},
-    )
-    try:
-        _docker_owned_governed_network(network, lease)
-    except GovernedEgressAdmissionError:
-        return None
-    return lease
-
-
-def _docker_complete_governed_network_members(
-    client: Any,
-    *,
-    network: Any,
-    lease: ContainerLease,
-    network_id: str,
-    network_name: str,
-    callback_base_url: str,
-    expected_source: str,
-) -> tuple[Any, Any]:
-    """Prove a governed bridge has exactly its current API witness and primary lease."""
-    _docker_owned_governed_network(network, lease)
-    api_container, api_id, _api_source = _docker_api_callback_witness(client, expected_source)
-    try:
-        primary = client.containers.get(lease.container_name)
-    except Exception:
-        raise GovernedEgressAdmissionError() from None
-    if not DockerContainerProvider._is_exact_owned_remote_container(
-        primary,
-        lease,
-        require_lease_identity=True,
-    ):
-        raise GovernedEgressAdmissionError() from None
-    primary_id, _attachment = _docker_network_attachment(primary, network_name, network_id)
-    attrs = _docker_network_authoritative_attrs(network)
-    members = attrs.get("Containers")
-    if not isinstance(members, dict) or {str(member_id) for member_id in members} != {api_id, primary_id}:
-        raise GovernedEgressAdmissionError() from None
-    _docker_callback_endpoint_subject(
-        client,
-        network_name=network_name,
-        network_id=network_id,
-        callback_base_url=callback_base_url,
-        expected_source=expected_source,
-    )
-    return primary, api_container
 
 
 def _seal_docker_governed_egress_after_readback(
@@ -2018,117 +1920,6 @@ class DockerContainerProvider(DockerLeaseRegistry):
             await asyncio.sleep(0.25)
         raise ExecutorHealthTimeoutError()
 
-    def _governed_private_executor_ipv4(
-        self,
-        container: Any,
-        lease: ContainerLease,
-        request: SandboxRuntimeRequest,
-        settings: Any,
-    ) -> str:
-        """Resolve a private executor IP only from the exact governed bridge."""
-        if (
-            lease.provider != "docker"
-            or lease.tenant_id != request.tenant_id
-            or lease.workspace_id != request.workspace_id
-            or lease.user_id != request.user_id
-            or lease.session_id != request.session_id
-            or lease.run_id != request.run_id
-            or lease.sandbox_mode != request.sandbox_mode
-            or lease.browser_enabled != request.browser_enabled
-            or lease.labels.get("ai-platform.attempt_id") != request.attempt_id
-        ):
-            raise GovernedEgressAdmissionError() from None
-        if hasattr(container, "reload"):
-            try:
-                container.reload()
-            except Exception:
-                raise GovernedEgressAdmissionError() from None
-        if getattr(container, "status", None) != "running":
-            raise GovernedEgressAdmissionError() from None
-        container_id = str(getattr(container, "id", "") or "").strip()
-        attrs = getattr(container, "attrs", None)
-        if not isinstance(attrs, dict):
-            raise GovernedEgressAdmissionError() from None
-        inspected_id = str(attrs.get("Id") or "").strip()
-        if not container_id or container_id != lease.container_id or container_id != inspected_id:
-            raise GovernedEgressAdmissionError() from None
-
-        client = self._get_client()
-        callback = _docker_governed_callback_target(settings)
-        runtime_commit = _runtime_release_commit(settings)
-        network_name = _governed_docker_network_name(lease)
-        try:
-            network = client.networks.get(network_name)
-        except Exception:
-            raise GovernedEgressAdmissionError() from None
-        network_id, verified_name = _docker_owned_governed_network(network, lease)
-        if verified_name != network_name:
-            raise GovernedEgressAdmissionError() from None
-        primary, _api = _docker_complete_governed_network_members(
-            client,
-            network=network,
-            lease=lease,
-            network_id=network_id,
-            network_name=network_name,
-            callback_base_url=callback.base_url,
-            expected_source=runtime_commit,
-        )
-        primary_id, attachment = _docker_network_attachment(primary, network_name, network_id)
-        if primary_id != lease.container_id or primary_id != container_id:
-            raise GovernedEgressAdmissionError() from None
-
-        network_attrs = _docker_network_authoritative_attrs(network)
-        members = network_attrs.get("Containers")
-        member = members.get(primary_id) if isinstance(members, dict) else None
-        if not isinstance(member, dict):
-            raise GovernedEgressAdmissionError() from None
-        attachment_ip = _private_docker_executor_ipv4(attachment.get("IPAddress"))
-        member_ip = _private_docker_executor_ipv4(member.get("IPv4Address"))
-        if attachment_ip != member_ip:
-            raise GovernedEgressAdmissionError() from None
-
-        callback_subject = _docker_callback_endpoint_subject(
-            client,
-            network_name=network_name,
-            network_id=network_id,
-            callback_base_url=callback.base_url,
-            expected_source=runtime_commit,
-        )
-        inspected_labels = _container_labels(primary)
-        image_subject = inspected_labels.get("ai-platform.executor.requested_image", "")
-        image_digest = inspected_labels.get("ai-platform.executor.requested_image_digest", "")
-        if not image_subject or not image_digest:
-            raise GovernedEgressAdmissionError() from None
-        expected_binding = {
-            "tenant_id": request.tenant_id,
-            "workspace_id": request.workspace_id,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "run_id": request.run_id,
-            "attempt_id": request.attempt_id,
-            "image_subject": image_subject,
-            "image_digest": image_digest,
-            "lease_identity": f"docker:{lease.container_name}:{lease.container_id}",
-            "runtime_subject": "docker-internal-bridge",
-            "policy_subject": f"{network_id}:{network_name}:internal",
-            "callback_subject": callback_subject,
-            "denial_subject": f"{network_id}:internal-default-deny",
-            "network_id": network_id,
-            "network_name": network_name,
-        }
-        # Reconciliation snapshots do not contain every launch-time capability
-        # input. The proof signature preserves those frozen scope digests; this
-        # path only resolves an existing executor after ownership is rechecked.
-        proof = governed_egress_identity_proof_from_labels(
-            "docker",
-            lease.labels,
-            signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
-            signing_key_id=_governed_egress_proof_key_id(settings),
-            expected_binding=expected_binding,
-        )
-        if proof is None:
-            raise GovernedEgressAdmissionError() from None
-        return attachment_ip
 
     def _resolve_executor_connection(
         self,
@@ -2142,11 +1933,19 @@ class DockerContainerProvider(DockerLeaseRegistry):
         executor_url = _published_executor_url_from_container(container, endpoint)
         if executor_url is not None:
             return executor_url, _executor_connect_base_url(executor_url, endpoint)
-        private_ip = self._governed_private_executor_ipv4(
+        private_ip = governed_private_executor_ipv4(
+            self._get_client(),
             container,
             lease,
             request,
             settings,
+            identity_proof_matches=lambda labels, binding: governed_egress_identity_proof_from_labels(
+                "docker",
+                labels,
+                signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=_governed_egress_proof_key_id(settings),
+                expected_binding=binding,
+            ) is not None,
         )
         private_url = f"http://{private_ip}:18000"
         return private_url, private_url
@@ -2733,33 +2532,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
     ) -> bool:
         return _governed_egress_labels_match("docker", lease.labels, expected_labels, signing_key)
 
-    @staticmethod
-    def _is_exact_owned_remote_container(
-        container: Any,
-        lease: ContainerLease,
-        *,
-        require_lease_identity: bool = False,
-    ) -> bool:
-        labels = _container_labels(container)
-        if not all(
-            labels.get(key) == value
-            for key, value in {
-                "ai-platform.owner": "sandbox-runtime",
-                "ai-platform.tenant_id": lease.tenant_id,
-                "ai-platform.workspace_id": lease.workspace_id,
-                "ai-platform.user_id": lease.user_id,
-                "ai-platform.session_id": lease.session_id,
-                "ai-platform.run_id": lease.run_id,
-                "ai-platform.attempt_id": lease.labels.get("ai-platform.attempt_id"),
-            }.items()
-        ):
-            return False
-        container_id = str(getattr(container, "id", "") or "").strip()
-        attrs = getattr(container, "attrs", {})
-        inspected_id = str(attrs.get("Id") or "").strip() if isinstance(attrs, dict) else ""
-        return bool(container_id and container_id == inspected_id) and (
-            not require_lease_identity or container_id == lease.container_id
-        )
+    _is_exact_owned_remote_container = staticmethod(is_exact_owned_remote_container)
 
     async def _recover_remote_docker_lease(
         self,
