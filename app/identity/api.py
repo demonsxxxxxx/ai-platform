@@ -31,8 +31,12 @@ from app.identity.application.profile_metadata import (
 from app.identity.application.company_employees import (
     CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeDirectoryUnavailable,
 )
+from app.identity.application.department_authority import (
+    assert_safe_department_authority_id as assert_safe_department_authority_id,
+)
 
 __all__ = [
+    "assert_safe_department_authority_id",
     "DepartmentAuthority",
     "department_authority_from_snapshot",
     "is_department_id",

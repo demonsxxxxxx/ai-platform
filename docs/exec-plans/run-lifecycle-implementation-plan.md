@@ -6,7 +6,7 @@
 
 详细行为继续由 [Runtime authorities](../architecture/runtime-authorities.md)、[Run lifecycle](../architecture/run-lifecycle-boundary.md)、[ExecutionSpec/Attempt](../architecture/execution-spec-and-attempt-lifecycle.md)、[Sandbox Runtime](../architecture/sandbox-runtime-control-layer.md)、[原生会话连续性](../architecture/claude-provider-session-continuity.md)、[SSE execution control](../architecture/redis-streams-sse-execution-control.md) 和 [ADR 0011](../adr/0011-durable-executor-terminalization.md) 拥有。每个行为变更节点同步修改其 owning contract。
 
-本计划复用 [state-authority 计划](../implementation/state-authority-convergence.md) 中的准入恢复、操作身份和调用闭环，不建立另一套 submission、Attempt 或发布账本。涉及 [Harness 计划](active/harness-migration.md) B3–B5 的事务、身份和删除节点，继续核验其完整测试保护、D5 和独立审查前置；不能用本方案代替这些条件，也不把旧计划中的历史结果视为当前通过。
+本计划复用 [state-authority 计划](../implementation/state-authority-convergence.md) 中的准入恢复、操作身份和调用闭环，不建立另一套 submission、Attempt 或发布账本。涉及 [Harness 计划](completed/harness-migration-2026-10.md) B3–B5 的事务、身份和删除节点，继续核验其完整测试保护、D5 和独立审查前置；不能用本方案代替这些条件，也不把旧计划中的历史结果视为当前通过。
 
 ## 1. 评审建议与实施边界
 
@@ -97,7 +97,7 @@
 | probe 与 terminal reconciliation | [executor_reconciler](../../app/executor_reconciler.py)：心跳 stale 45s、probe client 10s、连续失败阈值 3；batch 1、claim stale 300s、work 240s、idle 30s、fallback 2s | candidate 读 PG 持久时间，认领后复核 claim；provider 不可达不是权威 not_found；已有回执走结算 |
 | 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/platform/postgres/sandbox_leases.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
 
-Harness 前置复核：当前 [计划 §5.6](active/harness-migration.md#56-2026-10-19-当前实现与验收缺口) 仍记录 D5、完整基线/可信覆盖阻断等未闭环。本切片新增测试和库存，不改变事务、身份或删除字段；不能据此宣布 B3–B5 或后续生命周期迁移已满足前置条件。
+Harness 前置复核：当前 [计划 §5.6](completed/harness-migration-2026-10.md#56-2026-10-19-当前实现与验收缺口) 仍记录 D5、完整基线/可信覆盖阻断等未闭环。本切片新增测试和库存，不改变事务、身份或删除字段；不能据此宣布 B3–B5 或后续生命周期迁移已满足前置条件。
 
 ## 3. 所有节点共同保留的不变量
 
@@ -220,6 +220,7 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 产出：C 层套件纳入现有 backend-tests/required，强制零跳过；L 层候选构建、隔离运行、证据读取流程，并标明触发边界和未就绪项。
 - 验收：漏 selector、依赖缺失、skip、场景失败、错误 source/image 的负例不能返回通过；成功报告绑定精确源码/锁文件/镜像、实际依赖版本及安全 profile。
 - 回退：只能撤回本节点新增 job/入口，保留原 required；不能用回滚配置声称已获得 L 层证据。真实环境自动化缺失时保留明确人工验收入口与待验收状态。
+- 2026-10-24 决定：仓库要求每个测试文件由某个分片拥有，`backend required` 依赖全部分片，C 层 `lifecycle-control-chain` 分片随 C 层测试 PR 接入即成为必过检查，不为其修改 CI 所有权合同。依据：首个候选在 CI 中 8 个场景全部通过、零跳过，确定性 runner 不调用真实模型，分片约 7 分钟、与现有分片并行。附带条件：接入后前 20 次 CI 运行中出现与代码无关的失败按最高优先级修复，不以重跑掩盖；本节点其余验收（受控破坏验证、门禁负例、证据绑定）照常完成，接入必过不等于 N03 完成。
 
 ### Phase 1：分开处理定义、约束与写入责任
 

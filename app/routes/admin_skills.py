@@ -58,7 +58,7 @@ from app.storage import (
     StorageIOTimeoutError,
     run_storage_io,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
