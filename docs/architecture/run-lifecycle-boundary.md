@@ -76,8 +76,8 @@ Run-only terminal paths. Source, tests, image and runtime acceptance remain sepa
 | API/worker composition | `app.bootstrap.api`, `app.bootstrap.worker` | construct concrete adapters once and inject a complete service graph | product rules, SQL, request handling, implicit global lookup |
 | Legacy import surface | temporary, explicitly inventoried compatibility only | logic-free name delegation when separately authorized | lifecycle writes, orchestration, hidden defaults, indefinite aliases |
 
-`app/repositories.py` is not a Run lifecycle owner. New Runs lifecycle code MUST
-NOT be added there. Internal callers migrate to `app.runs.api`; an external
+New Runs lifecycle code belongs to `app.runs`, and internal callers use
+`app.runs.api`; it is never added to a global repository module. An external
 compatibility claim requires named consumers and evidence, not an assumption.
 
 ## 3. Operation classification
