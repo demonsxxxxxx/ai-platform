@@ -1061,6 +1061,8 @@ async def _run_worker_process(
             lifecycle=lifecycle,
             capabilities=worker_runtime.capabilities,
         )
+        if run_delivery_intents.enabled:
+            await run_delivery_intents.prepare_historical_delivery_intents()
         process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
         if role in {"integrated", "finalizer"}:
             background_tasks.append(asyncio.create_task(

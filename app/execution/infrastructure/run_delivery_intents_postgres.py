@@ -186,9 +186,9 @@ async def claim_due(
                  'run_not_queued' as reason
           from run_delivery_intents as intent
           join runs on runs.tenant_id = intent.tenant_id and runs.id = intent.run_id
-          where intent.state in ('pending', 'claimed')
+          where intent.state in ('pending', 'claimed', 'delivered')
             and {filters}
-            and (intent.state = 'pending' or intent.claim_expires_at <= now())
+            and (intent.state in ('pending', 'delivered') or intent.claim_expires_at <= now())
             and not exists (
               select 1 from run_attempts attempt
               where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
@@ -222,9 +222,9 @@ async def claim_due(
           select intent.tenant_id, intent.run_id
           from run_delivery_intents as intent
           join runs on runs.tenant_id = intent.tenant_id and runs.id = intent.run_id
-          where intent.state in ('pending', 'claimed')
+          where intent.state in ('pending', 'claimed', 'delivered')
             and intent.next_retry_at <= now()
-            and (intent.state = 'pending' or intent.claim_expires_at <= now())
+            and (intent.state in ('pending', 'delivered') or intent.claim_expires_at <= now())
             and ((runs.status = 'queued'
             and runs.cancel_requested_at is null
             and runs.terminalization_target is null
@@ -295,6 +295,7 @@ async def record_receipt(
     *,
     intent: RunDeliveryIntent,
     receipt: QueueDeliveryReceipt,
+    retry_after_seconds: int = 900,
 ) -> bool:
     cursor = await connection.execute(
         """
@@ -308,6 +309,7 @@ async def record_receipt(
             queue_message_id = %s,
             queue_admission_source = %s,
             delivered_at = now(),
+            next_retry_at = now() + (%s * interval '1 second'),
             last_error_code = null,
             updated_at = now()
         where delivery.tenant_id = %s and delivery.run_id = %s
@@ -324,6 +326,7 @@ async def record_receipt(
             receipt.queue_admission_ordinal,
             receipt.message_id,
             receipt.source,
+            max(int(retry_after_seconds), 1),
             intent.tenant_id,
             intent.run_id,
             intent.claim_token,

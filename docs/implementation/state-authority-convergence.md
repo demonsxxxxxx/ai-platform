@@ -203,6 +203,10 @@ S3 同批必须处理补投与 `reconcile_stale_runs_for_worker` 的竞争：明
 
 至少暴露 pending 数量和最老年龄、最近成功进展、成功/未知/拒绝/CAS 丢失计数、重试次数、扫描耗时及超预算次数。指标维度不携带 user/run ID；脱敏日志通过受控 trace 关联。进程 heartbeat 不能替代恢复进展指标。
 
+`run_delivery_intents` 另行负责已接受 Run 的 Redis 投递与回执恢复。PostgreSQL 保存不可变 payload 和 message identity；`delivered` 只表示曾观察到 Redis admission，不代表消息仍在 queued、processing 或 retry 集合中。回执超过 `stale_run_reconciliation_seconds` 后，扫描器重新领取该 intent 并先按原 identity readback；只有当前 Run 仍为 queued、未取消、未 terminalize、没有 Attempt 且 claim 仍有效时，才可用原 payload 和 message identity 重投。已有 Attempt 时只 readback，缺失回执会退避；旧 claim 的迟到回执必须被 token、expiry 和 payload CAS 拒绝。回执再次确认后沿用相同 stale 窗口，避免持续扫描和 Redis I/O 忙循环。
+
+Production Settings 强制启用同一组 intent writer 和 Worker scanner。API startup 与 Worker 在开始接收/执行队列项前都运行 bounded legacy mapper：只使用持久化 Run input/context 和 submission/control-operation identity；存在无法证明的 queued Run 时 startup 失败，要求先处理该记录，不能按最新 Profile 或 catalog 猜测。Development/test 保留显式 opt-in 默认值。
+
 ## 7. S4：按操作收敛执行权
 
 沿用 `run_attempts` 和 immutable ExecutionSpec。普通 Worker 目前把 Redis-fenced heartbeat 的精确时间写入 PostgreSQL，写入或提交失败会停止本地执行；这条安全路径需要保留，直到替代协议有等价证据。

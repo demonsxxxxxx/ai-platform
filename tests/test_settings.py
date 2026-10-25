@@ -201,6 +201,19 @@ def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypa
     assert settings.stale_run_reconciliation_claim_ttl_seconds == 540
 
 
+def test_production_requires_durable_run_delivery_and_local_default_stays_opt_in():
+    assert Settings(_env_file=None).run_delivery_intents_enabled is False
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="production",
+        trusted_principal_secret=_TEST_TRUSTED_PRINCIPAL_SECRET,
+        ai_session_secret=_TEST_AI_SESSION_SECRET,
+        existing_auth_base_url="https://auth.internal.example",
+        existing_user_info_base_url="https://directory.internal.example",
+    )
+    assert settings.run_delivery_intents_enabled is True
+
+
 def test_postgres_stale_reconciliation_uses_bounded_claim_ttl_by_default():
     settings = Settings(_env_file=None)
 

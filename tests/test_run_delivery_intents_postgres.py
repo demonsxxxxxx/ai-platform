@@ -7,10 +7,12 @@ import json
 import subprocess
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from uuid import uuid4
 
 import psycopg
 import pytest
+from redis.asyncio import Redis
 from psycopg.rows import dict_row
 
 from app import schema_migrations
@@ -230,6 +232,60 @@ async def delivery_db():
         await admin.execute(f'drop schema "{schema}" cascade')
         await admin.execute(f'drop schema "{schema_name}" cascade')
         await admin.close()
+    finally:
+        subprocess.run(
+            ["docker", "stop", container_id],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+
+@pytest.fixture(scope="module")
+async def delivery_redis():
+    """Run queue recovery against an isolated, test-owned Redis container."""
+    name = f"run-delivery-redis-{uuid4().hex[:12]}"
+    started = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            name,
+            "-p",
+            "127.0.0.1::6379",
+            "redis:7-alpine",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    container_id = started.stdout.strip()
+    try:
+        published = subprocess.run(
+            ["docker", "port", container_id, "6379/tcp"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        port = published.rsplit(":", 1)[1]
+        redis_url = f"redis://127.0.0.1:{port}/0"
+        client = Redis.from_url(redis_url, decode_responses=True)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                await client.ping()
+                break
+            except Exception:
+                await asyncio.sleep(0.2)
+        else:
+            raise TimeoutError("test-owned Redis did not become ready")
+        await client.aclose()
+        yield redis_url
     finally:
         subprocess.run(
             ["docker", "stop", container_id],
@@ -679,6 +735,197 @@ async def test_stale_claim_cannot_write_receipt_after_reclaim(delivery_db):
         ).fetchone()
         assert row["state"] == "claimed"
         assert str(row["claim_token"]) == str(replacement["claim_token"])
+
+
+@pytest.mark.asyncio
+async def test_expired_delivered_claim_cannot_record_receipt_after_reclaim(delivery_db):
+    connect = delivery_db
+    record = await seed(connect, "stale-delivered")
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_delivery_intents set state='delivered', delivered_at=now(), "
+            "queue_position=1, queue_admission_ordinal=1, "
+            "queue_admission_source='redis_enqueued', next_retry_at=now()-interval '1 second' "
+            "where tenant_id='tenant' and run_id='stale-delivered'"
+        )
+        first_claim = (await store.claim_due(conn, limit=1, claim_ttl_seconds=30))[0]
+    stale = RunDeliveryIntent.from_record(first_claim)
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_delivery_intents set claim_expires_at=now()-interval '1 second', "
+            "next_retry_at=now()-interval '1 second' where tenant_id='tenant' "
+            "and run_id='stale-delivered'"
+        )
+    async with connect() as conn, conn.transaction():
+        replacement = (await store.claim_due(conn, limit=1, claim_ttl_seconds=30))[0]
+
+    receipt = QueueDeliveryReceipt(2, 2, record["queue_message_id"], "redis_readback_queued")
+    async with connect() as conn, conn.transaction():
+        assert await store.record_receipt(conn, intent=stale, receipt=receipt) is False
+    async with connect() as conn:
+        current = await (
+            await conn.execute(
+                "select state,claim_token from run_delivery_intents "
+                "where tenant_id='tenant' and run_id='stale-delivered'"
+            )
+        ).fetchone()
+    assert current["state"] == "claimed"
+    assert str(current["claim_token"]) == str(replacement["claim_token"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempt_before_recovery", [False, True])
+async def test_real_postgres_redis_recovers_stale_delivery_by_frozen_identity(
+    delivery_db, delivery_redis, monkeypatch, attempt_before_recovery
+):
+    from pydantic import ValidationError
+
+    from app import queue as queue_module
+    from app.execution.infrastructure.run_delivery_queue import RedisRunDeliveryQueue
+    from app.models import QueueRunPayload
+    from app.queue import QueueAdmissionRejected, validate_skill_manifest_refs
+    from app.skills.pinning import SkillVersionMaterializationError
+
+    connect = delivery_db
+    run_id = f"redis-recovery-{uuid4().hex[:12]}"
+    prefix = f"run-delivery-test:{uuid4().hex}"
+    monkeypatch.setattr(
+        queue_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            queue_key_prefix=prefix,
+            queue_metadata_fallback_scan_limit=500,
+            queue_dead_letter_max_entries=1000,
+        ),
+    )
+
+    async def get_test_redis():
+        return Redis.from_url(delivery_redis, decode_responses=True)
+
+    monkeypatch.setattr(queue_module, "get_redis", get_test_redis)
+    skill_id = "qa-file-reviewer"
+    version = f"hash-{skill_id}"
+    payload = QueueRunPayload(
+        tenant_id="tenant",
+        workspace_id="workspace",
+        user_id="user",
+        session_id="session",
+        run_id=run_id,
+        agent_id="agent",
+        skill_id=skill_id,
+        executor_type="fake",
+        skill_version=version,
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": version,
+            "selected_track": "manifest_pin",
+        },
+        skill_manifests=[
+            {
+                "schema_version": "ai-platform.skill-materialization-ref.v1",
+                "skill_id": skill_id,
+                "version": version,
+                "content_hash": version,
+                "materialization_sha256": "a" * 64,
+            }
+        ],
+        input={"message": "frozen"},
+    ).model_dump(mode="json")
+    frozen = QueueRunPayload.model_validate(payload).model_dump_json()
+    digest = sha256(frozen.encode("utf-8")).hexdigest()
+    await seed(connect, run_id, payload=frozen, digest=digest)
+
+    redis_transport = RedisRunDeliveryQueue(
+        payload_model=QueueRunPayload,
+        payload_errors=(ValidationError, ValueError, SkillVersionMaterializationError),
+        validate_skill_manifest_refs=validate_skill_manifest_refs,
+        enqueue_run_with_metadata=queue_module.enqueue_run_with_metadata,
+        read_queue_admission=queue_module.read_queue_admission,
+        queue_admission_rejected=QueueAdmissionRejected,
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        async with connect() as conn, conn.transaction():
+            yield conn
+
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=redis_transport,
+        queue=redis_transport,
+        transaction=transaction,
+        scan_batch_size=10,
+        claim_ttl_seconds=30,
+        retry_base_seconds=1,
+        retry_cap_seconds=10,
+        delivered_retry_seconds=900,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=False),
+    )
+
+    # Establish the durable delivered receipt while the immutable message exists.
+    accepted = await queue_module.enqueue_run_with_metadata(payload)
+    first = await manager.deliver_one(tenant_id="tenant", run_id=run_id)
+    assert first.state == "delivered"
+    assert first.receipt is not None and first.receipt.message_id == digest
+    assert accepted.message_id == digest
+
+    # Simulate Redis losing the message after PostgreSQL already recorded delivery.
+    redis_client = Redis.from_url(delivery_redis, decode_responses=True)
+    try:
+        await redis_client.flushdb()
+    finally:
+        await redis_client.aclose()
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_delivery_intents set next_retry_at=now()-interval '1 second' "
+            "where tenant_id='tenant' and run_id=%s",
+            (run_id,),
+        )
+        if attempt_before_recovery:
+            await conn.execute(
+                "insert into run_attempts(tenant_id,run_id) values ('tenant',%s)",
+                (run_id,),
+            )
+            await conn.execute(
+                "update runs set status='running' where tenant_id='tenant' and id=%s",
+                (run_id,),
+            )
+
+    recovered = await manager.scan_once()
+    redis_client = Redis.from_url(delivery_redis, decode_responses=True)
+    try:
+        queued = await redis_client.lrange(f"{prefix}:queued", 0, -1)
+    finally:
+        await redis_client.aclose()
+    async with connect() as conn:
+        current = await (
+            await conn.execute(
+                "select state,queue_payload_json,queue_message_id,attempt_count "
+                "from run_delivery_intents where tenant_id='tenant' and run_id=%s",
+                (run_id,),
+            )
+        ).fetchone()
+        attempts = await (
+            await conn.execute(
+                "select count(*) as count from run_attempts where tenant_id='tenant' and run_id=%s",
+                (run_id,),
+            )
+        ).fetchone()
+
+    assert current["queue_payload_json"] == frozen
+    assert current["queue_message_id"] == digest
+    if attempt_before_recovery:
+        assert recovered.claimed == 1 and recovered.rescheduled == 1
+        assert queued == []
+        assert current["state"] == "pending"
+        assert attempts["count"] == 1
+    else:
+        assert recovered.claimed == 1 and recovered.delivered == 1
+        assert queued == [frozen]
+        assert current["state"] == "delivered"
+        assert attempts["count"] == 0
 
 
 @pytest.mark.asyncio

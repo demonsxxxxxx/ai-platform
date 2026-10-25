@@ -75,6 +75,7 @@ class Store:
         self.suppressed: list[tuple[str, str]] = []
         self.rescheduled: list[tuple[str, int, str]] = []
         self.receipt_intents: list[str] = []
+        self.receipt_delays: list[int] = []
         self.historical_candidates: list[dict[str, Any]] = []
         self.inserted: list[dict[str, Any]] = []
         self.historical_limits: list[int] = []
@@ -103,8 +104,11 @@ class Store:
     async def claim_is_current(self, connection, intent, *, for_enqueue=True):
         return self.current
 
-    async def record_receipt(self, connection, *, intent, receipt):
+    async def record_receipt(
+        self, connection, *, intent, receipt, retry_after_seconds=900
+    ):
         self.receipt_intents.append(intent.payload_json)
+        self.receipt_delays.append(retry_after_seconds)
         return self.receipt_written
 
     async def reschedule(self, connection, *, intent, retry_after_seconds, error_code):
@@ -498,6 +502,7 @@ async def test_scanner_replays_the_frozen_payload_without_rebuilding_it():
         (original["queue_payload_json"], original["queue_message_id"])
     ]
     assert store.receipt_intents == [original["queue_payload_json"]]
+    assert store.receipt_delays == [900]
 
 
 @pytest.mark.asyncio

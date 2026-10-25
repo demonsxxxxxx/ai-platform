@@ -109,8 +109,8 @@ class Settings(BaseSettings):
     # permits this replica to execute work while a domain is unified.
     execution_supervision_enabled: bool = Field(default=False)
     execution_supervision_shadow_enabled: bool = Field(default=False)
-    # One switch controls both transactional intent writers and the Worker
-    # recovery scanner so they cannot be enabled independently.
+    # Development and test keep the existing local default. Production turns
+    # this on unconditionally; API/Worker startup must backfill or fail closed.
     run_delivery_intents_enabled: bool = Field(default=False)
     run_delivery_intent_scan_batch_size: int = Field(default=25, ge=1, le=100)
     run_delivery_intent_claim_ttl_seconds: int = Field(default=120, ge=1, le=3600)
@@ -303,6 +303,8 @@ class Settings(BaseSettings):
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
+        if self.deployment_environment == "production":
+            self.run_delivery_intents_enabled = True
         if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
             raise ValueError("object_delete_retry_cap_below_base")
         if self.run_delivery_intent_retry_cap_seconds < self.run_delivery_intent_retry_base_seconds:
