@@ -4346,9 +4346,14 @@ async def test_deleted_session_run_context_and_lease_deny_before_reads_or_writes
         deleted_session_run_is_not_authorized,
     )
     monkeypatch.setattr(_owner_context_infrastructure_snapshot_postgres, 'list_context_snapshots', forbidden_child_operation)
-    monkeypatch.setattr(
-        "app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease",
-        forbidden_child_operation,
+    http_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                sandbox_lease_transport=SimpleNamespace(
+                    create_sandbox_lease=forbidden_child_operation,
+                ),
+            ),
+        ),
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', forbidden_child_operation)
 
@@ -4361,6 +4366,7 @@ async def test_deleted_session_run_context_and_lease_deny_before_reads_or_writes
         await create_sandbox_lease(
             "run-deleted",
             SandboxLeaseRequest(sandbox_mode="ephemeral"),
+            http_request=http_request,
             principal=principal(),
         )
     assert lease_exc.value.status_code == 404
