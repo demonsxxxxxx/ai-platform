@@ -178,6 +178,47 @@ async def record_sandbox_executor_accepted(
         )
     return dict(row)
 
+
+async def record_sandbox_executor_accepted_observation(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    reconciliation_context: dict[str, Any],
+    ttl_seconds: int = 1800,
+) -> dict[str, Any]:
+    """Record Sandbox execution acceptance without writing settlement context."""
+    cursor = await connection.execute(
+        """
+        update sandbox_leases
+        set executor_status = case
+                when executor_status in ('running', 'completed', 'failed', 'cancelled')
+                    then executor_status
+                else 'accepted'
+            end,
+            executor_heartbeat_at = now(),
+            expires_at = now() + make_interval(secs => %s),
+            updated_at = now()
+        where id = %s and tenant_id = %s and run_id = %s and attempt_id = %s
+          and status = 'active'
+        returning id, tenant_id, workspace_id, user_id, session_id, run_id,
+                  attempt_id, trace_id, sandbox_mode, provider, status,
+                  lease_payload_json, runtime_container_id, runtime_container_name,
+                  runtime_executor_url, runtime_workspace_container_path,
+                  runtime_handle_verified_at, executor_status, executor_heartbeat_at,
+                  executor_terminal_received_at, executor_cleanup_status,
+                  heartbeat_at, expires_at, released_at, release_reason,
+                  created_at, updated_at
+        """,
+        (int(ttl_seconds), lease_id, tenant_id, run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise SandboxLeaseReleaseScopeMismatchError("sandbox_executor_attempt_inactive")
+    return dict(row)
+
 async def record_sandbox_executor_heartbeat(
     connection: Any,
     *,
@@ -208,7 +249,7 @@ async def record_sandbox_executor_heartbeat(
           and attempt_id = %s
           and status = 'active'
           and (expires_at is null or expires_at > now())
-          and executor_terminal_json is null
+          and executor_status in ('accepted', 'running')
         returning *
         """,
         (executor_status, executor_status, int(ttl_seconds), lease_id, tenant_id, run_id, attempt_id),
@@ -240,7 +281,7 @@ async def record_opensandbox_renewal_receipt(
           and provider = 'opensandbox'
           and status = 'active'
           and (expires_at is null or expires_at > now())
-          and executor_terminal_json is null
+          and executor_status in ('accepted', 'running')
         returning *
         """,
         (provider_expires_at, lease_id, tenant_id, run_id, attempt_id),
@@ -269,10 +310,7 @@ async def release_sandbox_lease(
           and run_id = %s
           and id = %s
           and status = 'active'
-          and (
-            executor_terminal_json is null
-            or executor_reconciliation_status = 'finalized'
-          )
+          and executor_cleanup_status in ('not_required', 'finalized')
         returning *
         """,
         (reason, tenant_id, user_id, run_id, lease_id),
@@ -297,10 +335,7 @@ async def release_active_sandbox_leases_for_run(
         where tenant_id = %s
           and run_id = %s
           and status = 'active'
-          and (
-            executor_terminal_json is null
-            or executor_reconciliation_status = 'finalized'
-          )
+          and executor_cleanup_status in ('not_required', 'finalized')
         returning *
         """,
         (reason, tenant_id, run_id),
@@ -328,10 +363,7 @@ async def release_stopped_sandbox_leases(
           and (%s::text is null or run_id = %s)
           and id = any(%s)
           and status = 'active'
-          and (
-            executor_terminal_json is null
-            or executor_reconciliation_status = 'finalized'
-          )
+          and executor_cleanup_status in ('not_required', 'finalized')
         returning *
         """,
         (reason, tenant_id, run_id, run_id, lease_ids),
@@ -354,10 +386,7 @@ async def list_expired_active_sandbox_leases(
           and status = 'active'
           and expires_at is not null
           and expires_at <= now()
-          and (
-            executor_terminal_json is null
-            or executor_reconciliation_status = 'finalized'
-          )
+          and executor_cleanup_status in ('not_required', 'finalized')
         order by expires_at asc, created_at asc
         for update skip locked
         limit %s
@@ -384,10 +413,7 @@ async def cleanup_expired_sandbox_leases(
           and expires_at is not null
           and expires_at <= now()
           and provider not in ('fake', 'docker', 'opensandbox')
-          and (
-            executor_terminal_json is null
-            or executor_reconciliation_status = 'finalized'
-          )
+          and executor_cleanup_status in ('not_required', 'finalized')
         returning id, tenant_id, run_id, trace_id, release_reason
         """,
         (reason, tenant_id, tenant_id),
@@ -437,10 +463,7 @@ async def fence_sandbox_lease_release(
           and sandbox_leases.sandbox_mode = excluded.sandbox_mode
           and sandbox_leases.provider = excluded.provider
           and coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')
-          and (
-            sandbox_leases.executor_terminal_json is null
-            or sandbox_leases.executor_reconciliation_status = 'finalized'
-          )
+          and sandbox_leases.executor_cleanup_status in ('not_required', 'finalized')
         returning *
         """,
         (

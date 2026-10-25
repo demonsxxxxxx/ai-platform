@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from app.sandbox.domain.lease_errors import SandboxExecutorTerminalConflictError
+from app.runs.api import AttemptSettlementProjectionConflict
+
 
 class AttemptSettlementShadowLeaseRepository:
     """Wrap Sandbox persistence while preserving the shared source lock order."""
@@ -45,6 +48,9 @@ class AttemptSettlementShadowLeaseRepository:
             conn, shadow_enabled=bool(self._enabled())
         )
 
+    async def _writer_active(self, conn: Any) -> bool:
+        return await self._settlement.attempt_writer_active(conn)
+
     async def _refresh(self, conn: Any, scope: Mapping[str, str] | None) -> None:
         if scope is not None:
             await self._settlement.refresh_in_transaction(conn, **scope)
@@ -81,6 +87,7 @@ class AttemptSettlementShadowLeaseRepository:
             "unknown": "unknown",
         }.get(phase, "unknown")
         receipt = detail.get("receipt_json")
+        settlement_claimed = phase == "claimed"
         result.update(
             settlement_storage_version="attempt.v1",
             settlement_mapping_state=detail.get("mapping_state"),
@@ -90,24 +97,29 @@ class AttemptSettlementShadowLeaseRepository:
             executor_terminal_json=receipt,
             executor_reconciliation_intent_context_json=detail.get("intent_recovery_context_json"),
             executor_terminal_reconciliation_attempt_count=detail.get("settlement_attempt_count"),
+            executor_reconciliation_context_json=detail.get("accepted_context_json"),
+            executor_reconciliation_status=legacy_phase,
+            executor_reconciliation_claim_token=(
+                detail.get("settlement_claim_token") if settlement_claimed else None
+            ),
+            executor_reconciliation_claimed_at=(
+                detail.get("settlement_claimed_at") if settlement_claimed else None
+            ),
+            executor_reconciliation_retry_not_before=detail.get("next_retry_at"),
         )
-        if receipt is not None:
-            result["executor_reconciliation_context_json"] = detail.get("accepted_context_json")
-            source_status = str(row.get("executor_reconciliation_status") or "")
-            if source_status not in {"cleanup_pending", "failed"}:
-                result.update(
-                    executor_reconciliation_status=legacy_phase,
-                    executor_reconciliation_claim_token=detail.get("settlement_claim_token"),
-                    executor_reconciliation_claimed_at=detail.get("settlement_claimed_at"),
-                    executor_reconciliation_retry_not_before=detail.get("next_retry_at"),
-                )
         return result
 
     async def create_sandbox_lease(self, conn: Any, **kwargs: Any) -> Any:
         scope = self._scope(kwargs)
         write_detail = await self._write_enabled(conn, scope)
         row = await self._repository.create_sandbox_lease(conn, **kwargs)
-        if write_detail:
+        if await self._writer_active(conn):
+            if scope is None and kwargs.get("attempt_id"):
+                scope = {key: str(kwargs[key]) for key in ("tenant_id", "run_id", "attempt_id")}
+            await self._settlement.initialize_attempt_in_transaction(
+                conn, **scope, source_lease_id=str(row["id"]),
+            )
+        elif write_detail:
             if scope is None and kwargs.get("attempt_id"):
                 scope = {key: str(kwargs[key]) for key in ("tenant_id", "run_id", "attempt_id")}
             await self._refresh(conn, scope)
@@ -142,6 +154,8 @@ class AttemptSettlementShadowLeaseRepository:
                 "run_id": run_id,
             }
             view = await self._settlement_view(conn, source)
+            context = view.get("executor_reconciliation_context_json")
+            dispatch_timings = context.get("dispatch_timings") if isinstance(context, Mapping) else None
             projected.append(
                 {
                     **item,
@@ -154,6 +168,7 @@ class AttemptSettlementShadowLeaseRepository:
                     "executor_terminal_reconciliation_attempt_count": view.get(
                         "executor_terminal_reconciliation_attempt_count"
                     ),
+                    "dispatch_timings": dispatch_timings if isinstance(dispatch_timings, Mapping) else {},
                 }
             )
         return {**result, "leases": projected}
@@ -161,6 +176,18 @@ class AttemptSettlementShadowLeaseRepository:
     async def record_sandbox_executor_accepted(self, conn: Any, **kwargs: Any) -> Any:
         scope = self._scope(kwargs)
         write_detail = await self._write_enabled(conn, scope)
+        if await self._writer_active(conn):
+            if scope is None:
+                raise RuntimeError("attempt_settlement_scope_missing")
+            row = await self._repository.record_sandbox_executor_accepted_observation(
+                conn, **kwargs
+            )
+            if row is not None:
+                await self._settlement.record_accepted_context_in_transaction(
+                    conn, **scope, lease_id=str(kwargs["lease_id"]),
+                    accepted_context=kwargs["reconciliation_context"],
+                )
+            return row
         row = await self._repository.record_sandbox_executor_accepted(conn, **kwargs)
         if write_detail:
             if row is not None:
@@ -174,6 +201,28 @@ class AttemptSettlementShadowLeaseRepository:
     async def record_sandbox_executor_terminal(self, conn: Any, **kwargs: Any) -> Any:
         scope = self._scope(kwargs)
         write_detail = await self._write_enabled(conn, scope)
+        if await self._writer_active(conn):
+            if scope is None:
+                raise RuntimeError("attempt_settlement_scope_missing")
+            try:
+                row = await self._repository.record_sandbox_executor_terminal_observation(
+                    conn, **kwargs
+                )
+                lease_payload = row.get("lease_payload_json") if isinstance(row, Mapping) else None
+                owner_generation = (
+                    lease_payload.get("owner_generation")
+                    if isinstance(lease_payload, Mapping) else None
+                )
+                await self._settlement.record_terminal_receipt_in_transaction(
+                    conn, **scope, lease_id=str(kwargs["lease_id"]),
+                    receipt=kwargs["terminal_result"],
+                    receipt_owner_generation=int(owner_generation),
+                )
+                return row
+            except (AttemptSettlementProjectionConflict, TypeError, ValueError) as exc:
+                raise SandboxExecutorTerminalConflictError(
+                    "sandbox_executor_terminal_conflict"
+                ) from exc
         row = await self._repository.record_sandbox_executor_terminal(conn, **kwargs)
         if write_detail:
             await self._refresh(conn, scope)
@@ -192,6 +241,13 @@ class AttemptSettlementShadowLeaseRepository:
         # activation cannot change the durable marker partway through this claim.
         await self._settlement.lock_writer_fence(conn)
         storage_before = await self._settlement.storage_version(conn)
+        writer_active = await self._settlement.attempt_writer_active(conn)
+        if writer_active and use_attempt_candidates:
+            return await self._settlement.claim_due_attempts_in_transaction(
+                conn, claim_token=str(kwargs["claim_token"]),
+                limit=kwargs["limit"],
+                stale_after_seconds=kwargs["stale_after_seconds"],
+            )
         candidates = (
             []
             if storage_before == "attempt.v1" and use_attempt_candidates
@@ -252,6 +308,7 @@ class AttemptSettlementShadowLeaseRepository:
         rows = await getattr(self._repository, claim_method)(
             conn,
             candidate_lease_ids=candidate_lease_ids,
+            legacy_settlement_compat=not writer_active,
             **kwargs,
         )
         if storage_version == "attempt.v1" and use_attempt_candidates:
@@ -293,6 +350,11 @@ class AttemptSettlementShadowLeaseRepository:
     async def retry_sandbox_executor_reconciliation(self, conn: Any, **kwargs: Any) -> bool:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
+        if await self._writer_active(conn):
+            return await self._settlement.retry_claim_in_transaction(
+                conn, **scope, lease_id=str(kwargs["lease_id"]),
+                claim_token=str(kwargs["claim_token"]),
+            )
         changed = await self._repository.retry_sandbox_executor_reconciliation(conn, **kwargs)
         if changed and write_detail:
             await self._refresh(conn, scope)
@@ -301,6 +363,18 @@ class AttemptSettlementShadowLeaseRepository:
     async def mark_sandbox_executor_reconciliation_cleanup_pending(self, conn: Any, **kwargs: Any) -> bool:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
+        if await self._writer_active(conn):
+            detail = await self._settlement.read_attempt(
+                conn, **scope, require_mapped=True,
+            )
+            if (
+                detail is None or detail.get("source_lease_id") != str(kwargs["lease_id"])
+                or detail.get("settlement_phase") not in {"settled", "failed"}
+            ):
+                return False
+            return await self._repository.mark_sandbox_executor_cleanup_pending(
+                conn, **kwargs, legacy_settlement_compat=False,
+            )
         changed = await self._repository.mark_sandbox_executor_reconciliation_cleanup_pending(
             conn, **kwargs
         )
@@ -313,20 +387,70 @@ class AttemptSettlementShadowLeaseRepository:
     ) -> Any:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
+        active_writer = await self._writer_active(conn)
         row = await self._repository.finalize_failed_sandbox_executor_reconciliation_cleanup(
-            conn, **kwargs
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
         )
-        if row is not None and write_detail:
+        if row is not None and write_detail and not active_writer:
             await self._refresh(conn, scope)
         return row
 
     async def quarantine_sandbox_executor_reconciliation(self, conn: Any, **kwargs: Any) -> bool:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
-        changed = await self._repository.quarantine_sandbox_executor_reconciliation(conn, **kwargs)
-        if changed and write_detail:
+        active_writer = await self._writer_active(conn)
+        changed = await self._repository.quarantine_sandbox_executor_reconciliation(
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
+        )
+        if changed and write_detail and not active_writer:
             await self._refresh(conn, scope)
         return changed
+
+    async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
+        active_writer = await self._writer_active(conn)
+        return await self._repository.release_sandbox_executor_probe_claim(
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
+        )
+
+    async def claim_failed_sandbox_executor_reconciliation_cleanups(
+        self, conn: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        active_writer = await self._writer_active(conn)
+        return await self._repository.claim_failed_sandbox_executor_reconciliation_cleanups(
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
+        )
+
+    async def release_failed_sandbox_executor_reconciliation_cleanup_claim(
+        self, conn: Any, **kwargs: Any
+    ) -> bool:
+        active_writer = await self._writer_active(conn)
+        return await self._repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
+        )
+
+    async def quarantine_failed_sandbox_executor_reconciliation_cleanup(
+        self, conn: Any, **kwargs: Any
+    ) -> bool:
+        active_writer = await self._writer_active(conn)
+        return await self._repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+            conn, **kwargs, legacy_settlement_compat=not active_writer,
+        )
+
+    async def get_sandbox_executor_reconciliation_summary(
+        self, conn: Any, **kwargs: Any
+    ) -> dict[str, Any]:
+        if await self._settlement.storage_version(conn) != "attempt.v1":
+            return await self._repository.get_sandbox_executor_reconciliation_summary(
+                conn, **kwargs
+            )
+        settlement_summary = await self._settlement.reconciliation_summary(
+            conn, tenant_id=str(kwargs["tenant_id"]),
+            slo_seconds=int(kwargs["slo_seconds"]),
+        )
+        resource_summary = await self._repository.get_sandbox_resource_cleanup_summary(
+            conn, tenant_id=str(kwargs["tenant_id"]),
+        )
+        return {**settlement_summary, **resource_summary}
 
     async def next_sandbox_executor_reconciliation_retry_delay(self, conn: Any) -> float | None:
         if await self._settlement.storage_version(conn) == "attempt.v1":
@@ -360,6 +484,57 @@ class AttemptSettlementShadowLeaseRepository:
             )
         return await self.is_sandbox_executor_reconciliation_claim_current(
             conn, lease_id=lease_id, claim_token=claim_token
+        )
+
+    async def record_sandbox_executor_terminal_diagnostics(
+        self, conn: Any, *, lease_id: str, claim_token: str, diagnostics: list[str]
+    ) -> bool:
+        if await self._writer_active(conn):
+            scope = await self._scope_for_lease(conn, lease_id)
+            if scope is None:
+                return False
+            return await self._settlement.append_claim_diagnostics_in_transaction(
+                conn, **scope, lease_id=lease_id, claim_token=claim_token,
+                diagnostics=diagnostics,
+            )
+        return await self._repository.record_sandbox_executor_terminal_diagnostics(
+            conn, lease_id=lease_id, claim_token=claim_token, diagnostics=diagnostics,
+        )
+
+    async def lock_scoped_reconciliation_receipt(self, conn: Any, **kwargs: Any) -> bool:
+        if await self._settlement.storage_version(conn) != "attempt.v1":
+            return await self._repository.lock_scoped_reconciliation_receipt(
+                conn, **kwargs
+            )
+        scope = {
+            "tenant_id": str(kwargs["tenant_id"]),
+            "run_id": str(kwargs["run_id"]),
+            "attempt_id": str(kwargs["attempt_id"]),
+        }
+        await self._settlement.lock_sources_in_transaction(conn, **scope)
+        resource_current = await self._repository.lock_scoped_reconciliation_resource(
+            conn,
+            tenant_id=kwargs["tenant_id"],
+            workspace_id=kwargs["workspace_id"],
+            user_id=kwargs["user_id"],
+            session_id=kwargs["session_id"],
+            run_id=kwargs["run_id"],
+            attempt_id=kwargs["attempt_id"],
+            lease_id=kwargs["lease_id"],
+            expected_owner_generation=kwargs["expected_owner_generation"],
+        )
+        if not resource_current:
+            return False
+        detail = await self._settlement.read_attempt(
+            conn, **scope, require_mapped=True,
+        )
+        return bool(
+            detail
+            and detail.get("source_lease_id") == kwargs["lease_id"]
+            and detail.get("receipt_json") is not None
+            and detail.get("receipt_owner_generation") == kwargs["expected_owner_generation"]
+            and detail.get("settlement_phase") == "claimed"
+            and detail.get("settlement_claim_token") == kwargs["claim_token"]
         )
 
 
@@ -397,12 +572,19 @@ class AttemptSettlementShadowDispatchRepository:
             "attempt_id": str(identity.attempt_id),
         }
         write_detail = await self._write_enabled(conn, scope)
+        writer_active = await self._settlement.attempt_writer_active(conn)
         result = await self._repository.persist_intent(
             conn,
             identity=identity,
             reconciliation_context=reconciliation_context,
+            legacy_settlement_compat=not writer_active,
         )
-        if write_detail:
+        if writer_active:
+            await self._settlement.record_intent_in_transaction(
+                conn, **scope, lease_id=str(identity.lease_id),
+                intent_context=reconciliation_context,
+            )
+        elif write_detail:
             await self._settlement.refresh_in_transaction(conn, **scope)
         return result
 
@@ -413,7 +595,12 @@ class AttemptSettlementShadowDispatchRepository:
             "attempt_id": str(identity.attempt_id),
         }
         write_detail = await self._write_enabled(conn, scope)
+        writer_active = await self._settlement.attempt_writer_active(conn)
         result = await self._repository.record_outcome(conn, identity=identity, outcome=outcome)
-        if write_detail and result is not None:
+        if writer_active and result is not None:
+            await self._settlement.record_dispatch_outcome_in_transaction(
+                conn, **scope, lease_id=str(identity.lease_id), outcome=outcome,
+            )
+        elif write_detail and result is not None:
             await self._settlement.refresh_dispatch_in_transaction(conn, **scope)
         return result

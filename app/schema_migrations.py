@@ -61,10 +61,11 @@ RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
 # N42 may be enabled only after the N40 reader cutover has a durable migration marker.
 N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
 RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
-TARGET_SCHEMA_VERSION = RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION
+RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION = "2026.10.25.10"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 RUN_STATUS_CONSTRAINT_NAME = "chk_runs_status"
 RUN_STATUS_LOCK_TIMEOUT = "2s"
@@ -98,6 +99,7 @@ CRITICAL_RELATIONS = (
     "run_attempts",
     "run_attempt_settlements",
     "run_attempt_settlement_storage",
+    "run_attempt_settlement_writer",
     "run_stale_reconciliation_claims",
     "execution_supervision_domains",
     "execution_supervision_claims",
@@ -255,6 +257,9 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlement_storage", "singleton", "bool", True),
     ("run_attempt_settlement_storage", "storage_version", "text", True),
     ("run_attempt_settlement_storage", "updated_at", "timestamptz", True),
+    ("run_attempt_settlement_writer", "singleton", "bool", True),
+    ("run_attempt_settlement_writer", "writer_version", "text", True),
+    ("run_attempt_settlement_writer", "updated_at", "timestamptz", True),
     ("run_stale_reconciliation_claims", "tenant_id", "text", True),
     ("run_stale_reconciliation_claims", "run_id", "text", True),
     ("run_stale_reconciliation_claims", "expected_attempt_id", "text", False),
@@ -358,6 +363,12 @@ CRITICAL_COLUMNS = (
     ),
     ("sandbox_leases", "executor_reconciliation_error", "text", True),
     ("sandbox_leases", "executor_reconciled_at", "timestamptz", False),
+    ("sandbox_leases", "executor_probe_claim_token", "text", False),
+    ("sandbox_leases", "executor_probe_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "executor_cleanup_status", "text", True),
+    ("sandbox_leases", "executor_cleanup_claim_token", "text", False),
+    ("sandbox_leases", "executor_cleanup_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "executor_cleanup_retry_not_before", "timestamptz", False),
     ("sandbox_execution_dispatches", "dispatch_id", "text", True),
     ("sandbox_execution_dispatches", "tenant_id", "text", True),
     ("sandbox_execution_dispatches", "run_id", "text", True),
@@ -533,6 +544,9 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempt_settlement_storage", "run_attempt_settlement_storage_pkey"),
     ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_singleton"),
     ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_version"),
+    ("run_attempt_settlement_writer", "run_attempt_settlement_writer_pkey"),
+    ("run_attempt_settlement_writer", "chk_run_attempt_settlement_writer_singleton"),
+    ("run_attempt_settlement_writer", "chk_run_attempt_settlement_writer_version"),
     ("run_stale_reconciliation_claims", "run_stale_reconciliation_claims_pkey"),
     ("run_stale_reconciliation_claims", "run_stale_reconciliation_claims_token_key"),
     ("run_stale_reconciliation_claims", "fk_run_stale_reconciliation_claims_run"),
@@ -571,6 +585,7 @@ CRITICAL_CONSTRAINTS = (
     ("object_deletion_outbox", "object_deletion_outbox_file_id_fkey"),
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
+    ("sandbox_leases", "chk_sandbox_leases_executor_cleanup_status"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_pkey"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_attempt_id_fkey"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_lease_id_fkey"),
@@ -1482,6 +1497,29 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "status = 'active' and executor_terminal_json is null "
         "and executor_reconciliation_context_json is not null "
         "and executor_reconciliation_status = any array['waiting_terminal', 'retry', 'claimed']",
+    ),
+    ConcurrentIndexMigration(
+        "idx_sandbox_leases_executor_probe_due",
+        "create index concurrently if not exists idx_sandbox_leases_executor_probe_due "
+        "on sandbox_leases(executor_heartbeat_at asc nulls first, updated_at asc, id asc) "
+        "where status = 'active' and executor_status in ('accepted', 'running')",
+        "sandbox_leases",
+        ("executor_heartbeat_at", "updated_at", "id"),
+        (False, False, False),
+        "status = 'active' and executor_status = any array['accepted', 'running']",
+    ),
+    ConcurrentIndexMigration(
+        "idx_sandbox_leases_executor_cleanup_due",
+        "create index concurrently if not exists idx_sandbox_leases_executor_cleanup_due "
+        "on sandbox_leases((coalesce(executor_cleanup_claimed_at, executor_terminal_received_at, created_at)), id asc) "
+        "where status in ('active', 'released') "
+        "and executor_cleanup_status in ('cleanup_pending', 'retry', 'failed', 'claimed')",
+        "sandbox_leases",
+        ("id",),
+        (False,),
+        "status = any array['active', 'released'] and executor_cleanup_status = any "
+        "array['cleanup_pending', 'retry', 'failed', 'claimed']",
+        key_expressions=("coalesce(executor_cleanup_claimed_at, executor_terminal_received_at, created_at)", "id"),
     ),
 )
 STATIC_INDEX_DEFINITIONS = (

@@ -188,12 +188,15 @@ class RunAttemptLifecycleService:
         attempt_id: str,
         write_detail: bool,
     ) -> None:
-        if attempt is not None and self.settlement_projection is not None and write_detail:
+        if attempt is None or self.settlement_projection is None:
+            return
+        if await self.settlement_projection.attempt_writer_active(conn):
+            await self.settlement_projection.refresh_snapshot_in_transaction(
+                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            )
+        elif write_detail:
             await self.settlement_projection.refresh_in_transaction(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                attempt_id=attempt_id,
+                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
             )
 
     async def restore_reconciliation(
@@ -290,6 +293,13 @@ class RunAttemptLifecycleService:
             run_id=str(attempt["run_id"]),
             attempt_id=str(attempt["id"]),
         )
+        if self.settlement_projection is not None and await self.settlement_projection.attempt_writer_active(conn):
+            await self.settlement_projection.initialize_attempt_in_transaction(
+                conn,
+                tenant_id=str(attempt["tenant_id"]),
+                run_id=str(attempt["run_id"]),
+                attempt_id=str(attempt["id"]),
+            )
         await self._refresh_settlement(
             conn,
             attempt,
