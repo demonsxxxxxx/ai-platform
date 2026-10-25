@@ -58,6 +58,21 @@ TARGET_SCHEMA_VERSION = SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
+RUN_STATUS_CONSTRAINT_NAME = "chk_runs_status"
+RUN_STATUS_LOCK_TIMEOUT = "2s"
+RUN_STATUS_VALIDATION_TIMEOUT = "30s"
+RUN_STATUS_CHECK_EXPRESSION = """status is not null
+  and status = any (array[
+    'queued'::text, 'running'::text, 'cancel_requested'::text,
+    'succeeded'::text, 'failed'::text, 'cancelled'::text,
+    'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+    'dead-lettered'::text
+  ])"""
+RUN_STATUS_CHECK_DEFINITION = "CHECK (status IS NOT NULL AND (status = ANY (ARRAY[" \
+    "'queued'::text, 'running'::text, 'cancel_requested'::text, " \
+    "'succeeded'::text, 'failed'::text, 'cancelled'::text, " \
+    "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, " \
+    "'dead-lettered'::text])))"
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
@@ -103,6 +118,7 @@ CRITICAL_RELATIONS = (
 )
 RETIRED_RELATIONS = ("run_tool_permission_requests",)
 CRITICAL_COLUMNS = (
+    ("schema_migrations", "state", "text", True),
     ("mcp_servers", "integration_kind", "text", True),
     ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
@@ -1331,10 +1347,18 @@ def schema_sql() -> str:
 
 def schema_checksum(sql: str | None = None) -> str:
     core_sql = sql if sql is not None else schema_sql()
+    status_constraint_contract = (
+        f"{RUN_STATUS_CONSTRAINT_NAME}:CHECK ({RUN_STATUS_CHECK_EXPRESSION})\n"
+        f"expected={RUN_STATUS_CHECK_DEFINITION}"
+    )
     index_contract = "\n".join(
         f"{migration.name}:{migration.checksum_sha256}" for migration in CONCURRENT_INDEX_MIGRATIONS
     )
-    return hashlib.sha256(f"{core_sql}\n-- concurrent-index-contract\n{index_contract}".encode()).hexdigest()
+    contract = (
+        f"{core_sql}\n-- run-status-constraint-contract\n{status_constraint_contract}"
+        f"\n-- concurrent-index-contract\n{index_contract}"
+    )
+    return hashlib.sha256(contract.encode()).hexdigest()
 
 
 def _critical_trigger_contract() -> tuple[tuple[Any, ...], ...]:
@@ -1367,9 +1391,13 @@ async def _ensure_ledger(conn: Any) -> None:
         create table if not exists schema_migrations (
           version text primary key,
           checksum_sha256 text not null,
+          state text not null default 'applied',
           applied_at timestamptz not null default now()
         )
         """
+    )
+    await conn.execute(
+        "alter table schema_migrations add column if not exists state text not null default 'applied'"
     )
     await conn.execute(
         """
@@ -1386,6 +1414,91 @@ async def _ensure_ledger(conn: Any) -> None:
         )
         """
     )
+
+
+def _normalized_constraint_definition(definition: str) -> str:
+    without_not_valid = re.sub(r"\s+not\s+valid\s*$", "", definition, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", "", without_not_valid.lower())
+    return re.sub(r"^check\(\((.*)\)\)$", r"check(\1)", normalized)
+
+
+async def _run_status_constraint_state(conn: Any) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select contype::text as constraint_type,
+               convalidated as validated,
+               pg_get_constraintdef(oid, true) as definition
+        from pg_constraint
+        where conrelid = to_regclass('runs')
+          and conname = %s
+        """,
+        (RUN_STATUS_CONSTRAINT_NAME,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    if (
+        str(row.get("constraint_type") or "") != "c"
+        or _normalized_constraint_definition(str(row.get("definition") or ""))
+        != _normalized_constraint_definition(RUN_STATUS_CHECK_DEFINITION)
+    ):
+        raise SchemaMigrationError("runs_status_constraint_definition_mismatch")
+    return row
+
+
+async def _install_run_status_constraint(
+    *,
+    transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
+) -> bool:
+    """Install the check without scanning rows, then commit its short table lock."""
+
+    async with transaction_factory() as conn:
+        current = await _run_status_constraint_state(conn)
+        if current is not None:
+            return False
+        await conn.execute(f"SET LOCAL lock_timeout = '{RUN_STATUS_LOCK_TIMEOUT}'")
+        await conn.execute(
+            f"ALTER TABLE runs ADD CONSTRAINT {RUN_STATUS_CONSTRAINT_NAME} "
+            f"CHECK ({RUN_STATUS_CHECK_EXPRESSION}) NOT VALID"
+        )
+        return True
+
+
+async def _validate_run_status_constraint(
+    *,
+    transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
+) -> bool:
+    """Validate in its own transaction with bounded lock acquisition and scan time."""
+
+    async with transaction_factory() as conn:
+        current = await _run_status_constraint_state(conn)
+        if current is None:
+            raise SchemaMigrationError("runs_status_constraint_missing")
+        if bool(current.get("validated")):
+            return False
+        await conn.execute(f"SET LOCAL lock_timeout = '{RUN_STATUS_LOCK_TIMEOUT}'")
+        await conn.execute(
+            f"SET LOCAL statement_timeout = '{RUN_STATUS_VALIDATION_TIMEOUT}'"
+        )
+        await conn.execute(
+            f"ALTER TABLE runs VALIDATE CONSTRAINT {RUN_STATUS_CONSTRAINT_NAME}"
+        )
+        return True
+
+
+async def _ensure_run_status_constraint(
+    *,
+    transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
+) -> bool:
+    """Commit NOT VALID installation before the separately bounded validation scan."""
+
+    installed = await _install_run_status_constraint(
+        transaction_factory=transaction_factory,
+    )
+    validated = await _validate_run_status_constraint(
+        transaction_factory=transaction_factory,
+    )
+    return installed or validated
 
 
 async def _default_index_connection_factory() -> Any:
@@ -1637,6 +1750,7 @@ async def apply_migrations(
     sql = schema_sql()
     checksum = schema_checksum(sql)
     core_applied = False
+    schema_migration_completed = False
     coordinator = await index_connection_factory()
     locked = False
     primary_error: BaseException | None = None
@@ -1647,24 +1761,49 @@ async def apply_migrations(
             await conn.execute("select pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
             await _ensure_ledger(conn)
             cursor = await conn.execute(
-                "select checksum_sha256 from schema_migrations where version = %s",
+                "select checksum_sha256, state from schema_migrations where version = %s",
                 (TARGET_SCHEMA_VERSION,),
             )
             row = await cursor.fetchone()
             if row is not None:
                 if str(row.get("checksum_sha256") or "") != checksum:
                     raise SchemaMigrationError("schema_migration_checksum_mismatch")
+                migration_state = str(row.get("state") or "")
+                if migration_state not in {"pending", "applied"}:
+                    raise SchemaMigrationError("schema_migration_state_invalid")
             else:
                 await _require_no_future_open_attempt_heartbeats(conn)
                 await conn.execute(sql)
                 await conn.execute(
                     """
-                    insert into schema_migrations(version, checksum_sha256)
-                    values (%s, %s)
+                    insert into schema_migrations(version, checksum_sha256, state)
+                    values (%s, %s, 'pending')
                     """,
                     (TARGET_SCHEMA_VERSION, checksum),
                 )
+                migration_state = "pending"
                 core_applied = True
+        status_constraint_changed = await _ensure_run_status_constraint(
+            transaction_factory=transaction_factory,
+        )
+        if migration_state == "pending":
+            async with transaction_factory() as conn:
+                await conn.execute(
+                    "select pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,)
+                )
+                cursor = await conn.execute(
+                    """
+                    update schema_migrations
+                    set state = 'applied'
+                    where version = %s and checksum_sha256 = %s and state = 'pending'
+                    returning state
+                    """,
+                    (TARGET_SCHEMA_VERSION, checksum),
+                )
+                completed = await cursor.fetchone()
+                if not completed or completed.get("state") != "applied":
+                    raise SchemaMigrationError("schema_migration_completion_state_missing")
+                schema_migration_completed = True
         indexes_applied = await _apply_concurrent_indexes(coordinator)
     except BaseException as exc:
         primary_error = exc
@@ -1688,7 +1827,9 @@ async def apply_migrations(
                 if primary_error is None:
                     raise
     return {
-        "status": "applied" if core_applied or indexes_applied else "current",
+        "status": "applied"
+        if core_applied or status_constraint_changed or schema_migration_completed or indexes_applied
+        else "current",
         "version": TARGET_SCHEMA_VERSION,
         "checksum_sha256": checksum,
     }
@@ -1901,7 +2042,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         select
           exists (
             select 1 from schema_migrations
-            where version = %s and checksum_sha256 = %s
+            where version = %s and checksum_sha256 = %s and state = 'applied'
           ) as ledger_current,
           (
             select count(*)

@@ -11,7 +11,7 @@ Workflow 文件是唯一配置来源；本页只说明拓扑和本地复现方�
 
 | 文件 | 触发条件 | 覆盖内容 | 是否自动发布 | 备注 |
 |---|---|---|---|---|
-| ai-platform-backend.yml | PR→main、push main、workflow_dispatch | Linux 8 个完整文件分片 + Windows runtime 节点分片；preflight/compileall/SSE cutover + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | PR 时按影响范围构建镜像；main push 不构建，镜像发布由 packaging 手动触发 |
+| ai-platform-backend.yml | PR→main/生命周期 phase 分支、push main、workflow_dispatch | Linux 8 个完整文件分片 + Windows runtime 节点分片；preflight/compileall/SSE cutover + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | PR 时按影响范围构建镜像；main push 不构建，镜像发布由 packaging 手动触发 |
 | ai-platform-frontend.yml | PR→main、push main、workflow_dispatch | Windows 4 个 JS 测试分片、独立 Python 合同/投影审计、lint/build/trace + Linux 镜像/Trivy/provenance/启动健康 + required 聚合 | 否 | 同上 |
 | ai-platform-packaging-publish.yml | 仅 dispatch（main，confirm_release=PUBLISH_MAIN）；合并 main 不触发 | 不可变镜像 + SBOM + cosign 签名/验证 + manifest + Compose 包 + 可选版本化 Release | 是（受控） | 无 PR 触发 |
 | ai-platform-trusted-governance-v2.yml | pull_request_target（opened/synchronize/reopened/edited） | 受信基线 + PR head 验证 + Ruff + code_governance + architecture_governance | 否 | governance 是 authority object（candidate 不可放宽自身结果） |
@@ -33,8 +33,11 @@ Windows runtime 分片只补充 Linux 无法执行的 Job Object、host-bind 和
 真实 MCP/Capability Distribution PostgreSQL 测试使用对应的专用 DSN，不能借用
 已有数据库容器但漏传连接配置而产生 skip。
 
-后端和 Agent/Skill 均使用 `tools/run_test_stage.py`、600 秒 stage deadline
-及显式 branch coverage；每个分片上传自己的 evidence、JUnit 和 coverage JSON。
+后端和 Agent/Skill 均使用 `tools/run_test_stage.py`、显式 branch coverage
+及每分片 evidence、JUnit 和 coverage JSON。后端常规分片使用 600 秒 stage
+deadline；`lifecycle-control-chain` 使用 1,800 秒 stage deadline 和 50 分钟 Job
+deadline，完整生命周期 evidence 与其绑定的源码、镜像、依赖版本和 profile
+artifact 一同上传。
 PG/Redis 必需分片和 Windows 分片保持 zero-skips；sandbox-runtime 与 release-governance-authority
 仍可能报告另一个平台的 skip。真实 OpenSandbox 凭据隔离是独立 governed 环境验收，
 其未执行状态不能由普通 CI 的 skip 或镜像构建成功替代。没有 coverage 阈值门禁。

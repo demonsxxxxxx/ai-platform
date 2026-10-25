@@ -52,12 +52,15 @@ class SharedMigrationState:
         self.lock = asyncio.Lock()
         self.index_lock = asyncio.Lock()
         self.ledger = {}
+        self.migration_states = {}
         self.index_ledger = {}
         self.indexes = set()
         self.schema_execute_count = 0
         self.index_execute_count = 0
         self.run_attempt_heartbeat_contract_supported = False
         self.future_open_attempt_heartbeat = False
+        self.run_status_constraint_exists = False
+        self.run_status_constraint_validated = False
 
 
 class FakeMigrationConnection:
@@ -69,6 +72,8 @@ class FakeMigrationConnection:
         normalized = " ".join(str(statement).split()).lower()
         if str(statement) == schema_migrations.schema_sql():
             self.state.schema_execute_count += 1
+            self.state.run_status_constraint_exists = True
+            self.state.run_status_constraint_validated = True
             await asyncio.sleep(0)
             return FakeCursor(None)
         if normalized.startswith("select pg_advisory_xact_lock"):
@@ -77,11 +82,30 @@ class FakeMigrationConnection:
             return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_migrations"):
             return FakeCursor(None)
+        if normalized.startswith("alter table schema_migrations add column if not exists state"):
+            return FakeCursor(None)
+        if normalized.startswith("set local ") or normalized.startswith("alter table schema_migrations add column if not exists state"):
+            return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_index_migrations"):
             return FakeCursor(None)
-        if normalized.startswith("select checksum_sha256 from schema_migrations"):
+        if normalized.startswith("select checksum_sha256, state from schema_migrations"):
             checksum = self.state.ledger.get(params[0])
-            return FakeCursor(None if checksum is None else {"checksum_sha256": checksum})
+            return FakeCursor(
+                None
+                if checksum is None
+                else {
+                    "checksum_sha256": checksum,
+                    "state": self.state.migration_states.get(params[0], "applied"),
+                }
+            )
+        if "from pg_constraint" in normalized and "to_regclass('runs')" in normalized:
+            if not self.state.run_status_constraint_exists:
+                return FakeCursor(None)
+            return FakeCursor({
+                "constraint_type": "c",
+                "validated": self.state.run_status_constraint_validated,
+                "definition": schema_migrations.RUN_STATUS_CHECK_DEFINITION,
+            })
         if "to_regclass('run_attempts') is not null" in normalized:
             return FakeCursor(
                 {
@@ -97,6 +121,17 @@ class FakeMigrationConnection:
             )
         if normalized.startswith("insert into schema_migrations"):
             self.state.ledger[params[0]] = params[1]
+            self.state.migration_states[params[0]] = "pending"
+            return FakeCursor(None)
+        if normalized.startswith("update schema_migrations"):
+            self.state.migration_states[params[0]] = "applied"
+            return FakeCursor({"state": "applied"})
+        if normalized.startswith("alter table runs add constraint chk_runs_status"):
+            self.state.run_status_constraint_exists = True
+            self.state.run_status_constraint_validated = False
+            return FakeCursor(None)
+        if normalized.startswith("alter table runs validate constraint chk_runs_status"):
+            self.state.run_status_constraint_validated = True
             return FakeCursor(None)
         raise AssertionError(normalized)
 
@@ -119,6 +154,8 @@ class FakeIndexConnection:
             self.locked = False
             return FakeCursor({"pg_advisory_unlock": True})
         if normalized.startswith("create table if not exists schema_migrations"):
+            return FakeCursor(None)
+        if normalized.startswith("set local ") or normalized.startswith("alter table schema_migrations add column if not exists state"):
             return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_index_migrations"):
             return FakeCursor(None)
@@ -190,11 +227,13 @@ class FakeSchemaStatusConnection:
         missing_retired_relation: str | None = None,
         constraint_definitions_current: bool = True,
         model_index_definitions_current: bool = True,
+        ledger_current: bool = True,
     ):
         self.missing_relation = missing_relation
         self.missing_retired_relation = missing_retired_relation
         self.constraint_definitions_current = constraint_definitions_current
         self.model_index_definitions_current = model_index_definitions_current
+        self.ledger_current = ledger_current
         self.calls = []
 
     async def execute(self, statement, params=None):
@@ -219,7 +258,10 @@ class FakeSchemaStatusConnection:
         if "from jsonb_to_recordset" in normalized and "indexes.indexrelid is not null" in normalized:
             return FakeCursor({"current": True})
         if normalized.startswith("with expected_indexes"):
-            return FakeCursor({"ledger_current": True, "index_ledger_current": True})
+            return FakeCursor({
+                "ledger_current": self.ledger_current,
+                "index_ledger_current": True,
+            })
         if "from pg_index indexes" in normalized:
             migration = next(
                 item
@@ -283,6 +325,7 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
     assert state.schema_execute_count == 1
     assert state.index_execute_count == len(schema_migrations.CONCURRENT_INDEX_MIGRATIONS)
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == schema_migrations.schema_checksum()
+    assert state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] == "applied"
     assert {
         row["target_version"] for row in state.index_ledger.values()
     } == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
@@ -497,6 +540,24 @@ async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema
 
 
 @pytest.mark.asyncio
+async def test_pending_target_ledger_resumes_without_reapplying_core_schema():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] = schema_migrations.schema_checksum()
+    state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] = "pending"
+    state.run_status_constraint_exists = True
+    state.run_status_constraint_validated = True
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.schema_execute_count == 0
+    assert state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] == "applied"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_relation", ["model_gateway_revisions", "model_catalog_entries"])
 async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_missing(
     missing_relation: str,
@@ -508,6 +569,16 @@ async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_m
     assert status["ready"] is False
     assert status["relations_current"] is False
     assert status["contracts_current"] is False
+
+
+@pytest.mark.asyncio
+async def test_schema_status_does_not_treat_pending_schema_ledger_as_ready():
+    status = await schema_migrations.schema_status(
+        FakeSchemaStatusConnection(ledger_current=False)
+    )
+
+    assert status["ready"] is False
+    assert status["ledger_current"] is False
 
 
 @pytest.mark.asyncio

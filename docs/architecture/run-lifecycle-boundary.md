@@ -127,6 +127,13 @@ Pure Runs policy owns:
 - typed `RunTerminalizationProgress` semantics;
 - safe terminal result/error projection rules.
 
+`RunTerminalizationProgress` exposes `completed`, `status`, and `did_transition`
+as typed fields; mapping-style `get` compatibility is retired. The Runs API
+continues to export this value. `is_terminal(requested_status)` and truthiness
+retain terminal-status checks; `did_transition` remains the separate fact that
+the current attempt won the durable transition. This is an in-process value,
+not a persisted-record or HTTP response schema.
+
 Public sanitization uses an explicit stable public contract. Raw child result,
 error, dispatch metadata, storage identity, command, secret, or private path
 never becomes a Run event merely because it was present in a database record.

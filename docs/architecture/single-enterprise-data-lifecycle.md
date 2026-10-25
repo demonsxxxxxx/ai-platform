@@ -185,9 +185,10 @@ python -m app.schema_migrations apply
 The runner holds a session-scoped advisory coordinator lock across both phases.
 Within the core phase it also takes a transaction-scoped advisory lock, creates
 the `schema_migrations` ledger when bootstrapping, applies the versioned core
-schema, and records the target version plus SHA-256 checksum in the same
-transaction. A matching target ledger and checksum skips the core SQL; safe
-repeated invocation does not imply that business-schema changes are additive or
+schema, and records the target version plus SHA-256 checksum as `pending` in the
+same transaction. After required checks validate, a separate transaction marks
+the target `applied`. A matching applied or pending target and checksum skips
+the core SQL; safe repeated invocation does not imply that business-schema changes are additive or
 reversible. New hot-table indexes are a separate resumable phase recorded in
 `schema_index_migrations`: each is built with `CREATE INDEX CONCURRENTLY`
 outside the core transaction, catalog validity is checked before it is marked
@@ -198,19 +199,30 @@ across the concurrent index build. Every committed schema change must advance
 checksum mismatch.
 
 The migration runner owns a separate autocommit coordinator connection whose
-session advisory lock spans the core transaction and concurrent-index phase.
+session advisory lock spans the core transaction, Run status validation, target
+ledger completion and concurrent-index phase.
 Failed or cancelled autocommit setup closes the connection before ownership can
 transfer to the runner. Once transferred, the runner always attempts session
 close, including when explicit advisory unlock fails. The first failure or
 cancellation remains primary; a cleanup failure is raised when no earlier
-failure exists. This does not change migration transactions, ledger checksums,
-or retry/idempotency semantics.
+failure exists. The target ledger checksum and retry semantics remain bound to
+the exact schema contract.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
 startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
 verify the target ledger and index-ledger entries, checksum, critical column
 types/nullability, named constraints, and valid/ready indexes. Connectivity or
 relation existence alone is insufficient.
+
+The Run status check keeps its inline validated form for a newly created
+`runs` table. For an existing table, the coordinator adds the exact named check
+as `NOT VALID` under a 2-second lock-acquisition budget and commits that DDL
+before scanning historical rows. A separate transaction validates it with the
+same lock-acquisition budget and a 30-second statement budget, allowing ordinary
+Run writes during the scan. The target schema-ledger row remains `pending`
+until validation succeeds; a timeout or invalid historical value leaves the
+check unvalidated and the target pending for a safe retry. The migration rejects
+an unexpected same-name check and never rewrites existing Run statuses.
 
 Upgrade procedure:
 
