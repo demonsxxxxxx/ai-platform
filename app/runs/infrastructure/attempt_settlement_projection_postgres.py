@@ -256,6 +256,7 @@ async def refresh_attempt_settlement_projection(
 ) -> AttemptSettlementProjection | None:
     """Project the current source rows after the caller's transaction write."""
 
+    await _require_legacy_settlement_mapping_phase(conn)
     attempt, run, leases = await _load_locked_attempt_facts(
         conn,
         key=(tenant_id, run_id, attempt_id),
@@ -381,6 +382,24 @@ def _cursor_after(keys: list[tuple[str, str, str]], limit: int) -> tuple[str, st
     return keys[-1] if len(keys) == limit else None
 
 
+async def _require_legacy_settlement_mapping_phase(conn: Any) -> None:
+    writer = await (
+        await conn.execute(
+            "select writer_version from run_attempt_settlement_writer where singleton = true"
+        )
+    ).fetchone()
+    retirement = await (
+        await conn.execute(
+            "select state from run_attempt_settlement_retirement where singleton = true"
+        )
+    ).fetchone()
+    if (
+        str(writer.get("writer_version") or "") == "attempt.v1"
+        or str(retirement.get("state") or "") == "retired"
+    ):
+        raise RuntimeError("attempt_settlement_legacy_mapping_unavailable_after_writer_cutover")
+
+
 async def backfill_attempt_settlement_projections(
     conn: Any,
     *,
@@ -391,6 +410,7 @@ async def backfill_attempt_settlement_projections(
     """Insert one bounded page of mappings; repeats never overwrite a receipt."""
 
     limit = _page_limit(limit)
+    await _require_legacy_settlement_mapping_phase(conn)
     keys = await _page_attempt_keys(conn, tenant_id=tenant_id, after=after, limit=limit)
     inserted = 0
     existing = 0
@@ -464,6 +484,7 @@ async def compare_attempt_settlement_projections(
     """Compare one bounded page; this result cannot establish global readiness."""
 
     limit = _page_limit(limit)
+    await _require_legacy_settlement_mapping_phase(conn)
     keys = await _page_attempt_keys(conn, tenant_id=tenant_id, after=after, limit=limit)
     counts: dict[str, Any] = {
         "attempt_count": len(keys),
@@ -754,6 +775,7 @@ def _cutover_ready(summary: Mapping[str, Any]) -> bool:
 
 async def _unbound_execution_lease_count(conn: Any) -> int:
     """Keep legacy execution evidence outside the Attempt ledger in the denominator."""
+    await _require_legacy_settlement_mapping_phase(conn)
     row = await (await conn.execute(
         """
         select count(*)::bigint as count from sandbox_leases lease
@@ -882,6 +904,27 @@ async def activate_attempt_settlement_storage(
     current_version = str(marker.get("storage_version") or "") if marker else ""
     if current_version not in ATTEMPT_SETTLEMENT_STORAGE_VERSIONS:
         raise RuntimeError("attempt_settlement_storage_marker_invalid")
+    writer_marker = await (
+        await conn.execute(
+            "select writer_version from run_attempt_settlement_writer where singleton = true"
+        )
+    ).fetchone()
+    retirement_marker = await (
+        await conn.execute(
+            "select state from run_attempt_settlement_retirement where singleton = true"
+        )
+    ).fetchone()
+    writer_version = str(writer_marker.get("writer_version") or "") if writer_marker else ""
+    retirement_state = str(retirement_marker.get("state") or "") if retirement_marker else ""
+    if writer_version == "attempt.v1" or retirement_state == "retired":
+        return {
+            "status": "already_active" if current_version == "attempt.v1" else "blocked",
+            "storage_version": current_version,
+            "writer_version": writer_version,
+            "retirement_state": retirement_state or None,
+            "legacy_comparison": "not_applicable_after_writer_activation",
+            "activation_authorized": False,
+        }
     count_row = await (
         await conn.execute("select count(*)::bigint as attempt_count from run_attempts")
     ).fetchone()

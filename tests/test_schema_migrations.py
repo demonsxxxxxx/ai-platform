@@ -61,6 +61,7 @@ class SharedMigrationState:
         self.future_open_attempt_heartbeat = False
         self.run_status_constraint_exists = False
         self.run_status_constraint_validated = False
+        self.retirement_state = "expanded"
 
 
 class FakeMigrationConnection:
@@ -70,6 +71,11 @@ class FakeMigrationConnection:
 
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": self.state.retirement_state,
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
         if str(statement) == schema_migrations.schema_sql():
             self.state.schema_execute_count += 1
             self.state.run_status_constraint_exists = True
@@ -143,6 +149,11 @@ class FakeIndexConnection:
 
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": self.state.retirement_state,
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
         if normalized.startswith("select pg_try_advisory_lock"):
             if self.state.index_lock.locked():
                 return FakeCursor({"acquired": False})
@@ -239,6 +250,17 @@ class FakeSchemaStatusConnection:
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
         self.calls.append((normalized, params))
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": "expanded",
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
+        if "legacy_column_count" in normalized:
+            return FakeCursor({
+                "legacy_column_count": 8,
+                "legacy_index_count": 3,
+                "legacy_constraint_count": 1,
+            })
         if "from jsonb_array_elements_text" in normalized:
             if "to_regclass(relation_name) is null" in normalized:
                 return FakeCursor(
@@ -782,7 +804,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION == "2026.10.25.8"
     assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION == "2026.10.25.11"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
     assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -794,6 +817,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert "run_attempt_settlements" in schema_migrations.CRITICAL_RELATIONS
     assert "run_attempt_settlement_storage" in schema_migrations.CRITICAL_RELATIONS
     assert "run_stale_reconciliation_claims" in schema_migrations.CRITICAL_RELATIONS
+    assert "run_attempt_settlement_retirement" in schema_migrations.CRITICAL_RELATIONS
     assert "execution_supervision_domains" in schema_migrations.CRITICAL_RELATIONS
     assert "execution_supervision_claims" in schema_migrations.CRITICAL_RELATIONS
     assert ("execution_supervision_domains", "mode", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -826,7 +850,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -845,6 +869,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_attempt_settlements",
         "run_attempt_settlement_storage",
         "run_attempt_settlement_writer",
+        "run_attempt_settlement_retirement",
         "run_stale_reconciliation_claims",
         "execution_supervision_domains",
         "execution_supervision_claims",
@@ -1158,6 +1183,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
+            "sandbox_leases",
+            "trg_reject_legacy_attempt_settlement_write",
+            "reject_legacy_attempt_settlement_write",
+            19,
+        ),
+        (
             "run_attempts",
             "trg_run_attempt_heartbeat_monotonicity_guard",
             "ai_platform_guard_run_attempt_heartbeat_monotonicity",
@@ -1181,6 +1212,32 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "run_attempt_settlement_retirement",
+            "run_attempt_settlement_retirement_pkey",
+            "p",
+            "PRIMARY KEY (singleton)",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_singleton",
+            "c",
+            "CHECK (singleton)",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_state",
+            "c",
+            "CHECK (state = ANY (ARRAY['expanded'::text, 'retired'::text]))",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_receipt",
+            "c",
+            "CHECK (state = 'expanded'::text AND retired_at IS NULL OR "
+            "state = 'retired'::text AND retired_at IS NOT NULL AND "
+            "minimum_compatible_version IS NOT NULL AND operator_declaration IS NOT NULL)",
+        ),
         (
             "runs",
             "chk_runs_status",

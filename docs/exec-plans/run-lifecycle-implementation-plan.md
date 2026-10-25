@@ -389,6 +389,29 @@ diagnostics、readiness 和 `idx_sandbox_leases_executor_reconcile*`。
 - 验收：旧库升级、历史读取、重复升级、新数据写入与十四场景；生产旧入口/SQL 引用清单归零，历史 ADR/迁移 SQL/禁止回退测试的命中分类保留。完整运行清理与下载/续接验收闭合。
 - 回退：这是破坏性 schema 变更，不支持简单二进制回退；使用已演练的停写、备份恢复或前向修复程序，并声明会影响哪些新数据。不要自动执行 destructive down migration。
 
+当前编码切片把 2026.10.25.11 定义为可升级的 expanded schema；它创建独立
+retirement marker 与 N41 旧写保护触发器，保留旧列供显式 operator 切换，不在
+普通 schema apply 中删除数据。tools/attempt_settlement_storage.py 的
+retirement-status 与 prepare-retirement 只读；只有 retire 会在短 lock timeout 和有界
+statement timeout 下，按 Run → Sandbox lease → Attempt → dispatch → settlement/marker
+顺序取表级写 fence，再首次读取 MVCC 数据。该命令要求操作员声明旧 binary 已停止、
+Run/资源 claim 已排空、备份恢复演练完成，并提供最低兼容版本；这些声明被记录，
+代码不会把它们当成生产验真。
+
+退役前同时要求 reader/writer 均为 attempt.v1、每个 Attempt detail 已映射、旧
+receipt 与 context/intent payload 在 detail 中有精确保留载体，且结算、旧结算、
+probe、cleanup、supervision、stale Run claim 和待处理 settlement 均排空。为使
+操作简单可审，当前实现还要求没有 queued/running/cancel-requested Run、active
+Sandbox lease 和 unresolved dispatch；这会暂时阻止忙碌系统的退役。不会要求旧
+status/retry/attempt-counter 列与新 Attempt 事实相等。迁移显式删除八列、三个旧
+索引和旧 status constraint，不使用 CASCADE；持久 marker 记录退役版本、声明和
+兼容下限。后续 schema apply 会按 marker 跳过旧列/索引，并在 marker 与实际布局
+不一致时让 readiness 失败关闭。退役后历史 mapping/backfill 明确拒绝，N40 prepare
+或 activate 在 writer 已切换/已退役时不再访问旧 settlement 列。
+
+生产停写、排空、备份恢复演练、最低镜像兼容性、真实 SDK/Sandbox 与十四场景验收
+仍需由维护者在真实环境执行；本地 PostgreSQL 证据只覆盖合成数据库和代码约束。
+
 ### U1：可选的“正在整理结果”展示
 
 依赖 N40 的稳定持久进度；由 Runs 公开投影、Streaming 和前端 owner 共同完成。先复用现有 phase 能力；如涉及新字段/事件，按现有 schema、validator、history、hydration、renderer 合同一起演进。保持 queued/running/terminal 状态枚举不变。
