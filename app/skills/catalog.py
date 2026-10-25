@@ -31,7 +31,7 @@ from app.skills.pinning import (
     validate_skill_version_dependency_policy,
 )
 from app.skills.api import MAX_SKILL_RUN_MANIFESTS, AuthorizedSkillCatalogError
-from app.validation import SAFE_ID_PATTERN
+from app.kernel.identifiers import SAFE_ID_PATTERN
 
 
 AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION = "ai-platform.authorized-skill-catalog.v1"

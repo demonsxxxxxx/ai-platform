@@ -26,7 +26,7 @@ from app.public_context_keys import (
     public_context_input_key_findings,
     safe_public_context_pack_version,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"

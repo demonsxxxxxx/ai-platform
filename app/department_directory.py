@@ -10,7 +10,7 @@ import httpx
 from app.identity.api import is_department_id
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
 from app.settings import get_settings, resolve_dingtalk_directory_base_url
-from app.validation import assert_safe_department_authority_id
+from app.identity.api import assert_safe_department_authority_id
 
 MAX_DIRECTORY_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_DIRECTORY_NODES = 5_000

@@ -25,7 +25,7 @@ from app.files.api import (
     normalized_xlsx_content_type,
     parser_spec_for_attachment,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 ATTACHMENT_CONTEXT_SCHEMA_VERSION = "ai-platform.attachment-context.v1"

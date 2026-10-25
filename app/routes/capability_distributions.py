@@ -32,7 +32,7 @@ from app.models import (
 )
 from app.platform.postgres import errors as platform_errors
 from app.skills.infrastructure import catalog_postgres as skills_catalog
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

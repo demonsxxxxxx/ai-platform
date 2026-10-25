@@ -45,7 +45,7 @@ from app.platform.postgres import errors as platform_errors
 from app.runs.infrastructure import (
     capability_admission_postgres as runs_capability_admission,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
