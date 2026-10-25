@@ -956,8 +956,20 @@ async def quarantine_sandbox_executor_reconciliation(
             executor_probe_claim_token = null,
             executor_probe_claimed_at = null,
         """
-        compatibility_predicate = "and executor_cleanup_status = 'waiting_settlement'"
-        parameters = (error[:1000], lease_id)
+        compatibility_predicate = """
+            and executor_cleanup_status = 'waiting_settlement'
+            and exists (
+              select 1 from run_attempt_settlements detail
+              where detail.tenant_id = sandbox_leases.tenant_id
+                and detail.run_id = sandbox_leases.run_id
+                and detail.attempt_id = sandbox_leases.attempt_id
+                and detail.source_lease_id = sandbox_leases.id
+                and detail.mapping_state = 'mapped'
+                and detail.settlement_phase = 'claimed'
+                and detail.settlement_claim_token = %s
+            )
+        """
+        parameters = (error[:1000], lease_id, claim_token)
 
     cursor = await connection.execute(
         f"""

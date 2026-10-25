@@ -483,8 +483,15 @@ class AttemptSettlementShadowLeaseRepository:
         return row
 
     async def quarantine_sandbox_executor_reconciliation(self, conn: Any, **kwargs: Any) -> bool:
-        write_detail = await self._write_enabled(conn, None)
+        scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
+        write_detail = await self._write_enabled(conn, scope)
         active_writer = await self._writer_active(conn) if write_detail else False
+        if active_writer:
+            if scope is None or not await self._settlement.settlement_claim_current(
+                conn, **scope, lease_id=str(kwargs["lease_id"]),
+                claim_token=str(kwargs["claim_token"]),
+            ):
+                return False
         changed = await self._repository.quarantine_sandbox_executor_reconciliation(
             conn, **kwargs, legacy_settlement_compat=not active_writer,
         )
