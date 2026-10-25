@@ -136,7 +136,7 @@ function projectionStatusToneClass(tone: ProjectionStatusTone) {
     case "warning":
       return "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning)]";
     case "danger":
-      return "border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]";
+      return "border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)]";
     case "muted":
     default:
       return "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";

@@ -27,6 +27,16 @@
 }
 
 /* ── Content layers ── */
+
+/* General entry: headline + suggestions sit above a bottom-aligned composer. */
+.welcome-root.chat-entry-root {
+  justify-content: flex-start;
+}
+
+.welcome-root.chat-entry-root .chat-start-surface {
+  flex: 1 1 auto;
+}
+
 .welcome-greeting,
 .welcome-subtitle,
 .welcome-suggestions {

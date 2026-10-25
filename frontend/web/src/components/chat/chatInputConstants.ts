@@ -27,18 +27,18 @@ export const THINKING_LEVEL_COLOR: Record<
     text: "var(--theme-text-secondary)",
   },
   low: {
-    border: "color-mix(in srgb, #60a5fa 40%, transparent)",
-    bg: "color-mix(in srgb, #60a5fa 10%, transparent)",
-    text: "#60a5fa",
+    border: "var(--theme-info-ring)",
+    bg: "var(--theme-info-soft)",
+    text: "var(--theme-info-text)",
   },
   medium: {
-    border: "color-mix(in srgb, #fbbf24 40%, transparent)",
-    bg: "color-mix(in srgb, #fbbf24 10%, transparent)",
-    text: "#fbbf24",
+    border: "var(--theme-warning-ring)",
+    bg: "var(--theme-warning-soft)",
+    text: "var(--theme-warning-text)",
   },
   high: {
-    border: "color-mix(in srgb, #fb923c 40%, transparent)",
-    bg: "color-mix(in srgb, #fb923c 10%, transparent)",
-    text: "#fb923c",
+    border: "var(--theme-danger-ring)",
+    bg: "var(--theme-danger-soft)",
+    text: "var(--theme-danger-text)",
   },
 };

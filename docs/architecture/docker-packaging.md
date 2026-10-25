@@ -31,7 +31,19 @@ index digest:
 - `python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8`
 - `ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded`
 - `node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a`
-- `nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c`
+- `nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951`
+
+The frontend runtime uses the official `1.30.6-alpine` index to replace the
+`1.30.4-alpine` base affected by `CVE-2026-15176`, `CVE-2026-93479`, and
+`CVE-2026-97205`. Official Nginx images install the server and dynamic modules
+with exact package versions; ordinary Alpine package upgrades do not replace
+that group. Updating the base keeps their versions consistent. The index and
+Linux amd64/arm64 subjects are recorded in the official
+[Docker image inventory](https://github.com/docker-library/repo-info/blob/master/repos/nginx/remote/1.30.6-alpine.md).
+The existing APK security upgrades, libexpat minimum, proxy configuration,
+provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
+The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
+later for `CVE-2026-111497`; the base image ships `1.2.0-r1`.
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
@@ -69,8 +81,7 @@ production Compose authority.
 ## Phase 2 publication authority
 
 `.github/workflows/ai-platform-packaging-publish.yml` is the only registry
-publisher. It accepts a trusted `push` to `main`, or a `workflow_dispatch` whose
-selected ref is `main`, whose confirmation is the fixed `PUBLISH_MAIN` value,
+publisher. It runs only from a `workflow_dispatch` whose selected ref is `main`, whose confirmation is the fixed `PUBLISH_MAIN` value,
 and whose `packaging-publish` GitHub Environment protection permits the job.
 Repository and checkout identity are rechecked before the build. Pull request,
 `pull_request_target`, fork, tag, branch, and user-supplied ref inputs have no

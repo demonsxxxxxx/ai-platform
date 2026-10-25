@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -578,8 +579,19 @@ class FakeDockerClient:
             return
         network_id = str(network["attrs"]["Id"])
         networks = container.attrs["NetworkSettings"]["Networks"]
-        networks[network_name] = {"NetworkID": network_id, "Aliases": list(aliases or [])}
-        network["attrs"]["Containers"][container.id] = {"Name": container.name}
+        members = network["attrs"]["Containers"]
+        if container.labels.get("ai-platform.release-role") == "api":
+            host_octet = 2
+        else:
+            other_executors = set(members) - {container.id, self.api_container.id}
+            host_octet = 3 + len(other_executors)
+        ipv4_address = f"172.30.0.{host_octet}/24"
+        networks[network_name] = {
+            "NetworkID": network_id,
+            "Aliases": list(aliases or []),
+            "IPAddress": ipv4_address.split("/")[0],
+        }
+        members[container.id] = {"Name": container.name, "IPv4Address": ipv4_address}
 
     def detach_from_network(self, container: FakeDockerContainer, network_name: str) -> None:
         container.attrs["NetworkSettings"]["Networks"].pop(network_name, None)
@@ -1219,6 +1231,42 @@ def persisted_opensandbox_row(lease):
         "runtime_handle_verified_at": datetime.now(timezone.utc),
         "lease_payload_json": {
             "security_profile": "governed",
+            "attempt_id": lease.labels["ai-platform.attempt_id"],
+            "governed_egress_proof": proof,
+            "labels": {
+                key: value
+                for key, value in lease.labels.items()
+                if not key.startswith(
+                    (
+                        "ai-platform.executor.",
+                        "ai-platform.external_egress.",
+                        "ai-platform.governed_egress.",
+                    )
+                )
+            },
+        },
+    }
+
+
+def persisted_docker_row(lease):
+    proof = json.loads(lease.labels["ai-platform.governed_egress.proof"])
+    return {
+        "id": "lease-a",
+        "tenant_id": lease.tenant_id,
+        "workspace_id": lease.workspace_id,
+        "user_id": lease.user_id,
+        "session_id": lease.session_id,
+        "run_id": lease.run_id,
+        "attempt_id": lease.labels["ai-platform.attempt_id"],
+        "sandbox_mode": lease.sandbox_mode,
+        "provider": "docker",
+        "browser_enabled": lease.browser_enabled,
+        "runtime_container_id": lease.container_id,
+        "runtime_container_name": lease.container_name,
+        "runtime_executor_url": lease.executor_url,
+        "runtime_workspace_container_path": lease.workspace_container_path,
+        "runtime_handle_verified_at": datetime.now(timezone.utc),
+        "lease_payload_json": {
             "attempt_id": lease.labels["ai-platform.attempt_id"],
             "governed_egress_proof": proof,
             "labels": {
@@ -2324,7 +2372,7 @@ async def test_docker_provider_retains_safe_publish_wait_evidence_before_cleanup
         health_probe=lambda *_args: True,
     )
 
-    async def fail_after_executor_exit(container, *_args):
+    async def fail_after_executor_exit(container, *_args, **_kwargs):
         container.status = "exited"
         container.attrs["State"] = {
             "Status": "exited",
@@ -5165,6 +5213,81 @@ async def test_docker_provider_creates_owned_per_lease_internal_network(monkeypa
     assert kwargs["options"] == {"com.docker.network.bridge.enable_ip_masquerade": "false"}
 
 
+@pytest.mark.parametrize(
+    "options",
+    (
+        {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.enable_ipv4": "true",
+        },
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.enable_ipv6": "false",
+        },
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.enable_ipv4": "true",
+            "com.docker.network.enable_ipv6": "false",
+        },
+    ),
+)
+def test_docker_governed_network_accepts_optional_docker_default_options(options):
+    from app.platform.sandbox.docker_governed_network import docker_governed_network_identity
+
+    network = {
+        "attrs": {
+            "Id": "network-governed",
+            "Name": "sandbox-egress",
+            "Driver": "bridge",
+            "Internal": True,
+            "Options": options,
+        }
+    }
+
+    assert docker_governed_network_identity(network, "sandbox-egress") == (
+        "network-governed",
+        "sandbox-egress",
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    (
+        {},
+        {"com.docker.network.bridge.enable_ip_masquerade": "true"},
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.enable_ipv4": "false",
+        },
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.enable_ipv6": "true",
+        },
+        {
+            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.bridge.some_unknown_option": "false",
+        },
+    ),
+)
+def test_docker_governed_network_rejects_unsafe_or_unknown_options(options):
+    from app.platform.sandbox.docker_governed_network import docker_governed_network_identity
+    from app.platform.sandbox.errors import GovernedEgressAdmissionError
+
+    network = {
+        "attrs": {
+            "Id": "network-governed",
+            "Name": "sandbox-egress",
+            "Driver": "bridge",
+            "Internal": True,
+            "Options": options,
+        }
+    }
+
+    with pytest.raises(GovernedEgressAdmissionError):
+        docker_governed_network_identity(network, "sandbox-egress")
+
+
 @pytest.mark.asyncio
 async def test_docker_cold_start_starts_before_sealing_deferred_network_membership(monkeypatch):
     """Model Docker exposing the governed attachment only after container start."""
@@ -6016,7 +6139,7 @@ async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(mon
         health_probe=lambda executor_url, timeout_seconds: True,
     )
 
-    async def cancel_wait(container, timeout_seconds, endpoint):
+    async def cancel_wait(container, *_args, **_kwargs):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
@@ -6157,7 +6280,7 @@ async def test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled
     )
     first = await provider.create_or_reuse(request(), workspace())
 
-    async def cancel_wait(container, timeout_seconds, endpoint):
+    async def cancel_wait(container, *_args, **_kwargs):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
@@ -6674,8 +6797,8 @@ async def test_docker_provider_maps_health_false_to_timeout():
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_requires_published_executor_port(monkeypatch):
-    from app.runtime.sandbox.container_provider import DockerContainerProvider, ExecutorHealthTimeoutError
+async def test_docker_provider_uses_owned_private_endpoint_when_publish_missing(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
     import app.runtime.sandbox.container_provider as container_provider
 
     settings = type(
@@ -6695,17 +6818,454 @@ async def test_docker_provider_requires_published_executor_port(monkeypatch):
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     fake = FakeDockerClient(host_port=None)
+    probes: list[tuple[str, dict[str, str]]] = []
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
-        health_probe=lambda executor_url, timeout_seconds: True,
+        health_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        ) or True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        ) or {"uid": 10001, "gid": 10001},
     )
 
-    with pytest.raises(ExecutorHealthTimeoutError) as exc_info:
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.executor_url == "http://172.30.0.3:18000"
+    assert lease.executor_headers[container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA] == lease.executor_url
+    assert [url for url, _headers in probes] == [lease.executor_url, lease.executor_url]
+    assert all(
+        headers.get(container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA) is None
+        and headers.get("Host") == "172.30.0.3:18000"
+        for _url, headers in probes
+    )
+    assert fake.created[0]["ports"] == {"18000/tcp": ("127.0.0.1", None)}
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_unpublished_endpoint_without_valid_inspected_ip(monkeypatch):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+    import app.runtime.sandbox.container_provider as container_provider
+
+    settings = governed_docker_settings(sandbox_container_start_timeout_seconds=1)
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+
+    def clear_executor_address(container):
+        network_name = next(iter(container.attrs["NetworkSettings"]["Networks"]))
+        container.attrs["NetworkSettings"]["Networks"][network_name]["IPAddress"] = ""
+        fake.networks_by_name[network_name]["attrs"]["Containers"][container.id]["IPv4Address"] = ""
+
+    fake.post_create_mutator = clear_executor_address
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+
+    with pytest.raises(ContainerStartFailedError):
         await provider.create_or_reuse(request(), workspace())
 
-    assert exc_info.value.error_code == "executor_health_timeout"
-    assert fake.containers_by_name["executor-exec-run-a"].stopped is True
-    assert fake.containers_by_name["executor-exec-run-a"].removed is True
+    executor = fake.containers_by_name["executor-exec-run-a"]
+    assert executor.stopped is True
+    assert executor.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_recovers_unpublished_endpoint_and_refreshes_inspected_ip(monkeypatch):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = governed_docker_settings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+    first_provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    first_lease = await first_provider.create_or_reuse(request(), workspace())
+    remote = fake.containers_by_name[first_lease.container_name]
+    remote.labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL] = first_lease.labels[
+        container_provider.GOVERNED_EGRESS_PROOF_LABEL
+    ]
+    remote.attrs["Config"]["Labels"] = remote.labels
+
+    restarted = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    recovered = await restarted.create_or_reuse(request(), workspace())
+
+    assert recovered.executor_url == "http://172.30.0.3:18000"
+    assert len(fake.created) == 1
+    network_name = fake.created[0]["network"]
+    network = fake.networks_by_name[network_name]
+    attachment = remote.attrs["NetworkSettings"]["Networks"][network_name]
+    member = network["attrs"]["Containers"][remote.id]
+    attachment["IPAddress"] = "172.30.0.19"
+    member["IPv4Address"] = "172.30.0.19/24"
+
+    refreshed_url, refreshed_headers = await restarted.executor_control_endpoint(recovered, request())
+
+    assert refreshed_url == "http://172.30.0.19:18000"
+    assert refreshed_headers[container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA] == refreshed_url
+    assert remote.reload_count > 0
+
+
+@pytest.mark.asyncio
+async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(monkeypatch):
+    import app.executor_reconciler as executor_reconciler
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = governed_docker_settings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+    runtime_request = request(
+        skill_ids=["general-chat", "staged-skill"],
+        mcp_tool_ids=["gateway::search"],
+    )
+    launch_provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    lease = await launch_provider.create_or_reuse(runtime_request, workspace())
+    row = persisted_docker_row(lease)
+    persisted_labels = row["lease_payload_json"]["labels"]
+    persisted_proof = row["lease_payload_json"]["governed_egress_proof"]
+    expected_scope = container_provider.governed_egress_authorized_skill_scope(
+        skill_ids=runtime_request.skill_ids,
+        mcp_tool_ids=runtime_request.mcp_tool_ids,
+    )
+    assert "ai-platform.executor.requested_image" not in persisted_labels
+    assert container_provider.GOVERNED_EGRESS_PROOF_LABEL not in persisted_labels
+    assert persisted_proof["authorized_skill_scope_sha256"] == hashlib.sha256(
+        expected_scope.encode("utf-8")
+    ).hexdigest()
+    restored_handle = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
+    assert restored_handle is not None
+    assert json.loads(
+        restored_handle.labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL]
+    ) == persisted_proof
+    row["executor_reconciliation_context_json"] = {
+        "schema_version": "ai-platform.executor-reconciliation.v1",
+        "run_payload": {
+            "tenant_id": lease.tenant_id,
+            "workspace_id": lease.workspace_id,
+            "user_id": lease.user_id,
+            "session_id": lease.session_id,
+            "run_id": lease.run_id,
+            "attempt_id": runtime_request.attempt_id,
+            "agent_id": runtime_request.agent_id,
+            "skill_id": None,
+            "file_ids": [],
+            "input": {},
+            "execution_kind": "harness_chat",
+            "trace_id": "trace-a",
+            "schema_version": "ai-platform.run-payload.v2",
+            "skill_manifests": [],
+        },
+        "adapter_context": {},
+    }
+    executor_reconciler._context_payload(row)
+    calls = []
+    recovered_requests = []
+    released = []
+
+    @asynccontextmanager
+    async def transaction():
+        yield SimpleNamespace()
+
+    async def claim(_conn, *, claim_token, **_kwargs):
+        claimed = dict(row)
+        claimed["executor_reconciliation_claim_token"] = claim_token
+        claimed["executor_reconciliation_attempt_count"] = 1
+        return [claimed]
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": lease.run_id, "status": "cancelled"}
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+
+    class ExecutorClient:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 10.0
+
+        async def cancel(self, executor_url, *, run_id, attempt_id, executor_headers):
+            calls.append(("cancel", executor_url, run_id, attempt_id, executor_headers))
+
+        async def get_status(self, executor_url, *, run_id, attempt_id, executor_headers):
+            calls.append(("status", executor_url, run_id, attempt_id, executor_headers))
+            return {"status": "running"}
+
+    recovered_provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+
+    class RecordingProvider:
+        async def executor_control_endpoint(self, recovered_lease, control_request):
+            recovered_requests.append(control_request)
+            return await recovered_provider.executor_control_endpoint(recovered_lease, control_request)
+
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction)
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "claim_sandbox_executor_suspects",
+        claim,
+    )
+    monkeypatch.setattr(executor_reconciler.runs_postgres, "get_run", get_run)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "create_container_provider",
+        lambda provider_name: RecordingProvider() if provider_name == "docker" else None,
+    )
+    monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", ExecutorClient)
+    monkeypatch.setattr(
+        executor_reconciler.sandbox_lease_repository,
+        "release_sandbox_executor_probe_claim",
+        release,
+    )
+
+    assert await executor_reconciler.probe_suspect_executor_tasks_once() == 0
+    assert len(recovered_requests) == 1
+    assert recovered_requests[0].skill_ids == []
+    assert recovered_requests[0].mcp_tool_ids == []
+    assert [call[0] for call in calls] == ["cancel", "status"]
+    assert all(call[1] == "http://172.30.0.3:18000" for call in calls)
+    assert all(call[2:4] == (lease.run_id, runtime_request.attempt_id) for call in calls)
+    assert released and released[0]["lease_id"] == row["id"]
+
+
+@pytest.mark.asyncio
+async def test_expired_docker_proof_allows_owned_control_but_fails_dispatch(monkeypatch):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.execution_boundary import (
+        build_governed_egress_proof,
+        governed_egress_authorized_native_tool_scope,
+        governed_egress_authorized_skill_scope,
+    )
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, GovernedEgressAdmissionError
+
+    settings = governed_docker_settings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+    runtime_request = request(
+        skill_ids=["general-chat", "staged-skill"],
+        mcp_tool_ids=["gateway::search"],
+    )
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    lease = await provider.create_or_reuse(runtime_request, workspace())
+    network_name = fake.created[0]["network"]
+    network_id = fake.networks_by_name[network_name]["attrs"]["Id"]
+    callback = container_provider._docker_governed_callback_target(settings)
+    callback_subject = container_provider._docker_callback_endpoint_subject(
+        fake,
+        network_name=network_name,
+        network_id=network_id,
+        callback_base_url=callback.base_url,
+        expected_source=container_provider._runtime_release_commit(settings),
+    )
+    now = datetime.now(timezone.utc)
+    expired_proof = build_governed_egress_proof(
+        signing_key=settings.sandbox_egress_proof_signing_key,
+        key_id=container_provider._governed_egress_proof_key_id(settings),
+        provider="docker",
+        runtime_subject="docker-internal-bridge",
+        policy_subject=f"{network_id}:{network_name}:internal",
+        callback_subject=callback_subject,
+        denial_subject=f"{network_id}:internal-default-deny",
+        network_id=network_id,
+        network_name=network_name,
+        network_internal=True,
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        attempt_id=runtime_request.attempt_id,
+        image_subject=lease.labels["ai-platform.executor.requested_image"],
+        image_digest=lease.labels["ai-platform.executor.requested_image_digest"],
+        authorized_skill_scope=governed_egress_authorized_skill_scope(
+            skill_ids=runtime_request.skill_ids,
+            mcp_tool_ids=runtime_request.mcp_tool_ids,
+        ),
+        authorized_native_tool_scope=governed_egress_authorized_native_tool_scope(
+            runtime_request.tool_policy_subjects
+        ),
+        lease_identity=f"docker:{lease.container_name}:{lease.container_id}",
+        issued_at=now - timedelta(minutes=2),
+        expires_at=now - timedelta(seconds=1),
+    )
+    row = persisted_docker_row(lease)
+    row["lease_payload_json"]["governed_egress_proof"] = expired_proof
+    recovered = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
+    assert recovered is not None
+
+    url, _headers = await provider.executor_control_endpoint(recovered, runtime_request)
+
+    assert url == "http://172.30.0.3:18000"
+    expired_dispatch_lease = lease.model_copy(
+        update={
+            "labels": {
+                **lease.labels,
+                container_provider.GOVERNED_EGRESS_PROOF_LABEL: recovered.labels[
+                    container_provider.GOVERNED_EGRESS_PROOF_LABEL
+                ],
+            }
+        }
+    )
+    with pytest.raises(GovernedEgressAdmissionError):
+        await provider.validate_for_dispatch(expired_dispatch_lease, runtime_request, workspace())
+    assert fake.containers_by_name[lease.container_name].removed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ("tampered-proof", "missing-proof", "image-drift"))
+async def test_persisted_docker_control_rejects_missing_or_drifted_identity(monkeypatch, mutation):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, GovernedEgressAdmissionError
+
+    settings = governed_docker_settings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
+    fake = FakeDockerClient(host_port=None)
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    runtime_request = request(mcp_tool_ids=["gateway::search"])
+    lease = await provider.create_or_reuse(runtime_request, workspace())
+    row = persisted_docker_row(lease)
+
+    if mutation == "tampered-proof":
+        row["lease_payload_json"]["governed_egress_proof"]["signature"] = "f" * 64
+    elif mutation == "missing-proof":
+        row["lease_payload_json"].pop("governed_egress_proof")
+    else:
+        fake.containers_by_name[lease.container_name].labels[
+            "ai-platform.executor.requested_image_digest"
+        ] = "sha256:" + "b" * 64
+
+    recovered = sandbox_runtime_cleanup.container_lease_from_persisted_row(row)
+    assert recovered is not None
+    with pytest.raises(GovernedEgressAdmissionError):
+        await provider.executor_control_endpoint(recovered, runtime_request)
+
+    if mutation == "missing-proof":
+        stopped = await provider.stop(recovered, reason="historical_cleanup")
+        assert stopped.status == "stopped"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "loopback-ip",
+        "unspecified-ip",
+        "link-local-ip",
+        "multicast-ip",
+        "public-ip",
+        "attachment-ip-mismatch",
+        "member-ip-mismatch",
+        "network-id-mismatch",
+        "inspect-id-mismatch",
+        "extra-hosts",
+        "extra-network",
+        "extra-member",
+        "invalid-proof",
+        "tampered-signed-scope",
+        "cross-attempt",
+        "cross-run",
+        "missing-api-witness",
+    ),
+)
+async def test_docker_private_executor_control_rejects_untrusted_inspect_state(monkeypatch, mutation):
+    import app.runtime.sandbox.container_provider as container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, GovernedEgressAdmissionError
+
+    monkeypatch.setattr(container_provider, "get_settings", lambda: governed_docker_settings())
+    fake = FakeDockerClient(host_port=None)
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+    container = fake.containers_by_name[lease.container_name]
+    network_name = fake.created[0]["network"]
+    network = fake.networks_by_name[network_name]
+    attachment = container.attrs["NetworkSettings"]["Networks"][network_name]
+    member = network["attrs"]["Containers"][container.id]
+    control_request = request()
+
+    if mutation.endswith("-ip"):
+        address = {
+            "loopback-ip": "127.0.0.1/8",
+            "unspecified-ip": "0.0.0.0/0",
+            "link-local-ip": "169.254.0.1/16",
+            "multicast-ip": "224.0.0.1/4",
+            "public-ip": "8.8.8.8/32",
+        }[mutation]
+        attachment["IPAddress"] = address.split("/")[0]
+        member["IPv4Address"] = address
+    elif mutation == "attachment-ip-mismatch":
+        attachment["IPAddress"] = "172.30.0.19"
+    elif mutation == "member-ip-mismatch":
+        member["IPv4Address"] = "172.30.0.19/24"
+    elif mutation == "network-id-mismatch":
+        attachment["NetworkID"] = "foreign-network"
+    elif mutation == "inspect-id-mismatch":
+        container.attrs["Id"] = "foreign-container"
+    elif mutation == "extra-hosts":
+        container.attrs["HostConfig"]["ExtraHosts"] = ["api.sandbox.internal:192.0.2.1"]
+    elif mutation == "extra-network":
+        container.attrs["NetworkSettings"]["Networks"]["foreign"] = {
+            "NetworkID": "foreign-network",
+            "Aliases": [],
+            "IPv4Address": "172.30.1.3/24",
+        }
+    elif mutation == "extra-member":
+        network["attrs"]["Containers"]["foreign-container"] = {
+            "Name": "worker",
+            "IPv4Address": "172.30.0.4/24",
+        }
+    elif mutation == "invalid-proof":
+        lease = lease.model_copy(
+            update={
+                "labels": {
+                    **lease.labels,
+                    container_provider.GOVERNED_EGRESS_PROOF_LABEL: "forged",
+                }
+            }
+        )
+    elif mutation == "tampered-signed-scope":
+        labels = dict(lease.labels)
+        proof = json.loads(labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL])
+        proof["authorized_skill_scope_sha256"] = "b" * 64
+        labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL] = json.dumps(proof)
+        lease = lease.model_copy(update={"labels": labels})
+    elif mutation == "cross-attempt":
+        control_request = request(attempt_id="attempt-other")
+    elif mutation == "cross-run":
+        control_request = request(run_id="run-other")
+    elif mutation == "missing-api-witness":
+        fake.api_container.attrs["State"]["Health"]["Status"] = "unhealthy"
+
+    with pytest.raises(GovernedEgressAdmissionError):
+        await provider.executor_control_endpoint(lease, control_request)
 
 
 @pytest.mark.asyncio

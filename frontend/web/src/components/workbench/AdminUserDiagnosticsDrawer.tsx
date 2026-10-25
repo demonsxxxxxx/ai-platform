@@ -44,7 +44,7 @@ export function AdminUserDiagnosticsDrawer({
             {t("workbench.projections.users.diagnosticsLoading")}
           </div>
         ) : error ? (
-          <div className="m-5 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]">
+          <div className="m-5 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]">
             {error}
           </div>
         ) : diagnostics ? (

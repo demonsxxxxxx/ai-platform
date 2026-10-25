@@ -95,7 +95,7 @@ def connection(**changes):
         "model_value": "gateway-model-a",
         "base_url": "https://gateway.example",
         "api_key": "synthetic-provider-key",
-        "max_input_tokens": 128_000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 4096,
     }
     values.update(changes)

@@ -420,7 +420,7 @@ export function ToolSelector({
                                     </span>
                                   )}
                                   {tool.system_disabled && (
-                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)] font-medium">
+                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-1 ring-[var(--theme-danger-ring)] font-medium">
                                       {t("tools.systemDisabled")}
                                     </span>
                                   )}
@@ -465,7 +465,7 @@ render: (_value, param) => (<>
                                                     {param.name}
                                                   </code>
                                                   {param.required && (
-                                                    <span className="text-[8px] px-1 py-0.5 rounded bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] font-medium">
+                                                    <span className="text-[8px] px-1 py-0.5 rounded bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] font-medium">
                                                       *
                                                     </span>
                                                   )}

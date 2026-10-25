@@ -15,7 +15,8 @@ remain unchanged. No new host relay, service, database catalog, or dependency.
 Dependency versions are owned by [pyproject.toml](../../pyproject.toml) and
 [uv.lock](../../uv.lock); the bundled CLI comes from that locked SDK package.
 The SDK 0.2.130 / CLI 2.1.222 pair records the original repair baseline, not an
-independent dependency pin. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+independent dependency pin. The current pin is claude-agent-sdk 0.2.165,
+bundled Claude Code 2.1.294. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -118,16 +119,16 @@ a credential after their context operation has been superseded.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool exposed by the platform's in-process Server. The platform adapter
-   also appends `structuredContent` as a bounded JSON text content item while
-   retaining the typed field. This compatibility representation preserves the
-   structured value when an SDK bridge omits optional result fields, as observed
-   with SDK 0.2.130. Forwarding through a later SDK and model interpretation
-   require their own adapter/provider acceptance; a dependency change alone does
-   not prove that the compatibility representation can be retired.
-   With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a JSON tool-result
-   string containing that structured value. Acceptance checks the JSON value,
-   not the previous `[structuredContent]` text marker.
+   typed Tool at the MCP boundary; the adapter does not rely on it reaching the
+   model. The platform adapter appends `structuredContent` as a bounded JSON text
+   item while retaining the typed field for direct MCP callers. This compatibility
+   representation preserves the structured value when an SDK bridge omits
+   optional result fields, as observed with SDK 0.2.130. Forwarding through a
+   later SDK and model interpretation require their own adapter/provider
+   acceptance; a dependency change alone does not prove that the representation
+   can be retired. With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a
+   JSON tool-result string containing that structured value. Acceptance checks
+   the JSON value, not the previous `[structuredContent]` text marker.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,

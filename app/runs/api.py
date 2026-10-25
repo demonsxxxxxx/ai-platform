@@ -110,8 +110,8 @@ from app.runs.application.terminalization_v4 import (
 )
 from app.runs.application.cancellation import (
     CancelRequestResult as CancelRequestResult,
-)
-from app.runs.application.cancellation import (
+    RunCancellationPostProcessor as RunCancellationPostProcessor,
+    RunCancellationQueueCleanupError as RunCancellationQueueCleanupError,
     RunCancellationUseCase as RunCancellationUseCase,
 )
 from app.runs.application.execution_spec import (
@@ -159,6 +159,9 @@ from app.runs.domain.execution_spec import (
 )
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION_V2 as EXECUTION_SPEC_SCHEMA_VERSION_V2,
+)
+from app.runs.domain.execution_spec import (
+    EXECUTION_SPEC_SCHEMA_VERSION_V3 as EXECUTION_SPEC_SCHEMA_VERSION_V3,
 )
 from app.runs.domain.execution_spec import ExecutionSpec as ExecutionSpec
 from app.runs.domain.execution_spec import ExecutionSpecError as ExecutionSpecError
@@ -234,4 +237,14 @@ from app.runs.application.attempt_lifecycle import (
 from app.runs.application.worker_terminal_completion import (
     WorkerOutcome as WorkerOutcome,
     WorkerTerminalCompletionService as WorkerTerminalCompletionService,
+)
+
+from app.runs.application.model_token_usage import ModelTokenUsageService as ModelTokenUsageService
+from app.runs.domain.model_token_usage import ModelUsageSnapshot as ModelUsageSnapshot
+
+from app.runs.domain.model_token_usage import normalize_model_usage_snapshot as normalize_model_usage_snapshot
+from app.runs.domain.multi_agent_admission import (
+    PLATFORM_MULTI_AGENT_NOT_SUPPORTED as PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
+    contains_persisted_platform_multi_agent_control as contains_persisted_platform_multi_agent_control,
+    contains_platform_multi_agent_control as contains_platform_multi_agent_control,
 )

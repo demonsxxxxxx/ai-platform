@@ -44,7 +44,7 @@ from app.principal_authority import (
     resolve_login_principal,
 )
 from app.settings import get_settings
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

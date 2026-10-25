@@ -8,12 +8,12 @@
 
 .chat-input-shell {
   background: var(--theme-workbench-canvas);
-  padding-bottom: 0.5rem;
+  padding-bottom: 0;
 }
 
 .chat-input-container {
   border-radius: 1.25rem;
-  min-height: 112px;
+  min-height: 104px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:
@@ -27,6 +27,25 @@
   box-shadow:
     0 8px 28px rgba(0, 0, 0, 0.1),
     0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+/* Question mode: the task surface replaces the ordinary controls and owns its
+   natural height. Ordinary short questions must fit without an inner scroll, so
+   only this mode drops the compact cap; the ordinary textarea/data safety caps
+   and the viewport-derived bound below still stop an unbounded question from
+   pushing the transcript away. */
+.chat-input-container[data-question-mode] {
+  max-height: none;
+  min-height: 0;
+  padding: 0.75rem;
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+.chat-input-container[data-question-mode] [data-slot="composer-task-surface"] {
+  max-height: calc(100dvh - 12rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Chat input textarea placeholder */
@@ -75,7 +94,7 @@
 
 /* Chat toolbar icon button (active/enabled state) */
 .chat-tool-btn-active {
-  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
-  background: color-mix(in srgb, #fbbf24 10%, transparent);
-  color: #fbbf24;
+  border-color: color-mix(in srgb, var(--theme-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--theme-warning) 10%, transparent);
+  color: var(--theme-warning-text);
 }

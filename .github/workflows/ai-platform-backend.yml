@@ -97,10 +97,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       minio:
-        image: ${{ matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1' || '' }}
+        image: ${{ (matrix.shard == 'schema-migrations' || matrix.shard == 'repository-worker-streaming') && 'bitnamilegacy/minio:2025.4.22-debian-12-r1' || '' }}
         env:
-          MINIO_ROOT_USER: synthetic-provider-images
-          MINIO_ROOT_PASSWORD: synthetic-provider-images-local-test-only
+          MINIO_ROOT_USER: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests' || 'synthetic-provider-images' }}
+          MINIO_ROOT_PASSWORD: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests-only' || 'synthetic-provider-images-local-test-only' }}
         ports:
           - "19014:9000"
         options: >-
@@ -172,7 +172,6 @@ jobs:
               tests/test_sandbox_callback_authority.py
               tests/test_sandbox_cleanup_application.py
               tests/test_sandbox_runtime_control_layer.py
-              tests/test_sandbox_runtime_evidence_script.py
               tests/test_skill_execution_profiles.py
               tests/test_validation.py
               tests/test_contract.py
@@ -180,7 +179,6 @@ jobs:
               tests/test_context_duplicate_file_staging.py
               tests/test_embedded_kernel_contracts.py
               tests/test_execution_boundary.py
-              tests/test_executor_context_pack_evidence_script.py
               tests/test_executor_registry.py
               tests/test_kernel_contracts.py
               tests/test_native_skill_tool_sandbox.py
@@ -192,7 +190,6 @@ jobs:
               tests/test_sandbox_contracts.py
               tests/test_sandbox_executor_client.py
               tests/test_sandbox_filesystem_contract.py
-              tests/test_sandbox_hardening_contract.py
               tests/test_sandbox_lease_routes.py
               tests/test_sandbox_readiness_evidence.py
               tests/test_context_manifest.py
@@ -206,6 +203,7 @@ jobs:
               tests/test_context_memory_retention.py
               tests/test_context_persistence.py
               tests/test_context_builder.py
+              tests/test_context_artifact_transfer.py
               tests/test_conversations_persistence.py
               tests/test_files_artifacts_persistence.py
               tests/test_artifact_manifest_projection.py
@@ -286,7 +284,6 @@ jobs:
               tests/test_run_performance.py
               tests/test_run_performance_postgres.py
               tests/test_streaming_schema_postgres.py
-              tests/test_verify_b1_memory_context_workflow.py
               tests/test_s0a_schema_postgres.py
           - shard: model-control-plane
             runner: ubuntu-latest
@@ -296,6 +293,8 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_model_management.py
+              tests/test_model_user_access.py
+              tests/test_company_employee_directory.py
               tests/test_model_upstream_stream.py
               tests/test_model_stream_ownership.py
               tests/test_model_discovery_security.py
@@ -308,6 +307,8 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_admin_run_detail.py
+              tests/test_model_token_usage_contract.py
+              tests/test_model_token_usage_routes.py
               tests/test_admin_part_messages.py
               tests/test_admin_runtime_routes.py
               tests/test_auth_principal.py
@@ -372,8 +373,6 @@ jobs:
               tests/test_run_performance_routes.py
               tests/test_run_question_defaults.py
               tests/test_tool_permission_routes.py
-              tests/test_tool_policy_readiness.py
-              tests/test_verify_auth_rbac_smoke.py
               tests/test_frontend_projection_routes.py
               tests/test_lambchat_compat.py
               tests/test_lambchat_projection_contract.py
@@ -389,6 +388,7 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_run_diagnostics_postgres.py
+              tests/test_model_token_usage_postgres.py
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
               tests/test_skill_release_lifecycle_postgres.py
@@ -422,7 +422,6 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_architecture_governance.py
-              tests/test_capacity_recorded_gate_values_from_live_run.py
               tests/test_backend_ci_workflow.py
               tests/test_trusted_governance.py
               tests/test_code_governance.py
@@ -431,13 +430,11 @@ jobs:
               tests/test_run_test_stage.py
               tests/test_source_quality_inventory.py
               tests/test_ci_image_scope.py
-              tests/test_require_zero_junit_skips.py
               tests/test_packaging_contract.py
               tests/test_packaging_publish_workflow.py
               tests/test_release_required_checks.py
               tests/test_trivy_failure_evidence.py
               tests/test_release_image_manifest.py
-              tests/test_authenticated_smoke_redirects.py
               tests/test_backend_image_source_markers.py
               tests/test_legacy_product_surface_cleanup.py
               tests/test_oci_image_manifest.py
@@ -454,28 +451,14 @@ jobs:
             redis_image: ""
             redis_url: ""
             test_files: >-
-              tests/test_governance_readiness.py
-              tests/test_foundation_alpha_readiness.py
-              tests/test_foundation_runtime_concurrency.py
-              tests/test_verify_multiuser_poc.py
               tests/test_verify_poc_gate.py
-              tests/test_watch_poc_gate.py
               tests/test_capacity_baseline.py
-              tests/test_office_context_readiness.py
-              tests/test_release_evidence_export_acceptance.py
-              tests/test_wrap_foundation_alpha_evidence.py
               tests/test_compose_package_deploy.py
               tests/test_production_bootstrap.py
               tests/test_release_authority.py
               tests/test_s75_opensandbox_transition.py
-              tests/integration/run_control/test_exact_main_run_control_acceptance.py
-              tests/test_b5_file_tool_readiness.py
-              tests/test_b6_operations_beta_readiness.py
               tests/test_browser_runtime_config.py
-              tests/test_capacity_bounded_load_harness.py
               tests/test_governed_egress_diagnostics.py
-              tests/test_observability_readiness.py
-              tests/test_release_evidence_runtime_acceptance.py
           - shard: windows-runtime
             runner: windows-latest
             postgres_image: ""
@@ -494,6 +477,7 @@ jobs:
       AI_PLATFORM_MCP_CATALOG_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_CAPABILITY_DISTRIBUTION_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL: ${{ matrix.shard == 'schema-migrations' && 'http://127.0.0.1:19014' || '' }}
+      AI_PLATFORM_ARTIFACT_MINIO_URL: ${{ matrix.shard == 'repository-worker-streaming' && 'http://127.0.0.1:19014' || '' }}
       AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}
     steps:
       - name: Checkout exact backend test source
@@ -638,7 +622,6 @@ jobs:
               tests/test_capability_distribution.py \
               tests/test_claude_capability_policy.py \
               tests/test_github_skill_import.py \
-              tests/test_skill_legacy_workbench.py \
               tests/test_skill_pinning.py \
               tests/test_skill_release_readiness.py \
               tests/test_skill_version_labels.py \

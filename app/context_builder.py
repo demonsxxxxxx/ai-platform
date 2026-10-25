@@ -23,7 +23,7 @@ from app.context_manifest import (
     ContextPlanner,
 )
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
-from app.office_execution_tier import route_office_execution_tier
+from app.execution.api import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
 from app.public_context_keys import (
     PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES,

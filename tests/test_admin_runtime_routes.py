@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import importlib.util
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,19 @@ from tests.support.db_transactions import opaque_transaction
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "app.b5_file_tool_readiness",
+        "app.b6_operations_beta_readiness",
+        "tools.b5_file_tool_readiness",
+        "tools.b6_operations_beta_readiness",
+    ],
+)
+def test_retired_phase_readiness_reports_are_not_importable(module_name):
+    assert importlib.util.find_spec(module_name) is None
 
 
 @pytest.fixture(autouse=True)
@@ -1088,20 +1102,8 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert "password" not in str(body["capacity"]).lower()
     assert "api_key" not in str(body["capacity"]).lower()
     assert "database_url" not in str(body["capacity"]).lower()
-    assert body["governance"] == {
-        "schema_version": "ai-platform.offline-readiness-reference.v1",
-        "status": "not_evaluated_in_runtime",
-        "runtime_evaluated": False,
-        "command": "python tools/governance_readiness.py",
-        "evidence_boundary": "offline_source_and_release_evidence_not_current_runtime_health",
-    }
-    assert body["observability_readiness"] == {
-        "schema_version": "ai-platform.offline-readiness-reference.v1",
-        "status": "not_evaluated_in_runtime",
-        "runtime_evaluated": False,
-        "command": "python tools/observability_readiness.py",
-        "evidence_boundary": "offline_source_and_release_evidence_not_current_runtime_health",
-    }
+    assert "governance" not in body
+    assert "observability_readiness" not in body
     assert body["admission"]["saturated_users"] == 1
     assert body["admission"]["top_users"] == [{"user_id": "user-a", "active": 3, "saturated": True}]
     assert body["backpressure"]["reasons"] == [

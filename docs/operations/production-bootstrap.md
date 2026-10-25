@@ -1,9 +1,14 @@
 # Production host preparation
 
-The application package is the normal production upgrade path. This document
-covers only the one-time host preparation and controlled maintenance of the
-independently managed OpenSandbox service. It does not ask an operator to keep
-a source checkout or rebuild application images.
+This document retains the dedicated-network host contract for controlled
+maintenance of hosts already using it. It is not an alternative application
+package or a prerequisite for the current package's native Docker bridge.
+Use the [single deployment guide](../../deploy/ai-platform/README.md) for the
+application package. Its historical filename does not select a deployment track.
+Do not switch an existing host's network, profile, credentials or workspace
+identity to make it match a package without a separately reviewed migration.
+The host operations below require explicit authority and matching runtime
+configuration; this documentation does not authorize executing them.
 
 ## Host prerequisites
 
@@ -122,9 +127,9 @@ TOML and guard together, then verify the previous topology before admission.
 Historical internal-test leases without the current `active-v1` marker remain
 eligible for stop-only cleanup when their complete persisted scope, image,
 executor identity and remote metadata match. They cannot be recreated,
-reused, dispatched or renewed. The separate internal-test package may create
-and renew new `active-v1` leases on its test bridge; this production host must
-not select that package. Missing historical identity evidence requires
+reused, dispatched or renewed. The current package may create and renew new `active-v1` leases on its
+native bridge; that configuration is not compatible with this dedicated-network
+host contract. Missing historical identity evidence requires
 classified recovery.
 
 ## Verify the host
@@ -141,55 +146,14 @@ it changes application services. A configured lifecycle listener is private;
 the local example uses port `18001` by default. The application CORS value must
 be the browser-visible frontend origin.
 
-## Install or upgrade the application
+## Application deployment boundary
 
-This production host procedure applies only when a separate, reviewed immutable
-production Release is available. The current publication workflow emits only
-`ai-platform-internal-test.tar.gz`; do not deploy that test bridge package here.
-Previously published production Releases remain immutable but may be too old
-for the current schema. When a qualified production package exists, download it
-from one Release, extract it, and reuse the owner-held application environment
-file. From the package directory run:
-
-```sh
-python3 deploy.py \
-  --env-file /absolute/path/to/operator.env \
-  --docker-cmd 'sudo -n docker'
-```
-
-The package validates immutable application and data image identities, active
-work protection, deployment mutual exclusion, migration, workspace
-initialization, API/Worker/OpenSandbox health, and persistent-service identity.
-It does not delete volumes or silently roll back an advanced schema. Independent
-post-deployment acceptance must confirm the target image/commit, API readiness,
-OpenSandbox checks, two advancing Worker heartbeat samples, `migrate` and
-`workspace-init` exit 0, unchanged PostgreSQL/Redis/MinIO identity and restart
-counts, no active work, and controller termination.
-
-Use the package's `--check` before a maintenance window. Do not run the retired
-source-checkout release controller or reconstruct a latest Release on the host.
-
-
-## First-install and storage recovery
-
-A fresh production installation initializes the current workspace root without
-creating or copying a legacy source directory. Any selected existing legacy
-source directory, even empty, requires `--migrate-legacy-workspaces`.
-Existing bind or local volume data must match the configured migration source's
-inspected host path and both running containers' storage identity. The source is
-retained read-only during the package copy.
-
-For an interrupted first install, `--resume-install` is intentionally narrow:
-keep the same package, configuration and migration mode, the intact owner-held
-mode `0600` journal beside the env file, and no application containers. Changed
-inputs, missing journals, partially-created activity tables and any application
-containers require classified operator recovery. `--resume-install --check`
-never starts PostgreSQL and requires it already running. Classify changes
-to existing data before retrying a failed install.
-
-Production defaults to HTTPS origins and secure cookies. Generate independent
-`TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32
-characters. For an intentionally HTTP-only isolated intranet, configure the
-actual HTTP browser origin, set both secure-cookie flags false, and explicitly
-pass `--allow-insecure-http`. Restrict network access and firewall the direct
-API; the flag cannot protect session or gateway traffic in transit.
+The only current application package is `ai-platform-internal-test.tar.gz`.
+Follow the [single deployment guide](../../deploy/ai-platform/README.md) and
+[release runbook](release-operations-runbook.md), not a second production-package
+procedure. The package fixes native Docker `bridge` and the `internal-test`
+profile; these host templates retain a different dedicated-network security
+contract. Do not deploy that bridge configuration onto a host that requires
+this contract or treat an older immutable Release as schema-compatible without
+verification. Host maintenance does not authorize application deployment,
+network migration, credential replacement or rollback.

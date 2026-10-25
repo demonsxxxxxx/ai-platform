@@ -76,9 +76,12 @@ failures remain unresolved until repaired or formally dispositioned.
 
 ## Review and findings
 
-Keep findings and disposition in the PR. Prefer a code fix and regression test
-to another repository rule. Add a rule only for a repeated defect class with an
-owner and a narrow, reliable detector; consolidate overlapping rules.
+Review with the [review skill](../../.agents/skills/ai-platform-review/SKILL.md)
+from a context independent of the change's author; an author's self-review is
+preparation, not review evidence. Keep findings and disposition in the PR.
+Prefer a code fix and regression test to another repository rule. Add a rule
+only for a repeated defect class with an owner and a narrow, reliable detector;
+consolidate overlapping rules.
 Do not publish raw transcripts, private prompts, credentials, or sensitive paths.
 
 ## Evidence

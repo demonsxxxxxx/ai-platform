@@ -76,8 +76,8 @@ Run-only terminal paths. Source, tests, image and runtime acceptance remain sepa
 | API/worker composition | `app.bootstrap.api`, `app.bootstrap.worker` | construct concrete adapters once and inject a complete service graph | product rules, SQL, request handling, implicit global lookup |
 | Legacy import surface | temporary, explicitly inventoried compatibility only | logic-free name delegation when separately authorized | lifecycle writes, orchestration, hidden defaults, indefinite aliases |
 
-`app/repositories.py` is not a Run lifecycle owner. New Runs lifecycle code MUST
-NOT be added there. Internal callers migrate to `app.runs.api`; an external
+New Runs lifecycle code belongs to `app.runs`, and internal callers use
+`app.runs.api`; it is never added to a global repository module. An external
 compatibility claim requires named consumers and evidence, not an assumption.
 
 ## 3. Operation classification
@@ -160,8 +160,15 @@ The migration MUST preserve these observable semantics:
    Redis receipts enforce idempotency and callback-prefix ordering. There is no
    publication state, pending-intent drain or successor recovery. Redis failure
    cannot undo Run finalization or hide its authoritative final answer.
-9. **Sandbox cleanup remains Sandbox-owned.** After the Run cancellation fact
-   commits, orchestration calls the public Sandbox Runtime release/reconcile
+9. **Sandbox cleanup remains Sandbox-owned.** Owner and administrator cancellation
+   retain separate authorization commands, then use one Runs-owned post-cancellation
+   operation after the transaction commits. That operation admits and publishes
+   the exact Attempt stream when present, removes queued payloads only for a
+   cancelled Run, and always attempts Sandbox cleanup before reporting a queue
+   failure. Publication failures do not prevent cleanup. Bootstrap injects these
+   collaborators; neither HTTP route owns a separate cleanup implementation.
+   The routes retain their existing 404/502/503 mapping and actor/role/reason.
+   After the Run cancellation fact commits, orchestration calls the public Sandbox Runtime release/reconcile
    application API through a separate Sandbox-owned operation boundary. That authority
    owns the scoped lease and operation fence and records stop/release or cleanup
    failure. The existing stop-under-lock compatibility mechanism must remain
@@ -457,3 +464,9 @@ The terminal behavior change is not ready until focused evidence covers:
 Source and CI evidence do not prove a stopped deployment, production schema
 migration, Redis convergence, Sandbox cleanup, or mixed-version runtime safety.
 Those remain deployment/runtime acceptance.
+
+## Actual-model usage accounting
+
+[Actual model token usage](actual-model-token-usage.md) owns the administrator
+usage ledger. It consumes private callback snapshots in the existing fenced
+receipt transaction, independently of Run terminal state and legacy counters.

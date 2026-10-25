@@ -1,3 +1,4 @@
+import os
 import json
 import sys
 import types
@@ -48,8 +49,9 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
         },
     )
 
-    assert "Context materials: 1 file ref." in prompt
-    assert "Conversation continuity is supplied by the native Claude session" in prompt
+    assert "Context materials:" not in prompt
+    assert "Context pack generated at:" not in prompt
+    assert "Context pack version:" not in prompt
     assert "Authorized message ref IDs" not in prompt
     assert "read_session_messages" not in prompt
     assert "stage_context_file_to_workspace" in prompt
@@ -57,16 +59,9 @@ def test_skill_prompt_lists_material_retrieval_without_using_message_refs_as_his
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
-    assert (
-        "Use Simplified Chinese for the final answer and public work-progress commentary. "
-        "Keep code, commands, filenames, and other literal values unchanged when the task requires them."
-    ) in prompt
-    assert "summarized-thinking" not in prompt
-    assert "hidden reasoning" in prompt
-    assert (
-        "put one concise user-facing progress update in ordinary assistant text in the same "
-        "Assistant turn as the first tool call of each new work stage"
-    ) in prompt
+    # Common policy is loaded once from the controlled workspace CLAUDE.md.
+    assert "Use Simplified Chinese" not in prompt
+    assert "attach_file" not in prompt
 
 
 def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payload():
@@ -95,19 +90,61 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
         },
     )
 
-    assert (
-        "Context manifest refs: 0 message(s), 1 file(s), 0 artifact(s), "
-        "0 memory record(s)" in prompt
-    )
-    assert "Conversation continuity is supplied by the native Claude session" in prompt
+    assert "Context manifest refs:" not in prompt
+    assert "Context manifest: 1 file ref." not in prompt
     assert "Use context retrieval tools before assuming full prior message" not in prompt
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
     assert "Available context retrieval tools: stage_context_file_to_workspace" in prompt
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
-    assert "Return the final response as ordinary assistant text" in prompt
-    assert "call the available `attach_file` tool" in prompt
-    assert "Do not attach temporary" in prompt
+    assert "attach_file" not in prompt
+
+
+def test_prompt_builders_omit_empty_materials_without_losing_current_user_validation():
+    from app.context_manifest import ContextPlanner
+
+    pack = ContextPlanner().executor_context_pack({
+        "schema_version": "ai-platform.context-manifest.v1",
+        "selection": {"history_authorized_count": 3, "history_omitted_count": 2},
+        "files": [], "artifacts": [], "memory_records": [],
+        "available_retrieval_tools": ["read_session_messages"],
+    })
+    for builder, kwargs in (
+        (claude_prompts.build_harness_chat_prompt, {}),
+        (claude_prompts.build_skill_prompt, {"skill_id": "synthetic-skill"}),
+    ):
+        assert builder(user_message="请继续", file_names=[], context_pack=pack, **kwargs) == ""
+
+
+def test_legacy_context_summary_requires_materials_when_counts_are_known():
+    pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "prompt_summary": "Context pack: 1 message(s), 0 file(s), 0 artifact(s).",
+        "referenced_materials": {
+            "message_count": 1, "file_count": 0,
+            "artifact_count": 0, "memory_record_count": 0,
+        },
+    }
+    assert claude_prompts.context_pack_prompt_section(pack) == ""
+    pack["referenced_materials"]["file_count"] = 1
+    assert pack["prompt_summary"] in claude_prompts.context_pack_prompt_section(pack)
+    del pack["referenced_materials"]
+    assert pack["prompt_summary"] in claude_prompts.context_pack_prompt_section(pack)
+
+
+def test_context_refs_survive_missing_summary_but_never_expose_private_fields():
+    section = claude_prompts.context_pack_prompt_section({
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "context_manifest": {
+            "schema_version": "ai-platform.context-manifest.v1",
+            "artifacts": [{"artifact_id": "artifact-a", "storage_key": "s3://private"}],
+            "memory_records": [{"memory_record_id": "memory-a"}],
+            "available_retrieval_tools": ["read_run_artifact", "search_memory"],
+        },
+    })
+    assert "artifact-a" in section and "memory-a" in section
+    assert "read_run_artifact" in section and "search_memory" in section
+    assert "storage_key" not in section and "s3://private" not in section
 
 
 def test_skill_prompt_ignores_platform_conversation_bodies():
@@ -255,6 +292,7 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
     assert captured_messages[0]["session_id"] != "default"
 
 
+@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="requires POSIX no-follow directory descriptors")
 @pytest.mark.asyncio
 async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch, tmp_path):
     captured = {}
@@ -419,6 +457,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "run_id": "run-a",
                     "artifact_id": "artifact-a",
                     "artifact_type": "translated_docx",
+                    "storage_key": "synthetic/artifact-a",
                     "label": "translated.docx",
                     "content": "artifact bytes",
                     "size_bytes": len("artifact bytes".encode("utf-8")),
@@ -592,3 +631,77 @@ async def test_sdk_runner_fails_closed_when_authorized_context_tool_registration
 
     assert result.used_sdk is True
     assert result.error == expected_error
+
+
+@pytest.mark.parametrize("materials", [
+    {}, {"message_count": 1}, {"file_count": 0},
+    {"file_count": None, "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": False, "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": "0", "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": -1, "artifact_count": 0, "memory_record_count": 0},
+])
+def test_legacy_context_summary_preserves_unknown_material_counts(materials):
+    pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "prompt_summary": "Authorized legacy material summary.",
+        "referenced_materials": materials,
+    }
+    assert pack["prompt_summary"] in claude_prompts.context_pack_prompt_section(pack)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "context_artifact_too_large", "context_artifact_size_required", "context_artifact_identity_mismatch",
+    "context_artifact_unavailable", "context_artifact_target_conflict", "context_artifact_name_invalid",
+    "context_artifact_safe_filesystem_required", "unknown", "s3://private/key?credential=secret",
+])
+async def test_artifact_stage_tool_preserves_only_safe_stable_errors(reason):
+    from app.context.retrieval import ContextRetrievalDenied
+    from app.executors.claude_agent_sdk_runner import _build_context_retrieval_mcp_server
+    handlers = {}
+    def tool(name, description, schema):
+        def register(handler):
+            handlers[name] = handler
+            return types.SimpleNamespace(name=name, handler=handler)
+        return register
+    class Retrieval:
+        async def execute(self, *args):
+            raise ContextRetrievalDenied(reason)
+    sdk = types.SimpleNamespace(tool=tool, create_sdk_mcp_server=lambda *args, **kwargs: kwargs)
+    identity = ScopedContextRetrievalIdentity(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-a", agent_id="agent-a")
+    _build_context_retrieval_mcp_server(sdk, retrieval=Retrieval(), identity=identity,
+                                      tool_names=["stage_run_artifact_to_workspace"])
+    result = await handlers["stage_run_artifact_to_workspace"]({"artifact_id": "artifact-a"})
+    payload = json.loads(result["content"][0]["text"])
+    assert result["is_error"] is True
+    assert payload["error"] == (reason if reason.startswith("context_artifact_") else "context_scope_denied")
+    assert "private/key" not in str(result) and "secret" not in str(result)
+
+
+@pytest.mark.parametrize("overrides,allowed", [
+    ({}, True),
+    ({"workspace_path": "context/artifact-a/private-budget.docx/../escape"}, False),
+    ({"workspace_path": "/tmp/private-budget.docx"}, False),
+    ({"workspace_path": "https://object.test/key"}, False),
+    ({"artifact_id": "artifact-b"}, False),
+    ({"name": "different.docx"}, False),
+    ({"name": "../../private-budget.docx"}, False),
+    ({"name": "api_key=secret.docx", "workspace_path": "context/artifact-a/api_key=secret.docx"}, False),
+])
+def test_artifact_tool_projection_preserves_only_exact_safe_relative_path(overrides, allowed):
+    from app.context.retrieval import ContextRetrievalDenied
+    from app.executors.claude_agent_sdk_runner import _context_retrieval_tool_response
+    payload = {"artifact_id": "artifact-a", "name": "private-budget.docx", "source_run_id": "source-run",
+               "workspace_path": "context/artifact-a/private-budget.docx", "storage_key": "tenants/private/object",
+               "content_base64": "secret", "callback_token": "secret", **overrides}
+    if not allowed:
+        with pytest.raises(ContextRetrievalDenied):
+            _context_retrieval_tool_response(payload, action="stage_run_artifact_to_workspace")
+    else:
+        result = json.loads(_context_retrieval_tool_response(payload, action="stage_run_artifact_to_workspace")["content"][0]["text"])
+        assert result["workspace_path"] == payload["workspace_path"] and result["name"] == payload["name"]
+        assert result["source_run_id"] == "source-run"
+        assert "storage_key" not in result and "content_base64" not in result and "callback_token" not in result
+        unknown = json.loads(_context_retrieval_tool_response(payload, action="unknown")["content"][0]["text"])
+        assert "workspace_path" not in unknown

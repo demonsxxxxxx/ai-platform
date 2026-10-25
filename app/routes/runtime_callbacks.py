@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
+from app.bootstrap.context_artifact_transfer import build_artifact_transfer_response
+from app.context.api import ArtifactTransferError
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
 from app.bootstrap.execution import (
@@ -37,7 +39,7 @@ from app.mcp.api import (
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
-from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.streaming.api import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runs.api import (
     RunInputClosed,
@@ -56,6 +58,7 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_matches,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.runs.api import ModelTokenUsageService, normalize_model_usage_snapshot
 from app.runtime.sandbox.contracts import (
     PROFILE_DRIVE_STAGE_LEASE_FLAG,
     PROFILE_DRIVE_STAGE_MAX_BYTES,
@@ -179,6 +182,7 @@ async def record_executor_callback(
     *,
     capabilities: WorkerV4Capabilities,
     run_diagnostics: RunDiagnosticsService | None = None,
+    model_token_usage: ModelTokenUsageService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -193,6 +197,8 @@ async def record_executor_callback(
         }
         for event in callback.events
     ):
+        raise HTTPException(status_code=409, detail="callback_batch_id_required")
+    if callback.model_usage_snapshot is not None and not callback.batch_id:
         raise HTTPException(status_code=409, detail="callback_batch_id_required")
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
@@ -335,6 +341,18 @@ async def record_executor_callback(
             callback_deduplicated = bool(
                 receipt.get("duplicate") if isinstance(receipt, dict) else False
             )
+            if callback.model_usage_snapshot is not None and not callback_deduplicated:
+                if model_token_usage is None:
+                    raise RuntimeError("model_token_usage_service_unavailable")
+                await model_token_usage.record(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    snapshot=normalize_model_usage_snapshot(callback.model_usage_snapshot.model_dump()),
+                    receipt_id=str(receipt["id"]),
+                    recorded_at=receipt["callback_received_at"],
+                )
             if v4_items:
                 try:
                     committed_rows = await append_callback_v4_rows(
@@ -869,6 +887,7 @@ async def executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
         run_diagnostics=request.app.state.run_diagnostics_service,
+        model_token_usage=request.app.state.model_token_usage_service,
     )
 
 
@@ -960,6 +979,7 @@ async def _profile_drive_file_response(
 async def executor_context_retrieval_callback(
     request: ExecutorContextRetrievalRequest,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+    accept: str | None = Header(default=None),
 ) -> Any:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
@@ -971,6 +991,24 @@ async def executor_context_retrieval_callback(
     )
     if request.action == PROFILE_DRIVE_STAGE_TOOL:
         return await _profile_drive_file_response(request)
+    if request.action == "stage_run_artifact_to_workspace" and accept == "application/octet-stream":
+        try:
+            return await build_artifact_transfer_response(
+                request, transaction=transaction, lock_authority=_lock_callback_authority,
+                load_snapshot=context_snapshot.get_bound_executor_context_snapshot,
+                storage_factory=ObjectStorage, storage_io=run_storage_io,
+                tools=available_context_retrieval_tools, record_event=streaming_run_events.append_event,
+            )
+        except ContextRetrievalInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ArtifactTransferError, ContextRetrievalDenied) as exc:
+            reason = str(exc)
+            code = 413 if reason in {"context_artifact_too_large", "context_artifact_size_required"} else 403
+            raise HTTPException(status_code=code, detail=reason) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="context_retrieval_failed") from exc
     async with transaction() as conn:
         run_identity, _lease = await _lock_callback_authority(
             conn,

@@ -216,9 +216,9 @@ function MessagePartRendererContent({
       <div
         className={clsx(
           "flex items-center gap-2 px-4 py-2.5 rounded-lg",
-          "bg-amber-50 dark:bg-amber-950/40",
-          "border border-amber-200/60 dark:border-amber-800/60",
-          "text-amber-700 dark:text-amber-400",
+          "bg-[var(--theme-warning-soft)]",
+          "border border-[var(--theme-warning-ring)]",
+          "text-[var(--theme-warning-text)]",
           "text-sm font-medium",
         )}
       >
@@ -297,10 +297,10 @@ function RunStatusItem({
             : CheckCircle;
   const tone =
     part.severity === "error"
-      ? "border-red-200/70 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300"
+      ? "border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)]"
       : part.severity === "warning"
-        ? "border-amber-200/70 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
-        : "border-stone-200/70 bg-stone-50 text-stone-700 dark:border-stone-700/60 dark:bg-stone-800/40 dark:text-stone-300";
+        ? "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning-text)]"
+        : "border-neutral-200/70 bg-neutral-50 text-neutral-700 dark:border-neutral-700/60 dark:bg-neutral-800/40 dark:text-neutral-300";
   const terminalDefinition = getPublicTerminalPresentationDefinition(
     part.event_type,
   );

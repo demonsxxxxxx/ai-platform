@@ -74,14 +74,21 @@ def docker_governed_network_identity(
     attrs = docker_network_authoritative_attrs(network)
     network_id = str(attrs.get("Id") or "").strip()
     network_name = str(attrs.get("Name") or "").strip()
+    options = docker_network_options(network)
+    allowed_options = {
+        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.enable_ipv4": "true",
+        "com.docker.network.enable_ipv6": "false",
+    }
     if (
         not network_id
         or len(network_id) > 512
         or network_name != configured_name
         or attrs.get("Driver") != "bridge"
         or attrs.get("Internal") is not True
-        or docker_network_options(network)
-        != {"com.docker.network.bridge.enable_ip_masquerade": "false"}
+        or attrs.get("EnableIPv6") not in (None, False)
+        or options.get("com.docker.network.bridge.enable_ip_masquerade") != "false"
+        or any(key not in allowed_options or allowed_options[key] != value for key, value in options.items())
     ):
         raise GovernedEgressAdmissionError() from None
     return network_id, network_name
@@ -368,3 +375,111 @@ def docker_callback_endpoint_subject(
         f"{callback_base_url}|{container_id}|{source}|{network_id}|"
         f"{GOVERNED_DOCKER_CALLBACK_ALIAS}"
     )
+
+
+def is_exact_owned_remote_container(
+    container: Any,
+    lease: ContainerLease,
+    *,
+    require_lease_identity: bool = False,
+) -> bool:
+    labels = container_labels(container)
+    if not all(
+        labels.get(key) == value
+        for key, value in {
+            "ai-platform.owner": "sandbox-runtime",
+            "ai-platform.tenant_id": lease.tenant_id,
+            "ai-platform.workspace_id": lease.workspace_id,
+            "ai-platform.user_id": lease.user_id,
+            "ai-platform.session_id": lease.session_id,
+            "ai-platform.run_id": lease.run_id,
+            "ai-platform.attempt_id": lease.labels.get("ai-platform.attempt_id"),
+        }.items()
+    ):
+        return False
+    container_id = str(getattr(container, "id", "") or "").strip()
+    attrs = getattr(container, "attrs", {})
+    inspected_id = str(attrs.get("Id") or "").strip() if isinstance(attrs, dict) else ""
+    return bool(container_id and container_id == inspected_id) and (
+        not require_lease_identity or container_id == lease.container_id
+    )
+
+
+def docker_complete_governed_network_members(
+    client: Any,
+    *,
+    network: Any,
+    lease: ContainerLease,
+    network_id: str,
+    network_name: str,
+    callback_base_url: str,
+    expected_source: str,
+) -> tuple[Any, Any]:
+    """Prove a governed bridge has exactly its current API witness and primary lease."""
+    docker_owned_governed_network(network, lease)
+    api_container, api_id, _api_source = docker_api_callback_witness(client, expected_source)
+    try:
+        primary = client.containers.get(lease.container_name)
+    except Exception:
+        raise GovernedEgressAdmissionError() from None
+    if not is_exact_owned_remote_container(
+        primary,
+        lease,
+        require_lease_identity=True,
+    ):
+        raise GovernedEgressAdmissionError() from None
+    primary_id, _attachment = docker_network_attachment(primary, network_name, network_id)
+    attrs = docker_network_authoritative_attrs(network)
+    members = attrs.get("Containers")
+    if not isinstance(members, dict) or {str(member_id) for member_id in members} != {api_id, primary_id}:
+        raise GovernedEgressAdmissionError() from None
+    docker_callback_endpoint_subject(
+        client,
+        network_name=network_name,
+        network_id=network_id,
+        callback_base_url=callback_base_url,
+        expected_source=expected_source,
+    )
+    return primary, api_container
+
+
+def lease_from_owned_governed_network(network: Any) -> ContainerLease | None:
+    """Recover only the non-secret lease identity necessary to clean an orphan bridge."""
+    attrs = docker_network_authoritative_attrs(network)
+    labels = attrs.get("Labels")
+    if not isinstance(labels, dict) or labels.get("ai-platform.owner") != GOVERNED_DOCKER_NETWORK_OWNER:
+        return None
+    values = {
+        key: str(labels.get(key) or "").strip()
+        for key in (
+            "ai-platform.tenant_id",
+            "ai-platform.workspace_id",
+            "ai-platform.user_id",
+            "ai-platform.session_id",
+            "ai-platform.run_id",
+            "ai-platform.attempt_id",
+            "ai-platform.container_name",
+        )
+    }
+    if not all(values.values()) or values["ai-platform.container_name"] != f"executor-exec-{values['ai-platform.run_id']}":
+        return None
+    lease = ContainerLease(
+        container_id=f"exec-{values['ai-platform.run_id']}",
+        container_name=values["ai-platform.container_name"],
+        provider="docker",
+        executor_url="http://sandbox-runtime.invalid",
+        tenant_id=values["ai-platform.tenant_id"],
+        workspace_id=values["ai-platform.workspace_id"],
+        user_id=values["ai-platform.user_id"],
+        session_id=values["ai-platform.session_id"],
+        run_id=values["ai-platform.run_id"],
+        sandbox_mode="ephemeral",
+        browser_enabled=False,
+        workspace_host_path="",
+        labels={"ai-platform.attempt_id": values["ai-platform.attempt_id"]},
+    )
+    try:
+        docker_owned_governed_network(network, lease)
+    except GovernedEgressAdmissionError:
+        return None
+    return lease

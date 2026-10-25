@@ -420,7 +420,7 @@ async def test_proxy_assembly_failure_closes_already_accepted_stream(monkeypatch
 
     async def connection(*_a, **_kw):
         return SimpleNamespace(base_url="https://synthetic.example", api_key="synthetic",
-                               max_input_tokens=32000, max_output_tokens=2048, conversation_mode="empty_start")
+                               auto_compact_window=200_000, max_output_tokens=2048, conversation_mode="empty_start")
 
     service = control.ModelControlPlaneService(
         transaction_factory=transaction,

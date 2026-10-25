@@ -7,11 +7,8 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
 )
 from app.skills.api import is_valid_executable_skill_name
-from app.validation import (
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
-    assert_canonical_sha256,
-    assert_safe_id,
-)
+from app.execution.api import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+from app.kernel.identifiers import assert_canonical_sha256, assert_safe_id
 
 
 def validate_agent_profile_execution_input(

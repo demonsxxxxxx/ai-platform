@@ -22,7 +22,7 @@ export default function DocumentPreview(props: DocumentPreviewProps) {
       overlayClass={
         state.isSidebar
           ? undefined
-          : "sm:items-center sm:justify-center bg-black/70"
+          : "sm:items-center sm:justify-center bg-[color-mix(in_srgb,var(--theme-overlay-solid)_70%,transparent)]"
       }
       panelClass={state.isSidebar ? undefined : state.centerPanelClass}
       onUserInteraction={state.onUserInteraction}

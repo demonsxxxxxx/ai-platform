@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.domain.tool_policy import evaluate_tool_policy
 
 
 def policy_tool(**overrides: object) -> dict[str, object]:

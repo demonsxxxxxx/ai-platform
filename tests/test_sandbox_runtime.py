@@ -26,10 +26,7 @@ from app.sandbox.api import SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
-from app.validation import (
-    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
-    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
-)
+from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
@@ -588,7 +585,7 @@ async def test_runtime_logs_only_safe_opensandbox_startup_evidence(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_runtime_persists_one_private_safe_readiness_event_before_rethrow(tmp_path, monkeypatch):
-    from app.public_execution import public_execution_event_from_row
+    from app.streaming.domain.public_execution import public_execution_event_from_row
 
     class StubSettings:
         sandbox_container_provider = "docker"

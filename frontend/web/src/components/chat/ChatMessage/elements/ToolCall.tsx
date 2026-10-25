@@ -27,11 +27,11 @@ export function ToolCall({ status, icon, label, suffix, errorKind }: ToolCallPro
       <div
         className={clsx(
           "inline-flex w-fit max-w-full flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-[13px] leading-5",
-          status === "loading" && "bg-amber-100/80 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-          status === "success" && "bg-emerald-100/80 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
-          status === "error" && "bg-red-100/80 text-red-700 dark:bg-red-900/30 dark:text-red-300",
-          status === "cancelled" && "bg-amber-100/80 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-          status === "idle" && "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-400",
+          status === "loading" && "bg-[var(--theme-warning-soft)] text-[var(--theme-warning-text)]",
+          status === "success" && "bg-[var(--theme-success-soft)] text-[var(--theme-success-text)]",
+          status === "error" && "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)]",
+          status === "cancelled" && "bg-[var(--theme-warning-soft)] text-[var(--theme-warning-text)]",
+          status === "idle" && "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400",
         )}
       >
         {status === "loading" ? <LoaderCircle size={12} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" /> : StatusIcon ? <StatusIcon size={12} aria-hidden="true" className="shrink-0" /> : null}

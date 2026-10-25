@@ -152,7 +152,7 @@ function AuthenticationDialog({
                 />
               </div>
               {error ? (
-                <p id="file-server-password-error" role="alert" className="text-sm text-[var(--theme-danger)]">
+                <p id="file-server-password-error" role="alert" className="text-sm text-[var(--theme-danger-text)]">
                   {error}
                 </p>
               ) : null}
@@ -265,7 +265,7 @@ export function PluginMarketPanel() {
               className={`${workbenchSurface.catalog.entryCard} flex min-h-64 min-w-0 flex-col`}
             >
               <div className="flex items-start gap-3">
-                <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-700 ring-1 ring-cyan-600/20 dark:text-cyan-300">
+                <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-info-soft)] text-[var(--theme-info-text)] ring-1 ring-[var(--theme-info-ring)]">
                   <Server aria-hidden="true" size={22} />
                 </span>
                 <div className="min-w-0 flex-1">
@@ -281,8 +281,8 @@ export function PluginMarketPanel() {
                     <span
                       className={`rounded-md px-2 py-1 text-[11px] font-medium ring-1 ${
                         connected
-                          ? "bg-emerald-500/10 text-emerald-800 ring-emerald-600/20 dark:text-emerald-200"
-                          : "bg-amber-500/10 text-amber-800 ring-amber-600/20 dark:text-amber-200"
+                          ? "bg-[var(--theme-success-soft)] text-[var(--theme-success-text)] ring-[var(--theme-success-ring)]"
+                          : "bg-[var(--theme-warning-soft)] text-[var(--theme-warning-text)] ring-[var(--theme-warning-ring)]"
                       }`}
                     >
                       {connected ? "已连接" : "未连接"}
@@ -311,7 +311,7 @@ export function PluginMarketPanel() {
                 <span className="inline-flex items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]">
                   <ShieldCheck
                     aria-hidden="true"
-                    className="text-emerald-600 dark:text-emerald-400"
+                    className="text-[var(--theme-success-text)]"
                     size={15}
                   />
                   用户级受控访问

@@ -28,7 +28,7 @@ export function FileTreeItem({
         <Button type="text"
           htmlType="button"
           onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center gap-1.5 py-[4px] text-[13px] text-left text-stone-500 dark:text-stone-400 hover:bg-stone-100/80 dark:hover:bg-white/5 transition-colors duration-100 select-none"
+          className="w-full flex items-center gap-1.5 py-[4px] text-[13px] text-left text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100/80 dark:hover:bg-[color-mix(in_srgb,var(--theme-bg-card)_5%,transparent)] transition-colors duration-100 select-none"
           style={{ paddingLeft: `${indent}px`, paddingRight: "8px" }}
         >
           <ChevronDown
@@ -39,7 +39,7 @@ export function FileTreeItem({
           />
           <FolderOpen
             size={14}
-            className="shrink-0 text-stone-400 dark:text-stone-500"
+            className="shrink-0 text-neutral-400 dark:text-neutral-500"
           />
           <span className="truncate">{node.name}</span>
         </Button>
@@ -67,7 +67,7 @@ export function FileTreeItem({
       className={`w-full flex items-center gap-2 py-[5px] text-[13px] text-left group transition-colors duration-100 ${
         isActive
           ? "bg-[var(--theme-primary)]/10 text-[var(--theme-text)] font-medium"
-          : "text-stone-600 dark:text-stone-400 hover:bg-stone-100/80 dark:hover:bg-white/5"
+          : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100/80 dark:hover:bg-[color-mix(in_srgb,var(--theme-bg-card)_5%,transparent)]"
       }`}
       style={
         isActive
@@ -96,7 +96,7 @@ export function FileTreeItem({
               onRemove(node.fileIndex);
             }
           }}
-          className="hidden group-hover:inline-flex items-center justify-center h-4 w-4 rounded hover:bg-stone-300/60 dark:hover:bg-stone-600/60 text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300 transition-colors"
+          className="hidden group-hover:inline-flex items-center justify-center h-4 w-4 rounded hover:bg-neutral-300/60 dark:hover:bg-neutral-600/60 text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300 transition-colors"
         >
           <X size={10} />
         </span>

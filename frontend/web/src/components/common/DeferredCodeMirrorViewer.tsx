@@ -20,7 +20,7 @@ function CodeMirrorFallback({
   return (
     <div className={className}>
       <pre
-        className="overflow-auto whitespace-pre-wrap break-words bg-white p-3 font-mono text-stone-700 dark:bg-[#282c34] dark:text-stone-200"
+        className="overflow-auto whitespace-pre-wrap break-words bg-[var(--theme-on-overlay)] p-3 font-mono text-neutral-700 dark:bg-[var(--theme-bg-card)] dark:text-neutral-200"
         style={{
           ...(maxHeight ? { maxHeight } : {}),
           ...(fontSize ? { fontSize } : {}),

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
-from app.public_execution import (
+from app.streaming.domain.public_execution import (
     PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
     PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS,
     PersistablePublicExecutionStepV2,
