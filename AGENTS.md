@@ -65,6 +65,7 @@ reviewers must inspect or rerun the referenced inventory.
 ## Read when relevant
 
 - Code ownership and product contracts: [documentation index](docs/README.md).
+- Coding rules and the enforcement level of every constraint: [coding standards](docs/agent-rules/coding-standards.md).
 - Architecture navigation: [architecture map](ARCHITECTURE.md). Measure current source with `scripts/analysis/source_quality_inventory.py` rather than citing old counts.
 - Known architecture debt: [debt inventory](docs/exec-plans/tech-debt-tracker.md); confirm each entry against current source before acting.
 - Frontend implementation and checks: [web frontend instructions](frontend/web/AGENTS.md).
