@@ -3238,3 +3238,122 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
                 else "executor_reconciliation_run_not_terminal"
             ),
         })]
+
+
+class _CleanupHealthConnection:
+    """Execute cleanup counters and quarantine SQL on SQLite, not PostgreSQL.
+
+    Other summary aggregates use PostgreSQL-only date/aggregate expressions and
+    are deliberately outside this bounded predicate regression.
+    """
+
+    def __init__(self):
+        import sqlite3
+
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.create_function("now", 0, lambda: "2026-10-17T00:00:00Z")
+        self.db.execute(
+            "create table sandbox_leases (id text, tenant_id text, status text, "
+            "executor_reconciliation_status text, executor_reconciliation_claim_token text, "
+            "executor_reconciliation_claimed_at text, executor_reconciliation_error text, "
+            "updated_at text)"
+        )
+
+    def insert(self, lease_id, status, reconciliation_status, tenant_id="tenant-a"):
+        self.db.execute(
+            "insert into sandbox_leases values (?, ?, ?, ?, 'claim-a', null, '', null)",
+            (lease_id, tenant_id, status, reconciliation_status),
+        )
+
+    async def execute(self, sql, params):
+        import re
+
+        if "as quarantined_receipt_count" in sql:
+            # Keep each production predicate and the tenant WHERE unchanged.
+            clauses = re.findall(
+                r"count\(\*\) filter \(\s*where ((?:(?!count\(\*\)).)*?)\s*\) "
+                r"as (cleanup_pending_receipt_count|quarantined_receipt_count)",
+                sql,
+                re.S,
+            )
+            assert len(clauses) == 2
+            projection = ", ".join(
+                f"count(*) filter (where {predicate}) as {name}"
+                for predicate, name in clauses
+            )
+            from_clause = sql[sql.rindex("from sandbox_leases"):]
+            sql = f"select {projection} {from_clause}"
+            params = params[1:]
+        row = self.db.execute(sql.replace("%s", "?"), params).fetchone()
+        return _Cursor(dict(row) if row is not None else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "released", "quarantined"])
+@pytest.mark.parametrize(
+    "reconciliation_status", ["cleanup_pending", "failed", "pending", "reconciled", "finalized"]
+)
+async def test_reconciliation_cleanup_health_counts_state_matrix(status, reconciliation_status):
+    conn = _CleanupHealthConnection()
+    try:
+        conn.insert("lease-a", status, reconciliation_status)
+        # A foreign tenant's backlog must never influence either aggregate.
+        conn.insert("foreign-a", "quarantined", "cleanup_pending", "tenant-b")
+        conn.insert("foreign-b", "active", "failed", "tenant-b")
+        summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn, tenant_id="tenant-a", slo_seconds=900,
+        )
+        is_backlog = reconciliation_status in {"failed", "cleanup_pending"}
+        assert summary["cleanup_pending_receipt_count"] == int(
+            status in {"active", "released"} and is_backlog
+        )
+        assert summary["quarantined_receipt_count"] == int(
+            status == "quarantined" and is_backlog
+        )
+        assert not {"tenant_id", "run_id", "lease_id", "error"} & set(summary)
+        empty = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn, tenant_id="tenant-empty", slo_seconds=900,
+        )
+        assert empty["cleanup_pending_receipt_count"] == 0
+        assert empty["quarantined_receipt_count"] == 0
+    finally:
+        conn.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "released"])
+@pytest.mark.parametrize("reconciliation_status", ["cleanup_pending", "failed"])
+async def test_quarantined_cleanup_stays_visible_without_changing_receipt_state(
+    status, reconciliation_status,
+):
+    conn = _CleanupHealthConnection()
+    try:
+        conn.insert("lease-a", status, reconciliation_status)
+        assert not await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+            conn, lease_id="lease-a", claim_token="stale-claim", error="invalid_handle",
+        )
+        before = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn, tenant_id="tenant-a", slo_seconds=900,
+        )
+        assert before["cleanup_pending_receipt_count"] == 1
+        assert before["quarantined_receipt_count"] == 0
+        assert await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+            conn, lease_id="lease-a", claim_token="claim-a",
+            error="executor_reconciliation_runtime_handle_invalid",
+        )
+        row = dict(conn.db.execute("select * from sandbox_leases").fetchone())
+        assert row["status"] == "quarantined"
+        assert row["executor_reconciliation_status"] == reconciliation_status
+        assert row["executor_reconciliation_claim_token"] is None
+        assert row["executor_reconciliation_claimed_at"] is None
+        after = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+            conn, tenant_id="tenant-a", slo_seconds=900,
+        )
+        assert after["cleanup_pending_receipt_count"] == 0
+        assert after["quarantined_receipt_count"] == 1
+        assert not await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
+            conn, lease_id="lease-a", claim_token="claim-a", error="invalid_handle",
+        )
+    finally:
+        conn.db.close()
