@@ -917,9 +917,11 @@ async def test_real_postgres_redis_recovers_stale_delivery_by_frozen_identity(
     assert current["queue_payload_json"] == frozen
     assert current["queue_message_id"] == digest
     if attempt_before_recovery:
-        assert recovered.claimed == 1 and recovered.rescheduled == 1
+        # A confirmed delivery with an Attempt has completed its transport
+        # responsibility; missing Redis data cannot authorize another dispatch.
+        assert recovered.claimed == 0 and recovered.rescheduled == 0
         assert queued == []
-        assert current["state"] == "pending"
+        assert current["state"] == "delivered"
         assert attempts["count"] == 1
     else:
         assert recovered.claimed == 1 and recovered.delivered == 1

@@ -50,8 +50,11 @@ class _Connection:
         self.rows = list(rows)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def execute(self, query: str, params: tuple[Any, ...]):
-        self.calls.append((" ".join(query.split()).lower(), params))
+    async def execute(self, query: str, params: tuple[Any, ...] = ()):
+        statement = " ".join(query.split()).lower()
+        self.calls.append((statement, params))
+        if statement == "select storage_version from run_attempt_settlement_storage where singleton = true":
+            return _Cursor({"storage_version": "sandbox_lease.v1"})
         return _Cursor(self.rows.pop(0) if self.rows else None)
 
 
@@ -187,7 +190,7 @@ async def test_postgres_stale_candidates_bind_attempt_and_exclude_queued_deliver
         postgres_claim_mode=True,
     )
 
-    statement, params = conn.calls[0]
+    statement, params = conn.calls[1]
     assert rows == []
     assert "runs.status = 'running'" in statement
     assert "latest_attempt.id as expected_attempt_id" in statement
@@ -249,8 +252,8 @@ async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim()
     assert claim["expected_attempt_id"] == "attempt-a"
     assert claim["expected_owner_generation"] == 4
     assert claim["stale_before"] == "2026-07-21T11:00:00Z"
-    assert "for update of runs" in conn.calls[0][0]
-    assert "for update" in conn.calls[1][0]
+    assert "for update of runs" in conn.calls[1][0]
+    assert "for update" in conn.calls[2][0]
     assert "on conflict (tenant_id, run_id) do update" in conn.calls[-1][0]
     assert "claim_deadline_at <= clock_timestamp()" in conn.calls[-1][0]
 
