@@ -254,17 +254,17 @@ async def test_enabled_pg_claim_path_requires_n40_marker_before_scanning(monkeyp
     async def current_schema():
         return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
 
-    async def missing_n40(_version):
-        raise schema_migrations.SchemaMigrationError("schema_marker_not_applied")
+    async def missing_n40():
+        raise RuntimeError("attempt_settlement_reader_not_active")
 
     async def legacy_must_not_run(*_args, **_kwargs):
         raise AssertionError("missing N40 marker must fail closed")
 
     monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
-    monkeypatch.setattr(worker_main, "require_schema_marker_applied", missing_n40)
+    monkeypatch.setattr(worker_main, "require_attempt_settlement_reader_active", missing_n40)
     monkeypatch.setattr(worker_main, "_reconcile_stale_runs_with_redis_fence", legacy_must_not_run)
 
-    with pytest.raises(schema_migrations.SchemaMigrationError, match="schema_marker_not_applied"):
+    with pytest.raises(RuntimeError, match="attempt_settlement_reader_not_active"):
         await worker_main.reconcile_stale_runs_for_worker(
             Settings(),
             v4_capabilities=object(),
@@ -284,15 +284,15 @@ async def test_enabled_pg_claim_path_dispatches_only_after_n40_and_n42_markers(m
         calls.append("n42")
         return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
 
-    async def n40_marker(version):
-        calls.append(("n40", version))
+    async def n40_marker():
+        calls.append(("n40", "attempt.v1"))
 
     async def postgres_owner(*_args, **kwargs):
         calls.append(("postgres_owner", kwargs["worker_id"]))
         return []
 
     monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
-    monkeypatch.setattr(worker_main, "require_schema_marker_applied", n40_marker)
+    monkeypatch.setattr(worker_main, "require_attempt_settlement_reader_active", n40_marker)
     monkeypatch.setattr(worker_main, "reconcile_worker_stale_runs_with_postgres_claims", postgres_owner)
 
     result = await worker_main.reconcile_stale_runs_for_worker(
@@ -305,7 +305,7 @@ async def test_enabled_pg_claim_path_dispatches_only_after_n40_and_n42_markers(m
     assert result == []
     assert calls[:2] == [
         "n42",
-        ("n40", schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION),
+        ("n40", "attempt.v1"),
     ]
     assert calls[2][0] == "postgres_owner"
 
@@ -883,7 +883,9 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
                 )
         assert await redis.lrange(keys.processing, 0, -1) == [message.raw]
         async with transaction_factory() as conn:
-            assert not await stale_run_reconciliation_claim_is_current(conn, claim=claim)
+            # The old Worker loses execution authority; the current reconciler
+            # must retain its claim so it can finish the same Attempt.
+            assert await stale_run_reconciliation_claim_is_current(conn, claim=claim)
     finally:
         if redis_keys:
             await redis.delete(*redis_keys)

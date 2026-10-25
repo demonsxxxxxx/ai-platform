@@ -1,5 +1,6 @@
 """Composition for the Runs-owned Attempt settlement projection API."""
 
+from app.db import transaction
 from app.runs.api import (
     AttemptSettlementProjectionPorts,
     AttemptSettlementProjectionService,
@@ -37,4 +38,11 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
             writer_fence=lock_attempt_settlement_writer_fence,
         )
     )
+
+
+async def require_attempt_settlement_reader_active() -> None:
+    async with transaction() as conn:
+        version = await build_attempt_settlement_projection_service().storage_version(conn)
+    if version != "attempt.v1":
+        raise RuntimeError("attempt_settlement_reader_not_active")
 

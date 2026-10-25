@@ -248,6 +248,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_delivery_intents.py",
         "tests/test_run_delivery_intents_postgres.py",
         "tests/test_execution_supervision_postgres.py",
+        "tests/test_stale_reconciliation_claims.py",
     ),
     "lifecycle-control-chain": (
         "tests/test_run_execution_lifecycle_integration.py",

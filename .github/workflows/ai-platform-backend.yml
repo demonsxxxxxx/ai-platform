@@ -290,6 +290,7 @@ jobs:
               tests/test_run_delivery_intents.py
               tests/test_run_delivery_intents_postgres.py
               tests/test_execution_supervision_postgres.py
+              tests/test_stale_reconciliation_claims.py
           - shard: lifecycle-control-chain
             stage: lifecycle-control-chain-core
             runner: ubuntu-latest

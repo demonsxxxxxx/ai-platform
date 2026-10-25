@@ -32,6 +32,7 @@ from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.skills import configure_skill_markdown
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
+from app.bootstrap.attempt_settlement_projection import require_attempt_settlement_reader_active
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.bootstrap.run_delivery_intents import build_run_delivery_intents
@@ -75,9 +76,6 @@ from app.sandbox.api import (
     exception_chain_from_error,
 )
 from app.schema_migrations import (
-    N42_REQUIRED_N40_SCHEMA_VERSION,
-    RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION,
-    require_schema_marker_applied,
     require_schema_current,
 )
 from app.platform.tracing import configure_terminal_stage_logging
@@ -575,10 +573,8 @@ async def reconcile_stale_runs_for_worker(
             lifecycle=lifecycle,
         )
 
-    schema = await require_schema_current()
-    if schema.get("target_version") != RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION:
-        raise RuntimeError("stale_run_reconciliation_claim_schema_marker_missing")
-    await require_schema_marker_applied(N42_REQUIRED_N40_SCHEMA_VERSION)
+    await require_schema_current()
+    await require_attempt_settlement_reader_active()
     return await reconcile_worker_stale_runs_with_postgres_claims(
         settings,
         v4_capabilities=v4_capabilities,

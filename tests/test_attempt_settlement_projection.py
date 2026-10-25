@@ -2621,3 +2621,43 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
             },
         ) is True
 
+
+
+@pytest.mark.asyncio
+async def test_cutover_accounts_for_execution_receipts_without_an_attempt(attempt_settlement_db):
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+        activate_attempt_settlement_storage,
+        prepare_attempt_settlement_storage_cutover,
+    )
+
+    connect, *_ = attempt_settlement_db
+    async with connect() as conn, conn.transaction():
+        await build_attempt_settlement_projection_service().backfill(conn, limit=800)
+        await conn.execute(
+            """insert into sandbox_leases(
+                 id,tenant_id,workspace_id,user_id,session_id,run_id,attempt_id,
+                 sandbox_mode,provider,status,lease_payload_json,executor_status,
+                 executor_terminal_json,executor_terminal_received_at)
+               select 'lease-unbound',tenant_id,workspace_id,user_id,session_id,run_id,null,
+                 sandbox_mode,provider,'released',lease_payload_json,'failed',
+                 '{"run_id":"run-a","status":"failed","error_code":"legacy"}'::jsonb,now()
+               from sandbox_leases where id='lease-a'"""
+        )
+    report = await prepare_attempt_settlement_storage_cutover(connect)
+    assert report['status'] == 'blocked'
+    assert report['unbound_execution_lease_count'] == 1
+    assert report['comparison']['mapped_count'] == report['comparison']['attempt_count']
+    assert report['comparison']['missing_count'] == 0
+    confirmations = dict.fromkeys((
+        'run_and_sandbox_writers_drained', 'all_source_writers_n40_compatible',
+        'real_sdk_acceptance_complete', 'real_sandbox_lifecycle_acceptance_complete',
+        'fourteen_lifecycle_scenarios_complete',
+    ), True)
+    async with connect() as conn, conn.transaction():
+        activation = await activate_attempt_settlement_storage(conn, operator_confirmations=confirmations)
+        assert activation['status'] == 'blocked'
+        assert activation['unbound_execution_lease_count'] == 1
+        marker = await (await conn.execute(
+            'select storage_version from run_attempt_settlement_storage where singleton=true'
+        )).fetchone()
+        assert marker['storage_version'] == 'sandbox_lease.v1'

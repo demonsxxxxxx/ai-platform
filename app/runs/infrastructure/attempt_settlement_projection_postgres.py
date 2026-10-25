@@ -684,6 +684,25 @@ def _cutover_ready(summary: Mapping[str, Any]) -> bool:
     )
 
 
+async def _unbound_execution_lease_count(conn: Any) -> int:
+    """Keep legacy execution evidence outside the Attempt ledger in the denominator."""
+    row = await (await conn.execute(
+        """
+        select count(*)::bigint as count from sandbox_leases lease
+        where (lease.executor_terminal_json is not null
+               or lease.executor_reconciliation_context_json is not null
+               or lease.executor_heartbeat_at is not null
+               or lease.executor_status is distinct from 'pending')
+          and not exists (
+            select 1 from run_attempts attempt
+            where attempt.tenant_id = lease.tenant_id
+              and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+          )
+        """
+    )).fetchone()
+    return int(row["count"])
+
+
 async def prepare_attempt_settlement_storage_cutover(
     transaction_factory: Any,
     *,
@@ -729,12 +748,14 @@ async def prepare_attempt_settlement_storage_cutover(
         comparison = await compare_attempt_settlement_snapshot(
             conn, page_limit=page_limit
         )
+        unbound_count = await _unbound_execution_lease_count(conn)
     return {
-        "status": "ready" if _cutover_ready(comparison) else "blocked",
+        "status": "ready" if _cutover_ready(comparison) and unbound_count == 0 else "blocked",
         "storage_version": "sandbox_lease.v1",
         "backfilled_attempt_count": backfilled,
         "page_count": pages,
         "comparison": comparison,
+        "unbound_execution_lease_count": unbound_count,
         "activation_authorized": False,
     }
 
@@ -805,13 +826,18 @@ async def activate_attempt_settlement_storage(
             "activation_authorized": False,
         }
     comparison = await compare_attempt_settlement_snapshot(conn, page_limit=page_limit)
-    ready = _cutover_ready(comparison) and attempt_count == int(comparison["attempt_count"])
+    unbound_count = await _unbound_execution_lease_count(conn)
+    ready = (
+        _cutover_ready(comparison) and attempt_count == int(comparison["attempt_count"])
+        and unbound_count == 0
+    )
     if not ready:
         return {
             "status": "blocked",
             "storage_version": current_version,
             "attempt_count": attempt_count,
             "comparison": comparison,
+            "unbound_execution_lease_count": unbound_count,
             "activation_authorized": False,
         }
     if current_version == "attempt.v1":
