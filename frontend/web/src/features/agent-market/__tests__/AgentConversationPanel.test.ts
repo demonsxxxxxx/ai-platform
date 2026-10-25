@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -66,6 +66,5 @@ test("the retired adjacent Agent history panel has no production importer", () =
   );
 
   assert.deepEqual(importers, [], `${retired} threading must stay unreferenced`);
-  // Implementation is retained on disk until an explicit delete is approved.
-  assert.match(read(retired), /data-agent-conversation-panel/);
+  assert.equal(existsSync(join(root, "src", retired)), false);
 });

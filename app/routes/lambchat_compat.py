@@ -1,4 +1,12 @@
 # ruff: noqa: B008
+"""Current browser chat-session API: sessions, run history replay and SSE stream.
+
+The module name is historical (the frontend shell was ported from LambChat).
+These routes are the live paths used by ``frontend/web/src/services/api/session.ts``
+and ``hooks/useAgent/sseConnection.ts``; they are not a retirable compatibility
+layer. Migration into the owning contexts is tracked as TD-CONV-001 in
+``docs/exec-plans/tech-debt-tracker.md``.
+"""
 
 import asyncio
 import base64
@@ -34,7 +42,7 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     public_skill_display_label,
 )
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
@@ -1423,49 +1431,12 @@ async def oauth_providers() -> dict[str, object]:
     }
 
 
-UI_PERMISSIONS = [
-    "agent:use",
-    "artifact:download",
-    "model:admin",
-    "settings:manage",
-    "admin:status",
-    "chat:read",
-    "chat:write",
-    "session:read",
-    "session:write",
-    "file:upload",
-    "file:upload:document",
-    "skill:read",
-    "skill:write",
-    "skill:delete",
-    "skill:admin",
-    "marketplace:read",
-    "marketplace:publish",
-    "marketplace:admin",
-    "user:read",
-    "user:admin",
-    "feedback:read",
-    "feedback:admin",
-    "notification:read",
-    "notification:admin",
-]
-
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {
     "run_succeeded",
     "run_failed",
     "run_cancelled",
     "run_canceled",
 }
-
-@router.get("/auth/permissions")
-async def permissions() -> dict[str, object]:
-    permission_infos = [
-        {"value": item, "label": item, "description": item} for item in UI_PERMISSIONS
-    ]
-    return {
-        "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
-        "all_permissions": permission_infos,
-    }
 
 @router.get("/agent/models/available")
 async def available_models(
@@ -2063,12 +2034,6 @@ async def generate_title(
         except session_actions.SessionActionNotFoundError as exc:
             raise HTTPException(status_code=404, detail="session_not_found") from exc
     return {"session_id": session_id, "title": str(session["title"])}
-
-
-@router.post("/sessions/{session_id}/mark-read")
-async def mark_read(session_id: str) -> dict[str, bool]:
-    """Acknowledge older clients without persisting or authorizing unread state."""
-    return {"success": True}
 
 
 @router.get("/chat/sessions/{session_id}/status")

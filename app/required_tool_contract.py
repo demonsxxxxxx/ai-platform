@@ -21,7 +21,7 @@ from app.skills.execution_profiles import (
     SANDBOX_FULL_LOCAL,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
+from app.mcp.api import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 REQUIRED_CAPABILITY_DECLARATION_SCHEMA_VERSION = (
     "ai-platform.required-capability-declaration.v1"

@@ -294,7 +294,7 @@ def test_poc_gate_default_env_path_is_repository_relative():
 def test_poc_gate_validates_api_run_id_before_psql_interpolation():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 
-    assert "from app.validation import assert_safe_id" in text
+    assert "from app.kernel.identifiers import assert_safe_id" in text
     assert "run_id = assert_safe_id(str(run_id), \"run_id\")" in text
 
 

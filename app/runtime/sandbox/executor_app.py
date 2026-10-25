@@ -37,7 +37,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
     PublicExecutionV2Projector,
@@ -81,7 +81,7 @@ from app.runtime.sandbox.contracts import (
     executor_callback_receipt_event_count,
 )
 from app.settings import get_settings
-from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None

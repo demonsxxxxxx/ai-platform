@@ -32,7 +32,7 @@ from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runs.infrastructure import postgres as runs_postgres
 from app.streaming.api import V4_METADATA_KEY
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

@@ -26,11 +26,8 @@ from app.mcp.api import assert_mcp_tool_reference
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.sandbox.api import AssistantAnswerReceipt
-from app.validation import (
-    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
-    assert_safe_id,
-    assert_safe_principal_user_id,
-)
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
 
 SandboxMode = Literal["ephemeral", "persistent"]

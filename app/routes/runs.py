@@ -11,7 +11,7 @@ from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.bootstrap.run_inputs import RunInputSubmissionRequest
-from app.capabilities import get_capability
+from app.agent_apps.api import get_capability
 from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
@@ -71,7 +71,7 @@ from app.queue import (
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
@@ -132,7 +132,7 @@ from app.streaming.api import (
     WorkerV4Capabilities,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_principal_user_id
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
