@@ -808,7 +808,13 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
                 "selected_version": "version-a",
             },
             skill_manifests=[
-                {"skill_id": f"skill-{suffix}", "content_hash": "version-a"}
+                {
+                    "schema_version": "ai-platform.skill-materialization-ref.v1",
+                    "skill_id": f"skill-{suffix}",
+                    "version": "version-a",
+                    "content_hash": "version-a",
+                    "materialization_sha256": "a" * 64,
+                }
             ],
         )
         assert seeded_worker_id == worker_id
