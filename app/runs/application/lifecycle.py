@@ -44,6 +44,7 @@ class RunLifecyclePersistence(Protocol):
     async def classify_success_commit_block(self, conn: object, **kwargs: Any) -> str: ...
     async def list_stale_run_reconciliation_candidates(self, conn: object, **kwargs: Any) -> list[dict[str, Any]]: ...
     async def claim_stale_run_reconciliation(self, conn: object, **kwargs: Any) -> dict[str, Any] | None: ...
+    async def stage_stale_run_reconciliation(self, conn: object, **kwargs: Any) -> dict[str, Any] | None: ...
     async def renew_stale_run_reconciliation_claim(self, conn: object, **kwargs: Any) -> bool: ...
     async def stale_run_reconciliation_claim_is_current(self, conn: object, **kwargs: Any) -> bool: ...
     async def release_stale_run_reconciliation_claim(self, conn: object, **kwargs: Any) -> bool: ...
@@ -294,6 +295,41 @@ class RunLifecycleService:
             stale_after_seconds=stale_after_seconds,
             cancel_requested_after_seconds=cancel_requested_after_seconds,
             claim_ttl_seconds=claim_ttl_seconds,
+        )
+
+    async def stage_stale_run_reconciliation(
+        self,
+        conn: object,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str | None,
+        run_id: str,
+        expected_status: str,
+        stale_before: Any,
+        cancel_requested_before: Any | None,
+        terminal_status: str,
+        error_code: str | None,
+        error_message: str | None,
+        claim_token: str | None,
+        expected_attempt_id: str | None,
+        expected_owner_generation: int,
+    ) -> dict[str, Any] | None:
+        return await self._persistence.stage_stale_run_reconciliation(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            run_id=run_id,
+            expected_status=expected_status,
+            stale_before=stale_before,
+            cancel_requested_before=cancel_requested_before,
+            terminal_status=terminal_status,
+            error_code=error_code,
+            error_message=error_message,
+            claim_token=claim_token,
+            expected_attempt_id=expected_attempt_id,
+            expected_owner_generation=expected_owner_generation,
         )
 
     async def renew_stale_run_reconciliation_claim(

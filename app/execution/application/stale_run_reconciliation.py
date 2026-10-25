@@ -219,6 +219,7 @@ class StaleRunReconciliationService:
                             else "Run interrupted because no live execution owner remains."
                         )
                         staged = await stage_stale_run_reconciliation(
+                            self._lifecycle,
                             conn,
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,

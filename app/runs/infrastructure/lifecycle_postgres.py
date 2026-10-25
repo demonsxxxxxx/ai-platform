@@ -417,6 +417,160 @@ async def list_stale_run_reconciliation_candidates(
     return list(await cursor.fetchall())
 
 
+async def stage_stale_run_reconciliation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str | None,
+    run_id: str,
+    expected_status: str,
+    stale_before: Any,
+    cancel_requested_before: Any | None,
+    terminal_status: str,
+    error_code: str | None,
+    error_message: str | None,
+    claim_token: str | None,
+    expected_attempt_id: str | None,
+    expected_owner_generation: int,
+) -> dict[str, Any] | None:
+    """Stage one stale Run under the same receipt and claim fences as claiming."""
+    if expected_status not in {"queued", "running"}:
+        raise ValueError("invalid_stale_run_expected_status")
+    if terminal_status not in {"failed", "cancelled"}:
+        raise ValueError("invalid_stale_run_terminal_status")
+
+    pending_receipt_guard = _pending_terminal_receipt_sql(
+        attempt_reader_active=await _attempt_settlement_reader_active(conn)
+    )
+    target_result = (
+        {"message": "任务已取消", "reconciliation_reason": "stale_run_no_owner"}
+        if terminal_status == "cancelled"
+        else {
+            "message": "Run interrupted because no live execution owner remains.",
+            "retryable": True,
+            "reconciliation_reason": "stale_run_no_owner",
+        }
+    )
+    cursor = await conn.execute(
+        f"""
+        update runs
+        set terminalization_target = %s,
+            terminalization_reason = 'stale_run_no_owner',
+            terminalization_result_json = %s::jsonb,
+            terminalization_error_code = %s,
+            terminalization_error_message = %s
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id is not distinct from %s
+          and id = %s
+          and status = %s
+          and (terminalization_target is null
+               or (terminalization_target = 'cancel_requested' and %s = 'cancelled'))
+          and (%s <> 'cancelled' or cancel_requested_at is not null)
+          and (%s <> 'failed' or cancel_requested_at is null)
+          and (
+            %s::uuid is null
+            or exists (
+              select 1 from run_stale_reconciliation_claims claim
+              where claim.tenant_id = runs.tenant_id and claim.run_id = runs.id
+                and claim.claim_token = %s::uuid
+                and claim.expected_attempt_id is not distinct from %s
+                and claim.expected_owner_generation = %s
+                and claim.claim_deadline_at > clock_timestamp()
+            )
+          )
+          and not exists (
+            select 1 from sandbox_leases
+            where sandbox_leases.tenant_id = runs.tenant_id
+              and sandbox_leases.run_id = runs.id
+              and sandbox_leases.status = 'active'
+          )
+          and not ({pending_receipt_guard})
+          and (
+            (%s = 'cancelled' and cancel_requested_at <= %s::timestamptz)
+            or
+            (%s = 'failed' and greatest(
+                  coalesce((select max(created_at) from run_events
+                            where run_events.tenant_id = runs.tenant_id
+                              and run_events.run_id = runs.id), '-infinity'::timestamptz),
+                  coalesce(started_at, '-infinity'::timestamptz),
+                  coalesce(queued_at, '-infinity'::timestamptz),
+                  created_at
+                ) <= %s::timestamptz)
+          )
+        returning id, trace_id, terminalization_target
+        """,
+        (
+            terminal_status,
+            _json_text(target_result),
+            error_code,
+            error_message,
+            tenant_id,
+            workspace_id,
+            user_id,
+            run_id,
+            expected_status,
+            terminal_status,
+            terminal_status,
+            terminal_status,
+            claim_token,
+            claim_token,
+            expected_attempt_id,
+            expected_owner_generation,
+            terminal_status,
+            cancel_requested_before,
+            terminal_status,
+            stale_before,
+        ),
+    )
+    staged = await cursor.fetchone()
+    if staged is None:
+        if claim_token is None:
+            return None
+        cursor = await conn.execute(
+            f"""
+            select runs.id, runs.trace_id, runs.terminalization_target
+            from runs
+            where runs.tenant_id = %s and runs.workspace_id = %s
+              and runs.user_id is not distinct from %s and runs.id = %s
+              and runs.status = %s
+              and runs.terminalization_target = %s
+              and runs.terminalization_reason = 'stale_run_no_owner'
+              and exists (
+                select 1 from run_stale_reconciliation_claims claim
+                where claim.tenant_id = runs.tenant_id and claim.run_id = runs.id
+                  and claim.claim_token = %s::uuid
+                  and claim.expected_attempt_id is not distinct from %s
+                  and claim.expected_owner_generation = %s
+                  and claim.claim_deadline_at > clock_timestamp()
+              )
+              and not exists (
+                select 1 from sandbox_leases lease
+                where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
+                  and lease.status = 'active'
+              )
+              and not ({pending_receipt_guard})
+            """,
+            (
+                tenant_id,
+                workspace_id,
+                user_id,
+                run_id,
+                expected_status,
+                terminal_status,
+                claim_token,
+                expected_attempt_id,
+                expected_owner_generation,
+            ),
+        )
+        staged = await cursor.fetchone()
+        if staged is None:
+            return None
+        staged = {**staged, "already_staged": True}
+    return dict(staged)
+
+
 async def claim_stale_run_reconciliation(
     conn: AsyncConnection,
     *,
@@ -688,52 +842,27 @@ async def _stale_run_reconciliation_claim_binding_is_current(
     if run is None or str(run.get("status") or "") != "running":
         return False
 
-    lease_lock = " for update" if for_update else ""
-    if await _attempt_settlement_reader_active(conn):
-        lease_cursor = await conn.execute(
-            """
-            select lease.status, lease.executor_status,
-                   detail.attempt_id as settlement_attempt_id,
-                   detail.receipt_json, detail.settlement_phase
-            from sandbox_leases lease
-            left join run_attempt_settlements detail
-              on detail.tenant_id = lease.tenant_id and detail.run_id = lease.run_id
-             and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
-            where lease.tenant_id = %s and lease.run_id = %s
-            order by lease.id asc
-            """ + (" for update of lease" if for_update else ""),
-            (claim["tenant_id"], claim["run_id"]),
-        )
-        leases = list(await lease_cursor.fetchall())
-        pending_receipt = any(
-            (
-                lease.get("settlement_attempt_id") is None
-                and str(lease.get("executor_status") or "")
-                    in {"completed", "failed", "cancelled"}
-            )
-            or (
-                lease.get("receipt_json") is not None
-                and str(lease.get("settlement_phase") or "") != "settled"
-            )
-            for lease in leases
-        )
-    else:
-        lease_cursor = await conn.execute(
-            """
-            select status, executor_terminal_json, executor_reconciliation_status
-            from sandbox_leases
-            where tenant_id = %s and run_id = %s
-            order by id asc
-            """ + lease_lock,
-            (claim["tenant_id"], claim["run_id"]),
-        )
-        leases = list(await lease_cursor.fetchall())
-        pending_receipt = any(
-            lease.get("executor_terminal_json") is not None
-            and lease.get("executor_reconciliation_status") != "finalized"
-            for lease in leases
-        )
-    if any(str(lease.get("status") or "") == "active" for lease in leases) or pending_receipt:
+    lease_cursor = await conn.execute(
+        "select status from sandbox_leases where tenant_id = %s and run_id = %s "
+        "order by id asc" + (" for update" if for_update else ""),
+        (claim["tenant_id"], claim["run_id"]),
+    )
+    leases = list(await lease_cursor.fetchall())
+    pending_receipt_cursor = await conn.execute(
+        f"""
+        select ({_pending_terminal_receipt_sql(
+            attempt_reader_active=await _attempt_settlement_reader_active(conn)
+        )}) as pending_terminal_receipt
+        from runs where tenant_id = %s and id = %s
+        """,
+        (claim["tenant_id"], claim["run_id"]),
+    )
+    pending_receipt = await pending_receipt_cursor.fetchone()
+    if (
+        any(str(lease.get("status") or "") == "active" for lease in leases)
+        or pending_receipt is None
+        or bool(pending_receipt.get("pending_terminal_receipt"))
+    ):
         return False
 
     attempt_lock = " for update" if for_update else ""
@@ -826,6 +955,7 @@ class PostgresRunLifecyclePersistence:
     classify_success_commit_block = staticmethod(classify_success_commit_block)
     list_stale_run_reconciliation_candidates = staticmethod(list_stale_run_reconciliation_candidates)
     claim_stale_run_reconciliation = staticmethod(claim_stale_run_reconciliation)
+    stage_stale_run_reconciliation = staticmethod(stage_stale_run_reconciliation)
     renew_stale_run_reconciliation_claim = staticmethod(renew_stale_run_reconciliation_claim)
     stale_run_reconciliation_claim_is_current = staticmethod(stale_run_reconciliation_claim_is_current)
     release_stale_run_reconciliation_claim = staticmethod(release_stale_run_reconciliation_claim)
