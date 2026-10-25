@@ -137,7 +137,7 @@ async def renew_sandbox_lease(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        existing = await sandbox_lease_port(http_request).get_sandbox_lease(
+        existing = await sandbox_lease_port(http_request).get_resource_sandbox_lease(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -181,7 +181,7 @@ async def release_sandbox_lease(
     existing: dict[str, Any] | None = None
     try:
         async with transaction() as conn:
-            existing = await sandbox_lease_port(http_request).get_sandbox_lease(
+            existing = await sandbox_lease_port(http_request).get_resource_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,

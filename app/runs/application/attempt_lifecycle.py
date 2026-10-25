@@ -28,6 +28,15 @@ class RestoredReconciliationAttempt:
 class RunAttemptPersistence(Protocol):
     """Persistence operations required by Run-attempt application workflows."""
 
+    async def get_run(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        for_update: bool = False,
+    ) -> dict[str, Any] | None: ...
+
     async def get_scoped_reconciliation_run(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
     async def get_run_attempt(
@@ -390,6 +399,18 @@ class RunAttemptLifecycleService:
         **kwargs: Any,
     ) -> dict[str, Any] | None:
         if self.settlement_projection is not None:
+            # Fence the source set before choosing the latest Attempt. A new
+            # Attempt can commit between an earlier latest-row read and the
+            # Run lock; the locked Run then prevents any later Attempt insert.
+            await self.settlement_projection.lock_writer_fence(conn)
+            run = await self.persistence.get_run(
+                conn,
+                tenant_id=str(kwargs["tenant_id"]),
+                run_id=str(kwargs["run_id"]),
+                for_update=True,
+            )
+            if run is None:
+                return None
             candidate = await self.persistence.get_latest_run_attempt(
                 conn,
                 tenant_id=kwargs["tenant_id"],
@@ -436,6 +457,15 @@ class RunAttemptLifecycleService:
         """Mirror one terminal Run onto its latest durable attempt atomically."""
 
         if self.settlement_projection is not None:
+            await self.settlement_projection.lock_writer_fence(conn)
+            run = await self.persistence.get_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=True,
+            )
+            if run is None:
+                return None
             candidate = await self.persistence.get_latest_run_attempt(
                 conn,
                 tenant_id=tenant_id,

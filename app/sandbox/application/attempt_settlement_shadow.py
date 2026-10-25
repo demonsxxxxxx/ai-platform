@@ -80,21 +80,27 @@ class AttemptSettlementShadowLeaseRepository:
             "failed": "failed",
             "unknown": "unknown",
         }.get(phase, "unknown")
+        receipt = detail.get("receipt_json")
         result.update(
             settlement_storage_version="attempt.v1",
             settlement_mapping_state=detail.get("mapping_state"),
             settlement_phase=phase,
             settlement_dispatch_state=detail.get("dispatch_state"),
-            settlement_receipt_present=detail.get("receipt_json") is not None,
-            executor_terminal_json=detail.get("receipt_json"),
-            executor_reconciliation_context_json=detail.get("accepted_context_json"),
+            settlement_receipt_present=receipt is not None,
+            executor_terminal_json=receipt,
             executor_reconciliation_intent_context_json=detail.get("intent_recovery_context_json"),
-            executor_reconciliation_status=legacy_phase,
-            executor_reconciliation_claim_token=detail.get("settlement_claim_token"),
-            executor_reconciliation_claimed_at=detail.get("settlement_claimed_at"),
-            executor_reconciliation_retry_not_before=detail.get("next_retry_at"),
             executor_terminal_reconciliation_attempt_count=detail.get("settlement_attempt_count"),
         )
+        if receipt is not None:
+            result["executor_reconciliation_context_json"] = detail.get("accepted_context_json")
+            source_status = str(row.get("executor_reconciliation_status") or "")
+            if source_status not in {"cleanup_pending", "failed"}:
+                result.update(
+                    executor_reconciliation_status=legacy_phase,
+                    executor_reconciliation_claim_token=detail.get("settlement_claim_token"),
+                    executor_reconciliation_claimed_at=detail.get("settlement_claimed_at"),
+                    executor_reconciliation_retry_not_before=detail.get("next_retry_at"),
+                )
         return result
 
     async def create_sandbox_lease(self, conn: Any, **kwargs: Any) -> Any:
@@ -110,6 +116,10 @@ class AttemptSettlementShadowLeaseRepository:
     async def get_sandbox_lease(self, conn: Any, **kwargs: Any) -> Any:
         row = await self._repository.get_sandbox_lease(conn, **kwargs)
         return await self._settlement_view(conn, row) if row is not None else None
+
+    async def get_resource_sandbox_lease(self, conn: Any, **kwargs: Any) -> Any:
+        """Read Sandbox-owned resource authority without requiring settlement detail."""
+        return await self._repository.get_sandbox_lease(conn, **kwargs)
 
     async def list_sandbox_leases(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
         rows = await self._repository.list_sandbox_leases(conn, **kwargs)
