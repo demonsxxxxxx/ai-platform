@@ -436,13 +436,17 @@ def test_callback_token_id_rotates_on_attempt_owner_generation(monkeypatch):
 
     assert first != second
     runtime_callbacks._require_valid_callback_token(
-        derived_callback_token("secret", first), first,
-        run_id="run-a", attempt_id="attempt-a",
+        derived_callback_token("secret", first),
+        runtime_callbacks.SandboxCallbackIdentity(
+            run_id="run-a", attempt_id="attempt-a", callback_token_id=first,
+        ),
     )
     with pytest.raises(HTTPException) as caught:
         runtime_callbacks._require_valid_callback_token(
-            derived_callback_token("secret", second), second,
-            run_id="run-a", attempt_id="attempt-b",
+            derived_callback_token("secret", second),
+            runtime_callbacks.SandboxCallbackIdentity(
+                run_id="run-a", attempt_id="attempt-b", callback_token_id=second,
+            ),
         )
     assert caught.value.status_code == 401
 
@@ -597,10 +601,14 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             callback,
             *,
             capabilities,
+            callback_identity,
             run_diagnostics=None,
             model_token_usage=None,
         ):
             recorded.append(callback)
+            assert callback_identity.run_id == callback.run_id
+            assert callback_identity.attempt_id == callback.attempt_id
+            assert callback_identity.callback_token_id == callback.callback_token_id
             assert run_diagnostics is not None
             assert model_token_usage is not None
             return {"accepted": True, "event_count": 1}

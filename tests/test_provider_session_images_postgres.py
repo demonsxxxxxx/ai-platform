@@ -250,6 +250,7 @@ async def test_callback_route_keeps_io_outside_locks_and_rechecks_authority(medi
     from fastapi import HTTPException
     from app.context.application import provider_sessions
     from app.routes import runtime_callbacks
+    from app.sandbox.api import ProviderSessionAppendIdentity
     from app.runtime.sandbox.contracts import ProviderSessionCallbackRequest
 
     service, _storage = media_service
@@ -275,7 +276,9 @@ async def test_callback_route_keeps_io_outside_locks_and_rechecks_authority(medi
     else:
         result = await runtime_callbacks.provider_session_callback(request, callback_token="synthetic")
         assert result.last_sequence == 3
-    assert len(checks) == 2 and all(check["allow_provider_tail"] for check in checks)
+    assert len(checks) == 2 and all(
+        isinstance(check["identity"], ProviderSessionAppendIdentity) for check in checks
+    )
     async with media_db() as conn:
         row = await (await conn.execute("select next_sequence from provider_session_epochs")).fetchone()
         assert row["next_sequence"] == (3 if revoke else 4)

@@ -3,6 +3,8 @@
 from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
 
 from app.sandbox.application.callback_authority import (
+    ProviderSessionAppendIdentity as ProviderSessionAppendIdentity,
+    SandboxCallbackIdentity as SandboxCallbackIdentity,
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
 )
