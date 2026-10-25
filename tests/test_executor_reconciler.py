@@ -1055,7 +1055,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1319,7 +1319,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1397,7 +1397,7 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
         sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1453,7 +1453,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
         sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1522,7 +1522,7 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
     monkeypatch.setattr(
         sandbox_lease_repository, "claim_sandbox_executor_suspects", claim
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -2214,7 +2214,7 @@ async def test_reconciler_drains_receiptless_terminal_backlog_before_probe_idle(
     )
     monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_terminal", record)
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run", get_run)
-    monkeypatch.setattr(executor_reconciler, "_context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr(executor_reconciler, "_context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row",
@@ -2455,7 +2455,17 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
 
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count" not in statements[0]
-    assert statements[0].count("make_interval(secs => %s)") == 1
+    assert statements[0].count("make_interval(secs => %s)") == 2
+    assert (
+        "lease.executor_probe_claim_token is null and "
+        "coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) "
+        "< now() - make_interval(secs => %s)"
+    ) in statements[0]
+    assert (
+        "lease.executor_probe_claim_token is not null and "
+        "coalesce(lease.executor_probe_claimed_at, lease.updated_at, lease.created_at) "
+        "< now() - make_interval(secs => %s)"
+    ) in statements[0]
     assert "executor_reconciliation_status = 'claimed'" in statements[0]
     assert "executor_reconciliation_claimed_at" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
@@ -3212,8 +3222,8 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     assert "executor_cleanup_status in ('failed', 'cleanup_pending', 'retry', 'claimed')" in claim_sql
     assert "executor_cleanup_retry_not_before" in claim_sql
     assert "executor_cleanup_claimed_at is null" in claim_sql
-    assert "%s::text is null or tenant_id = %s" in claim_sql
-    assert "for update skip locked" in claim_sql
+    assert "%s::text is null or lease.tenant_id = %s" in claim_sql
+    assert "for update of lease skip locked" in claim_sql
     assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a", "cleanup-a")
 
     has_claim_sql, _ = statements[1]

@@ -756,10 +756,15 @@ async def test_delivery_domain_claim_waits_for_failed_receipt_and_blocked_enqueu
             def __getattr__(self, name):
                 return getattr(delivery_store, name)
 
-            async def record_receipt(self, connection, *, intent, receipt):
+            async def record_receipt(
+                self, connection, *, intent, receipt, retry_after_seconds=900
+            ):
                 try:
                     return await delivery_store.record_receipt(
-                        connection, intent=intent, receipt=receipt
+                        connection,
+                        intent=intent,
+                        receipt=receipt,
+                        retry_after_seconds=retry_after_seconds,
                     )
                 except psycopg.Error:
                     receipt_errors.append(intent.run_id)
