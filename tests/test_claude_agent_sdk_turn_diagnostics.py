@@ -1222,12 +1222,12 @@ def test_completed_tool_does_not_retain_stale_abort_and_budget_remains_bounded(m
 async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatch, tmp_path, codes):
     from contextlib import asynccontextmanager
     from datetime import datetime, timezone
-    from mcp.shared.exceptions import McpError
-    from mcp.types import CallToolRequest, CallToolRequestParams, ErrorData, Tool
+    from mcp.shared.exceptions import MCPError
+    from mcp_types import ErrorData, Tool
     from app.bootstrap import claude_mcp
     from app.runs.application.diagnostics import _project_observations
     from app.runs.domain.diagnostics import build_failure_observation, merge_run_diagnostics
-    from tests.test_claude_mcp_registration import subject
+    from tests.test_claude_mcp_registration import connected_client, subject
 
     call_codes = list(codes)
 
@@ -1236,7 +1236,9 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
         async def call_tool(name, arguments):
             code = call_codes.pop(0)
             await asyncio.sleep(0)
-            raise McpError(ErrorData.model_construct(code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"}))
+            failure = MCPError(code=0, message="PRIVATE_MESSAGE")
+            failure.error = ErrorData.model_construct(code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"})
+            raise failure
         yield types.SimpleNamespace(call_tool=call_tool)
 
     async def list_tools(session):
@@ -1248,12 +1250,11 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
 
     async def query(prompt, options):
         server = options.mcp_servers["gateway"]["instance"]
-        async def invoke():
-            return await server.request_handlers[CallToolRequest](CallToolRequest(
-                method="tools/call", params=CallToolRequestParams(name="lookup", arguments={"query": "PRIVATE_ARGUMENT"}),
-            ))
-        results = await asyncio.gather(*(invoke() for _ in codes))
-        assert all(result.root.isError for result in results)
+        async with connected_client(server) as session:
+            async def invoke():
+                with pytest.raises(MCPError):
+                    await session.call_tool("lookup", {"query": "PRIVATE_ARGUMENT"})
+            await asyncio.gather(*(invoke() for _ in codes))
         yield sdk.ResultMessage(is_error=True, errors=["existing_sdk_error"])
 
     sdk = _install_sdk(monkeypatch, query)
@@ -1272,7 +1273,7 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
     assert errors["sdk_reported_errors"] == ["existing_sdk_error"]
     expected = []
     for code in codes[-8:]:
-        item = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "McpError"}
+        item = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "MCPError"}
         if type(code) is int and abs(code) <= 2**53 - 1:
             item["code"] = code
         expected.append(item)

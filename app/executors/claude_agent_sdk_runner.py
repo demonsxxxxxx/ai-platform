@@ -111,7 +111,7 @@ from app.mcp.api import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _SDK_ENV_ALLOWLIST = {
-    "PATH",
+    "PATH", "ENABLE_TOOL_SEARCH",
     "PATHEXT",
     "SYSTEMROOT",
     "COMSPEC",

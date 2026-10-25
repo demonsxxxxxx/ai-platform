@@ -121,6 +121,25 @@ def test_mcp_identity_uses_authoritative_registry_id_grammar_without_prefix_auth
     assert malformed.reason == "tool_identity_malformed"
 
 
+def test_tool_search_name_is_not_a_declared_tool_capability():
+    decision = evaluate_tool_policy(
+        tool={
+            "requested_identity": "ToolSearch",
+            "declared_identities": ["ToolSearch"],
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+        }
+    )
+
+    assert decision.outcome == "deny"
+    assert decision.reason == "tool_identity_malformed"
+
+
 def test_no_active_production_permission_request_producer_or_sandbox_callback_sender_remains():
     root = Path(__file__).resolve().parents[1]
     production_files = [
