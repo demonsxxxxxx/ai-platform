@@ -792,6 +792,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert "execution_supervision_domains" in schema_migrations.CRITICAL_RELATIONS
     assert "execution_supervision_claims" in schema_migrations.CRITICAL_RELATIONS
     assert ("execution_supervision_domains", "mode", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_domains", "probe_cancel_scan_cursor", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_domains", "probe_normal_scan_cursor", "text", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("execution_supervision_claims", "owner_version", "int8", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("execution_supervision_domains", "execution_supervision_domains_pkey") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("execution_supervision_claims", "execution_supervision_claims_domain_fkey") in schema_migrations.CRITICAL_CONSTRAINTS

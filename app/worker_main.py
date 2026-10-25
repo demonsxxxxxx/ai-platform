@@ -43,7 +43,7 @@ from app.bootstrap.worker_maintenance import (
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
 from app.execution.api import RunDeliveryIntents, WorkerQueueLease, stage_stale_run_reconciliation
-from app.execution.domain.supervision import SupervisionDomain
+from app.execution.api import SupervisionDomain
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,

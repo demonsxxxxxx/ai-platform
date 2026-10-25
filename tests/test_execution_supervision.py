@@ -158,6 +158,7 @@ async def test_current_persistent_owner_wraps_existing_action_owner(monkeypatch,
         expected_mode=mode,
         worker_id="worker-a",
         ttl_seconds=3600,
+        unified_execution_enabled=(mode == "unified"),
     )
     assert result == "owner-result"
     assert called == [mode]
@@ -186,13 +187,26 @@ async def test_draining_domain_fails_closed_without_calling_current_action_owner
         expected_mode="legacy",
         worker_id="worker-a",
         ttl_seconds=3600,
+        unified_execution_enabled=False,
     )
     assert result is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode,expected_calls", [("legacy", ["legacy"]), ("unified", ["unified"]), ("draining", [])])
-async def test_scheduled_action_routes_only_through_persisted_domain_mode(mode, expected_calls):
+@pytest.mark.parametrize(
+    "mode,unified_enabled,expected_calls",
+    [
+        ("legacy", False, ["legacy"]),
+        ("legacy", True, ["legacy"]),
+        ("unified", False, []),
+        ("unified", True, ["unified"]),
+        ("draining", False, []),
+        ("draining", True, []),
+    ],
+)
+async def test_scheduled_action_routes_only_through_persisted_domain_mode(
+    mode, unified_enabled, expected_calls
+):
     claim = {"domain": "delivery", "owner_mode": mode, "owner_version": 2}
     released = []
 
@@ -226,7 +240,7 @@ async def test_scheduled_action_routes_only_through_persisted_domain_mode(mode, 
         domain=SupervisionDomain.DELIVERY,
         worker_id="worker-a",
         ttl_seconds=60,
-        supervision_enabled=True,
+        unified_execution_enabled=unified_enabled,
     )
     assert called == expected_calls
     assert result == ("action-result" if expected_calls else None)
@@ -256,6 +270,7 @@ async def test_persisted_unified_mode_does_not_run_legacy_operation():
         expected_mode="legacy",
         worker_id="legacy-worker",
         ttl_seconds=60,
+        unified_execution_enabled=False,
     )
     assert result is None
     assert called == []
@@ -300,6 +315,7 @@ async def test_domain_claim_stays_owned_until_cancelled_action_finishes():
             expected_mode="unified",
             worker_id="worker-a",
             ttl_seconds=60,
+            unified_execution_enabled=True,
         )
     )
     await action_started.wait()
@@ -351,15 +367,22 @@ async def test_shadow_observation_returns_full_scan_page_before_action_capacity(
 
 
 @pytest.mark.asyncio
-async def test_worker_domain_operation_preserves_legacy_path_when_supervision_disabled(monkeypatch):
+async def test_worker_domain_operation_checks_persisted_owner_when_supervision_disabled(monkeypatch):
     from app.bootstrap.execution_supervision import run_worker_domain_operation
 
-    async def unexpected_supervision(*_args, **_kwargs):
-        raise AssertionError("disabled_supervision_must_not_read_persisted_gate")
+    observed = []
+
+    async def current_domain(operation, **kwargs):
+        observed.append(kwargs)
+        if kwargs["expected_mode"] == "unified" and not kwargs["unified_execution_enabled"]:
+            return None
+        if kwargs["expected_mode"] == "legacy":
+            return await operation()
+        return "unified-result"
 
     monkeypatch.setattr(
         "app.bootstrap.execution_supervision.run_current_domain_work",
-        unexpected_supervision,
+        current_domain,
     )
 
     async def legacy_action():
@@ -372,6 +395,46 @@ async def test_worker_domain_operation_preserves_legacy_path_when_supervision_di
         expected_mode="legacy",
         worker_id="worker-a",
     ) == "legacy-action-result"
+    assert len(observed) == 1
+    assert observed[0]["expected_mode"] == "legacy"
+    assert observed[0]["unified_execution_enabled"] is False
+
+    assert await run_worker_domain_operation(
+        legacy_action,
+        settings=SimpleNamespace(execution_supervision_enabled=False),
+        domain=SupervisionDomain.DELIVERY,
+        expected_mode="unified",
+        worker_id="worker-a",
+    ) is None
+    assert len(observed) == 2
+    assert observed[1]["expected_mode"] == "unified"
+    assert observed[1]["unified_execution_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_scheduled_action_requires_persisted_domain_when_unified_is_disabled():
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    store = SimpleNamespace(read_domain_control=_async_value(None))
+
+    async def unexpected_action():
+        raise AssertionError("missing_domain_must_not_bypass_postgres")
+
+    with pytest.raises(RuntimeError, match="execution_supervision_domain_missing"):
+        await supervision.run_scheduled_domain_work(
+            unexpected_action,
+            transaction_factory=Transaction,
+            store=store,
+            domain=SupervisionDomain.DELIVERY,
+            worker_id="worker-a",
+            ttl_seconds=60,
+            unified_execution_enabled=False,
+        )
 
 
 def test_operator_recovery_cli_requires_exact_fence_and_stop_evidence_inputs():

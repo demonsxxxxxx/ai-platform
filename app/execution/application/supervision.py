@@ -67,6 +67,8 @@ def batches_from_settings(settings: object) -> dict[SupervisionDomain, int]:
         SupervisionDomain.DELIVERY: int(
             getattr(settings, "run_delivery_intent_scan_batch_size", 25)
         ),
+        # Probe observation gives this page budget independently to the
+        # cancellation and ordinary lanes, so neither lane can hide the other.
         SupervisionDomain.PROBE: 1,
         SupervisionDomain.SETTLEMENT: 1,
         SupervisionDomain.CLEANUP: int(
@@ -191,12 +193,9 @@ async def run_scheduled_domain_work(
     worker_id: str,
     ttl_seconds: int,
     capacities: SupervisionCapacities | None = None,
-    supervision_enabled: bool,
+    unified_execution_enabled: bool,
 ) -> T | None:
-    """Route one existing action owner through the persisted domain owner."""
-    if not supervision_enabled:
-        return await operation()
-
+    """Require a PostgreSQL claim in every mode; the local switch gates unified work."""
     async with transaction_factory() as connection:
         control = await store.read_domain_control(connection, domain=domain)
     if control is None:
@@ -206,6 +205,8 @@ async def run_scheduled_domain_work(
         return None
     if mode not in {"legacy", "unified"}:
         raise RuntimeError("execution_supervision_owner_mode_invalid")
+    if mode == "unified" and not unified_execution_enabled:
+        return None
     return await run_claimed_domain_work(
         operation,
         transaction_factory=transaction_factory,
@@ -228,8 +229,9 @@ async def run_current_domain_work(
     worker_id: str,
     ttl_seconds: int,
     capacities: SupervisionCapacities | None = None,
+    unified_execution_enabled: bool,
 ) -> T | None:
-    """Run through the persisted current owner, stopping new claims while draining."""
+    """Run through the persisted owner, requiring unified permission on this replica."""
     async with transaction_factory() as connection:
         control = await store.read_domain_control(connection, domain=domain)
     if control is None:
@@ -239,6 +241,8 @@ async def run_current_domain_work(
         return None
     if mode not in {"legacy", "unified"}:
         raise RuntimeError("execution_supervision_owner_mode_invalid")
+    if mode == "unified" and not unified_execution_enabled:
+        return None
     return await run_claimed_domain_work(
         operation,
         transaction_factory=transaction_factory,

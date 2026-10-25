@@ -1,3 +1,4 @@
+from app.execution.domain.supervision import SupervisionDomain as SupervisionDomain
 from app.artifacts.api import (
     build_artifact_records as build_artifact_records,
     promote_artifact_reservations as promote_artifact_reservations,

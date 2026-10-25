@@ -968,6 +968,8 @@ create table if not exists execution_supervision_domains (
   mode text not null default 'legacy',
   owner_version bigint not null default 1,
   scan_cursor text,
+  probe_cancel_scan_cursor text,
+  probe_normal_scan_cursor text,
   drain_started_at timestamptz,
   updated_at timestamptz not null default clock_timestamp(),
   constraint execution_supervision_domains_pkey primary key (domain),
@@ -986,6 +988,10 @@ create table if not exists execution_supervision_domains (
 insert into execution_supervision_domains(domain)
 values ('delivery'), ('probe'), ('settlement'), ('cleanup')
 on conflict (domain) do nothing;
+alter table execution_supervision_domains
+  add column if not exists probe_cancel_scan_cursor text;
+alter table execution_supervision_domains
+  add column if not exists probe_normal_scan_cursor text;
 
 create table if not exists execution_supervision_claims (
   claim_token uuid not null,
