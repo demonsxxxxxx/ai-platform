@@ -70,16 +70,31 @@ def build_admin_runtime_health(
     if len(current) != 1:
         return health
     lease = current[0]
-    executor_status = lease.get("executor_status")
-    health["async_dispatch_accepted"] = executor_status in {
-        "accepted", "running", "completed", "failed", "cancelled",
-    }
-    terminal_received_at = _monitor_timestamp(lease.get("executor_terminal_received_at"))
-    if executor_status in {"completed", "failed", "cancelled"}:
-        if terminal_received_at is not None and terminal_received_at <= observed_at:
-            health["state"] = "awaiting_reconciliation"
-        return health
-    source = "executor" if health["async_dispatch_accepted"] else "sandbox"
+    attempt_storage = lease.get("settlement_storage_version") == "attempt.v1"
+    if attempt_storage:
+        mapping_state = lease.get("settlement_mapping_state")
+        if mapping_state != "mapped":
+            return health
+        dispatch_accepted = lease.get("settlement_dispatch_state") == "accepted"
+        health["async_dispatch_accepted"] = dispatch_accepted
+        if lease.get("settlement_receipt_present") is True:
+            if lease.get("settlement_phase") in {
+                "awaiting_context", "pending", "claimed", "retry",
+            }:
+                health["state"] = "awaiting_reconciliation"
+            return health
+    else:
+        executor_status = lease.get("executor_status")
+        dispatch_accepted = executor_status in {
+            "accepted", "running", "completed", "failed", "cancelled",
+        }
+        health["async_dispatch_accepted"] = dispatch_accepted
+        terminal_received_at = _monitor_timestamp(lease.get("executor_terminal_received_at"))
+        if executor_status in {"completed", "failed", "cancelled"}:
+            if terminal_received_at is not None and terminal_received_at <= observed_at:
+                health["state"] = "awaiting_reconciliation"
+            return health
+    source = "executor" if dispatch_accepted else "sandbox"
     heartbeat_key = "executor_heartbeat_at" if source == "executor" else "heartbeat_at"
     heartbeat = _monitor_timestamp(lease.get(heartbeat_key))
     expires_at = _monitor_timestamp(lease.get("expires_at"))

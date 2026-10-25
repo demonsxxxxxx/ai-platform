@@ -1,4 +1,62 @@
-from app.runs.application.admin_run_monitor import build_admin_worker_execution
+from datetime import datetime, timedelta, timezone
+
+from app.runs.application.admin_run_monitor import (
+    build_admin_runtime_health,
+    build_admin_worker_execution,
+)
+
+
+def test_runtime_health_uses_attempt_settlement_mapping_after_storage_cutover():
+    observed_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    attempt = {
+        "id": "attempt-a",
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "status": "running",
+        "owner_generation": 4,
+        "last_heartbeat_at": observed_at,
+        "lease_expires_at": observed_at + timedelta(minutes=1),
+    }
+    lease = {
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "status": "active",
+        "provider": "opensandbox",
+        "current_attempt_owner": True,
+        "lease_owner_generation": "4",
+        "executor_status": "accepted",
+        "executor_terminal_received_at": observed_at + timedelta(days=1),
+        "settlement_storage_version": "attempt.v1",
+        "settlement_mapping_state": "mapped",
+        "settlement_dispatch_state": "accepted",
+        "settlement_receipt_present": True,
+        "settlement_phase": "retry",
+    }
+
+    health = build_admin_runtime_health(
+        "running",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt=attempt,
+        leases=[lease],
+        observed_at=observed_at,
+    )
+    assert health["state"] == "awaiting_reconciliation"
+    assert health["async_dispatch_accepted"] is True
+
+    lease["settlement_mapping_state"] = "unknown"
+    lease["settlement_receipt_present"] = False
+    legacy_projection = build_admin_runtime_health(
+        "running",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt=attempt,
+        leases=[lease],
+        observed_at=observed_at,
+    )
+    assert legacy_projection["state"] == "unknown"
+    assert legacy_projection["async_dispatch_accepted"] is False
 
 
 def test_worker_execution_projects_only_safe_effective_information():

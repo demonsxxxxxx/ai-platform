@@ -333,6 +333,16 @@ def test_probe_claim_without_receipt_does_not_become_settlement_claim():
     assert values["settlement_claimed_at"] is None
 
 
+@pytest.mark.asyncio
+async def test_attempt_settlement_activation_requires_explicit_operator_acceptance():
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+        activate_attempt_settlement_storage,
+    )
+
+    with pytest.raises(RuntimeError, match="attempt_settlement_operator_confirmations_required"):
+        await activate_attempt_settlement_storage(None)
+
+
 @pytest.fixture(scope="module")
 async def attempt_settlement_db():
     """Use an isolated PostgreSQL instance and expand a pre-N30 table shape."""
@@ -658,12 +668,18 @@ async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(at
     connect, original_generation, first, second, status = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
     assert first["status"] == "applied"
-    assert first["version"] == "2026.10.25.7"
+    assert first["version"] == "2026.10.25.8"
     assert second["status"] == "current"
     assert status["ready"] is True
-    assert status["target_version"] == "2026.10.25.7"
+    assert status["target_version"] == "2026.10.25.8"
 
     async with connect() as conn, conn.transaction():
+        storage_marker = await (
+            await conn.execute(
+                "select storage_version from run_attempt_settlement_storage where singleton=true"
+            )
+        ).fetchone()
+        assert storage_marker == {"storage_version": "sandbox_lease.v1"}
         await conn.execute(
             """
             insert into runs(id, tenant_id, workspace_id, user_id, session_id, agent_id,
@@ -1988,4 +2004,161 @@ async def test_real_postgres_reverse_batch_release_does_not_deadlock_ordered_bac
             )
         ).fetchall()
         assert {row["run_id"]: row["owner_generation"] for row in attempt_rows} == initial_generations
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_authority(
+    attempt_settlement_db,
+):
+    from app.bootstrap.sandbox_lease_ports import (
+        build_sandbox_executor_reconciliation_port,
+        build_sandbox_run_lease_reader,
+    )
+    from app.sandbox.application.reconciliation_receipt import (
+        SandboxReconciliationReceiptAuthority,
+    )
+    from app.sandbox.infrastructure import leases_postgres
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+        activate_attempt_settlement_storage,
+    )
+
+    connect, *_ = attempt_settlement_db
+    projection_service = build_attempt_settlement_projection_service()
+    claim_token = "n40-reader-claim"
+    async with connect() as conn, conn.transaction():
+        run_id = "run-cutover-reader"
+        lease_id = "lease-cutover-reader"
+        await conn.execute(
+            """
+            insert into runs(id, tenant_id, workspace_id, user_id, session_id, agent_id,
+              execution_kind, status, model_id, model_value, model_gateway_revision,
+              auto_compact_window, max_output_tokens)
+            values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'agent-a',
+              'harness_chat', 'queued', 'model-a', 'claude-test', 3, 200000, 4096)
+            """,
+            (run_id,),
+        )
+        await conn.execute(
+            "insert into run_context_snapshots(id, tenant_id, workspace_id, user_id, session_id, run_id) "
+            "values ('context-cutover-reader', 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s)",
+            (run_id,),
+        )
+        await conn.execute(
+            "update runs set context_snapshot_id='context-cutover-reader', input_json=%s::jsonb where id=%s",
+            (json.dumps({
+                "executor_type": "claude-agent-worker",
+                "context_snapshot_id": "context-cutover-reader",
+                "context_snapshot": {"context_snapshot_id": "context-cutover-reader"},
+            }), run_id),
+        )
+        attempt_row = await attempt_postgres.start_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id=run_id,
+            queue_attempt_id="qat-cutover-reader",
+            worker_id="worker-cutover-reader",
+            execution_spec=frozen_spec(
+                run_id=run_id,
+                context_snapshot_id="context-cutover-reader",
+                context_snapshot={"context_snapshot_id": "context-cutover-reader"},
+            ),
+        )
+        attempt_id = str(attempt_row["id"])
+        generation = int(attempt_row["owner_generation"])
+        receipt = {"run_id": run_id, "status": "succeeded", "answer": "attempt-reader"}
+        context = {"adapter_name": "test", "accepted_context": "attempt-reader"}
+        await conn.execute(
+            """
+            insert into sandbox_leases(
+              id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+              sandbox_mode, provider, status, lease_payload_json,
+              executor_status, executor_terminal_json, executor_terminal_received_at,
+              executor_reconciliation_context_json, executor_reconciliation_intent_context_json,
+              executor_reconciliation_status, executor_reconciliation_claim_token,
+              executor_reconciliation_claimed_at, executor_terminal_reconciliation_attempt_count
+            ) values (
+              %s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s, %s,
+              'ephemeral', 'fake', 'active', %s::jsonb,
+              'completed', %s::jsonb, now(), %s::jsonb, %s::jsonb,
+              'claimed', %s, now(), 1
+            )
+            """,
+            (
+                lease_id,
+                run_id,
+                attempt_id,
+                json.dumps({"attempt_id": attempt_id, "owner_generation": str(generation)}),
+                json.dumps(receipt),
+                json.dumps(context),
+                json.dumps(context),
+                claim_token,
+            ),
+        )
+        projection = await settlement_store.refresh_attempt_settlement_projection(
+            conn, tenant_id="tenant-a", run_id=run_id, attempt_id=attempt_id
+        )
+        assert projection is not None and projection.to_mapping()["mapping_state"] == "mapped"
+        await projection_service.persist_in_transaction(conn, projection)
+
+    async with connect() as conn, conn.transaction():
+        activation = await activate_attempt_settlement_storage(
+            conn,
+            operator_confirmations={
+                "run_and_sandbox_writers_drained": True,
+                "all_source_writers_n40_compatible": True,
+                "real_sdk_acceptance_complete": True,
+                "real_sandbox_lifecycle_acceptance_complete": True,
+                "fourteen_lifecycle_scenarios_complete": True,
+            },
+        )
+        assert activation["status"] == "blocked"
+        assert activation["storage_version"] == "sandbox_lease.v1"
+        assert activation["comparison"]["unknown_count"] > 0
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update run_attempt_settlement_storage set storage_version='attempt.v1' where singleton=true"
+        )
+        # Deliberately diverge the legacy claim alias after activation. Every
+        # consumer below must take the Runs detail as its reader authority.
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_claim_token='legacy-stale' "
+            "where id=%s",
+            (lease_id,),
+        )
+
+    async with connect() as conn, conn.transaction():
+        leases = await build_sandbox_run_lease_reader().list_sandbox_leases_for_run(
+            conn, tenant_id="tenant-a", run_id="run-cutover-reader"
+        )
+        lease_row = next(row for row in leases if row["id"] == "lease-cutover-reader")
+        assert lease_row["settlement_storage_version"] == "attempt.v1"
+        assert lease_row["executor_reconciliation_claim_token"] == claim_token
+        assert lease_row["settlement_phase"] == "claimed"
+
+        reconciler_port = build_sandbox_executor_reconciliation_port()
+        assert await reconciler_port.is_sandbox_executor_reconciliation_claim_current(
+            conn, lease_id="lease-cutover-reader", claim_token=claim_token
+        ) is True
+
+        authority = SandboxReconciliationReceiptAuthority(
+            lock_receipt=leases_postgres.lock_scoped_reconciliation_receipt,
+            lock_resource=leases_postgres.lock_scoped_reconciliation_resource,
+            settlement_reader=projection_service,
+        )
+        assert await authority.is_current(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-cutover-reader",
+            attempt_id=lease_row["attempt_id"],
+            lease_id="lease-cutover-reader",
+            claim_token=claim_token,
+            expected_owner_generation=generation,
+            scope={
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "agent_id": "agent-a",
+            },
+        ) is True
 

@@ -351,3 +351,23 @@ async def lock_scoped_reconciliation_receipt(
          claim_token, str(expected_owner_generation)),
     )
     return await cursor.fetchone() is not None
+
+
+async def lock_scoped_reconciliation_resource(
+    conn, *, tenant_id: str, workspace_id: str, user_id: str, session_id: str,
+    run_id: str, attempt_id: str, lease_id: str, expected_owner_generation: int,
+) -> bool:
+    """Lock the exact Sandbox resource while Runs supplies settlement authority."""
+    cursor = await conn.execute(
+        """
+        select id from sandbox_leases
+        where id = %s and tenant_id = %s and workspace_id = %s and user_id = %s
+          and session_id = %s and run_id = %s and attempt_id = %s
+          and status in ('active', 'released')
+          and lease_payload_json->>'owner_generation' = %s
+        for update
+        """,
+        (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+         str(expected_owner_generation)),
+    )
+    return await cursor.fetchone() is not None

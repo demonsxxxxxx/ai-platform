@@ -9,7 +9,12 @@ from app.runs.infrastructure.attempt_settlement_projection_postgres import (
     compare_attempt_settlement_projections,
     compare_attempt_settlement_snapshot,
     lock_attempt_settlement_projection_sources,
+    lock_attempt_settlement_writer_fence,
+    get_attempt_settlement_storage_version,
+    list_due_attempt_settlements,
+    next_attempt_settlement_retry_delay,
     persist_attempt_settlement_projection,
+    read_attempt_settlement,
     refresh_attempt_settlement_projection,
 )
 
@@ -25,6 +30,11 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
             lock_sources=lock_attempt_settlement_projection_sources,
             refresh=refresh_attempt_settlement_projection,
             compare_snapshot=compare_attempt_settlement_snapshot,
+            storage_version=get_attempt_settlement_storage_version,
+            read_attempt=read_attempt_settlement,
+            list_due=list_due_attempt_settlements,
+            next_retry_delay=next_attempt_settlement_retry_delay,
+            writer_fence=lock_attempt_settlement_writer_fence,
         )
     )
 

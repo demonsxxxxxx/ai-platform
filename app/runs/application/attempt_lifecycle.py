@@ -146,6 +146,7 @@ class RunAttemptLifecycleService:
 
     persistence: RunAttemptPersistence
     settlement_projection: Any | None = None
+    settlement_shadow_enabled: Callable[[], bool] = lambda: True
 
     async def _lock_settlement_sources(
         self,
@@ -154,14 +155,19 @@ class RunAttemptLifecycleService:
         tenant_id: str,
         run_id: str,
         attempt_id: str,
-    ) -> None:
+    ) -> bool:
         if self.settlement_projection is not None:
+            await self.settlement_projection.lock_writer_fence(conn)
             await self.settlement_projection.lock_sources_in_transaction(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
+            return await self.settlement_projection.writes_enabled(
+                conn, shadow_enabled=bool(self.settlement_shadow_enabled())
+            )
+        return False
 
     async def _refresh_settlement(
         self,
@@ -171,8 +177,9 @@ class RunAttemptLifecycleService:
         tenant_id: str,
         run_id: str,
         attempt_id: str,
+        write_detail: bool,
     ) -> None:
-        if attempt is not None and self.settlement_projection is not None:
+        if attempt is not None and self.settlement_projection is not None and write_detail:
             await self.settlement_projection.refresh_in_transaction(
                 conn,
                 tenant_id=tenant_id,
@@ -265,8 +272,10 @@ class RunAttemptLifecycleService:
         return await self.persistence.lock_queued_run_for_attempt(conn, **kwargs)
 
     async def start_worker(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
+        if self.settlement_projection is not None:
+            await self.settlement_projection.lock_writer_fence(conn)
         attempt = await self.persistence.start_worker_run_attempt(conn, **kwargs)
-        await self._lock_settlement_sources(
+        write_detail = await self._lock_settlement_sources(
             conn,
             tenant_id=str(attempt["tenant_id"]),
             run_id=str(attempt["run_id"]),
@@ -278,6 +287,7 @@ class RunAttemptLifecycleService:
             tenant_id=str(attempt["tenant_id"]),
             run_id=str(attempt["run_id"]),
             attempt_id=str(attempt["id"]),
+            write_detail=write_detail,
         )
         return attempt
 
@@ -332,7 +342,7 @@ class RunAttemptLifecycleService:
         tenant_id = str(kwargs["tenant_id"])
         run_id = str(kwargs["run_id"])
         attempt_id = str(kwargs["attempt_id"])
-        await self._lock_settlement_sources(
+        write_detail = await self._lock_settlement_sources(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -345,6 +355,7 @@ class RunAttemptLifecycleService:
             tenant_id=tenant_id,
             run_id=run_id,
             attempt_id=attempt_id,
+            write_detail=write_detail,
         )
         return attempt
 
@@ -356,7 +367,7 @@ class RunAttemptLifecycleService:
         tenant_id = str(kwargs["tenant_id"])
         run_id = str(kwargs["run_id"])
         attempt_id = str(kwargs["attempt_id"])
-        await self._lock_settlement_sources(
+        write_detail = await self._lock_settlement_sources(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -369,6 +380,7 @@ class RunAttemptLifecycleService:
             tenant_id=tenant_id,
             run_id=run_id,
             attempt_id=attempt_id,
+            write_detail=write_detail,
         )
         return attempt
 
@@ -387,7 +399,7 @@ class RunAttemptLifecycleService:
             if candidate is None:
                 return None
             attempt_id = str(candidate["id"])
-            await self._lock_settlement_sources(
+            write_detail = await self._lock_settlement_sources(
                 conn,
                 tenant_id=str(kwargs["tenant_id"]),
                 run_id=str(kwargs["run_id"]),
@@ -403,6 +415,7 @@ class RunAttemptLifecycleService:
                 tenant_id=str(kwargs["tenant_id"]),
                 run_id=str(kwargs["run_id"]),
                 attempt_id=attempt_id,
+                write_detail=write_detail,
             )
             return attempt
         return await self.persistence.prepare_stale_run_attempt_reconciliation(

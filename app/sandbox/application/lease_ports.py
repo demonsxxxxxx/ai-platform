@@ -74,3 +74,7 @@ class SandboxRunLeaseReader(Protocol):
         self, conn: Any, *, tenant_id: str, run_id: str
     ) -> list[dict[str, Any]]: ...
 
+    async def read_run_runtime_debug(
+        self, conn: Any, *, tenant_id: str, run_id: str
+    ) -> dict[str, Any]: ...
+

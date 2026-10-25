@@ -336,11 +336,41 @@ N33 执行入口使用现有 Worker maintenance 和 executor reconciler 循环�
 - 验收：十四场景与历史已释放但仍待结算记录；Spec、claim、答案/产物/coverage 与 Run/Attempt 仍原子结算，暂时依赖故障重试不重复结果；不改变 commit_provider_turn 的授权条件。
 - 回退：旧 writer 尚保持兼容投影且差异为零时才能切回旧 reader；不能回滚到忽略新 receipt/claim 的程序。
 
+当前代码切片（schema `2026.10.25.8`）新增持久 reader marker，默认
+`sandbox_lease.v1`。`tools/attempt_settlement_storage.py prepare` 只做有界
+backfill 和稳定快照比对；`activate` 要求明确的 operator confirmation，随后
+在同一 `REPEATABLE READ` 事务锁住 `runs`、`sandbox_leases`、`run_attempts`、
+`sandbox_execution_dispatches`，重新比对全体 Attempts，只有缺失、unknown、
+conflict、mismatch 全为零且预算满足时才提交 `attempt.v1`。命令输出会注明
+真实 SDK/Sandbox 验收由操作员声明，代码没有验证这些声明。本次没有运行
+prepare/activate，也没有生产切读。
+
+实际 reader 已接到 Sandbox 的终态 claim、恢复 payload、Runs finalizer claim
+检查、Admin Run leases 和 runtime health/diagnostics。active marker 下，候选
+从 Runs detail 选出；Sandbox 只用准确 lease 做当前 claim/source identity CAS。
+相关 Attempt、callback、acceptance、dispatch outcome、terminal claim/retry
+writer 先取得相同顺序的兼容源表锁，再读持久 marker 并在同一事务维护 detail，
+不依赖每副本 shadow 环境变量。Heartbeat 和无回执 probe claim 仍属 Sandbox。
+真实 SDK、生产 Sandbox 和十四场景验收仍未完成，故 N40 代码实现不等于可激活。
+
 **N41：停止旧列写入并确认全部消费者迁出 — Runs/Sandbox owner。依赖 N40。**
 
 - 产出：全部活跃 writer/readers、动态导入、导出、监控、脚本、测试、schema/index/readiness 清单；旧列停止写入，必要历史读取明确 owner 与退出条件。
 - 验收：进程/fleet 清单证明旧 writer 不再运行；在途 dispatch、waiting_terminal、claimed/retry、cleanup_pending/failed 都有当前 owner。观察覆盖相关最长操作生命周期和一次重启，不能仅以“最近无写日志”为证。
 - 回退：停写后新事实不再有完整旧投影，不能无条件切回；先用经过验证的重建/排空程序建立兼容，或仅前向修复。保留数据列到 N43。
+
+N41/N43 需逐列清点的 Sandbox settlement source fields 为
+`executor_terminal_json`、`executor_reconciliation_context_json`、
+`executor_reconciliation_intent_context_json`、`executor_reconciliation_status`、
+`executor_reconciliation_claim_token`、`executor_reconciliation_claimed_at`、
+`executor_reconciliation_retry_not_before` 和
+`executor_terminal_reconciliation_attempt_count`。`executor_terminal_received_at`
+仍服务运行时诊断时间展示；`executor_reconciliation_attempt_count`、
+`executor_reconciliation_error`、`executor_reconciled_at`、heartbeat、probe
+claim、stop/release 与 cleanup 字段继续保留 Sandbox owner，N40 没有将它们迁入
+Attempt。N41 的消费者清单至少要复查 executor reconciler、runtime callback、
+`WorkerResultCommitService`、Sandbox cleanup、Admin Run monitor、runtime
+diagnostics、readiness 和 `idx_sandbox_leases_executor_reconcile*`。
 
 **N42：退役 Redis 业务对账 fence — Execution queue owner + Runs reviewer。依赖 N23/N33/N40/N41。**
 

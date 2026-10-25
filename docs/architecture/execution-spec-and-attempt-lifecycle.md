@@ -318,32 +318,48 @@ its own outstanding work.
 The Runs API exposes bounded keyset backfill and page-scoped read-only
 comparison, with a maximum page of 800 Attempts. Missing rows, unknown
 bindings and conflicts remain in each page's counts. A page result or a stable
-snapshot's row count and maximum key cannot authorize a reader cutover. N40
-must run a fresh complete semantic comparison and keep writers for `runs`,
-`run_attempts`, `sandbox_leases`, and `sandbox_execution_dispatches` fenced until
-the cutover transaction commits. Backfill inserts only and is safe to repeat;
-it never overwrites an existing receipt.
-For each Attempt its lock order is Run, matching Sandbox leases ordered by lease
-id, Attempt, then settlement detail. Sandbox accepted, dispatch intent, and
-terminal-receipt writers use this order before changing source facts, then call
-the Runs-owned `AttemptSettlementProjectionService.persist_in_transaction` in
-the same transaction. Bounded legacy reconciliation claims already hold their
-selected Sandbox leases; their hook reads source facts without acquiring Run or
-Attempt locks and writes the detail. Run/Attempt terminalization refreshes its
-detail in the same transaction. `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` is
-explicit and defaults to false. Heartbeats that only change executor heartbeat
-facts, cleanup claims, and resource release do not write the detail. Cleanup
-pending/finalize/failure writes refresh the detail only when their legacy
-reconciliation status changes the derived settlement phase; cleanup ownership
-and cleanup claim facts remain Sandbox-owned and visible in comparison counts.
+snapshot's row count and maximum key cannot authorize a reader cutover.
 
-Page comparison remains page-scoped. Full comparison is available only inside a
-caller-owned `REPEATABLE READ` or `SERIALIZABLE` transaction and returns the
-complete Attempt denominator plus its count/high-key fence. It does not claim
-cutover readiness. A future reader switch must revalidate the fence in a fresh
-`READ COMMITTED` transaction before enabling reads; the validator holds a short
-`SHARE` lock on `run_attempts` through that transaction so concurrent Attempt
-inserts cannot make the proof stale before commit.
+Schema `2026.10.25.8` adds the persistent singleton
+`run_attempt_settlement_storage`. New and upgraded databases start at
+`sandbox_lease.v1`; repeating schema application preserves its current value.
+`tools/attempt_settlement_storage.py prepare` performs insert-only, bounded
+backfill and reports a fresh stable comparison without changing the reader.
+`activate` is a separate command. It requires explicit operator confirmations
+for drained writers, N40-compatible writer binaries, the real SDK and Sandbox
+acceptance, and the fourteen lifecycle scenarios. The code records those
+confirmations as operator assertions and reports that it did not verify them.
+
+Activation takes `SHARE ROW EXCLUSIVE` locks on `runs`, `sandbox_leases`,
+`run_attempts`, and `sandbox_execution_dispatches` in that order, enforces
+statement and lock budgets, compares the entire Attempt denominator in one
+`REPEATABLE READ` transaction, and updates the marker only when counts match
+and missing, unknown, conflict and mismatch counts are all zero. Over-budget or
+unready state leaves the marker unchanged. No activation was run for this
+change. While a writer transaction is active, its N40 path takes compatible
+`ROW EXCLUSIVE` locks on those same source tables before reading the marker;
+this prevents the reader version from changing midway through a source write.
+
+When the marker is `attempt.v1`, the executor reconciler selects due receipts
+from `run_attempt_settlements` and uses the detail's exact source lease only for
+the Sandbox claim CAS. Callback recovery receives the accepted context and
+receipt from the same detail mapping; Runs finalization checks its claim token
+there while Sandbox still locks the exact resource identity and generation.
+Admin Run lease projections and runtime health/diagnostics use this mapping as
+well. Missing details raise an error, and unknown/conflict mappings are exposed
+as unknown or rejected; no reader falls back to Sandbox settlement columns.
+Source fields remain dual-written in N40 to preserve the identified legacy
+reader rollback condition while a fresh full comparison remains zero.
+
+Resource stop/release state, cleanup status/claims, executor heartbeat, and
+probe claims remain Sandbox-owned. The legacy receipt/context/settlement claim
+columns also remain in the schema and continue receiving compatibility writes;
+N41 will inventory and stop those writes, and N43 will decide their final
+historical disposition. This does not migrate every executor field or make
+heartbeat/probe state Attempt-owned. Rollback to the legacy reader is only
+compatible while those source fields are maintained and a fresh fenced
+comparison confirms equality; after N41 stops those writes, rollback requires
+rebuilding the source projection or a forward repair.
 
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds

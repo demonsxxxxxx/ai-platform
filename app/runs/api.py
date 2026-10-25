@@ -250,6 +250,7 @@ from app.runs.application.attempt_settlement_projection import (
     AttemptSettlementProjectionError as AttemptSettlementProjectionError,
     AttemptSettlementProjectionPorts as AttemptSettlementProjectionPorts,
     AttemptSettlementProjectionService as AttemptSettlementProjectionService,
+    AttemptSettlementReadError as AttemptSettlementReadError,
     project_legacy_attempt_settlement as project_legacy_attempt_settlement,
 )
 from app.runs.domain.multi_agent_admission import (

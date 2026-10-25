@@ -348,7 +348,10 @@ def project_legacy_attempt_settlement(
     )
     if dispatch_accepted:
         values["dispatch_state"] = "accepted"
-        values["accepted_context_json"] = context
+        if str(lease.get("executor_status") or "") in {
+            "accepted", "running", "completed", "failed", "cancelled",
+        }:
+            values["accepted_context_json"] = context
     elif receipt is not None and reconciliation_status == "waiting_terminal":
         values["dispatch_state"] = "receipt_before_acceptance"
 

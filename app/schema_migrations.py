@@ -57,7 +57,8 @@ RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION = "2026.10.25.4"
 RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION = "2026.10.25.5"
 EXECUTION_SUPERVISION_SCHEMA_VERSION = "2026.10.25.6"
 EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION = "2026.10.25.7"
-TARGET_SCHEMA_VERSION = EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION
+RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -93,6 +94,7 @@ CRITICAL_RELATIONS = (
     "model_catalog_entries",
     "run_attempts",
     "run_attempt_settlements",
+    "run_attempt_settlement_storage",
     "execution_supervision_domains",
     "execution_supervision_claims",
     "run_input_sessions",
@@ -246,6 +248,9 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlements", "settled_at", "timestamptz", False),
     ("run_attempt_settlements", "created_at", "timestamptz", True),
     ("run_attempt_settlements", "updated_at", "timestamptz", True),
+    ("run_attempt_settlement_storage", "singleton", "bool", True),
+    ("run_attempt_settlement_storage", "storage_version", "text", True),
+    ("run_attempt_settlement_storage", "updated_at", "timestamptz", True),
     ("execution_supervision_domains", "domain", "text", True),
     ("execution_supervision_domains", "mode", "text", True),
     ("execution_supervision_domains", "owner_version", "int8", True),
@@ -511,6 +516,9 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempt_settlements", "chk_run_attempt_settlements_retry"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_attempt_count"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_result"),
+    ("run_attempt_settlement_storage", "run_attempt_settlement_storage_pkey"),
+    ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_singleton"),
+    ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_version"),
     ("execution_supervision_domains", "execution_supervision_domains_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_domain_fkey"),
@@ -844,6 +852,24 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "AND jsonb_typeof(result_json) = 'object'::text "
         "AND result_sha256 ~ '^[0-9a-f]{64}$'::text "
         "AND settled_at IS NOT NULL)",
+    ),
+    (
+        "run_attempt_settlement_storage",
+        "run_attempt_settlement_storage_pkey",
+        "p",
+        "PRIMARY KEY (singleton)",
+    ),
+    (
+        "run_attempt_settlement_storage",
+        "chk_run_attempt_settlement_storage_singleton",
+        "c",
+        "CHECK (singleton)",
+    ),
+    (
+        "run_attempt_settlement_storage",
+        "chk_run_attempt_settlement_storage_version",
+        "c",
+        "CHECK (storage_version = ANY (ARRAY['sandbox_lease.v1'::text, 'attempt.v1'::text]))",
     ),
     (
         "execution_supervision_domains",

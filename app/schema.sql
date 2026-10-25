@@ -943,6 +943,24 @@ alter table run_attempt_settlements
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
 
+-- This singleton is the durable authority for choosing the settlement reader.
+-- Schema application only creates the legacy default; operational cutover is
+-- performed separately by the explicit N40 command.
+create table if not exists run_attempt_settlement_storage (
+  singleton boolean not null default true,
+  storage_version text not null default 'sandbox_lease.v1',
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlement_storage_pkey primary key (singleton),
+  constraint chk_run_attempt_settlement_storage_singleton check (singleton),
+  constraint chk_run_attempt_settlement_storage_version check (
+    storage_version in ('sandbox_lease.v1', 'attempt.v1')
+  )
+);
+
+insert into run_attempt_settlement_storage(singleton, storage_version)
+values (true, 'sandbox_lease.v1')
+on conflict (singleton) do nothing;
+
 -- Durable handoff state for the legacy and unified supervisors. Every domain
 -- starts on the current owner; the observation cursor does not authorize work.
 create table if not exists execution_supervision_domains (

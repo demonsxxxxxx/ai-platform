@@ -6,6 +6,7 @@ from app.platform.postgres import errors as platform_errors
 from app.runs.infrastructure import postgres as runs_postgres
 
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
 from app.execution.api import WorkerAttemptLifecyclePorts
 from app.runs.api import (
     RunAttemptLifecycleService,
@@ -27,6 +28,8 @@ def build_worker_attempt_lifecycle_ports(
     run_diagnostics = build_run_diagnostics_service()
     receipt_authority = SandboxReconciliationReceiptAuthority(
         lock_receipt=leases_postgres.lock_scoped_reconciliation_receipt,
+        lock_resource=leases_postgres.lock_scoped_reconciliation_resource,
+        settlement_reader=build_attempt_settlement_projection_service(),
     )
     return WorkerAttemptLifecyclePorts(
         lock_run=runs_postgres.get_run,
