@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 import os
 from typing import Any
@@ -11,8 +12,11 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
+from redis.asyncio import Redis
 
+from app import queue
 from app import schema_migrations
+from app.models import QueueRunPayload
 from app import worker_main
 from app.execution.application.stale_terminalization import stage_stale_run_reconciliation
 from app.runs.domain.execution_spec import EXECUTION_SPEC_SCHEMA_VERSION, compile_execution_spec
@@ -180,7 +184,10 @@ async def test_postgres_stale_candidates_bind_attempt_and_exclude_queued_deliver
     assert "latest_attempt.id as expected_attempt_id" in statement
     assert "latest_attempt.owner_generation" in statement
     assert "claim_expires_at > clock_timestamp()" in statement
+    assert "lease.status = 'active'" in statement
     assert "executor_reconciliation_status is distinct from 'finalized'" in statement
+    assert "attempt.lease_expires_at > clock_timestamp()" in statement
+    assert "claim.claim_deadline_at > clock_timestamp()" in statement
     assert "for update of runs skip locked" in statement
     assert params == (5, 900, 25)
 
@@ -286,7 +293,7 @@ async def test_enabled_pg_claim_path_dispatches_only_after_n40_and_n42_markers(m
 
     monkeypatch.setattr(worker_main, "require_schema_current", current_schema)
     monkeypatch.setattr(worker_main, "require_schema_marker_applied", n40_marker)
-    monkeypatch.setattr(worker_main, "_reconcile_stale_runs_with_postgres_claims", postgres_owner)
+    monkeypatch.setattr(worker_main, "reconcile_worker_stale_runs_with_postgres_claims", postgres_owner)
 
     result = await worker_main.reconcile_stale_runs_for_worker(
         Settings(),
@@ -476,6 +483,407 @@ async def test_real_postgres_claim_takeover_fences_old_attempt_writeback():
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_candidate_scan_skips_unclaimable_rows_before_limit():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"stale_run_fair_scan_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        fixtures = {}
+        async with transaction_factory() as conn:
+            for index, kind in enumerate(("active", "receipt", "live_attempt", "claim", "eligible")):
+                suffix = f"fair-{index}-{uuid.uuid4().hex[:8]}"
+                tenant_id, run_id, attempt_id, worker_id, old = await _seed_running_attempt(
+                    conn, suffix=suffix
+                )
+                stale_at = old - timedelta(hours=5 - index)
+                await conn.execute(
+                    "update runs set created_at=%s, queued_at=%s, started_at=%s where id=%s",
+                    (stale_at, stale_at, stale_at, run_id),
+                )
+                fixtures[kind] = (tenant_id, run_id, attempt_id, worker_id)
+
+            tenant_id, run_id, attempt_id, _worker_id = fixtures["active"]
+            await conn.execute(
+                """insert into sandbox_leases(
+                     id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+                     sandbox_mode, status
+                   ) values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'active')""",
+                (
+                    "lease-active", tenant_id, run_id.replace("run-", "workspace-", 1),
+                    run_id.replace("run-", "user-", 1),
+                    run_id.replace("run-", "session-", 1), run_id, attempt_id,
+                ),
+            )
+
+            tenant_id, run_id, attempt_id, _worker_id = fixtures["receipt"]
+            workspace_id = run_id.replace("run-", "workspace-")
+            user_id = run_id.replace("run-", "user-")
+            session_id = run_id.replace("run-", "session-")
+            await conn.execute(
+                """insert into sandbox_leases(
+                     id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+                     sandbox_mode, status, executor_terminal_json, executor_reconciliation_status
+                   ) values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'released',
+                             '{"status":"failed"}'::jsonb, 'pending')""",
+                ("lease-receipt", tenant_id, workspace_id, user_id, session_id, run_id, attempt_id),
+            )
+
+            tenant_id, run_id, _attempt_id, _worker_id = fixtures["live_attempt"]
+            await conn.execute(
+                "update run_attempts set lease_expires_at=clock_timestamp()+interval '10 minutes' where tenant_id=%s and run_id=%s",
+                (tenant_id, run_id),
+            )
+
+            tenant_id, run_id, attempt_id, _worker_id = fixtures["claim"]
+            attempt = await (await conn.execute(
+                "select owner_generation from run_attempts where tenant_id=%s and run_id=%s",
+                (tenant_id, run_id),
+            )).fetchone()
+            await conn.execute(
+                """insert into run_stale_reconciliation_claims(
+                     tenant_id, run_id, expected_attempt_id, expected_owner_generation,
+                     claim_token, claimed_by, claim_deadline_at
+                   ) values (%s, %s, %s, %s, %s, 'existing-worker',
+                             clock_timestamp()+interval '10 minutes')""",
+                (tenant_id, run_id, attempt_id, attempt["owner_generation"], uuid.uuid4()),
+            )
+
+        async with transaction_factory() as conn:
+            candidates = await list_stale_run_reconciliation_candidates(
+                conn,
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                limit=1,
+                postgres_claim_mode=True,
+            )
+        assert [row["run_id"] for row in candidates] == [fixtures["eligible"][1]]
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_two_connection_run_attempt_claim_writeback_uses_run_first_lock_order():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"stale_run_lock_order_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        suffix = uuid.uuid4().hex[:12]
+        async with transaction_factory() as conn:
+            tenant_id, run_id, attempt_id, worker_id, _old = await _seed_running_attempt(
+                conn, suffix=suffix
+            )
+        async with transaction_factory() as conn:
+            candidate = next(
+                row
+                for row in await list_stale_run_reconciliation_candidates(
+                    conn,
+                    stale_after_seconds=60,
+                    cancel_requested_after_seconds=5,
+                    limit=10,
+                    postgres_claim_mode=True,
+                )
+                if row["run_id"] == run_id
+            )
+        async with transaction_factory() as conn:
+            claim = await claim_stale_run_reconciliation(
+                conn,
+                candidate=candidate,
+                worker_id="worker-finalizer",
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                claim_ttl_seconds=300,
+            )
+            assert claim is not None
+            await prepare_stale_run_attempt_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_status="failed",
+                reconciler_id="stale-run-maintenance",
+            )
+
+        run_locked = asyncio.Event()
+        contender_started = asyncio.Event()
+
+        async def finalize_run_first():
+            async with transaction_factory() as conn:
+                await conn.execute(
+                    "select id from runs where tenant_id=%s and id=%s for update",
+                    (tenant_id, run_id),
+                )
+                run_locked.set()
+                await asyncio.wait_for(contender_started.wait(), timeout=3)
+                assert await stale_run_reconciliation_claim_is_current(
+                    conn, claim=claim, for_update=True
+                )
+                await conn.execute(
+                    "update runs set status='failed' where tenant_id=%s and id=%s and status='running'",
+                    (tenant_id, run_id),
+                )
+                await transition_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    expected_status="expired",
+                    requested_status="failed",
+                    expected_owner_kind="reconciler",
+                    expected_owner_id="stale-run-maintenance",
+                    expected_owner_generation=int(claim["expected_owner_generation"]) + 1,
+                    terminal_reason="run_failed",
+                )
+
+        async def competing_finalizer():
+            await asyncio.wait_for(run_locked.wait(), timeout=3)
+            async with transaction_factory() as conn:
+                contender_started.set()
+                current = await stale_run_reconciliation_claim_is_current(
+                    conn, claim=claim, for_update=True
+                )
+                if current:
+                    # This is the old claim-first lock order: after taking the
+                    # claim, a final writer proceeds to lock the Run.
+                    await conn.execute(
+                        "select id from runs where tenant_id=%s and id=%s for update",
+                        (tenant_id, run_id),
+                    )
+                return current
+
+        finalize_task = asyncio.create_task(finalize_run_first())
+        contender_task = asyncio.create_task(competing_finalizer())
+        await asyncio.wait_for(asyncio.gather(finalize_task, contender_task), timeout=6)
+        assert contender_task.result() is False
+
+        async with transaction_factory() as conn:
+            run = await (await conn.execute(
+                "select status from runs where tenant_id=%s and id=%s", (tenant_id, run_id)
+            )).fetchone()
+            attempt = await (await conn.execute(
+                "select status, owner_generation from run_attempts where tenant_id=%s and run_id=%s and id=%s",
+                (tenant_id, run_id, attempt_id),
+            )).fetchone()
+            assert run["status"] == "failed"
+            assert attempt["status"] == "failed"
+            assert not await stale_run_reconciliation_claim_is_current(conn, claim=claim)
+        with pytest.raises(Exception, match="run_attempt_transition_conflict"):
+            async with transaction_factory() as conn:
+                await transition_run_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    expected_status="running",
+                    requested_status="failed",
+                    expected_owner_kind="queue_worker",
+                    expected_owner_id=worker_id,
+                    expected_owner_generation=int(candidate["expected_owner_generation"]),
+                    terminal_reason="late_executor_writeback",
+                )
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim(monkeypatch):
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    redis_url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    if not redis_url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    schema = f"stale_run_redis_cas_{uuid.uuid4().hex}"
+    suffix = uuid.uuid4().hex[:12]
+    tenant_id = f"tenant-{suffix}"
+    run_id = f"run-{suffix}"
+    worker_id = f"worker-{suffix}"
+    queue_prefix = f"ai-platform:test:stale-claim:{suffix}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    redis_keys: tuple[str, ...] = ()
+
+    class Settings:
+        queue_key_prefix = queue_prefix
+        queue_lease_scan_limit = 10
+        worker_heartbeat_ttl_seconds = 60
+
+    async def get_redis():
+        return Redis.from_url(redis_url, decode_responses=True)
+
+    monkeypatch.setattr(queue, "get_settings", lambda: Settings())
+    monkeypatch.setattr(queue, "get_redis", get_redis)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        async with transaction_factory() as conn:
+            tenant_id, run_id, attempt_id, seeded_worker_id, _old = await _seed_running_attempt(
+                conn, suffix=suffix
+            )
+        payload = QueueRunPayload(
+            tenant_id=tenant_id,
+            workspace_id=f"workspace-{suffix}",
+            user_id=f"user-{suffix}",
+            session_id=f"session-{suffix}",
+            run_id=run_id,
+            agent_id=f"agent-{suffix}",
+            skill_id=f"skill-{suffix}",
+            file_ids=[],
+            input={"message": "redis and postgres stale owner race"},
+            executor_type="fake",
+            skill_version="version-a",
+            release_decision={
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "selected_version": "version-a",
+            },
+            skill_manifests=[
+                {"skill_id": f"skill-{suffix}", "content_hash": "version-a"}
+            ],
+        )
+        assert seeded_worker_id == worker_id
+        await queue.enqueue_run(payload.model_dump())
+        message = await queue.lease_run(worker_id=worker_id, lease_scan_limit=10)
+        assert message is not None
+        keys = queue.get_queue_keys()
+        redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
+
+        async with transaction_factory() as conn:
+            await conn.execute(
+                """update run_attempts
+                   set queue_attempt_id=%s, queue_message_id=%s
+                   where tenant_id=%s and run_id=%s and id=%s""",
+                (message.attempt_id, message.queue_message_id, tenant_id, run_id, attempt_id),
+            )
+            candidates = await list_stale_run_reconciliation_candidates(
+                conn,
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                limit=10,
+                postgres_claim_mode=True,
+            )
+        candidate = next(row for row in candidates if row["run_id"] == run_id)
+
+        async with transaction_factory() as conn:
+            claim = await claim_stale_run_reconciliation(
+                conn,
+                candidate=candidate,
+                worker_id="stale-run-claimer",
+                stale_after_seconds=60,
+                cancel_requested_after_seconds=5,
+                claim_ttl_seconds=300,
+            )
+            assert claim is not None
+            await prepare_stale_run_attempt_reconciliation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_status="failed",
+                reconciler_id="stale-run-maintenance",
+            )
+
+        redis_heartbeat = await queue.heartbeat_run(
+            message.message_id,
+            worker_id=worker_id,
+        )
+        assert redis_heartbeat.status == "heartbeat"
+        assert redis_heartbeat.heartbeat_at is not None
+        from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
+        from app.runs.infrastructure import postgres as run_attempt_persistence
+        from app.platform.postgres.errors import RepositoryConflictError
+
+        heartbeat_at = datetime.fromtimestamp(redis_heartbeat.heartbeat_at, tz=timezone.utc)
+        with pytest.raises(RepositoryConflictError, match="run_attempt_worker_authority_stale"):
+            async with transaction_factory() as conn:
+                await RunAttemptLifecycleService(persistence=run_attempt_persistence).heartbeat_worker(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    queue_attempt_id=message.attempt_id,
+                    queue_message_id=message.queue_message_id,
+                    worker_id=worker_id,
+                    last_heartbeat_at=heartbeat_at,
+                    lease_expires_at=heartbeat_at + timedelta(seconds=60),
+                )
+        assert await redis.lrange(keys.processing, 0, -1) == [message.raw]
+        async with transaction_factory() as conn:
+            assert not await stale_run_reconciliation_claim_is_current(conn, claim=claim)
+    finally:
+        if redis_keys:
+            await redis.delete(*redis_keys)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+        await redis.aclose()
 
 
 async def _noop(*_args, **_kwargs):

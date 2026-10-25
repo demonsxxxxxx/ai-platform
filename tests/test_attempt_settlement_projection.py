@@ -400,6 +400,9 @@ async def attempt_settlement_db():
         async with connect() as conn:
             await conn.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
             # Emulate the last pre-N30 shape while keeping real PG data and constraints.
+            # The N42 claim table is outside this historical fixture and must
+            # leave no foreign-key dependency on the Attempt identity index.
+            await conn.execute("drop table if exists run_stale_reconciliation_claims")
             await conn.execute("drop table run_attempt_settlements cascade")
             await conn.execute(
                 "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_id_key"
