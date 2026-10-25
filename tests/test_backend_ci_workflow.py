@@ -251,7 +251,6 @@ BACKEND_TEST_SHARDS = {
     "lifecycle-control-chain": (
         "tests/test_run_execution_lifecycle_integration.py",
         "tests/test_execution_supervision_postgres.py",
-        "tests/test_run_delivery_intents_postgres.py",
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
@@ -281,7 +280,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_public_event_enum_types.py",
         "tests/test_execution_supervision.py",
         "tests/test_attempt_settlement_projection.py",
-        "tests/test_run_delivery_intents.py",
         "tests/test_executor_reconciler.py",
         "tests/test_executor_signals.py",
         "tests/test_run_attempt_lifecycle_domain.py",

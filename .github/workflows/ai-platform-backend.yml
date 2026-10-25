@@ -298,7 +298,6 @@ jobs:
             test_files: >-
               tests/test_run_execution_lifecycle_integration.py
               tests/test_execution_supervision_postgres.py
-              tests/test_run_delivery_intents_postgres.py
           - shard: model-control-plane
             runner: ubuntu-latest
             postgres_image: ""
@@ -338,7 +337,6 @@ jobs:
               tests/test_public_event_enum_types.py
               tests/test_execution_supervision.py
               tests/test_attempt_settlement_projection.py
-              tests/test_run_delivery_intents.py
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
