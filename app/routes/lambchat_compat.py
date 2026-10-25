@@ -1025,10 +1025,7 @@ def _compatibility_events_for_run_page(
         and event_visible_to_principal(event, principal)
         and (projected := _persisted_v4_message_delta(run, event)) is not None
     }
-    compact_terminal_answer = (
-        compact_answer_deltas
-        and runs_api.is_terminal_run_status(status)
-    )
+    compact_terminal_answer = compact_answer_deltas and runs_api.is_terminal_run_status(status)
     pending_answer_events: list[tuple[dict[str, Any], dict[str, object]]] = []
 
     def emit_answer_event(
