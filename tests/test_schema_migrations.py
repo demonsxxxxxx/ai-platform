@@ -781,7 +781,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION == "2026.10.25.8"
     assert schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION == "2026.10.25.8"
     assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
+    assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
@@ -824,7 +826,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -842,6 +844,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "run_attempts",
         "run_attempt_settlements",
         "run_attempt_settlement_storage",
+        "run_attempt_settlement_writer",
         "run_stale_reconciliation_claims",
         "execution_supervision_domains",
         "execution_supervision_claims",
@@ -1305,6 +1308,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "CHECK (settlement_phase = ANY (ARRAY['awaiting_receipt'::text, "
             "'awaiting_context'::text, 'pending'::text, 'claimed'::text, 'retry'::text, "
             "'settled'::text, 'failed'::text, 'unknown'::text]))",
+        ),
+        (
+            "run_attempt_settlement_writer",
+            "chk_run_attempt_settlement_writer_version",
+            "c",
+            "CHECK (writer_version = ANY (ARRAY['sandbox_lease.v1'::text, 'attempt.v1'::text]))",
         ),
         (
             "run_attempt_settlements",

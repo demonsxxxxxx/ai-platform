@@ -748,7 +748,10 @@ async def test_real_postgres_cutover_waits_for_writer_refresh_and_uses_fresh_sna
 
     async def source_writer_without_projection():
         async with transaction_schema() as conn:
-            await settlement_store.lock_attempt_settlement_writer_fence(conn)
+            from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+                lock_attempt_settlement_writer_fence,
+            )
+            await lock_attempt_settlement_writer_fence(conn)
             await settlement_store.lock_attempt_settlement_projection_sources(conn, **scope)
             writer_locked.set()
             await allow_unprojected_write.wait()
@@ -1125,10 +1128,10 @@ async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(at
     connect, original_generation, first, second, status = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
     assert first["status"] == "applied"
-    assert first["version"] == "2026.10.25.9"
+    assert first["version"] == "2026.10.25.10"
     assert second["status"] == "current"
     assert status["ready"] is True
-    assert status["target_version"] == "2026.10.25.9"
+    assert status["target_version"] == "2026.10.25.10"
 
     async with connect() as conn, conn.transaction():
         storage_marker = await (
@@ -1510,10 +1513,12 @@ async def test_real_postgres_shadow_writers_and_stable_snapshot(
             insert into sandbox_leases(
               id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
               sandbox_mode, provider, status, lease_payload_json, executor_status,
-              executor_reconciliation_status, executor_terminal_reconciliation_attempt_count
+              executor_reconciliation_status, executor_terminal_reconciliation_attempt_count,
+              executor_heartbeat_at
             ) values (
               %s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s, %s,
-              'ephemeral', 'fake', 'active', %s::jsonb, 'accepted', 'waiting_terminal', 0
+              'ephemeral', 'fake', 'active', %s::jsonb, 'accepted', 'waiting_terminal', 0,
+              now()
             )
             """,
             (lease_id, run_id, attempt_id, json.dumps({"owner_generation": generation})),
@@ -1648,6 +1653,10 @@ async def test_real_postgres_shadow_writers_and_stable_snapshot(
 
     reconciler_port = build_sandbox_executor_reconciliation_port()
     async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update sandbox_leases set executor_probe_claim_token='probe-live', "
+            "executor_probe_claimed_at=now() where id in ('lease-e', 'lease-intent')"
+        )
         await conn.execute(
             "update sandbox_leases set executor_heartbeat_at=now() - interval '1 minute', "
             "updated_at=now() - interval '1 minute' where id='lease-d'"
