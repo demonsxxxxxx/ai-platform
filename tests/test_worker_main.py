@@ -3604,3 +3604,40 @@ async def test_worker_shutdown_settles_snapshot_physical_owner_before_clients(mo
             await asyncio.gather(task, return_exceptions=True)
     assert len(original_cancellation) == 1
     assert events == ["physical-finished", "owner-cancelled", "runtime-closed", "clients-closed"]
+
+
+@pytest.mark.asyncio
+async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(monkeypatch):
+    from app.bootstrap import executor_reconciliation
+
+    lease_port = object()
+    stop_event = asyncio.Event()
+    captured = {}
+
+    async def fake_reconciler(actual_stop_event, **kwargs):
+        captured["stop_event"] = actual_stop_event
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        executor_reconciliation,
+        "build_sandbox_executor_reconciliation_port",
+        lambda: lease_port,
+    )
+    monkeypatch.setattr(
+        executor_reconciliation,
+        "_run_executor_terminal_reconciler",
+        fake_reconciler,
+    )
+
+    await worker_main.run_executor_terminal_reconciler(
+        stop_event,
+        worker_id="worker-a",
+        concurrency=1,
+    )
+
+    assert captured == {
+        "stop_event": stop_event,
+        "lease_port": lease_port,
+        "worker_id": "worker-a",
+        "concurrency": 1,
+    }
