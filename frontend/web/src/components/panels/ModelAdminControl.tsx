@@ -374,7 +374,7 @@ export function ModelAdminControl({
   };
 
   const updateDraft = (id: string, change: Partial<AdminModelEntry>) => {
-    if (activeRequest.current) return;
+    if (activeRequest.current || !draft.some((model) => model.id === id && model.available)) return;
     setDraft((current) => current.map((model) => model.id === id
       ? { ...model, ...change }
       : change.is_default ? { ...model, is_default: false } : model));
@@ -629,7 +629,7 @@ render: (_value, model) => (<>
                           aria-label={`${model.value} 平台显示名称`}
                           size="small" variant="borderless"
                           onChange={(event) => updateDraft(model.id, { label: event.target.value })}
-                          disabled={busy !== null}
+                          disabled={!model.available || busy !== null}
                           value={model.label}
                         />
                         <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>

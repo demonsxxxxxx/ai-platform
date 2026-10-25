@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { ApiProtocolError, ApiRequestError, authFetch, FORCE_RELOGIN_EVENT } from "../fetch.ts";
 import { apiRequestErrorFromResponse } from "../fetch.ts";
+import i18n from "../../../i18n/index.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { parseSessionRunInputs, sessionApi } from "../session.ts";
 
@@ -788,3 +789,29 @@ test("an expired platform context signals login recovery without refreshing or r
     assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
   } finally { stubs.restore(); }
 });
+
+for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty", "unknown_error"]) {
+  test(`authFetch projects ${name} response details to localized string fallback`, async () => {
+    for (const detail of [name, { code: name, message: "private-secret" }]) {
+      const stubs = installFetchAuthStubs({
+        fetchImpl: async () => new Response(JSON.stringify({ detail }), { status: 500 }),
+      });
+      try {
+        await assert.rejects(authFetch("/api/synthetic"), (error: unknown) => {
+          assert.ok(error instanceof ApiRequestError);
+          assert.equal(error.status, 500);
+          assert.equal(error.message, i18n.t("chat.requestFailed"));
+          assert.equal(error.code, ["constructor", "unknown_error"].includes(name) ? name : undefined);
+          assert.equal(error.submissionDisposition, undefined);
+          assert.equal(error.diagnosticId, undefined);
+          assert.doesNotMatch(error.message, /private|secret|native code|Object|function/);
+          return true;
+        });
+        assert.deepEqual(stubs.events, []);
+        assert.deepEqual(stubs.removedKeys, []);
+      } finally {
+        stubs.restore();
+      }
+    }
+  });
+}
