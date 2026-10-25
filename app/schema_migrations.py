@@ -235,6 +235,7 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlements", "receipt_json", "jsonb", False),
     ("run_attempt_settlements", "receipt_sha256", "text", False),
     ("run_attempt_settlements", "receipt_owner_generation", "int8", False),
+    ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False),
     ("run_attempt_settlements", "dispatch_state", "text", True),
     ("run_attempt_settlements", "intent_recovery_context_json", "jsonb", False),
     ("run_attempt_settlements", "accepted_context_json", "jsonb", False),
@@ -855,6 +856,12 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "CHECK (settlement_phase = ANY (ARRAY['awaiting_receipt'::text, "
         "'awaiting_context'::text, 'pending'::text, 'claimed'::text, 'retry'::text, "
         "'settled'::text, 'failed'::text, 'unknown'::text]))",
+    ),
+    (
+        "run_attempt_settlement_writer",
+        "chk_run_attempt_settlement_writer_version",
+        "c",
+        "CHECK (writer_version = ANY (ARRAY['sandbox_lease.v1'::text, 'attempt.v1'::text]))",
     ),
     (
         "run_attempt_settlements",
@@ -1516,7 +1523,7 @@ CONCURRENT_INDEX_MIGRATIONS = (
         "and executor_cleanup_status in ('cleanup_pending', 'retry', 'failed', 'claimed')",
         "sandbox_leases",
         ("id",),
-        (False,),
+        (False, False),
         "status = any array['active', 'released'] and executor_cleanup_status = any "
         "array['cleanup_pending', 'retry', 'failed', 'claimed']",
         key_expressions=("coalesce(executor_cleanup_claimed_at, executor_terminal_received_at, created_at)", "id"),

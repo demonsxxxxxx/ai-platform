@@ -240,6 +240,9 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
     conn = object()
 
     class Projection:
+        async def attempt_writer_active(self, _conn):
+            return False
+
         async def lock_writer_fence(self, _conn):
             calls.append("writer_fence")
 

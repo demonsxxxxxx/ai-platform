@@ -862,6 +862,7 @@ create table if not exists run_attempt_settlements (
   receipt_json jsonb,
   receipt_sha256 text,
   receipt_owner_generation bigint,
+  receipt_recorded_at timestamptz,
   dispatch_state text not null,
   intent_recovery_context_json jsonb,
   accepted_context_json jsonb,
@@ -939,6 +940,8 @@ create table if not exists run_attempt_settlements (
 
 alter table run_attempt_settlements
   add column if not exists intent_recovery_context_json jsonb;
+alter table run_attempt_settlements
+  add column if not exists receipt_recorded_at timestamptz;
 
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
@@ -3783,3 +3786,16 @@ where id = 'ragflow-knowledge-search';
 update tool_policies
 set status = 'disabled', visible_to_user = false
 where tool_id = 'ragflow-knowledge-search';
+
+-- Preserve historical receipt age when the Runs-owned settlement writer is added.
+update run_attempt_settlements detail
+set receipt_recorded_at = coalesce(
+  lease.executor_terminal_received_at, lease.updated_at, lease.created_at
+)
+from sandbox_leases lease
+where detail.receipt_json is not null
+  and detail.receipt_recorded_at is null
+  and lease.tenant_id = detail.tenant_id
+  and lease.run_id = detail.run_id
+  and lease.attempt_id = detail.attempt_id
+  and lease.id = detail.source_lease_id;

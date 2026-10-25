@@ -30,10 +30,8 @@ def _pending_terminal_receipt_sql(*, attempt_reader_active: bool) -> str:
            and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
           where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
             and (
-              (detail.attempt_id is null and (
-                lease.executor_status in ('completed', 'failed', 'cancelled')
-                or lease.executor_terminal_received_at is not null
-              ))
+              (detail.attempt_id is null
+               and lease.executor_status in ('completed', 'failed', 'cancelled'))
               or (detail.receipt_json is not null
                   and detail.settlement_phase <> 'settled')
             )
@@ -695,7 +693,6 @@ async def _stale_run_reconciliation_claim_binding_is_current(
         lease_cursor = await conn.execute(
             """
             select lease.status, lease.executor_status,
-                   lease.executor_terminal_received_at,
                    detail.attempt_id as settlement_attempt_id,
                    detail.receipt_json, detail.settlement_phase
             from sandbox_leases lease
@@ -711,10 +708,8 @@ async def _stale_run_reconciliation_claim_binding_is_current(
         pending_receipt = any(
             (
                 lease.get("settlement_attempt_id") is None
-                and (
-                    str(lease.get("executor_status") or "") in {"completed", "failed", "cancelled"}
-                    or lease.get("executor_terminal_received_at") is not None
-                )
+                and str(lease.get("executor_status") or "")
+                    in {"completed", "failed", "cancelled"}
             )
             or (
                 lease.get("receipt_json") is not None
