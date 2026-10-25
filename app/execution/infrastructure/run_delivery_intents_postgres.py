@@ -207,6 +207,7 @@ async def claim_due(
             claim_token = null,
             claimed_at = null,
             claim_expires_at = null,
+            delivered_at = null,
             last_error_code = candidates.reason,
             suppressed_at = now(),
             updated_at = now()
@@ -231,10 +232,10 @@ async def claim_due(
             and not exists (
               select 1 from run_attempts attempt
               where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
-            )) or exists (
+            )) or (intent.state <> 'delivered' and exists (
               select 1 from run_attempts attempt
               where attempt.tenant_id = intent.tenant_id and attempt.run_id = intent.run_id
-            ))
+            )))
             and {filters}
           order by intent.next_retry_at, intent.created_at, intent.tenant_id, intent.run_id
           limit %s
@@ -242,6 +243,7 @@ async def claim_due(
         )
         update run_delivery_intents as intent
         set state = 'claimed',
+            delivered_at = null,
             claim_token = gen_random_uuid(),
             claimed_at = now(),
             claim_expires_at = now() + (%s * interval '1 second'),
