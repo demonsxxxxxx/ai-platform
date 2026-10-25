@@ -6,7 +6,6 @@ import { useTranslation } from "react-i18next";
 import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
-import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
@@ -1447,7 +1446,6 @@ export function ChatAppContent({
             ) : null}
           </div>
         ) : null}
-        <BlockPreviewPortal />
       </div>
     </AppShell>
   );

@@ -309,3 +309,14 @@ The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selecte
 Tool policy writes remain under `/api/ai/admin/tool-policies/*`; ordinary users
 do not gain MCP server CRUD, credential lifecycle, or write-tool bypass
 authority from this public route set.
+
+## Ordinary workbench catalog metadata
+
+The public list includes `expected_version`, the effective version snapshot.
+For ordinary `skill:read` users, `files=[]` and `file_count=0` are redacted file
+metadata, not a claim that the installed package contains no files. File names,
+real counts, private source/storage/runtime/manifest fields and file contents
+are not ordinary list data; detail/file access stays role-bound. AI administrators
+retain the normal file metadata and management controls. The unified skills hub
+uses the active skills panel and management table; the unconsumed
+`AvailableSkillsPanel.tsx` and `SkillCard.tsx` views are retired.

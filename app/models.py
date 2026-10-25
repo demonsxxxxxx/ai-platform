@@ -1673,7 +1673,7 @@ class RoleGovernanceRollbackRequest(BaseModel):
 
 
 class WorkbenchUserResponse(BaseModel):
-    """Safe company user-directory projection."""
+    """Authenticated self projection; not an arbitrary directory entry."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1692,7 +1692,7 @@ class WorkbenchUserResponse(BaseModel):
 
 
 class WorkbenchUserListResponse(BaseModel):
-    """Paginated safe user-directory response."""
+    """Paginated authenticated-self compatibility response."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1702,19 +1702,6 @@ class WorkbenchUserListResponse(BaseModel):
     skip: int = 0
     limit: int = 50
     governance: WorkbenchGovernanceResponse
-
-
-class WorkbenchUserWriteRequest(BaseModel):
-    """User lifecycle request payload with secret-bearing fields forbidden."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    username: str | None = None
-    full_name: str | None = None
-    email: str | None = None
-    roles: list[str] = Field(default_factory=list)
-    permissions: list[str] = Field(default_factory=list)
-    is_active: bool | None = None
 
 
 class AdminSkillVersionResponse(BaseModel):

@@ -93,6 +93,10 @@ test("superseded Skill, composer-help, and auth wrappers remain absent", () => {
     "src/components/chat/ChatInputHelpMenu.tsx",
     "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/auth/AuthLayout.tsx",
+    "src/services/api/workbench.ts",
+    "src/components/chat/ChatMessage/items/toolUtils.ts",
+    "src/components/chat/ChatMessage/items/McpBlockPreview.tsx",
+    "src/components/common/VideoViewer.tsx",
   ]) {
     assert.equal(existsSync(join(root, path)), false, path);
   }

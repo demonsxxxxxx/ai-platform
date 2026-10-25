@@ -437,14 +437,17 @@ test("user projection renders a full workbench instead of a thin list", () => {
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
-test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
-  const baseCard = read("src/components/common/SkillBaseCard.tsx");
+test("active skill table and loading skeleton retain dense themed presentation", () => {
+  const table = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
+  const skeleton = read("src/components/skeletons/PanelSkeletons.tsx");
+  const main = read("src/main.tsx");
   const cardCss = read("src/styles/card-base.css");
 
-  assert.match(baseCard, /p-3\.5 sm:p-4/);
-  assert.match(baseCard, /text-sm font-semibold/);
-  assert.match(baseCard, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.doesNotMatch(baseCard, /text-base font-semibold/);
+  assert.match(table, /text-sm font-semibold text-\[var\(--theme-text\)\]/);
+  assert.doesNotMatch(table, /text-base font-semibold/);
+  assert.match(skeleton, /className="scb"/);
+  assert.match(skeleton, /className="scb__icon-ring shrink-0 /);
+  assert.match(main, /import "\.\/styles\/card-base\.css"/);
   assert.match(cardCss, /border-radius:\s*0\.5rem/);
   assert.match(cardCss, /background:\s*var\(--theme-workbench-panel\);/);
   assert.doesNotMatch(cardCss, /translateY\(-4px\)/);

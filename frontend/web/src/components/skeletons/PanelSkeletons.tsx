@@ -6,7 +6,7 @@ import { PanelHeaderSkeleton } from "./PanelHeaderSkeleton";
    Panel-specific skeletons — updated to match latest layouts
    ═══════════════════════════════════════════════════════ */
 
-/** Skills panel: card grid matching SkillBaseCard (.scb) structure */
+/** Skills panel: loading grid using the retained .scb skeleton styles */
 export function SkillsPanelSkeleton() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 animate-fade-in">

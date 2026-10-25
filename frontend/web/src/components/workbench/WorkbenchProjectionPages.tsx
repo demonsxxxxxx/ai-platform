@@ -27,7 +27,6 @@ import {
   type AdminUserDiagnosticsResponse,
   type AdminUserSummary,
 } from "../../services/api/adminUsers";
-import type { WorkbenchGovernance } from "../../services/api/workbench";
 import { Permission } from "../../types";
 import { formatDateTimeShort } from "../../utils/datetime";
 import { AdminUserDiagnosticsDrawer } from "./AdminUserDiagnosticsDrawer";
@@ -115,17 +114,13 @@ function useProjection<T>(loader: () => Promise<T>, deps: unknown[]): LoadState<
   return state;
 }
 
-function governanceState(
-  state: LoadState<unknown>,
-  governance?: WorkbenchGovernance | null,
-): FrontendGovernanceState {
+function governanceState(state: LoadState<unknown>): FrontendGovernanceState {
   return resolveFrontendGovernanceState({
     isAuthenticated: true,
     isLoading: state.isLoading,
     hasPermission: true,
-    hasWorkspace: governance ? Boolean(governance.workspace_id) : true,
+    hasWorkspace: true,
     projectionError: state.error,
-    degraded: Boolean(governance?.degraded),
   });
 }
 
@@ -146,14 +141,12 @@ function projectionStatusToneClass(tone: ProjectionStatusTone) {
 function ProjectionShell({
   kind,
   loadState,
-  governance,
   auditAvailable,
   metrics,
   children,
 }: {
   kind: PageKind;
   loadState: LoadState<unknown>;
-  governance?: WorkbenchGovernance | null;
   auditAvailable?: boolean;
   metrics?: ProjectionMetric[];
   children: ReactNode;
@@ -162,10 +155,7 @@ function ProjectionShell({
   const { hasPermission } = useAuth();
   const meta = pageMeta[kind];
   const Icon = meta.icon;
-  const state = governanceState(loadState, governance);
-  const secretMaterialProjected = Boolean(
-    governance && governance.secret_material_projected,
-  );
+  const state = governanceState(loadState);
   const readAvailability = resolveGroupAvailability({
     backed: true,
     enabled: state === "ready" || state === "degraded",
@@ -175,18 +165,7 @@ function ProjectionShell({
     adminOnly: !hasPermission(meta.adminPermission),
     enabled: hasPermission(meta.adminPermission),
   });
-  const details = [
-    loadState.error,
-    governance?.projection
-      ? t("workbench.projections.governance.projection", {
-          projection: governance.projection,
-          workspace: governance.workspace_id,
-        })
-      : null,
-    secretMaterialProjected
-      ? t("workbench.projections.governance.secretProjected")
-      : null,
-  ].filter((item): item is string => Boolean(item));
+  const details = [loadState.error].filter((item): item is string => Boolean(item));
 
   if (state === "loading" || state === "forbidden") {
     return (
@@ -297,11 +276,7 @@ function ProjectionShell({
             details={details}
             readAvailability={readAvailability}
             adminAvailability={adminAvailability}
-            auditAvailable={Boolean(
-              auditAvailable ??
-                (governance?.audit_required || governance?.rollback_available),
-            )}
-            secretMaterialProjected={secretMaterialProjected}
+            auditAvailable={Boolean(auditAvailable)}
           />
         </section>
       </div>
@@ -342,13 +317,11 @@ function ProjectionInsightPanel({
   readAvailability,
   adminAvailability,
   auditAvailable,
-  secretMaterialProjected,
 }: {
   details: string[];
   readAvailability: { state: AvailabilityState; labelKey: string };
   adminAvailability: { state: AvailabilityState; labelKey: string };
   auditAvailable: boolean;
-  secretMaterialProjected: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -396,10 +369,8 @@ function ProjectionInsightPanel({
           icon={ShieldCheck}
           title={t("workbench.projections.governance.redactionTitle")}
           description={t("workbench.projections.governance.redactionDescription")}
-          state={secretMaterialProjected ? "enabled" : "disabled"}
-          labelKey={
-            secretMaterialProjected ? "governance.enabled" : "governance.disabled"
-          }
+          state="disabled"
+          labelKey="governance.disabled"
         />
       </div>
 

@@ -1,6 +1,5 @@
 import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation";
 import { closeAttachmentPreview } from "./attachmentPreviewStore";
-import { closeBlockPreview } from "./ChatMessage/items/blockPreviewStore";
 import { clearSidebarHistory } from "./ChatMessage/items/sidebarHistoryStore";
 
 let currentOwnerKey: string | undefined;
@@ -14,7 +13,6 @@ export function claimChatPreviewSession(ownerKey: string): boolean {
   if (currentOwnerKey === ownerKey) return false;
   currentOwnerKey = ownerKey;
   closeAttachmentPreview();
-  closeBlockPreview();
   clearSidebarHistory();
   return true;
 }

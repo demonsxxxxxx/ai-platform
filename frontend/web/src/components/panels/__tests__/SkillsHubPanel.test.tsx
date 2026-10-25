@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { projectOrdinarySkillCatalogItem } from "../ordinaryCatalogPolicy.ts";
 import { resolveSkillsHubGovernance } from "../SkillsHubPanel/state.ts";
 import { resolveSkillCatalogSelection } from "../SkillsPanel/skillCatalogEntries.ts";
 
@@ -28,21 +27,6 @@ test("keeps Skill visibility administration server-governed and ordinary catalog
   assert.equal(ordinaryState.pageState, "forbidden");
   assert.equal(ordinaryState.hasPermission, false);
   assert.equal(ordinaryState.governedUnavailable, true);
-
-  const serverSkill = {
-    name: "  文件审阅  ",
-    description: "  仅显示公开说明  ",
-    inputModes: ["chat", "pdf", 42, "xlsx", "pdf"],
-    private_manifest: { token: "must-not-project" },
-  };
-  assert.deepEqual(
-    projectOrdinarySkillCatalogItem(serverSkill),
-    {
-      displayName: "文件审阅",
-      description: "仅显示公开说明",
-      applicableFileTypes: ["pdf", "xlsx", "pdf"],
-    },
-  );
 
   const source = readFileSync(new URL("../SkillsHubPanel.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /<AvailableSkillsPanel|<SkillDistributionGovernancePanel/);

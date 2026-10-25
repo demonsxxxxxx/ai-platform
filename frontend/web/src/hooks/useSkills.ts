@@ -144,6 +144,8 @@ export function useSkills(options?: {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  // Keep catalog authorization separate from localized presentation copy.
+  const [listPermissionDenied, setListPermissionDenied] = useState(false);
 
   // Per-operation loading states for better UX
   const [isUpdating, setIsUpdating] = useState(false);
@@ -176,6 +178,7 @@ export function useSkills(options?: {
     setCatalogReadResolved(false);
     setError(null);
     setListError(null);
+    setListPermissionDenied(false);
   }
   const identityEpoch = identityRef.current.epoch;
 
@@ -203,6 +206,7 @@ export function useSkills(options?: {
       setIsLoading(true);
       setError(null);
       setListError(null);
+      setListPermissionDenied(false);
       setCatalogReadResolved(false);
       setPermissionsValid(false);
       setEffectivePermissionsKnown(false);
@@ -254,6 +258,7 @@ export function useSkills(options?: {
         const message = resolveSkillOperationError(err, "skills.loadFailed");
         setError(message);
         setListError(message);
+        setListPermissionDenied(err instanceof ApiRequestError && err.status === 403);
         setEffectivePermissions([]);
         setCatalogReadResolved(false);
         setPermissionsValid(true);
@@ -808,6 +813,7 @@ export function useSkills(options?: {
     isLoading,
     error,
     listError,
+    listPermissionDenied,
     fetchSkills,
     getSkill,
     getSkillExportFiles,
