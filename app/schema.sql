@@ -960,6 +960,23 @@ create table if not exists run_attempt_settlement_storage (
 insert into run_attempt_settlement_storage(singleton, storage_version)
 values (true, 'sandbox_lease.v1')
 on conflict (singleton) do nothing;
+
+-- Writer authority is independent from the reader marker above. N41 activates
+-- this only after legacy writers and in-flight operations are explicitly drained.
+create table if not exists run_attempt_settlement_writer (
+  singleton boolean not null default true,
+  writer_version text not null default 'sandbox_lease.v1',
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlement_writer_pkey primary key (singleton),
+  constraint chk_run_attempt_settlement_writer_singleton check (singleton),
+  constraint chk_run_attempt_settlement_writer_version check (
+    writer_version in ('sandbox_lease.v1', 'attempt.v1')
+  )
+);
+
+insert into run_attempt_settlement_writer(singleton, writer_version)
+values (true, 'sandbox_lease.v1')
+on conflict (singleton) do nothing;
 -- A per-Run claim fences stale reconciliation in PostgreSQL. It binds the
 -- exact Attempt owner generation observed before takeover; Attempt CAS remains
 -- the authority that rejects late executor writes.
@@ -2959,6 +2976,12 @@ create table if not exists sandbox_leases (
   executor_terminal_reconciliation_attempt_count integer not null default 0,
   executor_reconciliation_error text not null default '',
   executor_reconciled_at timestamptz,
+  executor_probe_claim_token text,
+  executor_probe_claimed_at timestamptz,
+  executor_cleanup_status text not null default 'not_required',
+  executor_cleanup_claim_token text,
+  executor_cleanup_claimed_at timestamptz,
+  executor_cleanup_retry_not_before timestamptz,
   heartbeat_at timestamptz,
   expires_at timestamptz,
   released_at timestamptz,
@@ -2994,6 +3017,12 @@ alter table sandbox_leases add column if not exists executor_terminal_reconcilia
 alter table sandbox_leases add column if not exists executor_reconciliation_error text not null default '';
 alter table sandbox_leases add column if not exists executor_reconciled_at timestamptz;
 alter table sandbox_leases add column if not exists executor_reconciliation_retry_not_before timestamptz;
+alter table sandbox_leases add column if not exists executor_probe_claim_token text;
+alter table sandbox_leases add column if not exists executor_probe_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists executor_cleanup_status text not null default 'not_required';
+alter table sandbox_leases add column if not exists executor_cleanup_claim_token text;
+alter table sandbox_leases add column if not exists executor_cleanup_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists executor_cleanup_retry_not_before timestamptz;
 -- Preserve the former retry clock for persisted work at cutover.
 update sandbox_leases
 set executor_reconciliation_retry_not_before = updated_at + make_interval(
@@ -3002,12 +3031,56 @@ set executor_reconciliation_retry_not_before = updated_at + make_interval(
 where executor_terminal_json is not null
   and executor_reconciliation_status = 'retry'
   and executor_reconciliation_retry_not_before is null;
+-- Split probe and resource-cleanup ownership from the legacy settlement claim.
+update sandbox_leases
+set executor_probe_claim_token = case
+      when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
+        then executor_reconciliation_claim_token
+      else executor_probe_claim_token
+    end,
+    executor_probe_claimed_at = case
+      when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
+        then executor_reconciliation_claimed_at
+      else executor_probe_claimed_at
+    end,
+    executor_cleanup_status = case
+      when executor_terminal_json is null then 'not_required'
+      when executor_reconciliation_status = 'finalized' then 'finalized'
+      when executor_reconciliation_status in ('cleanup_pending', 'failed')
+        then executor_reconciliation_status
+      else 'waiting_settlement'
+    end,
+    executor_cleanup_claim_token = case
+      when executor_terminal_json is not null
+       and executor_reconciliation_status in ('cleanup_pending', 'failed')
+        then executor_reconciliation_claim_token
+      else executor_cleanup_claim_token
+    end,
+    executor_cleanup_claimed_at = case
+      when executor_terminal_json is not null
+       and executor_reconciliation_status in ('cleanup_pending', 'failed')
+        then executor_reconciliation_claimed_at
+      else executor_cleanup_claimed_at
+    end,
+    executor_cleanup_retry_not_before = case
+      when executor_terminal_json is not null
+       and executor_reconciliation_status in ('cleanup_pending', 'failed')
+        then executor_reconciliation_retry_not_before
+      else executor_cleanup_retry_not_before
+    end
+where executor_cleanup_status = 'not_required';
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_status
   check (executor_status in ('pending', 'accepted', 'running', 'completed', 'failed', 'cancelled'));
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
   check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'));
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_cleanup_status;
+alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_status
+  check (executor_cleanup_status in (
+    'not_required', 'waiting_settlement', 'cleanup_pending', 'claimed',
+    'retry', 'failed', 'finalized'
+  ));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
 

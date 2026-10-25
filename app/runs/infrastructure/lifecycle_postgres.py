@@ -14,7 +14,43 @@ from app.platform.postgres.limits import (
     ensure_json_size,
 )
 from app.runs.domain.run_status import is_terminal_run_status
+from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    get_attempt_settlement_storage_version,
+)
 from app.runs.infrastructure.steps_postgres import _cancel_open_run_steps, _fail_open_run_steps
+
+
+def _pending_terminal_receipt_sql(*, attempt_reader_active: bool) -> str:
+    if attempt_reader_active:
+        return """
+        exists (
+          select 1 from sandbox_leases lease
+          left join run_attempt_settlements detail
+            on detail.tenant_id = lease.tenant_id and detail.run_id = lease.run_id
+           and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
+          where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
+            and (
+              (detail.attempt_id is null and (
+                lease.executor_status in ('completed', 'failed', 'cancelled')
+                or lease.executor_terminal_received_at is not null
+              ))
+              or (detail.receipt_json is not null
+                  and detail.settlement_phase <> 'settled')
+            )
+        )
+        """
+    return """
+    exists (
+      select 1 from sandbox_leases lease
+      where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
+        and lease.executor_terminal_json is not null
+        and lease.executor_reconciliation_status is distinct from 'finalized'
+    )
+    """
+
+
+async def _attempt_settlement_reader_active(conn: AsyncConnection) -> bool:
+    return await get_attempt_settlement_storage_version(conn) == "attempt.v1"
 
 
 def require_run_result_size(result_json: dict[str, Any] | None) -> None:
@@ -256,8 +292,11 @@ async def list_stale_run_reconciliation_candidates(
     )
     bounded_limit = max(1, min(int(limit), 50))
     if postgres_claim_mode:
+        pending_receipt_guard = _pending_terminal_receipt_sql(
+            attempt_reader_active=await _attempt_settlement_reader_active(conn)
+        )
         cursor = await conn.execute(
-            """
+            f"""
             select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
                    runs.status, runs.cancel_requested_at,
                    latest_attempt.id as expected_attempt_id,
@@ -304,12 +343,7 @@ async def list_stale_run_reconciliation_candidates(
                  where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
                    and lease.status = 'active'
                )
-               and not exists (
-                 select 1 from sandbox_leases lease
-                 where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
-                   and lease.executor_terminal_json is not null
-                   and lease.executor_reconciliation_status is distinct from 'finalized'
-               )
+               and not ({pending_receipt_guard})
                and not exists (
                  select 1 from run_delivery_intents delivery
                  where delivery.tenant_id = runs.tenant_id and delivery.run_id = runs.id
@@ -427,8 +461,11 @@ async def claim_stale_run_reconciliation(
     ):
         raise ValueError("stale_run_reconciliation_claim_invalid")
 
+    pending_receipt_guard = _pending_terminal_receipt_sql(
+        attempt_reader_active=await _attempt_settlement_reader_active(conn)
+    )
     run_cursor = await conn.execute(
-        """
+        f"""
         select runs.id, runs.tenant_id, runs.workspace_id, runs.user_id, runs.status,
                runs.cancel_requested_at, runs.terminalization_target,
                runs.terminalization_reason,
@@ -453,11 +490,7 @@ async def claim_stale_run_reconciliation(
                exists (select 1 from sandbox_leases lease
                  where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
                    and lease.status = 'active') as active_lease,
-               exists (select 1 from sandbox_leases lease
-                 where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
-                   and lease.executor_terminal_json is not null
-                   and lease.executor_reconciliation_status is distinct from 'finalized')
-                 as pending_terminal_receipt,
+               ({pending_receipt_guard}) as pending_terminal_receipt,
                exists (select 1 from run_delivery_intents delivery
                  where delivery.tenant_id = runs.tenant_id and delivery.run_id = runs.id
                    and delivery.state = 'claimed'
@@ -529,6 +562,10 @@ async def claim_stale_run_reconciliation(
     ):
         return None
 
+    pending_receipt_recheck = f"""
+        select ({pending_receipt_guard}) as pending_terminal_receipt
+        from runs where tenant_id = %s and id = %s
+    """
     for update in (
         """
         select exists (
@@ -536,14 +573,7 @@ async def claim_stale_run_reconciliation(
           where lease.tenant_id = %s and lease.run_id = %s and lease.status = 'active'
         ) as active_lease
         """,
-        """
-        select exists (
-          select 1 from sandbox_leases lease
-          where lease.tenant_id = %s and lease.run_id = %s
-            and lease.executor_terminal_json is not null
-            and lease.executor_reconciliation_status is distinct from 'finalized'
-        ) as pending_terminal_receipt
-        """,
+        pending_receipt_recheck,
         """
         select exists (
           select 1 from run_delivery_intents delivery
@@ -661,24 +691,54 @@ async def _stale_run_reconciliation_claim_binding_is_current(
         return False
 
     lease_lock = " for update" if for_update else ""
-    lease_cursor = await conn.execute(
-        """
-        select status, executor_terminal_json, executor_reconciliation_status
-        from sandbox_leases
-        where tenant_id = %s and run_id = %s
-        order by id asc
-        """ + lease_lock,
-        (claim["tenant_id"], claim["run_id"]),
-    )
-    leases = list(await lease_cursor.fetchall())
-    if any(
-        str(lease.get("status") or "") == "active"
-        or (
+    if await _attempt_settlement_reader_active(conn):
+        lease_cursor = await conn.execute(
+            """
+            select lease.status, lease.executor_status,
+                   lease.executor_terminal_received_at,
+                   detail.attempt_id as settlement_attempt_id,
+                   detail.receipt_json, detail.settlement_phase
+            from sandbox_leases lease
+            left join run_attempt_settlements detail
+              on detail.tenant_id = lease.tenant_id and detail.run_id = lease.run_id
+             and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
+            where lease.tenant_id = %s and lease.run_id = %s
+            order by lease.id asc
+            """ + (" for update of lease" if for_update else ""),
+            (claim["tenant_id"], claim["run_id"]),
+        )
+        leases = list(await lease_cursor.fetchall())
+        pending_receipt = any(
+            (
+                lease.get("settlement_attempt_id") is None
+                and (
+                    str(lease.get("executor_status") or "") in {"completed", "failed", "cancelled"}
+                    or lease.get("executor_terminal_received_at") is not None
+                )
+            )
+            or (
+                lease.get("receipt_json") is not None
+                and str(lease.get("settlement_phase") or "") != "settled"
+            )
+            for lease in leases
+        )
+    else:
+        lease_cursor = await conn.execute(
+            """
+            select status, executor_terminal_json, executor_reconciliation_status
+            from sandbox_leases
+            where tenant_id = %s and run_id = %s
+            order by id asc
+            """ + lease_lock,
+            (claim["tenant_id"], claim["run_id"]),
+        )
+        leases = list(await lease_cursor.fetchall())
+        pending_receipt = any(
             lease.get("executor_terminal_json") is not None
             and lease.get("executor_reconciliation_status") != "finalized"
+            for lease in leases
         )
-        for lease in leases
-    ):
+    if any(str(lease.get("status") or "") == "active" for lease in leases) or pending_receipt:
         return False
 
     attempt_lock = " for update" if for_update else ""

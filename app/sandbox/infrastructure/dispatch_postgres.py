@@ -16,52 +16,81 @@ async def persist_intent(
     *,
     identity: SandboxDispatchIdentity,
     reconciliation_context: dict[str, Any],
+    legacy_settlement_compat: bool = True,
 ) -> tuple[dict[str, Any], bool]:
     """Commit the exact identity and recovery context before provider I/O."""
     context = {key: value for key, value in reconciliation_context.items()}
-    lease_cursor = await conn.execute(
-        """
-        update sandbox_leases lease
-        set executor_reconciliation_context_json = coalesce(
-              executor_reconciliation_context_json, %s::jsonb
+    if legacy_settlement_compat:
+        lease_cursor = await conn.execute(
+            """
+            update sandbox_leases lease
+            set executor_reconciliation_context_json = coalesce(
+                  executor_reconciliation_context_json, %s::jsonb
+                ),
+                executor_reconciliation_intent_context_json = coalesce(
+                  executor_reconciliation_intent_context_json, %s::jsonb
+                ),
+                executor_reconciliation_status = case
+                  when executor_terminal_json is not null
+                    and executor_reconciliation_status = 'waiting_terminal' then 'pending'
+                  else executor_reconciliation_status
+                end,
+                updated_at = now()
+            from run_attempts attempt, runs
+            where lease.id = %s
+              and lease.tenant_id = %s and lease.run_id = %s and lease.attempt_id = %s
+              and lease.status = 'active' and lease.runtime_handle_verified_at is not null
+              and lease.lease_payload_json->>'attempt_id' = %s
+              and lease.lease_payload_json->>'owner_generation' = %s
+              and lease.provider = %s
+              and attempt.tenant_id = lease.tenant_id and attempt.run_id = lease.run_id
+              and attempt.id = lease.attempt_id and attempt.owner_generation = %s
+              and attempt.status = 'running'
+              and runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+              and runs.status = 'running' and runs.cancel_requested_at is null
+            returning lease.id
+            """,
+            (
+                json.dumps(context, ensure_ascii=False),
+                json.dumps(context, ensure_ascii=False),
+                identity.lease_id,
+                identity.tenant_id,
+                identity.run_id,
+                identity.attempt_id,
+                identity.attempt_id,
+                str(identity.owner_generation),
+                identity.provider,
+                identity.owner_generation,
             ),
-            executor_reconciliation_intent_context_json = coalesce(
-              executor_reconciliation_intent_context_json, %s::jsonb
+        )
+        lease_row = await lease_cursor.fetchone()
+    else:
+        lease_cursor = await conn.execute(
+            """
+            select lease.id
+            from sandbox_leases lease
+            join run_attempts attempt on attempt.tenant_id = lease.tenant_id
+              and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+            join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+            where lease.id = %s and lease.tenant_id = %s and lease.run_id = %s
+              and lease.attempt_id = %s and lease.status = 'active'
+              and lease.runtime_handle_verified_at is not null
+              and lease.lease_payload_json->>'attempt_id' = %s
+              and lease.lease_payload_json->>'owner_generation' = %s
+              and lease.provider = %s
+              and attempt.owner_generation = %s and attempt.status = 'running'
+              and runs.status = 'running' and runs.cancel_requested_at is null
+            for update of lease
+            """,
+            (
+                identity.lease_id, identity.tenant_id, identity.run_id,
+                identity.attempt_id, identity.attempt_id,
+                str(identity.owner_generation), identity.provider,
+                identity.owner_generation,
             ),
-            executor_reconciliation_status = case
-              when executor_terminal_json is not null
-                and executor_reconciliation_status = 'waiting_terminal' then 'pending'
-              else executor_reconciliation_status
-            end,
-            updated_at = now()
-        from run_attempts attempt, runs
-        where lease.id = %s
-          and lease.tenant_id = %s and lease.run_id = %s and lease.attempt_id = %s
-          and lease.status = 'active' and lease.runtime_handle_verified_at is not null
-          and lease.lease_payload_json->>'attempt_id' = %s
-          and lease.lease_payload_json->>'owner_generation' = %s
-          and lease.provider = %s
-          and attempt.tenant_id = lease.tenant_id and attempt.run_id = lease.run_id
-          and attempt.id = lease.attempt_id and attempt.owner_generation = %s
-          and attempt.status = 'running'
-          and runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
-          and runs.status = 'running' and runs.cancel_requested_at is null
-        returning lease.id
-        """,
-        (
-            json.dumps(context, ensure_ascii=False),
-            json.dumps(context, ensure_ascii=False),
-            identity.lease_id,
-            identity.tenant_id,
-            identity.run_id,
-            identity.attempt_id,
-            identity.attempt_id,
-            str(identity.owner_generation),
-            identity.provider,
-            identity.owner_generation,
-        ),
-    )
-    if await lease_cursor.fetchone() is None:
+        )
+        lease_row = await lease_cursor.fetchone()
+    if lease_row is None:
         raise RuntimeError("sandbox_dispatch_attempt_scope_invalid")
 
     dispatch_cursor = await conn.execute(

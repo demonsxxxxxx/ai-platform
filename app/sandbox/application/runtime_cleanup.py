@@ -189,7 +189,10 @@ class SandboxRuntimeCleanup:
         stopped_leases: list[dict[str, Any]] = []
         failed_leases: list[dict[str, Any]] = []
         for row in sandbox_leases or []:
-            if (
+            cleanup_status = row.get("executor_cleanup_status")
+            if cleanup_status is not None and cleanup_status not in {"not_required", "finalized"}:
+                continue
+            if cleanup_status is None and (
                 row.get("executor_terminal_json") is not None
                 and row.get("executor_reconciliation_status") != "finalized"
             ):

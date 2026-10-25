@@ -1,4 +1,4 @@
-"""Prepare and explicitly activate the durable Attempt settlement reader."""
+"""Prepare and explicitly activate the Attempt settlement reader or writer."""
 
 from __future__ import annotations
 
@@ -14,8 +14,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.db import close_pool, transaction  # noqa: E402
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (  # noqa: E402
+    activate_attempt_settlement_writer,
     activate_attempt_settlement_storage,
+    get_attempt_settlement_writer_version,
     get_attempt_settlement_storage_version,
+    prepare_attempt_settlement_writer_cutover,
     prepare_attempt_settlement_storage_cutover,
 )
 
@@ -37,6 +40,24 @@ def _parser() -> argparse.ArgumentParser:
     activate.add_argument("--confirm-real-sdk-acceptance-complete", action="store_true", required=True)
     activate.add_argument("--confirm-real-sandbox-lifecycle-acceptance-complete", action="store_true", required=True)
     activate.add_argument("--confirm-fourteen-lifecycle-scenarios-complete", action="store_true", required=True)
+    commands.add_parser("writer-status", help="Read the persistent settlement writer version")
+    prepare_writer = commands.add_parser(
+        "prepare-writer", help="Backfill and compare the writer target without activating"
+    )
+    prepare_writer.add_argument("--page-size", type=int, default=100)
+    prepare_writer.add_argument("--max-attempts", type=int, default=10000)
+    activate_writer = commands.add_parser(
+        "activate-writer", help="Stop legacy settlement-column writes after explicit drain"
+    )
+    activate_writer.add_argument("--page-size", type=int, default=100)
+    activate_writer.add_argument("--max-attempts", type=int, default=10000)
+    activate_writer.add_argument("--lock-timeout-seconds", type=int, default=10)
+    activate_writer.add_argument("--statement-timeout-seconds", type=int, default=300)
+    activate_writer.add_argument("--confirm-legacy-writers-drained", action="store_true", required=True)
+    activate_writer.add_argument("--confirm-inflight-settlement-and-cleanup-operations-drained", action="store_true", required=True)
+    activate_writer.add_argument("--confirm-real-sdk-acceptance-complete", action="store_true", required=True)
+    activate_writer.add_argument("--confirm-real-sandbox-lifecycle-acceptance-complete", action="store_true", required=True)
+    activate_writer.add_argument("--confirm-fourteen-lifecycle-scenarios-complete", action="store_true", required=True)
     return parser
 
 
@@ -45,13 +66,56 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
         if args.command == "status":
             async with transaction() as conn:
                 version = await get_attempt_settlement_storage_version(conn)
-            return {"status": "current", "storage_version": version}
+                writer_version = await get_attempt_settlement_writer_version(conn)
+            return {
+                "status": "current", "storage_version": version,
+                "writer_version": writer_version,
+            }
+        if args.command == "writer-status":
+            async with transaction() as conn:
+                writer_version = await get_attempt_settlement_writer_version(conn)
+                reader_version = await get_attempt_settlement_storage_version(conn)
+            return {
+                "status": "current", "writer_version": writer_version,
+                "reader_version": reader_version,
+            }
         if args.command == "prepare":
             return await prepare_attempt_settlement_storage_cutover(
                 transaction,
                 page_limit=args.page_size,
                 max_attempts=args.max_attempts,
             )
+        if args.command == "prepare-writer":
+            return await prepare_attempt_settlement_writer_cutover(
+                transaction, page_limit=args.page_size,
+                max_attempts=args.max_attempts,
+            )
+        if args.command == "activate-writer":
+            confirmations = {
+                "legacy_writers_drained": args.confirm_legacy_writers_drained,
+                "inflight_settlement_and_cleanup_operations_drained": (
+                    args.confirm_inflight_settlement_and_cleanup_operations_drained
+                ),
+                "real_sdk_acceptance_complete": args.confirm_real_sdk_acceptance_complete,
+                "real_sandbox_lifecycle_acceptance_complete": (
+                    args.confirm_real_sandbox_lifecycle_acceptance_complete
+                ),
+                "fourteen_lifecycle_scenarios_complete": (
+                    args.confirm_fourteen_lifecycle_scenarios_complete
+                ),
+            }
+            async with transaction() as conn:
+                result = await activate_attempt_settlement_writer(
+                    conn, operator_confirmations=confirmations,
+                    page_limit=args.page_size, max_attempts=args.max_attempts,
+                    lock_timeout_seconds=args.lock_timeout_seconds,
+                    statement_timeout_seconds=args.statement_timeout_seconds,
+                )
+            return {
+                **result,
+                "operator_confirmations": confirmations,
+                "operator_confirmations_verified_by_code": False,
+            }
         async with transaction() as conn:
             result = await activate_attempt_settlement_storage(
                 conn,

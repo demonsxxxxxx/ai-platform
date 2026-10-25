@@ -30,6 +30,18 @@ class AttemptSettlementProjectionPorts:
     list_due: Callable[..., Awaitable[list[dict[str, Any]]]]
     next_retry_delay: Callable[..., Awaitable[float | None]]
     writer_fence: Callable[..., Awaitable[None]]
+    writer_version: Callable[..., Awaitable[str]]
+    initialize_attempt: Callable[..., Awaitable[bool]]
+    refresh_snapshot: Callable[..., Awaitable[bool]]
+    record_intent: Callable[..., Awaitable[bool]]
+    record_accepted: Callable[..., Awaitable[bool]]
+    record_terminal: Callable[..., Awaitable[bool]]
+    record_dispatch_outcome: Callable[..., Awaitable[bool]]
+    claim_due: Callable[..., Awaitable[list[dict[str, Any]]]]
+    claim_current: Callable[..., Awaitable[bool]]
+    retry_claim: Callable[..., Awaitable[bool]]
+    append_diagnostics: Callable[..., Awaitable[bool]]
+    summary: Callable[..., Awaitable[dict[str, Any]]]
 
 
 class AttemptSettlementReadError(RuntimeError):
@@ -44,6 +56,12 @@ class AttemptSettlementProjectionService:
 
     async def storage_version(self, conn: Any) -> str:
         return await self.ports.storage_version(conn)
+
+    async def writer_version(self, conn: Any) -> str:
+        return await self.ports.writer_version(conn)
+
+    async def attempt_writer_active(self, conn: Any) -> bool:
+        return await self.writer_version(conn) == "attempt.v1"
 
     async def read_attempt(
         self,
@@ -78,9 +96,109 @@ class AttemptSettlementProjectionService:
     async def next_retry_delay(self, conn: Any) -> float | None:
         return await self.ports.next_retry_delay(conn)
 
+    async def reconciliation_summary(
+        self, conn: Any, *, tenant_id: str, slo_seconds: int,
+    ) -> dict[str, Any]:
+        return await self.ports.summary(
+            conn, tenant_id=tenant_id, slo_seconds=slo_seconds,
+        )
+
+    async def initialize_attempt_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        source_lease_id: str | None = None,
+    ) -> bool:
+        return await self.ports.initialize_attempt(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            source_lease_id=source_lease_id,
+        )
+
+    async def refresh_snapshot_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+    ) -> bool:
+        """Refresh Run/Attempt settlement facts without reading Sandbox columns."""
+        return await self.ports.refresh_snapshot(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        )
+
+    async def record_intent_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, intent_context: Mapping[str, Any],
+    ) -> bool:
+        return await self.ports.record_intent(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, intent_context=intent_context,
+        )
+
+    async def record_accepted_context_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, accepted_context: Mapping[str, Any],
+    ) -> bool:
+        return await self.ports.record_accepted(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, accepted_context=accepted_context,
+        )
+
+    async def record_terminal_receipt_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, receipt: Mapping[str, Any], receipt_owner_generation: int,
+    ) -> bool:
+        return await self.ports.record_terminal(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, receipt=receipt,
+            receipt_owner_generation=receipt_owner_generation,
+        )
+
+    async def record_dispatch_outcome_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, outcome: str,
+    ) -> bool:
+        return await self.ports.record_dispatch_outcome(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, outcome=outcome,
+        )
+
+    async def claim_due_attempts_in_transaction(
+        self, conn: Any, *, claim_token: str, limit: int, stale_after_seconds: int,
+    ) -> list[dict[str, Any]]:
+        return await self.ports.claim_due(
+            conn, claim_token=claim_token, limit=limit,
+            stale_after_seconds=stale_after_seconds,
+        )
+
+    async def settlement_claim_current(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, claim_token: str,
+    ) -> bool:
+        return await self.ports.claim_current(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, claim_token=claim_token,
+        )
+
+    async def retry_claim_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, claim_token: str,
+    ) -> bool:
+        return await self.ports.retry_claim(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, claim_token=claim_token,
+        )
+
+    async def append_claim_diagnostics_in_transaction(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        lease_id: str, claim_token: str, diagnostics: list[str],
+    ) -> bool:
+        return await self.ports.append_diagnostics(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            lease_id=lease_id, claim_token=claim_token, diagnostics=diagnostics,
+        )
+
     async def writes_enabled(self, conn: Any, *, shadow_enabled: bool) -> bool:
-        """Persistent cutover always enables projection writes after the lock."""
-        return (await self.storage_version(conn) == "attempt.v1") or shadow_enabled
+        """Keep the projection current for either its reader or active writer."""
+        return (
+            await self.storage_version(conn) == "attempt.v1"
+            or await self.attempt_writer_active(conn)
+            or shadow_enabled
+        )
 
     async def lock_writer_fence(self, conn: Any) -> None:
         await self.ports.writer_fence(conn)

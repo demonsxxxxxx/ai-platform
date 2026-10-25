@@ -4,6 +4,7 @@ from app import execution_boundary
 from app.db import transaction
 from app.identity.infrastructure import audit_postgres, postgres as identity_postgres
 from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_runtime_lease_port
 from app.runtime.sandbox import opensandbox_policy
 from app.runtime.sandbox.contracts import ContainerLease
 from app.sandbox.api import SandboxRuntimeCleanup
@@ -17,7 +18,7 @@ from app.kernel.identifiers import assert_safe_id
 def build_sandbox_runtime_cleanup() -> SandboxRuntimeCleanup:
     return SandboxRuntimeCleanup(
         transaction_factory=lambda: transaction(),
-        lease_repository=sandbox_lease_repository,
+        lease_repository=build_sandbox_runtime_lease_port(),
         outcomes=leases_postgres,
         append_event=lambda *args, **kwargs: run_events_postgres.append_event(*args, **kwargs),
         append_audit=lambda *args, **kwargs: audit_postgres.append_audit_log(*args, **kwargs),
