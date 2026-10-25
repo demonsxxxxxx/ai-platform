@@ -43,6 +43,10 @@ class RunLifecyclePersistence(Protocol):
     async def is_cancel_requested(self, conn: object, **kwargs: Any) -> bool: ...
     async def classify_success_commit_block(self, conn: object, **kwargs: Any) -> str: ...
     async def list_stale_run_reconciliation_candidates(self, conn: object, **kwargs: Any) -> list[dict[str, Any]]: ...
+    async def claim_stale_run_reconciliation(self, conn: object, **kwargs: Any) -> dict[str, Any] | None: ...
+    async def renew_stale_run_reconciliation_claim(self, conn: object, **kwargs: Any) -> bool: ...
+    async def stale_run_reconciliation_claim_is_current(self, conn: object, **kwargs: Any) -> bool: ...
+    async def release_stale_run_reconciliation_claim(self, conn: object, **kwargs: Any) -> bool: ...
 
 
 class RunEventWriter(Protocol):
@@ -260,12 +264,57 @@ class RunLifecycleService:
         stale_after_seconds: int,
         cancel_requested_after_seconds: int | None = None,
         limit: int,
+        postgres_claim_mode: bool = False,
     ) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {
+            "stale_after_seconds": stale_after_seconds,
+            "cancel_requested_after_seconds": cancel_requested_after_seconds,
+            "limit": limit,
+        }
+        if postgres_claim_mode:
+            kwargs["postgres_claim_mode"] = True
         return await self._persistence.list_stale_run_reconciliation_candidates(
+            conn, **kwargs
+        )
+
+    async def claim_stale_run_reconciliation(
+        self,
+        conn: object,
+        *,
+        candidate: dict[str, Any],
+        worker_id: str,
+        stale_after_seconds: int,
+        cancel_requested_after_seconds: int,
+        claim_ttl_seconds: int,
+    ) -> dict[str, Any] | None:
+        return await self._persistence.claim_stale_run_reconciliation(
             conn,
+            candidate=candidate,
+            worker_id=worker_id,
             stale_after_seconds=stale_after_seconds,
             cancel_requested_after_seconds=cancel_requested_after_seconds,
-            limit=limit,
+            claim_ttl_seconds=claim_ttl_seconds,
+        )
+
+    async def renew_stale_run_reconciliation_claim(
+        self, conn: object, *, claim: dict[str, Any], claim_ttl_seconds: int
+    ) -> bool:
+        return await self._persistence.renew_stale_run_reconciliation_claim(
+            conn, claim=claim, claim_ttl_seconds=claim_ttl_seconds
+        )
+
+    async def stale_run_reconciliation_claim_is_current(
+        self, conn: object, *, claim: dict[str, Any], for_update: bool = False
+    ) -> bool:
+        return await self._persistence.stale_run_reconciliation_claim_is_current(
+            conn, claim=claim, for_update=for_update
+        )
+
+    async def release_stale_run_reconciliation_claim(
+        self, conn: object, *, claim: dict[str, Any]
+    ) -> bool:
+        return await self._persistence.release_stale_run_reconciliation_claim(
+            conn, claim=claim
         )
 
     async def progress_for_requested_status(

@@ -363,6 +363,7 @@ async def test_full_schema_lost_claim_cannot_adopt_new_receipt_owner_or_write_te
 async def test_real_failure_settlement_and_frozen_restore_share_run_first_lock_order(full_receipt_db, monkeypatch):
     import logging
     from app import executor_reconciler
+    from app.sandbox.infrastructure import leases_postgres as sandbox_leases
     connect, args, _spec = full_receipt_db
     failure_waiting_for_run = asyncio.Event()
     original_get_run = postgres.get_run
@@ -382,6 +383,7 @@ async def test_real_failure_settlement_and_frozen_restore_share_run_first_lock_o
             task = asyncio.create_task(executor_reconciler._terminalize_reconciliation_failure(
                 {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": args["attempt_id"]},
                 claim_token="stale-claim", logger=logging.getLogger(__name__),
+                lease_port=sandbox_leases,
                 v4_capabilities=None, attempt_lifecycle=None, lifecycle=None,
                 run_diagnostics=None, reconciliation_error_code="synthetic-failure",
             ))

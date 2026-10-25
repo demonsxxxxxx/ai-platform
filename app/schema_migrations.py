@@ -58,7 +58,10 @@ RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION = "2026.10.25.5"
 EXECUTION_SUPERVISION_SCHEMA_VERSION = "2026.10.25.6"
 EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION = "2026.10.25.7"
 RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION
+# N42 may be enabled only after the N40 reader cutover has a durable migration marker.
+N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
+RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
+TARGET_SCHEMA_VERSION = RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -95,6 +98,7 @@ CRITICAL_RELATIONS = (
     "run_attempts",
     "run_attempt_settlements",
     "run_attempt_settlement_storage",
+    "run_stale_reconciliation_claims",
     "execution_supervision_domains",
     "execution_supervision_claims",
     "run_input_sessions",
@@ -251,6 +255,14 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlement_storage", "singleton", "bool", True),
     ("run_attempt_settlement_storage", "storage_version", "text", True),
     ("run_attempt_settlement_storage", "updated_at", "timestamptz", True),
+    ("run_stale_reconciliation_claims", "tenant_id", "text", True),
+    ("run_stale_reconciliation_claims", "run_id", "text", True),
+    ("run_stale_reconciliation_claims", "expected_attempt_id", "text", False),
+    ("run_stale_reconciliation_claims", "expected_owner_generation", "int8", True),
+    ("run_stale_reconciliation_claims", "claim_token", "uuid", True),
+    ("run_stale_reconciliation_claims", "claimed_by", "text", True),
+    ("run_stale_reconciliation_claims", "claimed_at", "timestamptz", True),
+    ("run_stale_reconciliation_claims", "claim_deadline_at", "timestamptz", True),
     ("execution_supervision_domains", "domain", "text", True),
     ("execution_supervision_domains", "mode", "text", True),
     ("execution_supervision_domains", "owner_version", "int8", True),
@@ -521,6 +533,12 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempt_settlement_storage", "run_attempt_settlement_storage_pkey"),
     ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_singleton"),
     ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_version"),
+    ("run_stale_reconciliation_claims", "run_stale_reconciliation_claims_pkey"),
+    ("run_stale_reconciliation_claims", "run_stale_reconciliation_claims_token_key"),
+    ("run_stale_reconciliation_claims", "fk_run_stale_reconciliation_claims_run"),
+    ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_identity"),
+    ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_generation"),
+    ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_deadline"),
     ("execution_supervision_domains", "execution_supervision_domains_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_pkey"),
     ("execution_supervision_claims", "execution_supervision_claims_domain_fkey"),
@@ -771,6 +789,30 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "f",
         "FOREIGN KEY (tenant_id, run_id, attempt_id) "
         "REFERENCES run_attempts(tenant_id, run_id, id)",
+    ),
+    (
+        "run_stale_reconciliation_claims",
+        "run_stale_reconciliation_claims_pkey",
+        "p",
+        "PRIMARY KEY (tenant_id, run_id)",
+    ),
+    (
+        "run_stale_reconciliation_claims",
+        "run_stale_reconciliation_claims_token_key",
+        "u",
+        "UNIQUE (claim_token)",
+    ),
+    (
+        "run_stale_reconciliation_claims",
+        "fk_run_stale_reconciliation_claims_run",
+        "f",
+        "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id) ON DELETE CASCADE",
+    ),
+    (
+        "run_stale_reconciliation_claims",
+        "chk_run_stale_reconciliation_claims_deadline",
+        "c",
+        "CHECK (claim_deadline_at > claimed_at)",
     ),
     (
         "run_attempt_settlements",
@@ -1443,6 +1485,12 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ),
 )
 STATIC_INDEX_DEFINITIONS = (
+    StaticIndexDefinition(
+        "idx_run_stale_reconciliation_claims_deadline",
+        "run_stale_reconciliation_claims",
+        ("claim_deadline_at", "tenant_id", "run_id"),
+        (False, False, False),
+    ),
     StaticIndexDefinition(
         "idx_execution_supervision_claims_domain",
         "execution_supervision_claims",
@@ -2371,6 +2419,20 @@ async def require_schema_current() -> dict[str, object]:
     if not status["ready"]:
         raise SchemaMigrationError("schema_not_current")
     return status
+
+
+async def require_schema_marker_applied(version: str) -> None:
+    """Require an exact historical schema marker before a phased cutover."""
+    if not version or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\.\d+", version):
+        raise ValueError("schema_marker_version_invalid")
+    async with transaction() as conn:
+        cursor = await conn.execute(
+            "select state from schema_migrations where version = %s",
+            (version,),
+        )
+        row = await cursor.fetchone()
+    if row is None or str(row.get("state") or "") != "applied":
+        raise SchemaMigrationError("schema_marker_not_applied")
 
 
 async def _run_cli(command: str) -> int:

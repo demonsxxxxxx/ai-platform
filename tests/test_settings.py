@@ -193,12 +193,23 @@ def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypa
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_SECONDS", "1800")
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_LIMIT", "7")
     monkeypatch.setenv("STALE_RUN_RECONCILIATION_FENCE_TTL_SECONDS", "420")
+    monkeypatch.setenv("STALE_RUN_RECONCILIATION_POSTGRES_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("STALE_RUN_RECONCILIATION_CLAIM_TTL_SECONDS", "540")
 
     settings = Settings(_env_file=None)
 
     assert settings.stale_run_reconciliation_seconds == 1800
     assert settings.stale_run_reconciliation_limit == 7
     assert settings.stale_run_reconciliation_fence_ttl_seconds == 420
+    assert settings.stale_run_reconciliation_postgres_claims_enabled is True
+    assert settings.stale_run_reconciliation_claim_ttl_seconds == 540
+
+
+def test_postgres_stale_reconciliation_rollout_is_disabled_by_default():
+    settings = Settings(_env_file=None)
+
+    assert settings.stale_run_reconciliation_postgres_claims_enabled is False
+    assert settings.stale_run_reconciliation_claim_ttl_seconds == 300
 
 
 @pytest.mark.parametrize(
@@ -207,6 +218,7 @@ def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypa
         ("stale_run_reconciliation_seconds", 59),
         ("stale_run_reconciliation_limit", 0),
         ("stale_run_reconciliation_fence_ttl_seconds", 29),
+        ("stale_run_reconciliation_claim_ttl_seconds", 29),
     ],
 )
 def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):

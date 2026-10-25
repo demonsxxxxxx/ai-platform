@@ -35,6 +35,9 @@ from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_serv
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.bootstrap.run_delivery_intents import build_run_delivery_intents
+from app.bootstrap.execution_stale_run_reconciliation import (
+    reconcile_worker_stale_runs_with_postgres_claims,
+)
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -71,7 +74,12 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     exception_chain_from_error,
 )
-from app.schema_migrations import require_schema_current
+from app.schema_migrations import (
+    N42_REQUIRED_N40_SCHEMA_VERSION,
+    RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION,
+    require_schema_marker_applied,
+    require_schema_current,
+)
 from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
 from app.runs.api import (
@@ -404,14 +412,14 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     return rows
 
 
-async def reconcile_stale_runs_for_worker(
+async def _reconcile_stale_runs_with_redis_fence(
     settings: object | None = None,
     *,
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> list[dict[str, object]]:
-    """Recover a bounded batch while one atomic queue fence excludes new owners."""
+    """Run the pre-N42 compatibility owner under its Redis fence."""
 
     settings = settings or get_settings()
     limit = int(settings.stale_run_reconciliation_limit)
@@ -548,6 +556,37 @@ async def reconcile_stale_runs_for_worker(
         except ReconciliationFenceLost:
             results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False})
     return results
+
+
+async def reconcile_stale_runs_for_worker(
+    settings: object | None = None,
+    *,
+    v4_capabilities: WorkerV4Capabilities,
+    attempt_lifecycle: RunAttemptLifecycleService,
+    lifecycle: RunLifecycleService,
+) -> list[dict[str, object]]:
+    """Use PG claims only after their schema marker and explicit rollout switch."""
+    settings = settings or get_settings()
+    if not bool(getattr(settings, "stale_run_reconciliation_postgres_claims_enabled", False)):
+        return await _reconcile_stale_runs_with_redis_fence(
+            settings,
+            v4_capabilities=v4_capabilities,
+            attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
+        )
+
+    schema = await require_schema_current()
+    if schema.get("target_version") != RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION:
+        raise RuntimeError("stale_run_reconciliation_claim_schema_marker_missing")
+    await require_schema_marker_applied(N42_REQUIRED_N40_SCHEMA_VERSION)
+    return await reconcile_worker_stale_runs_with_postgres_claims(
+        settings,
+        v4_capabilities=v4_capabilities,
+        attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
+        worker_id=default_worker_id(),
+        cancel_requested_after_seconds=_CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS,
+    )
 
 
 async def cleanup_expired_file_upload_sessions() -> int:
