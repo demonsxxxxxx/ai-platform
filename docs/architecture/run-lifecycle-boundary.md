@@ -62,6 +62,31 @@ running writer. Worker dispatch locks the session-consistent queued Run through
 PostgreSQL. Pre-dispatch failures without a valid specification retain their
 Run-only terminal paths. Source, tests, image and runtime acceptance remain separate.
 
+### 1.2 Attempt settlement cutover and retirement
+
+Attempt settlement read and write authority use separate PostgreSQL version
+markers and separate operator cutovers. N40's reader activation selects mapped
+Attempt details for terminal receipt, recovery, finalizer and diagnostic reads;
+N41's writer activation stops writes to the inventoried Sandbox settlement
+columns. Neither activation is inferred from schema application or from a
+missing detail row. Their code and lifecycle-specific acceptance inventory are
+owned by [Execution Specification and Attempt Lifecycle](execution-spec-and-attempt-lifecycle.md)
+and the [Phase 4 implementation plan](../exec-plans/run-lifecycle-implementation-plan.md).
+
+N42 retires the Redis stale-Run business fence while preserving queue delivery
+owner tokens, ACK/requeue behavior, capacity controls and the independent SSE
+contract. N43 schema `2026.10.25.11` adds a durable retirement marker and an
+explicit operator path for dropping the eight legacy settlement fields, three
+indexes and old status constraint. `retirement-status` and `prepare-retirement`
+are read-only; only `retire` may drop them after current core readiness, both
+Attempt markers, complete history mapping, and drained Run/resource claims have
+been established. Expired claim TTLs do not prove external I/O stopped. The
+operator records old-binary shutdown, Run/resource drain, backup/restore drill
+and minimum compatible version; the code does not verify those production
+facts. Retirement has no automatic down migration, and legacy mapping/read
+compatibility is rejected afterward. Real SDK/Sandbox, fourteen-scenario and
+deployment acceptance remain separate from local PostgreSQL and CI evidence.
+
 ## 2. Source ownership
 
 | Concern | Canonical owner | Allowed contents | Forbidden contents |

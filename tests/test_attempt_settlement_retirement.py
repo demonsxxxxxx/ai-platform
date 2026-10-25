@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -56,6 +58,44 @@ async def _retire(conn):
         operator_confirmations=_CONFIRMATIONS,
         minimum_compatible_version="attempt.v1 / ai-platform 2026.10.25.11",
     )
+
+
+async def _mark_fixture_drained(conn) -> None:
+    result = {"status": "failed", "reason": "synthetic retirement fixture"}
+    await conn.execute(
+        "update runs set status = 'failed', error_code = 'synthetic_failure', "
+        "finished_at = now() where id = 'run-a'"
+    )
+    await conn.execute(
+        "update run_attempts set status = 'failed', owner_generation = owner_generation + 1, "
+        "terminal_reason = 'run_failed', error_code = 'synthetic_failure', "
+        "finished_at = now() where run_id = 'run-a'"
+    )
+    await conn.execute(
+        "update run_attempt_settlements set mapping_state = 'mapped', settlement_phase = 'settled', "
+        "settlement_claim_token = null, settlement_claimed_at = null, next_retry_at = null, "
+        "result_status = 'failed', result_json = %s::jsonb, result_sha256 = %s, settled_at = now() "
+        "where run_id = 'run-a'",
+        (json.dumps(result), _digest(result)),
+    )
+    await conn.execute(
+        "update sandbox_leases set executor_cleanup_status = 'finalized', "
+        "executor_cleanup_claim_token = null, executor_cleanup_claimed_at = null, "
+        "executor_cleanup_retry_not_before = null where id = 'lease-a'"
+    )
+
+
+async def _make_retirement_candidate(connect) -> None:
+    async with connect() as conn, conn.transaction():
+        await backfill_attempt_settlement_projections(conn, limit=100)
+        await conn.execute(
+            "update run_attempt_settlement_storage set storage_version = 'attempt.v1'"
+        )
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version = 'attempt.v1'"
+        )
+    async with connect() as conn, conn.transaction():
+        await _mark_fixture_drained(conn)
 
 
 @pytest.mark.asyncio
@@ -133,6 +173,10 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
 
     async with connect() as conn, conn.transaction():
         await conn.execute(
+            "update runs set status = 'failed', error_code = 'synthetic_failure', "
+            "finished_at = now() where id = 'run-a'"
+        )
+        await conn.execute(
             "update run_attempts set status = 'failed', owner_generation = owner_generation + 1, "
             "terminal_reason = 'run_failed', error_code = 'synthetic_failure', "
             "finished_at = now() where run_id = 'run-a'"
@@ -145,9 +189,14 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
             "where run_id = 'run-a'",
             (json.dumps(result), _digest(result)),
         )
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status = 'finalized', "
+            "executor_cleanup_claim_token = null, executor_cleanup_claimed_at = null, "
+            "executor_cleanup_retry_not_before = null where id = 'lease-a'"
+        )
     async with connect() as conn, conn.transaction():
         prepared = await prepare_attempt_settlement_retirement(conn)
-        assert prepared["status"] == "ready"
+        assert prepared["status"] == "ready", prepared
         assert prepared["compatibility_counts"]["unretained_legacy_history_count"] == 0
         assert prepared["fenced"] is False
 
@@ -228,4 +277,179 @@ async def test_retirement_blocks_gaps_and_claims_then_drops_exact_columns_idempo
             conn, tenant_id="tenant-a", run_id="run-a", attempt_id=attempt_id,
         )
         assert reread["dispatch_state"] == "accepted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("claim_kind", "count_name"),
+    (
+        ("supervision", "supervision_count"),
+        ("stale", "stale_reconciliation_count"),
+        ("delivery", "delivery_count"),
+    ),
+)
+async def test_expired_unrecovered_external_claims_block_retirement(
+    attempt_settlement_db, claim_kind, count_name
+):
+    connect, *_ = attempt_settlement_db
+    await _make_retirement_candidate(connect)
+
+    async with connect() as conn, conn.transaction():
+        if claim_kind == "supervision":
+            await conn.execute(
+                "insert into execution_supervision_claims "
+                "(claim_token, domain, owner_mode, worker_id, owner_version, started_at, expires_at) "
+                "values (%s, 'delivery', 'unified', 'n43-expired-worker', 1, "
+                "now() - interval '2 minutes', now() - interval '1 minute')",
+                (uuid4(),),
+            )
+        elif claim_kind == "stale":
+            attempt = await (
+                await conn.execute(
+                    "select id, owner_generation from run_attempts where run_id = 'run-a'"
+                )
+            ).fetchone()
+            await conn.execute(
+                "insert into run_stale_reconciliation_claims "
+                "(tenant_id, run_id, expected_attempt_id, expected_owner_generation, "
+                "claim_token, claimed_by, claimed_at, claim_deadline_at) "
+                "values ('tenant-a', 'run-a', %s, %s, %s, 'n43-expired-worker', "
+                "now() - interval '2 minutes', now() - interval '1 minute')",
+                (attempt["id"], attempt["owner_generation"], uuid4()),
+            )
+        else:
+            await conn.execute(
+                "insert into run_delivery_intents "
+                "(tenant_id, run_id, session_id, source, queue_payload_json, queue_message_id, "
+                "payload_sha256, state, claim_token, claimed_at, claim_expires_at, attempt_count) "
+                "values ('tenant-a', 'run-a', 'session-a', 'create_run', '{}', %s, %s, 'claimed', "
+                "%s, now() - interval '2 minutes', now() - interval '1 minute', 1)",
+                ("d" * 64, "e" * 64, uuid4()),
+            )
+        blocked = await _retire(conn)
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "retirement_preconditions_not_met"
+    assert blocked["compatibility_counts"][count_name] == 1
+    assert blocked["activation_authorized"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unready_source", ("retirement_marker", "core_schema"))
+async def test_retirement_requires_current_marker_and_core_readiness(
+    attempt_settlement_db, unready_source
+):
+    connect, *_ = attempt_settlement_db
+    await _make_retirement_candidate(connect)
+
+    async with connect() as conn, conn.transaction():
+        if unready_source == "retirement_marker":
+            await conn.execute(
+                "update run_attempt_settlement_retirement set retirement_version = 'stale' "
+                "where singleton = true"
+            )
+        else:
+            await conn.execute(
+                "update schema_migrations set state = 'pending' where version = %s",
+                (schema_migrations.TARGET_SCHEMA_VERSION,),
+            )
+
+        blocked = await _retire(conn)
+        assert blocked["status"] == "blocked"
+        assert blocked["reason"] == "retirement_schema_not_ready"
+        assert blocked["activation_authorized"] is False
+        schema_status = await schema_migrations.schema_status(conn)
+        assert schema_status["ready"] is False
+        columns = await (
+            await conn.execute(
+                "select attname from pg_attribute where attrelid = 'sandbox_leases'::regclass "
+                "and attnum > 0 and not attisdropped"
+            )
+        ).fetchall()
+        assert set(schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_COLUMNS).issubset(
+            {row["attname"] for row in columns}
+        )
+
+
+@pytest.mark.asyncio
+async def test_retirement_waits_for_writer_commit_and_observes_new_expired_claim(
+    attempt_settlement_db,
+):
+    connect, *_ = attempt_settlement_db
+    await _make_retirement_candidate(connect)
+
+    async with connect() as writer, connect() as retirement:
+        await retirement.set_autocommit(True)
+        await retirement.execute("set application_name = 'n43-retirement-race'")
+        await writer.execute("begin")
+        await writer.execute(
+            "insert into execution_supervision_claims "
+            "(claim_token, domain, owner_mode, worker_id, owner_version, started_at, expires_at) "
+            "values (%s, 'delivery', 'unified', 'n43-inflight-worker', 1, "
+            "now() - interval '2 minutes', now() - interval '1 minute')",
+            (uuid4(),),
+        )
+        assert writer.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+
+        async def retire_in_second_connection():
+            async with retirement.transaction():
+                return await _retire(retirement)
+
+        retirement_task = asyncio.create_task(retire_in_second_connection())
+        try:
+            deadline = asyncio.get_running_loop().time() + 5
+            while True:
+                activity = await (
+                    await writer.execute(
+                        "select mode from pg_locks where pid = %s and not granted",
+                        (retirement.info.backend_pid,),
+                    )
+                ).fetchone()
+                if activity:
+                    break
+                if retirement_task.done():
+                    task_error = retirement_task.exception()
+                    raise AssertionError(
+                        f"retirement exited before acquiring its source fence: {task_error!r}"
+                    )
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise AssertionError("retirement did not wait for the source writer fence")
+                await asyncio.sleep(0.01)
+
+            assert not retirement_task.done()
+            await writer.execute("commit")
+            blocked = await asyncio.wait_for(retirement_task, timeout=10)
+        finally:
+            if not retirement_task.done():
+                retirement_task.cancel()
+                await asyncio.gather(retirement_task, return_exceptions=True)
+            if not writer.closed:
+                await writer.execute("rollback")
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "retirement_preconditions_not_met"
+    assert blocked["compatibility_counts"]["supervision_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retirement_ignores_receipt_diagnostics_only_differences(attempt_settlement_db):
+    connect, *_ = attempt_settlement_db
+    async with connect() as conn, conn.transaction():
+        await backfill_attempt_settlement_projections(conn, limit=100)
+        await conn.execute(
+            "update sandbox_leases set executor_terminal_json = "
+            "executor_terminal_json || '{\"diagnostics\":[\"legacy-only note\"]}'::jsonb "
+            "where id = 'lease-a'"
+        )
+        await conn.execute(
+            "update run_attempt_settlement_storage set storage_version = 'attempt.v1'"
+        )
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version = 'attempt.v1'"
+        )
+        await _mark_fixture_drained(conn)
+        prepared = await prepare_attempt_settlement_retirement(conn)
+
+    assert prepared["status"] == "ready", prepared
+    assert prepared["compatibility_counts"]["unretained_legacy_history_count"] == 0
 

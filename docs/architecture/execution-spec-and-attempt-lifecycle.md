@@ -321,25 +321,27 @@ comparison, with a maximum page of 800 Attempts. Missing rows, unknown
 bindings and conflicts remain in each page's counts. A page result or a stable
 snapshot's row count and maximum key cannot authorize a reader cutover.
 
-Schema `2026.10.25.8` adds the persistent singleton
-`run_attempt_settlement_storage`. New and upgraded databases start at
-`sandbox_lease.v1`; repeating schema application preserves its current value.
-`tools/attempt_settlement_storage.py prepare` performs insert-only, bounded
-backfill and reports a fresh stable comparison without changing the reader.
-`activate` is a separate command. It requires explicit operator confirmations
-for drained writers, N40-compatible writer binaries, the real SDK and Sandbox
-acceptance, and the fourteen lifecycle scenarios. The code records those
-confirmations as operator assertions and reports that it did not verify them.
+Schema `2026.10.25.11` adds the persistent reader, writer and retirement markers.
+Reader and writer cutovers remain separate operator actions. New and upgraded
+databases initialize both markers to `sandbox_lease.v1`; schema reapplication
+preserves their current versions and retirement state. `tools/attempt_settlement_storage.py`
+provides `prepare`/`activate` for the reader and `prepare-writer`/`activate-writer`
+for the writer. Preparation performs bounded backfill and comparison without
+changing either marker. Activation requires operator confirmations for drained
+writers and in-flight operations plus real SDK, Sandbox and fourteen-scenario
+acceptance. The program records those declarations and reports that it did not
+verify them.
 
-Activation takes `SHARE ROW EXCLUSIVE` locks on `runs`, `sandbox_leases`,
-`run_attempts`, and `sandbox_execution_dispatches` in that order, enforces
-statement and lock budgets, compares the entire Attempt denominator in one
-`REPEATABLE READ` transaction, and updates the marker only when counts match
-and missing, unknown, conflict and mismatch counts are all zero. Over-budget or
-unready state leaves the marker unchanged. No activation was run for this
-change. While a writer transaction is active, its N40 path takes compatible
-`ROW EXCLUSIVE` locks on those same source tables before reading the marker;
-this prevents the reader version from changing midway through a source write.
+Reader activation fences `runs`, `sandbox_leases`, `run_attempts`, and
+`sandbox_execution_dispatches`, compares the full Attempt denominator in a
+`REPEATABLE READ` transaction, and updates only the reader marker when missing,
+unknown, conflict and mismatch counts are all zero and the budget is satisfied.
+While a source writer transaction is active, its N40 path obtains compatible
+locks on those same source tables before reading the marker and maintains the
+detail in the same transaction. Writer activation has its own marker and
+preflight; it fences the same lifecycle sources and changes legacy-column write
+behavior only after the required drain and comparison. Neither marker is
+implicitly switched by schema application.
 
 When the marker is `attempt.v1`, the executor reconciler selects due receipts
 from `run_attempt_settlements` and uses the detail's exact source lease only for
@@ -353,14 +355,35 @@ Source fields remain dual-written in N40 to preserve the identified legacy
 reader rollback condition while a fresh full comparison remains zero.
 
 Resource stop/release state, cleanup status/claims, executor heartbeat, and
-probe claims remain Sandbox-owned. The legacy receipt/context/settlement claim
-columns also remain in the schema and continue receiving compatibility writes;
-N41 will inventory and stop those writes, and N43 will decide their final
-historical disposition. This does not migrate every executor field or make
-heartbeat/probe state Attempt-owned. Rollback to the legacy reader is only
-compatible while those source fields are maintained and a fresh fenced
-comparison confirms equality; after N41 stops those writes, rollback requires
-rebuilding the source projection or a forward repair.
+probe claims remain Sandbox-owned. N41's writer cutover stops compatibility
+writes to the eight legacy settlement fields while retaining them for the
+explicit N43 disposition. `executor_terminal_received_at`, Sandbox cleanup and
+probe fields, heartbeat, and resource lifecycle facts remain in place. Rollback
+to the legacy reader is compatible only while its fields are maintained and a
+fresh fenced comparison confirms equality; after writer cutover, recovery needs
+a validated reconstruction or forward repair.
+
+The Redis stale-run business fence has been retired. PostgreSQL owns the stale
+Run claim path through `app/execution/application/stale_run_reconciliation.py`;
+queue delivery `owner_token`, ACK/requeue and capacity controls remain transport
+ownership, and SSE keeps its independent stream contract. Production always
+enables the PostgreSQL Run delivery-intent outbox. API startup maps historical
+queued Runs in bounded, serialized pages from persisted immutable facts and
+fails closed when that history cannot be proven. A delivered intent retries
+with its stored queue message identity, allowing recovery of the original
+queued message.
+
+N43's schema retirement is an explicit, one-way operator command. The `.11`
+retirement marker and core schema readiness must be current; preflight accounts
+for incomplete Attempt mapping/history and every unresolved source/resource
+claim even when its TTL has expired. The command records the declared minimum
+compatible application version and requires old-binary stop, Run/resource
+drain, and backup/restore declarations. It removes only the inventoried legacy
+settlement fields, indexes and constraint, without `CASCADE`. Schema readiness
+fails closed on marker/layout mismatch, there is no automatic down migration,
+and post-retirement legacy history mapping is rejected. Production stop/drain,
+backup/restore, real SDK/Sandbox acceptance and the fourteen scenarios remain
+operator verification items.
 
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds
