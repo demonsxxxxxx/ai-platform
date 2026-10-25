@@ -56,8 +56,8 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(routeSource, /\/api\/review\/history/);
   assert.match(routeSource, /\/api\/file\/view/);
   assert.match(routeSource, /\/api\/file\/download/);
-  assert.match(routeSource, /const response = await fetch\(url\)/);
-  assert.match(routeSource, /URL\.createObjectURL\(await response\.blob\(\)\)/);
+  assert.ok(routeSource.includes("const response = await fetch(url, { signal: controller.signal })"));
+  assert.ok(routeSource.includes("const blob = await response.blob();\n      if (!ownsDownload()) return;\n      objectUrl = URL.createObjectURL(blob)"));
   assert.match(routeSource, /link\.download = file\.name \|\| "review-result"/);
   assert.match(routeSource, /URL\.revokeObjectURL\(objectUrl\)/);
   assert.match(routeSource, /await download\(file, item\.taskId\)/);
