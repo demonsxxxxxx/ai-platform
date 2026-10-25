@@ -15,7 +15,7 @@ from app.execution.api import (
     release_worker_runtime_sandbox_lease,
 )
 from app.execution_boundary import ordinary_worker_run_uses_runtime_sandbox
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.mcp import api as mcp_api
 from app.platform.postgres import errors as platform_errors
 from app.runs import api as runs_api

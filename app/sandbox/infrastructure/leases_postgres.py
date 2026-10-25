@@ -1,6 +1,44 @@
-"""Leases persistence. Callers own the connection and transaction."""
+"""Sandbox lease PostgreSQL adapters. Callers own the connection and transaction."""
 
 from __future__ import annotations
+
+from app.sandbox.domain.lease_errors import (
+    SandboxExecutorTerminalConflictError as SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
+)
+from app.sandbox.infrastructure.executor_reconciliation_postgres import (
+    claim_failed_sandbox_executor_reconciliation_cleanups as claim_failed_sandbox_executor_reconciliation_cleanups,
+    claim_sandbox_executor_reconciliations as claim_sandbox_executor_reconciliations,
+    claim_sandbox_executor_suspects as claim_sandbox_executor_suspects,
+    finalize_failed_sandbox_executor_reconciliation_cleanup as finalize_failed_sandbox_executor_reconciliation_cleanup,
+    get_sandbox_executor_reconciliation_summary as get_sandbox_executor_reconciliation_summary,
+    has_failed_sandbox_executor_reconciliation_cleanup_claim as has_failed_sandbox_executor_reconciliation_cleanup_claim,
+    has_sandbox_executor_reconciliation_claim as has_sandbox_executor_reconciliation_claim,
+    is_sandbox_executor_reconciliation_claim_current as is_sandbox_executor_reconciliation_claim_current,
+    mark_sandbox_executor_reconciliation_cleanup_pending as mark_sandbox_executor_reconciliation_cleanup_pending,
+    next_sandbox_executor_reconciliation_retry_delay as next_sandbox_executor_reconciliation_retry_delay,
+    quarantine_failed_sandbox_executor_reconciliation_cleanup as quarantine_failed_sandbox_executor_reconciliation_cleanup,
+    quarantine_sandbox_executor_reconciliation as quarantine_sandbox_executor_reconciliation,
+    record_sandbox_executor_terminal as record_sandbox_executor_terminal,
+    record_sandbox_executor_terminal_diagnostics as record_sandbox_executor_terminal_diagnostics,
+    release_failed_sandbox_executor_reconciliation_cleanup_claim as release_failed_sandbox_executor_reconciliation_cleanup_claim,
+    release_sandbox_executor_probe_claim as release_sandbox_executor_probe_claim,
+    retry_sandbox_executor_reconciliation as retry_sandbox_executor_reconciliation,
+)
+from app.sandbox.infrastructure.lease_runtime_postgres import (
+    cleanup_expired_sandbox_leases as cleanup_expired_sandbox_leases,
+    create_sandbox_lease as create_sandbox_lease,
+    fence_sandbox_lease_release as fence_sandbox_lease_release,
+    list_expired_active_sandbox_leases as list_expired_active_sandbox_leases,
+    new_lease_id as new_lease_id,
+    record_opensandbox_renewal_receipt as record_opensandbox_renewal_receipt,
+    record_sandbox_executor_accepted as record_sandbox_executor_accepted,
+    record_sandbox_executor_heartbeat as record_sandbox_executor_heartbeat,
+    release_active_sandbox_leases_for_run as release_active_sandbox_leases_for_run,
+    release_sandbox_lease as release_sandbox_lease,
+    release_stopped_sandbox_leases as release_stopped_sandbox_leases,
+)
+
 
 from app.platform.public_payload import sanitize_public_text
 from app.identity.infrastructure.audit_postgres import append_audit_log

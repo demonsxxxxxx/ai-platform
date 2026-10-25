@@ -3,7 +3,7 @@
 from app import execution_boundary
 from app.db import transaction
 from app.identity.infrastructure import audit_postgres, postgres as identity_postgres
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.runtime.sandbox import opensandbox_policy
 from app.runtime.sandbox.contracts import ContainerLease
 from app.sandbox.api import SandboxRuntimeCleanup

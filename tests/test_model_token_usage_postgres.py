@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.runs.domain.model_token_usage import ModelUsageSnapshot
 from app.runs.infrastructure.model_token_usage import PostgresModelTokenUsage
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 from tests.test_run_diagnostics_postgres import _isolated_postgres_run
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
@@ -195,14 +196,14 @@ async def test_real_callback_receipt_ledger_repeat_and_final_fence_rollback(monk
         callback = ExecutorCallbackEvent(session_id="session-a",run_id="run-a",attempt_id="attempt-a",
             callback_token_id="cbt:run-a:attempt-a",batch_id="batch-a",status="running",progress=20,
             model_usage_snapshot=asdict(snapshot()))
-        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=service)
-        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=service)
+        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=service, lease_port=sandbox_lease_reader)
+        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=service, lease_port=sandbox_lease_reader)
         assert (await (await admin.execute("select count(*) n from model_token_usage_deltas")).fetchone())["n"] == 2
         assert (await (await admin.execute("select count(*) n from run_event_batches")).fetchone())["n"] == 1
         expired = True
         rejected = ExecutorCallbackEvent.model_validate({**callback.model_dump(), "batch_id":"rejected", "model_usage_snapshot":asdict(snapshot(seq=2,n=2))})
         with pytest.raises(HTTPException):
-            await route.record_executor_callback(rejected,capabilities=SimpleNamespace(),model_token_usage=service)
+            await route.record_executor_callback(rejected,capabilities=SimpleNamespace(),model_token_usage=service, lease_port=sandbox_lease_reader)
         assert (await (await admin.execute("select count(*) n from run_event_batches")).fetchone())["n"] == 1
         assert (await (await admin.execute("select count(*) n from model_token_usage_observations")).fetchone())["n"] == 1
         assert (await (await admin.execute("select count(*) n from model_token_usage_coverage")).fetchone())["n"] == 1

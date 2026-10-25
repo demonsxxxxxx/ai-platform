@@ -15,6 +15,7 @@ from app.runs.infrastructure.admin_queries_postgres import (
     get_admin_runtime_observability_summary,
     get_admin_run_detail,
 )
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 from app.runs.infrastructure.diagnostics_postgres import (
     PostgresRunDiagnosticsRepository,
 )
@@ -336,7 +337,7 @@ async def test_postgres_terminalization_preserves_explicit_cost_and_public_facts
         }
         assert "runtime_private_payload" not in events[0]["payload_json"]["result"]
 
-        detail = await get_admin_run_detail(admin, tenant_id="tenant-a", run_id="run-a")
+        detail = await get_admin_run_detail(admin, tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
         assert detail is not None
         public = run_event_response("run-a", events[0], principal=AuthPrincipal(
             user_id="user-a", display_name="User A", tenant_id="tenant-a",

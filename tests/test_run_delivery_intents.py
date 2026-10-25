@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.execution.application.run_delivery_intents import (
+    QueueDeliveryError,
     QueueDeliveryReceipt,
     RunDeliveryIntents,
 )
@@ -149,6 +150,9 @@ class Queue:
 
 
 def service(store: Store, queue: Queue, *, batch_size: int = 25) -> RunDeliveryIntents:
+    async def failure_owner(*_args, **_kwargs):
+        return True
+
     return RunDeliveryIntents(
         enabled=True,
         store=store,
@@ -159,6 +163,7 @@ def service(store: Store, queue: Queue, *, batch_size: int = 25) -> RunDeliveryI
         claim_ttl_seconds=60,
         retry_base_seconds=5,
         retry_cap_seconds=60,
+        permanent_rejection_owner=failure_owner,
     )
 
 
@@ -274,6 +279,44 @@ async def test_temporary_queue_error_is_backed_off_without_losing_frozen_intent(
         (original["queue_payload_json"], 5, "queue_readback_unknown")
     ]
     assert original["queue_payload_json"] == store.rescheduled[0][0]
+
+
+@pytest.mark.asyncio
+async def test_permanent_readback_rejection_suppresses_and_calls_run_failure_owner():
+    original = intent_record()
+    queue = Queue(
+        readback_error=QueueDeliveryError(
+            "queue_payload_invalid", definitive_rejection=True
+        )
+    )
+    store = Store(claims=[original])
+    failures = []
+
+    async def failure_owner(connection, *, intent, reason):
+        failures.append((connection, intent.run_id, reason))
+        return True
+
+    deliveries = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=object(),
+        queue=queue,
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=failure_owner,
+    )
+
+    result = await deliveries.scan_once()
+
+    assert result.suppressed == 1
+    assert result.rescheduled == 0
+    assert store.suppressed == [("run", "queue_payload_invalid")]
+    assert len(failures) == 1
+    assert failures[0][1:] == ("run", "queue_payload_invalid")
+    assert queue.enqueues == []
 
 
 @pytest.mark.asyncio

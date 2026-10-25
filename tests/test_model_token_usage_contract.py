@@ -4,6 +4,7 @@ import pytest
 
 from app.runs.domain.model_token_usage import ModelUsageSnapshot, normalize_model_usage_snapshot, cumulative_deltas, token_totals, window_utc
 from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 
 
 def counts(n):
@@ -136,10 +137,10 @@ async def test_callback_ledger_uses_receipt_transaction_and_final_lease_fence(mo
         model_usage_snapshot=dict(scope_id="scope",observation_seq=1,baseline="fresh",models={"a":counts(1)},coverage="partial"))
     if expired:
         with pytest.raises(HTTPException):
-            await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=Usage())
+            await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=Usage(), lease_port=sandbox_lease_reader)
         assert state == []
     else:
-        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=Usage())
+        await route.record_executor_callback(callback,capabilities=SimpleNamespace(),model_token_usage=Usage(), lease_port=sandbox_lease_reader)
         assert len(state) == (0 if duplicate else 1)
 
 

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from typing import Any, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 
 
 DeliveryState = Literal["pending", "claimed", "delivered", "suppressed"]
@@ -204,11 +204,14 @@ class RunDeliveryIntents:
         claim_ttl_seconds: int,
         retry_base_seconds: int,
         retry_cap_seconds: int,
+        permanent_rejection_owner: Callable[..., Awaitable[bool]] | None = None,
     ) -> None:
         if scan_batch_size < 1 or claim_ttl_seconds < 1:
             raise ValueError("run_delivery_configuration_invalid")
         if retry_base_seconds < 1 or retry_cap_seconds < retry_base_seconds:
             raise ValueError("run_delivery_retry_configuration_invalid")
+        if enabled and permanent_rejection_owner is None:
+            raise ValueError("run_delivery_permanent_rejection_owner_required")
         self.enabled = bool(enabled)
         self._store = store
         self._codec = codec
@@ -218,6 +221,7 @@ class RunDeliveryIntents:
         self._claim_ttl_seconds = claim_ttl_seconds
         self._retry_base_seconds = retry_base_seconds
         self._retry_cap_seconds = retry_cap_seconds
+        self._permanent_rejection_owner = permanent_rejection_owner
         self._queue_io_slots = asyncio.Semaphore(_MAX_CONCURRENT_QUEUE_IO)
 
     async def record(
@@ -341,7 +345,7 @@ class RunDeliveryIntents:
     async def _deliver_claim(self, intent: RunDeliveryIntent) -> DeliveryAttemptResult:
         if not _payload_identity_matches(intent):
             suppressed = await self._suppress(
-                intent, "delivery_payload_identity_mismatch"
+                intent, "delivery_payload_identity_mismatch", permanent=True
             )
             return DeliveryAttemptResult(
                 state="suppressed" if suppressed else "pending",
@@ -363,6 +367,14 @@ class RunDeliveryIntents:
 
         try:
             receipt = await self._readback(intent)
+        except QueueDeliveryError as exc:
+            if exc.definitive_rejection:
+                suppressed = await self._suppress(intent, exc.code, permanent=True)
+                return DeliveryAttemptResult(
+                    state="suppressed" if suppressed else "pending",
+                    error_code=exc.code if suppressed else "delivery_claim_stale",
+                )
+            return await self._reschedule(intent, exc.code)
         except Exception:
             return await self._reschedule(intent, "queue_readback_unknown")
 
@@ -386,7 +398,9 @@ class RunDeliveryIntents:
                     return await self._reschedule(intent, "queue_response_unknown")
                 if receipt is None:
                     if exc.definitive_rejection:
-                        suppressed = await self._suppress(intent, exc.code)
+                        suppressed = await self._suppress(
+                            intent, exc.code, permanent=True
+                        )
                         return DeliveryAttemptResult(
                             state="suppressed" if suppressed else "pending",
                             error_code=exc.code
@@ -471,13 +485,20 @@ class RunDeliveryIntents:
             error_code=error_code if updated else "delivery_claim_stale",
         )
 
-    async def _suppress(self, intent: RunDeliveryIntent, reason: str) -> bool:
+    async def _suppress(
+        self, intent: RunDeliveryIntent, reason: str, *, permanent: bool = False
+    ) -> bool:
         async with self._transaction() as connection:
-            return await self._store.suppress(
+            suppressed = await self._store.suppress(
                 connection,
                 intent=intent,
                 reason=reason,
             )
+            if suppressed and permanent and self._permanent_rejection_owner is not None:
+                await self._permanent_rejection_owner(
+                    connection, intent=intent, reason=reason
+                )
+            return suppressed
 
 
 def _payload_identity_matches(intent: RunDeliveryIntent) -> bool:

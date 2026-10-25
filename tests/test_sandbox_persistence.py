@@ -2,13 +2,15 @@ from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import uuid
 import psycopg
 from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
-from app.platform.postgres.sandbox_leases import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
+from app.sandbox.infrastructure.leases_postgres import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
 from app.sandbox.infrastructure.leases_postgres import renew_sandbox_lease
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.support.repository_fixtures import RecordingConnection, SingleRowConnection, SingleRowCursor, _run_control_postgres_dsn
@@ -621,7 +623,7 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
 
 @pytest.mark.asyncio
 async def test_generic_sandbox_release_sql_fences_nonfinalized_terminal_receipts():
-    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 
     statements = []
 
@@ -777,7 +779,7 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
 
 @pytest.mark.asyncio
 async def test_executor_acceptance_preserves_terminal_and_reconciliation_owners():
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = SingleRowConnection({"id": "lease-a"})
     await record_sandbox_executor_accepted(
@@ -802,7 +804,7 @@ async def test_executor_acceptance_preserves_terminal_and_reconciliation_owners(
 
 @pytest.mark.asyncio
 async def test_executor_acceptance_rejects_context_write_outside_active_attempt_scope():
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = SingleRowConnection(None)
     with pytest.raises(
@@ -853,6 +855,177 @@ async def executor_acceptance_database():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_intent_is_attempt_fenced_and_terminal_first_is_preserved(executor_acceptance_database):
+    from app.platform.postgres.sandbox_leases import record_sandbox_executor_terminal
+    from app.sandbox.application.dispatch_intent import SandboxDispatchIdentity
+    from app.sandbox.infrastructure.dispatch_postgres import persist_intent, record_outcome
+
+    conn = executor_acceptance_database
+    spec = {
+        "schema_version": "ai-platform.execution-spec.v1",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    async with conn.transaction():
+        await conn.execute("update runs set status = 'queued' where id = 'run-a'")
+        await conn.execute(
+            """insert into run_attempts (
+                 id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                 owner_generation, queue_attempt_id, execution_spec_schema_version,
+                 execution_spec_json, execution_spec_canonical_json, execution_spec_sha256
+               ) values (
+                 'attempt-a', 'tenant-a', 'run-a', 1, 'created', 'queue_worker', 'worker-a', 1,
+                 'queue-attempt-a', %s, %s::jsonb, %s, %s
+               )""",
+            (spec["schema_version"], json.dumps(spec), canonical, hashlib.sha256(canonical.encode()).hexdigest()),
+        )
+        await conn.execute(
+            "update run_attempts set status='queued', owner_generation=2, queue_message_id='message-a' where id='attempt-a'"
+        )
+        await conn.execute("update run_attempts set status='claimed', owner_generation=3 where id='attempt-a'")
+        await conn.execute("update run_attempts set status='running', owner_generation=4 where id='attempt-a'")
+        await conn.execute(
+            "update sandbox_leases set runtime_handle_verified_at=now(), lease_payload_json=%s::jsonb "
+            "where id='lease-a'",
+            (json.dumps({"attempt_id": "attempt-a", "owner_generation": "4"}),),
+        )
+        early = await record_sandbox_executor_terminal(
+            conn,
+            tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a",
+            executor_status="completed", terminal_result={"run_id": "run-a", "status": "succeeded"},
+        )
+        assert early["executor_reconciliation_status"] == "waiting_terminal"
+        identity = SandboxDispatchIdentity(
+            tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", owner_generation=4,
+            lease_id="lease-a", provider="fake", provider_task_id="attempt-a",
+        )
+        context = {
+            "schema_version": "ai-platform.executor-reconciliation.v1",
+            "adapter_name": "test",
+            "run_payload": {"run_id": "run-a"},
+            "adapter_context": {},
+        }
+        dispatch, created = await persist_intent(conn, identity=identity, reconciliation_context=context)
+        assert created is True
+        assert dispatch["status"] == "intent"
+        accepted = await record_outcome(conn, identity=identity, outcome="accepted")
+        assert accepted["status"] == "accepted"
+        lease = await (await conn.execute("select * from sandbox_leases where id='lease-a'")).fetchone()
+        assert lease["executor_status"] == "completed"
+        assert lease["executor_terminal_json"] == {"run_id": "run-a", "status": "succeeded"}
+        assert lease["executor_reconciliation_status"] == "pending"
+        assert lease["executor_reconciliation_context_json"] == context
+        repeated, created = await persist_intent(conn, identity=identity, reconciliation_context=context)
+        assert created is False
+        assert repeated["dispatch_id"] == dispatch["dispatch_id"]
+        preserved = await record_outcome(conn, identity=identity, outcome="unknown")
+        assert preserved["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_unknown_dispatch_lease_remains_probeable_for_its_original_terminal(executor_acceptance_database):
+    from app.platform.postgres.sandbox_leases import (
+        claim_sandbox_executor_suspects,
+        record_sandbox_executor_terminal,
+    )
+    from app.sandbox.application.dispatch_intent import SandboxDispatchIdentity
+    from app.sandbox.infrastructure.dispatch_postgres import persist_intent, record_outcome
+
+    conn = executor_acceptance_database
+    spec = {
+        "schema_version": "ai-platform.execution-spec.v1",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    async with conn.transaction():
+        await conn.execute("update runs set status = 'queued' where id = 'run-a'")
+        await conn.execute(
+            """insert into run_attempts (
+                 id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                 owner_generation, queue_attempt_id, execution_spec_schema_version,
+                 execution_spec_json, execution_spec_canonical_json, execution_spec_sha256
+               ) values (
+                 'attempt-a', 'tenant-a', 'run-a', 1, 'created', 'queue_worker', 'worker-a', 1,
+                 'queue-attempt-a', %s, %s::jsonb, %s, %s
+               )""",
+            (spec["schema_version"], json.dumps(spec), canonical, hashlib.sha256(canonical.encode()).hexdigest()),
+        )
+        await conn.execute(
+            "update run_attempts set status='queued', owner_generation=2, queue_message_id='message-a' where id='attempt-a'"
+        )
+        await conn.execute("update run_attempts set status='claimed', owner_generation=3 where id='attempt-a'")
+        await conn.execute("update run_attempts set status='running', owner_generation=4 where id='attempt-a'")
+        await conn.execute(
+            "update sandbox_leases set runtime_handle_verified_at=now(), lease_payload_json=%s::jsonb "
+            "where id='lease-a'",
+            (json.dumps({"attempt_id": "attempt-a", "owner_generation": "4"}),),
+        )
+        identity = SandboxDispatchIdentity(
+            tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", owner_generation=4,
+            lease_id="lease-a", provider="fake", provider_task_id="attempt-a",
+        )
+        context = {
+            "schema_version": "ai-platform.executor-reconciliation.v1",
+            "adapter_name": "test",
+            "run_payload": {"run_id": "run-a"},
+            "adapter_context": {},
+        }
+        dispatch, created = await persist_intent(
+            conn, identity=identity, reconciliation_context=context,
+        )
+        assert created is True
+        assert (await record_outcome(conn, identity=identity, outcome="unknown"))["status"] == "unknown"
+        await conn.execute(
+            "update sandbox_leases set executor_heartbeat_at=now() - interval '1 minute', "
+            "updated_at=now() - interval '1 minute' where id='lease-a'"
+        )
+
+    async with conn.transaction():
+        claimed = await claim_sandbox_executor_suspects(
+            conn, claim_token="probe-a", stale_after_seconds=30, limit=1,
+        )
+    assert [row["id"] for row in claimed] == ["lease-a"]
+    assert claimed[0]["executor_reconciliation_context_json"] == context
+    assert claimed[0]["executor_reconciliation_status"] == "claimed"
+    assert dispatch["attempt_id"] == claimed[0]["attempt_id"] == "attempt-a"
+
+    async with conn.transaction():
+        terminal = await record_sandbox_executor_terminal(
+            conn,
+            tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a",
+            executor_status="completed",
+            terminal_result={"run_id": "run-a", "status": "succeeded"},
+            claim_token="probe-a",
+        )
+    assert terminal["executor_reconciliation_status"] == "pending"
+    assert terminal["executor_terminal_json"] == {"run_id": "run-a", "status": "succeeded"}
+    dispatch_after_probe = await (await conn.execute(
+        "select status, attempt_id, lease_id from sandbox_execution_dispatches where dispatch_id=%s",
+        (dispatch["dispatch_id"],),
+    )).fetchone()
+    assert dispatch_after_probe == {
+        "status": "unknown", "attempt_id": "attempt-a", "lease_id": "lease-a",
+    }
+    run = await (await conn.execute("select status from runs where id='run-a'")).fetchone()
+    attempt = await (await conn.execute("select status from run_attempts where id='attempt-a'")).fetchone()
+    assert run["status"] == attempt["status"] == "running"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_first", [False, True])
 @pytest.mark.parametrize("executor_status,result_status", [
     ("completed", "succeeded"), ("failed", "failed"), ("cancelled", "cancelled"),
@@ -860,7 +1033,7 @@ async def executor_acceptance_database():
 async def test_executor_acceptance_terminal_order_converges_in_postgres(
     executor_acceptance_database, terminal_first, executor_status, result_status,
 ):
-    from app.platform.postgres.sandbox_leases import (
+    from app.sandbox.infrastructure.leases_postgres import (
         claim_sandbox_executor_reconciliations,
         record_sandbox_executor_accepted,
     )
@@ -909,7 +1082,7 @@ async def test_executor_acceptance_terminal_order_converges_in_postgres(
 async def test_executor_acceptance_does_not_reset_reconciliation_in_postgres(
     executor_acceptance_database, reconciliation_status,
 ):
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -982,7 +1155,7 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
 
 @pytest.mark.asyncio
 async def test_terminal_retry_deadline_survives_lease_updates_and_is_claim_fenced(executor_acceptance_database):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1018,7 +1191,7 @@ async def test_terminal_retry_deadline_survives_lease_updates_and_is_claim_fence
 
 @pytest.mark.asyncio
 async def test_due_retry_precedes_new_pending_and_concurrent_claims_skip_locked(executor_acceptance_database):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1051,7 +1224,7 @@ async def test_due_retry_precedes_new_pending_and_concurrent_claims_skip_locked(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_status", ["failed", "cleanup_pending"])
 async def test_terminal_cleanup_handoff_and_retry_remain_durable(executor_acceptance_database, legacy_status):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1090,7 +1263,7 @@ async def test_ready_terminal_commit_wakes_real_redis_and_is_claimable_in_postgr
     import os
     from redis.asyncio import Redis
     from app.runtime.sandbox import executor_signals
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
     if not url:

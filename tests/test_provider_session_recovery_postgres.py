@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from app.context.infrastructure import provider_epochs
 from app.context.domain.provider_sessions import ProviderSessionConflictError
 from app.routes import runtime_callbacks
+from app.sandbox.api import ProviderSessionAppendIdentity
 from app.runs.domain.attempt_lifecycle import decide_run_attempt_transition
 
 
@@ -352,10 +353,9 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
             await runtime_callbacks._recheck_callback_authority(
                 conn,
                 tenant_id="tenant",
-                run_id="run",
-                attempt_id="attempt",
-                callback_token_id="cbt",
-                allow_provider_tail=True,
+                identity=ProviderSessionAppendIdentity(
+                    run_id="run", attempt_id="attempt", callback_token_id="cbt",
+                ),
             )
             with pytest.raises(
                 HTTPException, match="sandbox_runtime_owner_generation_stale"
@@ -363,10 +363,9 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
                 await runtime_callbacks._recheck_callback_authority(
                     conn,
                     tenant_id="tenant",
-                    run_id="run",
-                    attempt_id="attempt",
-                    callback_token_id="stale",
-                    allow_provider_tail=True,
+                    identity=ProviderSessionAppendIdentity(
+                        run_id="run", attempt_id="attempt", callback_token_id="stale",
+                    ),
                 )
             retry = await operation(
                 conn,

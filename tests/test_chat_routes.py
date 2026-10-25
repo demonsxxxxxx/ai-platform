@@ -2902,6 +2902,7 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
     }
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
+@pytest.mark.parametrize("delivery_enabled", [False, True])
 @pytest.mark.parametrize(
     "current_message",
     [
@@ -2913,7 +2914,7 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
     ],
 )
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(
-    monkeypatch, enqueue_mode, current_message
+    monkeypatch, enqueue_mode, current_message, delivery_enabled
 ):
     calls = []
 
@@ -3051,6 +3052,33 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", fake_read_queue_admission)
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight)
+    if delivery_enabled:
+        class DeliveryIntents:
+            enabled = True
+
+            async def record(self, conn, payload, *, source, **_kwargs):
+                calls.append(("delivery_intent", source, dict(payload)))
+
+            async def deliver_one(self, *, tenant_id, run_id):
+                calls.append(("delivery", tenant_id, run_id))
+                if enqueue_mode == "unknown":
+                    return SimpleNamespace(receipt=None, error_code="queue_response_unknown")
+                return SimpleNamespace(
+                    receipt=SimpleNamespace(
+                        queue_position=3,
+                        queue_admission_ordinal=30,
+                        message_id="frozen-message",
+                        source="redis_metadata",
+                    ),
+                    error_code=None,
+                )
+
+        monkeypatch.setattr(
+            _TEST_STREAM_REQUEST.app.state,
+            "run_delivery_intents",
+            DeliveryIntents(),
+            raising=False,
+        )
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3066,9 +3094,20 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     assert response.run_id == "run_3"
     assert response.session_id == "ses_3"
-    queued_input = next(item[1]["input"] for item in calls if item[0] == "queue_payload")
+    queued_payload = (
+        next(item[2] for item in calls if item[0] == "delivery_intent")
+        if delivery_enabled
+        else next(item[1] for item in calls if item[0] == "queue_payload")
+    )
+    queued_input = queued_payload["input"]
     assert queued_input["message"] == current_message
     assert ("message", "user", current_message, "run_3") in calls
+    if delivery_enabled:
+        persisted = next(item for item in calls if item[0] == "delivery_intent")
+        assert persisted[1] == "chat"
+        assert persisted[2]["run_id"] == "run_3"
+        assert [item[0] for item in calls].count("delivery") == 1
+        assert not any(item[0] == "queue" for item in calls)
     if enqueue_mode == "unknown":
         assert response.status == "accepted_pending_enqueue"
         assert response.queue_position is None
@@ -3088,9 +3127,14 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     message_index = next(index for index, item in enumerate(calls) if item[0] == "message")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
-    queue_index = next(index for index, item in enumerate(calls) if item[0] == "queue_payload")
+    queue_item_name = "delivery_intent" if delivery_enabled else "queue_payload"
+    queue_index = next(index for index, item in enumerate(calls) if item[0] == queue_item_name)
     assert snapshot_index < message_index < event_index < queue_index
-    queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
+    queue_payload = (
+        next(item[2] for item in calls if item[0] == "delivery_intent")
+        if delivery_enabled
+        else next(item[1] for item in calls if item[0] == "queue_payload")
+    )
     assert queue_payload["executor_type"] == "claude-agent-worker"
     assert queue_payload["run_id"] == "run_3"
     assert queue_payload["file_ids"] == ["file_1"]

@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import AuthPrincipal, require_principal
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
@@ -10,18 +10,23 @@ from app.models import (
     SandboxLeaseRenewRequest,
     SandboxLeaseRequest,
 )
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.postgres.errors import RepositoryNotFoundError
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
-from app.sandbox.api import SandboxRuntimeCleanupError
+from app.sandbox.api import SandboxLeaseTransportPort, SandboxRuntimeCleanupError
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 
 _sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
+
+
+def sandbox_lease_port(request: Request) -> SandboxLeaseTransportPort:
+    port = getattr(request.app.state, "sandbox_lease_transport", None)
+    if port is None:
+        raise HTTPException(status_code=503, detail="sandbox_lease_operations_unavailable")
+    return port
 
 
 def lease_response(row: dict[str, Any]) -> dict[str, Any]:
@@ -70,6 +75,7 @@ def _user_visible_workspace() -> dict[str, str]:
 async def create_sandbox_lease(
     run_id: str,
     request: SandboxLeaseRequest,
+    http_request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     if request.provider != "fake":
@@ -85,7 +91,7 @@ async def create_sandbox_lease(
             if run is None:
                 raise RepositoryNotFoundError("run_not_found")
             trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
-            row = await sandbox_lease_repository.create_sandbox_lease(
+            row = await sandbox_lease_port(http_request).create_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 workspace_id=str(run["workspace_id"]),
@@ -127,10 +133,11 @@ async def renew_sandbox_lease(
     run_id: str,
     lease_id: str,
     request: SandboxLeaseRenewRequest,
+    http_request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     async with transaction() as conn:
-        existing = await sandbox_leases.get_sandbox_lease(
+        existing = await sandbox_lease_port(http_request).get_sandbox_lease(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -139,7 +146,7 @@ async def renew_sandbox_lease(
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="sandbox_lease_not_found")
-        row = await sandbox_leases.renew_sandbox_lease(
+        row = await sandbox_lease_port(http_request).renew_sandbox_lease(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
@@ -168,12 +175,13 @@ async def release_sandbox_lease(
     run_id: str,
     lease_id: str,
     request: SandboxLeaseReleaseRequest,
+    http_request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     existing: dict[str, Any] | None = None
     try:
         async with transaction() as conn:
-            existing = await sandbox_leases.get_sandbox_lease(
+            existing = await sandbox_lease_port(http_request).get_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -194,7 +202,7 @@ async def release_sandbox_lease(
                     reason=request.reason,
                     provider_factory=create_container_provider,
                 )
-            row = await sandbox_lease_repository.release_sandbox_lease(
+            row = await sandbox_lease_port(http_request).release_sandbox_lease(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -218,7 +226,7 @@ async def release_sandbox_lease(
     except SandboxRuntimeCleanupError as exc:
         try:
             async with transaction() as conn:
-                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
+                await sandbox_lease_port(http_request).record_sandbox_runtime_cleanup_outcome(
                     conn,
                     tenant_id=principal.tenant_id,
                     run_id=run_id,
