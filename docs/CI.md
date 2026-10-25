@@ -35,7 +35,7 @@ Windows runtime 分片只补充 Linux 无法执行的 Job Object、host-bind 和
 
 后端和 Agent/Skill 均使用 `tools/run_test_stage.py`、显式 branch coverage
 及每分片 evidence、JUnit 和 coverage JSON。后端常规分片使用 600 秒 stage
-deadline；`lifecycle-control-chain` 使用 2,400 秒 stage deadline 和 50 分钟 Job
+deadline；`lifecycle-control-chain` 使用 1,800 秒 stage deadline 和 50 分钟 Job
 deadline，完整生命周期 evidence 与其绑定的源码、镜像、依赖版本和 profile
 artifact 一同上传。
 PG/Redis 必需分片和 Windows 分片保持 zero-skips；sandbox-runtime 与 release-governance-authority

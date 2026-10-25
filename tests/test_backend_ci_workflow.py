@@ -543,7 +543,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("tools/run_test_stage.py")
     assert "uv run --locked --extra test python tools/run_test_stage.py" in pytest_step
-    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 2400 || 600 }} --coverage' in pytest_step
+    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 1800 || 600 }} --coverage' in pytest_step
     assert '"${zero_skips[@]}" -- ${{ matrix.test_files }}' in pytest_step
     assert (
         'if [[ "${{ matrix.shard }}" != "sandbox-runtime" && '

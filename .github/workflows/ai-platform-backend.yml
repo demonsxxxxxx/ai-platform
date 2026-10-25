@@ -528,7 +528,7 @@ jobs:
             zero_skips=(--require-zero-skips)
           fi
           uv run --locked --extra test python tools/run_test_stage.py \
-            --stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == 'lifecycle-control-chain' && 2400 || 600 }} --coverage \
+            --stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == 'lifecycle-control-chain' && 1800 || 600 }} --coverage \
             "${zero_skips[@]}" -- ${{ matrix.test_files }}
 
       - name: Upload exact shard evidence

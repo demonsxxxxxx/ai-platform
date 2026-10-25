@@ -92,7 +92,7 @@ Rules:
 
 The `lifecycle-control-chain` backend shard owns the complete
 `tests/test_run_execution_lifecycle_integration.py` selector set. It runs with
-PostgreSQL and Redis services, `--require-zero-skips`, a 2,400-second test
+PostgreSQL and Redis services, `--require-zero-skips`, a 1,800-second test
 budget, and a 50-minute shard budget. It remains inside
 `backend-tests`, which `backend required` already requires. Keep the workflow's
 selectors and zero-skip rule explicit; a missing selector, dependency, or
