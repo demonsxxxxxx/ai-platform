@@ -37,7 +37,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
     PublicExecutionV2Projector,
@@ -81,7 +81,7 @@ from app.runtime.sandbox.contracts import (
     executor_callback_receipt_event_count,
 )
 from app.settings import get_settings
-from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
@@ -1480,6 +1480,18 @@ async def _default_executor_runner(
         while sdk_text_checkpoints and len(events) < 100:
             events.append(sdk_text_checkpoints.popleft())
 
+    async def emit_model_usage_snapshot(snapshot: dict[str, Any]) -> bool:
+        return await emit_event(ExecutorCallbackEvent(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
+            batch_id=callback_batch_ids.next_id(),
+            status="running", progress=20,
+            state_patch={"stage": "model_usage"},
+            model_usage_snapshot=snapshot,
+        ))
+
     async def emit_agent_event_batch(events: list[AgentEvent]) -> bool:
         return await emit_event(ExecutorCallbackEvent(
             session_id=request.session_id,
@@ -1843,7 +1855,7 @@ async def _default_executor_runner(
             "session_store": session_store,
             "provider_session_resume_required": provider_session_resume_required,
             "model_id": model_id,
-            "model_max_input_tokens": model_limits.max_input_tokens,
+            "model_auto_compact_window": model_limits.auto_compact_window,
             "model_max_output_tokens": model_limits.max_output_tokens,
             "skills": skill_ids,
             "context_retrieval": context_retrieval,
@@ -1851,6 +1863,7 @@ async def _default_executor_runner(
             "on_text": on_text,
             "on_sdk_text": on_sdk_text,
             "on_agent_event": on_agent_event,
+            "on_model_usage_snapshot": emit_model_usage_snapshot,
             "run_id": request.run_id,
             "attempt_id": request.attempt_id,
             "on_skill_use": on_skill_use,
@@ -1938,6 +1951,7 @@ async def _default_executor_runner(
         "message": str(getattr(sdk_result, "message", "") or ""),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
+        "model_usage_snapshot": getattr(sdk_result, "model_usage_snapshot", None),
         "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
@@ -2962,6 +2976,7 @@ def create_executor_app(
                 "answer_receipt", "response_files", "response_file_descriptors",
             )),
             "sdk_usage",
+            "model_usage_snapshot",
             "provider_session_final_sequence",
             "sdk_used",
             "sdk_received_structured_terminal",
@@ -3012,7 +3027,8 @@ def create_executor_app(
             status=callback_status,
             progress=progress,
             error_message=str(result.get("error_message") or "") or None,
-            terminal_result=result,
+            terminal_result={key: value for key, value in result.items() if key != "model_usage_snapshot"},
+            model_usage_snapshot=result.get("model_usage_snapshot"),
         )
 
         clock = asyncio.get_running_loop().time

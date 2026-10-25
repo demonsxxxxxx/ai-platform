@@ -41,18 +41,19 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.match(source, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
   assert.doesNotMatch(source, /AvailableSkillsPanel/);
 
-  const ordinarySkills = readFileSync(
-    join(root, "src/components/panels/AvailableSkillsPanel.tsx"),
+  const actions = readFileSync(
+    join(root, "src/components/panels/SkillsPanel/useSkillsActions.ts"),
     "utf8",
   );
-  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
-  assert.match(ordinarySkills, /useSkills\(\{\s*allAuthorizedCatalog: true,\s*identityScope:/);
-  assert.match(ordinarySkills, /skills\.available\.title/);
-  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
-  assert.doesNotMatch(
-    ordinarySkills,
-    /expected_version|file_count|skill\.content|skill\.files|is_published|marketplace_is_active/,
+  const table = readFileSync(
+    join(root, "src/components/panels/SkillsPanel/SkillManagementTable.tsx"),
+    "utf8",
   );
+  assert.match(actions, /allAuthorizedCatalog: options\?\.allAuthorizedCatalog/);
+  assert.match(actions, /identityScope: JSON\.stringify/);
+  assert.match(table, /data-skill-management-table/);
+  assert.doesNotMatch(table, /\.(?:content|files|private_manifest|storage_key|storage_path)\b/);
+
 });
 
 test("mcp panel gives AI admins lifecycle controls while keeping the ordinary directory redacted", () => {

@@ -47,7 +47,7 @@ async def receipt_db():
                   user_id text, session_id text, agent_id text, status text, cancel_requested_at timestamptz,
                   execution_kind text, skill_id text, context_snapshot_id text, input_json jsonb,
                   model_id text, model_value text, model_gateway_revision integer,
-                  max_input_tokens integer, max_output_tokens integer);
+                  auto_compact_window integer, max_output_tokens integer);
                 create table run_attempts(id text primary key, tenant_id text, run_id text,
                   status text, owner_kind text, owner_id text, owner_generation bigint, queue_attempt_id text,
                   execution_spec_schema_version text, execution_spec_sha256 text,
@@ -65,8 +65,8 @@ async def receipt_db():
             """, (Jsonb({"executor_type": "claude-agent-worker"}),))
             await conn.execute("""
                 insert into run_attempts values('attempt-a','tenant-a','run-a','running','queue_worker',
-                'worker-original',4,'qat-a','ai-platform.execution-spec.v2',%s,%s,%s)
-            """, (spec.spec_sha256, spec.canonical_json.decode(), Jsonb(spec.to_mapping())))
+                'worker-original',4,'qat-a',%s,%s,%s,%s)
+            """, (spec.to_mapping()["schema_version"], spec.spec_sha256, spec.canonical_json.decode(), Jsonb(spec.to_mapping())))
             await conn.execute("""
                 insert into sandbox_leases values('lease-a','tenant-a','workspace-a','user-a','session-a',
                 'run-a','attempt-a','active','{"status":"completed"}','claimed','claim-a','{"owner_generation":4}')
@@ -251,7 +251,7 @@ async def full_receipt_db():
                 insert into model_gateway_revisions(revision,base_url,api_key_ciphertext,key_fingerprint,created_by)
                   values(3,'https://gateway.example.test',decode('00','hex'),'aaaaaaaaaaaaaaaa','fixture');
                 insert into runs(id,tenant_id,workspace_id,user_id,session_id,agent_id,
-                  execution_kind,status,model_id,model_value,model_gateway_revision,max_input_tokens,max_output_tokens)
+                  execution_kind,status,model_id,model_value,model_gateway_revision,auto_compact_window,max_output_tokens)
                   values('run-a','tenant-a','workspace-a','user-a','session-a','agent-a',
                   'harness_chat','queued','model-a','claude-test',3,200000,4096);
                 insert into run_context_snapshots(id,tenant_id,workspace_id,user_id,session_id,run_id)

@@ -176,7 +176,7 @@ async def test_dispatch_keeps_typed_codec_reason_only_in_private_diagnostics(
     )
     model = {
         "model_id": "model-a", "model_value": "other" if failure == "model" else "model-a",
-        "model_gateway_revision": 1, "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "model_gateway_revision": 1, "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
 
     class Attempt:

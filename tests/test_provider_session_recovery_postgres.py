@@ -742,3 +742,21 @@ async def test_real_pg_sequence_change_before_child_view_is_not_adopted(
         await adapter.list_subkeys({"session_id": PROVIDER_ID})
     assert adapter.accepted_final_sequence == 2
     assert (PROVIDER_ID, "subagents/agent-a") not in adapter._load_cache
+
+
+@pytest.mark.parametrize("schema_version", [
+    "ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3",
+])
+async def test_real_pg_callback_load_binds_both_frozen_spec_versions(
+    recovery_db, schema_version
+):
+    """The callback authority accepts a v3 attempt, not only the frozen v2 one."""
+
+    async with recovery_db() as conn:
+        await conn.execute(
+            "update run_attempts set execution_spec_schema_version=%s where id='attempt'",
+            (schema_version,),
+        )
+        loaded = await operation(conn, "load")
+        assert loaded["entries"] == INITIAL
+        assert loaded["next_sequence"] == 3

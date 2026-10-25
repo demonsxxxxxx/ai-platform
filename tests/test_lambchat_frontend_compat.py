@@ -509,20 +509,15 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     assert len(copied) == 3
 
 
-def test_read_mark_compatibility_route_keeps_its_noop_acknowledgement(monkeypatch):
-    def unexpected_transaction():
-        raise AssertionError("legacy read-mark must not read or persist unread state")
-
+def test_retired_read_mark_and_static_permission_routes_are_not_served(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.lambchat_compat.transaction", unexpected_transaction)
     client = TestClient(create_app())
 
-    for session_id in ("session-older-client", "session-not-present"):
-        response = client.post(
-            f"/api/sessions/{session_id}/mark-read", headers=action_headers()
-        )
-        assert response.status_code == 200
-        assert response.json() == {"success": True}
+    read_mark = client.post("/api/sessions/session-a/mark-read", headers=action_headers())
+    permissions = client.get("/api/auth/permissions")
+
+    assert read_mark.status_code in {404, 405}
+    assert permissions.status_code in {404, 405}
 
 
 def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
@@ -821,7 +816,6 @@ def test_frontend_bootstrap_endpoints_match_retained_contracts(monkeypatch):
 
     expectations = {
         "/api/auth/oauth/providers": {"registration_enabled": False},
-        "/api/auth/permissions": {"groups": list, "all_permissions": list},
         "/api/roles/?limit=200": {"roles": list, "total": 0, "skip": 0, "limit": 200},
         "/api/notifications/active": {"notifications": []},
         "/api/upload/config": {
@@ -915,6 +909,29 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
     assert authenticated_notifications.json() == {"detail": "notifications_unavailable"}
 
 
+def test_lambchat_model_catalog_is_scoped_to_the_authenticated_principal(monkeypatch):
+    """The public catalog is filtered by the caller, not by a shared directory."""
+
+    seen: list[str] = []
+
+    async def catalog(_conn, *, user_id):
+        seen.append(user_id)
+        return {
+            "models": [], "count": 0, "enabled_count": 0,
+            "default_model_id": None,
+        }
+
+    monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", catalog)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    response = TestClient(create_app()).get(
+        "/api/agent/models/available", headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert seen == ["user-a"]
+
+
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
     monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
     monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
@@ -993,22 +1010,6 @@ def test_lambchat_upload_check_route_is_retired():
     )
 
     assert response.status_code == 404
-
-
-def test_lambchat_permissions_include_user_and_admin_capabilities():
-    client = TestClient(create_app())
-
-    response = client.get("/api/auth/permissions")
-
-    assert response.status_code == 200
-    values = {item["value"] for item in response.json()["all_permissions"]}
-    assert {
-        "agent:use",
-        "artifact:download",
-        "model:admin",
-        "settings:manage",
-        "admin:status",
-    }.issubset(values)
 
 
 def test_lambchat_profile_endpoint_returns_principal_and_metadata(monkeypatch):
@@ -1203,7 +1204,10 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
     expected_reason,
 ):
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     principal = AuthPrincipal(
@@ -1310,7 +1314,10 @@ def test_lambchat_terminal_history_replays_safe_partial_activity_and_detail(
         },
     ]
 
-    records = _compatibility_events_for_run(run, run_events, [], principal)
+    records = _compatibility_events_for_run_page(
+        run, run_events, [], principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     history = [record.history_event for record in records]
 
     assert [event["event_type"] for event in history] == [
@@ -1385,7 +1392,10 @@ def test_lambchat_typed_tool_denied_projects_as_permission_blocked() -> None:
 
 def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     run = {
@@ -1429,14 +1439,15 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
         "created_at": "2026-08-01T00:00:01Z",
     }
 
-    records = _compatibility_events_for_run(
+    records = _compatibility_events_for_run_page(
         run,
         [v4_delta],
         [],
         AuthPrincipal(
             user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
         ),
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     history = [record.history_event for record in records]
     chunks = [event for event in history if event["event_type"] == "message:chunk"]
 
@@ -1450,7 +1461,10 @@ def test_lambchat_failed_history_reconstructs_authorized_v4_body() -> None:
 
 def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> None:
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     run = {
@@ -1524,7 +1538,7 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
 
     history = [
         record.history_event
-        for record in _compatibility_events_for_run(
+        for record in _compatibility_events_for_run_page(
             run,
             events,
             [],
@@ -1534,7 +1548,8 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
                 tenant_id="default",
                 roles=["user"],
             ),
-        )
+            fold_state=_CompatibilityFoldState(False, frozenset()),
+        )[0]
     ]
 
     summaries = [event for event in history if event["event_type"] == "summary"]
@@ -1555,7 +1570,10 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
 
 def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_events() -> None:
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     run = {
@@ -1639,10 +1657,14 @@ def test_lambchat_history_compacts_v4_answer_deltas_without_crossing_public_even
         user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
     )
 
-    uncompressed = _compatibility_events_for_run(run, events, [], principal)
-    compacted = _compatibility_events_for_run(
-        run, events, [], principal, compact_answer_deltas=True
-    )
+    uncompressed = _compatibility_events_for_run_page(
+        run, events, [], principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
+    compacted = _compatibility_events_for_run_page(
+        run, events, [], principal, compact_answer_deltas=True,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     uncompressed_chunks = [
         record.history_event
         for record in uncompressed
@@ -1705,7 +1727,10 @@ def test_lambchat_history_selects_one_authorized_body_source(
     expected_event_id,
 ) -> None:
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     run = {
@@ -1762,14 +1787,15 @@ def test_lambchat_history_selects_one_authorized_body_source(
         },
     }
 
-    records = _compatibility_events_for_run(
+    records = _compatibility_events_for_run_page(
         run,
         [legacy, v4],
         [],
         AuthPrincipal(
             user_id="user-a", display_name="User A", tenant_id="default", roles=["user"]
         ),
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     chunks = [
         record.history_event
         for record in records
@@ -1786,7 +1812,10 @@ def test_lambchat_history_selects_one_authorized_body_source(
 
 def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer():
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     canonical_public_text = "公开答案在终态前已持久化。"
@@ -1839,7 +1868,10 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
         }
     ]
 
-    records = _compatibility_events_for_run(run, run_events, [], principal)
+    records = _compatibility_events_for_run_page(
+        run, run_events, [], principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     history = [record.history_event for record in records]
 
     assert [event["event_type"] for event in history] == ["message:chunk", "done"]
@@ -1860,7 +1892,10 @@ def test_lambchat_success_history_keeps_canonical_delta_before_terminal_answer()
 
 def test_lambchat_terminal_history_preserves_published_identifier_fragments():
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
     from app.streaming.api import opaque_message_id
 
     principal = AuthPrincipal(
@@ -1940,7 +1975,10 @@ def test_lambchat_terminal_history_preserves_published_identifier_fragments():
         },
     ]
 
-    records = _compatibility_events_for_run(run, run_events, [], principal)
+    records = _compatibility_events_for_run_page(
+        run, run_events, [], principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     answer_payloads = [
         record.history_event["data"]
         for record in records
@@ -1961,7 +1999,10 @@ def test_lambchat_terminal_history_preserves_published_identifier_fragments():
 
 def test_lambchat_history_keeps_explicit_assistant_file_order():
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -2016,13 +2057,14 @@ def test_lambchat_history_keeps_explicit_assistant_file_order():
         },
     ]
 
-    records = _compatibility_events_for_run(
+    records = _compatibility_events_for_run_page(
         run,
         [],
         artifacts,
         principal,
         include_terminal=False,
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert [
         record.stream_data["artifact_id"]
@@ -2033,7 +2075,10 @@ def test_lambchat_history_keeps_explicit_assistant_file_order():
 
 def test_lambchat_history_uses_legacy_result_artifact_ids_as_allowlist():
     from app.auth import AuthPrincipal
-    from app.routes.lambchat_compat import _compatibility_events_for_run
+    from app.routes.lambchat_compat import (
+        _CompatibilityFoldState,
+        _compatibility_events_for_run_page,
+    )
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -2067,13 +2112,14 @@ def test_lambchat_history_uses_legacy_result_artifact_ids_as_allowlist():
         },
     ]
 
-    records = _compatibility_events_for_run(
+    records = _compatibility_events_for_run_page(
         run,
         [],
         artifacts,
         principal,
         include_terminal=False,
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert [
         record.stream_data["artifact_id"]

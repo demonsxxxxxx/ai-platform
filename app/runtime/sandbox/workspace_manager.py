@@ -8,12 +8,14 @@ from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME, WORKSPACE_RUN
 from app.settings import get_settings
 
 
-PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 任务默认规则
+PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 文件任务规则
 
-- 默认使用简体中文回复用户。
-- 面向用户的计划、进度说明、思考摘要和最终答复使用简体中文。
-- 代码、命令、文件名、路径、接口字段和必须保持准确的专有名词可以保留原文。
-- 用户明确指定其他语言时，遵循用户本次要求。
+- 默认使用简体中文回复用户；用户明确指定其他语言时遵循本次要求。保留代码、命令、文件名等字面值。
+- 保留实体、数值、单位、日期、引用和用户明确的格式要求；不编造缺失资料，按改动检查受影响的内容与格式。
+- 每个新工作阶段首次调用工具时，在同一助手轮次给一句简短进度；不展示内部推理、凭据、原始工具载荷或私有运行标识。
+- 输入原件只读。仅在当前工作目录（AI_PLATFORM_WORK_DIR）生成或修改副本，使用相对路径，不修改已安装的 Skill。
+- 最终答复使用普通文本。交付文件前调用 attach_file；成功仅表示已选中，平台在答复完成后发布附件。未成功不得声称已交付，不虚构下载链接。
+- 不附带临时、中间、缓存、日志或诊断文件，除非用户明确要求；未选中的文件保持私有。简洁说明实际结果和未解决的问题。
 """
 
 

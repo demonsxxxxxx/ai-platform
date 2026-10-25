@@ -139,7 +139,7 @@ render: (_value, { profile }) => (<>
           {historyState === "loading" ? (
             <p className="px-3 py-3 text-sm text-[var(--theme-text-secondary)]">正在加载版本历史</p>
           ) : historyState === "error" ? (
-            <p className="px-3 py-3 text-sm text-[var(--theme-danger)]" role="alert">
+            <p className="px-3 py-3 text-sm text-[var(--theme-danger-text)]" role="alert">
               版本历史暂不可用
             </p>
           ) : historyState === "ready" && publishedVersions.length === 0 ? (
@@ -177,7 +177,7 @@ render: (_value, { profile }) => (<>
           {mutation.phase === "testing" ? "试运行中" : "真实试运行"}
         </Button>
         <Button type="default"
-          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger-text)] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !canUnpublish}
           onClick={() => publishedRevision && onUnpublish(publishedRevision)}
           title="下架当前发布版本"
@@ -192,7 +192,7 @@ render: (_value, { profile }) => (<>
         </Button>
         <Button type="default"
           aria-label={editor.publishedRevision ? "删除当前专家，请先下架" : "删除当前专家"}
-          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger-text)] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !canRetire}
           onClick={() => setRetireConfirmationOpen(true)}
           title={editor.publishedRevision ? "请先下架当前专家" : "删除当前专家"}
@@ -252,7 +252,7 @@ render: (_value, { profile }) => (<>
             取消
           </Button>
           <Button type="default"
-            className="border-[var(--theme-danger)] text-[var(--theme-danger)]"
+            className="border-[var(--theme-danger)] text-[var(--theme-danger-text)]"
             onClick={() => {
               setRetireConfirmationOpen(false);
               onRetire();

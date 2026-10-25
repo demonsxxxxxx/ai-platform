@@ -36,7 +36,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.doesNotMatch(source, /MARKET_PAGE_SIZE|paginatedProfiles|<Pagination/);
   assert.match(source, /visibleProfiles\.map/);
   assert.match(source, /rounded-full p-1 transition-colors/);
-  assert.match(source, /text-amber-600/);
+  assert.match(source, /text-\[var\(--theme-warning-text\)\]/);
   assert.doesNotMatch(source, /bg-amber-/);
   assert.doesNotMatch(source, /企业专家目录/);
   assert.doesNotMatch(source, /选择一位企业专家/);

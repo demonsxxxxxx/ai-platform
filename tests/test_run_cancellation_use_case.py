@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,8 @@ from app.runs.api import RunTerminalizationProgress
 from app.runs.application.cancellation import (
     CancelRequestAuthority,
     CancelRequestResult,
+    RunCancellationPostProcessor,
+    RunCancellationQueueCleanupError,
     RunCancellationUseCase,
 )
 
@@ -250,3 +253,113 @@ async def test_queued_legacy_cancel_without_attempt_skips_attempt_stream_admissi
         "audit",
         "transaction.commit",
     ]
+
+
+def _post_processor(order, *, failures=None):
+    failures = failures or {}
+    captured = {}
+
+    def operation(name):
+        async def call(*args, **kwargs):
+            order.append(name)
+            captured[name] = kwargs
+            if name in failures:
+                raise failures[name]
+        return call
+
+    def warn(message, run_id, error):
+        captured.setdefault("warnings", []).append((message, run_id, error))
+
+    return RunCancellationPostProcessor(
+        queue_cleanup=operation("queue"),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=operation("sandbox")),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=operation("admit"), publish_event=operation("publish"), warn=warn,
+    ), captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+async def test_post_cancel_is_after_commit_and_preserves_actor_scope(role):
+    order = []
+    processor, captured = _post_processor(order)
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(role=role)),
+        event_writer=_EventWriter(order), progress_terminalization=_Progressor(order),
+        post_processor=processor,
+    )
+    actor = "owner-a" if role == "owner" else "admin-a"
+    reason = "cancel_requested" if role == "owner" else "admin_cancel_requested"
+    if role == "owner":
+        cancellation = await use_case.request_owner_cancel(
+            tenant_id="tenant-a", run_id="run-a", owner_user_id=actor,
+        )
+    else:
+        cancellation = await use_case.request_admin_cancel(
+            tenant_id="tenant-a", run_id="run-a", admin_user_id=actor,
+        )
+    assert order[-1] == "transaction.commit"
+    result = await use_case.post_cancel(
+        cancellation, tenant_id="tenant-a", user_id=actor,
+        requested_by_role=role, reason=reason, worker_capabilities=object(),
+    )
+    assert order[-5:] == ["transaction.commit", "admit", "publish", "queue", "sandbox"]
+    assert result == {"run_id": "run-a", "status": "cancelled"}
+    assert captured["sandbox"]["tenant_id"] == "tenant-a"
+    assert captured["sandbox"]["run_id"] == "run-a"
+    assert captured["sandbox"]["user_id"] == actor
+    assert captured["sandbox"]["requested_by_role"] == role
+    assert captured["sandbox"]["reason"] == reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["cancelled", "cancel_requested"])
+async def test_missing_attempt_skips_publication_and_only_cancelled_status_removes_queue(status):
+    order = []
+    processor, _ = _post_processor(order)
+    args = dict(tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+                reason="cancel_requested", worker_capabilities=object())
+    assert await processor.post_cancel(None, **args) is None
+    assert order == []
+    receipt = CancelRequestResult("run-a", status, None, (), None)
+    assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
+    assert order == (["queue", "sandbox"] if status == "cancelled" else ["sandbox"])
+
+
+@pytest.mark.asyncio
+async def test_publication_and_queue_failures_still_run_sandbox_cleanup():
+    order = []
+    queue_error = RuntimeError("queue unavailable")
+    processor, captured = _post_processor(order, failures={
+        "admit": RuntimeError("stream unavailable"),
+        "publish": RuntimeError("publication unavailable"), "queue": queue_error,
+    })
+    receipt = CancelRequestResult("run-a", "cancelled", "trace-a", ({"lease_id": "lease-a"},), None, "attempt-a")
+    with pytest.raises(RunCancellationQueueCleanupError) as caught:
+        await processor.post_cancel(
+            receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+            reason="cancel_requested", worker_capabilities=object(),
+        )
+    assert caught.value.failures == [queue_error]
+    assert order == ["admit", "publish", "queue", "sandbox"]
+    assert captured["admit"]["attempt_id"] == "attempt-a"
+    assert captured["sandbox"]["trace_id"] == "trace-a"
+    assert len(captured["warnings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_sandbox_failure_retains_precedence_over_queue_failure():
+    order = []
+    sandbox_error = RuntimeError("sandbox cleanup unavailable")
+    processor, _ = _post_processor(order, failures={
+        "queue": RuntimeError("queue unavailable"), "sandbox": sandbox_error,
+    })
+    receipt = CancelRequestResult("run-a", "cancelled", None, (), None)
+    with pytest.raises(RuntimeError) as caught:
+        await processor.post_cancel(
+            receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+            reason="cancel_requested", worker_capabilities=object(),
+        )
+    assert caught.value is sandbox_error
+    assert order == ["queue", "sandbox"]

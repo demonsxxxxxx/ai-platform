@@ -294,7 +294,7 @@ def test_poc_gate_default_env_path_is_repository_relative():
 def test_poc_gate_validates_api_run_id_before_psql_interpolation():
     text = Path("tools/verify_poc_gate.py").read_text(encoding="utf-8")
 
-    assert "from app.validation import assert_safe_id" in text
+    assert "from app.kernel.identifiers import assert_safe_id" in text
     assert "run_id = assert_safe_id(str(run_id), \"run_id\")" in text
 
 
@@ -492,6 +492,9 @@ def test_sandbox_overlay_grants_socket_and_group_only_to_worker():
         "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
     ]
     worker = overlay["services"]["worker"]
+    assert worker["network_mode"] == "service:api"
+    assert worker["extra_hosts"] == []
+    assert worker["depends_on"]["api"] == {"condition": "service_healthy", "restart": True}
     assert "/var/run/docker.sock:/var/run/docker.sock" in worker["volumes"]
     assert worker["group_add"] == ["${DOCKER_SOCKET_GID:?set DOCKER_SOCKET_GID}"]
     assert overlay["services"]["workspace-init"]["volumes"] == [

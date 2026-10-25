@@ -1,50 +1,21 @@
-# Release Evidence Contract
+# Release Evidence
 
-This directory stores reviewed, redacted evidence. It is not a current-status
-board and it cannot prove a later source revision or deployed runtime.
+This directory is copied into the backend image. It holds two current records:
 
-## Entry Contract
+- [skill-release](skill-release/README.md): read at runtime by the Admin Skill
+  release review for `builtin` Skill versions (`app/skills/release_readiness.py`,
+  `build_skill_version_release_review`).
+- [frontend-shell-parity](frontend-shell-parity/librechat-source.md): the pinned
+  LibreChat upstream provenance for reference-derived UI files, checked by
+  `frontend/web/src/librechat-ui/__tests__/libreChatUiUpstream.test.ts`.
 
-Use the structure:
+Entries contain no credentials, raw environment values, private executor
+payloads, storage keys, sandbox work directories, or absolute private paths.
+Ordinary pull requests, local tests, CI jobs, and review comments keep their
+output in GitHub checks or Actions artifacts, not here. Deployment package
+qualification evidence is generated into the package's own `release-evidence/`
+by `tools/release_compose_package.py` and is not stored in this directory.
 
-```text
-docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json
-```
-
-An entry uses `ai-platform.release-evidence-entry.v1`, is added only when a
-formal release, controlled runtime acceptance, or durable audit requirement
-needs a reviewed record, and contains no credentials, raw environment values,
-private executor payloads, storage keys, sandbox work directories, or absolute
-private paths. Ordinary pull requests, local tests, CI jobs, and review comments
-store their transient output in GitHub checks or Actions artifacts instead of
-adding repository evidence. Evidence ingestion and safe-index behavior are
-implemented by:
-
-```powershell
-python tools/release_evidence_readiness.py --format json
-python tools/release_evidence_export_acceptance.py --format json
-python tools/verify_release_evidence_runtime_acceptance.py --format json
-```
-
-These commands are source checks. They do not deploy, rerun an acceptance probe,
-or make a gate current.
-
-Keep reviewed evidence machine-readable. Do not commit generated Markdown
-readiness or status summaries beside evidence JSON; render operator-readable
-output from the source check when it is needed. Human-authored Markdown in this
-directory is limited to durable contracts and provenance records.
-
-## Interpretation
-
-Runtime-bound evidence must bind its `runtime_subject_commit_sha`, source
-marker, and OCI revision labels to the observed subject. When several reviewed
-entries exist, readiness tools select evidence according to their implemented
-subject-matching rules; an older entry remains historical. Only a fresh
-authorized runtime procedure can establish runtime verification for its exact
-deployed subject. Historical entries retain their original subject and labels;
-they do not verify a different deployment.
-
-Keep diagnostics separate from reviewed evidence. A diagnostic may explain a
-failure or a fix direction, but cannot close a gate. Deletion or retention of a
-reviewed entry follows the machine-readable retention policy and review process,
-not a documentation cleanup.
+The Foundation Alpha, capacity, sandbox, Office context, governance and
+observability gate evidence formerly kept here was removed together with its
+offline readiness tools on 2026-10-24; it remains in Git history.

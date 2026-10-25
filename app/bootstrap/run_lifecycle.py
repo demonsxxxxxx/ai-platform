@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+
 from app.db import transaction
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.queue import remove_queued_run
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.platform.tracing import standard_trace_id
-from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.application.cancellation import (
+    RunCancellationPostProcessor,
+    RunCancellationUseCase,
+)
 from app.runs.api import RunAttemptLifecycleService
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.application.provider_terminalization import progress_run_terminalization_with_context
@@ -22,6 +30,16 @@ from app.streaming.infrastructure.run_events_postgres import append_event
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.sandbox.infrastructure.leases_postgres import list_active_sandbox_leases_for_run
 from app.streaming.infrastructure.run_v4_events import PostgresRunCancellationEventWriter
+from app.streaming.api import V4PublicationTransportUnavailable, admit_v4_stream, publish_run_event
+
+
+def _warn_cancellation_publication(message: str, run_id: str, error: Exception) -> None:
+    transport_error = isinstance(error, V4PublicationTransportUnavailable)
+    logging.getLogger(__name__).warning(
+        message,
+        extra={"run_id": run_id, "error": error.error_code if transport_error else type(error).__name__},
+        exc_info=not transport_error,
+    )
 
 
 def build_run_lifecycle_service() -> RunLifecycleService:
@@ -51,6 +69,7 @@ def build_run_cancellation_use_case(
             run_id=run_id,
         )
 
+    sandbox_cleanup = build_sandbox_runtime_cleanup()
     return RunCancellationUseCase(
         transaction_factory=transaction,
         persistence=PostgresRunCancellationPersistence(
@@ -64,4 +83,13 @@ def build_run_cancellation_use_case(
             load_terminal_event_fact=load_current_terminal_event_fact,
         ),
         progress_terminalization=progress_terminalization,
+        post_processor=RunCancellationPostProcessor(
+            queue_cleanup=remove_queued_run,
+            sandbox_cleanup=sandbox_cleanup,
+            provider_factory=create_container_provider,
+            transaction_factory=transaction,
+            admit_stream=admit_v4_stream,
+            publish_event=publish_run_event,
+            warn=_warn_cancellation_publication,
+        ),
     )

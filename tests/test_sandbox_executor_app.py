@@ -20,8 +20,8 @@ from tests.support.claude_sdk import native_client_factory
 
 from app.execution.api import ClaudeAgentEventCandidate, ModelTextCheckpoint
 from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable
-from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
-from app.public_execution import (
+from app.streaming.domain.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
+from app.streaming.domain.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
     validate_versioned_public_execution_step_payload,
@@ -60,7 +60,7 @@ from app.runtime.sandbox.executor_app import (
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
 )
-from app.validation import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
 TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
@@ -88,7 +88,7 @@ def task_payload(
         "permission_mode": "default",
         "config": {
             "model": "deepseek-v4-flash",
-            "model_token_limits": {"max_input_tokens": 32000, "max_output_tokens": 2048},
+            "model_token_limits": {"auto_compact_window": 200_000, "max_output_tokens": 2048},
             "browser_enabled": False,
             "resource_limits": {"max_seconds": 60},
             "skill_ids": [],
@@ -1024,7 +1024,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert captured["skill_id"] is None
     assert captured["skills"] == []
     assert captured["thinking_effort"] == "high"
-    assert captured["model_max_input_tokens"] == 32000
+    assert captured["model_auto_compact_window"] == 200_000
     assert captured["model_max_output_tokens"] == 2048
     assert not any(
         isinstance(event, executor_app._PlatformExecutionPhaseFact)

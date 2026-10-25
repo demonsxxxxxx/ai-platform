@@ -9,7 +9,7 @@ from app.mcp import api as mcp_api
 from app.mcp.application import runtime_registry
 from app.auth import normalize_roles
 from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.domain.tool_policy import evaluate_tool_policy
 from app.mcp.application.selection_authorization import McpSelectionAuthorization
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 

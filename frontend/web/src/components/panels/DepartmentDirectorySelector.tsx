@@ -66,7 +66,7 @@ export function DepartmentDirectorySelector({
             aria-label={t("skills.governance.departmentSelector.selectAllowed")} title={t("skills.governance.departmentSelector.select")}
           ><Button type="default" size="small" icon={<ChevronDown size={16} />} /></SelectTrigger>
         </div>
-        {loadError ? <p className="text-xs text-[var(--theme-danger)]" role="alert">{loadError}</p> : null}
+        {loadError ? <p className="text-xs text-[var(--theme-danger-text)]" role="alert">{loadError}</p> : null}
         {!resolution.authoritative && selectedAuthorityIds.length > 0 ? <p id={selectionStatusId} className="text-xs text-[var(--theme-warning)]" role="status">{t("skills.governance.departmentSelector.unresolvedWarning")}</p> :
           selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS ? <p id={selectionStatusId} className="text-xs text-[var(--theme-text-secondary)]" role="status">{t("skills.governance.departmentSelector.limitReached")}</p> :
           <span className="sr-only" id={selectionStatusId}>{t("skills.governance.departmentSelector.selectionHelp")}</span>}

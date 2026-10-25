@@ -1,5 +1,8 @@
 from app.auth import AuthPrincipal
-from app.routes.lambchat_compat import _compatibility_events_for_run
+from app.routes.lambchat_compat import (
+    _CompatibilityFoldState,
+    _compatibility_events_for_run_page,
+)
 
 
 def test_public_lifecycle_singletons_match_exact_history_projection():
@@ -67,7 +70,10 @@ def test_public_lifecycle_singletons_match_exact_history_projection():
     for principal in principals:
         history = [
             record.history_event
-            for record in _compatibility_events_for_run(run, run_events, [], principal)
+            for record in _compatibility_events_for_run_page(
+                run, run_events, [], principal,
+                fold_state=_CompatibilityFoldState(False, frozenset()),
+            )[0]
         ]
         lifecycle = [
             (item["event_type"], item["id"], item["sequence"])
@@ -100,5 +106,8 @@ def test_public_lifecycle_singletons_match_exact_history_projection():
     )
     assert [
         (record.id, record.stream_event_type)
-        for record in _compatibility_events_for_run(run, [strict_event], [], principals[0])
+        for record in _compatibility_events_for_run_page(
+            run, [strict_event], [], principals[0],
+            fold_state=_CompatibilityFoldState(False, frozenset()),
+        )[0]
     ] == [("evt-strict-step", "execution_step")]

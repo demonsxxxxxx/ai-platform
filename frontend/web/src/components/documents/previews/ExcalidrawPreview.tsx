@@ -309,14 +309,14 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-red-100 dark:bg-red-900/30">
-          <AlertCircle size={28} className="text-red-500" />
+        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-[var(--theme-danger-soft)]">
+          <AlertCircle size={28} className="text-[var(--theme-danger-text)]" />
         </div>
         <div className="text-center">
-          <p className="text-sm text-red-600 dark:text-red-400 font-medium mb-2">
+          <p className="text-sm text-[var(--theme-danger-text)] font-medium mb-2">
             {error}
           </p>
-          <p className="text-xs text-stone-400 dark:text-stone-500">
+          <p className="text-xs text-neutral-400 dark:text-neutral-500">
             The file may be corrupted or in an unsupported format.
           </p>
         </div>
@@ -329,7 +329,7 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">
         <Spin size={32} />
-        <p className="text-sm text-stone-500 dark:text-stone-400">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">
           Loading diagram...
         </p>
       </div>
@@ -339,23 +339,23 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 shrink-0">
         {/* Zoom controls */}
         <Button type="text"
           onClick={handleZoomOut}
-          className="flex items-center justify-center w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors"
+          className="flex items-center justify-center w-8 h-8 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 transition-colors"
           title={t("documents.zoomOut")}
         >
           <ZoomOut size={16} />
         </Button>
 
-        <span className="text-xs text-stone-500 dark:text-stone-400 min-w-[50px] text-center">
+        <span className="text-xs text-neutral-500 dark:text-neutral-400 min-w-[50px] text-center">
           {Math.round(scale * 100)}%
         </span>
 
         <Button type="text"
           onClick={handleZoomIn}
-          className="flex items-center justify-center w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors"
+          className="flex items-center justify-center w-8 h-8 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 transition-colors"
           title={t("documents.zoomIn")}
         >
           <ZoomIn size={16} />
@@ -363,19 +363,19 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
 
         <Button type="text"
           onClick={handleFitToScreen}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-medium text-neutral-600 dark:text-neutral-300 transition-colors"
           title={t("documents.fitToScreen")}
         >
           <Maximize2 size={14} />
           <span className="hidden sm:inline">{t("documents.fitToScreen")}</span>
         </Button>
 
-        <div className="h-4 w-px bg-stone-200 dark:bg-stone-700" />
+        <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-700" />
 
         {/* Download buttons */}
         <Button type="text"
           onClick={handleDownloadSVG}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-medium text-neutral-600 dark:text-neutral-300 transition-colors"
           title={`${t("documents.download")} SVG`}
         >
           <Download size={14} />
@@ -384,7 +384,7 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
 
         <Button type="text"
           onClick={handleDownloadPNG}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-xs font-medium text-neutral-600 dark:text-neutral-300 transition-colors"
           title={`${t("documents.download")} PNG`}
         >
           <Download size={14} />
@@ -395,7 +395,7 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
       {/* SVG Container with touch and drag support */}
       <div
         ref={containerRef}
-        className={`flex-1 overflow-hidden bg-white dark:bg-stone-900 flex items-center justify-center ${
+        className={`flex-1 overflow-hidden bg-white dark:bg-neutral-900 flex items-center justify-center ${
           isDragging ? "cursor-grabbing" : "cursor-grab"
         }`}
         onWheel={handleWheel}
@@ -417,7 +417,7 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
             dangerouslySetInnerHTML={{ __html: svgContent }}
           />
         ) : (
-          <p className="text-stone-400 dark:text-stone-500">
+          <p className="text-neutral-400 dark:text-neutral-500">
             {t("documents.noContent")}
           </p>
         )}

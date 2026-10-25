@@ -14,8 +14,8 @@ from app.identity.infrastructure import postgres as identity_postgres
 from app.mcp.infrastructure import tool_policies_postgres as mcp_tool_policies
 from app.models import AdminToolPolicyUpdateRequest
 from app.platform.postgres import errors as platform_errors
-from app.tool_policy import RISK_ORDER
-from app.validation import assert_safe_id
+from app.mcp.api import RISK_ORDER
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

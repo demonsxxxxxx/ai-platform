@@ -103,6 +103,15 @@ from app.execution.domain.public_projection import (
     sdk_failure_result_fields,
 )
 
+from app.execution.domain.model_catalog import (
+    AUTO_COMPACT_WINDOW_DEFAULT_TOKENS as AUTO_COMPACT_WINDOW_DEFAULT_TOKENS,
+    AUTO_COMPACT_WINDOW_MAX_TOKENS as AUTO_COMPACT_WINDOW_MAX_TOKENS,
+    AUTO_COMPACT_WINDOW_MIN_TOKENS as AUTO_COMPACT_WINDOW_MIN_TOKENS,
+)
+from app.execution.domain.model_catalog import (
+    legacy_input_capacity_to_auto_compact_window as legacy_input_capacity_to_auto_compact_window,
+)
+
 from typing import Any
 
 from app.execution.application.follow_up_completion import (
@@ -120,23 +129,51 @@ from app.execution.application.model_selection import (
     bind_selected_run_model as bind_selected_run_model,
     parse_requested_model_selection as parse_requested_model_selection,
 )
+from app.execution.domain.office_execution_tier import (
+    route_office_execution_tier as route_office_execution_tier,
+)
+from app.execution.domain.input_limits import (
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS as MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS as MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    assert_upstream_model_id as assert_upstream_model_id,
+)
 
 
-async def list_public_models(conn: Any) -> dict[str, object]:
-    return await configured_model_control_plane().public_models(conn)
+async def list_public_models(conn: Any, *, user_id: str) -> dict[str, object]:
+    return await configured_model_control_plane().public_models(conn, user_id=user_id)
+
+
+async def model_access_excludes_user(
+    conn: Any, *, model_id: str, user_id: str
+) -> bool:
+    """Return whether the current model user list excludes this user."""
+
+    return await configured_model_control_plane().model_access_excludes_user(
+        conn, model_id=model_id, user_id=user_id
+    )
 
 
 async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
+    user_id: str,
 ) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
+        user_id=user_id,
     )
 
 __all__ = [
+    "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS",
+    "assert_upstream_model_id",
+    "route_office_execution_tier",
+    "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
+    "AUTO_COMPACT_WINDOW_MAX_TOKENS",
+    "AUTO_COMPACT_WINDOW_MIN_TOKENS",
+    "legacy_input_capacity_to_auto_compact_window",
     "FollowUpSuggestionResult",
     "FollowUpSuggestionService",
     "ModelTextCheckpoint",
@@ -194,6 +231,7 @@ __all__ = [
     "submit_run_until_cancelled",
     "configured_follow_up_suggestions",
     "list_public_models",
+    "model_access_excludes_user",
     "bind_selected_run_model",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",

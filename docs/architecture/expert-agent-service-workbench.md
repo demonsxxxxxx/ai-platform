@@ -6,10 +6,11 @@ Source baseline: `5176578bed089b7b479cefc528b240c2edf94c31`
 
 ## Purpose
 
-The authenticated product is an expert-agent service, not a generic chat
-product with an Agent add-on. An ordinary user should select a published expert,
-describe a task, and work inside that expert's pinned conversation without
-having to understand model, Skill, MCP, revision, or prompt plumbing.
+The authenticated product offers general Chat and published expert services in
+one shared conversation frame. General Chat supports open-ended questions;
+an expert workspace makes its public identity and task examples clear while
+keeping its pinned conversation and governed capabilities server-owned. Users
+do not need to understand Skill, MCP, revision, or prompt plumbing.
 
 This document is the implementation checklist for the Agent Market, Agent
 Builder, Skill administration, and authenticated navigation changes in this
@@ -44,30 +45,31 @@ server-side and appended to the executor system prompt.
 ### Authenticated navigation
 
 1. The authenticated root and post-login fallback open Company Navigation at
-   `/apps`. The bare `/chat` route is a first-class generic conversation surface:
-   it opens a new generic Chat session, and its sidebar exposes generic Chat
-   creation and session search alongside Agent Market, Agent Builder, Skills,
-   MCP, model administration and run monitoring. Agent-first landing is not a
-   redirect away from Chat.
-2. Generic Chat creation and search are discoverable from the Chat navigation
-   entry. The user's global session history remains available as a
-   disclosure-safe navigation list grouped by public Agent identity, and it never
-   reclassifies a session as a task for whichever Agent is currently selected.
-3. `/chat/:sessionId` opens that session directly; both the bare route and the
-   session route share the same Chat components. The canonical Chat components
-   are also reused by Agent Workspace for streaming, files, history, and the
-   composer.
-4. Agent Workspace navigation keeps two distinct history scopes: global session
-   history in the primary navigation and Agent-scoped task history in the
-   adjacent workspace panel. Desktop shows both; narrower layouts offer a
-   switch between them. A global history selection opens the session under its
-   original Agent or generic compatibility route and never reclassifies it as a
-   task for the currently selected Agent. Workspace controls still use task
-   language: “start new task” and “task history” for an Agent workspace; generic
-   Chat wording applies only outside a workspace.
-   Both history surfaces apply successful rename/delete receipts through the
-   workspace's shared mutation callbacks; their paginated and global reads remain
-   separate server projections, scoped to the current authenticated principal.
+   `/apps`. Bare `/chat` opens general Chat, reachable from the primary
+   navigation `对话` entry and from the collapsed/mobile rail.
+2. General Chat exposes new-conversation and search controls. The user's global
+   session history remains a disclosure-safe list grouped by public Agent
+   identity. At the bottom of the expanded sidebar, administrators have a
+   collapsible `管理` group with a shield icon; ordinary users instead have
+   `可用能力` with a layers icon and the existing Skill/MCP destinations.
+   These are presentation groups, not new permission grants. The separate
+   account-footer gear retains the existing settings menu and its actions;
+   platform resource navigation is never moved into that menu.
+3. `/chat/:sessionId` keeps the canonical Chat reader and recovers its original
+   Agent binding. Agent Workspace reuses the same streaming, files, history, and
+   composer implementation.
+4. Agent Workspace and general Chat share one 272px primary sidebar that owns
+   global navigation and history. Agent Workspace keeps two distinct history
+   scopes: global session history and Agent-scoped task history, presented
+   through one in-sidebar scope switch (`任务历史` / `全部对话`) instead of an
+   adjacent second history sidebar. Both surfaces stay mounted so a successful
+   rename/delete receipt reaches the hidden scope, and only one is presented at
+   a time; paginated and global reads remain separate server projections scoped
+   to the current authenticated principal. A global history selection opens the
+   session under its original Agent or generic compatibility route and never
+   reclassifies it as a task for the currently selected Agent. Workspace
+   controls still use task language: “start new task” and “task history”; they
+   must not expose generic Chat creation or search.
    Selecting an Agent task commits its route immediately. The existing route
    identity and history lifecycle owns recovery and supersession, including a
    return to the previously open task while another identity read is pending.
@@ -198,9 +200,9 @@ the browser.
 
 | Work package | Primary source | Required outcome |
 | --- | --- | --- |
-| Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login resolve to Company Navigation; bare Chat opens the generic Chat surface with its own creation and search entry |
+| Shared entry routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login resolve to Company Navigation; `/chat` opens general Chat and existing session links preserve identity |
 | Market task language | `frontend/web/src/features/agent-market/AgentMarketRoute.tsx` | Task-oriented hierarchy, CTA, examples, and recovery states |
-| Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; the generic Chat entry appears outside a workspace |
+| Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and task history inside the single primary sidebar |
 | Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Three-field initial surface; presentation and governance grouped as optional |
 | Skill archive UX | `SkillsPanel/*`, `useSkills.ts`, locale files | Truthful archive semantics, optimistic removal/rollback, partial-result handling |
 
@@ -239,10 +241,10 @@ the browser.
 
 ### Source and component checks
 
-- Authenticated `/` and the post-login fallback resolve to `/apps`; bare `/chat`
-  opens a new generic Chat session and `/chat/:sessionId` opens that session.
-  Generic Chat creation and search are reachable from the Chat navigation entry,
-  while an Agent workspace still shows only “start new task” and “task history”.
+- Authenticated `/` and the post-login fallback resolve to `/apps`; `/chat`
+  renders the general entry and `/chat/:sessionId` stays direct-addressable.
+  Generic Chat creation and search are reachable from the `对话` entry, while an
+  Agent workspace still shows only “start new task” and “task history”.
 - Agent Market card/detail navigation still carries exact `agent_id` and
   revision through the existing route builders.
 - Opening a Workspace does not create a conversation; first explicit send uses
@@ -260,14 +262,18 @@ the browser.
 
 ### Browser checks
 
-- Desktop and narrow viewport: Company Navigation is the default authenticated
-  surface; Agent Market cards and recovery actions remain usable, and no generic
-  Chat entry appears.
+- Desktop and narrow viewport: Company Navigation stays the default
+  authenticated surface; general Chat and Expert Market are both discoverable.
+  Cards and recovery actions remain usable.
 - Builder initially shows the three core fields; every progressive section can
   be opened with keyboard and retains entered values.
-- Agent Workspace shows expert identity, task examples, task history, global
-  session history in the primary navigation, the shared enabled-model selector,
-  and a task-oriented composer without exposing the other capability selectors.
+- Agent Workspace shows expert identity in the thread header, task examples, one
+  in-sidebar history scope switch for task history and global session history,
+  the shared enabled-model selector, and a task-oriented composer without
+  exposing the other capability selectors. General Chat shows the `通用助手`
+  header, the `今天想解决什么问题？` headline with its three suggestions that fill
+  the draft without sending, and the same composer. No desktop view shows a
+  second history sidebar.
 - Global history selection preserves the session's original Agent identity (or
   generic `/chat/:sessionId` compatibility route) and does not bind another
   Agent's session into the currently open workspace.
@@ -294,6 +300,25 @@ Skill revisions; it must not delete Agent revisions, conversations, Skill
 distributions, Runs, or historical compatibility rows. Do not use rollback to
 reintroduce mandatory Skill invocation, per-Agent file-type gates,
 `general-chat` as a published Skill, or weaker server-owned Agent admission.
+
+## Retired presentation surfaces
+
+This change replaces presentation only. Run admission, conversation pinning,
+Session isolation, authorization, and persistence are unchanged.
+
+| Superseded surface | Disposition |
+| --- | --- |
+| `AgentConversationPanel.tsx` (adjacent desktop Agent history sidebar) | Deleted. Its panel geometry, collapse control, and duplicate new-conversation button are no longer rendered; the primary sidebar scope switch owns that presentation. Owning regression: `features/agent-market/__tests__/AgentConversationPanel.test.ts` asserts the zero-importer inventory and that the file is absent. |
+| `AgentConversationPanel` props/`contentSidebar`/`agentHistoryInMainPanel` threading | Removed from `AppShell`, `ChatAppContent`, and `SessionSidebar`. No compatibility consumer exists outside the retired panel. |
+| Bare `/chat` redirect and hidden generic Chat navigation | Replaced with the general entry and shared navigation; `/chat/:sessionId` identity recovery is unchanged. Owning regressions: `AppRouteFallback.test.ts`, `launchpadRoute.test.ts`, and sidebar navigation tests. |
+| One `管理` label and gear icon for every user's platform navigation group | Replaced by admin `管理` (shield) and ordinary `可用能力` (layers, Skill/MCP only). The footer settings gear and existing authorization policy are unchanged. `GeneralChatEntryReset.mounted.test.tsx` verifies each role's rendered destinations and independent gear action. |
+| Always-on empty-state mascot badge and time-of-day greeting | Removed from `WelcomePage`; the branded `/icons/icon.svg` asset is unchanged and still used elsewhere. |
+| `68rem` / `60rem` message/composer column and `288px` sidebar width | Replaced by an aligned, responsive `76rem` maximum column for messages, composer, status and skeletons; the shared sidebar remains `272px` in `librechat-ui/surface.ts`. Only visual geometry changes; chat controls and behavior are unchanged. |
+
+Verification of the retirement is the source inventory in
+`AgentConversationPanel.test.ts` plus the mounted scope-switch coverage in
+`AgentWorkspaceHistory.mounted.test.tsx`; no deleted path is left active without
+an importing caller.
 
 ## Rejected Alternatives
 

@@ -132,10 +132,26 @@ test("keeps active conversations wide, readable, and visually compact", () => {
     new URL("../../../chat/assistant-ui/elements/thread.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(view, /className="mx-auto max-w-\[68rem\] px-2"/);
+  const composerRoot = readFileSync(
+    new URL("../../../chat/assistant-ui/elements/composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const companionSources = [
+    "../../../chat/ChatInput.tsx",
+    "../../../chat/WelcomePage.tsx",
+    "../../../chat/assistant-ui/FollowUpSuggestionsGate.tsx",
+    "../ChatConnectionStatus.tsx",
+    "../../../skeletons/ChatSkeletons.tsx",
+  ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+
+  assert.match(view, /className="mx-auto max-w-\[76rem\] px-2"/);
   assert.match(message, /<AssistantMessageContent/);
-  assert.match(thread, /max-w-\[68rem\]/);
-  assert.match(userMessage, /max-w-\[68rem\]/);
+  for (const source of [view, thread, composerRoot, userMessage, ...companionSources]) {
+    assert.match(source, /max-w-\[76rem\]/);
+    assert.doesNotMatch(source, /max-w-\[60rem\]/);
+  }
+  assert.match(thread, /max-w-\[76rem\] flex-col break-words px-2/);
+  assert.match(userMessage, /max-w-\[76rem\] justify-end px-2/);
   assert.match(userMessage, /sm:max-w-\[75%\]/);
 });
 

@@ -90,6 +90,7 @@ export interface AdminUserListOptions {
   search?: string;
   offset?: number;
   limit?: number;
+  signal?: AbortSignal;
 }
 
 export function buildAdminUsersUrl(options: AdminUserListOptions = {}): string {
@@ -108,6 +109,8 @@ export async function fetchAdminUsers(
 ): Promise<AdminUserListResponse> {
   return client.request<AdminUserListResponse>(buildAdminUsersUrl(options), {
     method: "GET",
+    // Only an explicit signal changes the request shape; absent stays absent.
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 

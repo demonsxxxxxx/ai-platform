@@ -3,6 +3,7 @@ import io
 import json
 import zipfile
 from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 
 import httpx
 import pytest
@@ -15,8 +16,10 @@ from app.execution.infrastructure.harness.claude.session_store import ClaudeSess
 from app.execution.infrastructure import model_upstream as upstream
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.application.diagnostic_export import build_admin_diagnostic_export
+from app.runs.domain import diagnostics as runs_diagnostics
 from app.runs.domain.diagnostics import merge_run_diagnostics, sanitize_runtime_diagnostics
 from app.sandbox.api import SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, normalize_sdk_runtime_diagnostics
+from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics
 from tests.test_admin_run_trajectory import _row
 from tests.test_model_upstream_stream import _mock, _call
 
@@ -37,8 +40,43 @@ def test_debug_closed_fields_survive_both_boundaries_without_arbitrary_data():
     assert sanitize_runtime_diagnostics(projected) == projected
 
 
+def test_debug_projection_boundaries_revalidate_the_same_policy_at_each_trust_boundary():
+    facts = {
+        "component": "provider_session",
+        "entry_kind": "new-future-kind",
+        "attempt_count": 0,
+        "http_status": 599,
+        "sdk_version": "0.2.165",
+        "executor_runtime_commit": "a" * 40,
+        "headers": "PRIVATE",
+        "url": "https://PRIVATE",
+        "count": True,
+    }
+    expected = {
+        "component": "provider_session",
+        "entry_kind": "other",
+        "attempt_count": 0,
+        "http_status": 599,
+        "sdk_version": "0.2.165",
+        "executor_runtime_commit": "a" * 40,
+    }
+
+    assert normalize_execution_debug(facts) == expected
+    assert runs_diagnostics._normalize_execution_debug(facts) == expected
+    assert sandbox_diagnostics._normalize_execution_debug(facts) == expected
+    assert normalize_execution_debug(MappingProxyType({"attempt_count": 1})) == {"attempt_count": 1}
+    assert runs_diagnostics._normalize_execution_debug(MappingProxyType({"attempt_count": 1})) == {}
+    assert sandbox_diagnostics._normalize_execution_debug(MappingProxyType({"attempt_count": 1})) == {}
+    assert normalize_execution_debug({"attempt_count": True}) == {}
+    assert runs_diagnostics._normalize_execution_debug({"attempt_count": True}) == {}
+    assert sandbox_diagnostics._normalize_execution_debug({"attempt_count": True}) == {}
+    assert normalize_execution_debug({"attempt_count": 1}) == {"attempt_count": 1}
+    assert runs_diagnostics._normalize_execution_debug({"attempt_count": 1}) == {"attempt_count": 1}
+    assert sandbox_diagnostics._normalize_execution_debug({"attempt_count": 1}) == {"attempt_count": 1}
+
+
 def test_debug_projection_boundaries_match_the_execution_contract():
-    from app.execution.domain import runtime_debug as contract
+    from app.kernel import runtime_debug as contract
 
     cases = [
         {name: value}

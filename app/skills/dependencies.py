@@ -1,4 +1,4 @@
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 INVALID_DEPENDENCY_ID = "[invalid-skill-id]"

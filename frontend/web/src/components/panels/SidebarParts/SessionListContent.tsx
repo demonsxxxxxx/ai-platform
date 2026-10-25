@@ -4,7 +4,6 @@ import {
   ChevronDown,
   Search,
   MessageSquarePlus,
-  MessageSquare,
   LayoutGrid,
   Package,
   Plug,
@@ -12,6 +11,9 @@ import {
   Bot,
   Cpu,
   Activity,
+  ChartNoAxesColumn,
+  Layers,
+  Shield,
   Settings,
   PanelLeftClose,
 } from "lucide-react";
@@ -31,6 +33,7 @@ import { SessionItem } from "../../sidebar/SessionItem";
 import { ThreadList } from "./ThreadList";
 import { APP_NAME } from "../../../constants";
 import {
+  getSafeWorkbenchNavPath,
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
 } from "./navigationState";
@@ -40,6 +43,7 @@ import {
 } from "../../governance/workbenchAccessPolicy";
 import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { isAiAdminUser } from "../capabilityAdmin";
+import { useSidebarPreference, SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY } from "../../../hooks/useSidebarPreference";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -87,7 +91,6 @@ interface SessionListContentProps {
     name: string;
     description: string;
   };
-  agentHistoryInMainPanel?: boolean;
   hideSessionDiscovery?: boolean;
   navigationOnly?: boolean;
   showSessionHistory?: boolean;
@@ -117,7 +120,6 @@ export function SessionListContent({
   isChatsCollapsed,
   onToggleChatsCollapsed,
   agentWorkspace,
-  agentHistoryInMainPanel = false,
   hideSessionDiscovery = false,
   navigationOnly = false,
   showSessionHistory = false,
@@ -149,10 +151,14 @@ export function SessionListContent({
   const [expandedAgentGroups, setExpandedAgentGroups] = useState<Set<string>>(
     () => new Set(),
   );
-  const [mobileHistoryView, setMobileHistoryView] = useState<"tasks" | "all">("tasks");
+  const [historyView, setHistoryView] = useState<"tasks" | "all">(
+    "tasks",
+  );
+  const [managementCollapsed, setManagementCollapsed] = useSidebarPreference(SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const isManagementOpen = isAiAdmin ? !managementCollapsed : capabilitiesOpen;
   const autoExpandedSessionRef = useRef<string | null>(null);
   const autoExpandedAgentGroupsRef = useRef<string | null>(null);
-
   useEffect(() => {
     if (agentWorkspace || !currentSessionId) {
       autoExpandedSessionRef.current = null;
@@ -175,14 +181,13 @@ export function SessionListContent({
     const agentId = agentWorkspace?.agent_id;
     if (
       !agentId ||
-      !agentHistoryInMainPanel ||
       globalIsLoading ||
       groupedAgentSessions.length === 0 ||
       autoExpandedAgentGroupsRef.current === agentId
     ) return;
     autoExpandedAgentGroupsRef.current = agentId;
     setExpandedAgentGroups(new Set(groupedAgentSessions.map((group) => group.key)));
-  }, [agentHistoryInMainPanel, agentWorkspace?.agent_id, globalIsLoading, groupedAgentSessions]);
+  }, [agentWorkspace?.agent_id, globalIsLoading, groupedAgentSessions]);
 
   const toggleAgentGroup = (key: string) => {
     setExpandedAgentGroups((previous) => {
@@ -348,6 +353,19 @@ export function SessionListContent({
     );
   };
   const showSessionRegion = !navigationOnly || showSessionHistory;
+  const historyScope: "tasks" | "all" = agentWorkspace
+    ? historyView
+    : "all";
+  // General Chat is the new-conversation entry. A bare push leaves the live
+  // Session bound, and the URL-sync canonicalizer then rewrites
+  // /chat/<old session>, rehydrating the previous transcript.
+  const openGeneralChat = () => {
+    if (navigationOnly || agentWorkspace) {
+      navigate("/chat");
+      return;
+    }
+    onNewSession();
+  };
   const taskNavItems: Array<{
     key: WorkbenchNavItem;
     icon: React.ComponentType<{ size?: number }>;
@@ -356,9 +374,9 @@ export function SessionListContent({
   }> = [
     {
       key: "chat",
-      icon: MessageSquare,
+      icon: MessageSquarePlus,
       label: t("nav.chat"),
-      onClick: () => navigate("/chat"),
+      onClick: openGeneralChat,
     },
     {
       key: "apps",
@@ -372,16 +390,13 @@ export function SessionListContent({
       label: "专家市场",
       onClick: () => navigate("/agent-market"),
     },
-    ...(isAiAdmin
-      ? [
-          {
-            key: "agentBuilder" as const,
-            icon: Bot,
-            label: "专家管理",
-            onClick: () => navigate("/agent-builder"),
-          },
-        ]
-      : []),
+  ];
+  const managementNavItems: Array<{
+    key: WorkbenchNavItem;
+    icon: React.ComponentType<{ size?: number }>;
+    label: string;
+    onClick: () => void;
+  }> = [
     {
       key: "skills",
       icon: Package,
@@ -389,23 +404,22 @@ export function SessionListContent({
       onClick: () => navigate("/skills"),
     },
     {
-      key: "pluginMarket",
-      icon: Plug,
-      label: "插件市场",
-      onClick: () => navigate("/plugins"),
-    },
-  ];
-  const governanceNavItems: Array<{
-    key: WorkbenchNavItem;
-    icon: React.ComponentType<{ size?: number }>;
-    label: string;
-    onClick: () => void;
-  }> = [
-    {
       key: "mcp",
       icon: Server,
       label: t("featureMenu.mcpTools"),
       onClick: () => navigate("/mcp"),
+    },
+    {
+      key: "agentBuilder",
+      icon: Bot,
+      label: "专家管理",
+      onClick: () => navigate(getSafeWorkbenchNavPath("agentBuilder", user)),
+    },
+    {
+      key: "pluginMarket",
+      icon: Plug,
+      label: "插件市场",
+      onClick: () => navigate("/plugins"),
     },
     {
       key: "models",
@@ -414,13 +428,23 @@ export function SessionListContent({
       onClick: () => navigate("/models"),
     },
     {
+      key: "usage",
+      icon: ChartNoAxesColumn,
+      label: t("nav.usage"),
+      onClick: () => navigate("/usage"),
+    },
+    {
       key: "runs",
       icon: Activity,
       label: t("nav.runs"),
       onClick: () => navigate("/runs"),
     },
   ];
-  const visibleGovernanceNavItems = governanceNavItems.filter(({ key }) =>
+  const visibleTaskNavItems = taskNavItems.filter(({ key }) =>
+    canAccessWorkbenchItem(user, key),
+  );
+  const visibleManagementNavItems = managementNavItems.filter(({ key }) =>
+    (isAiAdmin || key === "skills" || key === "mcp") &&
     canAccessWorkbenchItem(user, key),
   );
 
@@ -455,9 +479,7 @@ export function SessionListContent({
         data-workbench-primary-nav
         className="flex flex-col gap-2 px-2 pb-2 pt-2"
       >
-        {!navigationOnly ? <div
-          className={agentHistoryInMainPanel ? "space-y-1 xl:hidden" : "space-y-1"}
-        >
+        {!navigationOnly ? <div className="space-y-1">
           <Button type="text"
             onClick={onNewSession}
             className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm font-medium transition-colors focus:outline-none"
@@ -491,15 +513,127 @@ export function SessionListContent({
         </div> : null}
 
         {!navigationOnly ? (
-          <div
-            className={agentHistoryInMainPanel ? "h-px bg-[var(--theme-border)]/70 xl:hidden" : "h-px bg-[var(--theme-border)]/70"}
-          />
+          <div className="h-px bg-[var(--theme-border)]/70" />
         ) : null}
 
-        <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
-          {taskNavItems
-            .filter(({ key }) => canAccessWorkbenchItem(user, key))
-            .map(({ key, icon: Icon, label, onClick }) => {
+        <LibreChatPanelSection group="tasks" label={t("sidebar.navigate")}>
+          {visibleTaskNavItems.map(({ key, icon: Icon, label, onClick }) => {
+            const isActive = activeNavItem === key;
+            return (
+              <Button type="text"
+                key={key}
+                onClick={onClick}
+                aria-current={isActive ? "page" : undefined}
+                data-active={isActive ? "true" : "false"}
+                data-workbench-nav-item={key}
+                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
+              >
+                <Icon size={19} />
+                <span className="min-w-0 truncate">{label}</span>
+              </Button>
+            );
+          })}
+        </LibreChatPanelSection>
+      </div>
+
+      {/* Session list */}
+      {showSessionRegion ? <div
+        ref={onSetScrollEl}
+        data-workbench-session-region
+        data-sidebar-scroll
+        className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        <div className="flex flex-col gap-px">
+          {agentWorkspace ? (
+            <div
+              aria-label="历史范围"
+              className="mb-2 grid grid-cols-2 rounded-md bg-[var(--theme-sidebar-panel-muted)] p-0.5"
+              data-history-scope-switch
+              role="group"
+            >
+              <Button type="text"
+                aria-pressed={historyView === "tasks"}
+                className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                  historyView === "tasks"
+                    ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
+                    : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+                }`}
+                onClick={() => setHistoryView("tasks")}
+                htmlType="button"
+              >
+                任务历史
+              </Button>
+              <Button type="text"
+                aria-pressed={historyView === "all"}
+                className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                  historyView === "all"
+                    ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
+                    : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+                }`}
+                onClick={() => setHistoryView("all")}
+                htmlType="button"
+              >
+                全部对话
+              </Button>
+            </div>
+          ) : null}
+          {/* Both projections stay mounted so a rename/delete receipt reaches the
+              hidden scope; only one is presented at a time. */}
+          <div data-workbench-task-history hidden={historyScope !== "tasks"}>
+            {renderHistoryCatalog(
+              "任务历史",
+              isLoading,
+              groupedSessions.length > 0,
+              chatsUnreadCount,
+              renderTaskHistory(),
+            )}
+          </div>
+          <div data-workbench-global-history hidden={historyScope !== "all"}>
+            {renderHistoryCatalog(
+              t("sidebar.chats"),
+              globalIsLoading,
+              groupedAgentSessions.length > 0,
+              globalChatsUnreadCount,
+              renderGlobalSessionGroups(),
+            )}
+          </div>
+        </div>
+      </div> : <div className="flex-1" data-workbench-navigation-spacer />}
+
+      {visibleManagementNavItems.length > 0 ? (
+        <div
+          data-workbench-management-nav={isAiAdmin ? true : undefined}
+          data-workbench-capabilities-nav={isAiAdmin ? undefined : true}
+          className="shrink-0 border-t border-[var(--theme-border)] px-2 py-1"
+        >
+          <Button type="text"
+            aria-controls="workbench-management-nav-items"
+            aria-expanded={isManagementOpen}
+            htmlType="button"
+            className="group/section flex h-8 w-full items-center justify-between rounded-md px-[9px] text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+            style={{ justifyContent: "flex-start", textAlign: "left" }}
+            onClick={() => isAiAdmin
+              ? setManagementCollapsed((collapsed) => !collapsed)
+              : setCapabilitiesOpen((open) => !open)}
+          >
+            <span className="flex min-w-0 flex-1 items-center gap-3">
+              {isAiAdmin ? (
+                <Shield size={19} aria-hidden="true" />
+              ) : (
+                <Layers size={19} aria-hidden="true" />
+              )}
+              <span className="truncate font-medium">{isAiAdmin ? "管理" : "可用能力"}</span>
+            </span>
+            <ChevronDown
+              aria-hidden="true"
+              className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
+                isManagementOpen ? "rotate-180" : ""
+              }`}
+              size={14}
+            />
+          </Button>
+          <div id="workbench-management-nav-items" hidden={!isManagementOpen}>
+            {visibleManagementNavItems.map(({ key, icon: Icon, label, onClick }) => {
               const isActive = activeNavItem === key;
               return (
                 <Button type="text"
@@ -515,111 +649,9 @@ export function SessionListContent({
                 </Button>
               );
             })}
-        </LibreChatPanelSection>
-
-        <LibreChatPanelSection
-          group="governance"
-          label={t("sidebar.governance")}
-        >
-          {visibleGovernanceNavItems.map(
-            ({ key, icon: Icon, label, onClick }) => {
-            const isActive = activeNavItem === key;
-            return (
-              <Button type="text"
-                key={key}
-                onClick={onClick}
-                aria-current={isActive ? "page" : undefined}
-                data-active={isActive ? "true" : "false"}
-                data-workbench-nav-item={key}
-                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
-              >
-                <Icon size={19} />
-                <span className="min-w-0 truncate">{label}</span>
-              </Button>
-            );
-            },
-          )}
-        </LibreChatPanelSection>
-      </div>
-
-      {/* Session list */}
-      {showSessionRegion ? <div
-        ref={onSetScrollEl}
-        data-workbench-session-region
-        data-sidebar-scroll
-        className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      >
-        <div className="flex flex-col gap-px">
-          {agentWorkspace && agentHistoryInMainPanel ? (
-            <>
-              <div className="hidden xl:block" data-workbench-global-history>
-                {renderHistoryCatalog(
-                  t("sidebar.chats"),
-                  globalIsLoading,
-                  groupedAgentSessions.length > 0,
-                  globalChatsUnreadCount,
-                  renderGlobalSessionGroups(),
-                )}
-              </div>
-              <div className="xl:hidden" data-workbench-mobile-history>
-                <div
-                  aria-label="历史范围"
-                  className="mb-2 grid grid-cols-2 rounded-md bg-[var(--theme-sidebar-panel-muted)] p-0.5"
-                  role="group"
-                >
-                  <Button type="text"
-                    aria-pressed={mobileHistoryView === "tasks"}
-                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
-                      mobileHistoryView === "tasks"
-                        ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
-                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
-                    }`}
-                    onClick={() => setMobileHistoryView("tasks")}
-                    htmlType="button"
-                  >
-                    任务历史
-                  </Button>
-                  <Button type="text"
-                    aria-pressed={mobileHistoryView === "all"}
-                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
-                      mobileHistoryView === "all"
-                        ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
-                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
-                    }`}
-                    onClick={() => setMobileHistoryView("all")}
-                    htmlType="button"
-                  >
-                    全部对话
-                  </Button>
-                </div>
-                {mobileHistoryView === "tasks"
-                  ? renderHistoryCatalog(
-                      "任务历史",
-                      isLoading,
-                      groupedSessions.length > 0,
-                      chatsUnreadCount,
-                      renderTaskHistory(),
-                    )
-                  : renderHistoryCatalog(
-                      t("sidebar.chats"),
-                      globalIsLoading,
-                      groupedAgentSessions.length > 0,
-                      globalChatsUnreadCount,
-                      renderGlobalSessionGroups(),
-                    )}
-              </div>
-            </>
-          ) : renderHistoryCatalog(
-            agentWorkspace ? "任务历史" : t("sidebar.chats"),
-            agentWorkspace ? isLoading : globalIsLoading,
-            agentWorkspace
-              ? groupedSessions.length > 0
-              : groupedAgentSessions.length > 0,
-            agentWorkspace ? chatsUnreadCount : globalChatsUnreadCount,
-            agentWorkspace ? renderTaskHistory() : renderGlobalSessionGroups(),
-          )}
+          </div>
         </div>
-      </div> : <div className="flex-1" data-workbench-navigation-spacer />}
+      ) : null}
 
       <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
         <div className="min-w-0 flex-1"><UserMenu showLabel /></div>

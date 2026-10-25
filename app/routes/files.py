@@ -25,7 +25,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
-from app.artifact_preview import artifact_preview_allowed
+from app.artifacts.api import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.context.infrastructure.sources_postgres import get_scoped_context_file
 from app.control_plane_contracts import standard_trace_id
@@ -97,7 +97,7 @@ from app.storage import (
     StoredObject,
     run_storage_io,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 MAX_DIRECT_UPLOAD_BYTES = 32 * 1024 * 1024

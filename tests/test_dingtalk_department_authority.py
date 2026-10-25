@@ -111,6 +111,45 @@ async def lookup(*, fresh=False, base_url="https://ding.test", reader=None):
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_uses_one_timeout_for_membership_and_its_department_directory(monkeypatch):
+    from app.bootstrap import department_authority
+
+    adapter._membership_cache.clear()
+    settings = SimpleNamespace(
+        dingtalk_department_authority_base_url="https://ding.test",
+        dingtalk_department_authority_timeout_seconds=15,
+    )
+    original = httpx.AsyncClient
+    calls = []
+
+    def handle(request):
+        calls.append(request.url.path)
+        if request.url.path == "/api/DingTalk/employee/CHECK001/department-ids":
+            return httpx.Response(200, json={"workid": "CHECK001", "department_ids": ["110"]})
+        assert request.url.path == "/api/DingTalk/departs/pure"
+        return httpx.Response(200, json=[{
+            "value": "110", "parentId": "1", "label": "技术", "children": [],
+        }])
+
+    def client(**kwargs):
+        assert kwargs == {"timeout": 15, "trust_env": False, "follow_redirects": False}
+        return original(**kwargs, transport=httpx.MockTransport(handle))
+
+    monkeypatch.setattr(adapter.httpx, "AsyncClient", client)
+    try:
+        authority = await department_authority.resolve_department_authority(
+            "CHECK001", settings=settings, fresh=True,
+        )
+        assert authority.department_authority_status == "available"
+        assert authority.department_ids == ("110",)
+        assert calls == [
+            "/api/DingTalk/employee/CHECK001/department-ids", "/api/DingTalk/departs/pure",
+        ]
+    finally:
+        adapter._membership_cache.clear()
+
+
+@pytest.mark.asyncio
 async def test_readonly_client_binds_identity_without_credentials_and_bounds_cache(department_http, monkeypatch):
     observed, payload, _ = department_http
     scope = await lookup()

@@ -9,7 +9,7 @@ import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
 export interface ModelProfile {
-  max_input_tokens?: number;
+  auto_compact_window?: number;
   max_output_tokens?: number;
 }
 
