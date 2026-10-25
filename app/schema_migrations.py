@@ -62,10 +62,29 @@ RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
 N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
 RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION = "2026.10.25.10"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
+RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION = "2026.10.25.11"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+LEGACY_ATTEMPT_SETTLEMENT_COLUMNS = (
+    "executor_terminal_json",
+    "executor_reconciliation_context_json",
+    "executor_reconciliation_intent_context_json",
+    "executor_reconciliation_status",
+    "executor_reconciliation_claim_token",
+    "executor_reconciliation_claimed_at",
+    "executor_reconciliation_retry_not_before",
+    "executor_terminal_reconciliation_attempt_count",
+)
+LEGACY_ATTEMPT_SETTLEMENT_INDEXES = frozenset({
+    "idx_sandbox_leases_executor_reconcile",
+    "idx_sandbox_leases_executor_reconcile_due",
+    "idx_sandbox_leases_executor_watch",
+})
+LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT = (
+    "sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"
+)
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 RUN_STATUS_CONSTRAINT_NAME = "chk_runs_status"
 RUN_STATUS_LOCK_TIMEOUT = "2s"
@@ -100,6 +119,7 @@ CRITICAL_RELATIONS = (
     "run_attempt_settlements",
     "run_attempt_settlement_storage",
     "run_attempt_settlement_writer",
+    "run_attempt_settlement_retirement",
     "run_stale_reconciliation_claims",
     "execution_supervision_domains",
     "execution_supervision_claims",
@@ -134,6 +154,13 @@ CRITICAL_RELATIONS = (
 RETIRED_RELATIONS = ("run_tool_permission_requests",)
 CRITICAL_COLUMNS = (
     ("schema_migrations", "state", "text", True),
+    ("run_attempt_settlement_retirement", "singleton", "bool", True),
+    ("run_attempt_settlement_retirement", "state", "text", True),
+    ("run_attempt_settlement_retirement", "retirement_version", "text", True),
+    ("run_attempt_settlement_retirement", "minimum_compatible_version", "text", False),
+    ("run_attempt_settlement_retirement", "operator_declaration", "jsonb", False),
+    ("run_attempt_settlement_retirement", "retired_at", "timestamptz", False),
+    ("run_attempt_settlement_retirement", "updated_at", "timestamptz", True),
     ("mcp_servers", "integration_kind", "text", True),
     ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
@@ -473,6 +500,10 @@ CRITICAL_COLUMNS = (
     ("run_delivery_intents", "updated_at", "timestamptz", True),
 )
 CRITICAL_CONSTRAINTS = (
+    ("run_attempt_settlement_retirement", "run_attempt_settlement_retirement_pkey"),
+    ("run_attempt_settlement_retirement", "chk_run_attempt_settlement_retirement_singleton"),
+    ("run_attempt_settlement_retirement", "chk_run_attempt_settlement_retirement_state"),
+    ("run_attempt_settlement_retirement", "chk_run_attempt_settlement_retirement_receipt"),
     ("model_token_usage_scopes", "model_token_usage_scopes_pkey"),
     ("model_token_usage_observations", "model_token_usage_observations_pkey"),
     ("model_token_usage_deltas", "model_token_usage_deltas_pkey"),
@@ -617,6 +648,12 @@ CRITICAL_CONSTRAINTS = (
 )
 CRITICAL_TRIGGERS = (
     (
+        "sandbox_leases",
+        "trg_reject_legacy_attempt_settlement_write",
+        "reject_legacy_attempt_settlement_write",
+        19,
+    ),
+    (
         "run_attempts",
         "trg_run_attempt_heartbeat_monotonicity_guard",
         "ai_platform_guard_run_attempt_heartbeat_monotonicity",
@@ -730,6 +767,32 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "run_attempt_settlement_retirement",
+        "run_attempt_settlement_retirement_pkey",
+        "p",
+        "PRIMARY KEY (singleton)",
+    ),
+    (
+        "run_attempt_settlement_retirement",
+        "chk_run_attempt_settlement_retirement_singleton",
+        "c",
+        "CHECK (singleton)",
+    ),
+    (
+        "run_attempt_settlement_retirement",
+        "chk_run_attempt_settlement_retirement_state",
+        "c",
+        "CHECK (state = ANY (ARRAY['expanded'::text, 'retired'::text]))",
+    ),
+    (
+        "run_attempt_settlement_retirement",
+        "chk_run_attempt_settlement_retirement_receipt",
+        "c",
+        "CHECK (state = 'expanded'::text AND retired_at IS NULL OR "
+        "state = 'retired'::text AND retired_at IS NOT NULL AND "
+        "minimum_compatible_version IS NOT NULL AND operator_declaration IS NOT NULL)",
+    ),
     (
         "runs",
         "chk_runs_status",
@@ -1739,6 +1802,59 @@ async def _ensure_ledger(conn: Any) -> None:
     )
 
 
+async def _attempt_settlement_retirement_marker(conn: Any) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        "select state, retirement_version from run_attempt_settlement_retirement "
+        "where singleton = true"
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def _legacy_attempt_settlement_layout_current(conn: Any, *, retired: bool) -> bool:
+    cursor = await conn.execute(
+        """
+        select
+          (select count(*) from jsonb_array_elements_text(%s::jsonb) expected(name)
+           join pg_attribute attributes
+             on attributes.attrelid = to_regclass('sandbox_leases')
+            and attributes.attname = expected.name
+            and attributes.attnum > 0 and not attributes.attisdropped) as column_count,
+          (select count(*) from jsonb_array_elements_text(%s::jsonb) expected(name)
+           where to_regclass(expected.name) is not null) as index_count,
+          (select count(*) from pg_constraint
+           where conrelid = to_regclass('sandbox_leases')
+             and conname = %s) as constraint_count
+        """,
+        (
+            json.dumps(LEGACY_ATTEMPT_SETTLEMENT_COLUMNS),
+            json.dumps(sorted(LEGACY_ATTEMPT_SETTLEMENT_INDEXES)),
+            LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT[1],
+        ),
+    )
+    row = await cursor.fetchone() or {}
+    counts = tuple(int(row.get(name) or 0) for name in (
+        "column_count", "index_count", "constraint_count",
+    ))
+    return counts == ((0, 0, 0) if retired else (8, 3, 1))
+
+
+async def _expected_concurrent_index_migrations(conn: Any) -> tuple[ConcurrentIndexMigration, ...]:
+    marker = await _attempt_settlement_retirement_marker(conn)
+    if (
+        marker is None
+        or marker.get("retirement_version") != RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+        or marker.get("state") not in {"expanded", "retired"}
+    ):
+        raise SchemaMigrationError("attempt_settlement_retirement_marker_invalid")
+    if marker["state"] == "retired":
+        return tuple(
+            migration for migration in CONCURRENT_INDEX_MIGRATIONS
+            if migration.name not in LEGACY_ATTEMPT_SETTLEMENT_INDEXES
+        )
+    return CONCURRENT_INDEX_MIGRATIONS
+
+
 def _normalized_constraint_definition(definition: str) -> str:
     without_not_valid = re.sub(r"\s+not\s+valid\s*$", "", definition, flags=re.IGNORECASE)
     normalized = re.sub(r"\s+", "", without_not_valid.lower())
@@ -1934,7 +2050,8 @@ async def _index_is_ready(
 async def _apply_concurrent_indexes(conn: Any) -> bool:
     applied = False
     await _ensure_ledger(conn)
-    for migration in CONCURRENT_INDEX_MIGRATIONS:
+    migrations = await _expected_concurrent_index_migrations(conn)
+    for migration in migrations:
         cursor = await conn.execute(
             """
             select target_version, checksum_sha256, state
@@ -2012,7 +2129,7 @@ async def _apply_concurrent_indexes(conn: Any) -> bool:
         )
         returning index_name
         """,
-        (json.dumps([migration.name for migration in CONCURRENT_INDEX_MIGRATIONS]),),
+        (json.dumps([migration.name for migration in migrations]),),
     )
     if await cleanup.fetchone() is not None:
         applied = True
@@ -2164,13 +2281,43 @@ def _json_contract(rows: tuple[tuple[Any, ...], ...], names: tuple[str, ...]) ->
 
 async def schema_status(conn: Any) -> dict[str, object]:
     checksum = schema_checksum()
+    retirement_marker = await _attempt_settlement_retirement_marker(conn)
+    retirement_state = str(retirement_marker.get("state") or "") if retirement_marker else ""
+    retirement_marker_current = bool(
+        retirement_marker
+        and retirement_marker.get("retirement_version")
+        == RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+        and retirement_state in {"expanded", "retired"}
+    )
+    retired = retirement_state == "retired"
+    try:
+        concurrent_migrations = await _expected_concurrent_index_migrations(conn)
+    except SchemaMigrationError:
+        concurrent_migrations = CONCURRENT_INDEX_MIGRATIONS
+        retirement_marker_current = False
+    active_columns = tuple(
+        item for item in CRITICAL_COLUMNS
+        if not (retired and item[0] == "sandbox_leases" and item[1] in LEGACY_ATTEMPT_SETTLEMENT_COLUMNS)
+    )
+    active_constraints = tuple(
+        item for item in CRITICAL_CONSTRAINTS
+        if not (retired and item == LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT)
+    )
+    active_constraint_definitions = tuple(
+        item for item in CRITICAL_CONSTRAINT_DEFINITIONS
+        if not (retired and item[:2] == LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT)
+    )
+    active_indexes = tuple(
+        item for item in CRITICAL_INDEXES
+        if not (retired and item[0] in LEGACY_ATTEMPT_SETTLEMENT_INDEXES)
+    )
     index_ledger_contract = tuple(
         (
             migration.name,
             CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION,
             migration.checksum_sha256,
         )
-        for migration in CONCURRENT_INDEX_MIGRATIONS
+        for migration in concurrent_migrations
     )
     relation_cursor = await conn.execute(
         """
@@ -2202,7 +2349,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
          and not attributes.attisdropped
         left join pg_type types on types.oid = attributes.atttypid
         """,
-        (_json_contract(CRITICAL_COLUMNS, ("relation_name", "column_name", "type_name", "not_null")),),
+        (_json_contract(active_columns, ("relation_name", "column_name", "type_name", "not_null")),),
     )
     constraint_cursor = await conn.execute(
         """
@@ -2212,7 +2359,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
           on constraints.conrelid = to_regclass(expected.relation_name)
          and constraints.conname = expected.constraint_name
         """,
-        (_json_contract(CRITICAL_CONSTRAINTS, ("relation_name", "constraint_name")),),
+        (_json_contract(active_constraints, ("relation_name", "constraint_name")),),
     )
     constraint_definition_cursor = await conn.execute(
         """
@@ -2245,7 +2392,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         """,
         (
             _json_contract(
-                MODEL_CRITICAL_CONSTRAINT_DEFINITIONS + CRITICAL_CONSTRAINT_DEFINITIONS,
+                MODEL_CRITICAL_CONSTRAINT_DEFINITIONS + active_constraint_definitions,
                 ("relation_name", "constraint_name", "constraint_type", "definition"),
             ),
         ),
@@ -2353,7 +2500,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
         from jsonb_to_recordset(%s::jsonb) as expected(index_name text, is_unique boolean)
         left join pg_index indexes on indexes.indexrelid = to_regclass(expected.index_name)
         """,
-        (_json_contract(CRITICAL_INDEXES, ("index_name", "is_unique")),),
+        (_json_contract(active_indexes, ("index_name", "is_unique")),),
     )
     ledger_cursor = await conn.execute(
         """
@@ -2405,6 +2552,10 @@ async def schema_status(conn: Any) -> dict[str, object]:
     trigger_row = await trigger_cursor.fetchone() or {}
     index_row = await index_cursor.fetchone() or {}
     ledger_row = await ledger_cursor.fetchone() or {}
+    retirement_layout_current = (
+        await _legacy_attempt_settlement_layout_current(conn, retired=retired)
+        if retirement_marker_current else False
+    )
     relations_current = bool(relation_row.get("current"))
     retired_relations_current = bool(retired_relation_row.get("current"))
     columns_current = bool(column_row.get("current"))
@@ -2414,7 +2565,7 @@ async def schema_status(conn: Any) -> dict[str, object]:
     triggers_current = bool(trigger_row.get("current"))
     indexes_current = bool(index_row.get("current"))
     concurrent_index_definitions_current = all(
-        [await _index_is_ready(conn, migration) for migration in CONCURRENT_INDEX_MIGRATIONS]
+        [await _index_is_ready(conn, migration) for migration in concurrent_migrations]
     )
     static_index_definitions_current = all(
         [await _index_is_ready(conn, definition) for definition in STATIC_INDEX_DEFINITIONS]
@@ -2431,6 +2582,8 @@ async def schema_status(conn: Any) -> dict[str, object]:
             indexes_current,
             concurrent_index_definitions_current,
             static_index_definitions_current,
+            retirement_marker_current,
+            retirement_layout_current,
         )
     )
     ready = (
@@ -2455,6 +2608,9 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "indexes_current": indexes_current,
         "concurrent_index_definitions_current": concurrent_index_definitions_current,
         "static_index_definitions_current": static_index_definitions_current,
+        "retirement_state": retirement_state or None,
+        "retirement_marker_current": retirement_marker_current,
+        "retirement_layout_current": retirement_layout_current,
     }
 
 
