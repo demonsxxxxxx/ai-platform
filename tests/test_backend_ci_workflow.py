@@ -407,12 +407,14 @@ def _workflow_job_block(workflow: str, job_id: str) -> str:
     return workflow[start:end]
 
 
-def test_backend_required_check_is_stable_for_every_main_pull_request():
+def test_backend_required_check_is_stable_for_main_and_stacked_lifecycle_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     pull_request_block = workflow.split("pull_request:", 1)[1].split("push:", 1)[0]
     assert "branches:" in pull_request_block
     assert "- main" in pull_request_block
+    assert "- feat/n01-lifecycle-control-chain" in pull_request_block
+    assert "- feat/lifecycle-phase-*" in pull_request_block
     assert "paths:" not in pull_request_block
     assert (
         "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}"
@@ -453,7 +455,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "runs-on: ${{ matrix.runner }}" in tests_job
     assert "shell: bash" in tests_job
     assert "needs: backend-preflight" in tests_job
-    assert "timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 30 || 15 }}" in tests_job
+    assert "timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 50 || 15 }}" in tests_job
     assert "fail-fast: false" in tests_job
     assert "ref: ${{ env.BACKEND_TEST_SOURCE_COMMIT }}" in tests_job
     assert "fetch-depth: 0" in tests_job
@@ -541,7 +543,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
     assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("tools/run_test_stage.py")
     assert "uv run --locked --extra test python tools/run_test_stage.py" in pytest_step
-    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 1200 || 600 }} --coverage' in pytest_step
+    assert '--stage "${{ matrix.shard }}" --timeout-seconds ${{ matrix.shard == \'lifecycle-control-chain\' && 2400 || 600 }} --coverage' in pytest_step
     assert '"${zero_skips[@]}" -- ${{ matrix.test_files }}' in pytest_step
     assert (
         'if [[ "${{ matrix.shard }}" != "sandbox-runtime" && '
@@ -552,7 +554,18 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "- name: Upload exact shard evidence" in pytest_step
     for artifact in ("evidence.json", "junit.xml", "coverage.json"):
         assert f".pytest-tmp/test-runs/**/${{{{ matrix.shard }}}}/{artifact}" in pytest_step
-    for artifact in ("control-chain.json", "terminal-ack-fault.json", "terminal-callback-loss.json", "docker-cleanup.json", "failed-state.json", "*.log"):
+    for artifact in (
+        "control-chain.json",
+        "candidate-source-binding.json",
+        "candidate-image-inspect.json",
+        "runtime-dependency-versions.json",
+        "sandbox-security-profile.json",
+        "terminal-ack-fault.json",
+        "terminal-callback-loss.json",
+        "docker-cleanup.json",
+        "failed-state.json",
+        "*.log",
+    ):
         assert f".pytest-tmp/test-runs/**/lifecycle-control-chain/basetemp/**/{artifact}" in pytest_step
     assert "if-no-files-found: error" in pytest_step
     assert "--collect-only" not in pytest_step

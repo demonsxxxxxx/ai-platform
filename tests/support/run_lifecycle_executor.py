@@ -51,7 +51,11 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
     release_path.unlink(missing_ok=True)
     entered_path.write_text(
         json.dumps(
-            {"run_id": request.run_id, "attempt_id": request.attempt_id},
+            {
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "resource_limits": request.config.get("resource_limits", {}),
+            },
             separators=(",", ":"),
         ),
         encoding="utf-8",
