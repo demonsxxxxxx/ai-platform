@@ -95,6 +95,7 @@ class DeliveryAttemptResult:
     state: DeliveryState
     receipt: QueueDeliveryReceipt | None = None
     error_code: str | None = None
+    chat_projection_persisted: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,10 @@ class RunDeliveryIntentStore(Protocol):
         reason: str,
     ) -> bool: ...
 
+    async def list_historical_candidates(self, connection: Any) -> list[Mapping[str, Any]]: ...
+
+    async def lock_historical_backfill(self, connection: Any) -> None: ...
+
 
 class RunDeliveryIntents:
     """Persist accepted queue messages, then retry transport with the same identity."""
@@ -205,6 +210,8 @@ class RunDeliveryIntents:
         retry_base_seconds: int,
         retry_cap_seconds: int,
         permanent_rejection_owner: Callable[..., Awaitable[bool]] | None = None,
+        chat_receipt_owner: Callable[..., Awaitable[None]] | None = None,
+        chat_rejection_owner: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         if scan_batch_size < 1 or claim_ttl_seconds < 1:
             raise ValueError("run_delivery_configuration_invalid")
@@ -222,7 +229,90 @@ class RunDeliveryIntents:
         self._retry_base_seconds = retry_base_seconds
         self._retry_cap_seconds = retry_cap_seconds
         self._permanent_rejection_owner = permanent_rejection_owner
+        self._chat_receipt_owner = chat_receipt_owner
+        self._chat_rejection_owner = chat_rejection_owner
         self._queue_io_slots = asyncio.Semaphore(_MAX_CONCURRENT_QUEUE_IO)
+
+    async def prepare_historical_delivery_intents(self) -> int:
+        """Map provable legacy queued Runs before enabling intent-only recovery.
+
+        The persisted Run input and context snapshot are the only migration
+        source. A missing or ambiguous historical fact blocks enablement; the
+        current profile and other mutable catalogs are never consulted.
+        """
+
+        if not self.enabled:
+            return 0
+        list_candidates = getattr(self._store, "list_historical_candidates", None)
+        if list_candidates is None:
+            raise RuntimeError("run_delivery_history_preflight_unavailable")
+
+        mapped = 0
+        unprovable = 0
+        async with self._transaction() as connection:
+            lock = getattr(self._store, "lock_historical_backfill", None)
+            if lock is not None:
+                await lock(connection)
+            records = await list_candidates(connection)
+            for record in records:
+                mapped_facts = _historical_delivery_facts(record)
+                if mapped_facts is None:
+                    unprovable += 1
+                    continue
+                payload, source, submission_id, user_message_id = mapped_facts
+                try:
+                    frozen = self._codec.freeze(payload)
+                    digest = sha256(frozen.payload_json.encode("utf-8")).hexdigest()
+                    if digest != frozen.message_id:
+                        unprovable += 1
+                        continue
+                except Exception:
+                    unprovable += 1
+                    continue
+                submission_records = record.get("chat_submission_records") or []
+                if submission_records:
+                    submission_record = (
+                        submission_records[0]
+                        if len(submission_records) == 1
+                        and isinstance(submission_records[0], Mapping)
+                        else None
+                    )
+                    if (
+                        submission_record is None
+                        or submission_record.get("state")
+                        not in {"queued", "accepted_pending_enqueue"}
+                        or (
+                            submission_record.get("state") == "queued"
+                            and submission_record.get("queue_message_id")
+                            != frozen.message_id
+                        )
+                        or (
+                            submission_record.get("state")
+                            == "accepted_pending_enqueue"
+                            and submission_record.get("queue_message_id")
+                            not in {None, frozen.message_id}
+                        )
+                    ):
+                        unprovable += 1
+                        continue
+                await self._store.insert(
+                    connection,
+                    tenant_id=str(payload["tenant_id"]),
+                    run_id=str(payload["run_id"]),
+                    session_id=str(payload["session_id"]),
+                    source=source,
+                    submission_id=submission_id,
+                    user_message_id=user_message_id,
+                    payload_json=frozen.payload_json,
+                    message_id=frozen.message_id,
+                    payload_sha256=digest,
+                )
+                mapped += 1
+        if unprovable:
+            raise RuntimeError(
+                f"run_delivery_history_unprovable:{unprovable}"
+            )
+        return mapped
 
     async def record(
         self,
@@ -278,6 +368,7 @@ class RunDeliveryIntents:
 
         if not self.enabled:
             return DeliveryAttemptResult(state="pending")
+        await self.prepare_historical_delivery_intents()
         async with self._transaction() as connection:
             claimed = await self._store.claim_due(
                 connection,
@@ -305,6 +396,9 @@ class RunDeliveryIntents:
                 return DeliveryAttemptResult(
                     state="delivered",
                     receipt=_receipt_from_intent(intent),
+                    chat_projection_persisted=(
+                        intent.source == "chat" and self._chat_receipt_owner is not None
+                    ),
                 )
             return DeliveryAttemptResult(state="pending")
         if intent.state != "claimed" or not intent.claim_token:
@@ -319,6 +413,7 @@ class RunDeliveryIntents:
 
         if not self.enabled:
             return DeliveryScanResult()
+        await self.prepare_historical_delivery_intents()
         async with self._transaction() as connection:
             claimed_records = await self._store.claim_due(
                 connection,
@@ -431,8 +526,18 @@ class RunDeliveryIntents:
                 tenant_id=intent.tenant_id,
                 run_id=intent.run_id,
             )
+            if recorded and intent.source == "chat" and self._chat_receipt_owner is not None:
+                await self._chat_receipt_owner(
+                    connection, intent=intent, receipt=receipt
+                )
         if recorded:
-            return DeliveryAttemptResult(state="delivered", receipt=receipt)
+            return DeliveryAttemptResult(
+                state="delivered",
+                receipt=receipt,
+                chat_projection_persisted=(
+                    intent.source == "chat" and self._chat_receipt_owner is not None
+                ),
+            )
         if record is not None:
             latest = RunDeliveryIntent.from_record(record)
             if latest.state == "delivered":
@@ -495,15 +600,152 @@ class RunDeliveryIntents:
                 reason=reason,
             )
             if suppressed and permanent and self._permanent_rejection_owner is not None:
-                await self._permanent_rejection_owner(
+                terminalized = await self._permanent_rejection_owner(
                     connection, intent=intent, reason=reason
                 )
+                if (
+                    terminalized
+                    and intent.source == "chat"
+                    and self._chat_rejection_owner is not None
+                ):
+                    await self._chat_rejection_owner(
+                        connection, intent=intent, reason=reason
+                    )
             return suppressed
 
 
 def _payload_identity_matches(intent: RunDeliveryIntent) -> bool:
     digest = sha256(intent.payload_json.encode("utf-8")).hexdigest()
     return digest == intent.payload_sha256 == intent.message_id
+
+
+_HISTORICAL_SNAPSHOT_FIELDS = (
+    "file_ids",
+    "input",
+    "executor_type",
+    "execution_kind",
+    "skill_version",
+    "release_decision",
+    "skill_manifests",
+    "context_snapshot_id",
+    "context_snapshot",
+    "model_id",
+    "model_value",
+    "schema_version",
+)
+
+
+def _historical_delivery_facts(
+    record: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, str | None, str | None] | None:
+    """Build an old queue payload only when its immutable persisted facts prove it."""
+
+    input_json = record.get("input_json")
+    if not isinstance(input_json, dict) or any(
+        key not in input_json for key in _HISTORICAL_SNAPSHOT_FIELDS
+    ):
+        return None
+    if any(
+        not isinstance(record.get(key), str) or not record[key]
+        for key in (
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "session_id",
+            "run_id",
+            "agent_id",
+        )
+    ):
+        return None
+    snapshot = {key: input_json[key] for key in _HISTORICAL_SNAPSHOT_FIELDS}
+    context = snapshot["context_snapshot"]
+    if (
+        not isinstance(snapshot["input"], dict)
+        or not isinstance(snapshot["file_ids"], list)
+        or not isinstance(snapshot["release_decision"], dict)
+        or not isinstance(snapshot["skill_manifests"], list)
+        or not isinstance(context, dict)
+        or not isinstance(snapshot["context_snapshot_id"], str)
+        or not snapshot["context_snapshot_id"]
+        or context.get("context_snapshot_id") != snapshot["context_snapshot_id"]
+        or record.get("context_snapshot_id") != snapshot["context_snapshot_id"]
+        or input_json.get("execution_kind") != record.get("execution_kind")
+        or snapshot["execution_kind"] != record.get("execution_kind")
+        or not isinstance(snapshot["executor_type"], str)
+        or not snapshot["executor_type"]
+        or not isinstance(snapshot["schema_version"], str)
+        or not snapshot["schema_version"]
+    ):
+        return None
+
+    profile = input_json.get("agent_profile")
+    revision = record.get("admitted_agent_profile_revision")
+    profile_hash = record.get("admitted_agent_profile_hash")
+    if profile is None:
+        if revision is not None or profile_hash is not None:
+            return None
+    elif (
+        not isinstance(profile, dict)
+        or profile.get("agent_id") != record.get("agent_id")
+        or profile.get("revision") != revision
+        or profile.get("content_hash") != profile_hash
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or not isinstance(profile_hash, str)
+        or not profile_hash
+    ):
+        return None
+    if profile is not None:
+        snapshot["agent_profile"] = dict(profile)
+
+    source_hint = str(context.get("source") or "")
+    submission_ids = record.get("chat_submission_ids") or []
+    message_ids = record.get("user_message_ids") or []
+    control_operations = record.get("control_operations") or []
+    submission_id: str | None = None
+    user_message_id: str | None = None
+    if source_hint == "chat_stream":
+        source = "chat"
+        if len(submission_ids) > 1 or len(message_ids) != 1:
+            return None
+        if submission_ids:
+            submission_id = str(submission_ids[0])
+        user_message_id = str(message_ids[0])
+    elif source_hint == "runs_api":
+        source = "create_run"
+        if submission_ids or control_operations or record.get("copied_from_run_id"):
+            return None
+    elif source_hint == "copy_run":
+        source = "copy"
+        if submission_ids or control_operations or not record.get("copied_from_run_id"):
+            return None
+    elif source_hint in {"retry_run", "resume_run"}:
+        expected_action = source_hint.removesuffix("_run")
+        if (
+            submission_ids
+            or len(control_operations) != 1
+            or not isinstance(control_operations[0], dict)
+            or control_operations[0].get("action") != expected_action
+            or control_operations[0].get("child_run_id") != record.get("run_id")
+            or not isinstance(control_operations[0].get("operation_id"), str)
+            or not record.get("copied_from_run_id")
+        ):
+            return None
+        source = expected_action
+    else:
+        return None
+
+    payload = {
+        "tenant_id": record["tenant_id"],
+        "workspace_id": record["workspace_id"],
+        "user_id": record["user_id"],
+        "session_id": record["session_id"],
+        "run_id": record["run_id"],
+        "agent_id": record["agent_id"],
+        "skill_id": record.get("skill_id"),
+        **snapshot,
+    }
+    return payload, source, submission_id, user_message_id
 
 
 def _receipt_from_intent(intent: RunDeliveryIntent) -> QueueDeliveryReceipt | None:

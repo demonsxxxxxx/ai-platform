@@ -765,6 +765,129 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     ]
 
 
+def test_keyed_chat_retry_admission_route_persists_durable_receipt(monkeypatch, chat_submission_client):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    submission = {
+        "submission_id": submission_id,
+        "state": "accepted_pending_enqueue",
+        "run_id": "run-history",
+        "session_id": "session-history",
+        "outcome_json": {
+            "session_id": "session-history",
+            "run_id": "run-history",
+            "status": "accepted_pending_enqueue",
+            "submission_id": submission_id,
+        },
+    }
+    intent_payload = {
+        "file_ids": [],
+        "input": {"message": "accepted once"},
+        "executor_type": "harness-chat",
+        "execution_kind": "harness_chat",
+        "skill_version": None,
+        "release_decision": {},
+        "skill_manifests": [],
+        "context_snapshot_id": "ctx-history",
+        "context_snapshot": {
+            "context_snapshot_id": "ctx-history",
+            "source": "chat_stream",
+        },
+        "model_id": "frozen-model",
+        "model_value": "provider/frozen",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    calls = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_recover(**_kwargs):
+        return ChatSubmissionResponse(
+            submission_id=submission_id,
+            state="accepted_pending_enqueue",
+            outcome=submission["outcome_json"],
+            run_status="queued",
+        )
+
+    async def fake_get_submission(_conn, **_kwargs):
+        return submission
+
+    async def fake_finalize(_conn, **kwargs):
+        calls.append(("finalize", kwargs))
+        submission.update(kwargs)
+
+    async def fake_get_run(_conn, **_kwargs):
+        return {
+            "id": "run-history",
+            "status": "queued",
+            "workspace_id": "workspace-history",
+            "session_id": "session-history",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "input_json": {
+                **intent_payload,
+                "intent": {"selected_capability": "general_chat"},
+            },
+            "context_snapshot_id": "ctx-history",
+            "admitted_agent_profile_revision": None,
+            "admitted_agent_profile_hash": None,
+        }
+
+    async def no_retired_control(*_args, **_kwargs):
+        return False
+
+    class DeliveryIntents:
+        enabled = True
+
+        async def deliver_one(self, *, tenant_id, run_id):
+            calls.append(("deliver", tenant_id, run_id))
+            return SimpleNamespace(
+                receipt=SimpleNamespace(
+                    queue_position=2,
+                    queue_admission_ordinal=9,
+                    message_id="frozen-message",
+                    source="redis_readback_queued",
+                ),
+                error_code=None,
+            )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat._recover_preledger_chat_submission", fake_recover)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "get_chat_submission", fake_get_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", fake_finalize)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, "get_authorized_run", fake_get_run)
+    monkeypatch.setattr("app.routes.chat.reject_chat_submission_for_retired_platform_multi_agent", no_retired_control)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", AsyncMock())
+    chat_submission_client.app.state.run_delivery_intents = DeliveryIntents()
+
+    response = chat_submission_client.post(
+        f"/api/ai/chat/submissions/{submission_id}/retry-admission",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "queued"
+    assert response.json()["outcome"]["queue_position"] == 2
+    assert calls == [("deliver", "tenant-a", "run-history"), ("finalize", {
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "submission_id": submission_id,
+        "state": "queued",
+        "outcome_json": {
+            "session_id": "session-history",
+            "run_id": "run-history",
+            "status": "queued",
+            "submission_id": submission_id,
+            "queue_position": 2,
+        },
+        "queue_position": 2,
+        "queue_admission_ordinal": 9,
+        "queue_message_id": "frozen-message",
+    })]
+
+
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
 @pytest.mark.parametrize(
     ("message", "selected_tools", "expected_authorizations"),

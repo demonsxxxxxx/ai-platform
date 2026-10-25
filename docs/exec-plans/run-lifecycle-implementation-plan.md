@@ -269,7 +269,7 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 **N22：持久投递记录与历史映射 — Conversations/Runs 事实 owner，Execution 调度 owner。依赖 N00、ADR 评审。**
 
 - 产出：优先复用 submission/Run 可重建事实；只有现有字段不足才增加 outbox。覆盖 keyed/unkeyed Chat、直接 Run、retry/resume/copy 的已接受任务；首次记录不要求 Attempt 已存在。
-- 验收：原 Run 与调度意图同事务成立；重复提交不新建事实；保存原消息身份/版本，不能从最新 Profile 重建旧意图；撤权/取消/已有执行时不能授予再执行权。
+- 验收：原 Run 与调度意图同事务成立；重复提交不新建事实；保存原消息身份/版本，不能从最新 Profile 重建旧意图；撤权/取消/已有执行时不能授予再执行权。启用持久投递时先映射缺少 intent 的 queued 历史 Run：只从其原 `input_json`、context snapshot、Chat submission 或 Run-control operation 证明身份；存在缺失、冲突或无法证明的记录时 API 启动失败，要求先作有限处置，不留下永久 pending。
 - 回退：schema 先展开，writer 默认不启用；保留已写意图及历史读取。不得同时建独立 submission 状态账本或 SSE publication outbox。
 
 **N23：投递恢复与至少一次传输 — Execution owner。依赖 N22 及 R09/claim 并发保护。**
@@ -277,6 +277,8 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 产出：短事务 scoped claim -> 原身份投递/读回 -> claim-fenced receipt；持久 next_retry、公平扫描、进展指标；协调现行 stale-run/fence，不提前删除它们。
 - 验收：API commit 后崩溃无需浏览器可恢复；Redis 已写未记账、双 scanner+HTTP retry、旧 I/O 晚到、撤权、取消与 stale 回收竞争均不重复 Run/工具执行；只重试投递。
 - 回退：先停止领取并处理在途命令，再由旧兼容路径消费未完成意图；关闭扫描器不等于 Redis 请求已撤销。保留原 queue owner token/CAS。
+
+N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新读取 Profile、不创建新 Attempt，也不以新队列 identity 覆盖已存在 Redis receipt。Run status/schema 版本 `2026.10.25.1`、delivery intent `2026.10.25.2` 和 Sandbox dispatch `2026.10.25.3` 各自保留。
 
 ### Phase 3：结算投影与监督迁移
 

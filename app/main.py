@@ -174,6 +174,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     primary_error: BaseException | None = None
     try:
+        if app.state.run_delivery_intents.enabled:
+            await app.state.run_delivery_intents.prepare_historical_delivery_intents()
         yield
     except BaseException as exc:
         primary_error = exc

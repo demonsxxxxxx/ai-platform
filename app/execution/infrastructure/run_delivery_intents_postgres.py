@@ -94,6 +94,71 @@ async def get(
     return dict(row) if row else None
 
 
+async def lock_historical_backfill(connection: Any) -> None:
+    """Serialize the one-time historical mapping across API and worker owners."""
+
+    await connection.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
+        ("run_delivery_intents.historical_backfill.v1",),
+    )
+
+
+async def list_historical_candidates(connection: Any) -> list[dict[str, Any]]:
+    """Return accepted queued Runs whose frozen queue identity has no mapping."""
+
+    cursor = await connection.execute(
+        """
+        select runs.*,
+               coalesce((
+                 select jsonb_agg(jsonb_build_object(
+                   'submission_id', submission.submission_id::text,
+                   'state', submission.state,
+                   'queue_message_id', submission.queue_message_id
+                 ))
+                 from chat_submissions submission
+                 where submission.tenant_id = runs.tenant_id
+                   and submission.run_id = runs.id
+               ), '[]'::jsonb) as chat_submission_records,
+               coalesce((
+                 select jsonb_agg(submission.submission_id::text)
+                 from chat_submissions submission
+                 where submission.tenant_id = runs.tenant_id
+                   and submission.run_id = runs.id
+               ), '[]'::jsonb) as chat_submission_ids,
+               coalesce((
+                 select jsonb_agg(message.id order by message.created_at, message.id)
+                 from messages message
+                 where message.tenant_id = runs.tenant_id
+                   and message.session_id = runs.session_id
+                   and message.run_id = runs.id
+                   and message.role = 'user'
+               ), '[]'::jsonb) as user_message_ids,
+               coalesce((
+                 select jsonb_agg(operation.payload_json order by operation.sequence, operation.created_at)
+                 from run_events operation
+                 where operation.tenant_id = runs.tenant_id
+                   and operation.event_type = 'run_control_operation_committed'
+                   and operation.payload_json->>'child_run_id' = runs.id
+               ), '[]'::jsonb) as control_operations
+        from runs
+        where runs.status = 'queued'
+          and runs.cancel_requested_at is null
+          and runs.terminalization_target is null
+          and not exists (
+            select 1 from run_attempts attempt
+            where attempt.tenant_id = runs.tenant_id and attempt.run_id = runs.id
+          )
+          and not exists (
+            select 1 from run_delivery_intents delivery
+            where delivery.tenant_id = runs.tenant_id and delivery.run_id = runs.id
+          )
+        order by runs.created_at, runs.tenant_id, runs.id
+        for update of runs
+        """
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def claim_due(
     connection: Any,
     *,

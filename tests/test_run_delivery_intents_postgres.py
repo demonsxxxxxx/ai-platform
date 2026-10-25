@@ -17,6 +17,8 @@ from app.execution.application.run_delivery_intents import (
     RunDeliveryIntent,
 )
 from app.execution.infrastructure import run_delivery_intents_postgres as store
+from app.runs.application.queue_delivery_failure import QueueDeliveryFailureOwner
+from app.runs.infrastructure import queue_delivery_failure_postgres
 
 
 @pytest.fixture(scope="module")
@@ -95,8 +97,20 @@ async def delivery_db():
                   tenant_id text not null,
                   id text not null,
                   status text not null,
+                  workspace_id text,
+                  user_id text,
+                  session_id text,
+                  agent_id text,
+                  execution_kind text,
+                  skill_id text,
+                  input_json jsonb,
+                  context_snapshot_id text,
+                  admitted_agent_profile_revision integer,
+                  admitted_agent_profile_hash text,
+                  copied_from_run_id text,
                   cancel_requested_at timestamptz,
                   terminalization_target text,
+                  created_at timestamptz not null default now(),
                   primary key (tenant_id, id)
                 );
                 create table run_attempts (
@@ -133,6 +147,30 @@ async def delivery_db():
                   foreign key (tenant_id, run_id) references runs(tenant_id, id)
                 );
                 create index run_delivery_due on run_delivery_intents(state, next_retry_at, created_at, run_id);
+                create table chat_submissions (
+                  tenant_id text not null,
+                  user_id text not null,
+                  submission_id uuid not null,
+                  run_id text,
+                  state text not null,
+                  queue_message_id text
+                );
+                create table messages (
+                  id text not null,
+                  tenant_id text not null,
+                  session_id text not null,
+                  run_id text not null,
+                  role text not null,
+                  created_at timestamptz not null default now()
+                );
+                create table run_events (
+                  tenant_id text not null,
+                  run_id text not null,
+                  event_type text not null,
+                  payload_json jsonb not null,
+                  sequence bigint not null,
+                  created_at timestamptz not null default now()
+                );
             """)
             await conn.commit()
 
@@ -333,6 +371,122 @@ async def test_two_scanners_never_receive_the_same_active_claim(delivery_db):
     claimed_ids = [row["run_id"] for row in [*first, *second]]
     assert claimed_ids == ["contended"]
     assert len([row for row in [*first, *second] if row["claim_token"]]) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_candidate_scan_excludes_attempted_and_cancelled_runs_and_keeps_owner_facts(
+    delivery_db,
+):
+    connect = delivery_db
+    frozen_input = {
+        "file_ids": [],
+        "input": {"message": "saved"},
+        "executor_type": "harness-chat",
+        "execution_kind": "harness_chat",
+        "skill_version": None,
+        "release_decision": {},
+        "skill_manifests": [],
+        "context_snapshot_id": "ctx-chat",
+        "context_snapshot": {
+            "context_snapshot_id": "ctx-chat",
+            "source": "chat_stream",
+        },
+        "model_id": "frozen-model",
+        "model_value": "provider/frozen",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "insert into runs(tenant_id,id,status,workspace_id,user_id,session_id,"
+            "agent_id,execution_kind,input_json,context_snapshot_id) values "
+            "('tenant','history-chat','queued','workspace','user','session','agent',"
+            "'harness_chat',%s::jsonb,'ctx-chat')",
+            (json.dumps(frozen_input),),
+        )
+        await conn.execute(
+            "insert into chat_submissions(tenant_id,user_id,submission_id,run_id,state) "
+            "values ('tenant','user','123e4567-e89b-42d3-a456-426614174000',"
+            "'history-chat','accepted_pending_enqueue')"
+        )
+        await conn.execute(
+            "insert into messages(id,tenant_id,session_id,run_id,role) "
+            "values ('message-chat','tenant','session','history-chat','user')"
+        )
+        await conn.execute(
+            "insert into runs(tenant_id,id,status,cancel_requested_at) "
+            "values ('tenant','history-cancelled','queued',now())"
+        )
+        await conn.execute(
+            "insert into runs(tenant_id,id,status) values ('tenant','history-attempt','queued')"
+        )
+        await conn.execute(
+            "insert into run_attempts(tenant_id,run_id) values ('tenant','history-attempt')"
+        )
+
+    async with connect() as conn, conn.transaction():
+        rows = await store.list_historical_candidates(conn)
+
+    assert [row["id"] for row in rows] == ["history-chat"]
+    assert rows[0]["input_json"] == frozen_input
+    assert rows[0]["chat_submission_ids"] == ["123e4567-e89b-42d3-a456-426614174000"]
+    assert rows[0]["user_message_ids"] == ["message-chat"]
+
+
+@pytest.mark.asyncio
+async def test_permanent_queue_rejection_owner_only_terminalizes_queued_runs_without_attempt(
+    delivery_db, monkeypatch
+):
+    connect = delivery_db
+    eligible = await seed(connect, "rejection-eligible")
+    cancelled = await seed(connect, "rejection-cancelled", cancelled=True)
+    attempted = await seed(connect, "rejection-attempted", attempt=True)
+    terminalized: list[str] = []
+
+    class PendingAdmissions:
+        async def prepare_pending_authority_in_transaction(self, _conn, **_kwargs):
+            return object()
+
+    class Lifecycle:
+        async def mark_run_enqueue_failed(self, _conn, *, tenant_id, user_id, run_id):
+            assert tenant_id == "tenant"
+            assert user_id is None
+            terminalized.append(run_id)
+            return type("Progress", (), {"did_transition": True})()
+
+    class Capabilities:
+        pending_admissions = PendingAdmissions()
+
+    async def record_terminalization(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.queue_delivery_failure.record_run_terminalization",
+        record_terminalization,
+    )
+    owner = QueueDeliveryFailureOwner(
+        persistence=queue_delivery_failure_postgres,
+        lifecycle=Lifecycle(),
+        capabilities=Capabilities(),
+    )
+
+    async with connect() as conn, conn.transaction():
+        assert await owner(
+            conn,
+            intent=RunDeliveryIntent.from_record(eligible),
+            reason="queue_payload_invalid",
+        ) is True
+        assert await owner(
+            conn,
+            intent=RunDeliveryIntent.from_record(cancelled),
+            reason="queue_payload_invalid",
+        ) is False
+        assert await owner(
+            conn,
+            intent=RunDeliveryIntent.from_record(attempted),
+            reason="queue_payload_invalid",
+        ) is False
+
+    assert terminalized == ["rejection-eligible"]
 
 
 @pytest.mark.asyncio

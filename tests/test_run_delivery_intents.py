@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.execution.application.run_delivery_intents import (
+    FrozenQueueMessage,
     QueueDeliveryError,
     QueueDeliveryReceipt,
     RunDeliveryIntents,
@@ -74,6 +75,19 @@ class Store:
         self.suppressed: list[tuple[str, str]] = []
         self.rescheduled: list[tuple[str, int, str]] = []
         self.receipt_intents: list[str] = []
+        self.historical_candidates: list[dict[str, Any]] = []
+        self.inserted: list[dict[str, Any]] = []
+
+    async def lock_historical_backfill(self, connection):
+        return None
+
+    async def list_historical_candidates(self, connection):
+        candidates, self.historical_candidates = self.historical_candidates, []
+        return candidates
+
+    async def insert(self, connection, **kwargs):
+        self.inserted.append(dict(kwargs))
+        return dict(kwargs)
 
     async def claim_due(self, connection, **kwargs):
         return self.claims
@@ -165,6 +179,190 @@ def service(store: Store, queue: Queue, *, batch_size: int = 25) -> RunDeliveryI
         retry_cap_seconds=60,
         permanent_rejection_owner=failure_owner,
     )
+
+
+class HistoricalCodec:
+    def freeze(self, payload):
+        payload_json = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+        return FrozenQueueMessage(payload_json, sha256(payload_json.encode()).hexdigest())
+
+
+def historical_candidate(*, source: str = "chat_stream") -> dict[str, Any]:
+    run_id = "run-history"
+    input_json = {
+        "file_ids": [],
+        "input": {"message": "from persisted input"},
+        "executor_type": "harness-chat",
+        "execution_kind": "harness_chat",
+        "skill_version": None,
+        "release_decision": {},
+        "skill_manifests": [],
+        "context_snapshot_id": "ctx-history",
+        "context_snapshot": {
+            "context_snapshot_id": "ctx-history",
+            "source": source,
+        },
+        "model_id": "model-frozen",
+        "model_value": "provider/frozen",
+        "schema_version": "ai-platform.run-payload.v2",
+        "agent_profile": {
+            "agent_id": "agent-a",
+            "revision": 4,
+            "content_hash": "old-profile-hash",
+        },
+    }
+    candidate = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": run_id,
+        "agent_id": "agent-a",
+        "execution_kind": "harness_chat",
+        "skill_id": None,
+        "input_json": input_json,
+        "context_snapshot_id": "ctx-history",
+        "admitted_agent_profile_revision": 4,
+        "admitted_agent_profile_hash": "old-profile-hash",
+        "copied_from_run_id": None,
+        "chat_submission_ids": ["submission-history"],
+        "chat_submission_records": [
+            {
+                "submission_id": "submission-history",
+                "state": "accepted_pending_enqueue",
+                "queue_message_id": None,
+            }
+        ],
+        "user_message_ids": ["message-history"],
+        "control_operations": [],
+    }
+    if source in {"retry_run", "resume_run"}:
+        candidate["copied_from_run_id"] = "run-parent"
+        candidate["chat_submission_ids"] = []
+        candidate["chat_submission_records"] = []
+        candidate["user_message_ids"] = []
+        action = source.removesuffix("_run")
+        candidate["control_operations"] = [
+            {
+                "action": action,
+                "operation_id": "123e4567-e89b-42d3-a456-426614174000",
+                "child_run_id": run_id,
+            }
+        ]
+    return candidate
+
+
+@pytest.mark.asyncio
+async def test_historical_chat_backfill_uses_frozen_input_and_submission_origin():
+    store = Store()
+    store.historical_candidates = [historical_candidate()]
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=Queue(),
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    mapped = await manager.prepare_historical_delivery_intents()
+
+    assert mapped == 1
+    record = store.inserted[0]
+    payload = json.loads(record["payload_json"])
+    assert record["source"] == "chat"
+    assert record["submission_id"] == "submission-history"
+    assert record["user_message_id"] == "message-history"
+    assert payload["input"] == {"message": "from persisted input"}
+    assert payload["model_value"] == "provider/frozen"
+    assert payload["agent_profile"]["content_hash"] == "old-profile-hash"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["retry_run", "resume_run"])
+async def test_historical_control_child_maps_by_persisted_operation(source):
+    store = Store()
+    store.historical_candidates = [historical_candidate(source=source)]
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=Queue(),
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    assert await manager.prepare_historical_delivery_intents() == 1
+    assert store.inserted[0]["source"] == source.removesuffix("_run")
+    assert store.inserted[0]["submission_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_unprovable_historical_run_blocks_enablement_instead_of_staying_pending():
+    candidate = historical_candidate()
+    candidate["input_json"].pop("context_snapshot_id")
+    store = Store()
+    store.historical_candidates = [candidate]
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=Queue(),
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+
+    with pytest.raises(RuntimeError, match="run_delivery_history_unprovable:1"):
+        await manager.prepare_historical_delivery_intents()
+    assert store.inserted == []
+
+
+@pytest.mark.asyncio
+async def test_historical_backfill_reads_existing_redis_receipt_without_second_enqueue():
+    store = Store()
+    store.historical_candidates = [historical_candidate()]
+    queue = Queue()
+    manager = RunDeliveryIntents(
+        enabled=True,
+        store=store,
+        codec=HistoricalCodec(),
+        queue=queue,
+        transaction=transaction,
+        scan_batch_size=25,
+        claim_ttl_seconds=60,
+        retry_base_seconds=5,
+        retry_cap_seconds=60,
+        permanent_rejection_owner=lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+    await manager.prepare_historical_delivery_intents()
+    inserted = store.inserted[0]
+    receipt = QueueDeliveryReceipt(0, 0, inserted["message_id"], "redis_readback_processing")
+    queue.readback_result = receipt
+    store.claims = [
+        intent_record(
+            run_id="run-history",
+            state="claimed",
+            payload_json=inserted["payload_json"],
+        )
+    ]
+
+    result = await manager.deliver_one(tenant_id="tenant-a", run_id="run-history")
+
+    assert result.state == "delivered"
+    assert queue.enqueues == []
+    assert queue.readbacks == [(inserted["payload_json"], inserted["message_id"])]
 
 
 @pytest.mark.asyncio

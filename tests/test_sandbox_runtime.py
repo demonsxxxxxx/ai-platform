@@ -22,7 +22,7 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
 )
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
-from app.sandbox.api import SandboxExecutorHttpError
+from app.sandbox.api import SandboxDispatchIntentService, SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
@@ -32,9 +32,21 @@ from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMP
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
+class _TestDispatchIntentRepository:
+    async def persist_intent(self, _conn, *, identity, reconciliation_context):
+        return {"lease_id": identity.lease_id, "status": "intent"}, True
+
+    async def record_outcome(self, _conn, *, identity, outcome):
+        return {"lease_id": identity.lease_id, "status": outcome}
+
+
 class SandboxRuntime(_SandboxRuntime):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("lease_port", sandbox_lease_repository)
+        kwargs.setdefault(
+            "dispatch_intents",
+            SandboxDispatchIntentService(_TestDispatchIntentRepository()),
+        )
         super().__init__(*args, **kwargs)
 
 
@@ -1761,16 +1773,24 @@ async def test_lost_dispatch_ack_recovers_exact_task_without_resubmitting(tmp_pa
 
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-dispatch-a",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         get_executor_status=status,
         callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
     )
 
     result = await runtime.submit(request())
@@ -1824,16 +1844,24 @@ async def test_lost_dispatch_ack_with_failed_status_probe_is_typed_unknown(tmp_p
 
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-dispatch-unknown",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         get_executor_status=status,
         callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
     )
 
     with pytest.raises(SandboxDispatchOutcomeUnknown, match="sandbox_dispatch_outcome_unknown"):
@@ -1888,16 +1916,24 @@ async def test_accepted_commit_retry_returns_accepted_after_exact_task_probe(tmp
 
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", record_accepted)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "persist_intent", persist_intent)
-    monkeypatch.setattr(runtime_module.sandbox_dispatch_repository, "record_outcome", record_outcome)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-accepted-retry",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         get_executor_status=status,
         callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
     )
 
     result = await runtime.submit(request())

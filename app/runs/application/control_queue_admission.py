@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.execution.api import deliver_run_delivery_intent
 
 @dataclass(frozen=True)
 class QueueAdmission:
@@ -36,13 +37,11 @@ async def ensure_control_queue_admission(
     queue_rejected_error: type[BaseException],
 ) -> Any:
     if delivery_intents is not None and delivery_intents.enabled:
-        async with transaction() as conn:
-            await reauthorize(
-                conn,
-                principal=principal,
-                run_id=str(queue_payload["run_id"]),
-            )
-        delivery = await delivery_intents.deliver_one(
+        # This Run child was already accepted with a frozen execution snapshot.
+        # Transport recovery must preserve that decision, not reauthorize or
+        # rebuild it from mutable profile state.
+        delivery = await deliver_run_delivery_intent(
+            delivery_intents,
             tenant_id=principal.tenant_id,
             run_id=str(queue_payload["run_id"]),
         )

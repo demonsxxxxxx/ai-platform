@@ -2,6 +2,12 @@
 
 from pydantic import ValidationError
 
+from app.conversations.api import (
+    record_accepted_chat_delivery_receipt,
+    record_accepted_chat_delivery_rejection,
+)
+from app.persistence import chat_submissions
+from app.streaming.infrastructure import run_events_postgres
 from app.execution.application.run_delivery_intents import RunDeliveryIntents
 from app.execution.infrastructure import run_delivery_intents_postgres
 from app.execution.infrastructure.run_delivery_queue import RedisRunDeliveryQueue
@@ -54,6 +60,26 @@ def build_run_delivery_intents(
             lifecycle=lifecycle,
             capabilities=capabilities,
         )
+
+    async def persist_chat_receipt(connection, *, intent, receipt) -> None:
+        await record_accepted_chat_delivery_receipt(
+            connection,
+            intent=intent,
+            receipt=receipt,
+            get_submission=chat_submissions.get_chat_submission,
+            append_event=run_events_postgres.append_event,
+            finalize_submission=chat_submissions.finalize_chat_submission,
+        )
+
+    async def persist_chat_rejection(connection, *, intent, reason) -> None:
+        await record_accepted_chat_delivery_rejection(
+            connection,
+            intent=intent,
+            reason=reason,
+            get_submission=chat_submissions.get_chat_submission,
+            finalize_submission=chat_submissions.finalize_chat_submission,
+        )
+
     return RunDeliveryIntents(
         enabled=bool(enabled),
         store=run_delivery_intents_postgres,
@@ -65,4 +91,6 @@ def build_run_delivery_intents(
         retry_base_seconds=retry_base_seconds,
         retry_cap_seconds=retry_cap_seconds,
         permanent_rejection_owner=failure_owner,
+        chat_receipt_owner=persist_chat_receipt,
+        chat_rejection_owner=persist_chat_rejection,
     )
