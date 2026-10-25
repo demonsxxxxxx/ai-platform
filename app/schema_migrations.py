@@ -50,7 +50,8 @@ MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
-TARGET_SCHEMA_VERSION = MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
+RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
+TARGET_SCHEMA_VERSION = RUN_STATUS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -362,6 +363,7 @@ CRITICAL_CONSTRAINTS = (
     ("runs", "fk_runs_workspace_scope"),
     ("runs", "fk_runs_session_scope"),
     ("runs", "chk_runs_execution_skill_identity"),
+    ("runs", "chk_runs_status"),
     ("run_diagnostics", "run_diagnostics_pkey"),
     ("run_diagnostics", "fk_run_diagnostics_run"),
     ("run_diagnostics", "chk_run_diagnostics_identity"),
@@ -543,6 +545,16 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "runs",
+        "chk_runs_status",
+        "c",
+        "CHECK (status IS NOT NULL AND (status = ANY (ARRAY["
+        "'queued'::text, 'running'::text, 'cancel_requested'::text, "
+        "'succeeded'::text, 'failed'::text, 'cancelled'::text, "
+        "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, "
+        "'dead-lettered'::text])))",
+    ),
     (
         "users",
         "chk_users_metadata_json_object",

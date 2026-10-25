@@ -124,7 +124,7 @@ from app.runs.api import (
 )
 from app.run_admission_terminalization import (
     reject_chat_submission_for_retired_platform_multi_agent,
-    terminalize_enqueue_failure_with_v4,
+    terminalize_enqueue_failure,
 )
 from app.runs.infrastructure import (
     capability_admission_postgres as runs_capability_admission,
@@ -649,7 +649,7 @@ async def _admit_chat_submission(
                 if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
                     profile_enqueue_error
                 ):
-                    await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
+                    await terminalize_enqueue_failure(v4_capabilities, conn,
                         tenant_id=principal.tenant_id,
                         lifecycle=run_lifecycle, user_id=principal.user_id,
                         run_id=run_id,
@@ -736,7 +736,7 @@ async def _admit_chat_submission(
             # Only the queue module's deterministic pre-admission rejection
             # can produce enqueue_failed.  This transaction is distinct from
             # planning and commits before the HTTP error.
-            await terminalize_enqueue_failure_with_v4(v4_capabilities, conn,
+            await terminalize_enqueue_failure(v4_capabilities, conn,
                 tenant_id=principal.tenant_id,
                 lifecycle=run_lifecycle, user_id=principal.user_id,
                 run_id=run_id,
@@ -2232,7 +2232,7 @@ async def chat_stream(
             and str(enqueue_error) == "run_reconciliation_in_progress"
         ):
             async with transaction() as conn:
-                await terminalize_enqueue_failure_with_v4(
+                await terminalize_enqueue_failure(
                     http_request.app.state.run_stream_runtime.worker_capabilities, conn,
                     tenant_id=principal.tenant_id,
                     lifecycle=http_request.app.state.run_lifecycle, user_id=principal.user_id,

@@ -162,7 +162,7 @@ def _stub_terminal_provider_lineage(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release,
     )
 

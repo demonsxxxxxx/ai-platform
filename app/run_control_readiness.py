@@ -1,7 +1,12 @@
 from app.auth import AuthPrincipal, is_ai_admin
-from app.runs.api import run_retry_block_reason, run_unconfirmed_execution_block_reason
-from app.run_projection import (
+from app.runs.api import (
+    ACTIVE_RUN_STATUSES,
+    is_terminal_run_status,
     normalize_run_status,
+    run_retry_block_reason,
+    run_unconfirmed_execution_block_reason,
+)
+from app.run_projection import (
     normalize_step_status,
     run_step_response,
     run_step_responses,
@@ -13,8 +18,6 @@ from app.run_provenance import (
 )
 
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
-RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
-RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 def _control_action(*, enabled: bool, reason: str, method: str | None, href: str | None) -> dict[str, object]:
@@ -84,15 +87,15 @@ def run_control_readiness_snapshot(
     cancel_requested = bool(run.get("cancel_requested_at"))
     if cancel_requested:
         cancel_reason = "cancel_already_requested"
-    elif status in RUN_CONTROL_ACTIVE_STATUSES:
+    elif status in ACTIVE_RUN_STATUSES:
         cancel_reason = "cancel_available"
-    elif status in RUN_CONTROL_TERMINAL_STATUSES:
+    elif is_terminal_run_status(status):
         cancel_reason = "terminal_run"
     else:
         cancel_reason = "status_not_cancellable"
     cancel_enabled = cancel_reason == "cancel_available"
 
-    if status in RUN_CONTROL_ACTIVE_STATUSES:
+    if status in ACTIVE_RUN_STATUSES:
         resume_reason = "active_run"
     elif run_unconfirmed_execution_block_reason(run.get("error_code")):
         resume_reason = "execution_outcome_unconfirmed"

@@ -60,7 +60,7 @@
 | Spec/Attempt 创建与执行绑定 | [worker_dispatch_binding](../../app/runs/application/worker_dispatch_binding.py)、[worker_attempt_lifecycle](../../app/execution/application/worker_attempt_lifecycle.py)、[Attempt persistence](../../app/runs/infrastructure/postgres.py) |
 | dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[当前 lease repository](../../app/platform/postgres/sandbox_leases.py)、[callback route](../../app/routes/runtime_callbacks.py) |
 | 结算、结果与对象补偿 | [executor_reconciler](../../app/executor_reconciler.py)、[worker_result_commit](../../app/runs/application/worker_result_commit.py)、[artifact_storage](../../app/execution/application/artifact_storage.py)、[artifact persistence](../../app/persistence/artifacts.py) |
-| 原生会话结算 | [provider_epochs.commit_provider_turn](../../app/context/infrastructure/provider_epochs.py)、[provider_terminalization](../../app/runs/application/provider_terminalization.py) |
+| 原生会话结算 | [provider_epochs.commit_provider_turn](../../app/context/infrastructure/provider_epochs.py)、[run_terminalization.persist_assistant_with_provider_coverage](../../app/runs/application/run_terminalization.py) |
 | 取消、发布与清理 | [cancellation](../../app/runs/application/cancellation.py)、[worker_publication_v4](../../app/streaming/application/worker_publication_v4.py)、[runtime_cleanup](../../app/sandbox/application/runtime_cleanup.py) |
 
 ### N00 开工库存：当前实现与故障窗口
@@ -240,7 +240,7 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 
 **N12：终态组合服务收敛 — Runs application + Context/Streaming owner。依赖 N10 及事务回归。**
 
-- 范围：provider_terminalization、terminalization_v4、bootstrap/run_lifecycle、Worker completion、取消事件 writer 及全部调用者；不改变终态胜出规则。
+- 范围：Runs application 的 `run_terminalization` 组合服务、bootstrap/run_lifecycle、Worker completion、取消事件 writer 及全部调用者；不改变终态胜出规则。
 - 产出：一次完整终态提交组合，明确 Attempt、lineage、terminal v4、audit 的唯一执行位置；迁移取消路径已有独立 append_terminal，防止漏写或双写。
 - 验收：正常、前置失败、无 Attempt 失败、取消竞争、重复完成、CAS 丢失和事务回滚分别通过；同一 Run 终态/答案/产物不重复；commit 后 Redis 失败仍可读取。
 - 退役/回退：删除被替代 wrapper 及仅服务它的装配/测试；保留真正不同的 provider coverage 逻辑。无 schema/wire 变化时可源码回退，不恢复两套活跃组合。

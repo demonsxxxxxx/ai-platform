@@ -472,12 +472,12 @@ async def test_session_input_history_paginates_owned_runs_and_rejects_foreign_cu
     async with connect() as conn, conn.transaction():
         await callback(service, conn, "open")
         await submit(service, conn, input_id=str(uuid4()), text="old round")
-        await conn.execute("update runs set status='completed', created_at=now()-interval '1 day'")
+        await conn.execute("update runs set status='succeeded', created_at=now()-interval '1 day'")
         await conn.execute("""insert into runs (tenant_id,id,user_id,status,session_id,created_at) values
-            ('tenant','next','owner','completed','session',now()),
-            ('tenant','foreign','other','completed','session',now()),
-            ('other','foreign-tenant','owner','completed','session',now()),
-            ('tenant','other-session','owner','completed','another',now())""")
+            ('tenant','next','owner','succeeded','session',now()),
+            ('tenant','foreign','other','succeeded','session',now()),
+            ('other','foreign-tenant','owner','succeeded','session',now()),
+            ('tenant','other-session','owner','succeeded','another',now())""")
         page = await service.get_session_history(conn, tenant_id="tenant", user_id="owner", session_id="session", limit=1)
         assert [item["run_id"] for item in page["runs"]] == ["next"]
         assert page["has_more"] and page["next_before_run_id"] == "next"

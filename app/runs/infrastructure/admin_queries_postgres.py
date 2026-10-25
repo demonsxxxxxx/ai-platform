@@ -20,7 +20,7 @@ from app.platform.postgres.values import _coerce_int
 from app.platform.public_payload import sanitize_public_payload
 from app.platform.public_payload import sanitize_public_text
 from app.runs.domain.cost_observability import projected_event_cost
-from app.runs.infrastructure.creation_postgres import ACTIVE_RUN_STATUSES
+from app.runs.domain.run_status import ACTIVE_RUN_STATUSES, is_terminal_run_status
 from app.runs.application.admin_run_monitor import build_admin_runtime_health
 from app.runs.infrastructure.postgres import get_latest_run_attempt, get_run
 from app.runs.infrastructure.steps_postgres import list_run_steps
@@ -31,7 +31,6 @@ from app.skills.infrastructure.run_snapshots_postgres import list_run_skill_snap
 from app.streaming.infrastructure.run_events_postgres import list_run_events
 from psycopg import AsyncConnection
 from typing import Any
-import app.runs.domain.terminalization as runs_api
 
 
 def _required_schema_version(row: dict[str, Any], field: str, expected: str, error_code: str) -> str:
@@ -274,7 +273,9 @@ async def get_admin_runtime_run_summary(
         "total": sum(by_status.values()),
         "by_status": by_status,
         "active": sum(by_status.get(status, 0) for status in ACTIVE_RUN_STATUSES),
-        "terminal": sum(by_status.get(status, 0) for status in runs_api.TERMINAL_RUN_STATUSES),
+        "terminal": sum(
+            count for status, count in by_status.items() if is_terminal_run_status(status)
+        ),
         "recent_failures": [
             {
                 "run_id": row["id"],

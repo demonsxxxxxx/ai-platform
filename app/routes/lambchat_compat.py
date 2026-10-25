@@ -1027,7 +1027,7 @@ def _compatibility_events_for_run_page(
     }
     compact_terminal_answer = (
         compact_answer_deltas
-        and status in {"succeeded", "failed", "cancelled"}
+        and runs_api.is_terminal_run_status(status)
     )
     pending_answer_events: list[tuple[dict[str, Any], dict[str, object]]] = []
 
@@ -1365,7 +1365,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    if include_terminal and status in {"succeeded", "failed", "cancelled"}:
+    if include_terminal and runs_api.is_terminal_run_status(status):
         terminal_data = {"run_id": run_id, "status": status}
         compatibility_events.append(
             _CompatibilityWireEvent(
@@ -1403,7 +1403,7 @@ def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
 
 
 def _platform_status(status: str) -> str:
-    return "cancelled" if status == "canceled" else status
+    return runs_api.normalize_run_status(status)
 
 
 def _lambchat_status(status: str) -> str:
@@ -1859,8 +1859,10 @@ async def session_events(
             target_runs_by_id = {str(run["id"]): run for run in target_runs}
             snapshot = snapshots[cursor_payload["index"]]
             run = target_runs_by_id[snapshot["id"]]
-            if snapshot["status"] in {"succeeded", "failed", "cancelled"}:
-                if _platform_status(str(run.get("status") or "")) != snapshot["status"]:
+            if runs_api.is_terminal_run_status(snapshot["status"]):
+                if _platform_status(str(run.get("status") or "")) != _platform_status(
+                    str(snapshot.get("status") or "")
+                ):
                     raise HTTPException(
                         status_code=400, detail="history_cursor_invalid"
                     )

@@ -2633,9 +2633,9 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
@@ -2749,8 +2749,8 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "request_cancel", request_cancel)
-    monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.cancel_run_terminalization", cancel_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
@@ -2816,7 +2816,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
@@ -2852,7 +2852,7 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
         f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
 
     with pytest.raises(RuntimeError, match="executor_reconciliation_claim_lost"):
         await _terminalize_reconciliation_failure(
