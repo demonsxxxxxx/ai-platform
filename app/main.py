@@ -32,6 +32,11 @@ from app.bootstrap.run_delivery_intents import build_run_delivery_intents
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_inputs import build_run_inputs_service
+from app.bootstrap.sandbox_lease_ports import (
+    build_sandbox_executor_callback_lease_port,
+    build_sandbox_lease_transport_port,
+    build_sandbox_run_lease_reader,
+)
 from app.bootstrap.skills import configure_skill_services
 from app.bootstrap.submission_latency import build_chat_submission_latency_router
 from app.bootstrap.streaming import RunStreamRuntime, build_run_stream_runtime
@@ -191,6 +196,9 @@ def create_app() -> FastAPI:
     app.state.run_diagnostics_service = build_run_diagnostics_service()
     app.state.run_inputs_service = build_run_inputs_service()
     app.state.model_token_usage_service = build_model_token_usage_service()
+    app.state.sandbox_lease_transport = build_sandbox_lease_transport_port()
+    app.state.sandbox_executor_callback_leases = build_sandbox_executor_callback_lease_port()
+    app.state.sandbox_run_lease_reader = build_sandbox_run_lease_reader()
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,

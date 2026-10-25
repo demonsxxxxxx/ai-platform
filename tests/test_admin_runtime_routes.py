@@ -50,7 +50,7 @@ def signed_runtime_proof_key(monkeypatch):
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.sandbox_lease_repository.get_sandbox_executor_reconciliation_summary",
+        "app.sandbox.infrastructure.leases_postgres.get_sandbox_executor_reconciliation_summary",
         empty_executor_reconciliation_summary,
     )
 

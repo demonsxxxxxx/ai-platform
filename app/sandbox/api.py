@@ -30,6 +30,13 @@ from app.sandbox.application.runtime_cleanup import (
     SandboxRuntimeCleanup as SandboxRuntimeCleanup,
     SandboxRuntimeCleanupError as SandboxRuntimeCleanupError,
 )
+from app.sandbox.application.lease_ports import (
+    SandboxExecutorCallbackLeasePort as SandboxExecutorCallbackLeasePort,
+    SandboxExecutorReconciliationPort as SandboxExecutorReconciliationPort,
+    SandboxRunLeaseReader as SandboxRunLeaseReader,
+    SandboxRuntimeLeasePort as SandboxRuntimeLeasePort,
+    SandboxLeaseTransportPort as SandboxLeaseTransportPort,
+)
 
 from dataclasses import asdict, dataclass
 from re import fullmatch
@@ -41,6 +48,10 @@ from app.sandbox.domain.executor_failure import (
     canonical_executor_reported_failure_code as canonical_executor_reported_failure_code,
     executor_reported_failure_message as executor_reported_failure_message,
     normalize_executor_reported_failure as normalize_executor_reported_failure,
+)
+from app.sandbox.domain.lease_errors import (
+    SandboxExecutorTerminalConflictError as SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
 )
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,
