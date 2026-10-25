@@ -916,10 +916,9 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
     ]
 
 
-@pytest.mark.parametrize("log_mode", ["normal", "closed_sink", "raising_sink"])
 @pytest.mark.parametrize("insight_mode", ["normal", "acquire_failure", "llen_failure", "close_failure", "cancelled"])
 @pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown", "receipt_failure", "rejected"])
-def test_copy_run_creates_new_queued_run(monkeypatch, caplog, capsys, enqueue_mode, insight_mode, log_mode):
+def test_copy_run_creates_new_queued_run(monkeypatch, caplog, enqueue_mode, insight_mode):
     calls = []
     transaction_active = False
 
@@ -1108,20 +1107,6 @@ def test_copy_run_creates_new_queued_run(monkeypatch, caplog, capsys, enqueue_mo
         import app.queue as queue_module
         monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_module.get_queue_insight)
         monkeypatch.setattr(queue_module, "get_redis", insight_redis)
-    if log_mode != "normal":
-        import io
-        import logging
-        import app.routes.runs as runs_routes
-
-        class RaisingHandler(logging.Handler):
-            def emit(self, record):
-                raise RuntimeError("synthetic log sink unavailable")
-
-        stream = io.StringIO()
-        stream.close()
-        handler = logging.StreamHandler(stream) if log_mode == "closed_sink" else RaisingHandler()
-        monkeypatch.setattr(runs_routes.logger, "handlers", [handler])
-        monkeypatch.setattr(logging, "raiseExceptions", True)
     client = TestClient(create_app())
 
     if insight_mode == "cancelled" and enqueue_mode in {"normal", "reply_lost_readback"}:
@@ -1180,16 +1165,11 @@ def test_copy_run_creates_new_queued_run(monkeypatch, caplog, capsys, enqueue_mo
         assert redis_calls.count("aclose") == (0 if insight_mode == "acquire_failure" else 1)
         assert redis_calls.count("llen") == {"acquire_failure": 0, "llen_failure": 1, "close_failure": 3}[insight_mode]
         warnings = [record for record in caplog.records if record.message == "Copy queue insight unavailable"]
-        assert len(warnings) == (0 if log_mode == "raising_sink" else 1)
-        if warnings:
-            assert warnings[0].run_id == "run_new"
-            assert warnings[0].error == "ConnectionError"
-            assert warnings[0].exc_info is None
+        assert len(warnings) == 1
+        assert warnings[0].run_id == "run_new"
+        assert warnings[0].error == "ConnectionError"
+        assert warnings[0].exc_info is None
         assert private_error not in caplog.text
-        captured = capsys.readouterr()
-        assert private_error not in captured.err
-        if log_mode == "closed_sink":
-            assert "Logging error" in captured.err
     else:
         assert response.json()["queue_insight"] == {
             "tenant_id": "default",

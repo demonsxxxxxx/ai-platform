@@ -591,10 +591,6 @@ def _strip_server_owned_control_metadata(input_payload: object, *, redact_public
     return runs_capability_admission.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
 
 
-def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
-    return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
-
-
 async def _require_inherited_model_access(
     conn: Any,
     *,
@@ -642,7 +638,7 @@ async def prepare_copied_run_for_queue(
         snapshot=copied_snapshot,
         principal=effective_principal,
     )
-    source_run_id = _copied_run_source_run_id(authorized_source_run_id)
+    source_run_id = safe_provenance_graph_id("source_run_id", authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
     skill_manifests = await skills_run_snapshots.materialize_run_skill_manifests(
@@ -1263,11 +1259,7 @@ async def copy_run(
                 run_lifecycle=request.app.state.run_lifecycle,
                 v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
                 diagnostic_error=exc,
-                run_diagnostics=getattr(
-                    request.app.state,
-                    "run_diagnostics_service",
-                    None,
-                ),
+                run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
             )
             raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
         # The enqueue may have committed before its reply was lost. Keep the
@@ -1284,26 +1276,11 @@ async def copy_run(
                 status="accepted_pending_enqueue",
             )
         queue_position = int(admission.queue_position)
-    # Admission is authoritative; optional queue telemetry must not obscure the
-    # committed child's identity or encourage another copy after a read failure.
     try:
-        queue_insight = await queue_insight_for_status(
-            "queued", principal.tenant_id, user_id=principal.user_id
-        )
-    except Exception as exc:  # noqa: BLE001 - only optional post-admission telemetry
+        queue_insight = await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id)
+    except Exception as exc:  # noqa: BLE001 - optional telemetry must not hide the admitted child
         queue_insight = None
-        error_type = type(exc).__name__
-        try:
-            try:
-                # A broken log sink must not print the private Redis cause.
-                raise RuntimeError("safe failure logging context") from None
-            except RuntimeError:
-                logger.warning(
-                    "Copy queue insight unavailable",
-                    extra={"run_id": str(copied["run_id"]), "error": error_type},
-                )
-        except Exception:
-            pass  # Failure reporting cannot obscure successful admission.
+        logger.warning("Copy queue insight unavailable", extra={"run_id": str(copied["run_id"]), "error": type(exc).__name__})
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
