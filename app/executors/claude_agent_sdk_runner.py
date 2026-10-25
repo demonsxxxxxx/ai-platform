@@ -107,7 +107,7 @@ from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
 )
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.api import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _SDK_ENV_ALLOWLIST = {

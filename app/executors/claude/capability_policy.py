@@ -13,7 +13,7 @@ from app.required_tool_contract import (
     declaration_from_input,
     with_sandbox_local_tool_capability_subjects,
 )
-from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
+from app.mcp.api import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_run_artifact",
