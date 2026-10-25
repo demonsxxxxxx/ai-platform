@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -19,6 +20,9 @@ from tests.support.run_lifecycle_faults import (
     TERMINAL_ACK_FAULT_MARKER_PATH,
     TERMINAL_CALLBACK_LOSS_MARKER_PATH,
 )
+from tests.support.lifecycle_candidate_evidence import (
+    capture_candidate_source_binding,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +35,12 @@ _LIFECYCLE_SCOPE_LABEL = "ai-platform.lifecycle-test.scope"
 _WORKSPACE_LABEL = "ai-platform.workspace_id"
 _RUN_LABEL = "ai-platform.run_id"
 _DIRECT_HTTP = build_opener(ProxyHandler({}))
+_CANDIDATE_IMAGE_LABELS = (
+    "ai-platform.source-commit",
+    "ai-platform.source-tree-sha256",
+    "ai-platform.uv-lock-sha256",
+    "ai-platform.build-dirty",
+)
 
 
 def _direct_urlopen(url: str, *, timeout: float):
@@ -77,20 +87,16 @@ def build_control_image(evidence_dir: Path) -> str:
     if not (ROOT / "tests/support/run_lifecycle_docker_proxy.py").is_file():
         raise FileNotFoundError("lifecycle Docker socket proxy source is missing")
 
-    source_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    ).stdout.strip()
+    source_binding = capture_candidate_source_binding(ROOT)
+    source_commit = str(source_binding["head_sha"])
     if _SOURCE_COMMIT_RE.fullmatch(source_commit) is None:
         raise RuntimeError("lifecycle image source commit is invalid")
-    dirty = bool(subprocess.run(
-        ["git", "status", "--porcelain"], cwd=ROOT, check=True,
-        capture_output=True, text=True, timeout=10,
-    ).stdout.strip())
+    image_labels = {
+        "ai-platform.source-commit": source_commit,
+        "ai-platform.source-tree-sha256": str(source_binding["dirty_source_sha256"]),
+        "ai-platform.uv-lock-sha256": str(source_binding["lock_sha256"]),
+        "ai-platform.build-dirty": str(source_binding["dirty"]).lower(),
+    }
 
     build_id = uuid.uuid4().hex
     base_tag = f"ai-platform-lifecycle-base:{build_id}"
@@ -100,7 +106,8 @@ def build_control_image(evidence_dir: Path) -> str:
     base_command = [
         "docker", "build", "--pull=false", "--progress=plain",
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={source_commit}",
-        "--build-arg", f"AI_PLATFORM_BUILD_DIRTY={str(dirty).lower()}",
+        "--build-arg", f"AI_PLATFORM_BUILD_DIRTY={image_labels['ai-platform.build-dirty']}",
+        *[argument for name, value in image_labels.items() for argument in ("--label", f"{name}={value}")],
         "--file", "Dockerfile", "--tag", base_tag, ".",
     ]
     _run_build(base_command, base_log)
@@ -108,21 +115,162 @@ def build_control_image(evidence_dir: Path) -> str:
     control_command = [
         "docker", "build", "--pull=false", "--progress=plain",
         "--build-arg", f"BASE_IMAGE={base_tag}",
+        *[argument for name, value in image_labels.items() for argument in ("--label", f"{name}={value}")],
         "--file", "tests/fixtures/run-lifecycle/Dockerfile",
         "--tag", control_tag, ".",
     ]
     _run_build(control_command, control_log)
-    inspected = subprocess.run(
-        ["docker", "image", "inspect", "--format", "{{.Id}}", control_tag],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", inspected) is None:
+    inspected = _inspect_candidate_image(control_tag)
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", inspected["id"]) is None:
         raise RuntimeError("lifecycle control image digest is invalid")
-    return inspected
+    _require_candidate_image_binding(inspected, source_binding)
+    binding_after_build = capture_candidate_source_binding(ROOT)
+    if binding_after_build != source_binding:
+        raise RuntimeError("candidate source changed while lifecycle image was being built")
+    return inspected["id"]
+
+
+def _inspect_candidate_image(image_ref: str) -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image_ref],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        documents = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise RuntimeError("unable to inspect lifecycle candidate image") from error
+    if not isinstance(documents, list) or len(documents) != 1:
+        raise RuntimeError("Docker inspection did not return exactly one candidate image")
+    image = documents[0]
+    if not isinstance(image, dict):
+        raise RuntimeError("Docker candidate image inspection is malformed")
+    image_id = image.get("Id")
+    config = image.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(image_id, str) or not isinstance(labels, dict):
+        raise RuntimeError("Docker candidate image inspection is missing its ID or labels")
+    return {
+        "id": image_id,
+        "labels": {name: labels.get(name) for name in _CANDIDATE_IMAGE_LABELS},
+    }
+
+
+def _require_candidate_image_binding(
+    image: dict[str, Any], binding: dict[str, object]
+) -> None:
+    expected = {
+        "ai-platform.source-commit": binding["head_sha"],
+        "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+        "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+        "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+    }
+    labels = image.get("labels")
+    if not isinstance(labels, dict):
+        raise RuntimeError("lifecycle candidate image has no labels")
+    for name, value in expected.items():
+        if labels.get(name) != value:
+            raise RuntimeError(f"lifecycle candidate image source binding differs at {name}")
+
+
+def _write_candidate_artifact(
+    evidence_dir: Path, name: str, payload: dict[str, Any]
+) -> dict[str, str]:
+    content = (json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n").encode(
+        "utf-8"
+    )
+    path = evidence_dir / name
+    path.write_bytes(content)
+    return {
+        "path": name,
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def write_lifecycle_control_evidence(
+    evidence_dir: Path,
+    *,
+    image_id: str,
+    source_commit: str,
+    stack: LifecycleDockerStack,
+    scenario: dict[str, Any],
+) -> Path:
+    """Write one C-layer manifest with shared source, image, runtime and profile evidence."""
+
+    evidence_dir = Path(evidence_dir)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    binding = capture_candidate_source_binding(ROOT)
+    if binding["head_sha"] != source_commit:
+        raise RuntimeError("lifecycle source HEAD changed after candidate image build")
+    image = _inspect_candidate_image(image_id)
+    if image["id"] != image_id:
+        raise RuntimeError("lifecycle candidate image ID changed after build")
+    _require_candidate_image_binding(image, binding)
+    runtime_dependencies = stack.runtime_dependency_versions()
+    security_profile = stack.security_profile_observation(image_id=image_id)
+    for dependency in ("python", "postgresql", "redis", "minio"):
+        version = runtime_dependencies.get(dependency)
+        if not isinstance(version, str) or not version.strip():
+            raise RuntimeError(f"lifecycle {dependency} version was not observed")
+    profile_id = security_profile.get("profile_id")
+    egress_setting = security_profile.get("egress_policy_enabled_in_api_config")
+    runtime_image_ids = security_profile.get("runtime_image_ids")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise RuntimeError("lifecycle sandbox profile ID was not observed")
+    if type(egress_setting) is not bool or not isinstance(runtime_image_ids, dict):
+        raise RuntimeError("lifecycle sandbox profile configuration was incomplete")
+    if runtime_image_ids.get("api") != image_id or runtime_image_ids.get("identity") != image_id:
+        raise RuntimeError("lifecycle API or runtime probe used a different candidate image")
+    artifacts = [
+        _write_candidate_artifact(evidence_dir, "candidate-source-binding.json", binding),
+        _write_candidate_artifact(evidence_dir, "candidate-image-inspect.json", image),
+        _write_candidate_artifact(
+            evidence_dir, "runtime-dependency-versions.json", runtime_dependencies
+        ),
+        _write_candidate_artifact(
+            evidence_dir, "sandbox-security-profile.json", security_profile
+        ),
+    ]
+    scenario_payload = dict(scenario)
+    scenario_payload.pop("schema_version", None)
+    scenario_payload.pop("source_commit", None)
+    scenario_payload.pop("image_id", None)
+    scenario_payload.pop("sdk_used", None)
+    manifest = {
+        "schema_version": "ai-platform.lifecycle-control-evidence.v1",
+        "source_commit": source_commit,
+        "image_id": image_id,
+        "sdk_used": False,
+        "candidate_artifacts": artifacts,
+        **scenario_payload,
+    }
+    manifest_path = evidence_dir / "control-chain.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def _container_version(container: Any, role: str, command: list[str]) -> str:
+    try:
+        result = container.exec_run(command, demux=True)
+    except Exception as error:
+        raise RuntimeError(f"unable to observe lifecycle {role} version") from error
+    if result.exit_code != 0:
+        raise RuntimeError(f"lifecycle {role} version command failed")
+    output = result.output
+    if isinstance(output, tuple):
+        raw = (output[0] or b"") + (output[1] or b"")
+    else:
+        raw = output or b""
+    version = raw.decode("utf-8", errors="replace").strip()
+    if not version or version.casefold() in {"unknown", "n/a", "none"}:
+        raise RuntimeError(f"lifecycle {role} version was not observed")
+    return version
 
 
 def _run_build(command: list[str], log_path: Path) -> None:
@@ -236,6 +384,63 @@ class LifecycleDockerStack:
             raise RuntimeError("lifecycle API has not been started")
         return self.api_base
 
+    def runtime_dependency_versions(self) -> dict[str, str]:
+        """Read versions from the running candidate and its actual data services."""
+
+        return {
+            "python": _container_version(
+                self._containers["identity"], "Python", ["python", "--version"]
+            ),
+            "postgresql": _container_version(
+                self._containers["postgres"], "PostgreSQL", ["postgres", "--version"]
+            ),
+            "redis": _container_version(
+                self._containers["redis"], "Redis", ["redis-server", "--version"]
+            ),
+            "minio": _container_version(
+                self._containers["minio"],
+                "MinIO",
+                ["/opt/bitnami/minio/bin/minio", "--version"],
+            ),
+        }
+
+    def security_profile_observation(self, *, image_id: str) -> dict[str, Any]:
+        """Record the profile configured in the running API container, without attestation."""
+
+        api = self._containers.get("api")
+        if api is None:
+            raise RuntimeError("lifecycle API container is unavailable for profile observation")
+        api.reload()
+        config = api.attrs.get("Config") or {}
+        environment = {}
+        for entry in config.get("Env") or []:
+            key, separator, value = str(entry).partition("=")
+            if separator and key in {
+                "SANDBOX_SECURITY_PROFILE",
+                "SANDBOX_EGRESS_POLICY_ENABLED",
+            }:
+                environment[key] = value
+        profile_id = environment.get("SANDBOX_SECURITY_PROFILE", "").strip()
+        egress_setting = environment.get("SANDBOX_EGRESS_POLICY_ENABLED", "").strip().lower()
+        if not profile_id or egress_setting not in {"true", "false"}:
+            raise RuntimeError("lifecycle sandbox profile configuration was not observed")
+
+        runtime_image_ids: dict[str, str] = {}
+        for role in ("api", "worker", "identity"):
+            container = self._containers.get(role)
+            if container is None:
+                continue
+            container.reload()
+            actual_image_id = str(container.attrs.get("Image") or "")
+            if actual_image_id != image_id:
+                raise RuntimeError(f"lifecycle {role} is running a different candidate image")
+            runtime_image_ids[role] = actual_image_id
+        return {
+            "profile_id": profile_id,
+            "egress_policy_enabled_in_api_config": egress_setting == "true",
+            "runtime_image_ids": runtime_image_ids,
+        }
+
     def start_api(
         self,
         *,
@@ -259,8 +464,16 @@ class LifecycleDockerStack:
                     "APP_MODULE": "app.main:create_app",
                     "APP_PORT": "8020",
                     "WORKER_CONCURRENCY": "1",
+                    # Owner cancellation is an API operation that calls the
+                    # sandbox provider. Give this trusted test API the same
+                    # private, test-owned Docker proxy as the Worker.
+                    "DOCKER_HOST": "unix:///socket/docker.sock",
+                    "SANDBOX_EXECUTOR_PUBLISHED_HOST": self.network_gateway,
                 }
             )
+            volumes = {
+                self.socket_volume_name: {"bind": "/socket", "mode": "rw"},
+            }
             if drop_terminal_ack_once:
                 env.update(
                     {
@@ -290,6 +503,7 @@ class LifecycleDockerStack:
                     }
                 ),
                 network=self.network_name,
+                volumes=volumes,
                 ports={"8020/tcp": ("127.0.0.1", None)},
                 healthcheck={
                     "test": [
@@ -385,6 +599,46 @@ class LifecycleDockerStack:
             container.wait(timeout=30)
         container.reload()
         return container.id
+
+    def stop_docker_proxy(self, *, timeout_seconds: int = 5) -> str:
+        container = self._containers.get("docker-proxy")
+        if container is None:
+            raise RuntimeError("lifecycle Docker proxy has not been started")
+        container.reload()
+        if container.status == "running":
+            container.stop(timeout=timeout_seconds)
+        container.reload()
+        if container.status == "running":
+            raise RuntimeError("lifecycle Docker proxy did not stop")
+        return container.id
+
+    def start_docker_proxy(self, *, timeout_seconds: float = 15.0) -> str:
+        container = self._containers.get("docker-proxy")
+        if container is None:
+            raise RuntimeError("lifecycle Docker proxy has not been started")
+        container.reload()
+        if container.status != "running":
+            container.start()
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            container.reload()
+            if container.status != "running":
+                raise RuntimeError("lifecycle Docker proxy exited during restart")
+            result = container.exec_run(
+                [
+                    "python",
+                    "-c",
+                    "import docker; "
+                    "assert docker.DockerClient("
+                    "base_url='unix:///socket/docker.sock', timeout=3).ping()",
+                ],
+                demux=True,
+            )
+            if result.exit_code == 0:
+                return container.id
+            time.sleep(0.1)
+        raise TimeoutError("lifecycle Docker proxy did not restore its socket")
 
     def capture_worker_logs(self, checkpoint: str) -> str:
         container = self._containers.get("worker")
