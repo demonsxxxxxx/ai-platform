@@ -117,7 +117,7 @@ from app.queue import (
     is_definitive_chat_queue_rejection as _is_definitive_chat_queue_rejection,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
-from app.routes.chat_submission_delivery import (
+from app.bootstrap.chat_submission_delivery import (
     persist_chat_queue_success as _persist_chat_queue_success,
     persist_chat_submission_delivery_receipt as _persist_chat_submission_delivery_receipt,
     record_chat_submission_delivery_receipt as _record_chat_submission_delivery_receipt,

@@ -657,3 +657,35 @@ async def test_redis_adapter_uses_composition_injected_payload_and_queue_ports()
         ("readback", {"run_id": "run", "tenant_id": "tenant"}),
         ("enqueue", {"run_id": "run", "tenant_id": "tenant"}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_caller', [False, True])
+async def test_delivery_work_group_keeps_blocked_children_until_they_finish(cancel_caller):
+    from app.execution.application.task_completion import gather_completed
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def blocked_enqueue():
+        started.set()
+        await release.wait()
+        finished.set()
+
+    async def failed_receipt():
+        await started.wait()
+        raise RuntimeError('receipt transaction failed')
+
+    task = asyncio.create_task(gather_completed(blocked_enqueue(), failed_receipt()))
+    await started.wait()
+    await asyncio.sleep(0)
+    if cancel_caller:
+        task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert not finished.is_set()
+    release.set()
+    with pytest.raises(asyncio.CancelledError if cancel_caller else RuntimeError):
+        await task
+    assert finished.is_set()
