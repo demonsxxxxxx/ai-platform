@@ -492,6 +492,9 @@ def test_sandbox_overlay_grants_socket_and_group_only_to_worker():
         "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
     ]
     worker = overlay["services"]["worker"]
+    assert worker["network_mode"] == "service:api"
+    assert worker["extra_hosts"] == []
+    assert worker["depends_on"]["api"] == {"condition": "service_healthy", "restart": True}
     assert "/var/run/docker.sock:/var/run/docker.sock" in worker["volumes"]
     assert worker["group_add"] == ["${DOCKER_SOCKET_GID:?set DOCKER_SOCKET_GID}"]
     assert overlay["services"]["workspace-init"]["volumes"] == [
