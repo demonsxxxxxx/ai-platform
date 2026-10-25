@@ -221,7 +221,7 @@ async def delivery_db():
             transaction_factory=full_transaction,
             index_connection_factory=full_index_connection,
         )
-        assert upgraded["version"] == schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION
+        assert upgraded["version"] == schema_migrations.TARGET_SCHEMA_VERSION
         assert repeated["status"] == "current"
         connect.full_schema = full_transaction
         connect.full_schema_name = schema_name
