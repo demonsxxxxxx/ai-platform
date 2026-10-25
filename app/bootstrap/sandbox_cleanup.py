@@ -9,7 +9,6 @@ from app.runtime.sandbox import opensandbox_policy
 from app.runtime.sandbox.contracts import ContainerLease
 from app.sandbox.api import SandboxRuntimeCleanup
 from app.sandbox.application.runtime_handle import PersistedRuntimeHandleRecovery
-from app.sandbox.infrastructure import leases_postgres
 from app.settings import get_settings
 from app.streaming.infrastructure import run_events_postgres
 from app.kernel.identifiers import assert_safe_id
@@ -19,7 +18,7 @@ def build_sandbox_runtime_cleanup() -> SandboxRuntimeCleanup:
     return SandboxRuntimeCleanup(
         transaction_factory=lambda: transaction(),
         lease_repository=build_sandbox_runtime_lease_port(),
-        outcomes=leases_postgres,
+        outcomes=sandbox_lease_repository,
         append_event=lambda *args, **kwargs: run_events_postgres.append_event(*args, **kwargs),
         append_audit=lambda *args, **kwargs: audit_postgres.append_audit_log(*args, **kwargs),
         list_tenant_ids=lambda conn: identity_postgres.list_tenant_ids(conn),

@@ -85,7 +85,7 @@ async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
     assert recorded is None
     assert "expires_at = now() + make_interval(secs => %s)" in heartbeat_sql
     assert "(expires_at is null or expires_at > now())" in heartbeat_sql
-    assert "executor_terminal_json is null" in heartbeat_sql
+    assert "executor_status in ('accepted', 'running')" in heartbeat_sql
     assert heartbeat_params == (
         "running",
         "running",
@@ -125,7 +125,7 @@ async def test_opensandbox_renewal_receipt_is_provider_and_attempt_fenced():
     assert "status = 'active'" in sql
     assert "attempt_id = %s" in sql
     assert "(expires_at is null or expires_at > now())" in sql
-    assert "executor_terminal_json is null" in sql
+    assert "executor_status in ('accepted', 'running')" in sql
     assert params == (expiration, "lease-a", "tenant-a", "run-a", "attempt-a")
     with pytest.raises(ValueError, match="timezone_invalid"):
         await record_opensandbox_renewal_receipt(
@@ -237,8 +237,7 @@ async def test_sandbox_lease_release_fence_is_durable_before_or_after_insert():
     assert "insert into sandbox_leases" in conn.sql
     assert "on conflict (id) do update" in conn.sql
     assert "set status = 'released'" in conn.sql
-    assert "sandbox_leases.executor_terminal_json is null" in conn.sql
-    assert "sandbox_leases.executor_reconciliation_status = 'finalized'" in conn.sql
+    assert "sandbox_leases.executor_cleanup_status in ('not_required', 'finalized')" in conn.sql
     assert "coalesce(sandbox_leases.attempt_id, '') = coalesce(excluded.attempt_id, '')" in conn.sql
     assert conn.params == (
         "lease-a",
@@ -669,8 +668,7 @@ async def test_generic_sandbox_release_sql_fences_nonfinalized_terminal_receipts
 
     assert len(statements) == 4
     for statement, _params in statements:
-        assert "executor_terminal_json is null" in statement
-        assert "executor_reconciliation_status = 'finalized'" in statement
+        assert "executor_cleanup_status in ('not_required', 'finalized')" in statement
 
 
 @pytest.mark.asyncio
@@ -709,8 +707,7 @@ async def test_list_expired_active_sandbox_leases_preserves_runtime_stop_targets
     assert select_sql.startswith("select * from sandbox_leases")
     assert "status = 'active'" in select_sql
     assert "expires_at <= now()" in select_sql
-    assert "executor_terminal_json is null" in select_sql
-    assert "executor_reconciliation_status = 'finalized'" in select_sql
+    assert "executor_cleanup_status in ('not_required', 'finalized')" in select_sql
     assert "for update skip locked" in select_sql
     assert "provider not in" not in select_sql
     assert select_params == ("tenant-a", "tenant-a", 25)
@@ -756,8 +753,7 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
     update_sql, update_params = calls[0]
     assert "id = any(%s)" in update_sql
     assert "run_id = %s" in update_sql
-    assert "executor_terminal_json is null" in update_sql
-    assert "executor_reconciliation_status = 'finalized'" in update_sql
+    assert "executor_cleanup_status in ('not_required', 'finalized')" in update_sql
     assert update_params == ("expired", "tenant-a", None, None, ["lease-a"])
     assert calls[1] == (
         "event",

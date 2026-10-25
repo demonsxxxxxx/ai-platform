@@ -32,6 +32,31 @@ from app.settings import (
     LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
 )
 
+
+@pytest.fixture
+def inactive_attempt_writer_for_cleanup_tests(monkeypatch):
+    from app.sandbox.application.attempt_settlement_shadow import (
+        AttemptSettlementShadowLeaseRepository,
+    )
+
+    async def writes_disabled(_self, _conn, _scope):
+        return False
+
+    async def writer_inactive(_self, _conn):
+        return False
+
+    monkeypatch.setattr(
+        AttemptSettlementShadowLeaseRepository,
+        "_write_enabled",
+        writes_disabled,
+    )
+    monkeypatch.setattr(
+        AttemptSettlementShadowLeaseRepository,
+        "_writer_active",
+        writer_inactive,
+    )
+
+
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
@@ -445,6 +470,7 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
 @pytest.mark.asyncio
 async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     monkeypatch,
+    inactive_attempt_writer_for_cleanup_tests,
     lease_status,
     claim_lost_during_stop,
     reconciliation_status,
@@ -540,7 +566,9 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim(monkeypatch):
+async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim(
+    monkeypatch, inactive_attempt_writer_for_cleanup_tests,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
@@ -590,7 +618,9 @@ async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(monkeypatch):
+async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(
+    monkeypatch, inactive_attempt_writer_for_cleanup_tests,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
@@ -710,7 +740,9 @@ async def test_reconciliation_cleanup_owns_resistant_provider_until_it_really_st
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effect(monkeypatch):
+async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effect(
+    monkeypatch, inactive_attempt_writer_for_cleanup_tests,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
@@ -747,7 +779,9 @@ async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effe
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(monkeypatch):
+async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(
+    monkeypatch, inactive_attempt_writer_for_cleanup_tests,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
@@ -1171,6 +1205,7 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
 @pytest.mark.parametrize("runtime_subject", ("runtime-subject-a", "production:opensandbox", "r" * 80))
 async def test_production_opensandbox_cleanup_requires_authoritative_identity(
     monkeypatch,
+    inactive_attempt_writer_for_cleanup_tests,
     failure_mode,
     runtime_subject,
 ):

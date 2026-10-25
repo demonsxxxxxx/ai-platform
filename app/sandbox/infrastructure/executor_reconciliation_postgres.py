@@ -24,17 +24,9 @@ _RESOURCE_CLEANUP_FIELDS = """
 """
 
 
-async def record_sandbox_executor_terminal(
-    connection: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    lease_id: str,
-    executor_status: str,
-    terminal_result: dict[str, Any],
-    claim_token: str | None = None,
-) -> dict[str, Any]:
+def _validate_terminal_observation(
+    *, run_id: str, executor_status: str, terminal_result: dict[str, Any]
+) -> None:
     ensure_json_size(
         terminal_result,
         max_bytes=RUN_RESULT_MAX_BYTES,
@@ -52,6 +44,22 @@ async def record_sandbox_executor_terminal(
     }
     if normalized_result_status not in allowed_result_statuses[executor_status]:
         raise ValueError("sandbox_executor_terminal_result_status_invalid")
+
+
+async def record_sandbox_executor_terminal(
+    connection: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    executor_status: str,
+    terminal_result: dict[str, Any],
+    claim_token: str | None = None,
+) -> dict[str, Any]:
+    _validate_terminal_observation(
+        run_id=run_id, executor_status=executor_status, terminal_result=terminal_result
+    )
     cursor = await connection.execute(
         """
         select *
@@ -144,13 +152,9 @@ async def record_sandbox_executor_terminal_observation(
     legacy_settlement_compat: bool = False,
 ) -> dict[str, Any]:
     """Record Sandbox execution status while Runs owns the terminal receipt."""
-    ensure_json_size(
-        terminal_result,
-        max_bytes=RUN_RESULT_MAX_BYTES,
-        code="executor_terminal_receipt_too_large",
+    _validate_terminal_observation(
+        run_id=run_id, executor_status=executor_status, terminal_result=terminal_result
     )
-    if executor_status not in {"completed", "failed", "cancelled"}:
-        raise ValueError("sandbox_executor_terminal_status_invalid")
     cursor = await connection.execute(
         """
         select id, tenant_id, run_id, attempt_id, status, lease_payload_json,

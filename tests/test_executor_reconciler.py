@@ -2455,7 +2455,7 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
 
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count" not in statements[0]
-    assert statements[0].count("make_interval(secs => %s)") == 2
+    assert statements[0].count("make_interval(secs => %s)") == 1
     assert "executor_reconciliation_status = 'claimed'" in statements[0]
     assert "executor_reconciliation_claimed_at" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
@@ -3110,7 +3110,7 @@ async def test_reconciliation_repository_writes_are_claim_fenced_and_aggregate_o
     assert "executor_reconciliation_status = 'finalized'" in release_sql
     assert "executor_reconciliation_error = ''" in release_sql
     assert "executor_reconciliation_error = null" not in release_sql
-    assert "executor_reconciliation_claim_token = %s" in release_sql
+    assert "executor_cleanup_claim_token = %s" in release_sql
     assert release_params[-2:] == ("lease-a", "claim-a")
 
     quarantine_sql, _ = statements[1]
@@ -3209,35 +3209,35 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
 
     claim_sql, claim_params = statements[0]
     assert "status in ('active', 'released')" in claim_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in claim_sql
-    assert "executor_reconciliation_retry_not_before" in claim_sql
-    assert "executor_reconciliation_claimed_at is null" in claim_sql
+    assert "executor_cleanup_status in ('failed', 'cleanup_pending', 'retry', 'claimed')" in claim_sql
+    assert "executor_cleanup_retry_not_before" in claim_sql
+    assert "executor_cleanup_claimed_at is null" in claim_sql
     assert "%s::text is null or tenant_id = %s" in claim_sql
     assert "for update skip locked" in claim_sql
-    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a")
+    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a", "cleanup-a")
 
     has_claim_sql, _ = statements[1]
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in has_claim_sql
-    assert "executor_reconciliation_claim_token = %s" in has_claim_sql
+    assert "executor_cleanup_status = 'claimed'" in has_claim_sql
+    assert "executor_cleanup_claim_token = %s" in has_claim_sql
     assert "for update" in has_claim_sql
 
     release_claim_sql, _ = statements[2]
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in release_claim_sql
-    assert "executor_reconciliation_retry_not_before = now() + interval '30 seconds'" in release_claim_sql
-    assert "executor_reconciliation_claim_token = null" in release_claim_sql
-    assert "executor_reconciliation_claimed_at = now()" in release_claim_sql
+    assert "executor_cleanup_status = 'claimed'" in release_claim_sql
+    assert "executor_cleanup_retry_not_before = now() + interval '30 seconds'" in release_claim_sql
+    assert "executor_cleanup_claim_token = null" in release_claim_sql
+    assert "executor_cleanup_claimed_at = null" in release_claim_sql
 
     finalize_sql, finalize_params = statements[3]
     assert "set status = 'released'" in finalize_sql
     assert "executor_reconciliation_status = 'finalized'" in finalize_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in finalize_sql
-    assert "executor_reconciliation_claim_token = %s" in finalize_sql
+    assert "executor_cleanup_status = 'claimed'" in finalize_sql
+    assert "executor_cleanup_claim_token = %s" in finalize_sql
     assert finalize_params[-2:] == ("lease-a", "cleanup-a")
 
     quarantine_sql, _ = statements[4]
     assert "set status = 'quarantined'" in quarantine_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in quarantine_sql
-    assert "executor_reconciliation_claim_token = %s" in quarantine_sql
+    assert "executor_cleanup_status = 'claimed'" in quarantine_sql
+    assert "executor_cleanup_claim_token = %s" in quarantine_sql
 
 
 @pytest.mark.asyncio
