@@ -271,7 +271,7 @@ evidence remain required before the migration can be called complete.
 
 ### 3.2 Attempt settlement detail (N30/N31)
 
-Schema `2026.10.25.4` adds `run_attempt_settlements`, one Runs-owned detail per
+Schema `2026.10.25.5` adds `run_attempt_settlements`, one Runs-owned detail per
 existing `(tenant_id, run_id, attempt_id)`. Its composite foreign key binds the
 detail to that exact `RunAttempt`; it is not a second execution Attempt. The
 detail stores the legacy terminal receipt identity, canonical receipt content
@@ -282,7 +282,8 @@ cancellation time and owner generation used for comparison.
 | Field group | `run_attempt_settlements` | Authority retained |
 |---|---|---|
 | Receipt identity/content/digest | `receipt_identity`, `receipt_json`, `receipt_sha256`, source lease ID and captured generation | First terminal content remains in `sandbox_leases`; later root diagnostics are excluded from the detail digest |
-| Dispatch acceptance/context | `dispatch_state`, `accepted_context_json` | Current accepted-context producer remains Sandbox/Execution |
+| Dispatch intent recovery | `intent_recovery_context_json` | The original Sandbox intent context is retained separately from acceptance |
+| Dispatch acceptance/context | `dispatch_state`, `accepted_context_json` | Dispatch acceptance is observed from its durable dispatch row; accepted context remains Sandbox/Execution-owned |
 | Settlement progress | `settlement_phase`, settlement claim, retry clock/count | Runs detail projection; no execution transition |
 | Business result | Run result status/JSON/digest, error code and settled time | Run remains the committed business result owner |
 | Comparison fence | Run/Attempt status, owner generation and cancellation-time snapshots | Read-only observations of current authority |
@@ -292,9 +293,12 @@ The receipt identity is tied to the original Sandbox lease and Attempt. Because
 the legacy terminal receipt is JSONB, its digest is over canonical JSON; the
 mutable root `diagnostics` field is excluded. The source does not retain the
 original callback bytes or an independent receipt timestamp, so the projection
-does not claim either. Accepted state is observed from the persisted
-reconciliation context. A terminal receipt with `waiting_terminal` and no
-context remains explicitly `receipt_before_acceptance` / `awaiting_context`.
+does not claim either. The dispatch intent's recovery context is immutable and
+separate from accepted semantics; `dispatch_timings` added at acceptance cannot
+rewrite it. An executor probe claim without a terminal receipt remains a
+Sandbox probe and does not populate the settlement claim token or phase. A
+terminal receipt with `waiting_terminal` and no accepted dispatch remains
+explicitly `receipt_before_acceptance` / `awaiting_context`.
 
 This detail has no Attempt transition trigger. Writing it does not update
 `run_attempts`, `runs.status`, `owner_generation`, lifecycle events, or audit
@@ -313,11 +317,12 @@ its own outstanding work.
 
 The Runs API exposes bounded keyset backfill and page-scoped read-only
 comparison, with a maximum page of 800 Attempts. Missing rows, unknown
-bindings and conflicts remain in each page's counts. A page result does not
-report global readiness and cannot authorize a reader cutover: concurrent
-inserts can fall behind an already-scanned key, so a future cutover requires a
-stable snapshot boundary and a summary over the complete denominator. Backfill
-inserts only and is safe to repeat; it never overwrites an existing receipt.
+bindings and conflicts remain in each page's counts. A page result or a stable
+snapshot's row count and maximum key cannot authorize a reader cutover. N40
+must run a fresh complete semantic comparison and keep writers for `runs`,
+`run_attempts`, `sandbox_leases`, and `sandbox_execution_dispatches` fenced until
+the cutover transaction commits. Backfill inserts only and is safe to repeat;
+it never overwrites an existing receipt.
 For each Attempt its lock order is Run, matching Sandbox leases ordered by lease
 id, Attempt, then settlement detail. Sandbox accepted, dispatch intent, and
 terminal-receipt writers use this order before changing source facts, then call

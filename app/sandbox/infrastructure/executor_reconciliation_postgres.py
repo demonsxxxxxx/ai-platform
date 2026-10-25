@@ -151,6 +151,7 @@ async def claim_sandbox_executor_suspects(
     claim_token: str,
     limit: int,
     stale_after_seconds: int,
+    candidate_lease_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Claim accepted tasks whose executor heartbeat has gone stale."""
 
@@ -160,6 +161,7 @@ async def claim_sandbox_executor_suspects(
           select id
           from sandbox_leases
           where status = 'active'
+            and (%s::text[] is null or id = any(%s::text[]))
             and executor_terminal_json is null
             and executor_reconciliation_context_json is not null
             and (
@@ -192,7 +194,14 @@ async def claim_sandbox_executor_suspects(
         where lease.id = candidates.id
         returning lease.*
         """,
-        (stale_after_seconds, stale_after_seconds, limit, claim_token),
+        (
+            candidate_lease_ids,
+            candidate_lease_ids,
+            stale_after_seconds,
+            stale_after_seconds,
+            limit,
+            claim_token,
+        ),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -229,6 +238,7 @@ async def claim_sandbox_executor_reconciliations(
     claim_token: str,
     limit: int,
     stale_after_seconds: int,
+    candidate_lease_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     cursor = await connection.execute(
         """
@@ -236,6 +246,7 @@ async def claim_sandbox_executor_reconciliations(
           select id
           from sandbox_leases
           where status in ('active', 'released')
+            and (%s::text[] is null or id = any(%s::text[]))
             and executor_terminal_json is not null
             and executor_reconciliation_context_json is not null
             and (
@@ -268,10 +279,85 @@ async def claim_sandbox_executor_reconciliations(
         where lease.id = candidates.id
         returning lease.*
         """,
-        (stale_after_seconds, limit, claim_token),
+        (
+            candidate_lease_ids,
+            candidate_lease_ids,
+            stale_after_seconds,
+            limit,
+            claim_token,
+        ),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+async def list_sandbox_executor_suspect_candidate_scopes(
+    connection: Any,
+    *,
+    limit: int,
+    stale_after_seconds: int,
+) -> list[dict[str, str]]:
+    """Read a bounded probe-claim set before callers acquire ordered source locks."""
+
+    cursor = await connection.execute(
+        """
+        select id, tenant_id, run_id, attempt_id
+        from sandbox_leases
+        where status = 'active'
+          and executor_terminal_json is null
+          and executor_reconciliation_context_json is not null
+          and (
+            (
+              executor_reconciliation_status = 'waiting_terminal'
+              and coalesce(executor_heartbeat_at, updated_at, created_at)
+                  < now() - make_interval(secs => %s)
+            )
+            or (
+              executor_reconciliation_status = 'claimed'
+              and coalesce(executor_reconciliation_claimed_at, updated_at, created_at)
+                  < now() - make_interval(secs => %s)
+            )
+          )
+        order by coalesce(executor_heartbeat_at, updated_at, created_at), id
+        limit %s
+        """,
+        (stale_after_seconds, stale_after_seconds, limit),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_sandbox_executor_reconciliation_candidate_scopes(
+    connection: Any,
+    *,
+    limit: int,
+    stale_after_seconds: int,
+) -> list[dict[str, str]]:
+    """Read a bounded terminal-claim set before callers acquire source locks."""
+
+    cursor = await connection.execute(
+        """
+        select id, tenant_id, run_id, attempt_id
+        from sandbox_leases
+        where status in ('active', 'released')
+          and executor_terminal_json is not null
+          and executor_reconciliation_context_json is not null
+          and (
+            executor_reconciliation_status = 'pending'
+            or (
+              executor_reconciliation_status = 'retry'
+              and coalesce(executor_reconciliation_retry_not_before, '-infinity'::timestamptz) <= now()
+            )
+            or (
+              executor_reconciliation_status = 'claimed'
+              and executor_reconciliation_claimed_at < now() - make_interval(secs => %s)
+            )
+          )
+        order by coalesce(executor_terminal_received_at, created_at) asc, id asc
+        limit %s
+        """,
+        (stale_after_seconds, limit),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
 
 async def next_sandbox_executor_reconciliation_retry_delay(connection: Any) -> float | None:
     """Read the durable terminal retry clock independently of general lease updates."""

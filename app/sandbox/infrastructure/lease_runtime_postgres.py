@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from psycopg import AsyncConnection
+
 from app.sandbox.domain.lease_errors import (
     SandboxLeaseReleaseScopeMismatchError,
 )
@@ -103,6 +105,27 @@ async def create_sandbox_lease(
     if row is None:
         raise RuntimeError("sandbox_lease_insert_returning_missing")
     return row
+
+
+async def get_sandbox_lease_scope(
+    conn: AsyncConnection,
+    *,
+    lease_id: str,
+) -> dict[str, str] | None:
+    """Read the durable identity needed before an ordered shadow write."""
+
+    row = await (
+        await conn.execute(
+            "select tenant_id, run_id, attempt_id from sandbox_leases where id = %s",
+            (lease_id,),
+        )
+    ).fetchone()
+    if row is None or not row.get("attempt_id"):
+        return None
+    return {
+        key: str(row[key])
+        for key in ("tenant_id", "run_id", "attempt_id")
+    }
 
 async def record_sandbox_executor_accepted(
     connection: Any,

@@ -147,6 +147,39 @@ class RunAttemptLifecycleService:
     persistence: RunAttemptPersistence
     settlement_projection: Any | None = None
 
+    async def _lock_settlement_sources(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> None:
+        if self.settlement_projection is not None:
+            await self.settlement_projection.lock_sources_in_transaction(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+            )
+
+    async def _refresh_settlement(
+        self,
+        conn: Any,
+        attempt: dict[str, Any] | None,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> None:
+        if attempt is not None and self.settlement_projection is not None:
+            await self.settlement_projection.refresh_in_transaction(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=attempt_id,
+            )
+
     async def restore_reconciliation(
         self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
         lease_id: str, claim_token: str, expected_owner_generation: int,
@@ -233,13 +266,19 @@ class RunAttemptLifecycleService:
 
     async def start_worker(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
         attempt = await self.persistence.start_worker_run_attempt(conn, **kwargs)
-        if self.settlement_projection is not None:
-            await self.settlement_projection.refresh_in_transaction(
-                conn,
-                tenant_id=str(attempt["tenant_id"]),
-                run_id=str(attempt["run_id"]),
-                attempt_id=str(attempt["id"]),
-            )
+        await self._lock_settlement_sources(
+            conn,
+            tenant_id=str(attempt["tenant_id"]),
+            run_id=str(attempt["run_id"]),
+            attempt_id=str(attempt["id"]),
+        )
+        await self._refresh_settlement(
+            conn,
+            attempt,
+            tenant_id=str(attempt["tenant_id"]),
+            run_id=str(attempt["run_id"]),
+            attempt_id=str(attempt["id"]),
+        )
         return attempt
 
     async def assert_worker_current(
@@ -290,21 +329,47 @@ class RunAttemptLifecycleService:
         conn: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        return await self.persistence.request_run_attempt_cancel(conn, **kwargs)
+        tenant_id = str(kwargs["tenant_id"])
+        run_id = str(kwargs["run_id"])
+        attempt_id = str(kwargs["attempt_id"])
+        await self._lock_settlement_sources(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
+        attempt = await self.persistence.request_run_attempt_cancel(conn, **kwargs)
+        await self._refresh_settlement(
+            conn,
+            attempt,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
+        return attempt
 
     async def terminalize(
         self,
         conn: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
+        tenant_id = str(kwargs["tenant_id"])
+        run_id = str(kwargs["run_id"])
+        attempt_id = str(kwargs["attempt_id"])
+        await self._lock_settlement_sources(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
         attempt = await self.persistence.terminalize_run_attempt(conn, **kwargs)
-        if attempt is not None and self.settlement_projection is not None:
-            await self.settlement_projection.refresh_in_transaction(
-                conn,
-                tenant_id=str(attempt["tenant_id"]),
-                run_id=str(attempt["run_id"]),
-                attempt_id=str(attempt["id"]),
-            )
+        await self._refresh_settlement(
+            conn,
+            attempt,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+        )
         return attempt
 
     async def prepare_stale_reconciliation(
@@ -312,6 +377,34 @@ class RunAttemptLifecycleService:
         conn: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
+        if self.settlement_projection is not None:
+            candidate = await self.persistence.get_latest_run_attempt(
+                conn,
+                tenant_id=kwargs["tenant_id"],
+                run_id=kwargs["run_id"],
+                for_update=False,
+            )
+            if candidate is None:
+                return None
+            attempt_id = str(candidate["id"])
+            await self._lock_settlement_sources(
+                conn,
+                tenant_id=str(kwargs["tenant_id"]),
+                run_id=str(kwargs["run_id"]),
+                attempt_id=attempt_id,
+            )
+            attempt = await self.persistence.prepare_stale_run_attempt_reconciliation(
+                conn,
+                **kwargs,
+            )
+            await self._refresh_settlement(
+                conn,
+                attempt,
+                tenant_id=str(kwargs["tenant_id"]),
+                run_id=str(kwargs["run_id"]),
+                attempt_id=attempt_id,
+            )
+            return attempt
         return await self.persistence.prepare_stale_run_attempt_reconciliation(
             conn,
             **kwargs,
@@ -329,6 +422,21 @@ class RunAttemptLifecycleService:
     ) -> dict[str, Any] | None:
         """Mirror one terminal Run onto its latest durable attempt atomically."""
 
+        if self.settlement_projection is not None:
+            candidate = await self.persistence.get_latest_run_attempt(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                for_update=False,
+            )
+            if candidate is None:
+                return None
+            await self._lock_settlement_sources(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                attempt_id=str(candidate["id"]),
+            )
         attempt = await self.persistence.get_latest_run_attempt(
             conn,
             tenant_id=tenant_id,
@@ -338,7 +446,7 @@ class RunAttemptLifecycleService:
         if attempt is None:
             return None
         if status == "cancelled":
-            attempt = await self.persistence.request_run_attempt_cancel(
+            attempt = await self.request_cancel(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,

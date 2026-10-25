@@ -222,10 +222,10 @@ async def _release_claimed_terminal_batch(
     *,
     lease_port: SandboxExecutorReconciliationPort,
 ) -> None:
-    """Best-effort release every terminal claim still owned by this batch."""
+    """Release each terminal claim in its own transaction to avoid cross-Run locks."""
     try:
-        async with transaction() as conn:
-            for lease_row in claimed:
+        for lease_row in claimed:
+            async with transaction() as conn:
                 await lease_port.retry_sandbox_executor_reconciliation(
                     conn,
                     lease_id=str(lease_row["id"]),

@@ -862,6 +862,7 @@ create table if not exists run_attempt_settlements (
   receipt_sha256 text,
   receipt_owner_generation bigint,
   dispatch_state text not null,
+  intent_recovery_context_json jsonb,
   accepted_context_json jsonb,
   attempt_status_snapshot text not null,
   attempt_owner_generation_snapshot bigint not null,
@@ -934,6 +935,9 @@ create table if not exists run_attempt_settlements (
       and settled_at is not null)
   )
 );
+
+alter table run_attempt_settlements
+  add column if not exists intent_recovery_context_json jsonb;
 
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
@@ -2823,6 +2827,7 @@ create table if not exists sandbox_leases (
   executor_terminal_json jsonb,
   executor_terminal_received_at timestamptz,
   executor_reconciliation_context_json jsonb,
+  executor_reconciliation_intent_context_json jsonb,
   executor_reconciliation_status text not null default 'waiting_terminal',
   executor_reconciliation_claim_token text,
   executor_reconciliation_claimed_at timestamptz,
@@ -2857,6 +2862,7 @@ alter table sandbox_leases add column if not exists executor_heartbeat_at timest
 alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
 alter table sandbox_leases add column if not exists executor_terminal_received_at timestamptz;
 alter table sandbox_leases add column if not exists executor_reconciliation_context_json jsonb;
+alter table sandbox_leases add column if not exists executor_reconciliation_intent_context_json jsonb;
 alter table sandbox_leases add column if not exists executor_reconciliation_status text not null default 'waiting_terminal';
 alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
 alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
@@ -2908,6 +2914,18 @@ create table if not exists sandbox_execution_dispatches (
     status in ('intent', 'accepted', 'rejected', 'unknown')
   )
 );
+
+-- Preserve the best available historical intent context at this additive
+-- schema boundary; new dispatches persist it independently of acceptance.
+update sandbox_leases
+set executor_reconciliation_intent_context_json = executor_reconciliation_context_json
+where executor_reconciliation_intent_context_json is null
+  and executor_reconciliation_context_json is not null;
+
+update run_attempt_settlements
+set intent_recovery_context_json = accepted_context_json
+where intent_recovery_context_json is null
+  and accepted_context_json is not null;
 
 -- Rollback for the additive OpenSandbox renewal observations (after callers retire):
 -- alter table sandbox_leases drop column if exists provider_renewed_at;

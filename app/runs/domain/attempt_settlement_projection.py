@@ -22,6 +22,7 @@ ATTEMPT_SETTLEMENT_PROJECTION_FIELDS = (
     "receipt_sha256",
     "receipt_owner_generation",
     "dispatch_state",
+    "intent_recovery_context_json",
     "accepted_context_json",
     "attempt_status_snapshot",
     "attempt_owner_generation_snapshot",
@@ -168,6 +169,7 @@ def _base_values(attempt: Mapping[str, Any], run: Mapping[str, Any]) -> dict[str
         "receipt_sha256": None,
         "receipt_owner_generation": None,
         "dispatch_state": "unknown",
+        "intent_recovery_context_json": None,
         "accepted_context_json": None,
         "attempt_status_snapshot": attempt_status,
         "attempt_owner_generation_snapshot": attempt_generation,
@@ -263,7 +265,18 @@ def project_legacy_attempt_settlement(
         and attempt_generation == lease_generation + 1
         and run.get("cancel_requested_at") is not None
         and attempt_status in {"cancel_requested", "cancelled"}
-        and run_status in {"cancel_requested", "cancelled"}
+        and (
+            run_status in {"cancel_requested", "cancelled"}
+            or (run_status == "running" and attempt_status == "cancel_requested")
+        )
+    )
+    reconciler_expired_generation = (
+        attempt_status == "expired"
+        and attempt_generation is not None
+        and lease_generation is not None
+        and attempt_generation == lease_generation + 1
+        and attempt.get("owner_kind") == "reconciler"
+        and bool(attempt.get("owner_id"))
     )
     terminal_generation = (
         settled
@@ -271,6 +284,19 @@ def project_legacy_attempt_settlement(
         and lease_generation is not None
         and attempt_generation == lease_generation + 1
         and attempt_status in {"succeeded", "failed"}
+        and run.get("cancel_requested_at") is None
+    )
+    reconciler_terminal_generation = (
+        settled
+        and attempt_generation is not None
+        and lease_generation is not None
+        and attempt_generation == lease_generation + 2
+        and attempt_status == "failed"
+        and run_status == "failed"
+        and attempt.get("owner_kind") == "reconciler"
+        and bool(attempt.get("owner_id"))
+        and attempt.get("terminal_reason") == "run_failed"
+        and attempt.get("error_code") == "stale_run_interrupted"
         and run.get("cancel_requested_at") is None
     )
     cancelled_terminal_generation = (
@@ -285,7 +311,9 @@ def project_legacy_attempt_settlement(
     if attempt_generation is None or lease_generation is None or not (
         attempt_generation == lease_generation
         or cancellation_generation
+        or reconciler_expired_generation
         or terminal_generation
+        or reconciler_terminal_generation
         or cancelled_terminal_generation
     ):
         values["settlement_phase"] = "unknown"
@@ -293,16 +321,32 @@ def project_legacy_attempt_settlement(
 
     context_value = lease.get("executor_reconciliation_context_json")
     context = _object(context_value) if context_value is not None else None
+    intent_context_value = lease.get("executor_reconciliation_intent_context_json")
+    intent_context = _object(intent_context_value) if intent_context_value is not None else None
     receipt_value = lease.get("executor_terminal_json")
     receipt = _object(receipt_value) if receipt_value is not None else None
     if (context_value is not None and context is None) or (
+        intent_context_value is not None and intent_context is None
+    ) or (
         receipt_value is not None and receipt is None
     ):
         return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=settled))
 
     reconciliation_status = str(lease.get("executor_reconciliation_status") or "")
     values["source_lease_id"] = str(lease["id"])
-    if context is not None:
+    if intent_context is None and context is not None:
+        # Compatibility for leases created before the dedicated intent field.
+        intent_context = {key: value for key, value in context.items() if key != "dispatch_timings"}
+    values["intent_recovery_context_json"] = intent_context
+
+    dispatch_status = str(lease.get("dispatch_status") or "")
+    dispatch_accepted = dispatch_status == "accepted" or (
+        not dispatch_status
+        and context is not None
+        and str(lease.get("executor_status") or "")
+        in {"accepted", "running", "completed", "failed", "cancelled"}
+    )
+    if dispatch_accepted:
         values["dispatch_state"] = "accepted"
         values["accepted_context_json"] = context
     elif receipt is not None and reconciliation_status == "waiting_terminal":
@@ -334,6 +378,10 @@ def project_legacy_attempt_settlement(
     }
     if reconciliation_status in phase_by_legacy:
         phase = phase_by_legacy[reconciliation_status]
+        # A claim with no terminal receipt is a temporary executor probe, not
+        # an Attempt settlement claim. Keep its owner token in Sandbox only.
+        if reconciliation_status == "claimed" and receipt is None:
+            phase = "awaiting_receipt" if dispatch_accepted else "unknown"
         if phase in {"pending", "claimed", "retry"} and (receipt is None or context is None):
             phase = "unknown"
         if phase == "claimed":
@@ -370,7 +418,14 @@ def project_legacy_attempt_settlement(
                 settled_at=finished_at,
             )
 
-    mapped = values["settlement_phase"] != "unknown" and values["dispatch_state"] != "unknown"
+    mapped = (
+        values["settlement_phase"] != "unknown"
+        and values["dispatch_state"] != "unknown"
+        and (
+            values["dispatch_state"] != "accepted"
+            or values["accepted_context_json"] is not None
+        )
+    )
     values["mapping_state"] = "mapped" if mapped else "unknown"
     cleanup = _cleanup_observation(leases, settled=values["settlement_phase"] == "settled")
     return AttemptSettlementProjection(values, cleanup)

@@ -54,7 +54,8 @@ RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
 RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
 SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION = "2026.10.25.3"
 RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION = "2026.10.25.4"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION
+RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION = "2026.10.25.5"
+TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -207,6 +208,7 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlements", "receipt_sha256", "text", False),
     ("run_attempt_settlements", "receipt_owner_generation", "int8", False),
     ("run_attempt_settlements", "dispatch_state", "text", True),
+    ("run_attempt_settlements", "intent_recovery_context_json", "jsonb", False),
     ("run_attempt_settlements", "accepted_context_json", "jsonb", False),
     ("run_attempt_settlements", "attempt_status_snapshot", "text", True),
     ("run_attempt_settlements", "attempt_owner_generation_snapshot", "int8", True),
@@ -287,6 +289,7 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_terminal_json", "jsonb", False),
     ("sandbox_leases", "executor_terminal_received_at", "timestamptz", False),
     ("sandbox_leases", "executor_reconciliation_context_json", "jsonb", False),
+    ("sandbox_leases", "executor_reconciliation_intent_context_json", "jsonb", False),
     ("sandbox_leases", "executor_reconciliation_status", "text", True),
     ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
     ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),

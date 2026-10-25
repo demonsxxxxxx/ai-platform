@@ -25,6 +25,9 @@ async def persist_intent(
         set executor_reconciliation_context_json = coalesce(
               executor_reconciliation_context_json, %s::jsonb
             ),
+            executor_reconciliation_intent_context_json = coalesce(
+              executor_reconciliation_intent_context_json, %s::jsonb
+            ),
             executor_reconciliation_status = case
               when executor_terminal_json is not null
                 and executor_reconciliation_status = 'waiting_terminal' then 'pending'
@@ -46,6 +49,7 @@ async def persist_intent(
         returning lease.id
         """,
         (
+            json.dumps(context, ensure_ascii=False),
             json.dumps(context, ensure_ascii=False),
             identity.lease_id,
             identity.tenant_id,

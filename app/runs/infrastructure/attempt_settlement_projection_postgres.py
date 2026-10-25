@@ -16,7 +16,12 @@ from app.runs.domain.attempt_settlement_projection import (
 
 MAX_ATTEMPT_SETTLEMENT_PAGE_SIZE = 800
 DEFAULT_ATTEMPT_SETTLEMENT_PAGE_SIZE = 100
-_JSON_FIELDS = frozenset({"receipt_json", "accepted_context_json", "result_json"})
+_JSON_FIELDS = frozenset({
+    "receipt_json",
+    "intent_recovery_context_json",
+    "accepted_context_json",
+    "result_json",
+})
 _SOURCE_LEASE_FIELDS = (
     "id",
     "tenant_id",
@@ -29,6 +34,7 @@ _SOURCE_LEASE_FIELDS = (
     "executor_terminal_json",
     "executor_terminal_received_at",
     "executor_reconciliation_context_json",
+    "executor_reconciliation_intent_context_json",
     "executor_reconciliation_status",
     "executor_reconciliation_claim_token",
     "executor_reconciliation_claimed_at",
@@ -53,15 +59,19 @@ _ATTEMPT_FIELDS = (
     "tenant_id",
     "run_id",
     "status",
+    "owner_kind",
+    "owner_id",
     "owner_generation",
     "started_at",
     "finished_at",
     "error_code",
+    "terminal_reason",
 )
 _IMMUTABLE_FIELDS = (
     "receipt_identity",
     "receipt_sha256",
     "receipt_owner_generation",
+    "intent_recovery_context_json",
     "accepted_context_json",
     "result_sha256",
 )
@@ -136,14 +146,20 @@ async def _load_locked_attempt_facts(
             (tenant_id, run_id),
         )
     ).fetchone()
-    lease_suffix = " for update" if lock else ""
+    lease_suffix = " for update of lease" if lock else ""
     leases = await (
         await conn.execute(
             f"""
-            select {", ".join(_SOURCE_LEASE_FIELDS)}
-            from sandbox_leases
-            where tenant_id = %s and run_id = %s and attempt_id = %s
-            order by id asc{lease_suffix}
+            select {", ".join(f"lease.{field}" for field in _SOURCE_LEASE_FIELDS)},
+                   dispatch.status as dispatch_status
+            from sandbox_leases lease
+            left join sandbox_execution_dispatches dispatch
+              on dispatch.tenant_id = lease.tenant_id
+             and dispatch.run_id = lease.run_id
+             and dispatch.attempt_id = lease.attempt_id
+             and dispatch.lease_id = lease.id
+            where lease.tenant_id = %s and lease.run_id = %s and lease.attempt_id = %s
+            order by lease.id asc{lease_suffix}
             """,
             (tenant_id, run_id, attempt_id),
         )
@@ -524,50 +540,4 @@ async def compare_attempt_settlement_snapshot(
         next_after=None,
     )
     return summary
-
-
-async def attempt_settlement_snapshot_is_current(
-    conn: Any,
-    *,
-    tenant_id: str | None,
-    snapshot: Mapping[str, Any],
-) -> bool:
-    """Revalidate and briefly fence Attempt inserts in a cutover transaction."""
-
-    if (
-        snapshot.get("comparison_scope") != "stable_snapshot"
-        or snapshot.get("snapshot_complete") is not True
-        or snapshot.get("attempt_count") != snapshot.get("snapshot_attempt_count")
-    ):
-        return False
-    snapshot_attempt_count = snapshot.get("snapshot_attempt_count")
-    snapshot_max_key = snapshot.get("snapshot_max_key")
-    if (
-        isinstance(snapshot_attempt_count, bool)
-        or not isinstance(snapshot_attempt_count, int)
-        or snapshot_attempt_count < 0
-        or (
-            snapshot_max_key is not None
-            and (
-                not isinstance(snapshot_max_key, tuple)
-                or len(snapshot_max_key) != 3
-                or any(not isinstance(value, str) or not value for value in snapshot_max_key)
-            )
-        )
-    ):
-        return False
-    isolation = await (
-        await conn.execute("select current_setting('transaction_isolation') as level")
-    ).fetchone()
-    if str(isolation.get("level") or "") != "read committed":
-        raise ValueError("attempt_settlement_snapshot_validation_requires_fresh_transaction")
-    # SHARE conflicts with new Attempt INSERT/UPDATE/DELETE row-exclusive
-    # locks. The future N40 caller keeps this table-specific fence only through
-    # its short enablement transaction and performs no external I/O inside it.
-    await conn.execute("lock table run_attempts in share mode")
-    current = await _attempt_snapshot_identity(conn, tenant_id=tenant_id)
-    return (
-        current["attempt_count"] == snapshot_attempt_count
-        and current["max_key"] == snapshot_max_key
-    )
 

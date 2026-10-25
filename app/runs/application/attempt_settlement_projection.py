@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +25,6 @@ class AttemptSettlementProjectionPorts:
     lock_sources: Callable[..., Awaitable[bool]]
     refresh: Callable[..., Awaitable[AttemptSettlementProjection | None]]
     compare_snapshot: Callable[..., Awaitable[dict[str, Any]]]
-    snapshot_is_current: Callable[..., Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -71,21 +70,6 @@ class AttemptSettlementProjectionService:
 
         return await self.ports.compare_snapshot(
             conn, tenant_id=tenant_id, page_limit=page_limit
-        )
-
-    async def snapshot_is_current(
-        self,
-        conn: Any,
-        *,
-        tenant_id: str | None,
-        snapshot: Mapping[str, Any],
-    ) -> bool:
-        """Check a previously scanned denominator before a future cutover."""
-
-        return await self.ports.snapshot_is_current(
-            conn,
-            tenant_id=tenant_id,
-            snapshot=snapshot,
         )
 
     async def persist_in_transaction(

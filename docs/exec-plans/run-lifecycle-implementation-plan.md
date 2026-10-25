@@ -58,7 +58,7 @@
 |---|---|
 | 提交幂等与队列未知 | [chat_submissions](../../app/persistence/chat_submissions.py)、[queue_admission](../../app/conversations/application/queue_admission.py)、[chat route](../../app/routes/chat.py) |
 | Spec/Attempt 创建与执行绑定 | [worker_dispatch_binding](../../app/runs/application/worker_dispatch_binding.py)、[worker_attempt_lifecycle](../../app/execution/application/worker_attempt_lifecycle.py)、[Attempt persistence](../../app/runs/infrastructure/postgres.py) |
-| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[当前 lease repository](../../app/platform/postgres/sandbox_leases.py)、[callback route](../../app/routes/runtime_callbacks.py) |
+| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[lease persistence](../../app/sandbox/infrastructure/leases_postgres.py)、[callback route](../../app/routes/runtime_callbacks.py) |
 | 结算、结果与对象补偿 | [executor_reconciler](../../app/executor_reconciler.py)、[worker_result_commit](../../app/runs/application/worker_result_commit.py)、[artifact_storage](../../app/execution/application/artifact_storage.py)、[artifact persistence](../../app/persistence/artifacts.py) |
 | 原生会话结算 | [provider_epochs.commit_provider_turn](../../app/context/infrastructure/provider_epochs.py)、[run_terminalization.persist_assistant_with_provider_coverage](../../app/runs/application/run_terminalization.py) |
 | 取消、发布与清理 | [cancellation](../../app/runs/application/cancellation.py)、[worker_publication_v4](../../app/streaming/application/worker_publication_v4.py)、[runtime_cleanup](../../app/sandbox/application/runtime_cleanup.py) |
@@ -95,7 +95,7 @@
 | sandbox 创建/dispatch/资源 | Settings：create 30s、executor health 60s、dispatch 30s、lease TTL 1800s、cleanup 30s；OpenSandbox request 30s、lifetime 1800s | 本地单次 I/O 预算与 provider/PG lease 到期不同；取消等待不证明远端已停止 |
 | executor 心跳及总时间 | [create_executor_app](../../app/runtime/sandbox/executor_app.py)：heartbeat 15s；执行预算读取冻结请求 `resource_limits.max_seconds` | 单调时钟控制单次等待；不把 SDK 默认 timeout=0 解释为所有任务无截止时间 |
 | probe 与 terminal reconciliation | [executor_reconciler](../../app/executor_reconciler.py)：心跳 stale 45s、probe client 10s、连续失败阈值 3；batch 1、claim stale 300s、work 240s、idle 30s、fallback 2s | candidate 读 PG 持久时间，认领后复核 claim；provider 不可达不是权威 not_found；已有回执走结算 |
-| 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/platform/postgres/sandbox_leases.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
+| 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/sandbox/infrastructure/executor_reconciliation_postgres.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
 
 Harness 前置复核：当前 [计划 §5.6](completed/harness-migration-2026-10.md#56-2026-10-19-当前实现与验收缺口) 仍记录 D5、完整基线/可信覆盖阻断等未闭环。本切片新增测试和库存，不改变事务、身份或删除字段；不能据此宣布 B3–B5 或后续生命周期迁移已满足前置条件。
 
@@ -293,20 +293,20 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 比对：身份、原回执摘要、accepted 合并、结算含义、取消/generation、next-retry 和 cleanup 归属；不要求不同表示的时间戳字节相等。影子写失败造成的事务影响也必须测量。
 - 回退：停止 shadow 写；旧事实未被修改。回填不执行旧任务、不重写 Spec 或原 terminal receipt。
 
-当前 N30/N31 投影切片（schema `2026.10.25.4`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果不提供全局 ready 状态，也不得授权切读。shadow writer 由 `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` 显式启用，默认关闭；旧 Sandbox writer仍是唯一业务权威。
+当前 N30/N31 投影切片（schema `2026.10.25.5`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果和稳定快照的计数/最高 key 均不证明全量语义一致，也不得授权切读。shadow writer 由 `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` 显式启用，默认关闭；旧 Sandbox writer仍是唯一业务权威。
 
 同事务 hook 与锁序：
 
 | Hook | 受影子化的源字段 | 锁序/边界 |
 |---|---|---|
-| Attempt 创建、Sandbox lease 创建 | Attempt 状态/代际快照、source lease identity | Attempt 创建遵守现有 Run/Attempt owner；lease 创建从调用事务读当前事实并写 detail，不另取源行锁 |
-| Sandbox accepted 与 terminal receipt、dispatch intent | `dispatch_state`、accepted context、receipt identity/content/digest/generation、phase/attempt count | 先锁 Run，再按 lease id 锁该 Attempt 的 lease 集合，再锁 Attempt；写旧 lease 后经 `AttemptSettlementProjectionService.persist_in_transaction` 写 detail |
-| terminal reconciliation claim 与 retry | `settlement_phase`、claim/token/time、retry clock/count | 有界 claim 先持有其选中的 Sandbox lease；hook 只读源行并写 Runs detail，不再请求 Run/Attempt 锁；单条 retry 也以无锁源读回避 lease→Run 逆序 |
-| Run/Attempt terminalize | Run/Attempt 状态、结果、取消与 owner-generation 快照 | 复用现有 Run/Attempt terminalization 事务，再写 detail；detail 写入本身不迁移 Attempt、不增加 generation |
+| Attempt 创建、Sandbox lease 创建 | Attempt 状态/代际快照、source lease identity | lease shadow 在插入前按 Run → lease id → Attempt 获取源锁；Attempt 创建仍遵守现有 Run owner |
+| Sandbox accepted 与 terminal receipt、dispatch intent | Dispatch intent recovery context、accepted context、receipt identity/content/digest/generation、phase/attempt count | writer 在改源行前按 Run → lease id → Attempt 锁定；intent recovery context 与 accepted semantics 分开，detail 经 Runs API 写入 |
+| terminal reconciliation/probe claim 与 retry | 仅 terminal reconciliation 投影 claim/token/time、retry clock/count；无回执的 probe claim 不投影 settlement token/phase | 先读有界候选，再按 Attempt key 排序锁 Run → lease id → Attempt，最后按候选 lease ID 执行 claim 并刷新 detail；单条 retry 在更新前取得相同源锁序 |
+| Run/Attempt cancel、stale recovery 与 terminalize | Run/Attempt 状态、结果、取消与 owner-generation 快照 | 先取得 Run → lease id → Attempt 源锁，再调用 lifecycle persistence 并刷新 detail；detail 写入本身不迁移 Attempt、不增加 generation |
 | executor heartbeat、cleanup claim、lease release | heartbeat 时间与 Sandbox 资源/清理事实 | 不写 settlement detail；清理状态由 Sandbox lease 保持权威，比较时仍纳入全分母 cleanup 统计 |
 | cleanup pending、cleanup finalize / reconciliation failed | 仅当底层 reconciliation status 改变 settlement phase 时刷新；cleanup claim/retry 字段仍不投影 | 更新前由原 Sandbox writer持有其 lease；hook 只读 source facts 并写 detail，不再请求 Run/Attempt 锁 |
 
-调用方事务中的 shadow SQL 失败会使源写与 detail 一起回滚。页级 compare 保持 page scope。新增 `compare_snapshot` 只在 caller transaction 为 `REPEATABLE READ` 或 `SERIALIZABLE` 时扫描全部分页，返回完整分母和快照身份；它不返回 `switch_ready`。未来 N40 必须在新的 `READ COMMITTED` 切换事务里用 `snapshot_is_current` 重验 Attempt 数量和最高 key；该检查用短暂 `SHARE` 表锁阻止事务提交前出现并发 Attempt 插入，证明失效时拒绝启用。该扫描只保留逐页计数、无行锁和外部 I/O，但单个 MVCC snapshot 的持续时间随全量扫描增长；切换事务的表锁范围限于 `run_attempts` 且不跨越外部 I/O。
+调用方事务中的 shadow SQL 失败会使源写与 detail 一起回滚。页级 compare 保持 page scope。`compare_snapshot` 只在 caller transaction 为 `REPEATABLE READ` 或 `SERIALIZABLE` 时扫描全部分页，提供观测结果，不提供切换证明。未来 N40 必须在新事务重新执行全量语义比对，并在切换提交前 fence `runs`、`run_attempts`、`sandbox_leases` 和 `sandbox_execution_dispatches` 的相关 writer；仅校验 Attempt 数量或最高 key 不能证明投影内容未改变。
 
 **N32：统一监督调度的只读决策阶段 — Execution scheduler + 各决策 owner。依赖 N21/N23/N31。**
 

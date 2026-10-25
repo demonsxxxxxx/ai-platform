@@ -704,7 +704,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION == "2026.10.22.1"
     assert schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION == "2026.10.25.2"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION == "2026.10.25.4"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION == "2026.10.25.5"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION
     assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
@@ -714,11 +715,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("uq_run_delivery_intents_queue_identity", True) in schema_migrations.CRITICAL_INDEXES
     assert "run_attempt_settlements" in schema_migrations.CRITICAL_RELATIONS
     assert ("run_attempt_settlements", "receipt_sha256", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_attempt_settlements", "intent_recovery_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_attempt_settlements", "chk_run_attempt_settlements_receipt") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("idx_run_attempt_settlements_mapping", False) in schema_migrations.CRITICAL_INDEXES
     assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("sandbox_leases", "executor_reconciliation_intent_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_execution_dispatches", "status", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_execution_dispatches", "chk_sandbox_execution_dispatches_status") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
