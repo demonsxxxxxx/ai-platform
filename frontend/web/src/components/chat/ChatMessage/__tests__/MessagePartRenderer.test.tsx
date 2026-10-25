@@ -796,7 +796,7 @@ test("artifact element keeps public status without accepting raw payload props",
       sizeLabel: "1 KB",
       status: "ready",
       icon: createElement("span", null, "file"),
-      iconBackgroundClassName: "bg-stone-100",
+      iconBackgroundClassName: "bg-neutral-100",
     }),
   );
   assert.match(markup, /data-slot="artifact-card"/);

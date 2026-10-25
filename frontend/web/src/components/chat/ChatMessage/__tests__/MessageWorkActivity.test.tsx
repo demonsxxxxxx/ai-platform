@@ -61,3 +61,35 @@ test("collapsed work activity keeps failed and denied operation counts visible",
   assert.match(markup, /data-work-activity-denied-count="true">未授权 2/);
   assert.match(markup, /查看执行详情/);
 });
+
+test("work process renders after the visible result, not before it", async () => {
+  const renderToStaticMarkup = await createLobeServerTestRoot();
+  const answer = {
+    type: "text",
+    content: "Final answer.",
+    logical_id: "part-answer",
+    public_part_id: "part-answer",
+    text_role: "answer",
+  } satisfies MessagePart;
+  const work = {
+    type: "summary",
+    kind: "work_trace",
+    content: "Checking public sources.",
+  } satisfies MessagePart;
+  const parts: MessagePart[] = [work, answer];
+  const markup = renderToStaticMarkup(
+    createElement(MessageWorkActivity, {
+      messageId: "message-order",
+      parts,
+      partKeys: parts.map((_, index) => `part-${index}`),
+      renderPart: (part) =>
+        createElement("span", { "data-part": part.type }, part.type),
+    }),
+  );
+
+  const answerIndex = markup.indexOf('data-part="text"');
+  const toggleIndex = markup.indexOf("data-message-work-details-toggle");
+  assert.ok(answerIndex >= 0, "expected the answer part to render");
+  assert.ok(toggleIndex > answerIndex, "work disclosure must follow the result");
+  assert.match(markup, /data-message-work-activity-order="result-first"/);
+});

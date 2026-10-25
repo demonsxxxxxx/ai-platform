@@ -18,8 +18,9 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /flex shrink-0 justify-end px-3 pt-2/);
-  assert.doesNotMatch(shell, /absolute right-3 top-2/);
+  assert.match(shell, /data-workbench-region="header"[\s\S]*className=\{libreChatSurface\.threadHeader\}[\s\S]*\{header\}[\s\S]*data-librechat-context-toggle/);
+  assert.match(surface, /threadHeader:[\s\S]*flex min-h-14 shrink-0 items-center/);
+  assert.doesNotMatch(shell, /flex shrink-0 justify-end px-3 pt-2|absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:[\s\S]*relative flex/);
@@ -85,17 +86,20 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /data-workbench-sidebar-panel/);
   assert.match(sessionList, /data-workbench-primary-nav/);
   assert.match(sessionList, /LibreChatPanelSection group="tasks"/);
-  assert.match(sessionList, /LibreChatPanelSection[\s\S]*group="governance"/);
+  assert.match(sessionList, /data-workbench-management-nav/);
+  assert.match(sessionList, /aria-expanded=\{isManagementOpen\}/);
+  assert.match(sessionList, /hidden=\{!isManagementOpen\}/);
+  assert.match(sessionList, /visibleManagementNavItems\.map/);
   assert.match(panel, /data-workbench-nav-group=\{group\}/);
   assert.match(panel, /data-librechat-expanded-panel=\{group\}/);
   assert.match(sessionList, /data-workbench-session-region/);
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8/);
-  assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
-  assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f8f8f8/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f8f8f8/);
+  assert.doesNotMatch(sessionList, /text-neutral-100|text-white|border-neutral-800/);
+  assert.doesNotMatch(rail, /text-neutral-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
 
 test("expanded desktop sidebar uses one primary navigation surface", () => {
@@ -179,9 +183,9 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
   assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#f7f7f8;/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8;/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#f8f8f8;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f8f8f8;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f8f8f8;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
@@ -203,7 +207,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
-  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
   assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
@@ -279,7 +283,7 @@ test("post-login projection panels share workbench surface tokens", () => {
     assert.match(source, /workbenchSurface\.(?:page|statePage|compactPanel|panel)/, name);
     assert.match(source, /workbenchSurface\.(?:compactPanel|panel|catalog)/, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg\)\]/, name);
-    assert.doesNotMatch(source, /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/, name);
+    assert.doesNotMatch(source, /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/, name);
     assert.doesNotMatch(source, /text-stone-(?:700|800|900)/, name);
   }
 });
@@ -466,7 +470,7 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 
 test("skills route selects the ordinary catalog while retaining the admin management resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
-  const ordinarySkills = read("src/components/panels/SkillsPanel/index.tsx");
+  const table = read("src/components/panels/SkillsPanel/SkillManagementTable.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
 
@@ -483,17 +487,14 @@ test("skills route selects the ordinary catalog while retaining the admin manage
   assert.doesNotMatch(hub, /data-skills-catalog-status-strip/);
   assert.doesNotMatch(hub, /data-skills-hub-state-detail/);
   assert.doesNotMatch(hub, /bg-emerald-500/);
-  assert.doesNotMatch(hub, /rounded-full bg-emerald-500/);
+  assert.doesNotMatch(hub, /rounded-full bg-[var(--theme-success)]/);
   assert.doesNotMatch(hub, /<section className=\{`\$\{workbenchSurface\.compactPanel\} p-3`\}>/);
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.doesNotMatch(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
-  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
-  // The public effective version is allowed; private file/source metadata is not rendered.
-  // The real API-to-host boundary and role matrix are exercised by SkillsCatalogPublicHost.
-  assert.match(ordinarySkills, /selectedSkill\.expected_version/);
-  assert.match(ordinarySkills, /isAiAdmin &&/);
-  assert.doesNotMatch(ordinarySkills, /selectedSkill\.(?:content|files|source|private_manifest|storage_key|runtime_path)/);
+  assert.match(table, /data-skill-management-table/);
+  assert.match(table, /skills\.managementTable\.readOnly/);
+  assert.doesNotMatch(table, /\.(?:content|files|private_manifest|storage_key|storage_path)\b/);
   assert.equal(zh.skills.available.title, "可用技能");
   assert.match(resolver, /requiredPermission: "skill:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
@@ -573,7 +574,7 @@ test("skills and MCP action surfaces use semantic workbench state colors", () =>
     ["MCPPanel", mcp],
   ])) {
     assert.match(source, /var\(--theme-danger-soft\)/, name);
-    assert.match(source, /var\(--theme-danger\)/, name);
+    assert.match(source, /var\(--theme-danger(?:-text)?\)/, name);
     assert.doesNotMatch(source, /\b(?:bg|text|border|hover:bg|hover:text)-red-/, name);
     assert.doesNotMatch(source, /\b(?:bg|text|border)-(?:stone|slate)-/, name);
     assert.doesNotMatch(source, /dark:(?:bg|text|border)-/, name);
@@ -598,7 +599,7 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
     );
     assert.doesNotMatch(
       source,
-      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/,
       name,
     );
   }
@@ -621,12 +622,12 @@ test("launchpad and unavailable route workbenches use shared surface tokens", ()
     );
     assert.doesNotMatch(
       source,
-      /className="[^"]*dark:bg-stone-950(?:\/\d+)?[^"]*"/,
+      /className="[^"]*dark:bg-neutral-950(?:\/\d+)?[^"]*"/,
       name,
     );
   }
 
-  assert.doesNotMatch(stateSurface, /dark:bg-stone-950\/70/);
+  assert.doesNotMatch(stateSurface, /dark:bg-neutral-950\/70/);
   assert.match(stateSurface, /workbenchSurface\.statusTile/);
 });
 
@@ -660,7 +661,7 @@ test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*112px/);
+  assert.match(css, /min-height:\s*104px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(composer, /flex w-full flex-col/);
   assert.match(composer, /PopoverPortal/);
@@ -771,7 +772,7 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
   const baseCss = read("src/styles/base.css");
   const themeDom = read("src/utils/themeDom.ts");
 
-  assert.match(surface, /expandedMinWidthPx:\s*288/);
+  assert.match(surface, /expandedMinWidthPx:\s*272/);
   assert.doesNotMatch(surface, /expandedMinWidthPx:\s*360/);
   assert.match(
     sessionSidebar,

@@ -21,7 +21,6 @@ const activeFiles = [
   "src/components/common/selectionActionPrompt.ts",
   "src/components/chat/WelcomePage.tsx",
   "src/components/auth/AuthPage.tsx",
-  "src/components/auth/AuthLayout.tsx",
   "src/components/sidebar/RecentChatsDialog.tsx",
   "src/components/panels/SidebarParts/SidebarRail.tsx",
   "src/components/panels/SidebarParts/SessionListContent.tsx",

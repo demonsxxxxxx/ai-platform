@@ -86,25 +86,18 @@ test("browser smoke fixtures no longer conceal announcement API calls", () => {
   }
 });
 
-test("unconsumed skill views, chat help and LibreChat compatibility exports are retired", () => {
+test("superseded Skill, composer-help, and auth wrappers remain absent", () => {
   for (const path of [
-    "src/services/api/workbench.ts",
-    "src/components/chat/ChatMessage/items/toolUtils.ts",
-    "src/components/panels/AvailableSkillsPanel.tsx",
     "src/components/skill/SkillCard.tsx",
+    "src/components/panels/AvailableSkillsPanel.tsx",
     "src/components/chat/ChatInputHelpMenu.tsx",
     "src/components/chat/ChatInputShortcuts.tsx",
-    "src/components/librechatShell/LibreChatPanel.tsx",
-    "src/components/librechatShell/LibreChatRail.tsx",
-    "src/components/librechatShell/LibreChatShell.tsx",
-    "src/components/librechatShell/LibreChatSidePanel.tsx",
-    "src/components/librechatShell/libreChatSurface.ts",
-    "src/librechat-ui/index.ts"
-]) {
+    "src/components/auth/AuthLayout.tsx",
+    "src/services/api/workbench.ts",
+    "src/components/chat/ChatMessage/items/toolUtils.ts",
+    "src/components/chat/ChatMessage/items/McpBlockPreview.tsx",
+    "src/components/common/VideoViewer.tsx",
+  ]) {
     assert.equal(existsSync(join(root, path)), false, path);
   }
-});
-
-test("retired skill-card projection does not survive without a production consumer", () => {
-  assert.doesNotMatch(read("src/components/panels/ordinaryCatalogPolicy.ts"), /OrdinarySkillCatalogItem|normalizedStrings/);
 });

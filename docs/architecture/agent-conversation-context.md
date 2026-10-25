@@ -142,11 +142,92 @@ preview rather than a whole-object size-limit error.
 
 The Context repository prefix operation replaces the preview's unbounded object
 read in both connection and transaction adapters. No unbounded compatibility
-fallback remains in this preview path. Full staging/export keeps the existing
-whole-object bounded read, size and identity checks. Storage worker timeout and
-cancellation retain capacity until blocking I/O ends; the prefix operation closes
-its body when that operation exits. This does not change Run/Attempt locks,
-callback authorization, the retrieval response shape, or persisted artifacts.
+fallback remains in this preview path. Preview and uploaded-file JSON staging remain separate from full artifact
+transfer. Storage worker timeout and cancellation retain capacity until blocking
+I/O ends; the prefix operation closes its body when that operation exits.
+
+## Historical Artifact Workspace Transfer
+
+`stage_run_artifact_to_workspace` keeps its existing tool identity, `artifact_id`
+and optional `max_bytes` arguments. A new Run may restore only artifacts in its
+exact frozen executor snapshot. The existing scoped repository checks tenant,
+workspace, user, Session, source Run, active lifecycle and expiry; knowing an
+artifact ID does not grant access. Selection/admission owns which IDs enter that
+snapshot. Storage locators and credentials never reach the model.
+
+The canonical per-artifact limit is `artifacts.api.ARTIFACT_MAX_FILE_BYTES`
+(64 MiB), shared with sandbox collection. Neither upload limits, uploaded context
+file staging (1 MiB), `read_run_artifact` preview nor ProfileDrive changes.
+The executor requests the existing private
+`POST /runtime/callbacks/context-retrieval` with
+`Accept: application/octet-stream` and `Accept-Encoding: identity`. There is no
+JSON/base64 fallback in the new executor artifact path. Deployed pre-stream
+sandbox executors are the named compatibility consumer of the old JSON staging
+response, which remains capped at 16 MiB. Context owns that compatibility;
+remove it only after the deployed executor inventory and rollout/rollback window
+prove no remaining JSON artifact-stage consumers. The independent uploaded-file
+JSON response and artifact text preview remain supported.
+
+The broker uses shared `SandboxCallbackAuthority` to lock Run then exact Attempt
+and active lease, loads the bound snapshot/tool membership, and resolves scoped
+object identity in a short transaction. It downloads to a private temporary file
+outside those locks using bounded storage admission and 64 KiB reads. Declared
+size must match exactly; a historical row/manifest SHA-256, when present, must
+match. Historical artifacts without a recorded digest are not claimed to have
+one: the transfer header contains the digest computed during this download.
+A second short transaction repeats authority, snapshot, source identity and
+immutable lease checks before recording the private retrieval event and handing
+off the response. Cancellation, changed generation/lease/snapshot, expiry or
+source disappearance cannot publish a successful transfer. This read-only
+operation creates no remote effect or new lifecycle claim.
+
+The private response has exact `Content-Length`, identity encoding, `no-store`,
+and an ASCII JSON `X-Context-Artifact` header containing `artifact_id`, safe
+`name`, `source_run_id`, `size_bytes`, actual `sha256` and `max_bytes`. Its body
+contains only bytes. The response owns the server tempfile through ASGI send,
+including send failure/disconnect. Abandoned storage I/O joins physical completion
+before cleaning a late returned path or closing its client; the shared storage
+slot remains occupied until the physical operation ends.
+
+Executor and inline staging publish a complete mutable copy at
+`context/<artifact_id>/<safe-basename>`. The tool returns that exact
+workspace-relative `workspace_path`, `artifact_id`, `name`, `source_run_id`,
+`bytes_staged`, `max_bytes`, `reused`, audit and redaction facts. The model uses
+the returned path, not the original name. Same-name artifacts have separate ID
+directories. A bounded streamed temporary file is checked for exact length and
+SHA-256 and flushed/fsynced while its descriptor stays open. Atomic no-clobber
+publication links that verified descriptor through `/proc/self/fd`, never the
+replaceable temporary pathname. Publication does not roll back by deleting a
+mutable final path; edits or replacement after that atomic link remain intact.
+Directory traversal uses no-follow descriptors; symlinks, hardlinks, foreign
+preexisting targets and filesystems without the required descriptor-link support
+fail closed. No permissive Windows fallback is provided.
+
+Sandbox owns the executor's streaming orchestration, with the existing caller
+supplying its HTTP client factory. The worker's inline Context factory binds the
+bounded physical-download port in `bootstrap.context`; direct inline consumers
+supply that port explicitly. File staging, preview and existing JSON broker
+callers retain their entry points without this new inline-download prerequisite.
+
+Within the current Attempt's retrieval owner, a successful restore records only
+its path and immutable source identity. Repeated/concurrent calls reuse a
+controlled regular target and preserve local edits (including editor replacement),
+without comparing edited bytes to the source digest. This is not a durable
+workspace manifest or cross-Attempt cache: a fresh owner does not adopt an
+unproven existing target. The source S3 object remains immutable; later output
+publication creates a new artifact through the existing collection authority.
+Failed, partial, cancelled, over-budget or hash-mismatched downloads cannot replace
+an existing target. Descriptor and temporary-file ownership is local to each
+transfer, not a workspace scan or a retention policy.
+
+Focused tests in `test_context_artifact_transfer.py` cover synthetic 20/64 MiB
+bounded downloads, transfer integrity, callback fencing, concurrent publication,
+edit-preserving reuse and resource cleanup. Its optional real MinIO test uses
+`AI_PLATFORM_ARTIFACT_MINIO_URL` with synthetic-only credentials and a unique
+bucket, restores after deleting the first Attempt workspace and checks the
+original object after publishing a new version. Real PostgreSQL concurrency,
+real MinIO and POSIX filesystem acceptance require their actual facilities;
+Windows skips do not establish those results.
 
 ## Retirement And Acceptance
 

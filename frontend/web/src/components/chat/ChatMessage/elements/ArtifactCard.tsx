@@ -28,7 +28,7 @@ export function ArtifactCard({
   errorMessage,
 }: ArtifactCardProps) {
   return (
-    <div data-slot="artifact-card" data-status={status} role="group" aria-label={label} className="my-1 flex min-w-0 max-w-xl flex-wrap items-center gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2.5 text-left shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:bg-stone-900">
+    <div data-slot="artifact-card" data-status={status} role="group" aria-label={label} className="my-1 flex min-w-0 max-w-xl flex-wrap items-center gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2.5 text-left shadow-[0_4px_12px_rgba(18,38,63,0.03)] dark:bg-neutral-900">
       <div className={clsx("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", iconBackgroundClassName)}>
         {icon}
       </div>
@@ -41,7 +41,7 @@ export function ArtifactCard({
         </div>
       </div>
       {actions}
-      {errorMessage && <div role="alert" className="basis-full text-xs text-red-600 dark:text-red-400">{errorMessage}</div>}
+      {errorMessage && <div role="alert" className="basis-full text-xs text-[var(--theme-danger-text)]">{errorMessage}</div>}
     </div>
   );
 }

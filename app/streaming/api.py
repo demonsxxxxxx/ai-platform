@@ -66,6 +66,15 @@ from app.streaming.domain.public_events_v4 import (
     validate_internal_envelope_v4,
     validate_public_application_payload_v4,
 )
+from app.streaming.domain.public_execution import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PUBLIC_EXECUTION_EVENT_TYPES,
+    PublicAgentProgressPublisher,
+    PublicExecutionV2Projector,
+    public_execution_event_from_row,
+    validate_public_agent_progress_payload,
+    validate_versioned_public_execution_step_payload,
+)
 from app.streaming.domain.run_events import (
     RunCursor,
 )
@@ -78,6 +87,13 @@ from app.streaming.domain.transport import (
 
 
 __all__ = [
+    "PUBLIC_AGENT_PROGRESS_EVENT_TYPE",
+    "PUBLIC_EXECUTION_EVENT_TYPES",
+    "PublicAgentProgressPublisher",
+    "PublicExecutionV2Projector",
+    "public_execution_event_from_row",
+    "validate_public_agent_progress_payload",
+    "validate_versioned_public_execution_step_payload",
     "AssistantTextMessageProjection",
     "project_persisted_assistant_text_messages",
     "RunCursor",

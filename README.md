@@ -14,8 +14,8 @@ Thin platform service for the enterprise AI Agent platform.
 
 Download `ai-platform-internal-test.tar.gz` from the chosen immutable Deployment
 Release and extract it into a new directory on a trusted isolated test host.
-The current publication workflow does not emit a new production package. The
-package fixes the application version and image digests; no Git checkout,
+This is the single deployment package; its `internal-test` filename is retained
+historical naming, not a separate deployment track. The package fixes the application version and image digests; no Git checkout,
 Actions query or host build is needed.
 
 After the one-time Docker/Compose and OpenSandbox host preparation, configure
@@ -31,14 +31,14 @@ the new runtime. With already-loaded digest-verified images, add `--offline`.
 Database migrations are not automatically reversed and there is no speculative
 image rollback after a migration has begun.
 
-See the [internal-test package guide](deploy/ai-platform/README.internal-test.md)
-for host preparation, configuration, upgrade, offline images and failure handling,
-and the [release runbook](docs/operations/release-operations-runbook.md) for the
-release procedure. The test bridge is not production network isolation.
-The [historical production package guide](deploy/ai-platform/README.md) applies
-only to previously published production Releases;
-[production host preparation](docs/operations/production-bootstrap.md) and
-OpenSandbox credential/network changes remain separate controlled operations.
+See the [deployment guide](deploy/ai-platform/README.md) for the single
+installation/upgrade procedure and the
+[release runbook](docs/operations/release-operations-runbook.md) for publication
+and acceptance. The package still enforces the `test` / `internal-test` profile
+and native Docker bridge; it does not provide production network isolation.
+The [dedicated-network host contract](docs/operations/production-bootstrap.md)
+remains a separate controlled host-maintenance reference, not another package
+choice. OpenSandbox credential/network changes require their own authorization.
 
 ## Health check
 

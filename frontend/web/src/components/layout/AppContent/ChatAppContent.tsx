@@ -50,7 +50,6 @@ import {
   countEnabledSkills,
   resolveComposerSkillsAvailability,
 } from "./skillAvailability";
-import { AgentConversationPanel } from "../../../features/agent-market/AgentConversationPanel";
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
@@ -1241,17 +1240,6 @@ export function ChatAppContent({
       onOpenRunPlayback={handleOpenRunPlayback}
       showOutlineButton={shouldShowMessageOutline(visibleMessages)}
       onToggleOutline={handleToggleOutline}
-      contentSidebar={
-        agentWorkspace && agentWorkspaceSessionSource ? (
-          <AgentConversationPanel
-            currentSessionId={sessionId}
-            onNewSession={handleNewSessionWithReset}
-            onSelectSession={handleSelectSessionAndClose}
-            profile={agentWorkspace}
-            source={agentWorkspaceSessionSource}
-          />
-        ) : undefined
-      }
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
@@ -1286,17 +1274,17 @@ export function ChatAppContent({
                 }
               : undefined
           }
-          agentHistoryInMainPanel={agentWorkspace !== undefined}
+          navigationOnly={false}
         />
       }
     >
       <div className="min-h-0 flex-1 overflow-hidden flex flex-col">
         {isPageDragging && (
-          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-stone-500/5 transition-colors dark:bg-stone-500/10">
-            <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-stone-400 bg-[var(--theme-bg-card)] px-16 py-12 shadow-[0_12px_28px_rgba(18,38,63,0.08)] transition-colors dark:border-stone-500 dark:bg-stone-900">
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-neutral-500/5 transition-colors dark:bg-neutral-500/10">
+            <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-neutral-400 bg-[var(--theme-bg-card)] px-16 py-12 shadow-[0_12px_28px_rgba(18,38,63,0.08)] transition-colors dark:border-neutral-500 dark:bg-neutral-900">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-12 w-12 text-stone-500 dark:text-stone-400"
+                className="h-12 w-12 text-neutral-500 dark:text-neutral-400"
                 fill="none"
                 viewBox="0 0 24 24"
                 strokeWidth={1.5}
@@ -1308,7 +1296,7 @@ export function ChatAppContent({
                   d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
                 />
               </svg>
-              <span className="text-lg font-medium text-stone-600 dark:text-stone-300">
+              <span className="text-lg font-medium text-neutral-600 dark:text-neutral-300">
                 {t("chat.dropFilesHere", "Drop files here to upload")}
               </span>
             </div>
@@ -1370,7 +1358,7 @@ export function ChatAppContent({
                 ? "该历史会话为只读状态"
                 : agentWorkspace
                 ? `向 ${agentWorkspace.name} 描述要完成的任务…`
-                : undefined
+                : "提问、上传文件，或描述你想完成的事…"
             }
             tools={agentConversationControlsLocked ? [] : effectiveTools}
             onToggleTool={exposedMcpControls.onToggleTool}
@@ -1439,12 +1427,12 @@ export function ChatAppContent({
             />
           </ChatMcpCatalogContext.Provider>
         {modelSelectionError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
+          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {modelSelectionError}
           </p>
         ) : null}
         {agentWorkspaceError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger)]" role="alert">
+          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {agentWorkspaceError}
           </p>
         ) : null}

@@ -68,7 +68,7 @@ function deriveProviderProjections(models: ModelOption[]): ProviderProjection[] 
 }
 
 function contextWindowLabel(model: ModelOption, fallback: string): string {
-  const value = model.profile?.max_input_tokens;
+  const value = model.profile?.auto_compact_window;
   if (!value) return fallback;
   return `${value.toLocaleString()} tokens`;
 }
@@ -168,7 +168,7 @@ export function ModelCatalogPanel() {
       title={t("models.title", "模型")}
       subtitle={t(
         "models.subtitle",
-        "查看平台公共模型；管理员可获取候选模型、配置容量和默认模型，然后发布给全员。",
+        "查看当前用户可用的模型；管理员可配置模型容量、默认模型和可用用户。",
       )}
       icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
       searchValue={searchQuery}
@@ -363,7 +363,7 @@ export function ModelCatalogPanel() {
                     </div>
                     <div className={workbenchSurface.catalog.metricTile}>
                       <dt className={workbenchSurface.catalog.label}>
-                        {t("models.contextWindow", "上下文")}
+                        {t("models.compactionWindow", "压缩窗口")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {contextWindowLabel(

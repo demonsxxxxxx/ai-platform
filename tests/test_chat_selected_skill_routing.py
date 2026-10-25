@@ -46,7 +46,7 @@ async def fake_transaction():
 
 @pytest.fixture
 def stub_unselected_model(monkeypatch):
-    async def resolve_model(_conn, *, selection):
+    async def resolve_model(_conn, *, selection, user_id):
         assert selection is None
         return None
 

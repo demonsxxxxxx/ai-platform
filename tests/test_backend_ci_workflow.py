@@ -137,7 +137,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_callback_authority.py",
         "tests/test_sandbox_cleanup_application.py",
         "tests/test_sandbox_runtime_control_layer.py",
-        "tests/test_sandbox_runtime_evidence_script.py",
         "tests/test_skill_execution_profiles.py",
         "tests/test_validation.py",
         "tests/test_contract.py",
@@ -145,7 +144,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_context_duplicate_file_staging.py",
         "tests/test_embedded_kernel_contracts.py",
         "tests/test_execution_boundary.py",
-        "tests/test_executor_context_pack_evidence_script.py",
         "tests/test_executor_registry.py",
         "tests/test_kernel_contracts.py",
         "tests/test_native_skill_tool_sandbox.py",
@@ -157,7 +155,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_contracts.py",
         "tests/test_sandbox_executor_client.py",
         "tests/test_sandbox_filesystem_contract.py",
-        "tests/test_sandbox_hardening_contract.py",
         "tests/test_sandbox_lease_routes.py",
         "tests/test_sandbox_readiness_evidence.py",
         "tests/test_context_manifest.py",
@@ -166,6 +163,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_context_memory_retention.py",
         "tests/test_context_persistence.py",
         "tests/test_context_builder.py",
+        "tests/test_context_artifact_transfer.py",
         "tests/test_conversations_persistence.py",
         "tests/test_files_artifacts_persistence.py",
         "tests/test_artifact_manifest_projection.py",
@@ -246,11 +244,12 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_performance.py",
         "tests/test_run_performance_postgres.py",
         "tests/test_streaming_schema_postgres.py",
-        "tests/test_verify_b1_memory_context_workflow.py",
         "tests/test_s0a_schema_postgres.py",
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
+        "tests/test_model_user_access.py",
+        "tests/test_company_employee_directory.py",
         "tests/test_model_upstream_stream.py",
         "tests/test_model_stream_ownership.py",
         "tests/test_model_discovery_security.py",
@@ -258,6 +257,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
+        "tests/test_model_token_usage_contract.py",
+        "tests/test_model_token_usage_routes.py",
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_auth_principal.py",
@@ -322,8 +323,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_performance_routes.py",
         "tests/test_run_question_defaults.py",
         "tests/test_tool_permission_routes.py",
-        "tests/test_tool_policy_readiness.py",
-        "tests/test_verify_auth_rbac_smoke.py",
         "tests/test_frontend_projection_routes.py",
         "tests/test_lambchat_compat.py",
         "tests/test_lambchat_projection_contract.py",
@@ -334,6 +333,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "schema-migrations": (
         "tests/test_run_diagnostics_postgres.py",
+        "tests/test_model_token_usage_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_skill_release_lifecycle_postgres.py",
@@ -357,7 +357,6 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
-        "tests/test_capacity_recorded_gate_values_from_live_run.py",
         "tests/test_backend_ci_workflow.py",
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",
@@ -366,13 +365,11 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_test_stage.py",
         "tests/test_source_quality_inventory.py",
         "tests/test_ci_image_scope.py",
-        "tests/test_require_zero_junit_skips.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
         "tests/test_release_required_checks.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
-        "tests/test_authenticated_smoke_redirects.py",
         "tests/test_backend_image_source_markers.py",
         "tests/test_legacy_product_surface_cleanup.py",
         "tests/test_oci_image_manifest.py",
@@ -384,28 +381,14 @@ BACKEND_TEST_SHARDS = {
         "tests/test_git_hook_checks.py",
     ),
     "release-governance-authority": (
-        "tests/test_governance_readiness.py",
-        "tests/test_foundation_alpha_readiness.py",
-        "tests/test_foundation_runtime_concurrency.py",
-        "tests/test_verify_multiuser_poc.py",
         "tests/test_verify_poc_gate.py",
-        "tests/test_watch_poc_gate.py",
         "tests/test_capacity_baseline.py",
-        "tests/test_office_context_readiness.py",
-        "tests/test_release_evidence_export_acceptance.py",
-        "tests/test_wrap_foundation_alpha_evidence.py",
         "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
         "tests/test_s75_opensandbox_transition.py",
-        "tests/integration/run_control/test_exact_main_run_control_acceptance.py",
-        "tests/test_b5_file_tool_readiness.py",
-        "tests/test_b6_operations_beta_readiness.py",
         "tests/test_browser_runtime_config.py",
-        "tests/test_capacity_bounded_load_harness.py",
         "tests/test_governed_egress_diagnostics.py",
-        "tests/test_observability_readiness.py",
-        "tests/test_release_evidence_runtime_acceptance.py",
     ),
 }
 
@@ -442,11 +425,9 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "name: packaged backend image build" in workflow
     assert "if: ${{ always() }}" in workflow
     assert "python -m compileall -q app tools scripts" in workflow
-    assert "tests/test_b2_sandbox_readiness.py" not in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
     assert "tests/test_packaging_publish_workflow.py" in workflow
     assert "tests/test_release_image_manifest.py" in workflow
-    assert "tests/test_governance_readiness.py" in workflow
     assert "tests/test_compose_package_deploy.py" in workflow
     assert "tests/test_production_bootstrap.py" in workflow
     assert "tests/test_release_authority.py" in workflow
@@ -537,7 +518,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "image: ${{ matrix.postgres_image }}" in tests_job
     assert '"19014:9000"' in tests_job
     assert '--health-cmd "mc ready local"' in tests_job
-    assert "matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "(matrix.shard == 'schema-migrations' || matrix.shard == 'repository-worker-streaming') && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "MINIO_ROOT_USER: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests' || 'synthetic-provider-images' }}" in tests_job
+    assert "MINIO_ROOT_PASSWORD: ${{ matrix.shard == 'repository-worker-streaming' && 'synthetic-artifact-tests-only' || 'synthetic-provider-images-local-test-only' }}" in tests_job
+    assert "AI_PLATFORM_ARTIFACT_MINIO_URL: ${{ matrix.shard == 'repository-worker-streaming' && 'http://127.0.0.1:19014' || '' }}" in tests_job
     assert "AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL:" in tests_job
     assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job

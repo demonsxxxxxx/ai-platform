@@ -6,6 +6,7 @@ import { libreChatSurface } from "./surface";
 
 export interface LibreChatShellProps {
   children: ReactNode;
+  header?: ReactNode;
   composer?: ReactNode;
   rightPanel?: ReactNode;
 }
@@ -13,6 +14,7 @@ export interface LibreChatShellProps {
 /** Owns the chat-first workbench geometry while leaving data authority to ai-platform. */
 export function LibreChatShell({
   children,
+  header,
   composer,
   rightPanel,
 }: LibreChatShellProps) {
@@ -55,9 +57,13 @@ export function LibreChatShell({
         }
       >
         <div className={libreChatSurface.thread}>
-          {rightPanel && (
-            <div className="flex shrink-0 justify-end px-3 pt-2 sm:px-4">
-              <Button type="text"
+          {(header || rightPanel) && (
+            <div
+              data-workbench-region="header"
+              className={libreChatSurface.threadHeader}
+            >
+              {header && <div className="min-w-0 flex-1">{header}</div>}
+              {rightPanel && <Button type="text"
                 ref={triggerRef}
                 htmlType="button"
                 data-librechat-context-toggle
@@ -66,9 +72,9 @@ export function LibreChatShell({
                 aria-label={t("workbench.contextLabel")}
                 title={t("workbench.contextLabel")}
                 onClick={() => setContextOpen((open) => !open)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
+                className="ml-auto shrink-0 rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
                 icon={<ContextIcon size={18} aria-hidden="true" />}
-              />
+              />}
             </div>
           )}
           <div

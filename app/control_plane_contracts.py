@@ -13,7 +13,7 @@ from app.runs.api import (
     ThinkingEffort as ThinkingEffort,
     normalize_thinking_effort,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 RUN_CONTRACT_VERSION = "ai-platform.run.v1"

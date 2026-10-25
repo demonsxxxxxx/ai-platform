@@ -28,7 +28,7 @@ test("retired chat feedback and unowned browser smokes are absent", () => {
   assert.doesNotMatch(message, /feedbackId|feedback\?:/);
   assert.doesNotMatch(`${skillsList}\n${skillTable}`, /marketplace\.(?:clearFilters|files)/);
   assert.match(skillsList, /fileLibrary\.clearFilters/);
-  assert.match(skillTable, /skills\.managementTable\.package/);
+  assert.match(skillTable, /skills\.managementTable/);
   assert.equal(zh.feedback, undefined);
   assert.deepEqual(Object.keys(zh.adminMarketplace).sort(), [
     "tags",
@@ -267,7 +267,7 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   assert.match(skillsList, /canBatchSkills/);
   assert.match(skillsList, /const uploadAction = canImportSkills/);
   assert.match(skillTable, /hasActions/);
-  assert.match(skillTable, /canEdit/);
+  assert.match(skillTable, /rowCanEdit/);
   assert.doesNotMatch(
     skillsList,
     /disabled=\{governedUnavailable \|\| !canWrite\}/,
@@ -297,10 +297,12 @@ test("read-only skills catalog removes write controls instead of showing disable
 
   assert.match(skillTable, /hasActions/);
   assert.match(skillTable, /\{hasActions \? \(/);
-  for (const action of ["Toggle", "Edit", "Export", "Delete"]) {
-    assert.match(skillTable, new RegExp(`rowCan${action} = can${action} && canAct`));
-    assert.match(skillTable, new RegExp(`rowCan${action} \\?`));
+  for (const permission of ["Toggle", "Edit", "Export", "Publish", "Delete"]) {
+    assert.match(skillTable, new RegExp(`rowCan${permission} = can${permission} && canAct`));
   }
+  assert.match(skillTable, /rowCanToggle \? \{ key: "toggle"/);
+  assert.match(skillTable, /rowCanEdit \? \{ key: "edit"/);
+  assert.match(skillTable, /rowCanDelete \? \{ key: "archive"/);
   assert.doesNotMatch(skillTable, /onPublish|publishToMarketplace|republish/);
   assert.doesNotMatch(skillTable, /disabled=\{!canWrite\}/);
   assert.doesNotMatch(skillTable, /disabled=\{!canEdit\}/);

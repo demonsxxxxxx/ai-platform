@@ -129,14 +129,10 @@ test("composer model selector delegates overlays to Lobe", () => {
 });
 
 test("authenticated workbench popovers use the existing Lobe overlay owner", () => {
-  const activePopoverFiles = [
+  for (const path of [
     "src/components/chat/AgentOptionButton.tsx",
-    "src/components/layout/UserMenu.tsx",
-    "src/components/selectors/SkillSelector.tsx",
-    "src/components/selectors/ToolSelector.tsx",
-  ];
-
-  for (const path of activePopoverFiles) {
+    "src/components/layout/UserMenu.tsx", "src/components/selectors/SkillSelector.tsx", "src/components/selectors/ToolSelector.tsx",
+  ]) {
     const source = read(path);
     assert.match(source, /from "@lobehub\/ui\/base-ui"/, path);
     assert.match(source, /<(?:Popover|DropdownMenu|Modal|Drawer)/, path);

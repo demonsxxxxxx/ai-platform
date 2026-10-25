@@ -37,6 +37,7 @@ import {
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
 import { RunInputHistory } from "../../chat/RunInputHistory";
+import { deriveRunInputSurface } from "../../chat/runInputSurface";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -221,6 +222,7 @@ interface ChatViewProps {
   outlineToggleRef?: React.RefObject<(() => void) | null>;
   WorkbenchShellComponent: ComponentType<{
     children: ReactNode;
+    header?: ReactNode;
     composer?: ReactNode;
     rightPanel?: ReactNode;
   }>;
@@ -309,6 +311,8 @@ export function ChatView({
     selectedSkillRevision: 0,
     pendingScopeHandoff: false,
   });
+  // A general-entry suggestion only fills the draft; the user still sends it.
+  const [starterDraft, setStarterDraft] = useState<string | null>(null);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -337,6 +341,11 @@ export function ChatView({
   );
   const canSendInCurrentView =
     canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
+  // The authorized pending batch, not a route flag, owns question mode. A closed
+  // or accepted batch leaves no pending answer, so the ordinary composer returns
+  // with its draft and attachments untouched.
+  const runInputQuestionMode =
+    deriveRunInputSurface(runInputs).activeBatches.length > 0;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
@@ -355,17 +364,6 @@ export function ChatView({
   });
   const activeConnectionOwner =
     sessionId && currentRunId ? `${sessionId}:${currentRunId}` : null;
-
-  const getGreetingKey = () => {
-    const h = new Date().getHours();
-    if (h < 6) return "chat.goodEvening";
-    if (h < 12) return "chat.goodMorning";
-    if (h < 18) return "chat.goodAfternoon";
-    return "chat.goodEvening";
-  };
-  const greeting = user?.username
-    ? t(getGreetingKey(), { name: user.username })
-    : t(getGreetingKey());
 
   const showOutline = shouldShowMessageOutline(messages);
   const outlineItems = useMemo(
@@ -888,6 +886,19 @@ export function ChatView({
     [showStreamingFooterSkeleton],
   );
 
+  const assistantIdentity = useMemo(
+    () =>
+      agentEmptyProfile
+        ? {
+            agent_id: agentEmptyProfile.agent_id,
+            name: agentEmptyProfile.name,
+            avatar_ref: agentEmptyProfile.avatar_ref,
+            avatar_seed: agentEmptyProfile.avatar_seed,
+          }
+        : undefined,
+    [agentEmptyProfile],
+  );
+
   const virtuosoItemContent = useCallback(
     (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
@@ -899,6 +910,7 @@ export function ChatView({
           >
             <ChatMessage
               artifactDownloadScopeContext={artifactDownloadScopeContext}
+              assistantIdentity={assistantIdentity}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -912,6 +924,7 @@ export function ChatView({
     ),
     [
       artifactDownloadScopeContext,
+      assistantIdentity,
       sessionId,
       handleOpenPreview,
     ],
@@ -928,6 +941,8 @@ export function ChatView({
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
     onStop: onStopGeneration,
+    pendingInput: starterDraft,
+    onPendingInputConsumed: () => setStarterDraft(null),
     canStop: canStopGeneration && currentRunId !== null,
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
@@ -972,6 +987,47 @@ export function ChatView({
     [onLoadHistory, onReconnect, onSendMessage, onStopGeneration],
   );
 
+  const shellHeader = agentEmptyProfile ? (
+    <div
+      data-expert-workspace-header
+      className="flex min-w-0 items-center gap-3"
+    >
+      <AgentIdentityAvatar
+        agentId={agentEmptyProfile.agent_id}
+        avatarRef={agentEmptyProfile.avatar_ref}
+        avatarSeed={agentEmptyProfile.avatar_seed}
+        name={agentEmptyProfile.name}
+        size="sm"
+      />
+      <div className="min-w-0">
+        <h1
+          className="truncate text-[15px] font-semibold leading-5 text-[var(--theme-text)]"
+          data-expert-workspace-name
+        >
+          {agentEmptyProfile.name}
+        </h1>
+        {agentEmptyProfile.description ? (
+          <p
+            className="truncate text-xs leading-4 text-[var(--theme-text-secondary)]"
+            data-expert-workspace-description
+            title={agentEmptyProfile.description}
+          >
+            {agentEmptyProfile.description}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  ) : (
+    <div data-general-chat-header className="min-w-0">
+      <h1 className="truncate text-[15px] font-semibold leading-5 text-[var(--theme-text)]">
+        通用助手
+      </h1>
+      <p className="truncate text-xs leading-4 text-[var(--theme-text-secondary)]">
+        提问、写作与资料分析
+      </p>
+    </div>
+  );
+
   const rightPanel = (
     <WorkbenchRightPanel
       sessionId={sessionId}
@@ -988,14 +1044,14 @@ export function ChatView({
         >
           <Button type="text"
             onClick={scrollToTop}
-            className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800"
+            className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-neutral-900 dark:hover:bg-neutral-800"
             aria-label={t("chat.scrollToTop", "Scroll to top")}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
               viewBox="0 0 20 20"
               fill="currentColor"
-              className="w-4 h-4 text-stone-500 dark:text-stone-300"
+              className="w-4 h-4 text-neutral-500 dark:text-neutral-300"
             >
               <path
                 fillRule="evenodd"
@@ -1010,14 +1066,14 @@ export function ChatView({
       {messages.length > 0 && !isNearBottom && (
         <Button type="text"
           onClick={scrollToBottom}
-          className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
+          className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-neutral-900 dark:hover:bg-neutral-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
           aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 20 20"
             fill="currentColor"
-            className="w-4 h-4 text-stone-500 dark:text-stone-300"
+            className="w-4 h-4 text-neutral-500 dark:text-neutral-300"
           >
             <path
               fillRule="evenodd"
@@ -1041,7 +1097,7 @@ export function ChatView({
 
       {historyReadError && (
         <div
-          className="mx-auto mb-2 flex max-w-[68rem] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
+          className="mx-auto mb-2 flex max-w-[76rem] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
           data-chat-history-read-error
           role="alert"
         >
@@ -1072,7 +1128,7 @@ export function ChatView({
         </div>
       )}
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
+        <div className="mx-auto mb-2 flex max-w-[76rem] px-2">
           <Button type="text"
             htmlType="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -1086,7 +1142,7 @@ export function ChatView({
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
         <div
-          className="mx-auto mb-3 flex max-w-[68rem] flex-wrap gap-2 px-2"
+          className="mx-auto mb-3 flex max-w-[76rem] flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
           <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
@@ -1106,18 +1162,22 @@ export function ChatView({
         </div>
       ) : null}
       {runInputs?.loadFailed ? (
-        <div className="mx-auto mb-2 flex w-full max-w-[68rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
+        <div className="mx-auto mb-2 flex w-full max-w-[76rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
           <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
           <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refresh()} htmlType="button">
             {t("common.retry", "重试")}
           </Button>
         </div>
       ) : null}
-      {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      {/* Task questions and the Composer are one surface, not two stacked cards. */}
       <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
-        className="mx-auto max-w-[68rem] px-2"
+        questionMode={runInputQuestionMode}
+        taskSurface={runInputs
+          ? (stop) => <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} stop={stop} />
+          : undefined}
+        className="mx-auto max-w-[76rem] px-2"
       />
     </div>
   );
@@ -1133,6 +1193,7 @@ export function ChatView({
       <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent
         composer={messages.length > 0 ? composer : undefined}
+        header={shellHeader}
         rightPanel={rightPanel}
       >
       <main
@@ -1151,44 +1212,31 @@ export function ChatView({
           ) : (
             agentEmptyProfile ? (
               <div
-                className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 sm:px-5"
+                className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"
                 data-agent-chat-opening
                 data-workbench-empty-state="agent-chat"
               >
-                <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
+                <section className="chat-start-surface flex w-full max-w-[76rem] flex-1 flex-col items-center gap-4">
                   {/* The published description is the opening text; it is not a runtime message. */}
-                  <div className="flex w-full items-start gap-3 px-2" data-agent-opening>
-                    <AgentIdentityAvatar
-                      agentId={agentEmptyProfile.agent_id}
-                      avatarRef={agentEmptyProfile.avatar_ref}
-                      avatarSeed={agentEmptyProfile.avatar_seed}
-                      name={agentEmptyProfile.name}
-                      size="md"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <h1 className="break-words text-lg font-semibold text-[var(--theme-text)]">
-                        {agentEmptyProfile.name}
-                      </h1>
-                      {agentEmptyProfile.description ? (
-                        <p
-                          className="mt-2 max-w-[42rem] whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--theme-text)]"
-                          data-agent-opening-message
-                        >
-                          {agentEmptyProfile.description}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                  <div className="w-full">{composer}</div>
+                  {agentEmptyProfile.description ? (
+                    <p
+                      className="max-w-2xl whitespace-pre-wrap text-center text-sm leading-7 text-[var(--theme-text-secondary)]"
+                      data-agent-opening
+                      data-agent-opening-message
+                    >
+                      {agentEmptyProfile.description}
+                    </p>
+                  ) : (
+                    <div data-agent-opening />
+                  )}
+                  <div className="mt-auto w-full pt-8">{composer}</div>
                 </section>
               </div>
             ) : (
               <WelcomePage
-                greeting={greeting}
-                subtitle={
-                  t("chat.welcomeSubtitle") ?? "How can I help you today?"
-                }
+                subtitle="直接提问，或上传文件一起讨论。"
                 composer={composer}
+                onSelectSuggestion={setStarterDraft}
               />
             )
           )
@@ -1196,7 +1244,7 @@ export function ChatView({
           <Virtuoso
             key={messageListSessionKey}
             ref={virtuosoRef}
-            className="dark:divide-stone-800 overflow-x-hidden"
+            className="dark:divide-neutral-800 overflow-x-hidden"
             data={displayMessages}
             computeItemKey={(_, message) => message.id}
             atBottomStateChange={handleVirtuosoAtBottomChange}

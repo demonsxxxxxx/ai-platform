@@ -57,7 +57,7 @@ export function ChatConnectionStatus({
   }, [isReconnectPending, onReconnect, owner, status]);
 
   return (
-    <div className="mx-auto mb-2 max-w-[68rem] px-2">
+    <div className="mx-auto mb-2 max-w-[76rem] px-2">
       <ConnectionState status={status} disconnected={status === "disconnected"} pending={isReconnectPending}
         label={label} retryLabel={isReconnectPending ? reconnectingLabel : reconnectLabel}
         onRetry={() => void handleReconnect()} />

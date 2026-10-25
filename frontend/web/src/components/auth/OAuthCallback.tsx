@@ -83,10 +83,10 @@ export function OAuthCallback() {
   }, [handleOAuthCallback, navigate, searchParams]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-50 dark:bg-neutral-900">
       <div className="text-center">
         <Spin size={32} className="justify-center" />
-        <p className="mt-4 text-stone-600 dark:text-stone-400">
+        <p className="mt-4 text-neutral-600 dark:text-neutral-400">
           {t("auth.completingLogin")}
         </p>
       </div>

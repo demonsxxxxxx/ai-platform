@@ -26,6 +26,8 @@ function model(overrides: ModelOverrides = {}): AdminModelEntry {
     available: true,
     is_default: false,
     order: 1,
+    access_mode: "all" as const,
+    allowed_user_ids: [],
     last_seen_revision: 1,
     last_seen_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -140,7 +142,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     },
     models: [model({
       enabled: true, is_default: true,
-      max_input_tokens: 32000, max_output_tokens: 2048,
+      auto_compact_window: 200_000, max_output_tokens: 2048,
       last_seen_revision: 4,
     })],
   });
@@ -206,8 +208,19 @@ test("Model admin discovery is a draft and only publication changes the active c
     const publishButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("data-model-admin-publish") !== null);
     assert.ok(publishButton);
+    // The engine owns the actual compaction point; say so once, not per row.
+    assert.match(
+      nodeText(container),
+      /实际触发时机由引擎决定，可能早于该值/,
+      "admin view must state that compaction timing is engine-owned",
+    );
+    assert.equal(
+      inputByLabel(container, "openai/gpt-5 压缩窗口 Token").getAttribute("aria-describedby"),
+      "model-admin-compaction-window-hint",
+      "the window input must reference the shared engine-timing hint",
+    );
     await React.act(async () => {
-      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "64000");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 压缩窗口 Token"), "150000");
     });
     await React.act(async () => {
       publishButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -221,7 +234,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.discover.length, 0);
     assert.equal(calls.publish[0].expectedRevision, 4);
     assert.equal(calls.publish[0].credential, undefined);
-    assert.equal(calls.publish[0].models[0].max_input_tokens, 64000);
+    assert.equal(calls.publish[0].models[0].auto_compact_window, 150_000);
 
     const keyInput = inputByLabel(container, "模型 API Key");
     await React.act(async () => {
@@ -248,7 +261,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     await waitFor(
       React,
       () => calls.discover.length === 1
-        && inputByLabel(container, "openai/gpt-5 显示名称").value === "GPT-5",
+        && inputByLabel(container, "openai/gpt-5 平台显示名称").value === "GPT-5",
       "discovery should populate only the editable draft",
     );
     assert.deepEqual(calls.discover, [
@@ -258,9 +271,9 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
 
     // Discovery keeps existing selections and user edits for the same model.
-    assert.equal(inputByLabel(container, "openai/gpt-5 最大输入 Token").value, "32000");
+    assert.equal(inputByLabel(container, "openai/gpt-5 压缩窗口 Token").value, "200000");
     await React.act(async () => {
-      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 压缩窗口 Token"), "");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "");
       buttonByLabel(container, "启用 GPT-5").click();
     });
@@ -275,20 +288,22 @@ test("Model admin discovery is a draft and only publication changes the active c
     await React.act(async () => { buttonByLabel(container, "启用 GPT-5").click(); });
     await React.act(async () => { buttonByLabel(container, "设为默认 GPT-5").click(); });
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
-    for (const label of ["openai/gpt-5 最大输入 Token", "openai/gpt-5 最大输出 Token"]) {
-      const field = Array.from(container.querySelectorAll("input"))
-        .find((candidate) => candidate.getAttribute("aria-label") === label);
-      assert.equal(field?.getAttribute("placeholder"), "必填");
-      assert.equal(field?.getAttribute("aria-required"), "true");
-    }
+    // An empty window falls back to the platform default; the output cap stays required.
+    const windowField = Array.from(container.querySelectorAll("input"))
+      .find((candidate) => candidate.getAttribute("aria-label") === "openai/gpt-5 压缩窗口 Token");
+    assert.equal(windowField?.getAttribute("placeholder"), "默认 100000");
+    const outputField = Array.from(container.querySelectorAll("input"))
+      .find((candidate) => candidate.getAttribute("aria-label") === "openai/gpt-5 最大输出 Token");
+    assert.equal(outputField?.getAttribute("placeholder"), "必填");
+    assert.equal(outputField?.getAttribute("aria-required"), "true");
     await React.act(async () => {
       publishButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    assert.equal(calls.publish.length, 1, "missing limits must not reach the publish API");
-    assert.match(nodeText(actionBar), /请填写 GPT-5 的最大输入和输出 Token/);
+    assert.equal(calls.publish.length, 1, "a missing output cap must not reach the publish API");
+    assert.match(nodeText(actionBar), /请填写 GPT-5 的最大输出 Token/);
     assert.equal(container.querySelectorAll('[role="alert"]').length, 1);
     await React.act(async () => {
-      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "32000");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 压缩窗口 Token"), "200000");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "2048");
     });
     assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
@@ -307,7 +322,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[1].expectedRevision, 4);
     assert.equal(calls.publish[1].models[0].enabled, true);
     assert.equal(calls.publish[1].models[0].is_default, true);
-    assert.equal(calls.publish[1].models[0].max_input_tokens, 32000);
+    assert.equal(calls.publish[1].models[0].auto_compact_window, 200_000);
     assert.equal(calls.publish[1].models[0].max_output_tokens, 2048);
     assert.match(nodeText(container), /已生效配置/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);

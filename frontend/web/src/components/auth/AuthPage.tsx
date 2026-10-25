@@ -264,7 +264,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
       <div className="auth-shell flex min-h-screen items-center justify-center">
         <div className="text-center">
           <Spin size={32} className="justify-center" />
-          <p className="mt-4 text-stone-600 dark:text-stone-400">
+          <p className="mt-4 text-neutral-600 dark:text-neutral-400">
             {t("auth.completingLogin")}
           </p>
         </div>
@@ -278,13 +278,13 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
 
       {/* Subtle background gradient */}
       <div className="auth-atmosphere" aria-hidden="true">
-        <div className="auth-glow-main absolute -top-24 left-1/2 -translate-x-1/2 w-[720px] h-[520px] bg-[radial-gradient(ellipse_at_center,rgba(251,191,36,0.065)_0%,rgba(251,146,60,0.025)_42%,transparent_70%)] dark:bg-[radial-gradient(ellipse_at_center,rgba(251,191,36,0.04)_0%,rgba(251,146,60,0.018)_42%,transparent_70%)]" />
-        <div className="auth-glow-blue absolute top-[34%] left-[4%] w-[360px] h-[360px] bg-[radial-gradient(circle,rgba(56,189,248,0.04)_0%,transparent_62%)] dark:bg-[radial-gradient(circle,rgba(56,189,248,0.028)_0%,transparent_62%)]" />
-        <div className="auth-glow-violet absolute bottom-[10%] right-[8%] w-[300px] h-[300px] bg-[radial-gradient(circle,rgba(168,85,247,0.035)_0%,transparent_60%)] dark:bg-[radial-gradient(circle,rgba(168,85,247,0.022)_0%,transparent_60%)]" />
+        <div className="auth-glow-main absolute -top-24 left-1/2 -translate-x-1/2 w-[720px] h-[520px] bg-[radial-gradient(ellipse_at_center,color-mix(in_srgb,var(--theme-text)_6.5%,transparent)_0%,color-mix(in_srgb,var(--theme-text)_2.5%,transparent)_42%,transparent_70%)] dark:bg-[radial-gradient(ellipse_at_center,color-mix(in_srgb,var(--theme-text)_4%,transparent)_0%,color-mix(in_srgb,var(--theme-text)_1.8%,transparent)_42%,transparent_70%)]" />
+        <div className="auth-glow-blue absolute top-[34%] left-[4%] w-[360px] h-[360px] bg-[radial-gradient(circle,color-mix(in_srgb,var(--theme-text)_4%,transparent)_0%,transparent_62%)] dark:bg-[radial-gradient(circle,color-mix(in_srgb,var(--theme-text)_2.8%,transparent)_0%,transparent_62%)]" />
+        <div className="auth-glow-violet absolute bottom-[10%] right-[8%] w-[300px] h-[300px] bg-[radial-gradient(circle,color-mix(in_srgb,var(--theme-text)_3.5%,transparent)_0%,transparent_60%)] dark:bg-[radial-gradient(circle,color-mix(in_srgb,var(--theme-text)_2.2%,transparent)_0%,transparent_60%)]" />
       </div>
 
       {/* Navbar */}
-      <nav className="fixed top-0 inset-x-0 z-50 bg-white/90 dark:bg-stone-950/90 border-b border-stone-100/60 dark:border-stone-800/40 transition-shadow duration-300">
+      <nav className="fixed top-0 inset-x-0 z-50 bg-[color-mix(in_srgb,var(--theme-bg-card)_90%,transparent)] dark:bg-neutral-950/90 border-b border-neutral-100/60 dark:border-neutral-800/40 transition-shadow duration-300">
         <div className="mx-auto flex h-14 max-w-full items-center justify-between px-4 sm:px-8">
           <a href={APP_HOME_URL} className="flex items-center gap-2.5 group">
             <img
@@ -292,7 +292,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
               alt={APP_NAME}
               className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg transition-transform duration-300 group-hover:scale-105"
             />
-            <span className="text-[15px] sm:text-lg font-bold tracking-tight text-stone-900 dark:text-stone-100 font-serif">
+            <span className="text-[15px] sm:text-lg font-bold tracking-tight text-neutral-900 dark:text-neutral-100 font-serif">
               {APP_NAME}
             </span>
           </a>
@@ -307,16 +307,16 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
         <div className="w-full max-w-[22.5rem] sm:max-w-[420px] lg:max-w-[450px] 2xl:max-w-[480px]">
           {/* Title area */}
           <div className="mb-5 text-center sm:mb-6">
-            <h1 className="text-[2.65rem] sm:text-4xl lg:text-5xl font-extrabold font-serif tracking-[-0.045em] sm:tracking-[-0.03em] leading-[0.9] sm:leading-[0.95] text-stone-900 dark:text-stone-50 mb-2">
+            <h1 className="text-[2.65rem] sm:text-4xl lg:text-5xl font-extrabold font-serif tracking-[-0.045em] sm:tracking-[-0.03em] leading-[0.9] sm:leading-[0.95] text-neutral-900 dark:text-neutral-50 mb-2">
               {APP_NAME}
             </h1>
-            <p className="mx-auto max-w-[18rem] text-xs leading-relaxed text-stone-500 dark:text-stone-400 sm:text-[13px] lg:text-sm">
+            <p className="mx-auto max-w-[18rem] text-xs leading-relaxed text-neutral-500 dark:text-neutral-400 sm:text-[13px] lg:text-sm">
               {t("auth.loginHint")}
             </p>
           </div>
 
           {/* Form card */}
-          <div className="auth-panel rounded-[1.35rem] p-4 shadow-stone-200/50 sm:rounded-2xl sm:p-6 lg:p-8 2xl:p-10 dark:shadow-stone-950/40">
+          <div className="auth-panel rounded-[1.35rem] p-4 shadow-neutral-200/50 sm:rounded-2xl sm:p-6 lg:p-8 2xl:p-10 dark:shadow-neutral-950/40">
             {/* OAuth buttons */}
             {oauthProviders.length > 0 && (
               <div className="mb-4 sm:mb-5 lg:mb-6 2xl:mb-8">
@@ -326,7 +326,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
                       <Button type="text"
                         htmlType="button"
                         onClick={() => handleOAuthLogin(provider.id)}
-                        className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white/85 px-3 text-sm font-medium text-stone-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 dark:border-stone-700 dark:bg-stone-800/70 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
+                        className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-[color-mix(in_srgb,var(--theme-bg-card)_85%,transparent)] px-3 text-sm font-medium text-neutral-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-[var(--theme-bg-card)] hover:shadow-md active:translate-y-0 dark:border-neutral-700 dark:bg-neutral-800/70 dark:text-neutral-200 dark:hover:bg-neutral-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
                       >
                         {provider.id === "google" && (
                           <svg
@@ -376,11 +376,11 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
 
                 {/* Divider */}
                 <div className="relative mt-3 flex items-center sm:mt-3.5 lg:mt-4 2xl:mt-5">
-                  <div className="flex-grow border-t border-stone-200 dark:border-stone-700" />
-                  <span className="flex-shrink-0 mx-3 text-[10px] font-medium uppercase tracking-widest text-stone-400 dark:text-stone-500 sm:mx-4 sm:text-xs">
+                  <div className="flex-grow border-t border-neutral-200 dark:border-neutral-700" />
+                  <span className="flex-shrink-0 mx-3 text-[10px] font-medium uppercase tracking-widest text-neutral-400 dark:text-neutral-500 sm:mx-4 sm:text-xs">
                     {t("auth.or")}
                   </span>
-                  <div className="flex-grow border-t border-stone-200 dark:border-stone-700" />
+                  <div className="flex-grow border-t border-neutral-200 dark:border-neutral-700" />
                 </div>
               </div>
             )}
@@ -392,7 +392,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
               {/* Error */}
               {error && (
                 <div>
-                  <div className="flex items-center gap-2 rounded-lg border border-red-200/60 bg-red-50/80 px-2.5 py-1.5 text-xs text-red-600 dark:border-red-900/40 dark:bg-red-950/40 dark:text-red-400 sm:px-3 sm:py-2">
+                  <div className="flex items-center gap-2 rounded-lg border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-2.5 py-1.5 text-xs text-[var(--theme-danger-text)] sm:px-3 sm:py-2">
                     <AlertCircle size={14} className="flex-shrink-0" />
                     <span>{error}</span>
                   </div>
@@ -402,7 +402,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
                     error.includes("activate")) && (
                     <Button type="text"
                       onClick={() => setContactAdminOpen(true)}
-                      className="mt-1.5 text-xs text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
+                      className="mt-1.5 text-xs text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
                     >
                       {t("contactAdmin.supportLink", "联系管理员")}
                     </Button>
@@ -412,7 +412,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
 
               {/* Account input */}
               <div>
-                <label htmlFor="auth-username" className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
+                <label htmlFor="auth-username" className="mb-0.5 block text-[11px] font-medium text-neutral-700 dark:text-neutral-300 sm:mb-1.5 sm:text-sm">
                   {t("auth.account")}
                 </label>
                 <Input
@@ -428,7 +428,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
 
               {/* Password */}
               <div>
-                <label htmlFor="auth-password" className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
+                <label htmlFor="auth-password" className="mb-0.5 block text-[11px] font-medium text-neutral-700 dark:text-neutral-300 sm:mb-1.5 sm:text-sm">
                   {t("auth.password")}
                 </label>
                 <PasswordInput

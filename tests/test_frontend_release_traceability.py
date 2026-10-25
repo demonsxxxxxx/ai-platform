@@ -21,6 +21,7 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& node scripts/check-style-rules.mjs "
     "&& corepack pnpm run test:auth "
     "&& corepack pnpm run test:agent-market "
     "&& corepack pnpm run test:prd-closure-smoke-source "
@@ -35,7 +36,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:document-previews "
     "&& corepack pnpm run test:pwa "
     "&& corepack pnpm run test:browser-preferences "
-    "&& eslint . && tsc -b && vite build "
+    "&& corepack pnpm run lint && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
 EXPECTED_PYTHON_DEPENDENCIES = "python tools/frontend_ci_dependencies.py --subset windows-contracts"
@@ -47,8 +48,7 @@ FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/icons/icon-512.png",
 )
 EXPECTED_WORKFLOW_PYTEST = (
-    "python -m pytest tests/test_deploy_frontend_static.py "
-    "tests/test_frontend_release_traceability.py "
+    "python -m pytest tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
@@ -121,14 +121,12 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert all(command in trace["workflow"]["enforced_commands"] for command in WORKFLOW_TEST_STEP_COMMANDS.values())
     assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
-    assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
-    assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
+    assert not any("deploy_frontend_static.py" in command for command in trace["workflow"]["enforced_commands"])
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert trace["workflow"]["enforced_step_commands"] == {
-        "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run build",
+        "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build",
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
-        "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
         "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
         **WORKFLOW_TEST_STEP_COMMANDS,
         "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
@@ -591,8 +589,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
         "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
     )
     nginx_base = (
-        "nginx:1.30.4-alpine@"
-        "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
+        "nginx:1.30.6-alpine@"
+        "sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951"
     )
     runtime_dockerfile = dockerfile.split(f"FROM {nginx_base} AS runtime", 1)[1]
     npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
@@ -616,7 +614,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "apk add" not in dockerfile
     security_upgrade = (
         "RUN apk update \\\n"
-        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
+        "    && apk upgrade --no-cache brotli-libs libcrypto3 libexpat libssl3 libuuid libx11 pcre2 tiff \\\n"
         '    && installed="$(apk list --installed libexpat)" \\\n'
         '    && installed="${installed%% *}" \\\n'
         '    && installed="${installed#libexpat-}" \\\n'
@@ -974,6 +972,8 @@ def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
         "--test", "--test-concurrency=2",
         "src/services/api/__tests__/adminRuns.test.ts",
         "src/services/api/__tests__/adminUsers.test.ts",
+        "src/services/api/__tests__/modelUsage.test.ts",
+        "src/features/usage/__tests__/UsagePage.test.tsx",
         "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
         "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
         "src/components/workbench/__tests__/WorkbenchUsersProjectionPanel.mounted.test.tsx",

@@ -21,7 +21,9 @@ from app.execution.application.model_selection import (
     resolve_chat_model_selection,
 )
 from app.execution.domain.model_catalog import (
+    normalize_model_display_name,
     normalize_model_token_limits,
+    normalize_model_user_access,
     platform_model_id,
     public_model_projection,
 )
@@ -93,11 +95,19 @@ class ModelManagementRepository(Protocol):
 
     async def admin_models(self, conn: Any) -> list[dict[str, Any]]: ...
 
-    async def public_models(self, conn: Any) -> dict[str, Any] | None: ...
+    async def public_models(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
     async def publish_models(self, conn: Any, **kwargs: Any) -> Any: ...
 
     async def resolve_run_model(self, conn: Any, **kwargs: Any) -> RunModelSelection | None: ...
+
+    async def model_access_excludes_user(self, conn: Any, **kwargs: Any) -> bool: ...
+
+    async def catalog_access(self, conn: Any) -> dict[str, dict[str, Any]]: ...
+
+
+class EmployeeGrantValidator(Protocol):
+    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None: ...
 
 
 class ModelEndpointSecurity(Protocol):
@@ -176,6 +186,7 @@ class ModelControlPlaneService:
         upstream: ModelUpstream,
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
         diagnostic_recorder: Callable[..., Any] | None = None,
+        employee_directory: EmployeeGrantValidator | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -184,6 +195,7 @@ class ModelControlPlaneService:
         self._upstream = upstream
         self._attempt_capability_verifier = attempt_capability_verifier
         self._diagnostic_recorder = diagnostic_recorder
+        self._employee_directory = employee_directory
 
     async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
         facts = normalize_execution_debug(debug)
@@ -266,6 +278,7 @@ class ModelControlPlaneService:
         expected_revision: int | None,
         models: list[dict[str, Any]],
         actor_user_id: str,
+        tenant_id: str = "default",
     ) -> dict[str, Any]:
         encryption_key, _allowed_hosts = self._security_settings()
         requested_url = self._security.normalize(base_url)
@@ -297,18 +310,49 @@ class ModelControlPlaneService:
         for model in models:
             if model.get("id") != platform_model_id(model["value"]):
                 raise ValueError("model_catalog_identity_collision")
-            display_name = model.get("display_name", "")
-            if (display_name != display_name.strip() or any(
-                ord(character) < 32 for character in display_name
-            )):
-                raise ValueError("model_display_name_invalid")
-            limits = normalize_model_token_limits(
-                model.get("max_input_tokens"), model.get("max_output_tokens")
+            window, output_limit = normalize_model_token_limits(
+                model.get("auto_compact_window"), model.get("max_output_tokens")
             )
-            if model["enabled"] and limits[0] is None:
+            if model["enabled"] and output_limit is None:
                 raise ValueError("model_capacity_pair_required")
+            if output_limit is None:
+                # A row without an execution cap keeps both columns empty; the
+                # window has no meaning until the model can actually run.
+                window = None
+            # Persist the resolved window so discovery and reload never drift.
+            model["auto_compact_window"] = window
+            model["max_output_tokens"] = output_limit
         if len({model["order"] for model in models}) != len(models):
             raise ValueError("model_catalog_order_invalid")
+        async with self._transaction() as conn:
+            saved = await self._repository.catalog_access(conn)
+        added: set[str] = set()
+        for model in models:
+            previous = saved.get(model["id"])
+            previously_allowed = set(previous["allowed_user_ids"]) if previous else set()
+            model["display_name"] = normalize_model_display_name(
+                model.get("display_name"),
+                fallback=model["value"],
+                current=previous["display_name"] if previous else None,
+            )
+            access_mode, allowed_user_ids = normalize_model_user_access(
+                model.get("access_mode"),
+                model.get("allowed_user_ids"),
+                current=(previous["access_mode"], previous["allowed_user_ids"])
+                if previous
+                else None,
+            )
+            model["access_mode"] = access_mode
+            model["allowed_user_ids"] = allowed_user_ids
+            # Carry-over members are already bound; only newly granted users
+            # must currently exist in the trusted company directory.
+            if access_mode == "selected":
+                added.update(set(allowed_user_ids) - previously_allowed)
+        if added:
+            if self._employee_directory is None:
+                raise RuntimeError("company_employee_directory_unavailable")
+            await self._employee_directory.validate_grants(tenant_id=tenant_id, work_ids=added)
+        # Network validation is outside transactions; publication still owns revision CAS.
         async with self._transaction() as conn:
             revision, published = await self._repository.publish_models(
                 conn,
@@ -324,8 +368,8 @@ class ModelControlPlaneService:
             connection = await self._repository.connection_projection(conn)
         return {"connection": connection, "models": published, "revision": revision}
 
-    async def public_models(self, conn: Any) -> dict[str, Any]:
-        governed = await self._repository.public_models(conn)
+    async def public_models(self, conn: Any, *, user_id: str) -> dict[str, Any]:
+        governed = await self._repository.public_models(conn, user_id=user_id)
         if governed is not None:
             return governed
         return public_model_projection([])
@@ -335,11 +379,22 @@ class ModelControlPlaneService:
         conn: Any,
         *,
         selection: dict[str, str] | None,
+        user_id: str,
     ) -> RunModelSelection:
         return await resolve_chat_model_selection(
             conn,
             selection=selection,
+            user_id=user_id,
             resolve_governed_model=self._repository.resolve_run_model,
+        )
+
+    async def model_access_excludes_user(
+        self, conn: Any, *, model_id: str, user_id: str
+    ) -> bool:
+        """Answer the current-list check for a Run child that inherits a model."""
+
+        return await self._repository.model_access_excludes_user(
+            conn, model_id=model_id, user_id=user_id
         )
 
     async def proxy(
@@ -393,7 +448,7 @@ class ModelControlPlaneService:
             )
         if connection is None:
             raise PermissionError("model_proxy_run_binding_invalid")
-        if connection.max_output_tokens is None or connection.max_input_tokens is None:
+        if connection.max_output_tokens is None or connection.auto_compact_window is None:
             raise PermissionError("model_capacity_missing")
         if provider == "anthropic" and upstream_path == "v1/messages":
             if connection.conversation_mode not in {"native_resume", "empty_start"}:

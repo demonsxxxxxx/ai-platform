@@ -211,10 +211,10 @@ export const CodeMirrorViewer = memo(function CodeMirrorViewer({
         },
         ".cm-gutters": {
           backgroundColor: isDark ? "#1e1e1e" : "#fafafa",
-          borderRight: isDark ? "1px solid #333" : "1px solid #e7e5e4",
+          borderRight: isDark ? "1px solid #333" : "1px solid #e5e5e5",
         },
         ".cm-lineNumbers .cm-gutterElement": {
-          color: isDark ? "#6e7681" : "#78716c",
+          color: isDark ? "#6e7681" : "#737373",
           userSelect: "none",
         },
       }),

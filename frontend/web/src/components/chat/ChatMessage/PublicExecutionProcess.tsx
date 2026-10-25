@@ -95,9 +95,9 @@ function StepRow({
         : LoaderCircle;
   const tone =
     step.status === "failed"
-      ? "text-red-700 dark:text-red-300"
+      ? "text-[var(--theme-danger-text)]"
       : step.status === "completed"
-        ? "text-emerald-800 dark:text-emerald-200"
+        ? "text-[var(--theme-success-text)]"
         : "text-[var(--theme-text-secondary)]";
 
   return (

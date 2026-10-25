@@ -33,6 +33,7 @@ FORBIDDEN_PUBLIC_SKILL_MARKERS = (
     "inferred_used",
 )
 FORBIDDEN_PUBLIC_KEYS = {
+    "model_usage_snapshot",
     "storage_key",
     "local_path",
     "review_result",

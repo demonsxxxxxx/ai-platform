@@ -82,7 +82,7 @@ async def load_worker_dispatch_run_facts(
         select id, tenant_id, workspace_id, user_id, session_id, agent_id,
           execution_kind, skill_id, status, cancel_requested_at,
           context_snapshot_id, model_id, model_value, model_gateway_revision,
-          max_input_tokens, max_output_tokens
+          auto_compact_window, max_output_tokens
         from runs where tenant_id = %s and id = %s for update
         """,
         (tenant_id, run_id),
@@ -195,7 +195,7 @@ async def get_scoped_reconciliation_run(
         select id, tenant_id, workspace_id, user_id, session_id, agent_id, status,
           cancel_requested_at, execution_kind, skill_id, context_snapshot_id,
           input_json->>'executor_type' as executor_type,
-          model_id, model_value, model_gateway_revision, max_input_tokens, max_output_tokens
+          model_id, model_value, model_gateway_revision, auto_compact_window, max_output_tokens
         from runs where tenant_id = %s and id = %s
           and workspace_id = %s and user_id = %s and session_id = %s and agent_id = %s
           and status = 'running'
@@ -1131,7 +1131,7 @@ async def load_run_model_snapshot(
     cursor = await conn.execute(
         """
         select model_id, model_value, model_gateway_revision,
-               max_input_tokens, max_output_tokens
+               auto_compact_window, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1152,7 +1152,7 @@ async def bind_run_model(
     model_id: str,
     model_value: str,
     connection_revision: int,
-    max_input_tokens: int,
+    auto_compact_window: int,
     max_output_tokens: int,
 ) -> None:
     """Persist an Execution-admitted five-field snapshot on a queued Run."""
@@ -1160,7 +1160,7 @@ async def bind_run_model(
     if not model_id or not model_value or type(connection_revision) is not int or connection_revision < 1:
         raise ValueError("run_model_binding_invalid")
     if any(type(value) is not int or not 1 <= value <= 10_000_000
-           for value in (max_input_tokens, max_output_tokens)):
+           for value in (auto_compact_window, max_output_tokens)):
         raise ValueError("run_model_capacity_invalid")
     cursor = await conn.execute(
         """
@@ -1168,7 +1168,7 @@ async def bind_run_model(
         set model_id = %s,
             model_value = %s,
             model_gateway_revision = %s,
-            max_input_tokens = %s,
+            auto_compact_window = %s,
             max_output_tokens = %s
         where tenant_id = %s
           and id = %s
@@ -1176,7 +1176,7 @@ async def bind_run_model(
           and model_id is null
           and model_value is null
           and model_gateway_revision is null
-          and max_input_tokens is null
+          and auto_compact_window is null
           and max_output_tokens is null
         returning id
         """,
@@ -1184,7 +1184,7 @@ async def bind_run_model(
             model_id,
             model_value,
             connection_revision,
-            max_input_tokens,
+            auto_compact_window,
             max_output_tokens,
             tenant_id,
             run_id,
@@ -1208,7 +1208,7 @@ async def inherit_run_model(
     source_cursor = await conn.execute(
         """
         select model_id, model_value, model_gateway_revision,
-               max_input_tokens, max_output_tokens
+               auto_compact_window, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1221,7 +1221,7 @@ async def inherit_run_model(
     child_cursor = await conn.execute(
         """
         select status, copied_from_run_id, model_id, model_value,
-               model_gateway_revision, max_input_tokens, max_output_tokens
+               model_gateway_revision, auto_compact_window, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -1239,14 +1239,14 @@ async def inherit_run_model(
     source_model_id = source.get("model_id")
     source_model_value = source.get("model_value")
     source_revision = source.get("model_gateway_revision")
-    source_max_input_tokens = source.get("max_input_tokens")
+    source_auto_compact_window = source.get("auto_compact_window")
     source_max_output_tokens = source.get("max_output_tokens")
     if (
         not isinstance(source_model_id, str) or not source_model_id
         or not isinstance(source_model_value, str) or not source_model_value
         or type(source_revision) is not int or source_revision < 1
         or any(type(value) is not int or not 1 <= value <= 10_000_000
-               for value in (source_max_input_tokens, source_max_output_tokens))
+               for value in (source_auto_compact_window, source_max_output_tokens))
     ):
         raise ValueError("run_model_capacity_missing")
     if any(
@@ -1255,7 +1255,7 @@ async def inherit_run_model(
             child.get("model_id"),
             child.get("model_value"),
             child.get("model_gateway_revision"),
-            child.get("max_input_tokens"),
+            child.get("auto_compact_window"),
             child.get("max_output_tokens"),
         )
     ):
@@ -1266,19 +1266,19 @@ async def inherit_run_model(
         set model_id = %s,
             model_value = %s,
             model_gateway_revision = %s,
-            max_input_tokens = %s,
+            auto_compact_window = %s,
             max_output_tokens = %s
         where tenant_id = %s and id = %s and status = 'queued'
           and model_id is null and model_value is null
           and model_gateway_revision is null
-          and max_input_tokens is null and max_output_tokens is null
+          and auto_compact_window is null and max_output_tokens is null
         returning id
         """,
         (
             source_model_id,
             source_model_value,
             source_revision,
-            source_max_input_tokens,
+            source_auto_compact_window,
             source_max_output_tokens,
             tenant_id,
             child_run_id,

@@ -19,8 +19,7 @@ BACKEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-backend.yml"
 LOCK = ROOT / "uv.lock"
 PACKAGE = ROOT / "frontend" / "web" / "package.json"
 PYTEST_COMMAND = (
-    "python -m pytest tests/test_deploy_frontend_static.py "
-    "tests/test_frontend_release_traceability.py "
+    "python -m pytest tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
     "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
@@ -36,7 +35,6 @@ BACKEND_OWNED_STATIC_SUITES = {
     "tests/test_packaging_publish_workflow.py",
     "tests/test_release_image_manifest.py",
     "tests/test_release_authority.py",
-    "tests/test_require_zero_junit_skips.py",
     "tests/test_runtime_launch_script.py",
     "tests/test_source_authority_docs.py",
 }
@@ -288,9 +286,10 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         assert suite not in PYTEST_COMMAND
         assert suite not in workflow
         assert suite in backend_workflow
-    assert "tests/test_governance_readiness.py" not in workflow
-    assert "python tools/deploy_frontend_static.py --help" in workflow
-    assert "corepack pnpm run lint && corepack pnpm run build" in workflow
+    assert "deploy_frontend_static.py" not in workflow
+    assert not (ROOT / "tools/deploy_frontend_static.py").exists()
+    assert not (ROOT / "tests/test_deploy_frontend_static.py").exists()
+    assert "corepack pnpm run lint && corepack pnpm run check:style-rules && corepack pnpm run build" in workflow
     assert "python tools/frontend_projection_audit.py --format json" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow
@@ -357,8 +356,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     expected_split_steps = (
         "      - name: Verify static frontend Python contracts\n"
         f"        run: {PYTEST_COMMAND}\n\n"
-        "      - name: Verify static frontend deploy helper\n"
-        "        run: python tools/deploy_frontend_static.py --help"
+        "      - name: Audit frontend projections\n"
+        "        run: python tools/frontend_projection_audit.py --format json"
     )
     assert expected_split_steps in workflow
     expected_linux_steps = (

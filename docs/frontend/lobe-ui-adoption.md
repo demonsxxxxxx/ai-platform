@@ -66,6 +66,10 @@ AI 聊天交互采用 assistant-ui，内部通用控件及文档、编辑器外�
 
 以下旧文件已删除：`common/EnterpriseSelect.tsx`、`Checkbox.tsx`、`Table.tsx`、`Pagination.tsx`、`LoadingSpinner.tsx` 和 `skill/Toggle.tsx`；旧导出和生产消费者均已移除，无兼容入口；旧分页、旧 Select 的专用 CSS 和旧 Checkbox 的 `check-pop` 动画也已删除。选择器挂载测试已重命名为 `common/__tests__/LobeSelectField.mounted.test.tsx`。`@radix-ui/react-select` 与 `react-hot-toast` 的直接依赖及对应锁文件 importer 记录已移除；库存回归断言这些旧文件、旧测试文件名和直接依赖保持缺席。
 
+本次清理另外移除无生产调用者的 `skill/SkillCard.tsx`、`panels/AvailableSkillsPanel.tsx`、`chat/ChatInputHelpMenu.tsx`、`chat/ChatInputShortcuts.tsx` 和 `auth/AuthLayout.tsx`。Skill 页面继续由 `SkillsHubPanel → SkillsPanel → SkillsList → SkillManagementTable` 承担；权限、只读隐藏写操作、归档及私有文件内容不展示的回归归到现行 table/panel。登录仍直接使用 `AuthPage`，实际聊天和侧栏快捷键处理、当前 locale/CSS 均保留。旧 `components/librechatShell` 的五个转发文件无兼容入口；真实布局回归迁到 `librechat-ui/__tests__`，公开 `librechat-ui/index.ts` 与上游来源声明不变。
+
+`rehype-highlight` 的旧直接依赖和强制 chunk 条目退出。聊天、assistant-ui 与文档 Markdown 继续共用现有 KaTeX 插件和 DeferredCodeMirrorViewer 代码渲染 owner；Mermaid、`syntax-highlight.css` 以及外部粘贴 HTML 的 `hljs` 识别不在清理范围。锁文件由仓库指定 pnpm 重算，不以手工删除传递依赖代替一致性验证；本段不宣称包体收益、真实页面或部署验收。
+
 保留的传递依赖链为 `@assistant-ui/react@0.15.29 → radix-ui@1.8.1 → @radix-ui/react-select@2.4.1`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
 
 专业查看器保留业务外壳：`ToolResultPanel` / `EditorSidebar` 拥有主内容让位、宽度拖拽、移动手势和面板历史；`SkillForm` 保留同一编辑状态下的全屏模式，退出按钮通过公开 `style` 固定在可见的右上角；Mermaid 查看器保留缩放、平移及图形几何。这些 Portal 通过公开 `useAppElement` 进入 Lobe 主题宿主，工具结果只由面板自身创建一次 Portal。Markdown/XLSX 的语义表格与 Provider 外的 `ErrorBoundary` 刷新按钮仍是明确例外，不恢复旧通用控件。

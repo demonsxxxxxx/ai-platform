@@ -46,11 +46,14 @@ def request_payload(**overrides):
 
 
 def test_sandbox_model_budget_is_strict_at_both_transports():
-    budget = {"max_input_tokens": 32000, "max_output_tokens": 2048}
+    budget = {"auto_compact_window": 200_000, "max_output_tokens": 2048}
     request = SandboxRuntimeRequest.model_validate(request_payload(model_token_limits=budget))
     assert request.model_token_limits == ModelTokenLimits.model_validate(budget)
+    assert request.model_token_limits.auto_compact_window == 200_000
     for invalid in (
-        {**budget, "max_input_tokens": "32000"},
+        {**budget, "auto_compact_window": "200000"},
+        {**budget, "auto_compact_window": 32_000},
+        {**budget, "auto_compact_window": 1_000_001},
         {**budget, "max_output_tokens": True},
         {**budget, "extra": 1},
     ):

@@ -1,9 +1,6 @@
 name: ai-platform packaging publish
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       confirm_release:
@@ -28,8 +25,8 @@ jobs:
   publish:
     name: publish ${{ matrix.role }} immutable image
     if: >-
-      github.ref == 'refs/heads/main' && (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.confirm_release == 'PUBLISH_MAIN'))
+      github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_release == 'PUBLISH_MAIN'
     runs-on: ubuntu-24.04
     environment: packaging-publish
     permissions:
@@ -617,7 +614,7 @@ jobs:
             provenance-*.json
 
       - name: Upload temporary internal-test package
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version == '')
+        if: github.event_name == 'workflow_dispatch' && inputs.release_version == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ai-platform-internal-test-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}

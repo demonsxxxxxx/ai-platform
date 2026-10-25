@@ -831,7 +831,7 @@ test("locks Agent-only controls while generic Chat controls remain available", (
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("projects the Agent description and starter prompts only in the empty Chat UI", () => {
+test("projects public Agent identity in the header and starter prompts only in empty Chat", () => {
   const chatViewSource = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
   const appContentSource = readFileSync(
     new URL("../ChatAppContent.tsx", import.meta.url),
@@ -842,6 +842,9 @@ test("projects the Agent description and starter prompts only in the empty Chat 
   assert.doesNotMatch(appContentSource, /data-agent-conversation-profile/);
   assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
   assert.match(chatViewSource, /data-agent-chat-opening/);
+  assert.match(chatViewSource, /data-expert-workspace-header/);
+  assert.match(chatViewSource, /header=\{shellHeader\}/);
+  assert.match(chatViewSource, /assistantIdentity=\{assistantIdentity\}/);
   assert.match(chatViewSource, /<AgentIdentityAvatar/);
   assert.match(chatViewSource, /avatarRef=\{agentEmptyProfile\.avatar_ref\}/);
   assert.match(chatViewSource, /avatarSeed=\{agentEmptyProfile\.avatar_seed\}/);

@@ -73,16 +73,6 @@ def _sanitize_dict(value: object) -> dict[str, object]:
     return cleaned if isinstance(cleaned, dict) else {}
 
 
-def _offline_readiness_reference(*, command: str) -> dict[str, object]:
-    return {
-        "schema_version": "ai-platform.offline-readiness-reference.v1",
-        "status": "not_evaluated_in_runtime",
-        "runtime_evaluated": False,
-        "command": command,
-        "evidence_boundary": "offline_source_and_release_evidence_not_current_runtime_health",
-    }
-
-
 def _drop_overview_forbidden_keys(value: object) -> object:
     if isinstance(value, dict):
         cleaned: dict[str, object] = {}
@@ -617,10 +607,6 @@ async def admin_runtime_overview(
         "sandbox": sandbox,
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": capacity,
-        "governance": _offline_readiness_reference(command="python tools/governance_readiness.py"),
-        "observability_readiness": _offline_readiness_reference(
-            command="python tools/observability_readiness.py"
-        ),
         "database_pool": database_pool,
         "admission": admission,
         "backpressure": _backpressure_snapshot(

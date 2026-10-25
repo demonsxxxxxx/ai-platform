@@ -556,7 +556,7 @@ def payload(**overrides):
         "model_id": "catalog-default",
         "model_value": "provider/catalog-default",
         "model_gateway_revision": 1,
-        "model_max_input_tokens": 32000,
+        "model_auto_compact_window": 200_000,
         "model_max_output_tokens": 2048,
         "schema_version": "ai-platform.run-payload.v2",
     }
@@ -624,7 +624,7 @@ def sandbox_writing_payload(**overrides):
     overrides.setdefault("model_id", "catalog-default")
     overrides.setdefault("model_value", "provider/catalog-default")
     overrides.setdefault("model_gateway_revision", 1)
-    overrides.setdefault("model_max_input_tokens", 32000)
+    overrides.setdefault("model_auto_compact_window", 200_000)
     overrides.setdefault("model_max_output_tokens", 2048)
     overrides.setdefault("schema_version", "ai-platform.run-payload.v2")
     return payload(**overrides)
@@ -4455,7 +4455,9 @@ def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path)
             workspace_root,
             *,
             storage_io,
+            artifact_download,
         ):
+            captured["artifact_download"] = artifact_download
             captured["factory"] = (
                 transaction_factory,
                 storage_adapter,
@@ -4475,6 +4477,11 @@ def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path)
         tmp_path,
         context_bootstrap.run_storage_io,
     )
+
+
+    assert captured["artifact_download"].func is context_bootstrap.download_artifact_object
+    assert captured["artifact_download"].args == (storage, context_bootstrap.run_storage_io)
+    assert captured["artifact_download"].keywords == {"close_storage": False}
 
 
 @pytest.mark.parametrize("has_manifest", [False, True])
@@ -4563,8 +4570,9 @@ def test_build_skill_prompt_uses_backend_managed_skills_without_forced_selector(
 
     assert "Skill: qa-file-reviewer" not in prompt
     assert "sample.docx" in prompt
-    assert "backend-managed skills" in prompt
-    assert "staged Skill" in prompt
+    assert "Workspace input files (under inputs/):" in prompt
+    assert "Use Simplified Chinese" not in prompt
+    assert "attach_file" not in prompt
 
 
 def test_build_skill_prompt_includes_bounded_executor_context_pack():
@@ -4599,8 +4607,9 @@ def test_build_skill_prompt_includes_bounded_executor_context_pack():
 
     assert "Office context pack:" in prompt
     assert "Context pack: 2 message(s), 1 file(s), 1 artifact(s)" in prompt
-    assert "Context pack generated at: 2026-06-12T01:23:45Z" in prompt
-    assert "Use this bounded context only as background" in prompt
+    # Legacy packs retain their safe summary, but not separate audit metadata.
+    assert "Context pack generated at:" not in prompt
+    assert "2026-06-12T01:23:45Z" not in prompt
     assert "raw_storage_key" not in prompt
     assert "s3://private" not in prompt
     assert "sandbox_workdir" not in prompt
@@ -6012,7 +6021,7 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         assert "collect_workspace" in secondary["exception_chain"][1]["traceback"]
         assert "synthetic-bearer" not in repr(persistence.value)
         assert "synthetic-token" not in repr(persistence.value)
-        assert "/private/workspace" not in repr(persistence.value)
+        assert "/private/workspace" in repr(persistence.value)  # admin diagnostics keep paths
     logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
     assert len(logs) == (0 if collection_mode == "ok" else 2)
     assert "synthetic-token" not in repr(logs)

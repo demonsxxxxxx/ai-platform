@@ -47,7 +47,7 @@ from app.projection_redaction import (
 )
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

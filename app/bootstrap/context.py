@@ -1,6 +1,9 @@
 """Compose Context application use cases with PostgreSQL adapters."""
 
 from pathlib import Path
+from functools import partial
+
+from app.context.infrastructure.artifact_download import download_artifact_object
 
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -77,6 +80,8 @@ async def materialize_worker_context_files(*, payload, workspace: Path):
 
 
 def worker_context_retrieval_authority(workspace: Path) -> ContextRetrievalAuthority:
+    storage = ObjectStorage()
     return ContextRetrievalAuthority.for_workspace_transaction(
-        transaction, ObjectStorage(), workspace, storage_io=run_storage_io,
+        transaction, storage, workspace, storage_io=run_storage_io,
+        artifact_download=partial(download_artifact_object, storage, run_storage_io, close_storage=False),
     )

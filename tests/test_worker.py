@@ -1201,7 +1201,7 @@ def default_cancel_not_requested(monkeypatch):
                 "model_id",
                 "model_value",
                 "model_gateway_revision",
-                "max_input_tokens",
+                "auto_compact_window",
                 "max_output_tokens",
             )
         }
@@ -1648,7 +1648,7 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         "model_id": "catalog-model",
         "model_value": "provider/catalog-model",
         "model_gateway_revision": 3,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "input_json": {
             "input": {"message": "hello"},
@@ -2069,7 +2069,7 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
         "context_snapshot_id": payload.context_snapshot_id,
         "context_snapshot": {"context_snapshot_id": payload.context_snapshot_id},
         "model_gateway_revision": model["model_gateway_revision"],
-        "model_max_input_tokens": model["max_input_tokens"],
+        "model_auto_compact_window": model["auto_compact_window"],
         "model_max_output_tokens": model["max_output_tokens"],
     })
     attempt = frozen_attempt(spec, id=lease_row["attempt_id"], queue_attempt_id="qat-attempt-a")
@@ -2789,7 +2789,7 @@ def locked_run_from_payload(payload):
         "model_id": validated.get("model_id"),
         "model_value": validated.get("model_value"),
         "model_gateway_revision": 1 if validated.get("model_id") and validated.get("model_value") else None,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": standard_trace_id(validated["run_id"]),
         "principal_roles": [],
@@ -3764,7 +3764,7 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
         "model_id": "pro-tier",
         "model_value": "deepseek-v4-pro",
         "model_gateway_revision": 7,
-        "max_input_tokens": 96000,
+        "auto_compact_window": 100_000,
         "max_output_tokens": 4096,
     }
     load_test_model = runs_api.load_run_model_snapshot
@@ -5306,7 +5306,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -5410,7 +5410,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -5530,7 +5530,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -6304,7 +6304,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
                 "model_id": "platform-default",
                 "model_value": "provider/default",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
             }
 
@@ -6373,7 +6373,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
-    assert captured["payload"].model_max_input_tokens == 32000
+    assert captured["payload"].model_auto_compact_window == 200_000
     assert captured["payload"].model_max_output_tokens == 2048
     model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
     assert model_snapshot_call[2:] == ("tenant-a", "run-a")
@@ -8652,7 +8652,7 @@ def _install_task6_worker_fakes(
         "model_id": "platform-default",
         "model_value": "provider/default",
         "model_gateway_revision": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),

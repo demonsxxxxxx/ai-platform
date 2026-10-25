@@ -23,7 +23,8 @@ from app.queue import QueueAdmissionMetadata
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 from app.runs.api import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
-from app.runs.application.cancellation import RunCancellationUseCase
+from app.runs.application.cancellation import RunCancellationPostProcessor, RunCancellationUseCase
+from app.runtime.sandbox.container_provider import create_container_provider
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.skills.pinning import build_skill_manifest_ref
 
@@ -44,6 +45,12 @@ class _RouteCancellationHandlers:
     owner = None
     admin = None
 
+    @staticmethod
+    async def remove_queued_run(**_kwargs):
+        return None
+
+    create_container_provider = staticmethod(create_container_provider)
+
 
 route_cancellation_handlers = _RouteCancellationHandlers()
 
@@ -58,6 +65,30 @@ class _RouteCancellationAdapter:
         handler = route_cancellation_handlers.admin
         value = await handler(None, tenant_id=tenant_id, admin_user_id=admin_user_id, run_id=run_id)
         return _RouteCancellationReceipt(value) if value is not None else None
+
+    async def post_cancel(
+        self, cancellation, *, tenant_id, user_id, requested_by_role, reason, worker_capabilities
+    ):
+        async def no_stream_operation(*_args, **_kwargs):
+            return None
+
+        processor = RunCancellationPostProcessor(
+            queue_cleanup=route_cancellation_handlers.remove_queued_run,
+            sandbox_cleanup=sandbox_runtime_cleanup,
+            provider_factory=route_cancellation_handlers.create_container_provider,
+            transaction_factory=fake_transaction,
+            admit_stream=no_stream_operation,
+            publish_event=no_stream_operation,
+            warn=lambda *_args, **_kwargs: None,
+        )
+        return await processor.post_cancel(
+            cancellation,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            requested_by_role=requested_by_role,
+            reason=reason,
+            worker_capabilities=worker_capabilities,
+        )
 
 
 async def _no_terminal_progress(*_args, **_kwargs):
@@ -244,11 +275,14 @@ def auth_settings():
 
 
 class EmptyPropagationCursor:
+    def __init__(self, row=None):
+        self._row = row
+
     async def fetchone(self):
-        return None
+        return self._row
 
     async def fetchall(self):
-        return []
+        return [] if self._row is None else [self._row]
 
 
 class EmptyPropagationConnection:
@@ -258,6 +292,9 @@ class EmptyPropagationConnection:
             return EmptyPropagationCursor()
         if normalized.startswith("select id, tenant_id") and "cancel_requested_at" in normalized:
             return EmptyPropagationCursor()
+        if normalized.startswith("select access_mode, allowed_user_ids from model_catalog_entries"):
+            # Synthetic catalog row: the inherited model stays available.
+            return EmptyPropagationCursor({"access_mode": "all", "allowed_user_ids": []})
         raise AssertionError(f"unexpected fake transaction sql: {normalized}")
 
 
@@ -1243,6 +1280,98 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     ]
     assert calls["enqueue"][0]["model_id"] == "model-catalog-retry"
     assert calls["enqueue"][0]["model_value"] == "provider-model-retry"
+
+
+@pytest.mark.parametrize("action", ["copy", "retry", "resume"])
+def test_revoked_model_access_blocks_the_child_run_before_queue_admission(monkeypatch, action):
+    """A new child Run must not be admitted once the model excludes this user."""
+
+    enqueued: list[dict[str, object]] = []
+
+    async def copied_child(conn, **_kwargs):
+        return {
+            "session_id": "ses-old",
+            "run_id": "run-child",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"message": "child"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_decision": {},
+            "skill_manifests": [],
+            "model_id": "model-revoked",
+            "model_value": "provider-model-revoked",
+        }
+
+    async def empty_catalog_access(conn, *, model_id, user_id):
+        # The saved restriction now excludes the caller.
+        assert model_id == "model-revoked"
+        assert user_id == "user-a"
+        return True
+
+    async def enqueue(payload):
+        enqueued.append(payload)
+        return 1
+
+    async def admit(conn, **kwargs):
+        return 0
+
+    async def inherit_run_model(*_args, **_kwargs):
+        return None
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def operation_lock(*_args, **_kwargs):
+        return None
+
+    async def resolve_operation(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+    monkeypatch.setattr("app.routes.runs.model_access_excludes_user", empty_catalog_access)
+    monkeypatch.setattr(
+        "app.runs.infrastructure.postgres.enforce_user_active_run_admission", admit, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.copy_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.retry_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.replay_postgres.resume_run_as_new_task", copied_child, raising=False
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.control_operations_postgres.acquire_run_control_operation_lock",
+        operation_lock, raising=False,
+    )
+    monkeypatch.setattr(
+        "app.runs.infrastructure.control_operations_postgres.get_run_control_operation",
+        resolve_operation, raising=False,
+    )
+    for target in (
+        "app.routes.runs._agent_profile_authority",
+    ):
+        monkeypatch.setattr(
+            target,
+            type("A", (), {"reauthorize_pinned_run_for_replay": staticmethod(noop)})(),
+        )
+    client = TestClient(create_app())
+
+    if action == "copy":
+        response = client.post("/api/ai/runs/run-source/copy", headers=headers())
+    else:
+        response = client.post(run_control_url("run-source", action), headers=headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "model_not_available_to_user"
+    assert enqueued == [], "a revoked child must never reach queue admission"
 def test_retry_operation_replays_resolve_the_same_child_without_duplicate_creation(monkeypatch):
     calls: list[object] = []
     mapping: dict[str, object] | None = None
@@ -4675,7 +4804,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4684,7 +4813,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4753,11 +4882,11 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4804,11 +4933,11 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4859,7 +4988,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4868,7 +4997,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4910,11 +5039,11 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: FailingSandboxProvider(), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: FailingSandboxProvider(), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4942,11 +5071,11 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider([]), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider([]), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -4982,7 +5111,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4991,7 +5120,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
         fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.runs.create_container_provider", ProviderByName(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", ProviderByName(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
@@ -5024,7 +5153,7 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
-    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_queued/cancel", headers=headers())
@@ -5072,12 +5201,12 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.create_container_provider",
+        route_cancellation_handlers, "create_container_provider",
         lambda provider_name=None: RecordingSandboxProvider(calls),
         raising=False,
     )
@@ -5127,7 +5256,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -5137,7 +5266,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.create_container_provider",
+        route_cancellation_handlers, "create_container_provider",
         lambda provider_name=None: FailingSandboxProvider(),
         raising=False,
     )
@@ -5167,7 +5296,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         lambda *args, **kwargs: None,
         raising=False,
     )
@@ -5177,7 +5306,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runs.create_container_provider",
+        route_cancellation_handlers, "create_container_provider",
         lambda provider_name=None: FailingSandboxProvider(),
         raising=False,
     )
@@ -5213,11 +5342,11 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
+        sandbox_runtime_cleanup, "release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
-    monkeypatch.setattr("app.routes.admin_runs.create_container_provider", ProviderByName(calls), raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", ProviderByName(calls), raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/admin/runs/run_active/cancel", headers=admin_headers())
@@ -5457,7 +5586,7 @@ def test_cancel_running_run_does_not_remove_queued_payload(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
-    monkeypatch.setattr("app.routes.runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    monkeypatch.setattr(route_cancellation_handlers, "remove_queued_run", fake_remove_queued_run, raising=False)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())

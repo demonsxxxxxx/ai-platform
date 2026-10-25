@@ -11,7 +11,7 @@ from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.bootstrap.run_inputs import RunInputSubmissionRequest
-from app.capabilities import get_capability
+from app.agent_apps.api import get_capability
 from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
@@ -30,7 +30,7 @@ from app.control_plane_contracts import (
 )
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import resolve_chat_model_selection
+from app.execution.api import model_access_excludes_user, resolve_chat_model_selection
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -68,12 +68,10 @@ from app.queue import (
     get_queue_insight,
     get_run_queue_position,
     read_queue_admission,
-    remove_queued_run,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
-from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
@@ -108,6 +106,7 @@ from app.runs.api import (
     RunInputError,
     RunInputsService,
     RunCancellationUseCase,
+    RunCancellationQueueCleanupError,
     RunDiagnosticsService,
     bind_run_model,
     inherit_run_model,
@@ -125,21 +124,15 @@ from app.runs.infrastructure import creation_postgres as runs_creation
 from app.runs.infrastructure import postgres as runs_postgres
 from app.runs.infrastructure import replay_postgres as runs_replay
 from app.runs.infrastructure import steps_postgres as runs_steps
-from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.api import admit_skill_run, pin_skill_run_mcp_tools
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots
 from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 from app.streaming.api import (
-    V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
-    admit_v4_stream,
-    publish_run_event,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_principal_user_id
-
-_sandbox_cleanup = build_sandbox_runtime_cleanup()
+from app.kernel.identifiers import assert_safe_principal_user_id
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
@@ -204,21 +197,6 @@ async def _audit_wrapped_capability_denial(
     cause = error.__cause__
     if isinstance(cause, platform_errors.RepositoryAuthorizationError):
         await _audit_capability_denial(principal, cause, source=source)
-
-
-async def _remove_cancelled_queue_payloads(
-    *,
-    tenant_id: str,
-    run_id: str,
-    result: dict[str, Any],
-) -> list[Exception]:
-    failures: list[Exception] = []
-    if result["status"] == "cancelled":
-        try:
-            await remove_queued_run(tenant_id=tenant_id, run_id=run_id)
-        except Exception as exc:
-            failures.append(exc)
-    return failures
 
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
@@ -617,6 +595,30 @@ def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | Non
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
+async def _require_inherited_model_access(
+    conn: Any,
+    *,
+    snapshot: dict[str, Any],
+    principal: AuthPrincipal,
+) -> None:
+    """Reject a new child Run whose frozen model now excludes this user.
+
+    This runs inside the child-Run transaction before queue admission, so a
+    rejection rolls the child back instead of leaving an unauthorized queued
+    Run. Existing Runs and Attempts never pass through here and keep their
+    snapshot and proxy access. A child with no frozen model is unbound: no
+    proxy request can succeed for it, so it is not a model-access path.
+    """
+
+    model_id = snapshot.get("model_id")
+    if not isinstance(model_id, str) or not model_id:
+        return
+    if await model_access_excludes_user(
+        conn, model_id=model_id, user_id=principal.user_id
+    ):
+        raise HTTPException(status_code=403, detail="model_not_available_to_user")
+
+
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -635,6 +637,11 @@ async def prepare_copied_run_for_queue(
     )
     if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
+    await _require_inherited_model_access(
+        conn,
+        snapshot=copied_snapshot,
+        principal=effective_principal,
+    )
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
@@ -938,7 +945,9 @@ async def create_run(
                 release_decision_payload = {}
                 skill_manifests = []
             try:
-                selected_model = await resolve_chat_model_selection(conn, selection=None)
+                selected_model = await resolve_chat_model_selection(
+                    conn, selection=None, user_id=principal.user_id,
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
             if selected_model is None:
@@ -1036,7 +1045,7 @@ async def create_run(
                 model_id=selected_model.model_id,
                 model_value=selected_model.model_value,
                 connection_revision=selected_model.connection_revision,
-                max_input_tokens=selected_model.max_input_tokens,
+                auto_compact_window=selected_model.auto_compact_window,
                 max_output_tokens=selected_model.max_output_tokens,
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
@@ -1740,68 +1749,29 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
-    cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
+    use_case = _require_run_cancellation_use_case(request)
+    cancellation = await use_case.request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
         run_id=run_id,
     )
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await admit_v4_stream(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-                attempt_id=cancellation.attempt_id,
-            )
-        except V4PublicationTransportUnavailable as exc:
-            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
-        except Exception as exc:  # noqa: BLE001 - cancellation cleanup must outlive publication faults
-            logger.warning(
-                "Cancellation v4 admission deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    result = cancellation.as_route_result() if cancellation is not None else None
-    if result is not None:
-        result.pop("_terminalization_progress", None)
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await publish_run_event(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - durable publication retries after cleanup
-            logger.warning(
-                "Cancellation v4 terminal publication deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    if result is None:
-        raise HTTPException(status_code=404, detail="active_run_not_found")
-    queue_cleanup_failures = await _remove_cancelled_queue_payloads(
-        tenant_id=principal.tenant_id,
-        run_id=run_id,
-        result=result,
-    )
     try:
-        await _sandbox_cleanup.cleanup_cancelled_run_leases(
-            result.get("active_sandbox_leases"),
+        result = await use_case.post_cancel(
+            cancellation,
             tenant_id=principal.tenant_id,
-            run_id=str(result["run_id"]),
             user_id=principal.user_id,
             requested_by_role="owner",
             reason="cancel_requested",
-            trace_id=result.get("trace_id"),
-            provider_factory=create_container_provider,
-            transaction_factory=transaction,
+            worker_capabilities=runtime.worker_capabilities,
         )
     except SandboxCleanupPersistenceError as exc:
         raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from exc
     except SandboxRuntimeCleanupError as exc:
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
-    if queue_cleanup_failures:
-        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
+    except RunCancellationQueueCleanupError as exc:
+        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="active_run_not_found")
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
 
 

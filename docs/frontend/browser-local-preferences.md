@@ -12,6 +12,11 @@ is the frontend, not the authenticated principal or profile metadata service.
 - `useSidebarPreference` owns `ai-platform-sidebar-collapsed`, defaults the
   application shell to expanded, and persists explicit changes. AppContent,
   Agent Builder, Agent Market, and Agent Workspace share this owner.
+- The same `useSidebarPreference` owner persists the administrator management
+  group's `ai-platform-sidebar-management-collapsed` choice independently of
+  sidebar geometry. Management defaults to expanded and explicit collapse or
+  expansion survives page-owner remounts; the ordinary-user capabilities group
+  keeps its existing initially collapsed behavior. Neither choice grants access.
 - Storage failures do not prevent the current tab from changing presentation.
   These preferences are deliberately shared by users of the same browser;
   they are not account-scoped server facts or cross-device synchronization.
@@ -35,5 +40,7 @@ change identity or authorization, or change PWA/notification behavior.
 
 `test:browser-preferences` is selected by `ci:verify` and owns mounted lifecycle
 coverage: OS-derived initialization, OS changes, explicit choice, remount,
-legacy values, local sidebar changes, no metadata writes, and listener cleanup.
+legacy values, independent sidebar/management changes, no metadata writes, and
+listener cleanup. `GeneralChatEntryReset.mounted` also covers management choices
+across actual Chat and non-Chat page owners.
 The existing workbench source assertions now point to the local sidebar owner.

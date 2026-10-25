@@ -753,9 +753,9 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(opening.textContent, profile.description, "the opening shows the description verbatim");
     assert.equal(container.querySelectorAll("[data-agent-opening-message]").length, 1);
     assert.equal(
-      container.querySelectorAll("[data-agent-opening] h1")[0]?.textContent,
+      container.querySelector("[data-expert-workspace-name]")?.textContent,
       profile.name,
-      "the opening keeps the Agent name",
+      "the thread header keeps the public Agent name",
     );
 
     await draftStarterPrompt(0);
@@ -907,7 +907,7 @@ test("the opening shows the profile description verbatim and never replays it in
     assert.ok(opening, "a configured description becomes the opening text");
     assert.equal(opening.textContent, multiLineDescription);
     assert.match(opening.className, /whitespace-pre-wrap/);
-    assert.match(opening.className, /text-\[15px\]/);
+    assert.match(opening.className, /text-sm/);
     assert.equal(created.length, 0, "rendering the opening creates no conversation");
 
     await React.act(async () => root.render(React.createElement(React.Fragment)));
@@ -917,7 +917,11 @@ test("the opening shows the profile description verbatim and never replays it in
       null,
       "an empty description shows no invented opening",
     );
-    assert.match(container.querySelector("[data-agent-opening]")?.textContent ?? "", /agt_empty 专家/);
+    assert.equal(
+      container.querySelector("[data-expert-workspace-name]")?.textContent,
+      "agt_empty 专家",
+      "an empty description still presents the public Agent name",
+    );
     assert.ok(container.querySelector("[data-agent-starter-prompts]"), "an empty description keeps starter prompts");
 
     await React.act(async () => root.render(React.createElement(React.Fragment)));

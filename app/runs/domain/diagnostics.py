@@ -10,70 +10,46 @@ import math
 import re
 from typing import Any
 
+from app.kernel.runtime_debug import normalize_execution_debug as _normalize_execution_debug_facts
+
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.run-diagnostics.v1"
 RUN_DIAGNOSTICS_BUDGET_POLICY_VERSION = "run-diagnostics-budget.v1"
-RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
+RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v2"
 RUN_DIAGNOSTICS_MAX_BYTES = 128 * 1024
 RUN_DIAGNOSTICS_OBSERVATION_LIMIT = 64
-
-_RUNTIME_DEBUG_LABELS = {
-    "component": {"claude_executor", "model_proxy", "provider_session"},
-    "operation": {"messages", "count_tokens", "load", "append", "list_subkeys", "initialize"},
-    "phase": {"preflight", "connect", "response", "stream", "entry_validation", "structured_entry_validation", "image_validation"},
-    "failure_class": {"policy_rejected", "connect_error", "connect_timeout", "read_timeout", "write_timeout", "protocol_error", "transport_error", "http_error", "size_limit", "invalid_response"},
-    "policy": {"anthropic_version", "anthropic_beta", "capacity", "request", "binding"},
-    "entry_kind": {"user", "assistant", "system", "summary", "file-history-snapshot", "progress", "cost-state", "queue-operation", "other"},
-    "scope": {"main", "child"},
-}
-_RUNTIME_DEBUG_COUNTS = {
-    "attempt_count", "beta_count", "entry_count", "entry_index", "observed_bytes", "limit_bytes",
-    "image_count", "encoded_image_bytes", "largest_encoded_image_bytes",
-    "expected_sequence", "accepted_sequence", "timeout_ms",
-}
-_RUNTIME_DEBUG_VERSIONS = {"sdk_version", "cli_version", "python_version"}
-_RUNTIME_DEBUG_COMMITS = {"executor_runtime_commit", "api_runtime_commit"}
-
 
 def _normalize_execution_debug(value: object) -> dict[str, str | int]:
     """Revalidate closed runtime facts at the Runs persistence boundary."""
     if not isinstance(value, dict):
         return {}
-    result: dict[str, str | int] = {}
-    for name, allowed in _RUNTIME_DEBUG_LABELS.items():
-        item = value.get(name)
-        if name == "entry_kind" and isinstance(item, str):
-            result[name] = item if item in allowed else "other"
-        elif isinstance(item, str) and item in allowed:
-            result[name] = item
-    for name in _RUNTIME_DEBUG_COUNTS:
-        item = value.get(name)
-        if type(item) is int and 0 <= item <= 1_000_000_000:
-            result[name] = item
-    status = value.get("http_status")
-    if type(status) is int and 100 <= status <= 599:
-        result["http_status"] = status
-    for name in _RUNTIME_DEBUG_VERSIONS:
-        item = value.get(name)
-        if isinstance(item, str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,6}(?:[a-z][0-9]{1,3})?", item):
-            result[name] = item
-    for name in _RUNTIME_DEBUG_COMMITS:
-        item = value.get(name)
-        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item):
-            result[name] = item
-    return result
+    return _normalize_execution_debug_facts(value)
 
 
 _IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
 _OBSERVATION_ID_PATTERN = re.compile(r"obs_[0-9a-f]{32}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
-_PRIVATE_KEY_PATTERN = re.compile(
-    r"(?i)(?:api[_-]?key|authorization|bearer|cookie|credential|password|secret|token|"
-    r"tool[_-]?input|prompt|command|path|raw|request|response|header|environment|env|"
-    r"content|body|input|output)"
+# Admin diagnostics keep debugging context (paths, hosts, inputs, counters) and
+# mask only credential values. Field names stay visible so the evidence shape is
+# intact; counters such as input_tokens are not credentials.
+_CREDENTIAL_KEY_PATTERN = re.compile(
+    r"(?i)^(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|client[_-]?secret|secret(?:[_-]?key)?|"
+    r"password|passwd|authorization|cookie|credentials?|private[_-]?key|signing[_-]?key|"
+    r"(?:access|refresh|id|auth|bearer|session|security|api)?[_-]?token)$"
 )
+_CREDENTIAL_QUERY_PATTERN = re.compile(
+    r"(?i)^(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|key|secret|password|token|"
+    r"auth|code|sig|signature|credential|security[_-]?token)$"
+)
+# Quoted values use disjoint escape/non-escape branches so matching stays linear.
+# A missing closing quote (for example after upstream truncation) is redacted
+# through the end of that line, without consuming later diagnostic lines.
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|authorization|bearer|credential|password|"
-    r"private[_-]?key|refresh[_-]?token|secret|token)\b\s*[:=]\s*[^\s,;]+"
+    r"(?i)(?P<key_quote>['\"]?)\b"
+    r"(?P<key>api[_-]?key|access[_-]?token|authorization|bearer|credential|password|"
+    r"private[_-]?key|refresh[_-]?token|secret|token)\b(?P=key_quote)\s*[:=]\s*"
+    r"(?:\"(?:[^\"\\\r\n]|\\[^\r\n])*(?:\"|\\?(?=[\r\n]|$))"
+    r"|'(?:[^'\\\r\n]|\\[^\r\n])*(?:'|\\?(?=[\r\n]|$))"
+    r"|\[redacted-secret\](?=[}\]]*(?:[\s,;&#]|$))|[^\s,;\"'][^\s,;&#]*)"
 )
 _BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _JWT_PATTERN = re.compile(
@@ -81,10 +57,8 @@ _JWT_PATTERN = re.compile(
 )
 _PROVIDER_TOKEN_PATTERN = re.compile(r"\b(?:sk|ghp|glpat)-?[A-Za-z0-9_-]{16,}\b")
 _URL_PATTERN = re.compile(r"(?i)\bhttps?://[^\s'\"<>]+")
-_POSIX_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9])/(?:[^/\s:'\"<>]+/)+([^/\s:'\"<>]+)")
-_WINDOWS_PATH_PATTERN = re.compile(
-    r"(?i)\b[A-Z]:\\(?:[^\\\s:'\"<>]+\\)+([^\\\s:'\"<>]+)"
-)
+_URL_USERINFO_PATTERN = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#@'\"<>]+@")
+_URL_QUERY_PARAM_PATTERN = re.compile(r"([?&])([^=&#]+)=([^&#]*)")
 _EMPTY_COUNTS = {"retained_observations": 0, "omitted_observations": 0}
 _EXECUTOR_PROTOCOL_FIELDS = (
     "status",
@@ -278,20 +252,16 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
         for raw in _list_value(value.get("tool_lifecycles"))
         if (projected := _sanitize_tool_observation(raw, kind="lifecycle")) is not None
     ][:128]
-    tool_calls = []
-    for raw in _list_value(value.get("tool_calls")):
-        if isinstance(raw, dict) and any(
-            key in raw for key in ("tool_input", "failure")
-        ):
-            _append_redaction_loss(losses, field="tool_calls")
-        if projected := _sanitize_tool_observation(raw, kind="call"):
-            tool_calls.append(projected)
-    tool_policy_denials = []
-    for raw in _list_value(value.get("tool_policy_denials")):
-        if isinstance(raw, dict) and "tool_input" in raw:
-            _append_redaction_loss(losses, field="tool_policy_denials")
-        if projected := _sanitize_tool_observation(raw, kind="denial"):
-            tool_policy_denials.append(projected)
+    tool_calls = [
+        projected
+        for raw in _list_value(value.get("tool_calls"))
+        if (projected := _sanitize_tool_observation(raw, kind="call")) is not None
+    ]
+    tool_policy_denials = [
+        projected
+        for raw in _list_value(value.get("tool_policy_denials"))
+        if (projected := _sanitize_tool_observation(raw, kind="denial")) is not None
+    ]
     executor_protocol = _sanitize_executor_protocol(value.get("executor_protocol"))
     projection_failure = _sanitize_projection_failure(
         value.get("projection_failure")
@@ -815,15 +785,11 @@ def _sanitize_tool_observation(
             _redact_diagnostic_text(value["reason"]),
             max_bytes=1_024,
         )
+    # The Sandbox normalizer already bounds these values; keep them as evidence.
+    for key in ("tool_input", "failure"):
+        if key in value and value[key] is not None:
+            projected[key] = _sanitize_diagnostic_value(value[key])
     return projected
-
-
-def _append_redaction_loss(losses: list[dict[str, Any]], *, field: str) -> None:
-    for loss in losses:
-        if loss.get("field") == field and loss.get("reason") == "redacted":
-            loss["count"] = int(loss.get("count") or 0) + 1
-            return
-    losses.append({"field": field, "reason": "redacted", "count": 1})
 
 
 def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
@@ -841,29 +807,40 @@ def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
         ]
     if isinstance(value, dict):
         projected: dict[str, Any] = {}
-        redacted_fields = 0
+        invalid_fields = 0
         for raw_key, raw_value in list(value.items())[:32]:
             key = _identity(raw_key)
-            if not key or _PRIVATE_KEY_PATTERN.search(key):
-                redacted_fields += 1
-                continue
-            projected[key] = _sanitize_diagnostic_value(raw_value, depth=depth + 1)
-        if redacted_fields:
-            projected["redacted_fields"] = redacted_fields
+            if not key:
+                invalid_fields += 1
+            elif _CREDENTIAL_KEY_PATTERN.fullmatch(key) and raw_value not in (None, ""):
+                projected[key] = "[redacted-secret]"
+            else:
+                projected[key] = _sanitize_diagnostic_value(raw_value, depth=depth + 1)
+        if invalid_fields:
+            projected["invalid_fields"] = invalid_fields
         return projected
     return _bounded_utf8(_redact_diagnostic_text(str(value)), max_bytes=4_096)
 
 
 def _redact_diagnostic_text(value: str) -> str:
-    text = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1=[redacted-secret]", value)
+    text = _URL_USERINFO_PATTERN.sub(r"\1[redacted-secret]@", value)
+    text = _URL_PATTERN.sub(lambda match: _redact_url_query(match.group(0)), text)
+    text = _SECRET_ASSIGNMENT_PATTERN.sub(r"\g<key>=[redacted-secret]", text)
     text = _BEARER_PATTERN.sub("Bearer [redacted-secret]", text)
     text = _JWT_PATTERN.sub("[redacted-secret]", text)
-    text = _PROVIDER_TOKEN_PATTERN.sub("[redacted-secret]", text)
-    text = _URL_PATTERN.sub(
-        lambda match: match.group(0).split(":", 1)[0] + "://[redacted-host]", text
-    )
-    text = _WINDOWS_PATH_PATTERN.sub(r"<path>\\\1", text)
-    return _POSIX_PATH_PATTERN.sub(r"<path>/\1", text)
+    return _PROVIDER_TOKEN_PATTERN.sub("[redacted-secret]", text)
+
+
+def _redact_url_query(url: str) -> str:
+    """Keep scheme, host, path and ordinary query; mask credential parameters."""
+
+    def mask(match: re.Match[str]) -> str:
+        separator, name, raw = match.groups()
+        if raw and _CREDENTIAL_QUERY_PATTERN.fullmatch(name.replace("-", "_")):
+            return f"{separator}{name}=[redacted-secret]"
+        return match.group(0)
+
+    return _URL_QUERY_PARAM_PATTERN.sub(mask, url)
 
 
 def merge_run_diagnostics(

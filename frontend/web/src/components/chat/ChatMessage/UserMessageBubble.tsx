@@ -52,13 +52,13 @@ export function UserMessageBubble({
   const hasContent = content && content.trim().length > 0;
 
   return (
-    <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
-      <div className="mx-auto flex max-w-[68rem] justify-end px-1 sm:px-2">
+    <div className="group w-full py-2">
+      <div className="mx-auto flex max-w-[76rem] justify-end px-2">
         <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[75%]" data-user-message-group>
           {lockedSkillLabel && (
             <div
               data-locked-skill-label={lockedSkillLabel}
-              className="mb-2 rounded-full border border-sky-200/80 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-300"
+              className="mb-2 rounded-full border border-[var(--theme-info-ring)] bg-[var(--theme-info-soft)] px-3 py-1 text-xs font-medium text-[var(--theme-info-text)]"
             >
               {t("chat.message.lockedSkill", { skill: lockedSkillLabel })}
             </div>

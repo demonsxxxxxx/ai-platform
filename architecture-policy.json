@@ -94,17 +94,15 @@
     "events"
   ],
   "public_kernel_modules": [
-    "memory_redaction"
+    "identifiers",
+    "memory_redaction",
+    "runtime_debug"
   ],
   "approved_root_modules": [
     "app/__init__.py",
     "app/agent_profile_execution_validation.py",
-    "app/alert_slo_readiness.py",
-    "app/alert_trace_export_runtime_acceptance.py",
-    "app/artifact_preview.py",
     "app/auth.py",
     "app/auth_sessions.py",
-    "app/capabilities.py",
     "app/capability_distribution.py",
     "app/capacity_baseline.py",
     "app/chat_session_projection.py",
@@ -115,50 +113,30 @@
     "app/db.py",
     "app/department_directory.py",
     "app/error_taxonomy.py",
-    "app/error_taxonomy_dashboard_readiness.py",
     "app/execution_boundary.py",
     "app/executor_reconciler.py",
     "app/file_parser_contracts.py",
     "app/file_preview_contracts.py",
-    "app/file_type_validation.py",
-    "app/foundation_alpha_readiness.py",
-    "app/foundation_runtime_concurrency.py",
-    "app/governance_readiness.py",
     "app/intent_router.py",
     "app/main.py",
     "app/models.py",
-    "app/observability_readiness.py",
-    "app/office_context_readiness.py",
-    "app/office_execution_tier.py",
     "app/path_safety.py",
     "app/principal_authority.py",
     "app/product_events.py",
     "app/projection_redaction.py",
     "app/public_context_keys.py",
-    "app/public_execution.py",
-    "app/quality_golden_set_readiness.py",
     "app/queue.py",
     "app/queue_payload_validation.py",
     "app/redis_client.py",
-    "app/release_evidence_export_acceptance.py",
-    "app/release_evidence_readiness.py",
     "app/required_tool_contract.py",
-    "app/run_admission_policy.py",
     "app/run_admission_terminalization.py",
     "app/run_control_readiness.py",
-    "app/run_event_repository.py",
     "app/run_projection.py",
     "app/run_provenance.py",
-    "app/sandbox_hardening_contract.py",
     "app/schema_migrations.py",
     "app/session_actions.py",
     "app/settings.py",
     "app/storage.py",
-    "app/tool_policy.py",
-    "app/tool_policy_bulk_review_readiness.py",
-    "app/tool_policy_readiness.py",
-    "app/trace_audit_export_readiness.py",
-    "app/validation.py",
     "app/worker.py",
     "app/worker_main.py",
     "app/worker_principal_authority.py"
@@ -185,6 +163,12 @@
   ],
   "frozen_hot_files": [
     {
+      "path": "app/auth_sessions.py",
+      "max_lines": 2099,
+      "owner": "identity",
+      "reason": "Legacy browser session authority is frozen while it moves into the identity context."
+    },
+    {
       "path": "app/executors/claude_agent_worker.py",
       "max_lines": 3116,
       "owner": "execution",
@@ -197,10 +181,34 @@
       "reason": "Legacy global DTO bucket is frozen while contracts move to owning domains."
     },
     {
+      "path": "app/queue.py",
+      "max_lines": 2611,
+      "owner": "execution",
+      "reason": "Legacy queue orchestration is frozen while claim, lease and dispatch move behind execution APIs."
+    },
+    {
       "path": "app/routes/chat.py",
       "max_lines": 2684,
       "owner": "conversations",
       "reason": "Legacy Chat transport is frozen while admission and orchestration move behind domain APIs."
+    },
+    {
+      "path": "app/routes/files.py",
+      "max_lines": 2106,
+      "owner": "files",
+      "reason": "Legacy file transport is frozen while upload and preview routes move into the files context."
+    },
+    {
+      "path": "app/routes/lambchat_compat.py",
+      "max_lines": 2421,
+      "owner": "conversations",
+      "reason": "Current browser chat-session API in a legacy route module is frozen while TD-CONV-001 moves it into owning contexts."
+    },
+    {
+      "path": "app/routes/runs.py",
+      "max_lines": 2135,
+      "owner": "runs",
+      "reason": "Legacy run transport is frozen while run control and history routes move behind runs APIs."
     },
     {
       "path": "app/runtime/sandbox/container_provider.py",

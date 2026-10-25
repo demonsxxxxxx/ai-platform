@@ -22,7 +22,7 @@ from app.required_tool_contract import (
     with_boundary_sandbox_local_tool_subjects,
     with_sandbox_local_tool_capability_subjects,
 )
-from app.tool_policy import (
+from app.mcp.domain.tool_policy import (
     BUILTIN_TOOL_IDENTITIES,
     BUILTIN_TOOL_PARAMETER_CONTRACTS,
 )

@@ -2,17 +2,17 @@
   position: relative;
   background: linear-gradient(
       180deg,
-      rgba(255, 255, 255, 0.96) 0%,
-      rgba(250, 250, 249, 0.98) 100%
+      color-mix(in srgb, var(--theme-bg-card) 96%, transparent) 0%,
+      color-mix(in srgb, var(--theme-bg-card) 98%, transparent) 100%
     ),
     radial-gradient(
       ellipse 80% 50% at 70% 12%,
-      rgba(251, 191, 36, 0.045) 0%,
+      var(--theme-hover) 0%,
       transparent 62%
     ),
     radial-gradient(
       ellipse 60% 42% at 18% 62%,
-      rgba(56, 189, 248, 0.03) 0%,
+      var(--theme-hover) 0%,
       transparent 60%
     );
 }
@@ -20,17 +20,17 @@
 html.dark .auth-shell {
   background: linear-gradient(
       180deg,
-      rgba(12, 10, 9, 0.97) 0%,
-      rgba(28, 25, 23, 0.98) 100%
+      color-mix(in srgb, var(--theme-bg) 97%, transparent) 0%,
+      color-mix(in srgb, var(--theme-bg) 98%, transparent) 100%
     ),
     radial-gradient(
       ellipse 80% 50% at 70% 12%,
-      rgba(251, 191, 36, 0.028) 0%,
+      var(--theme-hover) 0%,
       transparent 62%
     ),
     radial-gradient(
       ellipse 60% 42% at 18% 62%,
-      rgba(56, 189, 248, 0.02) 0%,
+      var(--theme-hover) 0%,
       transparent 60%
     );
 }
@@ -63,10 +63,10 @@ html.dark body {
 
 html.dark .auth-crosshatch::before {
   background-image: linear-gradient(
-      rgba(255, 255, 255, 0.015) 1px,
+      color-mix(in srgb, var(--theme-bg-card) 1.5%, transparent) 1px,
       transparent 1px
     ),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+    linear-gradient(90deg, color-mix(in srgb, var(--theme-bg-card) 1.5%, transparent) 1px, transparent 1px);
 }
 
 /* Auth atmospheric gradients */
@@ -83,18 +83,18 @@ html.dark .auth-crosshatch::before {
   position: relative;
   z-index: 1;
   overflow: hidden;
-  border: 1px solid rgba(231, 229, 228, 0.72);
+  border: 1px solid var(--theme-border);
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.92) 0%,
-    rgba(255, 255, 255, 0.82) 100%
+    color-mix(in srgb, var(--theme-bg-card) 92%, transparent) 0%,
+    color-mix(in srgb, var(--theme-bg-card) 82%, transparent) 100%
   );
   backdrop-filter: blur(20px) saturate(1.08);
   -webkit-backdrop-filter: blur(20px) saturate(1.08);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.8) inset,
-    0 18px 55px rgba(41, 37, 36, 0.1),
-    0 4px 14px rgba(41, 37, 36, 0.06);
+    0 18px 55px rgba(38, 38, 38, 0.1),
+    0 4px 14px rgba(38, 38, 38, 0.06);
 }
 
 .auth-panel::before {
@@ -105,7 +105,7 @@ html.dark .auth-crosshatch::before {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(251, 191, 36, 0.5),
+    var(--theme-hover),
     transparent
   );
   opacity: 0.75;
@@ -113,11 +113,11 @@ html.dark .auth-crosshatch::before {
 }
 
 html.dark .auth-panel {
-  border-color: rgba(87, 83, 78, 0.52);
+  border-color: color-mix(in srgb, var(--theme-border-strong) 52%, transparent);
   background: linear-gradient(
     180deg,
-    rgba(41, 37, 36, 0.88) 0%,
-    rgba(28, 25, 23, 0.82) 100%
+    color-mix(in srgb, var(--theme-bg) 88%, transparent) 0%,
+    color-mix(in srgb, var(--theme-bg) 82%, transparent) 100%
   );
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
@@ -126,33 +126,33 @@ html.dark .auth-panel {
 }
 
 .auth-accent-icon {
-  background: rgba(245, 245, 244, 0.8);
-  color: #78716c;
+  background: color-mix(in srgb, var(--theme-bg-card) 80%, transparent);
+  color: var(--theme-text-secondary);
 }
 
 html.dark .auth-accent-icon {
-  background: rgba(41, 37, 36, 0.8);
-  color: #d6d3d1;
+  background: var(--theme-bg);
+  color: var(--theme-text-quaternary);
 }
 
 .auth-accent-badge {
-  background: rgba(245, 245, 244, 0.8);
-  color: #78716c;
+  background: color-mix(in srgb, var(--theme-bg-card) 80%, transparent);
+  color: var(--theme-text-secondary);
 }
 
 html.dark .auth-accent-badge {
-  background: rgba(41, 37, 36, 0.8);
-  color: #d6d3d1;
+  background: var(--theme-bg);
+  color: var(--theme-text-quaternary);
 }
 
 .auth-muted-panel {
-  background: rgba(250, 250, 249, 0.6);
-  border: 1px solid rgba(231, 229, 228, 0.4);
+  background: color-mix(in srgb, var(--theme-bg-card) 60%, transparent);
+  border: 1px solid var(--theme-border);
 }
 
 html.dark .auth-muted-panel {
-  background: rgba(12, 10, 9, 0.4);
-  border-color: rgba(68, 64, 60, 0.3);
+  background: var(--theme-warning);
+  border-color: color-mix(in srgb, var(--theme-border-strong) 30%, transparent);
 }
 
 /* ===== Auth Animations ===== */
@@ -333,8 +333,8 @@ html.dark .auth-muted-panel {
   .auth-panel {
     box-shadow:
       0 1px 0 rgba(255, 255, 255, 0.7) inset,
-      0 14px 42px rgba(41, 37, 36, 0.11),
-      0 3px 12px rgba(41, 37, 36, 0.06);
+      0 14px 42px rgba(38, 38, 38, 0.11),
+      0 3px 12px rgba(38, 38, 38, 0.06);
   }
 
   html.dark .auth-panel {
