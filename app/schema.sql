@@ -943,6 +943,75 @@ alter table run_attempt_settlements
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
 
+-- Durable handoff state for the legacy and unified supervisors. Every domain
+-- starts on the current owner; the observation cursor does not authorize work.
+create table if not exists execution_supervision_domains (
+  domain text not null,
+  mode text not null default 'legacy',
+  owner_version bigint not null default 1,
+  scan_cursor text,
+  drain_started_at timestamptz,
+  updated_at timestamptz not null default clock_timestamp(),
+  constraint execution_supervision_domains_pkey primary key (domain),
+  constraint chk_execution_supervision_domain check (
+    domain in ('delivery', 'probe', 'settlement', 'cleanup')
+  ),
+  constraint chk_execution_supervision_mode check (
+    mode in ('legacy', 'draining', 'unified')
+  ),
+  constraint chk_execution_supervision_version check (owner_version > 0),
+  constraint chk_execution_supervision_drain check (
+    (mode = 'draining' and drain_started_at is not null)
+    or (mode <> 'draining' and drain_started_at is null)
+  )
+);
+insert into execution_supervision_domains(domain)
+values ('delivery'), ('probe'), ('settlement'), ('cleanup')
+on conflict (domain) do nothing;
+
+create table if not exists execution_supervision_claims (
+  claim_token uuid not null,
+  domain text not null references execution_supervision_domains(domain),
+  owner_mode text not null,
+  worker_id text not null,
+  owner_version bigint not null,
+  expires_at timestamptz not null,
+  started_at timestamptz not null default clock_timestamp(),
+  recovered_at timestamptz,
+  recovered_by text,
+  recovery_evidence text,
+  constraint execution_supervision_claims_pkey primary key (claim_token),
+  constraint chk_execution_supervision_claim_mode check (
+    owner_mode in ('legacy', 'unified')
+  ),
+  constraint chk_execution_supervision_claim_identity check (
+    worker_id <> '' and owner_version > 0 and expires_at > started_at
+  ),
+  constraint chk_execution_supervision_claim_recovery check (
+    (recovered_at is null and recovered_by is null and recovery_evidence is null)
+    or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
+  )
+);
+alter table execution_supervision_claims add column if not exists recovered_at timestamptz;
+alter table execution_supervision_claims add column if not exists recovered_by text;
+alter table execution_supervision_claims add column if not exists recovery_evidence text;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_execution_supervision_claim_recovery'
+      and conrelid = 'execution_supervision_claims'::regclass
+  ) then
+    alter table execution_supervision_claims
+      add constraint chk_execution_supervision_claim_recovery check (
+        (recovered_at is null and recovered_by is null and recovery_evidence is null)
+        or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
+      );
+  end if;
+end $$;
+create index if not exists idx_execution_supervision_claims_domain
+  on execution_supervision_claims(domain, expires_at, claim_token);
+
 create table if not exists run_input_sessions (
   tenant_id text not null,
   run_id text not null,

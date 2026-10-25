@@ -1284,6 +1284,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     protocol_failure = persisted[0][1].pop("protocol_failure", None)
     if expected_executor_status == "protocol_invalid":
         assert protocol_failure is not None
@@ -1426,6 +1427,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     terminal_result = persisted[0][1].pop("terminal_result")
     private = terminal_result.pop("runtime_diagnostics")
     assert persisted[0][1] == {"executor_status": "failed"}

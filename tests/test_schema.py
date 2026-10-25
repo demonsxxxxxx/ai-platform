@@ -374,6 +374,15 @@ def test_schema_declares_runs_session_scope_guard():
     assert "references sessions(tenant_id, workspace_id, user_id, id, agent_id)" in schema
 
 
+def test_schema_supervision_claims_keep_operator_recovery_evidence():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "recovered_at timestamptz" in schema
+    assert "recovered_by text" in schema
+    assert "recovery_evidence text" in schema
+    assert "chk_execution_supervision_claim_recovery" in schema
+
+
 def test_schema_declares_tenant_scoped_workspace_guards_for_sessions_and_runs():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
