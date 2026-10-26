@@ -264,12 +264,20 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
         'record_sandbox_runtime_cleanup_outcome',
         fail_audit,
     )
+    http_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                sandbox_lease_transport=_owner_sandbox_infrastructure_leases_postgres,
+            )
+        )
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await sandbox_leases.release_sandbox_lease(
             "run-a",
             "lease-a",
             SandboxLeaseReleaseRequest(reason="cancelled"),
+            http_request,
             principal,
         )
 
