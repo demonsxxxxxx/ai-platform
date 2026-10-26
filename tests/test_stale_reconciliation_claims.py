@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import fields
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import os
 from typing import Any
@@ -623,7 +624,7 @@ async def test_real_postgres_candidate_scan_skips_unclaimable_rows_before_limit(
 
 
 @pytest.mark.asyncio
-async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_receipt():
+async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_receipt(monkeypatch):
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -662,7 +663,7 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
             )).fetchone()
             assert marker["storage_version"] == "sandbox_lease.v1"
             await conn.execute(
-                "update runs set cancel_requested_at=%s, terminalization_target='cancelled' "
+                "update runs set cancel_requested_at=%s, terminalization_target='cancel_requested' "
                 "where tenant_id=%s and id=%s",
                 (old, tenant_id, run_id),
             )
@@ -680,22 +681,26 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
                 ),
             )
 
-        lifecycle = _run_lifecycle_service()
+        async def current_schema():
+            async with transaction_factory() as conn:
+                status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True
+            return status
+
+        monkeypatch.setattr(stale_reconciliation_bootstrap, "transaction", transaction_factory)
+        monkeypatch.setattr(stale_reconciliation_bootstrap, "require_schema_current", current_schema)
         configure_context_services()
-        service = StaleRunReconciliationService(
-            lifecycle=lifecycle,
+        results = await stale_reconciliation_bootstrap.reconcile_worker_stale_runs_with_postgres_claims(
+            SimpleNamespace(
+                stale_run_reconciliation_limit=10,
+                stale_run_reconciliation_seconds=60,
+                stale_run_reconciliation_claim_ttl_seconds=300,
+            ),
+            lifecycle=_run_lifecycle_service(),
             attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
             v4_capabilities=None,
-            transaction_factory=transaction_factory,
-            append_event=append_event,
-            append_audit_log=append_audit_log,
-        )
-        results = await service.reconcile_postgres_claims(
             worker_id="legacy-cancel-owner",
-            limit=10,
-            stale_after_seconds=60,
             cancel_requested_after_seconds=5,
-            claim_ttl_seconds=300,
         )
         assert any(
             row["run_id"] == run_id and row["status"] == "cancelled" and row["did_transition"]
