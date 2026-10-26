@@ -66,3 +66,56 @@ async def test_rejected_queued_run_lock_fails_and_publishes_only_after_admission
     assert completed == [(
         "commit", ["lock_rejected", "loaded_existing", "pending_authority", "terminal_fail", "error"]
     )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconciliation", [False, True])
+async def test_cancel_intent_defers_reconciled_receipt_to_atomic_result_commit(reconciliation):
+    from app.runs.application.worker_dispatch_admission import WorkerAuthorizedDispatchCandidate
+    calls = []
+    payload = SimpleNamespace(tenant_id="tenant", run_id="run", executor_type="claude-agent-worker")
+    identity = {"tenant_id": "tenant", "run_id": "run"}
+
+    @asynccontextmanager
+    async def transaction():
+        yield calls
+
+    async def lock(conn, **kwargs):
+        return {"status": "running" if reconciliation else "queued"}
+
+    async def pending(conn, **kwargs):
+        conn.append("pending")
+
+    async def authorize(conn, **kwargs):
+        conn.append("authorized")
+        return WorkerAuthorizedDispatchCandidate(payload, kwargs["locked_run"], identity, "trace", authorization=object())
+
+    class Attempt:
+        async def restore_reconciliation_authority(self, conn):
+            conn.append("restore_exact_receipt")
+            return self
+
+        async def is_cancel_requested(self, conn):
+            return True
+
+        async def cancel(self, conn, **kwargs):
+            conn.append("early_cancel")
+            return True
+
+    service = WorkerDispatchAdmissionService(
+        transaction_factory=transaction, lock_queued_run=lock, get_run=lock,
+        prepare_pending_authority=pending, authorize_locked_candidate=authorize,
+        append_hidden_event=pending, executor_resolution_error=lambda _: None,
+        predispatch_failure_result=lambda *args, **kwargs: {},
+    )
+    outcome = await service.admit(
+        payload=payload, run_identity=identity, trace_id="trace", attempt_id="attempt",
+        attempt_authority=Attempt(), capabilities=object(), current_principal=object(),
+        reconciliation_attempt_id="attempt" if reconciliation else None,
+    )
+    if reconciliation:
+        assert outcome.outcome is None
+        assert calls == ["restore_exact_receipt", "pending", "authorized"]
+    else:
+        assert outcome.outcome.status == "cancelled"
+        assert calls == ["pending", "authorized", "early_cancel"]

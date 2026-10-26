@@ -441,3 +441,130 @@ async def test_native_question_filters_private_paths_without_changing_execution_
     finally:
         await actor.close()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_host_recovery_confirmation_waits_before_native_input_and_never_injects_answer(monkeypatch):
+    from app.execution.infrastructure.run_inputs_http import RunInputCallbackClient, RunInputCallbackError
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.interaction.QUESTION_POLL_INTERVAL_SECONDS", 0)
+    port = Inputs()
+    polls = []
+    async def pending():
+        return RunInputSnapshot("open", recovery_confirmation_pending=True)
+    async def resolve(**kwargs):
+        polls.append(kwargs)
+        return RunInputSnapshot("open", recovery_confirmation_pending=len(polls) < 2)
+    port.open, port.poll = pending, resolve
+    actor = ClaudeRunInteractionActor(port, run_id="recovery", attempt_id="attempt")
+    await actor.open()
+    assert len(polls) == 2 and not port.questions and not port.acks
+    initial = {"type": "user", "message": {"role": "user", "content": "original task"}}
+    stream = actor.initial_prompt_stream(initial)
+    assert await anext(stream) == initial
+    await stream.aclose()
+    await actor.close()
+    snapshot = RunInputCallbackClient._snapshot({"state": "open", "inputs": [], "recovery_confirmation_pending": True})
+    assert snapshot.recovery_confirmation_pending
+    with pytest.raises(RunInputCallbackError, match="response_invalid"):
+        RunInputCallbackClient._snapshot({"state": "open", "inputs": [], "recovery_confirmation_pending": "true"})
+
+
+async def test_host_recovery_wait_is_cancellable_before_sdk_entry(monkeypatch):
+    port = Inputs()
+    entered = asyncio.Event()
+    async def pending():
+        entered.set()
+        return RunInputSnapshot("open", recovery_confirmation_pending=True)
+    port.open = pending
+    actor = ClaudeRunInteractionActor(port, run_id="recovery", attempt_id="attempt")
+    task = asyncio.create_task(actor.open())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await actor.close()
+    assert not port.questions and not port.acks
+
+
+@pytest.mark.parametrize("defect", ["unknown", "extra", "provenance", "summary", "count", "bytes", "outcome_type"])
+def test_host_recovery_fact_wire_rejects_invalid_or_unbounded_data(defect):
+    from app.execution.infrastructure.run_inputs_http import RunInputCallbackClient, RunInputCallbackError
+    fact = {"public_summary": "创建项目；项目名称：合成", "outcome": "succeeded", "provenance": "authenticated_owner_confirmation"}
+    if defect == "unknown":
+        fact["outcome"] = "unknown"
+    if defect == "extra":
+        fact["native_id"] = "private"
+    if defect == "provenance":
+        fact["provenance"] = "tool_result"
+    if defect == "summary":
+        fact["public_summary"] = "a" * 1001
+    if defect == "outcome_type":
+        fact["outcome"] = []
+    facts = [fact]
+    if defect == "count":
+        facts *= 129
+    if defect == "bytes":
+        facts = [{**fact, "public_summary": "中" * 1000}] * 128
+    with pytest.raises(RunInputCallbackError, match="response_invalid"):
+        RunInputCallbackClient._snapshot({"state": "open", "inputs": [], "recovery_operation_facts": facts})
+
+
+async def test_host_fact_enters_current_system_context_before_client_without_changing_user_input(monkeypatch, tmp_path):
+    from app.execution.api import RecoveryOperationFact
+    from tests.test_claude_agent_sdk_runner import _captured_sdk_prompt
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    port = Inputs()
+    opened = []
+    async def resolved():
+        opened.append(True)
+        return RunInputSnapshot("open", recovery_operation_facts=(RecoveryOperationFact("创建项目；项目名称：合成", "succeeded"),))
+    port.open = resolved
+    base_client = sdk.ClaudeSDKClient
+    class Client(base_client):
+        def __init__(self, options):
+            assert opened
+            assert "authenticated_owner_confirmation" in options.system_prompt["prompt"]
+            super().__init__(options)
+    prompt = "先核实结果，完成平台确认后仅说明状态。附件 inputs/example.docx"
+    result = await run_claude_agent_sdk(prompt=prompt, system_prompt="Current profile", cwd=tmp_path,
+        skill_id=None, run_id="run", attempt_id="attempt", interaction_client=port, client_fn=Client)
+    assert result.error is None
+    assert _captured_sdk_prompt(captured) == prompt
+    assert captured["client_options"].system_prompt["snapshot"] is False
+    text = captured["client_options"].system_prompt["prompt"]
+    assert "Current profile" in text and '"outcome":"succeeded"' in text
+    assert "not an MCP query or tool result" in text and "no write or retry permission" in text
+    assert len(captured["sdk_user_messages"]) == 1 and not port.acks and not port.questions
+
+
+@pytest.mark.parametrize("stop", ["cancel", "timeout"])
+async def test_cancel_during_host_wait_finalizes_actor_without_creating_sdk_client(monkeypatch, tmp_path, stop):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    settings = _settings()
+    settings.claude_agent_sdk_timeout_seconds = 0.2 if stop == "timeout" else 5
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    entered, finalized = asyncio.Event(), asyncio.Event()
+    port = Inputs()
+    async def pending():
+        entered.set()
+        await asyncio.Future()
+    port.open = pending
+    original_cancel = ClaudeRunInteractionActor.cancel
+    async def cancel(actor):
+        await original_cancel(actor)
+        finalized.set()
+    monkeypatch.setattr(ClaudeRunInteractionActor, "cancel", cancel)
+    task = asyncio.create_task(run_claude_agent_sdk(prompt="unchanged", cwd=tmp_path, skill_id=None,
+        run_id="run", attempt_id="attempt", interaction_client=port))
+    await asyncio.wait_for(entered.wait(), 2)
+    if stop == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert (await task).error == "claude_agent_sdk_timeout"
+    assert finalized.is_set() and "client_options" not in captured

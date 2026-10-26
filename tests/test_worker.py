@@ -1086,6 +1086,12 @@ def _test_current_principal(
 
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
+    @asynccontextmanager
+    async def verified_context_stub(*args, **kwargs):
+        # Context materialization is independently stubbed in these Worker unit tests.
+        yield
+    for module in ("worker_dispatch_binding", "worker_result_commit", "worker_execution_terminal"):
+        monkeypatch.setattr(f"app.bootstrap.{module}.provider_session_verification_scope", verified_context_stub)
     global _CURRENT_QUEUE_PAYLOAD
     global _TEST_ATTEMPT_PERSISTENCE
     global _TEST_RUN_ATTEMPT_LIFECYCLE
@@ -4360,12 +4366,33 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
 
 
 @pytest.mark.asyncio
-async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkeypatch):
+@pytest.mark.parametrize("predispatch", [False, True])
+async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkeypatch, predispatch):
     calls = []
 
     class RaisingAdapter:
         async def submit_run(self, payload, event_sink=None):
+            if predispatch:
+                from app.runtime.sandbox.runtime import SandboxRuntime
+                runtime = SandboxRuntime(workspace_root="unused")
+                def reject(_provider):
+                    raise RuntimeError("executor crashed")
+                monkeypatch.setattr(runtime, "_trusted_callback_target", reject)
+                await runtime.submit(SimpleNamespace(
+                    **{key: getattr(payload, key) for key in (
+                        "tenant_id", "run_id", "attempt_id", "owner_generation",
+                    )}, provider_epoch_id="epoch-test",
+                ))
             raise RuntimeError("executor crashed")
+
+    async def settle(conn, **kwargs):
+        calls.append(("settle", kwargs))
+
+    async def release_continuation(conn, **kwargs):
+        calls.append(("continuation_release", kwargs))
+
+    monkeypatch.setattr("app.bootstrap.worker_execution_terminal.settle_predispatch_continuation", settle)
+    monkeypatch.setattr("app.bootstrap.worker_execution_terminal.release_predispatch_continuation", release_continuation)
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
@@ -4411,6 +4438,17 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+    if predispatch:
+        settlement = next(item[1]["settlement"] for item in calls if item[0] == "settle")
+        assert settlement["stop_evidence"] == "provider_not_created"
+        assert settlement["sdk_settlement"]["input_accepted"] is False
+        assert settlement["attempt_id"] == next(item[1]["attempt_id"] for item in calls if item[0] == "settle")
+        assert [item[0] for item in calls if item[0] in {"settle", "fail", "lease_release", "continuation_release"}] == [
+            "settle", "fail", "lease_release", "continuation_release",
+        ]
+    else:
+        assert not any(item[0] == "settle" for item in calls)
 
 
 @pytest.mark.asyncio

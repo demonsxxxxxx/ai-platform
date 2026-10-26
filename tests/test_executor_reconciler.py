@@ -22,7 +22,8 @@ from app.executor_reconciler import (
     reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
     run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
-from app.executors.base import ExecutorResult
+from app.executors.base import ExecutorResult, RunPayload
+from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
@@ -136,6 +137,50 @@ def _lease_row() -> dict[str, object]:
 
 
 
+def _generation_bound_lease_row(*, legacy_snapshot=False):
+    row = _lease_row()
+    payload = RunPayload(
+        **{key: row[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        )},
+        agent_id="agent-a", skill_id=None, file_ids=[], input={}, owner_generation=4,
+        execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2",
+    )
+    snapshot = sandbox_reconciliation_payload(payload)
+    if legacy_snapshot:
+        snapshot["execution_payload"].pop("owner_generation", None)
+    row["lease_payload_json"] = {"attempt_id": payload.attempt_id, "owner_generation": 4}
+    row["executor_reconciliation_context_json"] = {
+        "adapter_name": "claude-agent-worker", "adapter_context": {}, "run_payload": snapshot,
+    }
+    return row
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legacy_snapshot):
+    row = _generation_bound_lease_row(legacy_snapshot=legacy_snapshot)
+    if not legacy_snapshot:
+        assert row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
+    _, payload = _context_payload(row)
+    assert payload.owner_generation == 4
+    assert _reconciliation_request(row, payload).owner_generation == 4
+
+
+@pytest.mark.parametrize("defect", ["snapshot_generation", "lease_attempt", "string_generation", "bool_generation", "zero_generation"])
+def test_reconciler_rejects_invalid_or_conflicting_lease_generation(defect):
+    row = _generation_bound_lease_row()
+    if defect == "snapshot_generation":
+        row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
+    elif defect == "lease_attempt":
+        row["lease_payload_json"]["attempt_id"] = "other-attempt"
+    else:
+        row["lease_payload_json"]["owner_generation"] = {
+            "string_generation": "4", "bool_generation": True, "zero_generation": 0,
+        }[defect]
+    with pytest.raises(ReconciliationAuthorityError, match="executor_reconciliation_owner_generation_mismatch"):
+        _context_payload(row)
+
+
 def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
     subject = {
         "identity": "Skill",
@@ -154,6 +199,7 @@ def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
+        owner_generation=1,
         agent_id="agent-a",
         skill_id="qa-file-reviewer",
         model_value="model-a",
@@ -2897,7 +2943,6 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     )
 
     assert calls == [
-        ("terminalize", "lease-a"),
         (
             "quarantine",
             {

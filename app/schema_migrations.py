@@ -50,7 +50,9 @@ MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
-TARGET_SCHEMA_VERSION = MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
+CONVERSATION_RECOVERY_SCHEMA_VERSION = "2026.10.22.2"
+RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION = "2026.10.23.1"
+TARGET_SCHEMA_VERSION = RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -60,6 +62,8 @@ INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "execution_recovery_operations",
+    "execution_recovery_invocations",
     "users",
     "runs",
     "run_diagnostics",
@@ -285,6 +289,13 @@ CRITICAL_COLUMNS = (
     ("provider_session_heads", "next_epoch_number", "int8", True),
     ("provider_session_heads", "active_run_id", "text", False),
     ("provider_session_heads", "active_attempt_id", "text", False),
+    ("execution_recovery_operations", "operation_key", "text", True),
+    ("execution_recovery_operations", "verified_outcome", "text", True),
+    ("execution_recovery_invocations", "invocation_id", "text", True),
+    ("execution_recovery_invocations", "binding_kind", "text", True),
+    ("execution_recovery_invocations", "owner_generation", "int8", True),
+    ("execution_recovery_invocations", "authorization", "text", True),
+    ("provider_session_heads", "recovery_json", "jsonb", False),
     ("provider_session_epochs", "id", "text", True),
     ("provider_session_epochs", "tenant_id", "text", True),
     ("provider_session_epochs", "session_id", "text", True),
@@ -294,6 +305,10 @@ CRITICAL_COLUMNS = (
     ("provider_session_epochs", "state", "text", True),
     ("provider_session_epochs", "coverage_source_sha256", "text", False),
     ("provider_session_epochs", "writer_owner_generation", "int8", False),
+    ("provider_session_epochs", "source_epoch_id", "text", False),
+    ("provider_session_epochs", "source_final_sequence", "int8", False),
+    ("provider_session_epochs", "coverage_schema_version", "text", True),
+    ("provider_session_epochs", "recovery_json", "jsonb", False),
     ("provider_session_entries", "id", "text", True),
     ("provider_session_entries", "tenant_id", "text", True),
     ("provider_session_entries", "workspace_id", "text", True),
@@ -421,7 +436,9 @@ CRITICAL_CONSTRAINTS = (
     ("provider_session_epochs", "fk_provider_epoch_head"),
     ("provider_session_epochs", "uq_provider_epoch_scope"),
     ("provider_session_epochs", "uq_provider_epoch_number"),
-    ("provider_session_epochs", "uq_provider_epoch_provider_id"),
+    ("provider_session_epochs", "fk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_coverage_version"),
     ("provider_session_entries", "provider_session_entries_pkey"),
     ("provider_session_entries", "fk_provider_entry_epoch"),
     ("provider_session_entries", "uq_provider_entry_global_sequence"),
@@ -1131,7 +1148,14 @@ class SchemaMigrationError(RuntimeError):
 
 
 def schema_sql() -> str:
-    return SCHEMA_PATH.read_text(encoding="utf-8")
+    core = SCHEMA_PATH.read_text(encoding="utf-8")
+    fragments = (
+        "context/infrastructure/conversation_recovery_schema.sql",
+        "execution/infrastructure/recovery_operations_schema.sql",
+    )
+    return core + "\n" + "\n".join(
+        (SCHEMA_PATH.parent / fragment).read_text(encoding="utf-8") for fragment in fragments
+    )
 
 
 def schema_checksum(sql: str | None = None) -> str:

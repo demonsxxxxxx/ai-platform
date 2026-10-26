@@ -34,6 +34,7 @@ export interface BackendSession {
   unread_count?: number;
   purpose?: "conversation" | "builder_test";
   agent_conversation?: AgentConversationIdentity | null;
+  continuation?: PublicContinuation | null;
 }
 
 // Session list response type
@@ -279,12 +280,54 @@ export type ChatSubmissionResolution =
   | DurableChatSubmissionResolution
   | ChatSubmissionPreLedgerAbsenceResolution;
 
+/** The only conversation recovery facts admitted to ordinary chat. */
+export interface PublicContinuation {
+  state: "settling" | "resumable" | "recovery_candidate" | "blocked" | "capacity_exhausted" | "unavailable";
+  action: "wait" | "continue" | "new_conversation";
+  reason_code: string;
+  workspace_saved: boolean;
+}
+
+export const CONTINUATION_REASON_CODES = [
+  "writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted",
+] as const;
+
+/** Copy only public fields; unknown reason text never becomes display copy. */
+export function parsePublicContinuation(value: unknown): PublicContinuation | undefined {
+  if (value == null) return undefined;
+  const block = value as Partial<PublicContinuation>;
+  if (
+    !["settling", "resumable", "recovery_candidate", "blocked", "capacity_exhausted", "unavailable"].includes(block.state ?? "") ||
+    !["wait", "continue", "new_conversation"].includes(block.action ?? "") ||
+    typeof block.workspace_saved !== "boolean" ||
+    (["resumable", "recovery_candidate"].includes(block.state ?? "") && block.action !== "continue") ||
+    (block.state === "settling" && block.action !== "wait")
+  ) return { state: "unavailable", action: "new_conversation", reason_code: "unavailable", workspace_saved: false };
+  if (["resumable", "recovery_candidate"].includes(block.state!) && !block.workspace_saved) {
+    return { state: "blocked", action: "new_conversation", reason_code: "workspace_unsaved", workspace_saved: false };
+  }
+  return {
+    state: block.state!, action: block.action!, workspace_saved: block.workspace_saved,
+    reason_code: CONTINUATION_REASON_CODES.some((code) => code === block.reason_code)
+      ? block.reason_code! : "unavailable",
+  };
+}
+
+export function canContinueConversation(continuation: PublicContinuation | undefined): boolean {
+  // Older servers did not project recovery facts; preserve their existing admission path.
+  return continuation === undefined || (
+    ["resumable", "recovery_candidate"].includes(continuation.state) &&
+    continuation.action === "continue" && continuation.workspace_saved
+  );
+}
+
 /** Compatibility status projection with its authoritative platform value. */
 export interface ChatRunStatusResponse {
   session_id: string;
   run_id?: string;
   status?: string | null;
   raw_status?: string | null;
+  continuation?: PublicContinuation | null;
   error?: string;
 }
 
@@ -799,7 +842,7 @@ export const sessionApi = {
     const params = runId ? `?run_id=${runId}` : "";
     return authFetch(
       `${API_BASE}/api/chat/sessions/${sessionId}/status${params}`,
-      { signal: options.signal },
+      { signal: options.signal, cache: "no-store" },
     );
   },
 

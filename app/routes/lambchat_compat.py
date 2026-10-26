@@ -22,6 +22,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.context.api import get_session_continuation
+from app.conversations.api import (
+    normalize_session_run_status as _platform_status, browser_session_run_status as _lambchat_status,
+)
+
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -1402,20 +1407,6 @@ def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
     return str(projection["message"]) if projection is not None else ""
 
 
-def _platform_status(status: str) -> str:
-    return "cancelled" if status == "canceled" else status
-
-
-def _lambchat_status(status: str) -> str:
-    status = _platform_status(status)
-    return {
-        "succeeded": "completed",
-        "failed": "error",
-        "queued": "pending",
-        "running": "running",
-    }.get(status, status)
-
-
 @router.get("/auth/oauth/providers")
 async def oauth_providers() -> dict[str, object]:
     return {
@@ -2002,6 +1993,9 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
+            "continuation": await get_session_continuation(
+                conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+            ),
         }
 
 
@@ -2076,12 +2070,16 @@ async def chat_status(
             target = next(
                 (row for row in rows if row.get("session_generation") is not None), None
             )
+        continuation = await get_session_continuation(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+        )
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {
         "session_id": session_id,
         "run_id": run_id,
         "status": _lambchat_status(raw_status),
         "raw_status": raw_status,
+        "continuation": continuation,
     }
 
 

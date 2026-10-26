@@ -3368,3 +3368,6 @@ where id = 'ragflow-knowledge-search';
 update tool_policies
 set status = 'disabled', visible_to_user = false
 where tool_id = 'ragflow-knowledge-search';
+
+-- The migration loader appends Context-owned conversation_recovery_schema.sql here.
+-- Use app.schema_migrations.schema_sql() for the complete installed schema.

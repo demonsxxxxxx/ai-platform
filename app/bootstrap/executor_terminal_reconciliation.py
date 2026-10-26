@@ -19,6 +19,8 @@ from app.models import QueueRunPayload
 from app.runs.api import RunAttemptLifecycleService, RunLifecycleService, WorkerOutcome
 from app.streaming.api import WorkerV4Capabilities, publish_run_event
 from app.kernel.identifiers import assert_safe_id
+from app.sandbox.api import finalize_stopped_executor_checkpoint
+from app.platform.postgres import sandbox_leases
 
 
 async def reconcile_executor_terminal_result(
@@ -28,6 +30,7 @@ async def reconcile_executor_terminal_result(
     v4_capabilities: WorkerV4Capabilities,
     run_attempt_lifecycle: RunAttemptLifecycleService,
     run_lifecycle: RunLifecycleService,
+    outer_terminal_transaction: bool = False,
 ) -> WorkerOutcome:
     payload, attempt_id = restored_executor_reconciliation_queue_payload(
         lease_row.get("executor_reconciliation_context_json"), result=result.result,
@@ -48,18 +51,25 @@ async def reconcile_executor_terminal_result(
         transaction_factory=transaction_factory, v4_capabilities=v4_capabilities,
         run_attempt_lifecycle=run_attempt_lifecycle, run_lifecycle=run_lifecycle,
         publish_run_event=publish_run_event,
+        **({"outer_terminal_transaction": True} if outer_terminal_transaction else {}),
     )
     if isinstance(prepared, WorkerOutcome):
         return prepared
 
     async def release_runtime_lease(conn, *, reason):
-        # The durable receipt owns Sandbox cleanup, never an inline placeholder.
-        return None
+        stage = (lease_row.get("lease_payload_json") or {}).get("terminal_reconciliation")
+        if isinstance(stage, dict) and stage.get("continuation") is not None:
+            await finalize_stopped_executor_checkpoint(
+                conn, lease_row=lease_row, claim_token=claim_token,
+                finalize=sandbox_leases.finalize_stopped_executor_checkpoint,
+            )
+        # Noncheckpoint receipts retain the existing asynchronous cleanup owner.
 
     completion = build_worker_terminal_completion_service(
         prepared, transaction_factory=transaction_factory, capabilities=v4_capabilities,
         reconciliation=reconciliation, release_runtime_lease=release_runtime_lease,
         publish_run_event=publish_run_event,
+        **({"outer_terminal_transaction": True} if outer_terminal_transaction else {}),
     )
     try:
         if prepared.adapter is None:

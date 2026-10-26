@@ -2,7 +2,7 @@
 
 Status: active source contract
 Owner: Context; native engine adaptation is owned by Execution
-Last updated: 2026-10-11
+Last updated: 2026-10-23 (Beijing time)
 
 ## Authorities
 
@@ -14,8 +14,10 @@ Context owns the scoped provider epoch, opaque transcript entries, append and
 turn receipts, and lineage locking. A Run snapshot freezes a coverage receipt:
 `scope`, `through_session_generation`, `message_count`, `source_sha256`, and
 `current_message_id`, under `ai-platform.conversation-authority.v2`.
-The digest represents the committed provider coverage, not a fresh audit of
-all display-history bodies.
+The digest represents committed provider coverage, not a fresh audit of display
+history. Successful coverage retains v2 user/assistant meaning. A stopped accepted
+partial turn uses explicit v3 `native_accepted_messages` coverage and a verified
+private workspace reference; it does not fabricate an assistant message.
 
 ## Admission And Resume
 
@@ -36,8 +38,18 @@ all display-history bodies.
    Missing coverage, dirty/closed epochs, capacity exhaustion or a mismatch
    requires a new conversation; it cannot silently clear model context.
 6. The success transaction extends coverage using only the current user and
-   assistant messages, then releases the lineage. Runs API tasks may have no
-   business user-message row; their input still reaches the SDK user channel.
+   assistant messages. Cancelled/failed Attempts can instead settle confirmed
+   native state after exact provider stop and private workspace save. A target
+   proven undispatched may close without a writer/turn; its closing receipt must
+   follow the exact terminal Attempt generation before lineage release. Runs API
+   tasks may have no business user-message row; their input still reaches the SDK
+   user channel.
+7. Each new Attempt copies the selected source's complete bounded native prefix
+   and original receipt provenance into a new write epoch, with the same provider
+   UUID. A failed child cannot contaminate another continuation from its immutable
+   source. Run outcome and safe continuation are independent. The detailed
+   [native continuity contract](claude-provider-session-continuity.md) owns
+   recovery states, file barriers, capacity and multi-epoch migration limits.
 
 The SDK may read its own persisted transcript during resume. The removed work
 is the platform's duplicate full scan of business-message bodies.

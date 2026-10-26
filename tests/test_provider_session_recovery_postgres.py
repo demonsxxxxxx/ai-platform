@@ -64,7 +64,7 @@ async def recovery_db():
                 create table run_attempts(tenant_id text, id text, run_id text, status text,
                   owner_kind text, owner_id text, owner_generation bigint,
                   execution_spec_sha256 text, execution_spec_schema_version text,
-                  execution_spec_json jsonb, primary key(tenant_id,id));
+                  execution_spec_json jsonb, started_at timestamptz, primary key(tenant_id,id));
                 create table sandbox_leases(id text primary key, tenant_id text,
                   run_id text, attempt_id text, status text, released_at timestamptz,
                   expires_at timestamptz, created_at timestamptz default now(), lease_payload_json jsonb);
@@ -78,9 +78,13 @@ async def recovery_db():
             start = source.index("create table if not exists provider_session_heads")
             end = source.index("-- A populated pre-#511", start)
             await conn.execute(source[start:end])
+            await conn.execute((Path(__file__).resolve().parents[1] /
+                                "app/context/infrastructure/conversation_recovery_schema.sql").read_text())
+            # Match production prepare: epoch 1 has already consumed its number.
             await conn.execute("""
                 insert into provider_session_heads(tenant_id,workspace_id,user_id,session_id,
-                  agent_id,engine,active_run_id) values('tenant','workspace','user','session','agent','claude','run');
+                  agent_id,engine,active_run_id,next_epoch_number)
+                values('tenant','workspace','user','session','agent','claude','run',2);
             """)
             await conn.execute(
                 """
@@ -99,7 +103,9 @@ async def recovery_db():
             }
             await conn.execute(
                 """
-                insert into run_attempts values('tenant','attempt','run','running','queue_worker',
+                insert into run_attempts(tenant_id,id,run_id,status,owner_kind,owner_id,owner_generation,
+                  execution_spec_sha256,execution_spec_schema_version,execution_spec_json)
+                values('tenant','attempt','run','running','queue_worker',
                   'worker',2,%s,'ai-platform.execution-spec.v2',%s);
             """,
                 ("d" * 64, Jsonb({"context_pack": {"conversation_context": context}})),

@@ -59,6 +59,8 @@ export interface ChatInputProps {
   canSend?: boolean;
   /** Optional product-specific prompt for a locked composer surface. */
   placeholder?: string;
+  /** Explicit temporary block; ordinary permission denial keeps its help action. */
+  unavailableReason?: string;
   /** Undefined preserves ordinary Chat uploads; an array scopes Agent uploads. */
   acceptedFileTypes?: string[];
   /** Agent workspaces use plain task input and do not expose composer commands. */

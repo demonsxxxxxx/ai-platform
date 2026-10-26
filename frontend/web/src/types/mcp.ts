@@ -6,6 +6,8 @@
 export type MCPTransport = "sse" | "streamable_http" | "sandbox";
 export type MCPIntegrationKind = "mcp" | "enterprise_gateway";
 
+export type MCPPublicOperationSummary = { action_label: string; object_label: string; object_path: string[] };
+
 // MCP Server Base
 export interface MCPServerBase {
   name: string;
@@ -14,6 +16,7 @@ export interface MCPServerBase {
   enabled: boolean;
   url?: string;
   headers?: Record<string, string>;
+  public_operation_summaries?: Record<string, MCPPublicOperationSummary>;
 }
 
 // MCP Server Response (from API)
@@ -51,6 +54,7 @@ export interface MCPServerCreate {
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
+  public_operation_summaries?: Record<string, MCPPublicOperationSummary>;
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
   department_ids?: string[];
@@ -63,6 +67,7 @@ export interface MCPServerUpdate {
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
+  public_operation_summaries?: Record<string, MCPPublicOperationSummary>;
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
   department_ids?: string[];

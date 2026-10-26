@@ -2,6 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
+Last updated: 2026-10-22 (Beijing time)
 Last updated: 2026-10-25
 
 ## Decision
@@ -106,10 +107,12 @@ This change is limited to:
   check described below;
 - owning tests and these architecture documents.
 
-No frontend, SSE wire, public message schema, or deployment change is in scope.
-The private provider callback has the opt-in child read extension described
-below; its request body, action names and append ACK shape are unchanged. The
-cancellation drain qualification remains limited to native append persistence.
+Lifecycle recovery additionally changes the existing status/history continuation
+projection, cancellation settlement and private workspace composition. SSE event
+identity and the ordinary public message shape remain unchanged; there is no
+deployment in this source change. The provider callback accepts optional
+`provider_epoch_id` as an additional exact frozen-binding check. Existing actions,
+append ACK shape and the opt-in child read extension below remain compatible.
 
 ### Preserved invariants
 
@@ -117,8 +120,9 @@ cancellation drain qualification remains limited to native append persistence.
    boundaries remain platform-owned.
 2. Admission reads the committed provider coverage under the lineage lock.
    Worker binds the scoped snapshot to that digest/count and current message.
-   Neither stage reloads prior platform message bodies. The success transaction
-   extends coverage with only this Run's user and assistant messages.
+   Neither stage reloads prior platform message bodies. Success retains v2 user/
+   assistant coverage. A stopped accepted partial turn uses explicit v3
+   `native_accepted_messages` coverage, without inventing an assistant message.
 3. Historical tool calls never restore current capabilities. Every Run rebuilds
    Agent Profile, Skill Set, MCP/tool authorization, credentials, files, and
    system policy from current authority. Claude's current capability set excludes
@@ -163,9 +167,11 @@ Before ExecutionSpec/Attempt binding, the Worker:
 5. rejects unavailable native continuity with
    `provider_session_requires_new_conversation`.
 
-Missing, dirty, closed, over-capacity, coverage-mismatched, or concurrently
-owned native state therefore requires a new platform conversation. It cannot
-rotate to an empty provider transcript under the existing Session.
+Missing, unverifiable, over-capacity or coverage-mismatched state cannot silently
+rotate to an empty transcript. Concurrent or settling ownership waits for its
+original owner. A verified stopped partial epoch can become a recovery candidate;
+an unused target closed before any input was dispatched leaves the previous head
+unchanged and does not poison first-turn admission.
 
 ### Acceptance criteria
 
@@ -183,6 +189,117 @@ rotate to an empty provider transcript under the existing Session.
   changes still apply on resume.
 - Existing explicit count-token proxy behavior, terminal streamed-text fallback,
   public non-disclosure, and lineage commit checks remain green.
+
+### Per-Attempt native and private file recovery
+
+Every new Attempt writes to a new bounded epoch containing an exact copy of the
+selected source's complete ACK prefix, including child paths and original append
+receipt provenance. Provider UUID stays constant; its global uniqueness is retired.
+Callbacks resolve the epoch from the current frozen ExecutionSpec, not UUID alone.
+The source is immutable: a failed child Attempt cannot add its tail to another
+Attempt resumed from the original source. The existing 4096-entry/8-MiB budget and
+admission reserves remain; full copies have bounded but repeated storage cost.
+
+Active cancellation records intent and revokes new execution. The original live
+writer may drain append and terminal receipts under its narrowly scoped previous
+generation lease; it cannot load, start tools, accept inputs or survive takeover.
+Reconciliation observes the same Attempt before redispatching anything. Stop or
+typed 404 must identify the exact provider instance. Host-bind save follows stop;
+Context settlement, true Run terminal/events and lease release follow in one short
+CAS transaction. Failure to stop retains the gate and retry obligation. A prepared
+Attempt stopped before its first callback may close only with explicit undispatched
+input/no-unknown-ACK evidence and a verified unchanged target/source; no writer,
+turn or append receipt is fabricated.
+
+A runtime failure before the first provider call carries `provider_not_created`,
+which is distinct from a provider 404. A failure after creation but before dispatch
+carries stopped/not-found evidence only after stopping the exact container. The
+Worker preserves the original exception and commits this private receipt, Context
+closure, Run/Attempt terminal CAS and lease/lineage release atomically. The runtime's
+exact generation must match; the existing terminal CAS bridge advances that proof
+only from its actual previous generation. A writer claim rejects this path.
+Ambiguous creation or dispatch failures carry no such receipt, and old terminal
+Attempts without recorded facts cannot acquire one retroactively. No superseded
+implementation or compatibility surface is retired by this additive failure path.
+
+Private versions live outside the mounted workspace, separately from downloadable
+artifacts. Save excludes original inputs/context staging, credentials, runtime
+configuration and Skill code; it preserves ordinary drafts, deletions, scratch
+files and authorized Skill outputs. Restore reserves an absent new workspace,
+verifies the complete version, restores ordinary files, then stages current inputs
+and Skill code. Authorized Skill outputs are published only after real staging via
+`restore_workspace_skill_outputs`; existing packaged output is a conflict, never
+a merge or overwrite. A private journal fences retry ownership and directory
+identity. No-follow, flock, fsync/atomic publication and file/byte/4096-scan budgets
+apply. Storage completion retains physical ownership through cancellation.
+
+A fault candidate starts in actual tool-boundary inspection: selected file reads
+and explicitly non-writing MCP queries may run; Bash, code, Agent and unconfirmed
+writes cannot bypass it. Before SDK input, the authenticated RunInputs startup
+publishes host questions for exact frozen unknown source operations, including
+calls whose original native history already contains an error result. Source-only
+confirmations have a distinct binding kind; they verify outcomes without asserting
+a new native call or granting execution. The SDK waits for those host questions
+through the existing input callback. Once the owner answer is applied, a bounded
+private snapshot may expose only that current Attempt's freshly authorized public
+operation summary, verified outcome and owner-confirmation provenance to the
+existing current system context. This preserves truthful reporting without
+changing the original user/file input, copying native history or claiming an MCP
+query/tool result. Unknown/default/hold answers carry no verified fact, and these
+facts never grant execution or lift inspection. Original operation evidence joins are retained
+as private `operation_sources` through later stop/save settlement, separately from
+the latest native restore epoch. A no-write successful turn cannot clear inherited
+inspection, and outcome verification alone is not broad write authorization.
+Execution records host-issued operation identities before
+external calls. Started/completed sandbox reports do not verify outcomes. Only an
+authenticated owner response to an exact host question or a registered authoritative
+query can verify an operation. Exact native `tool_use_id` binding uses the frozen
+source epoch, never tool name or model text. The service supports conclusive host
+query adapters and authenticated operation-specific answers; this candidate has
+no registered authoritative query adapter. Administrators can declare a public
+action and a single business-object field through existing MCP registration, as
+specified in [MCP public recovery summaries](mcp-tool-execution.md#public-recovery-operation-summaries).
+Recovery compares source/current frozen declarations with current authorization,
+reads the exact invocation from the verified native ACK prefix, and publishes
+only that declared value. Lease validity is checked again with database wall-clock
+time after external principal lookup. Omitted registration fields preserve the
+current declaration under its owning lock; explicit `{}` revokes it without a
+concurrent omitted-field update restoring an older declaration.
+Missing or invalid declarations still record started/completed facts and retain
+safe inspection, but refuse ambiguous manual questions and old answers with a
+fixed safe reason. Confirmed success must never authorize replay; verified
+non-effect plus explicit retry consent applies
+only to the exact current invocation. There is no general compensation engine or
+exactly-once guarantee.
+
+Status/history expose only `state`, `action`, allowlisted `reason_code` and
+`workspace_saved`; SDK/epoch/version/lease IDs and paths stay private. Settling and
+unconfirmed history reads retain the draft and block actual send. Successful legacy
+responses with no continuation field retain compatibility; a failed GET is not a
+legacy response. Ordinary active supplementary input remains available until real
+cancellation/terminal settlement begins. Capacity exhaustion preserves history and
+saved files and uses the existing new-conversation action, without an unlimited
+continuation or redo promise.
+
+Migration `2026.10.22.2` appends the Context and Execution-owned SQL fragments through
+`schema_migrations.schema_sql()`. Additive migration `2026.10.23.1` distinguishes
+host source-operation confirmations from current native-invocation bindings in
+the existing Execution table; historical bindings retain their original meaning.
+Quiesce all old writers before applying it: old
+binaries select epochs by UUID and cannot safely coexist with per-Attempt UUID
+reuse. Do not binary-rollback a populated multi-epoch lineage to that reader;
+retain data and recover with a compatible binary. The old single-epoch mutation,
+active-cancel immediate kill and failed-turn-always-new-conversation rules have no
+compatibility consumers in this candidate and are retired. Legacy v2 successful
+coverage and old callback shapes remain supported under their original meaning.
+
+Owning checks: `test_conversation_recovery*.py`,
+`test_provider_unclaimed_continuation*.py`, `test_predispatch_continuation_postgres.py`,
+`test_runs_worker_execution_terminal.py`, `test_workspace_versions.py`,
+`test_lifecycle_control_settlement.py`, `test_recovery_operations*.py`,
+`test_conversation_lifecycle_integration.py`, and
+`tests/integration/lifecycle_cli/test_real_cli_postgres_callback.py`. Focused real
+CLI/PG/filesystem evidence is separate from a deployed model/Sandbox acceptance.
 
 ### Stop conditions
 
@@ -266,6 +383,26 @@ requires no object upload. Outstanding uncommitted images per epoch are capped
 at 128 objects and 64 MiB; durable deletion receipts release that reservation
 budget. Cancellation may only persist the existing qualified tail writer.
 
+Admission copy, terminal settlement, unclaimed-copy comparison, original native
+operation inspection and explicit checkpoint repair use the same Context-owned
+media verification scope. A short authorized snapshot transaction reads the exact
+Run/Attempt binding, scoped epoch ledger and image metadata. The bounded storage
+executor restores one epoch at a time after that transaction exits and verifies
+its original full-entry ACK digests. A task-local proof retains prefix byte
+counts, required native call blocks and an integrity stamp of the structured
+ledger/metadata; image bytes and reconstructed transcript are released after
+verification. This proof is neither persisted nor sent to the SDK.
+
+The owning atomic transaction rereads the ledger and image metadata and rechecks
+the current Run/Attempt binding before consuming the proof. Changed ownership,
+sequence, entries, receipts, references or storage metadata invalidates it. The
+original ACK still authenticates the full native bytes; the temporary integrity
+stamp only detects changes across the storage gap. Copies preserve image format,
+references, original receipts and both independent byte counters. Callback
+credentials and manual-answer authorization keep their existing live rechecks.
+Nested checkpoint settlement reuses only that same Run's verification scope and
+cannot initiate storage I/O while the outer repair transaction holds locks.
+
 Limits are separate: 8 MiB per encoded image, 128 extracted fields per batch,
 16 MiB per raw entry, 32 MiB per append batch and 64 MiB per restored transcript.
 The image-free entry remains at most 256 KiB and accumulated structured entries
@@ -281,7 +418,17 @@ including repeated deletion after a late write. Session deletion queues active
 images in bounded batches, with the existing maintenance loop handling the
 remainder and physically removed parents. Images use the disjoint
 `provider_image_*` outbox states, preventing old artifact/file workers from
-claiming them. No public File/Artifact row or new cleanup worker is introduced.
+claiming them. Existing scoped `provider_session_entries.image_references` own
+shared use across native epoch copies; the image row retains its original creator
+and storage identity. Copy verification holds share locks on ledger and image
+rows through commit. Cleanup locks images with `SKIP LOCKED` and retires an object
+only when no entry in any live, same-scope epoch references it. Source-entry
+retirement cannot delete an object still held by a copy; removal of the final
+live reference makes it eligible for the existing deletion outbox. A rolled-back
+copy adds neither image objects nor durable references. Original source-epoch
+provenance constraints and Session retention are unchanged; no automatic source
+history deletion is introduced. No public File/Artifact row, schema backfill,
+parallel reference table or new cleanup worker is introduced.
 
 Compatibility disposition: the previous raw 256 KiB / 2 MiB / 8 MiB private
 limits and all-inline writer are superseded. Inline history remains a read
@@ -354,18 +501,48 @@ scientific notation and negative zero, so reserializing it cannot always prove
 the original append digest or byte count. This preserves ACK retry identity and
 the existing transcript byte budget without a new digest format.
 
-Cancellation advances the Attempt owner generation and revokes ordinary
-runtime callbacks. Only provider `append` may drain the already-claimed writer
-through its original unexpired, unreleased active lease, while that exact
-queue-worker Attempt is `cancel_requested` and its Run remains running with a
-cancellation request. The generation must be exactly one ahead of that writer
-and lease. This exception cannot claim a writer, load history, invoke a tool,
-accept input, survive takeover, or persist after terminalization.
+Cancellation advances the Attempt owner generation and revokes ordinary runtime
+callbacks. The original unexpired, unreleased active lease may drain provider
+`append`, the final executor receipt and an already-persisted operation's
+idempotent completion receipt while that exact queue-worker Attempt is
+`cancel_requested` and its Run remains running with a cancellation request. The
+generation must be exactly one ahead of that writer and lease. Completion is
+reported evidence, not verified external effect; conflicting results fail. This
+exception cannot claim a writer, load history, start a tool, accept input, survive
+takeover or persist after terminalization.
 
-Turn-limit, timeout, missing authoritative terminal and provider-persistence
-failures direct users to a new conversation and are not advertised as same-Run
-retries. Failed started turns may leave native state dirty or coverage incomplete;
-the public advice does not promise that the same Session can resume.
+A dispatch-response timeout does not prove that input was undispatched. The host
+persists reconciliation identity before sending the request, cancels/observes the
+same executor, and may consume an exact durable terminal handoff even after the
+live endpoint disappears or reconciliation releases it. Missing, foreign or
+unowned receipts retain observation responsibility. No observation reauthorizes
+execution or resubmits input. Before actual SDK entry, preparation cancellation
+carries explicit undispatched/no-ACK evidence; after entry the SDK owns those facts.
+
+Artifact collection is checkpointed in the existing host-only lease payload before
+stop. The private save receipt is checkpointed before terminal conversion. A
+conversion or business-transaction retry validates the scope, original generation,
+container and trusted snapshot and reuses that completed phase, rather than
+connecting to a destroyed sandbox or changing a successful result to failure. An
+unclaimed closing receipt advances only with the exact legal terminal Attempt CAS
+on the same connection; release retains the exact terminal-generation check.
+Normal receipt ingress and operator repair consume the same Sandbox-owned stopped
+checkpoint finalizer in the Context/Run terminal transaction. It fences the full
+scope, original container/generation, exact persisted stage and current claim;
+claim loss rolls back Context, terminal events and lease changes together. A
+completed checkpoint bypasses provider cleanup, including recovery of a historical
+terminal Run whose checkpoint lease remains active. Invalid completed checkpoints
+stay quarantined; conversion failure cannot fall back to a Run-only terminal write.
+Receipts without a completed stop/save checkpoint retain ordinary deferred provider
+cleanup. The former post-commit B01-only release helper is retired.
+
+Run outcome and conversation continuation are separate. Cancelled or failed Runs
+may publish resumable/candidate native state only after exact provider stop and a
+private workspace save; a missing Result alone does not discard confirmed native
+history. Unverified writers, unsaved workspaces, unavailable native boundaries and
+capacity exhaustion have distinct fixed public guidance. Existing retry/resume
+entry points retain their authorization and frozen snapshot contracts; a new chat
+message is a new Run, never an automatic replay of the cancelled request.
 
 Execution captures the final provider sequence after the SDK's closing mirror
 flush and after all message/control producers have stopped. The sandbox carries
@@ -433,12 +610,14 @@ candidate artifact and separate release evidence.
 
 ## Rollback
 
-Rollback means reverting the complete source change. It must not re-enable
-`platform_bootstrap`, checkpoint summarization, or prompt reconstruction as a
-runtime fallback, and it must not delete provider or checkpoint rows ad hoc.
-The additive nullable JSON column may remain during a binary rollback; reverting
-the readiness version does not authorize deleting it or overwriting migration
-ledger entries. Apply the schema migration before starting the new binary.
+Source rollback must preserve the native-history contract and the per-Attempt
+migration restrictions above. Once a lineage contains multiple epochs sharing a
+provider UUID, do not start an old UUID-only reader or writer against it; recover
+with a compatible binary and retain the data. A rollback must not re-enable
+`platform_bootstrap`, checkpoint summarization or prompt reconstruction, or delete
+provider/checkpoint rows ad hoc. Additive columns may remain; reverting readiness
+does not authorize deleting them or overwriting migration ledger entries. Quiesce
+incompatible writers and apply the owning migration before starting the binary.
 
 ### SDK mirror batch sizing and retry boundary
 
@@ -473,8 +652,9 @@ existing mirror-error/tracker fences still reject partial success.
 Chunk progress is transient transport state, not another durable authority.
 Host append receipts and existing scope/Attempt/generation/cancellation fences
 remain authoritative. Restart does not adopt a disappeared writer's partial
-batch: host dirty-epoch/recovery policy applies. This change does not alter UUID
-uniqueness, entry normalization, schema, resource caps or retention. It retires
+batch: host dirty-epoch/recovery policy applies. Batch sizing itself does not alter
+entry normalization, resource caps or retention; epoch schema and provider UUID
+reuse follow the per-Attempt recovery contract above. It retires
 the assumption that one SDK append must equal one host callback; old single-
 chunk callbacks keep the same request/receipt shape.
 

@@ -471,6 +471,8 @@ export function ChatAppContent({
     sessionId,
     currentRunId,
     runInputs,
+    continuation,
+    continuationPending,
     canStopGeneration,
     isLoading,
     isLoadingHistory,
@@ -1346,6 +1348,8 @@ export function ChatAppContent({
             onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            continuation={agentWorkspaceTranscriptReady ? continuation : undefined}
+            continuationPending={agentWorkspaceTranscriptReady && continuationPending}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={

@@ -13,8 +13,17 @@ from app.runs.api import (
 
 
 @pytest.mark.asyncio
-async def test_dispatch_binding_starts_attempt_and_lease_on_one_connection():
+@pytest.mark.parametrize("verify_media", [False, True])
+async def test_dispatch_binding_starts_attempt_and_lease_on_one_connection(verify_media):
     events = []
+
+    @asynccontextmanager
+    async def verification_scope(**binding):
+        assert binding == {"tenant_id": "tenant", "run_id": "run"}
+        assert events == []
+        events.append(("media_verified", None))
+        yield
+        events.append(("media_released", None))
 
     @asynccontextmanager
     async def transaction():
@@ -80,6 +89,7 @@ async def test_dispatch_binding_starts_attempt_and_lease_on_one_connection():
         context=WorkerDispatchContextPorts(
             materialize=materialize, project=lambda row: row,
             execution_pack=lambda snapshot: {},
+            verification_scope=verification_scope if verify_media else None,
         ),
         execution=WorkerDispatchExecutionPorts(
             project_spec=lambda *args, **kwargs: ProjectedPayload(),
@@ -101,10 +111,10 @@ async def test_dispatch_binding_starts_attempt_and_lease_on_one_connection():
     assert result.outcome is None
     assert result.run_payload.owner_generation == 7
     assert result.runtime_sandbox_lease == {"id": "lease"}
-    assert [event for event, _ in events] == [
+    assert [event for event, _ in events] == (["media_verified"] if verify_media else []) + [
         "transaction_enter", "fence", "context", "compile", "attach_mcp",
         "bind_attempt", "worker_started", "create_lease", "transaction_commit",
-    ]
+    ] + (["media_released"] if verify_media else [])
     assert len({conn for event, conn in events if conn is not None}) == 1
 
 

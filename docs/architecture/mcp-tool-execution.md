@@ -26,6 +26,116 @@ Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
+## Public recovery operation summaries
+
+Administrators configure **公开操作摘要** in the existing MCP Server form, or send
+`public_operation_summaries` on the existing admin-gated MCP create/update API.
+Each key is the exact remote tool name, including dots; its declaration is:
+
+```json
+{
+  "pmm.create_project": {
+    "action_label": "创建项目",
+    "object_label": "项目名称",
+    "object_path": ["project", "name"]
+  }
+}
+```
+
+This is an administrator's explicit authorization to disclose that business
+field, not permission to publish all parameters that pass a text sanitizer.
+Declare only business names that may be shown to the authenticated owner. Never
+declare credentials, accounts, private identifiers, file/storage paths or fields
+that can contain them. The API validates exact declaration keys, bounded labels,
+and one to eight dictionary field names; secret/account/path field names are
+rejected. Selected values must be nonempty bounded strings (160 characters),
+with no controls, path separators, account/secret markers or redaction changes.
+Missing fields, collections, numbers, booleans and unsafe strings fail closed;
+values are never truncated or silently replaced with an ambiguous object.
+Unselected parameters are never included. Arbitrary opaque text is classified
+by the administrator's field declaration; sanitization alone is not disclosure
+authority.
+
+Declarations persist in the existing server distribution's `metadata_json`.
+The ordinary server directory and tool discovery projections omit this config;
+only admin governance reads return it. Omitting the API field preserves existing
+configuration; an explicit `{}` revokes all declarations. No database migration,
+new catalog or deployment setting is required. Worker authorization copies each
+tool's declaration into its private capability subject and ExecutionSpec.
+
+Started/completed evidence remains recordable before the SDK appends a native
+`tool_use`. Recovery query then binds the exact source Run/Attempt/native call ID,
+checks the source and current frozen declarations against current authorized
+registration, active lease and generation, and reads the immutable source's
+receipt-verified complete ACK prefix through Context's application API. The
+source's full frozen selection is passed to the existing Claude MCP alias
+resolver, so normalized names and collisions are matched exactly. Neither model
+text nor callback parameters provide the public object. The resulting bounded
+action/object text is persisted on the exact recovery binding and used for the
+host question; two different objects produce distinguishable questions.
+
+Authenticated RunInputs startup (`open`, then `poll` while waiting) also enumerates
+unknown operations from the exact frozen source Run/Attempt before native SDK
+input begins. This path does not depend on the SDK re-emitting a pending call:
+a source call may already have an ACKed error `tool_result`. Each host confirmation
+uses the original operation key with `binding_kind=source_operation`, separately
+from `native_invocation` bindings. Authorization resolves that operation's original
+native ID inside its original receipt-verified ACK boundary; the host identity
+never asserts a current SDK call. The owner sees one distinct existing RunInputs
+question per safe public object. Success verifies only that original operation;
+not-effective records only the outcome. Neither answer grants retry or broad
+write authority, and no answer is injected as native history or `tool_result`.
+Current exact-invocation retry consent retains the existing separate path.
+
+After that host wait resolves, the private input snapshot may carry bounded
+`recovery_operation_facts`: only the declared public summary, `succeeded` or
+`not_effective`, and fixed `authenticated_owner_confirmation` provenance. Each
+fact requires this current Attempt's source-operation binding, an applied manual
+answer matching the operation's verification reference, and fresh source/native,
+principal, metadata and lease authorization. Unknown, hold/default answers,
+ordinary SDK questions and already-verified historical operations without a
+matching current answer produce no fact. The list is limited to 128 facts,
+1000 characters per summary and 128000 UTF-8 JSON bytes; malformed or oversized
+snapshots fail closed.
+
+Execution adds these facts as explicitly labelled JSON data to the existing
+current custom system context before constructing the SDK client. It states
+owner-confirmation provenance and grants no write/retry permission. The original
+user/file input and native transcript are unchanged; this is neither an MCP
+query result nor a fabricated native `tool_result`. The optional field defaults
+to empty for legacy hosts and ordinary Runs, preserving their SDK options.
+
+The SDK waits through the existing input callback while host questions are pending;
+cancellation, lease expiry, source/native mismatch and revoked declarations still
+fail closed. A declined or expired question leaves inspection available. Frozen
+`operation_sources` retain the original evidence joins separately from the latest
+native restore epoch. A subsequent no-write successful turn cannot discard an
+unknown operation or remove inspection merely because its SDK reports no new
+unknown effects. Verified outcomes likewise do not grant a general write-policy
+clearance; resolved operations are not re-questioned, but their source joins remain.
+
+Authenticated RunInputs answers affect only that question's binding. Confirmed
+success denies replay; confirmed not-effective plus explicit retry permits the
+current invocation once. Answers are host-consumed and acknowledged, never
+injected into model history or fabricated as `tool_result`. Current registration
+revocation/change, identity/scope/generation/lease expiry, invalid native evidence,
+missing mapping or invalid selected values deny manual confirmation with a fixed
+safe reason. Old unconfigured tools retain safe inspection and started/completed
+facts; no same-name or raw-parameter fallback is introduced. Registered
+authoritative query adapters retain their separate evidence path; this change
+does not register an adapter.
+
+Owning checks: `tests/test_mcp_public_operation_summary.py`,
+`tests/test_public_operation_summary_postgres.py` (real PostgreSQL required), and
+`MCPPublicOperationSummary.mounted.test.tsx`. The former blanket production manual
+summary denial is replaced only for explicitly configured, fully verified
+operations. Existing no-mapping guard regressions remain active; no historical
+operation/native data is rewritten or backfilled. Migration `2026.10.23.1` adds
+only the binding discriminator to the existing invocation table, preserving all
+older bindings as `native_invocation`; it introduces no table or history repair.
+The former tool-hook-only trigger is supplemented by host startup; the existing
+native pending-call path remains owned for exact current-invocation permission.
+
 ## SDK v2 change contract
 
 MCP owns guarded remote discovery/transport; Execution owns the selected-tool
@@ -179,7 +289,12 @@ a credential after their context operation has been superseded.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,
    sessions, transports and tasks on success, failure, timeout and cancellation.
    Use `strict_mcp_config=True` so project/user/plugin MCP config cannot expand
-   the Server set. Selection remains optional use: a connected selected tool
+   the Server set. Chat's explicit `selected_mcp_tool_ids`, including `[]` to
+   clear selection, survives intent classification and follows current-principal
+   authorization into the frozen Run input. An omitted selection (`None`) keeps
+   the existing polarity-gated continuation inheritance. Selection grants
+   availability, not an instruction to execute: explanation/negation intent
+   remains unchanged and never creates a required tool call. A connected selected tool
    need not be called, but an observed call still requires existing evidence.
    `PreToolUse` may arrive before the corresponding assistant `ToolUseBlock`; the
    hook's validated call ID, tool name and private input seed the same per-call

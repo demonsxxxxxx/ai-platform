@@ -101,6 +101,10 @@ def empty_authorized_history_messages(monkeypatch):
         max_history_sequence_bounds,
         raising=False,
     )
+    async def legacy_continuation(conn, *, tenant_id, user_id, session_id):
+        return None
+
+    monkeypatch.setattr("app.routes.lambchat_compat.get_session_continuation", legacy_continuation)
 
 
 @pytest.mark.asyncio
@@ -2370,6 +2374,7 @@ def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_reject
         "run_id": "run-old",
         "status": "completed",
         "raw_status": "succeeded",
+        "continuation": None,
     }
     assert wrong_session.status_code == 404
     assert wrong_user.status_code == 404
@@ -4389,3 +4394,41 @@ def test_lambchat_session_event_pages_preserve_large_v4_history_and_compaction(
     ]
     assert message_queries == ["run-old", "run-new"]
     assert "<late-after-snapshot>" not in str(compact_events)
+
+
+@pytest.mark.parametrize("state,action", [
+    ("settling", "wait"), ("resumable", "continue"),
+    ("recovery_candidate", "continue"), ("blocked", "new_conversation"),
+])
+def test_session_status_projects_context_continuation_after_owner_authorization(monkeypatch, state, action):
+    calls = []
+    projection = dict(state=state, action=action, reason_code="native_ready",
+                      workspace_saved=state in {"resumable", "recovery_candidate"})
+
+    async def session(conn, *, tenant_id, user_id, session_id):
+        calls.append("session")
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        return {"id": session_id}
+
+    async def run(conn, *, tenant_id, user_id, run_id):
+        calls.append("run")
+        return {"id": run_id, "session_id": "ses_a", "status": "cancelled"}
+
+    async def continuation(conn, *, tenant_id, user_id, session_id):
+        assert calls == ["session", "run"]
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        calls.append("continuation")
+        return projection
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.get_authorized_lambchat_session", session)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", run)
+    monkeypatch.setattr("app.routes.lambchat_compat.get_session_continuation", continuation)
+    response = TestClient(create_app()).get(
+        "/api/chat/sessions/ses_a/status?run_id=run-a", headers=auth_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json()["continuation"] == projection
+    assert response.json()["raw_status"] == "cancelled"
+    assert calls == ["session", "run", "continuation"]

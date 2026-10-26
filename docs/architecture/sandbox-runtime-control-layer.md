@@ -229,13 +229,19 @@ generation, timestamps, and reconciliation ownership in one migration.
    entrypoints all consume this Sandbox operation boundary. The former
    `routes/sandbox_runtime_cleanup.py` implementation is retired, with no import
    compatibility alias or external wire contract.
-   Owner and administrator Run cancellation share one stop/release settlement:
-   stop outside the settlement transaction, release successful leases grouped
-   by their own Run, record the actor-scoped outcome in the same transaction,
-   then report a partial stop failure after commit. Routes retain authorization,
-   Run cancellation, queue/publication ordering and the existing 502/503 mapping.
-   The owner release event still omits the administrator role field. Persistence
-   failure takes precedence over the provider failure.
+   Owner and administrator cancellation of an active Attempt records intent and
+   leaves the original executor responsible for bounded SDK drain. Its exact
+   provider must stop before private workspace save and the atomic Context/Run
+   terminal transaction; lease release follows that transaction's terminal facts.
+   A dispatch response still in flight retains the same Attempt's observation
+   responsibility, including a verified durable terminal handoff after endpoint
+   loss. Routes do not immediately kill/release an active cancelled writer.
+   Direct cleanup of an already terminal or never-started Run retains the shared
+   stop/release settlement: stop outside its settlement transaction, release
+   successful leases grouped by their Run, record the actor-scoped outcome, then
+   report any partial stop failure after commit. Authorization, queue/publication
+   ordering, 502/503 mapping and owner/admin event distinctions remain unchanged.
+   Persistence failure takes precedence over provider failure.
    The following concurrency mechanisms are intentionally distinct: single-lease
    release and expiry cleanup retain stop-under-lock; terminal reconciliation
    cleanup keeps its claim, unlocked bounded stop and fenced receipt transactions. Sharing the
