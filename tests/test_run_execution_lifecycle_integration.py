@@ -123,56 +123,33 @@ def test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user():
     assert "/app/run_lifecycle_identity.py" in dockerfile.split("RUN chmod 0755 ", 1)[1]
 
 
-def test_lifecycle_fixture_native_tool_socket_path_stays_under_linux_limit(monkeypatch):
+def test_lifecycle_fixture_native_tool_socket_path_stays_under_linux_limit(monkeypatch, tmp_path):
     import os
     from pathlib import PurePosixPath
     from types import SimpleNamespace
 
     from app.runtime.sandbox import container_provider
-    from tests.support.run_lifecycle_docker import lifecycle_native_tool_socket_path
+    from tests.support.run_lifecycle_docker import LifecycleDockerStack
 
-    docker_root = "/data/opensandbox/docker"
-    scope_id = "a" * 32
-    workspace_volume_name = f"n{scope_id[:16]}"
-    legacy_volume_name = f"n01-{scope_id[:16]}"
-    corrected_path = lifecycle_native_tool_socket_path(
-        docker_root=docker_root,
-        workspace_volume_name=workspace_volume_name,
-    )
-    legacy_path = lifecycle_native_tool_socket_path(
-        docker_root=docker_root,
-        workspace_volume_name=legacy_volume_name,
-    )
-
-    assert len(os.fsencode(corrected_path)) == 105
-    assert len(os.fsencode(legacy_path)) == 108
-    for root in ("/var/lib/docker", docker_root):
-        path = lifecycle_native_tool_socket_path(
-            docker_root=root,
-            workspace_volume_name=workspace_volume_name,
-        )
-        assert len(os.fsencode(path)) <= container_provider._UNIX_SOCKET_PATH_MAX_BYTES
-
-    workspace_root = f"{docker_root}/volumes/{workspace_volume_name}/_data/s"
+    stack = LifecycleDockerStack("sha256:" + "a" * 64, "b" * 40, tmp_path)
     monkeypatch.setattr(container_provider, "Path", PurePosixPath)
-    monkeypatch.setattr(
-        container_provider,
-        "get_settings",
-        lambda: SimpleNamespace(sandbox_workspace_root=workspace_root),
-    )
     workspace = SimpleNamespace(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
+        tenant_id=stack.tenant_id,
+        workspace_id=stack.workspace_id,
+        user_id=stack.user_id,
         session_id="session-a",
         run_id="run-a",
     )
-    actual_path = container_provider._native_tool_socket_host_path(
-        workspace,
-        attempt_id="attempt-a",
-    )
-    assert len(os.fsencode(str(actual_path))) == 105
-    assert len(os.fsencode(str(actual_path))) <= container_provider._UNIX_SOCKET_PATH_MAX_BYTES
+    for root in ("/var/lib/docker", "/data/opensandbox/docker"):
+        workspace_root = f"{root}/volumes/{stack.workspace_volume_name}/_data/s"
+        monkeypatch.setattr(
+            container_provider, "get_settings",
+            lambda: SimpleNamespace(sandbox_workspace_root=workspace_root),
+        )
+        actual_path = container_provider._native_tool_socket_host_path(
+            workspace, attempt_id="attempt-a",
+        )
+        assert len(os.fsencode(str(actual_path))) <= container_provider._UNIX_SOCKET_PATH_MAX_BYTES
 
 
 def _post_json(url: str, payload: dict, *, headers: dict[str, str]) -> tuple[int, dict]:

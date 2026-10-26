@@ -70,20 +70,6 @@ def _safe_name(value: str) -> str:
     return re.sub(r"[^a-z0-9_.-]+", "-", value.lower()).strip("-.")[:63]
 
 
-def lifecycle_native_tool_socket_path(
-    *,
-    docker_root: str,
-    workspace_volume_name: str,
-    workspace_suffix: str = "s",
-    socket_key: str = "b" * 24,
-) -> str:
-    """Mirror the daemon-side native-tool socket path used by production owner checks."""
-    return (
-        f"{docker_root.rstrip('/')}/volumes/{workspace_volume_name}/_data/"
-        f"{workspace_suffix}/.uds/{socket_key}/native-tool.sock"
-    )
-
-
 def build_control_image(evidence_dir: Path) -> str:
     """Build production sources plus the test-only executor/proxy wrapper.
 
