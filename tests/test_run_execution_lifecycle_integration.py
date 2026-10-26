@@ -123,6 +123,35 @@ def test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user():
     assert "/app/run_lifecycle_identity.py" in dockerfile.split("RUN chmod 0755 ", 1)[1]
 
 
+def test_lifecycle_fixture_native_tool_socket_path_stays_under_linux_limit(monkeypatch, tmp_path):
+    import os
+    from pathlib import PurePosixPath
+    from types import SimpleNamespace
+
+    from app.runtime.sandbox import container_provider
+    from tests.support.run_lifecycle_docker import LifecycleDockerStack
+
+    stack = LifecycleDockerStack("sha256:" + "a" * 64, "b" * 40, tmp_path)
+    monkeypatch.setattr(container_provider, "Path", PurePosixPath)
+    workspace = SimpleNamespace(
+        tenant_id=stack.tenant_id,
+        workspace_id=stack.workspace_id,
+        user_id=stack.user_id,
+        session_id="session-a",
+        run_id="run-a",
+    )
+    for root in ("/var/lib/docker", "/data/opensandbox/docker"):
+        workspace_root = f"{root}/volumes/{stack.workspace_volume_name}/_data/s"
+        monkeypatch.setattr(
+            container_provider, "get_settings",
+            lambda: SimpleNamespace(sandbox_workspace_root=workspace_root),
+        )
+        actual_path = container_provider._native_tool_socket_host_path(
+            workspace, attempt_id="attempt-a",
+        )
+        assert len(os.fsencode(str(actual_path))) <= container_provider._UNIX_SOCKET_PATH_MAX_BYTES
+
+
 def _post_json(url: str, payload: dict, *, headers: dict[str, str]) -> tuple[int, dict]:
     request = urllib.request.Request(
         url,
