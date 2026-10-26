@@ -1650,7 +1650,6 @@ class PostgresRunCancellationPersistence:
             update run_attempts
             set owner_kind='reconciler', owner_id='cancel-cleanup',
                 owner_generation=owner_generation+1,
-                lease_expires_at=clock_timestamp(), last_heartbeat_at=clock_timestamp(),
                 updated_at=clock_timestamp()
             where tenant_id=%s and run_id=%s and id=%s
               and status='cancel_requested' and owner_kind='queue_worker'

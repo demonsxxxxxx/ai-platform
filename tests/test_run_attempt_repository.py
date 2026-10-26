@@ -734,7 +734,9 @@ async def test_cancel_handoff_requires_exact_released_resource_and_transfers_own
     assert "for update" in conn.calls[0][0]
     assert "status='released'" in conn.calls[2][0]
     assert "owner_kind='reconciler'" in conn.calls[-1][0]
-    assert "lease_expires_at=clock_timestamp()" in conn.calls[-1][0]
+    assert "owner_generation=owner_generation+1" in conn.calls[-1][0]
+    assert "lease_expires_at=" not in conn.calls[-1][0]
+    assert "last_heartbeat_at=" not in conn.calls[-1][0]
 
 
 @pytest.mark.asyncio

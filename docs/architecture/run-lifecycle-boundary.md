@@ -211,8 +211,12 @@ The migration MUST preserve these observable semantics:
    `running` with durable cancellation requested, the Attempt is still
    `cancel_requested` under the captured queue-worker generation, no same-Run
    active resource remains, and no terminal receipt is pending. The handoff
-   assigns the Attempt to the reconciler and expires the old queue lease; an
-   expired timestamp alone is never stop proof. Stop failure, tenant/Attempt/
+   assigns `reconciler/cancel-cleanup` and advances the execution generation,
+   preserving the monotonic heartbeat and lease timestamps. The PG stale owner
+   may consume this exact stopped-owner handoff before the old timestamp expires;
+   other live owners remain excluded. Claim and writeback still require their
+   exact Attempt, generation and claim token. A repeat cancellation can re-read
+   released evidence after an interrupted handoff. Stop failure, tenant/Attempt/
    generation mismatch, another active resource, or a pending receipt leaves
    the queue owner and lease untouched. A cancelled Run with cleanup pending
    does not claim that the Sandbox was released.

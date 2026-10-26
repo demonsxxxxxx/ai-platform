@@ -297,6 +297,33 @@ async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("owner_kind", "owner_id", "generation"),
+    [("queue_worker", "worker-a", 6), ("reconciler", "other-owner", 6),
+     ("reconciler", "stale-run-maintenance", 6), ("reconciler", "cancel-cleanup", 7)],
+)
+async def test_stale_claim_rejects_other_live_owners_and_changed_handoff_generation(
+    owner_kind, owner_id, generation,
+):
+    candidate = {
+        "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+        "run_id": "run-a", "status": "running", "expected_attempt_id": "attempt-a",
+        "expected_owner_generation": 6,
+    }
+    conn = _Connection([
+        {"id": "run-a", "status": "running", "cancel_requested_at": "now",
+         "terminalization_target": None, "stale": True},
+        {"id": "attempt-a", "owner_generation": generation, "status": "cancel_requested",
+         "owner_kind": owner_kind, "owner_id": owner_id, "lease_live": True},
+    ])
+    assert await claim_stale_run_reconciliation(
+        conn, candidate=candidate, worker_id="stale-owner", stale_after_seconds=60,
+        cancel_requested_after_seconds=5, claim_ttl_seconds=300,
+    ) is None
+    assert not any("insert into run_stale_reconciliation_claims" in query for query, _ in conn.calls)
+
+
+@pytest.mark.asyncio
 async def test_stale_reconciliation_bootstrap_preserves_schema_fail_closed_gate(monkeypatch):
     async def missing_schema():
         raise RuntimeError("schema_not_current")
@@ -733,8 +760,16 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reader_version", ["sandbox_lease.v1", "attempt.v1"])
-async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader_version):
+@pytest.mark.parametrize(
+    ("reader_version", "rejection"),
+    [("sandbox_lease.v1", None), ("attempt.v1", None),
+     ("sandbox_lease.v1", "pending_receipt"), ("attempt.v1", "pending_receipt"),
+     ("sandbox_lease.v1", "missing_marker"), ("sandbox_lease.v1", "active_resource"),
+     ("sandbox_lease.v1", "missing_evidence"), ("sandbox_lease.v1", "wrong_generation")],
+)
+async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
+    reader_version, rejection,
+):
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -768,6 +803,17 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader
             tenant_id, run_id, attempt_id, _worker_id, old = await _seed_running_attempt(
                 conn, suffix=suffix
             )
+            await conn.execute(
+                "update run_attempts set lease_expires_at=clock_timestamp()+interval '15 minutes', "
+                "last_heartbeat_at=clock_timestamp() where tenant_id=%s and id=%s",
+                (tenant_id, attempt_id),
+            )
+            before = await (await conn.execute(
+                "select lease_expires_at, last_heartbeat_at, "
+                "lease_expires_at > clock_timestamp() as lease_live from run_attempts "
+                "where tenant_id=%s and id=%s", (tenant_id, attempt_id)
+            )).fetchone()
+            assert before["lease_live"] is True
             attempt_row = await run_attempt_persistence.request_run_attempt_cancel(
                 conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
             )
@@ -778,10 +824,15 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader
                 "where tenant_id=%s and id=%s",
                 (old, tenant_id, run_id),
             )
-            await conn.execute(
-                "update run_attempt_settlement_storage set storage_version=%s where singleton=true",
-                (reader_version,),
-            )
+            if rejection == "missing_marker":
+                await conn.execute(
+                    "delete from run_attempt_settlement_storage where singleton=true"
+                )
+            else:
+                await conn.execute(
+                    "update run_attempt_settlement_storage set storage_version=%s where singleton=true",
+                    (reader_version,),
+                )
             await conn.execute(
                 """
                 insert into sandbox_leases(
@@ -795,6 +846,41 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader
                     json.dumps({"attempt_id": attempt_id, "owner_generation": generation - 1}),
                 ),
             )
+            if rejection == "active_resource":
+                await conn.execute(
+                    "update sandbox_leases set status='active' where id=%s",
+                    (f"lease-{suffix}",),
+                )
+            elif rejection == "missing_evidence":
+                await conn.execute(
+                    "update sandbox_leases set lease_payload_json='{}'::jsonb where id=%s",
+                    (f"lease-{suffix}",),
+                )
+            if rejection == "pending_receipt" and reader_version == "sandbox_lease.v1":
+                await conn.execute(
+                    "update sandbox_leases set executor_status='completed', "
+                    "executor_terminal_json=%s::jsonb, "
+                    "executor_reconciliation_status='waiting_terminal' "
+                    "where tenant_id=%s and id=%s",
+                    (json.dumps({"status": "succeeded"}), tenant_id, f"lease-{suffix}"),
+                )
+            if rejection == "pending_receipt" and reader_version == "attempt.v1":
+                await conn.execute(
+                    """
+                    insert into run_attempt_settlements(
+                      tenant_id, run_id, attempt_id, mapping_state, source_lease_id,
+                      receipt_identity, receipt_json, receipt_sha256, receipt_owner_generation,
+                      dispatch_state, accepted_context_json, attempt_status_snapshot,
+                      attempt_owner_generation_snapshot, run_status_snapshot,
+                      settlement_phase, settlement_attempt_count
+                    ) values (%s, %s, %s, 'mapped', %s, 'receipt-a',
+                      %s::jsonb, %s, %s, 'accepted',
+                      %s::jsonb, 'cancel_requested', %s, 'running', 'pending', 1)
+                    """,
+                    (tenant_id, run_id, attempt_id, f"lease-{suffix}",
+                     json.dumps({"status": "succeeded"}), "a" * 64, generation - 1,
+                     json.dumps({"accepted": True}), generation),
+                )
 
         persistence = PostgresRunCancellationPersistence(
             attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
@@ -811,6 +897,8 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader
             return []
 
         async def handoff(**kwargs):
+            if rejection == "wrong_generation":
+                kwargs["expected_owner_generation"] += 1
             async with transaction_factory() as conn:
                 return await persistence.handoff_cancelled_attempt(conn, **kwargs)
 
@@ -843,28 +931,80 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader
             publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
             handoff_cancelled_attempt=handoff,
         )
-        await repeat_processor.post_cancel(
-            CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
-            tenant_id=tenant_id, user_id=f"user-{suffix}",
-            requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
-        )
+        if rejection == "missing_marker":
+            with pytest.raises(RuntimeError, match="marker_invalid"):
+                await repeat_processor.post_cancel(
+                    CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
+                    tenant_id=tenant_id, user_id=f"user-{suffix}",
+                    requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+                )
+        else:
+            await repeat_processor.post_cancel(
+                CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
+                tenant_id=tenant_id, user_id=f"user-{suffix}",
+                requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+            )
         async with transaction_factory() as conn:
             final = await (await conn.execute(
-                "select owner_kind, owner_id, owner_generation, lease_expires_at "
+                "select owner_kind, owner_id, owner_generation, lease_expires_at, last_heartbeat_at "
                 "from run_attempts where tenant_id=%s and id=%s",
                 (tenant_id, attempt_id),
             )).fetchone()
-            assert final["owner_kind"] == "reconciler"
-            assert final["owner_id"] == "cancel-cleanup"
-            assert int(final["owner_generation"]) == generation + 1
-            assert final["lease_expires_at"] <= datetime.now(timezone.utc)
+            assert final["lease_expires_at"] == before["lease_expires_at"]
+            assert final["last_heartbeat_at"] == before["last_heartbeat_at"]
+            if rejection:
+                assert final["owner_kind"] == "queue_worker"
+                assert final["owner_id"] == "worker-" + suffix
+                assert int(final["owner_generation"]) == generation
+            else:
+                assert final["owner_kind"] == "reconciler"
+                assert final["owner_id"] == "cancel-cleanup"
+                assert int(final["owner_generation"]) == generation + 1
+                candidates = await list_stale_run_reconciliation_candidates(
+                    conn, stale_after_seconds=60, cancel_requested_after_seconds=5,
+                    limit=10, postgres_claim_mode=True,
+                )
+                candidate = next(row for row in candidates if row["run_id"] == run_id)
+                assert await claim_stale_run_reconciliation(
+                    conn, candidate={**candidate, "expected_owner_generation": generation},
+                    worker_id="stale-owner", stale_after_seconds=60,
+                    cancel_requested_after_seconds=5, claim_ttl_seconds=300,
+                ) is None
+                from app.platform.postgres.errors import RepositoryConflictError
+                with pytest.raises(RepositoryConflictError, match="worker_authority_stale"):
+                    await run_attempt_persistence.assert_worker_run_attempt_current(
+                        conn, tenant_id=tenant_id, run_id=run_id,
+                        queue_attempt_id=f"queue-attempt-{suffix}", worker_id=_worker_id,
+                    )
+        if not rejection:
+            configure_context_services()
+            service = StaleRunReconciliationService(
+                lifecycle=_run_lifecycle_service(),
+                attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
+                v4_capabilities=None, transaction_factory=transaction_factory,
+                append_event=append_event, append_audit_log=append_audit_log,
+            )
+            outcomes = await service.reconcile_postgres_claims(
+                worker_id="stale-owner", limit=10, stale_after_seconds=60,
+                cancel_requested_after_seconds=5, claim_ttl_seconds=300,
+            )
+            assert any(row["run_id"] == run_id and row["status"] == "cancelled"
+                       and row["did_transition"] for row in outcomes)
+            async with transaction_factory() as conn:
+                result = await (await conn.execute(
+                    "select r.status as run_status, a.status as attempt_status "
+                    "from runs r join run_attempts a on a.run_id=r.id and a.tenant_id=r.tenant_id "
+                    "where r.tenant_id=%s and r.id=%s and a.id=%s",
+                    (tenant_id, run_id, attempt_id),
+                )).fetchone()
+                assert result == {"run_status": "cancelled", "attempt_status": "cancelled"}
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
 
 
 @pytest.mark.asyncio
-async def test_real_cancel_handoff_rejects_invalid_reader_marker_before_cas():
+async def test_real_cancel_handoff_reader_marker_rejects_unsupported_version():
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -894,17 +1034,16 @@ async def test_real_cancel_handoff_rejects_invalid_reader_marker_before_cas():
             index_connection_factory=index_connection_factory,
         )
         async with transaction_factory() as conn:
-            await conn.execute(
-                "update run_attempt_settlement_storage set storage_version='invalid' where singleton=true"
-            )
-            with pytest.raises(Exception, match="invalid"):
-                await run_attempt_persistence.PostgresRunCancellationPersistence(
-                    attempt_lifecycle=object(), append_event=None, append_audit_log=None,
-                    list_active_sandbox_leases=lambda *_args, **_kwargs: [],
-                ).handoff_cancelled_attempt(
-                    conn, tenant_id="tenant-a", run_id="run-missing", attempt_id="attempt-missing",
-                    expected_owner_generation=5, resource_lease_ids=("lease-missing",),
+            await conn.execute("savepoint invalid_marker")
+            with pytest.raises(psycopg.errors.CheckViolation):
+                await conn.execute(
+                    "update run_attempt_settlement_storage set storage_version='invalid' where singleton=true"
                 )
+            await conn.execute("rollback to savepoint invalid_marker")
+            marker = await (await conn.execute(
+                "select storage_version from run_attempt_settlement_storage where singleton=true"
+            )).fetchone()
+            assert marker["storage_version"] == "sandbox_lease.v1"
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()

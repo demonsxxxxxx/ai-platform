@@ -353,6 +353,11 @@ async def list_stale_run_reconciliation_candidates(
                  where attempt.tenant_id = runs.tenant_id and attempt.run_id = runs.id
                    and attempt.status in ('claimed', 'running', 'cancel_requested')
                    and attempt.lease_expires_at > clock_timestamp()
+                   and not (
+                     attempt.status = 'cancel_requested'
+                     and attempt.owner_kind = 'reconciler'
+                     and attempt.owner_id = 'cancel-cleanup'
+                   )
                )
                and (
                  latest_attempt.id is null
@@ -686,7 +691,7 @@ async def claim_stale_run_reconciliation(
 
     attempt_cursor = await conn.execute(
         """
-        select id, owner_generation, status,
+        select id, owner_generation, owner_kind, owner_id, status,
                (lease_expires_at > clock_timestamp()) as lease_live
         from run_attempts
         where tenant_id = %s and run_id = %s
@@ -699,6 +704,12 @@ async def claim_stale_run_reconciliation(
     attempt = await attempt_cursor.fetchone()
     actual_attempt_id = str(attempt["id"]) if attempt is not None else None
     actual_owner_generation = int(attempt["owner_generation"]) if attempt is not None else 0
+    handed_off_cancel = (
+        attempt is not None
+        and str(attempt.get("status") or "") == "cancel_requested"
+        and str(attempt.get("owner_kind") or "") == "reconciler"
+        and str(attempt.get("owner_id") or "") == "cancel-cleanup"
+    )
     if (
         actual_attempt_id != expected_attempt_id
         or actual_owner_generation != expected_owner_generation
@@ -709,6 +720,7 @@ async def claim_stale_run_reconciliation(
         or (
             attempt is not None
             and bool(attempt.get("lease_live"))
+            and not handed_off_cancel
             and str(attempt.get("status") or "") in {"claimed", "running", "cancel_requested"}
         )
     ):
@@ -893,9 +905,18 @@ async def _stale_run_reconciliation_claim_binding_is_current(
             and str(attempt.get("owner_id") or "") == "stale-run-maintenance"
             and status in {"expired", "cancel_requested"}
         )
+        handed_off_cancel = (
+            generation_matches
+            and status == "cancel_requested"
+            and str(attempt.get("owner_kind") or "") == "reconciler"
+            and str(attempt.get("owner_id") or "") == "cancel-cleanup"
+        )
         if (
             status in {"succeeded", "failed", "cancelled"}
-            or bool(attempt.get("lease_live"))
+            or (
+                bool(attempt.get("lease_live"))
+                and not (handed_off_cancel or reconciler_takeover_matches)
+            )
             or not (generation_matches or reconciler_takeover_matches)
         ):
             return False
