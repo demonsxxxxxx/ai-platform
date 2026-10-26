@@ -38,7 +38,7 @@ def _stub_run_model_and_provider_lineage_for_route_fakes(monkeypatch):
 
     monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release_provider_lineage,
     )
 

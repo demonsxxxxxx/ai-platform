@@ -8,7 +8,7 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
-from app.platform.postgres.sandbox_leases import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
+from app.sandbox.infrastructure.leases_postgres import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
 from app.sandbox.infrastructure.leases_postgres import renew_sandbox_lease
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.support.repository_fixtures import RecordingConnection, SingleRowConnection, SingleRowCursor, _run_control_postgres_dsn
@@ -621,7 +621,7 @@ async def test_cleanup_expired_sandbox_leases_global_scope_emits_events_for_each
 
 @pytest.mark.asyncio
 async def test_generic_sandbox_release_sql_fences_nonfinalized_terminal_receipts():
-    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 
     statements = []
 
@@ -777,7 +777,7 @@ async def test_release_stopped_sandbox_leases_releases_by_stopped_ids_and_emits_
 
 @pytest.mark.asyncio
 async def test_executor_acceptance_preserves_terminal_and_reconciliation_owners():
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = SingleRowConnection({"id": "lease-a"})
     await record_sandbox_executor_accepted(
@@ -802,7 +802,7 @@ async def test_executor_acceptance_preserves_terminal_and_reconciliation_owners(
 
 @pytest.mark.asyncio
 async def test_executor_acceptance_rejects_context_write_outside_active_attempt_scope():
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = SingleRowConnection(None)
     with pytest.raises(
@@ -860,7 +860,7 @@ async def executor_acceptance_database():
 async def test_executor_acceptance_terminal_order_converges_in_postgres(
     executor_acceptance_database, terminal_first, executor_status, result_status,
 ):
-    from app.platform.postgres.sandbox_leases import (
+    from app.sandbox.infrastructure.leases_postgres import (
         claim_sandbox_executor_reconciliations,
         record_sandbox_executor_accepted,
     )
@@ -909,7 +909,7 @@ async def test_executor_acceptance_terminal_order_converges_in_postgres(
 async def test_executor_acceptance_does_not_reset_reconciliation_in_postgres(
     executor_acceptance_database, reconciliation_status,
 ):
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_accepted
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -982,7 +982,7 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
 
 @pytest.mark.asyncio
 async def test_terminal_retry_deadline_survives_lease_updates_and_is_claim_fenced(executor_acceptance_database):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1018,7 +1018,7 @@ async def test_terminal_retry_deadline_survives_lease_updates_and_is_claim_fence
 
 @pytest.mark.asyncio
 async def test_due_retry_precedes_new_pending_and_concurrent_claims_skip_locked(executor_acceptance_database):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1051,7 +1051,7 @@ async def test_due_retry_precedes_new_pending_and_concurrent_claims_skip_locked(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_status", ["failed", "cleanup_pending"])
 async def test_terminal_cleanup_handoff_and_retry_remain_durable(executor_acceptance_database, legacy_status):
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     conn = executor_acceptance_database
     await conn.execute(
@@ -1090,7 +1090,7 @@ async def test_ready_terminal_commit_wakes_real_redis_and_is_claimable_in_postgr
     import os
     from redis.asyncio import Redis
     from app.runtime.sandbox import executor_signals
-    from app.platform.postgres import sandbox_leases as repository
+    from app.sandbox.infrastructure import leases_postgres as repository
 
     url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
     if not url:

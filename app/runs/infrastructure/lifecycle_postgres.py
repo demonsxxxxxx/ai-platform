@@ -12,7 +12,7 @@ from app.platform.postgres.limits import (
     RUN_RESULT_MAX_BYTES,
     ensure_json_size,
 )
-from app.runs.domain.terminalization import TERMINAL_RUN_STATUSES
+from app.runs.domain.run_status import is_terminal_run_status
 from app.runs.infrastructure.steps_postgres import _cancel_open_run_steps, _fail_open_run_steps
 
 
@@ -232,7 +232,7 @@ async def classify_success_commit_block(conn: AsyncConnection, *, tenant_id: str
         (tenant_id, run_id),
     )
     row = await cursor.fetchone()
-    if row is None or str(row.get("status") or "") in TERMINAL_RUN_STATUSES:
+    if row is None or is_terminal_run_status(row.get("status")):
         return "stale_terminal_state"
     if row.get("cancel_requested_at") or str(row.get("terminalization_target") or "") in {"cancel_requested", "cancelled"}:
         return "cancel_requested"

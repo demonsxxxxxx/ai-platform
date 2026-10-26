@@ -127,7 +127,7 @@ def _stub_terminal_context_ports(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.terminalization_v4.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release,
     )
 
@@ -4138,7 +4138,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         "request_run_attempt_cancel",
         request_cancel,
     )
-    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_terminalization", cancel_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "terminalize_run_attempt",

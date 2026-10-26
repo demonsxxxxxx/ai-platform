@@ -49,7 +49,7 @@ the current transport behavior.
 `RunLifecycleService` now owns ordinary complete/fail/cancel/enqueue-failure
 transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
-`terminalization_v4` coordinates provider lineage and committed event rows.
+`run_terminalization` coordinates provider lineage and committed event rows.
 The current [application ports](../../app/runs/application/lifecycle.py) are
 `RunLifecyclePersistence`, `RunEventWriter`, and `RunAuditWriter`.
 [Lifecycle composition](../../app/bootstrap/run_lifecycle.py) injects

@@ -1157,7 +1157,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr(
-        "app.runs.application.terminalization_v4.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr("app.bootstrap.worker_run_preparation.admit_v4_stream", no_publication)

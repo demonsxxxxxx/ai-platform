@@ -339,6 +339,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_model_token_usage_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
+        "tests/test_run_status_schema_migrations.py",
         "tests/test_skill_release_lifecycle_postgres.py",
         "tests/test_run_inputs_postgres.py",
         "tests/test_provider_session_recovery_postgres.py",

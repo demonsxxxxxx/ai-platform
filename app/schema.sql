@@ -1,6 +1,7 @@
 create table if not exists schema_migrations (
   version text primary key,
   checksum_sha256 text not null,
+  state text not null default 'applied',
   applied_at timestamptz not null default now()
 );
 
@@ -636,6 +637,15 @@ create table if not exists runs (
   constraint chk_runs_execution_skill_identity check (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
+  ),
+  constraint chk_runs_status check (
+    status is not null
+    and status = any (array[
+      'queued'::text, 'running'::text, 'cancel_requested'::text,
+      'succeeded'::text, 'failed'::text, 'cancelled'::text,
+      'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+      'dead-lettered'::text
+    ])
   ),
   constraint chk_runs_model_token_limits check (
     (auto_compact_window is null and max_output_tokens is null)

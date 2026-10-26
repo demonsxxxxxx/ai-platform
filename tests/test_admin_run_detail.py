@@ -461,7 +461,7 @@ def test_admin_cancel_queued_run_removes_queued_payload(monkeypatch):
 
 
 def test_admin_run_detail_returns_explainability_contract(monkeypatch):
-    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
+    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id, sandbox_lease_reader):
         return {
             "run": {
                 "run_id": run_id,
@@ -603,7 +603,7 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
         ],
     }
 
-    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
+    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id, sandbox_lease_reader):
         return {
             "run": {
                 "run_id": run_id,
@@ -702,7 +702,7 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
 
 
 def test_admin_run_detail_includes_live_queue_context_for_queued_run(monkeypatch):
-    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id):
+    async def fake_get_admin_run_detail(conn, *, tenant_id, run_id, sandbox_lease_reader):
         return {
             "run": {
                 "run_id": run_id,

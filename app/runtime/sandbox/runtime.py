@@ -33,7 +33,6 @@ from app.runtime.sandbox.creation_claim import (
     SandboxCreationScope,
     acquire_sandbox_creation_claim,
 )
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.contracts import (
     PROFILE_DRIVE_STAGE_IDENTITY,
     PROFILE_DRIVE_STAGE_LEASE_FLAG,
@@ -54,7 +53,7 @@ from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
     publish_executor_terminal_signal,
 )
-from app.sandbox.api import normalize_executor_reported_failure
+from app.sandbox.api import SandboxRuntimeLeasePort, normalize_executor_reported_failure
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,
@@ -110,6 +109,7 @@ class SandboxRuntime:
         provider: ContainerProvider | None = None,
         execute_task: ExecuteTask | None = None,
         callback_token_resolver: TokenResolver | None = None,
+        lease_port: SandboxRuntimeLeasePort,
         record_lease: LeaseRecorder | None = None,
         release_lease: LeaseReleaser | None = None,
         creation_claim_factory: CreationClaimFactory = acquire_sandbox_creation_claim,
@@ -122,6 +122,7 @@ class SandboxRuntime:
         self.callback_token_resolver = callback_token_resolver or (
             lambda token_id: derive_callback_token(self.settings.sandbox_callback_token, token_id)
         )
+        self.lease_port = lease_port
         self.record_lease = record_lease or self._record_runtime_lease
         self._uses_default_lease_recorder = record_lease is None
         self.release_lease = release_lease or self._release_runtime_lease
@@ -346,7 +347,7 @@ class SandboxRuntime:
             async with transaction() as conn:
                 if lease_record_id is not None:
                     self._lease_record_connections[lease_record_id] = conn
-                row = await sandbox_lease_repository.create_sandbox_lease(
+                row = await self.lease_port.create_sandbox_lease(
                     conn,
                     tenant_id=lease.tenant_id,
                     workspace_id=lease.workspace_id,
@@ -389,7 +390,7 @@ class SandboxRuntime:
             return
         attempt_id = str(lease.labels.get("ai-platform.attempt_id") or "").strip() or None
         async with transaction() as conn:
-            await sandbox_lease_repository.fence_sandbox_lease_release(
+            await self.lease_port.fence_sandbox_lease_release(
                 conn,
                 tenant_id=lease.tenant_id,
                 workspace_id=lease.workspace_id,
@@ -525,7 +526,7 @@ class SandboxRuntime:
             nonlocal lease, lease_record_id, lease_record_uncertain
             lease = await self.provider.create_or_reuse(request, workspace)
             if self._uses_default_lease_recorder:
-                lease_record_id = sandbox_lease_repository.new_lease_id()
+                lease_record_id = self.lease_port.new_lease_id()
             record_task = asyncio.create_task(
                 self._call_record_lease(
                     lease,
@@ -875,7 +876,7 @@ class SandboxRuntime:
                     if not str(request.reconciliation_context.get("adapter_name") or "").strip():
                         raise RuntimeError("sandbox_executor_reconciliation_adapter_required")
                     async with transaction() as conn:
-                        accepted_lease = await sandbox_lease_repository.record_sandbox_executor_accepted(
+                        accepted_lease = await self.lease_port.record_sandbox_executor_accepted(
                             conn,
                             tenant_id=request.tenant_id,
                             run_id=request.run_id,

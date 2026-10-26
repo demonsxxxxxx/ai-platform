@@ -5,15 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 
-_TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
-
-
 class SandboxCallbackAuthorityError(RuntimeError):
     """A stable rejection reason; transport status mapping belongs to the caller."""
 
 
 @dataclass(frozen=True, slots=True)
 class SandboxCallbackAuthority:
+    is_terminal_run_status: Callable[[object], bool]
     get_run_identity: Callable[..., Awaitable[dict[str, Any] | None]]
     list_current_leases: Callable[..., Awaitable[list[dict[str, Any]]]]
     list_provider_tail_leases: Callable[..., Awaitable[list[dict[str, Any]]]]
@@ -68,7 +66,7 @@ class SandboxCallbackAuthority:
             raise SandboxCallbackAuthorityError("run_not_found")
         if session_id is not None and str(run_hint.get("session_id") or "") != session_id:
             raise SandboxCallbackAuthorityError("callback_session_mismatch")
-        if str(run_hint.get("status") or "").lower() in _TERMINAL_RUN_STATUSES:
+        if self.is_terminal_run_status(run_hint.get("status")):
             raise SandboxCallbackAuthorityError("run_already_terminal")
         tenant_id = str(run_hint.get("tenant_id") or "")
         locked_run = await self.get_run_identity(conn, run_id=run_id, for_update=True)
@@ -76,7 +74,7 @@ class SandboxCallbackAuthority:
             raise SandboxCallbackAuthorityError("sandbox_runtime_attempt_inactive")
         if session_id is not None and str(locked_run.get("session_id") or "") != session_id:
             raise SandboxCallbackAuthorityError("callback_session_mismatch")
-        if str(locked_run.get("status") or "").lower() in _TERMINAL_RUN_STATUSES:
+        if self.is_terminal_run_status(locked_run.get("status")):
             raise SandboxCallbackAuthorityError("run_already_terminal")
         lease = await self.recheck_attempt(
             conn,

@@ -11,7 +11,7 @@ from app.conversations.infrastructure import postgres as conversations_postgres
 from app.control_plane_contracts import artifact_lineage_contract, artifact_manifest_contract
 from app.execution import api as execution_api
 from app.persistence import artifacts as artifact_persistence
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.platform.postgres.limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.platform.public_payload import sanitize_public_text
 from app.platform.postgres import values as platform_values

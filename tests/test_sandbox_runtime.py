@@ -25,10 +25,17 @@ from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.sandbox.api import SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
-from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
+from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
+
+
+class SandboxRuntime(_SandboxRuntime):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("lease_port", sandbox_lease_repository)
+        super().__init__(*args, **kwargs)
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -1441,8 +1448,8 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(runtime_module, "transaction", transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
     monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish, raising=False)
     provider = FakeContainerProvider(executor_url="http://executor.test")
     runtime = SandboxRuntime(
@@ -1510,8 +1517,8 @@ async def test_accepted_terminal_keeps_runtime_through_worker_execution_owner(tm
 
     monkeypatch.setattr(runtime_module, "get_settings", lambda: Settings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
     monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish)
     provider = Provider(executor_url="http://executor.test")
     runtime = SandboxRuntime(workspace_root=tmp_path, provider=provider, execute_task=execute, callback_token_resolver=lambda _id: "synthetic-token")
@@ -1602,13 +1609,13 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_accepted",
+        sandbox_lease_repository, "record_sandbox_executor_accepted",
         record_sandbox_executor_accepted,
     )
 
@@ -1797,8 +1804,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
@@ -1864,7 +1871,7 @@ async def test_internal_test_bridge_lease_persists_exact_cleanup_identity(tmp_pa
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_lease)
     runtime = SandboxRuntime(workspace_root=_short_sandbox_workspace_root(tmp_path), provider=FakeContainerProvider())
     workspace = runtime.workspace_manager.prepare(runtime_request)
     labels = internal_test_opensandbox_lease_labels(
@@ -2092,8 +2099,8 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -2262,8 +2269,8 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -2529,15 +2536,15 @@ async def test_runtime_fences_default_lease_when_commit_confirmation_is_lost(tmp
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        sandbox_lease_repository, "new_lease_id",
         lambda: "lease-preallocated",
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        sandbox_lease_repository, "create_sandbox_lease",
         create_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     provider = FakeContainerProvider(executor_url="http://executor.test")
@@ -2608,15 +2615,15 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", late_record_transaction)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        sandbox_lease_repository, "new_lease_id",
         lambda: "lease-preallocated",
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        sandbox_lease_repository, "create_sandbox_lease",
         create_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     runtime = SandboxRuntime(

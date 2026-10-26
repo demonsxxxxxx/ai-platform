@@ -16,6 +16,7 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, StopResult
 from app.runtime.sandbox.executor_app import _CallbackBatchIdFactory
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 stop_sandbox_leases = sandbox_runtime_cleanup.stop_sandbox_leases
@@ -263,12 +264,20 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
         'record_sandbox_runtime_cleanup_outcome',
         fail_audit,
     )
+    http_request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                sandbox_lease_transport=_owner_sandbox_infrastructure_leases_postgres,
+            )
+        )
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await sandbox_leases.release_sandbox_lease(
             "run-a",
             "lease-a",
             SandboxLeaseReleaseRequest(reason="cancelled"),
+            http_request,
             principal,
         )
 
@@ -323,7 +332,8 @@ async def test_executor_callback_persists_one_attempt_scoped_idempotent_batch(
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fail_append_event)
 
     response = await runtime_callbacks.record_executor_callback(
-        _callback(), capabilities=private_callback_capabilities
+        _callback(), capabilities=private_callback_capabilities,
+        lease_port=sandbox_lease_reader,
     )
 
     expected_response = {
@@ -414,7 +424,8 @@ async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding
 
     with pytest.raises(HTTPException) as exc_info:
         await runtime_callbacks.record_executor_callback(
-            _callback(), capabilities=private_callback_capabilities
+            _callback(), capabilities=private_callback_capabilities,
+            lease_port=sandbox_lease_reader,
         )
 
     assert exc_info.value.status_code == 409

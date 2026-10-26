@@ -64,7 +64,7 @@ def _stub_terminal_context_ports(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release,
     )
 
@@ -1953,8 +1953,8 @@ async def test_run_once_terminalizes_escaped_process_exception_with_locked_curre
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.worker_main.fail_run_with_v4", fail_run)
-    monkeypatch.setattr("app.worker_main.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr("app.worker_main.fail_run_terminalization", fail_run)
+    monkeypatch.setattr("app.worker_main.cancel_run_terminalization", cancel_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_LIFECYCLE,
         "assert_worker_current",
@@ -2085,8 +2085,8 @@ async def test_run_once_does_not_terminalize_escaped_exception_for_mismatched_lo
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
     monkeypatch.setattr("app.worker_main.process_run_payload", process_run_payload)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.worker_main.fail_run_with_v4", fail_run)
-    monkeypatch.setattr("app.worker_main.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr("app.worker_main.fail_run_terminalization", fail_run)
+    monkeypatch.setattr("app.worker_main.cancel_run_terminalization", cancel_run)
     monkeypatch.setattr("app.worker_main.queue.ack_run", ack_run)
     monkeypatch.setattr("app.worker_main.queue.fail_leased_run", fail_leased_run)
 
@@ -2205,8 +2205,8 @@ async def test_escaped_terminalization_rejects_missing_durable_attempt(monkeypat
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "assert_worker_current", missing_attempt)
-    monkeypatch.setattr(worker_main, "fail_run_with_v4", forbidden)
-    monkeypatch.setattr(worker_main, "cancel_run_with_v4", forbidden)
+    monkeypatch.setattr(worker_main, "fail_run_terminalization", forbidden)
+    monkeypatch.setattr(worker_main, "cancel_run_terminalization", forbidden)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", forbidden)
 
     outcome = await worker_main._terminalize_escaped_process_exception(
@@ -2285,7 +2285,7 @@ async def test_escaped_terminalization_keeps_redis_lease_checks_outside_transact
     monkeypatch.setattr(worker_main, "transaction", Transaction)
     monkeypatch.setattr(worker_main.queue, "verify_lease_ownership", verify)
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
-    monkeypatch.setattr(worker_main, "fail_run_with_v4", fail_run)
+    monkeypatch.setattr(worker_main, "fail_run_terminalization", fail_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_LIFECYCLE,
         "assert_worker_current",
@@ -3604,3 +3604,40 @@ async def test_worker_shutdown_settles_snapshot_physical_owner_before_clients(mo
             await asyncio.gather(task, return_exceptions=True)
     assert len(original_cancellation) == 1
     assert events == ["physical-finished", "owner-cancelled", "runtime-closed", "clients-closed"]
+
+
+@pytest.mark.asyncio
+async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(monkeypatch):
+    from app.bootstrap import executor_reconciliation
+
+    lease_port = object()
+    stop_event = asyncio.Event()
+    captured = {}
+
+    async def fake_reconciler(actual_stop_event, **kwargs):
+        captured["stop_event"] = actual_stop_event
+        captured.update(kwargs)
+
+    monkeypatch.setattr(
+        executor_reconciliation,
+        "build_sandbox_executor_reconciliation_port",
+        lambda: lease_port,
+    )
+    monkeypatch.setattr(
+        executor_reconciliation,
+        "_run_executor_terminal_reconciler",
+        fake_reconciler,
+    )
+
+    await worker_main.run_executor_terminal_reconciler(
+        stop_event,
+        worker_id="worker-a",
+        concurrency=1,
+    )
+
+    assert captured == {
+        "stop_event": stop_event,
+        "lease_port": lease_port,
+        "worker_id": "worker-a",
+        "concurrency": 1,
+    }

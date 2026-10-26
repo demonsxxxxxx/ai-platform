@@ -22,7 +22,7 @@ connection or commit independently.
 | `mcp` | `app/mcp/infrastructure/postgres.py`, `registry_postgres.py`, `tool_policies_postgres.py`; `app/mcp/repository.py` (retained builtin authority SQL only) | Server-qualified lookup has one PostgreSQL owner; Chat/source-replay selection policy is in `application/selection_authorization.py` |
 | `platform` | `app/platform/postgres/errors.py`, `limits.py`, `values.py`; `app/kernel/memory_redaction.py` | Shared PostgreSQL errors, value encoding, payload bounds, and memory redaction rules |
 | `runs` | `app/runs/infrastructure/` adapters | Run creation, admission, control operations, lifecycle, steps, replay, and administrative queries |
-| `sandbox` | `app/sandbox/infrastructure/leases_postgres.py` | Sandbox lease persistence |
+| `sandbox` | `app/sandbox/infrastructure/lease_runtime_postgres.py`, `executor_reconciliation_postgres.py`, and `leases_postgres.py` | Sandbox lease writes, reconciliation, reads, and cleanup persistence |
 | `skills` | `app/skills/infrastructure/` adapters | Skill catalog, resolution, versions, snapshots, overlays, and legacy workbench persistence |
 | `streaming` | `app/streaming/infrastructure/run_events_postgres.py` | Durable Run event persistence |
 | `persistence` | `app/persistence/` | Transitional artifact/file lifecycle adapters; object_lifecycle owns outbox orchestration and target domains own eligibility |
@@ -44,7 +44,7 @@ Ordinary Run transitions are orchestrated by
 `app.runs.application.lifecycle.RunLifecycleService` with explicit persistence,
 event, and audit ports. API and Worker composition inject the service;
 committed-v4 and provider-lineage coordination lives in
-`app.runs.application.terminalization_v4`. Stale-run recovery continues through
+`app.runs.application.run_terminalization`. Stale-run recovery continues through
 the execution application, including its queue fence and executor terminal
 receipt checks. These application boundaries coexist with the cross-domain
 adapter calls described above.
