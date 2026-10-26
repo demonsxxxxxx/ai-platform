@@ -212,6 +212,7 @@ async def test_runtime_admission_failure_after_open_closes_owner(monkeypatch, ca
     from types import SimpleNamespace
     from fastapi import HTTPException
     import app.routes.runtime_callbacks as callbacks
+    from app.sandbox.api import SandboxCallbackIdentity
 
     stream = Stream(close_error=True)
     clients = client_factory(monkeypatch, lambda request: httpx.Response(
@@ -259,8 +260,12 @@ async def test_runtime_admission_failure_after_open_closes_owner(monkeypatch, ca
     ))
     request = SimpleNamespace(arguments={"path": "sample.txt"}, run_id="run", attempt_id="attempt",
                               session_id="session", callback_token_id="callback")
+    identity = SandboxCallbackIdentity(
+        run_id="run", attempt_id="attempt", callback_token_id="callback",
+        session_id="session",
+    )
     with pytest.raises(type(failure)) as caught:
-        await callbacks._profile_drive_file_response(request)
+        await callbacks._profile_drive_file_response(request, identity)
     assert caught.value is failure
     assert stream.closed and clients[0].is_closed
 
