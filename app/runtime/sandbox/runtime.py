@@ -513,6 +513,8 @@ class SandboxRuntime:
                     if cancellation is None:
                         cancellation = exc
                 except TimeoutError:
+                    if task.done():
+                        continue
                     task.cancel()
                     task.add_done_callback(consume_background_task)
                     raise TimeoutError("sandbox cleanup timed out") from None
@@ -537,25 +539,13 @@ class SandboxRuntime:
             try:
                 lease_record_id = await asyncio.shield(record_task)
             except asyncio.CancelledError:
-                try:
-                    lease_record_id = await await_bounded_task(record_task)
-                except TimeoutError:
-                    lease_record_uncertain = True
-                    record_task.add_done_callback(consume_background_task)
-                    force_finished = (
-                        self._uses_default_lease_recorder
-                        and self._force_finish_lease_record(lease_record_id)
-                    )
-                    if force_finished and not record_task.done():
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.shield(record_task),
-                                timeout=cleanup_timeout_seconds,
-                            )
-                        except BaseException:
-                            pass
-                except Exception:
-                    pass
+                # Fence the preallocated lease immediately; waiting for a
+                # cancelled persistence task here can deadlock before the
+                # outer compensation path can publish the release fence.
+                lease_record_uncertain = True
+                record_task.cancel()
+                record_task.add_done_callback(consume_background_task)
+                self._force_finish_lease_record(lease_record_id)
                 raise
             except BaseException as exc:
                 try:
@@ -823,6 +813,8 @@ class SandboxRuntime:
                 "materialized_file_names": request.materialized_file_names,
                 "provider_session_resume_required": request.provider_session_resume_required,
             }
+            if lease_record_id is not None:
+                task_config["lease_id"] = lease_record_id
             if request.model_token_limits is not None:
                 task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:

@@ -83,6 +83,20 @@ The platform owns these durable facts:
 - workspace collection and artifact publication receipts;
 - release intent, provider stop outcome, reconciliation outcome, and audit facts.
 
+### Change Contract: cancellation during lease persistence
+
+`SandboxRuntime` preallocates the exact lease identity before the default
+persistence insert. If the owning task is cancelled while that insert is in
+flight, it cancels the persistence task, closes its database connection when
+that operation is still active, and publishes the release fence through the
+normal scoped release path before returning cancellation. A late insert must
+therefore observe the released identity and cannot recreate an active lease.
+Provider stop still precedes release, and the original cancellation remains the
+caller outcome unless compensation fails. The custom injected recorder/releaser
+hooks retain their existing test and integration contract. No prior runtime
+lease rows, provider lifecycle state, or public payload compatibility is
+retired by this correction.
+
 ## Target lifecycle
 
 The target platform state machine is:

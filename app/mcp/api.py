@@ -38,6 +38,15 @@ from app.mcp.domain.headers import (
     normalize_static_mcp_headers,
 )
 from app.mcp.domain.identifiers import is_safe_mcp_id
+from app.mcp.domain.original_file import (
+    MAX_ORIGINAL_FILE_BYTES as MAX_ORIGINAL_FILE_BYTES,
+    OriginalFileResultError as OriginalFileResultError,
+    MAX_ORIGINAL_FILE_RESPONSE_BYTES as MAX_ORIGINAL_FILE_RESPONSE_BYTES,
+    ORIGINAL_FILE_RESULT_FORMAT as ORIGINAL_FILE_RESULT_FORMAT,
+    ORIGINAL_FILE_RESULT_FORMAT_MARKER as ORIGINAL_FILE_RESULT_FORMAT_MARKER,
+    extract_original_file_result as extract_original_file_result,
+    original_file_result_metadata as original_file_result_metadata,
+)
 from app.mcp.domain.tool_references import (
     assert_mcp_tool_reference,
     build_mcp_tool_reference,
@@ -212,6 +221,13 @@ __all__ = [
     "get_mcp_server_runtime_target",
     "get_mcp_tool_registry_entry",
     "is_safe_mcp_id",
+    "MAX_ORIGINAL_FILE_BYTES",
+    "OriginalFileResultError",
+    "MAX_ORIGINAL_FILE_RESPONSE_BYTES",
+    "ORIGINAL_FILE_RESULT_FORMAT",
+    "ORIGINAL_FILE_RESULT_FORMAT_MARKER",
+    "extract_original_file_result",
+    "original_file_result_metadata",
     "is_valid_mcp_public_tool_name",
     "list_mcp_server_registry",
     "list_mcp_server_registry_names",

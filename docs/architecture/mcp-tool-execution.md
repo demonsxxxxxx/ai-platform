@@ -148,6 +148,31 @@ a credential after their context operation has been superseded.
 
 ## Implementation
 
+### Opaque original-file delivery
+
+A selected live MCP `Tool` may declare the exact input-schema marker
+`x-ai-platform-result-format: profile-drive.original-file.v1`. The marker is a
+wire-format declaration only; it never grants authorization. The adapter checks
+the live selected Tool schema and keeps ordinary catalog/session traffic at the
+existing 1 MiB response/event bound. Only the actual invocation of that marked
+Tool opens a separate bounded call session with a 16 MiB response/event bound,
+covering an at-most-8 MiB Base64 resource and framing. The ordinary session,
+selected siblings, discovery, credential refresh and single-dispatch/no-replay
+rules are unchanged.
+
+The native result must contain exactly the bounded metadata text item and
+`profile-drive://original-file` embedded resource. Execution passes validated
+metadata and unchanged opaque bytes to a bootstrap-composed callback bound to
+the current Agent cwd and exact tenant/workspace/user/session/Run/Attempt/lease.
+The
+callback atomically writes a safe leaf below `inputs/`, returns only a
+workspace-relative path and bounded metadata, and enforces existing input count,
+total-byte, path, symlink and cancellation boundaries. Local delivery failure is
+an adapter-owned failure and never becomes a remote success or fabricated
+remote `isError` receipt. Claude Agent Skills/Bash/commands own all document
+parsing after delivery; the platform does not parse MIME-specific content or
+project document text.
+
 1. Keep `server::raw_tool` references and canonical platform subject identities
    unchanged. Build an explicit canonical-to-SDK alias map in the Claude
    adapter; use stable bounded hash suffixes to disambiguate normalized names.

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -414,6 +415,90 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert peer.sdk_tool not in str([value.payload for value in events])
 
         assert "synthetic.jwt" not in str([value.payload for value in events])
+
+
+@pytest.mark.asyncio
+async def test_installed_claude_cli_original_file_reference_reaches_authorized_bash(monkeypatch, tmp_path):
+    from docx import Document
+    from app.executors import claude_agent_sdk_runner as runner
+
+    workspace = tmp_path
+    if str(workspace).startswith(("//?/", "\\\\?\\")):
+        workspace = type(tmp_path)(str(workspace)[4:])
+    document = Document()
+    document.add_paragraph("known paragraph")
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "known table"
+    import io
+    output = io.BytesIO()
+    document.save(output)
+    original_bytes = output.getvalue()
+
+    with local_mcp_peers() as peer:
+        peer.original_file = True
+        peer.original_file_bytes = original_bytes
+        peer.original_file_workspace = str(workspace)
+        peer.parse_output_path = str(workspace / "parsed.txt")
+        peer.python_executable = sys.executable.replace("\\", "/")
+        peer.tools[0]["inputSchema"] = {
+            **SCHEMA, "x-ai-platform-result-format": "profile-drive.original-file.v1",
+        }
+        selected_subject = subject(server="files", tool=RAW_TOOL, url=peer.url + "/mcp")
+        registration = ClaudeMcpRegistration(
+            {selected_subject["identity"]: selected_subject}, {}, session_factory=None, list_tools=None
+        )
+        peer.sdk_tool = registration.sdk_names[selected_subject["identity"]]
+        allow_local_peer(monkeypatch, peer.url)
+        settings = SimpleNamespace(
+            claude_agent_sdk_enabled=True, claude_agent_sdk_max_turns=5,
+            claude_agent_sdk_timeout_seconds=40, claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk", claude_agent_model="claude-sonnet-4-6",
+            anthropic_model="", anthropic_base_url=peer.url, anthropic_auth_token="synthetic-model-token",
+            openai_api_key="",
+        )
+        monkeypatch.setattr(runner, "get_settings", lambda: settings)
+        real_env = runner.build_sdk_env
+
+        def synthetic_env(*, cwd, model_max_output_tokens=None):
+            env = real_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens)
+            env.update({"ANTHROPIC_BASE_URL": peer.url, "ANTHROPIC_AUTH_TOKEN": "synthetic-model-token",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "NO_PROXY": "127.0.0.1,localhost"})
+            return env
+
+        monkeypatch.setattr(runner, "build_sdk_env", synthetic_env)
+        delivered = []
+
+        async def delivery(metadata, raw):
+            from app.execution.infrastructure.original_file_delivery import OriginalFileDelivery
+            result = await OriginalFileDelivery(
+                cwd=workspace, tenant_id="tenant", workspace_id="workspace", user_id="user",
+                session_id="session", run_id="run", attempt_id="attempt", lease_id="lease",
+            )(metadata, raw)
+            delivered.append(result)
+            return result
+
+        from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
+        authorized_subjects = with_sandbox_local_tool_capability_subjects(
+            [selected_subject], sandbox_provider="opensandbox",
+            authorized_sandbox_tool_identities={"Bash"},
+        )
+        bash_subject = next(item for item in authorized_subjects if item["identity"] == "Bash")
+        assert bash_subject["workspace_contract"]
+        result = await runner.run_claude_agent_sdk(
+            prompt="Use the selected original file, then use authorized Bash to parse it and report both values.",
+            cwd=workspace, skill_id=None, skills=[], execution_policy="sandbox_brokered",
+            tool_policy_subjects=authorized_subjects,
+            on_capability_evidence=lambda _value: asyncio.sleep(0, result=True),
+            on_agent_event=lambda _values: asyncio.sleep(0, result=True),
+            on_tool_lifecycle=lambda _value: asyncio.sleep(0, result=True),
+            run_id="run_original", attempt_id="attempt_original", original_file_delivery=delivery,
+        )
+        assert result.error is None, result.runtime_diagnostics
+        assert delivered and delivered[0]["workspace_path"].startswith("inputs/"), (
+            result.runtime_diagnostics, peer.calls, peer.models
+        )
+        parsed = workspace / "parsed.txt"
+        assert parsed.read_text(encoding="utf-8").splitlines() == ["known paragraph", "known table"]
 
 
 @pytest.mark.asyncio

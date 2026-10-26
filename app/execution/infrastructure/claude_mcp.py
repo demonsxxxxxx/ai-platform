@@ -8,10 +8,17 @@ import json
 import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from mcp.server import Server, ServerRequestContext
 from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
+from app.execution.infrastructure.original_file_delivery import OriginalFileDeliveryError
+from app.mcp.api import (
+    MAX_ORIGINAL_FILE_RESPONSE_BYTES,
+    OriginalFileResultError,
+    extract_original_file_result,
+    original_file_result_metadata,
+)
 from mcp_types import (
     CallToolRequestParams,
     CallToolResult,
@@ -27,6 +34,7 @@ _BUILTIN_SERVERS = frozenset({"ai-platform-context", "ai-platform-response"})
 _MAX_SDK_TOOL_NAME_LENGTH = 64
 _MAX_SDK_SERVER_NAME_LENGTH = 24
 _MCP_DISCOVERY_TIMEOUT_SECONDS = 10
+_MCP_DISCOVERY_RESPONSE_BYTES = 1024 * 1024
 
 
 def _safe_component(value: str) -> str:
@@ -91,6 +99,17 @@ def _stable_aliases(
     return aliases
 
 
+def _safe_workspace_reference(value: object) -> str | None:
+    if not isinstance(value, str) or not value.startswith("inputs/"):
+        return None
+    if "\\" in value or "\x00" in value:
+        return None
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    return value
+
+
 def _tool_arguments_digest(arguments: object) -> str | None:
     try:
         encoded = json.dumps(arguments, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -100,8 +119,9 @@ def _tool_arguments_digest(arguments: object) -> str | None:
 
 
 class ClaudeMcpRegistration:
-    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None, credential_resolver=None):
+    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None, credential_resolver=None, original_file_delivery: Callable[[dict[str, Any], bytes], Awaitable[dict[str, Any]]] | None = None):
         self._credential_resolver = credential_resolver
+        self._original_file_delivery = original_file_delivery
         self._failure_observer = failure_observer
         self.configs = configs
         self._session_factory = session_factory
@@ -191,7 +211,7 @@ class ClaudeMcpRegistration:
         self._tool_error_results.discard(key)
         return received
 
-    def _server(self, server_name, tools, session):
+    def _server(self, server_name, tools, session, original_file_session_factory=None):
         selected = {alias: (tool, remote_name) for alias, tool, remote_name in tools}
 
         async def list_selected_tools(
@@ -213,10 +233,19 @@ class ClaudeMcpRegistration:
                     content=[TextContent(type="text", text="Tool is not authorized")],
                     is_error=True,
                 )
-            _tool, remote_name = selected[name]
+            tool, remote_name = selected[name]
             # Preserve the original remote tool name and typed result fields.
             try:
-                result = await session.call_tool(remote_name, arguments)
+                if original_file_result_metadata(tool.input_schema):
+                    if original_file_session_factory is None:
+                        raise MCPError(-32000, "original_file_session_unavailable")
+                    async with original_file_session_factory() as original_session:
+                        seed_tool_definition = getattr(original_session, "seed_tool_definition", None)
+                        if callable(seed_tool_definition):
+                            seed_tool_definition(tool.model_copy(update={"name": remote_name}))
+                        result = await original_session.call_tool(remote_name, arguments)
+                else:
+                    result = await session.call_tool(remote_name, arguments)
             except UrlElicitationRequiredError:
                 # Keep the MCP server's special elicitation handling unchanged.
                 raise
@@ -239,6 +268,44 @@ class ClaudeMcpRegistration:
                         # Diagnostics must never replace the model-facing exception.
                         pass
                 raise
+            if (
+                isinstance(result, CallToolResult)
+                and result.is_error is False
+                and original_file_result_metadata(tool.input_schema)
+            ):
+                if self._original_file_delivery is None:
+                    raise MCPError(-32000, "original_file_delivery_unavailable")
+                try:
+                    requested_max_bytes = arguments.get("maxBytes")
+                    if requested_max_bytes is None:
+                        requested_max_bytes = arguments.get("max_bytes")
+                    metadata, raw_bytes = extract_original_file_result(
+                        result, max_bytes=requested_max_bytes
+                    )
+                    delivery = await self._original_file_delivery(metadata, raw_bytes)
+                    workspace_path = _safe_workspace_reference(
+                        delivery.get("workspace_path") if isinstance(delivery, dict) else None
+                    )
+                    if workspace_path is None:
+                        raise OriginalFileResultError("original_file_delivery_invalid")
+                    model_metadata = {
+                        key: metadata[key]
+                        for key in ("format", "source", "name", "size_bytes", "content_type")
+                    }
+                    model_metadata["workspace_path"] = workspace_path
+                    result = result.model_copy(update={
+                        "content": [TextContent(
+                            type="text",
+                            text=json.dumps(model_metadata, ensure_ascii=True, separators=(",", ":")),
+                        )],
+                        "structured_content": None,
+                    })
+                except OriginalFileResultError as exc:
+                    raise MCPError(-32000, str(exc)) from None
+                except OriginalFileDeliveryError:
+                    # Local materialization failure is deliberately distinct from
+                    # the remote CallToolResult and contains no host/path detail.
+                    raise MCPError(-32001, "original_file_delivery_failed") from None
             if isinstance(result, CallToolResult) and result.is_error is True:
                 identity = self.canonical_identity(f"mcp__{server_name}__{name}")
                 digest = _tool_arguments_digest(arguments)
@@ -282,20 +349,48 @@ class ClaudeMcpRegistration:
 
         try:
             async with AsyncExitStack() as stack:
-                async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
-                    credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
-                                          if self._credential_resolver is not None else {})
-                    session = await stack.enter_async_context(self._session_factory(config, **credential_options))
-                    tools = await self._list_tools(session)
+                credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
+                                      if self._credential_resolver is not None else {})
+                discovery_config = {
+                    **config,
+                    "max_response_bytes": _MCP_DISCOVERY_RESPONSE_BYTES,
+                    "max_response_total_bytes": _MCP_DISCOVERY_RESPONSE_BYTES,
+                }
+                discovery_context = self._session_factory(discovery_config, **credential_options)
+                discovery_session = await discovery_context.__aenter__()
+                try:
+                    async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
+                        tools = await self._list_tools(discovery_session)
+                except BaseException as exc:
+                    await discovery_context.__aexit__(type(exc), exc, exc.__traceback__)
+                    raise
                 by_name = {tool.name: tool for tool in tools}
                 available_names = names.intersection(by_name)
                 if available_names != names:
                     self.unavailable[server_name] = "selected_tool_unavailable"
                 if not available_names:
+                    await discovery_context.__aexit__(None, None, None)
                     if not ready.done():
                         ready.set_result(None)
                     return
 
+                stack.push_async_exit(discovery_context)
+                session = discovery_session
+                original_file_session_factory = None
+                if any(
+                    original_file_result_metadata(by_name[name].input_schema)
+                    for name in available_names
+                ):
+                    expanded_config = {
+                        **config,
+                        "max_response_bytes": MAX_ORIGINAL_FILE_RESPONSE_BYTES,
+                        "max_response_total_bytes": MAX_ORIGINAL_FILE_RESPONSE_BYTES,
+                    }
+
+                    def original_file_session_factory(
+                        *, _config=expanded_config, _credential_options=credential_options,
+                    ):
+                        return self._session_factory(_config, **_credential_options)
                 alias_by_remote = {
                     remote_name: alias
                     for (server, remote_name), alias in self._tool_aliases.items()
@@ -309,7 +404,7 @@ class ClaudeMcpRegistration:
                         tool = tool.model_copy(update={"name": alias})
                     selected.append((alias, tool, remote_name))
                 if not ready.done():
-                    ready.set_result((selected, session))
+                    ready.set_result((selected, session, original_file_session_factory))
                 # This task owns the session context until activation exits.
                 # The SDK may call the session from another task, but cleanup
                 # always runs in the task that entered the context manager.
@@ -386,9 +481,11 @@ class ClaudeMcpRegistration:
             for server_name, outcome in zip(ready_by_server, outcomes):
                 if outcome is None:
                     continue
-                selected, session = outcome
+                selected, session, original_file_session_factory = outcome
                 server_alias = self.server_aliases[server_name]
-                servers[server_alias] = self._server(server_alias, selected, session)
+                servers[server_alias] = self._server(
+                    server_alias, selected, session, original_file_session_factory
+                )
             options.mcp_servers = servers
             if any(outcome is not None for outcome in outcomes):
                 self._configure_tool_search(options)

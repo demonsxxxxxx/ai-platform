@@ -7,18 +7,19 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from app.context.api import ContextFileContentError, context_stage_filename_fits
-from app.context.file_content import (
+from app.context.api import (
+    ContextFileContentError,
     MAX_CONTEXT_FILE_STAGE_BYTES,
-    validate_context_file_for_stage,
+    MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES,
+    MAX_PRIMARY_FILE_IDS,
+    context_stage_filename_fits,
 )
+from app.context.file_content import validate_context_file_for_stage
 from app.path_safety import ensure_creatable_inside
 
 
 _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "text", "txt", "xlsx"})
-MAX_PRIMARY_FILE_IDS = 8
 _SESSION_FILE_SELECTION_PAGE_LIMIT = 128
-_MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -435,7 +436,7 @@ async def materialize_run_context_files(
             "context_file_storage_unavailable",
             phase="storage",
         )
-    if sum(item[5] for item in authorized_files) > _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
+    if sum(item[5] for item in authorized_files) > MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES:
         raise ContextFileContentError("context_file_too_large")
 
     inputs_dir = workspace / "inputs"

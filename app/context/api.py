@@ -52,6 +52,7 @@ from app.context.application.worker_snapshot import (
 from app.context.domain.file_staging import (
     context_stage_filename_fits as context_stage_filename_fits,
 )
+
 from app.context.domain.conversation import (
     EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
     empty_executor_conversation_context,
@@ -79,6 +80,10 @@ from app.context.domain.provider_sessions import (
     normalize_provider_subpath,
     provider_session_id_for_scope,
 )
+
+MAX_PRIMARY_FILE_IDS = 8
+MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_CONTEXT_FILE_STAGE_BYTES = 128 * 1024 * 1024
 
 
 CONTEXT_FILE_FAILURE_SCHEMA_VERSION = "ai-platform.context-file-failure.v1"
@@ -268,6 +273,9 @@ __all__ = [
     "ContextFileContentError",
     "context_file_executor_failure",
     "context_file_failure_diagnostic",
+    "MAX_PRIMARY_FILE_IDS",
+    "MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES",
+    "MAX_CONTEXT_FILE_STAGE_BYTES",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
     "make_authority_receipt",

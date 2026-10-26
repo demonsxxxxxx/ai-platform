@@ -6,6 +6,7 @@ import asyncio
 import re
 from builtins import ExceptionGroup
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import partial
 from typing import Any, Mapping
 
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ import httpx2 as httpx
 from mcp import Client, MCPError
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import ListToolsResult
+from mcp_types import ListToolsResult, Tool
 from pydantic import ValidationError
 
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
@@ -121,7 +122,16 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
         await self._stream.aclose()
 
 
+_SSE_EVENT_LIMIT_LOCK = asyncio.Lock()
+
+
 class _SingleDispatchMcpClient(Client):
+    def seed_tool_definition(self, tool: Tool) -> None:
+        """Seed SDK result/header validation from the already-authorized live listing."""
+        self.session._absorb_tool_listing(
+            ListToolsResult(tools=[tool], nextCursor=None), complete=False
+        )
+
     async def call_tool(self, name, arguments=None):
         # A native admission authorizes one dispatch. Keep v1's explicit-call
         # semantics instead of v2 Client's schema-refresh or input-required replay.
@@ -135,6 +145,17 @@ async def open_mcp_session(
 ):
     """Keep credentials on one approved origin, including SSE message endpoints."""
     transport = config.get("type")
+    configured_response_bytes = config.get("max_response_bytes", max_response_bytes)
+    configured_total_bytes = config.get("max_response_total_bytes", max_response_total_bytes)
+    max_response_bytes = configured_response_bytes
+    max_response_total_bytes = configured_total_bytes
+    if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 16 * 1024 * 1024:
+        raise McpToolDiscoveryError("response_limit_invalid")
+    if max_response_total_bytes is not None and (
+        type(max_response_total_bytes) is not int
+        or not 1 <= max_response_total_bytes <= 16 * 1024 * 1024
+    ):
+        raise McpToolDiscoveryError("response_limit_invalid")
     if transport not in {"http", "sse"}:
         raise McpToolDiscoveryError("unsupported_transport")
     try:
@@ -238,19 +259,38 @@ async def open_mcp_session(
             # endpoint forever after its reader rejects an early malformed frame.
             async with asyncio.timeout(timeout_seconds):
                 if transport == "sse":
-                    protocol_transport = sse_client(
-                        target.endpoint, headers=headers, timeout=timeout_seconds,
-                        sse_read_timeout=timeout_seconds, httpx_client_factory=client_factory,
-                    )
+                    # MCP 2.3 exposes the EventSource budget through a module
+                    # helper but not sse_client's public signature. Install it
+                    # only while the owned transport enters, under one lock;
+                    # the resulting EventSource keeps the bound budget.
+                    async with _SSE_EVENT_LIMIT_LOCK:
+                        sse_globals = sse_client.__wrapped__.__globals__
+                        original_sse_within_origin = sse_globals["sse_within_origin"]
+                        sse_globals["sse_within_origin"] = partial(
+                            original_sse_within_origin,
+                            max_event_size=max_response_bytes,
+                        )
+                        try:
+                            protocol_transport = sse_client(
+                                target.endpoint, headers=headers, timeout=timeout_seconds,
+                                sse_read_timeout=timeout_seconds,
+                                httpx_client_factory=client_factory,
+                            )
+                            session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                                protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                                message_handler=validate_message, cache=None,
+                            ))
+                        finally:
+                            sse_globals["sse_within_origin"] = original_sse_within_origin
                 else:
                     http_client = await stack.enter_async_context(client_factory(headers=headers, timeout=timeout_seconds))
                     protocol_transport = streamable_http_client(
                         target.endpoint, http_client=http_client, terminate_on_close=terminate_on_close,
                     )
-                session = await stack.enter_async_context(_SingleDispatchMcpClient(
-                    protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
-                    message_handler=validate_message, cache=None,
-                ))
+                    session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                        protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                        message_handler=validate_message, cache=None,
+                    ))
             _install_strict_tool_list_validation(session)
             if guard_failure:
                 raise McpToolDiscoveryError(guard_failure)
