@@ -2082,7 +2082,7 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
     lease_row.update({field: getattr(payload, field) for field in (
         "tenant_id", "workspace_id", "user_id", "session_id", "run_id",
     )})
-    lease_row["lease_payload_json"] = {"owner_generation": 4}
+    lease_row["lease_payload_json"] = {"attempt_id": lease_row["attempt_id"], "owner_generation": 4}
 
     async def run(conn, **kwargs):
         return {**model, "executor_type": payload.executor_type,

@@ -46,7 +46,7 @@ async def test_active_cancel_http_keeps_original_executor_as_settlement_owner(
     monkeypatch.setattr("app.auth.get_settings", existing.auth_settings)
     monkeypatch.setattr(route + ".transaction", existing.fake_transaction)
     monkeypatch.setattr(existing.route_cancellation_handlers, role, cancel)
-    monkeypatch.setattr(route + "._sandbox_cleanup.cleanup_cancelled_run_leases", unexpected_cleanup)
+    monkeypatch.setattr(existing.sandbox_runtime_cleanup, "cleanup_cancelled_run_leases", unexpected_cleanup)
     response = TestClient(existing.create_app()).post(
         "/api/ai/" + ("admin/" if role == "admin" else "") + "runs/run_active/cancel",
         headers=existing.admin_headers() if role == "admin" else existing.headers(),
