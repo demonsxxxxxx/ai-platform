@@ -107,12 +107,20 @@ from app.runs.api import (
     RunInputsService,
     RunCancellationUseCase,
     RunCancellationQueueCleanupError,
-    RunDiagnosticsService,
     bind_run_model,
     inherit_run_model,
     public_run_outcome,
     run_retry_block_reason,
     run_unconfirmed_execution_block_reason,
+)
+from app.bootstrap.run_transport import (
+    bind_queue_insight,
+    PermanentQueueDeliveryRejected,
+    delivery_service,
+    ensure_control_queue_admission_http,
+    require_immediate_delivery,
+    record_accepted_run,
+    compensate_queue_rejection,
 )
 from app.runs.infrastructure import (
     capability_admission_postgres as runs_capability_admission,
@@ -557,34 +565,16 @@ async def enforce_user_active_run_limit(conn, *, tenant_id: str, user_id: str) -
     )
 
 
-async def queue_insight_for_status(status: str, tenant_id: str, *, user_id: str | None = None) -> dict[str, Any] | None:
-    if normalize_run_status(status) != "queued":
-        return None
-    return await get_queue_insight(tenant_id, user_id=user_id)
+queue_insight_for_status = bind_queue_insight(lambda status: normalize_run_status(status),
+                                             lambda tenant_id, *, user_id=None: get_queue_insight(tenant_id, user_id=user_id))
 
 
-async def _compensate_enqueue_failure(
-    *,
-    principal: AuthPrincipal,
-    run_id: str,
-    run_lifecycle: Any,
-    v4_capabilities: WorkerV4Capabilities,
-    diagnostic_error: BaseException | None = None,
-    run_diagnostics: RunDiagnosticsService | None = None,
-    trace_id: str | None = None,
-) -> None:
-    """Leave a committed run in a truthful terminal state when queue admission fails."""
-
-    async with transaction() as conn:
-        await terminalize_enqueue_failure(v4_capabilities, conn,
-            lifecycle=run_lifecycle,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-            trace_id=trace_id or standard_trace_id(run_id),
-            diagnostic_error=diagnostic_error,
-            run_diagnostics=run_diagnostics,
-        )
+async def _compensate_enqueue_failure(*, principal, run_id, run_lifecycle, v4_capabilities, diagnostic_error=None, run_diagnostics=None, trace_id=None):
+    await compensate_queue_rejection(
+        principal=principal, run_id=run_id, trace_id=trace_id or standard_trace_id(run_id),
+        diagnostic_error=diagnostic_error, lifecycle=run_lifecycle, capabilities=v4_capabilities,
+        run_diagnostics=run_diagnostics, transaction=transaction, terminalize=terminalize_enqueue_failure,
+    )
 
 
 def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
@@ -1124,6 +1114,9 @@ async def create_run(
                         skill_id=resolved_skill_id,
                     ),
                 )
+            await record_accepted_run(
+                delivery_service(http_request), conn, queue_payload, source="create_run"
+            )
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
@@ -1133,6 +1126,21 @@ async def create_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    delivery_intents = delivery_service(http_request)
+    if delivery_intents is not None and delivery_intents.enabled:
+        try:
+            queue_position = await require_immediate_delivery(
+                delivery_intents, tenant_id=tenant_id, run_id=run_id
+            )
+        except PermanentQueueDeliveryRejected as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if queue_position is not None:
+            return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
+        return CreateRunResponse(
+            run_id=run_id,
+            session_id=session_id,
+            status="accepted_pending_enqueue",
+        )
     try:
         await enqueue_run(queue_payload)
     except Exception as exc:
@@ -1141,16 +1149,11 @@ async def create_run(
             "run_reconciliation_in_progress",
         }:
             await _compensate_enqueue_failure(
-                principal=principal,
-                run_id=run_id,
+                principal=principal, run_id=run_id,
                 run_lifecycle=http_request.app.state.run_lifecycle,
                 v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
                 diagnostic_error=exc,
-                run_diagnostics=getattr(
-                    http_request.app.state,
-                    "run_diagnostics_service",
-                    None,
-                ),
+                run_diagnostics=getattr(http_request.app.state, "run_diagnostics_service", None),
             )
             raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
         try:
@@ -1201,6 +1204,9 @@ async def copy_run(
                     source="copy_run",
                     authorized_source_run_id=run_id,
                 )
+                await record_accepted_run(
+                    delivery_service(request), conn, queue_payload, source="copy"
+                )
     except HTTPException as exc:
         await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
         raise
@@ -1217,73 +1223,82 @@ async def copy_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    try:
-        async with transaction() as conn:
-            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
-                conn,
-                principal=principal,
-                run_id=str(copied["run_id"]),
-            )
-    except Exception as exc:
-        # The child is committed, but Redis has not been touched. A rejected or
-        # unavailable replay authorization must not strand it as queued.
-        await _compensate_enqueue_failure(
-            principal=principal,
-            run_id=str(copied["run_id"]),
-            run_lifecycle=request.app.state.run_lifecycle,
-            v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
-            diagnostic_error=exc,
-            run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
-        )
-        if isinstance(exc, platform_errors.RepositoryAuthorizationError):
-            await _audit_capability_denial(principal, exc, source="copy_run")
-            raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
-        if isinstance(exc, SkillVersionMaterializationError):
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if isinstance(exc, RepositoryNotFoundError):
-            _raise_if_capability_revoked(exc)
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if isinstance(exc, RepositoryConflictError):
-            _raise_if_capability_revoked(exc)
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if isinstance(exc, HTTPException):
-            await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
-            raise
-        raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
-    try:
-        queue_position = await enqueue_run(queue_payload)
-    except Exception as exc:
-        if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
-            "queue_payload_invalid",
-            "run_reconciliation_in_progress",
-        }:
+    delivery_intents = delivery_service(request)
+    if delivery_intents is None or not delivery_intents.enabled:
+        try:
+            async with transaction() as conn:
+                await _agent_profile_authority.reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=str(copied["run_id"]),
+                )
+        except Exception as exc:
+            # The legacy path still validates the committed child immediately
+            # before its first queue admission.
             await _compensate_enqueue_failure(
-                principal=principal,
-                run_id=str(copied["run_id"]),
+                principal=principal, run_id=str(copied["run_id"]),
                 run_lifecycle=request.app.state.run_lifecycle,
                 v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
                 diagnostic_error=exc,
-                run_diagnostics=getattr(
-                    request.app.state,
-                    "run_diagnostics_service",
-                    None,
-                ),
+                run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
             )
-            raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
-        # The enqueue may have committed before its reply was lost. Keep the
-        # committed child and return its identity even if Redis is unavailable
-        # for readback, so the caller can observe the eventual Run outcome.
+            if isinstance(exc, platform_errors.RepositoryAuthorizationError):
+                await _audit_capability_denial(principal, exc, source="copy_run")
+                raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+            if isinstance(exc, SkillVersionMaterializationError):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if isinstance(exc, RepositoryNotFoundError):
+                _raise_if_capability_revoked(exc)
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if isinstance(exc, RepositoryConflictError):
+                _raise_if_capability_revoked(exc)
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if isinstance(exc, HTTPException):
+                await _audit_wrapped_capability_denial(principal, exc, source="copy_run")
+                raise
+            raise HTTPException(status_code=503, detail="run_replay_authorization_unavailable") from exc
+    if delivery_intents is not None and delivery_intents.enabled:
         try:
-            admission = await read_queue_admission(queue_payload)
-        except Exception:
-            admission = None
-        if admission is None:
+            queue_position = await require_immediate_delivery(
+                delivery_intents,
+                tenant_id=principal.tenant_id,
+                run_id=str(copied["run_id"]),
+            )
+        except PermanentQueueDeliveryRejected as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if queue_position is None:
             return RunControlResponse(
                 run_id=copied["run_id"],
                 session_id=copied["session_id"],
                 status="accepted_pending_enqueue",
             )
-        queue_position = int(admission.queue_position)
+    else:
+        try:
+            queue_position = await enqueue_run(queue_payload)
+        except Exception as exc:
+            if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
+                "queue_payload_invalid",
+                "run_reconciliation_in_progress",
+            }:
+                await _compensate_enqueue_failure(
+                    principal=principal, run_id=str(copied["run_id"]),
+                    run_lifecycle=request.app.state.run_lifecycle,
+                    v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
+                    diagnostic_error=exc,
+                    run_diagnostics=getattr(request.app.state, "run_diagnostics_service", None),
+                )
+                raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+            try:
+                admission = await read_queue_admission(queue_payload)
+            except Exception:
+                admission = None
+            if admission is None:
+                return RunControlResponse(
+                    run_id=copied["run_id"],
+                    session_id=copied["session_id"],
+                    status="accepted_pending_enqueue",
+                )
+            queue_position = int(admission.queue_position)
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1320,43 +1335,20 @@ async def _ensure_run_control_queue_admission(
     *,
     check_existing: bool,
     principal: AuthPrincipal,
+    run_delivery_intents=None,
 ) -> QueueAdmissionMetadata:
     """Recover or idempotently admit one immutable committed control child."""
-
-    async with transaction() as conn:
-        await _agent_profile_authority.reauthorize_pinned_run_for_replay(
-            conn,
-            principal=principal,
-            run_id=str(queue_payload["run_id"]),
-        )
-        if check_existing:
-            try:
-                existing = await read_queue_admission(queue_payload)
-            except QueueAdmissionRejected as exc:
-                raise HTTPException(status_code=503, detail="queue_admission_recovery_failed") from exc
-            except Exception:
-                existing = None
-            if existing is not None:
-                return existing
-
-        try:
-            queue_position = await enqueue_run(queue_payload)
-            return QueueAdmissionMetadata(
-                queue_position=queue_position,
-                queue_admission_ordinal=0,
-                message_id="",
-                source="idempotent_enqueue",
-            )
-        except Exception as enqueue_error:
-            try:
-                recovered = await read_queue_admission(queue_payload)
-            except Exception:
-                recovered = None
-            if recovered is not None:
-                return recovered
-            # The DB mapping and immutable queued child remain authoritative. A
-            # same-operation replay can safely retry the deterministic Redis admit.
-            raise HTTPException(status_code=503, detail="queue_admission_unconfirmed") from enqueue_error
+    return await ensure_control_queue_admission_http(
+        queue_payload,
+        check_existing=check_existing,
+        principal=principal,
+        transaction=transaction,
+        reauthorize=_agent_profile_authority.reauthorize_pinned_run_for_replay,
+        read_queue_admission=read_queue_admission,
+        enqueue_run=enqueue_run,
+        delivery_intents=run_delivery_intents,
+        queue_rejected_error=QueueAdmissionRejected,
+    )
 
 
 async def _run_control_queue_admission_state(
@@ -1380,6 +1372,7 @@ async def _mutate_run_control_child(
     run_id: str,
     action: Literal["retry", "resume"],
     operation_id: UUID4,
+    request: Request,
     principal: AuthPrincipal,
     v4_capabilities: WorkerV4Capabilities,
 ) -> RunControlMutationResponse:
@@ -1464,6 +1457,9 @@ async def _mutate_run_control_child(
                         source=f"{action}_run",
                         authorized_source_run_id=run_id,
                     )
+                    await record_accepted_run(
+                        delivery_service(request), conn, queue_payload, source=action
+                    )
                     await runs_control_operations.record_run_control_operation(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -1501,6 +1497,7 @@ async def _mutate_run_control_child(
                 queue_payload,
                 check_existing=not created,
                 principal=principal,
+                run_delivery_intents=delivery_service(request),
             )
         except HTTPException as exc:
             await _audit_wrapped_capability_denial(principal, exc, source=f"{action}_run")
@@ -1548,6 +1545,7 @@ async def retry_run(
         run_id=run_id,
         action="retry",
         operation_id=operation_id or uuid4(),
+        request=request,
         principal=principal,
         v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )
@@ -1567,6 +1565,7 @@ async def resume_run(
         run_id=run_id,
         action="resume",
         operation_id=operation_id or uuid4(),
+        request=request,
         principal=principal,
         v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
     )

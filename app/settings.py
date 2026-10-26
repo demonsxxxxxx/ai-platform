@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    # One switch controls both transactional intent writers and the Worker
+    # recovery scanner so they cannot be enabled independently.
+    run_delivery_intents_enabled: bool = Field(default=False)
+    run_delivery_intent_scan_batch_size: int = Field(default=25, ge=1, le=100)
+    run_delivery_intent_claim_ttl_seconds: int = Field(default=120, ge=1, le=3600)
+    run_delivery_intent_retry_base_seconds: int = Field(default=5, ge=1, le=3600)
+    run_delivery_intent_retry_cap_seconds: int = Field(default=600, ge=1, le=86400)
     sandbox_lease_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_role: Literal["integrated", "execution", "finalizer"] = Field(default="integrated")
     worker_concurrency: int = Field(default=10)
@@ -286,6 +293,8 @@ class Settings(BaseSettings):
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
         if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
             raise ValueError("object_delete_retry_cap_below_base")
+        if self.run_delivery_intent_retry_cap_seconds < self.run_delivery_intent_retry_base_seconds:
+            raise ValueError("run_delivery_retry_cap_below_base")
         if self.sandbox_security_profile == "internal-test" and not (
             self.deployment_environment == "test"
             and self.sandbox_container_provider == "opensandbox"

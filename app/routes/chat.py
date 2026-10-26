@@ -50,6 +50,7 @@ from app.conversations.api import (
     submission_error_detail as _submission_error_detail,
     submission_error_code as _submission_code,
     attempt_chat_queue_admission,
+    deliver_accepted_chat_run,
     resolve_chat_submission,
     submission_resolution_projection,
 )
@@ -61,7 +62,9 @@ from app.db import transaction
 from app.execution.api import (
     RunModelSelection,
     bind_selected_run_model,
+    deliver_run_delivery_intent,
     parse_requested_model_selection,
+    record_run_delivery_intent,
     resolve_chat_model_selection,
 )
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
@@ -114,6 +117,13 @@ from app.queue import (
     is_definitive_chat_queue_rejection as _is_definitive_chat_queue_rejection,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
+from app.bootstrap.chat_submission_delivery import (
+    persist_chat_queue_success as _persist_chat_queue_success,
+    persist_chat_submission_delivery_receipt as _persist_chat_submission_delivery_receipt,
+    record_chat_submission_delivery_receipt as _record_chat_submission_delivery_receipt,
+    reload_chat_submission_resolution as _reload_chat_submission_resolution,
+    settle_chat_submission_enqueue_rejection as _settle_chat_submission_enqueue_rejection,
+)
 from app.required_tool_contract import (
     attach_required_tool_declaration,
     public_required_tool_detail,
@@ -530,6 +540,7 @@ async def _admit_chat_submission(
     submission_id: str,
     v4_capabilities: WorkerV4Capabilities,
     run_lifecycle: Any,
+    delivery_intents: Any | None = None,
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
@@ -635,60 +646,71 @@ async def _admit_chat_submission(
         )
         profile_bound = profile_revision is not None
         if profile_bound:
-            # Hold the run/profile locks through Redis admission.
-            await _agent_profile_authority.reauthorize_pinned_run_for_replay(
-                conn,
-                principal=principal,
-                run_id=run_id,
-            )
-            queue_admission, profile_enqueue_error = await _attempt_chat_queue_admission(
-                queue_payload,
-                check_existing=True,
-            )
-            if queue_admission is None:
-                if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
-                    profile_enqueue_error
-                ):
-                    await terminalize_enqueue_failure(v4_capabilities, conn,
-                        tenant_id=principal.tenant_id,
-                        lifecycle=run_lifecycle, user_id=principal.user_id,
-                        run_id=run_id,
-                        trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
-                        diagnostic_error=profile_enqueue_error,
-                    )
-                    await persistence_chat_submissions.finalize_chat_submission(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        user_id=principal.user_id,
-                        submission_id=submission_id,
-                        state="enqueue_failed",
-                        rejection_code="queue_enqueue_failed",
-                    )
-                    submission["state"] = "enqueue_failed"
-                    submission["rejection_code"] = "queue_enqueue_failed"
+            if delivery_intents is not None and delivery_intents.enabled:
+                # The accepted intent owns the immutable profile snapshot; a
+                # transport retry must not reauthorize it from current catalog state.
                 profile_resolution = _chat_submission_resolution(submission)
             else:
-                prior_outcome = _chat_stream_response_from_submission(submission)
-                queued_outcome = prior_outcome.model_copy(
-                    update={
-                        "status": "queued",
-                        "queue_position": int(queue_admission.queue_position) or None,
-                        "submission_id": submission_id,
-                    }
+                # Preserve the legacy profile-lock admission behavior while the
+                # durable delivery writer remains disabled.
+                await _agent_profile_authority.reauthorize_pinned_run_for_replay(
+                    conn,
+                    principal=principal,
+                    run_id=run_id,
                 )
-                if str(submission.get("state")) != "queued":
-                    await _persist_chat_queue_success(
+                queue_admission, profile_enqueue_error = await _attempt_chat_queue_admission(
+                    queue_payload,
+                    check_existing=True,
+                )
+                if queue_admission is None:
+                    profile_resolution = await _settle_chat_submission_enqueue_rejection(
                         conn,
                         principal=principal,
-                        run_id=run_id,
-                        queue_admission=queue_admission,
-                        outcome=queued_outcome,
                         submission_id=submission_id,
+                        run_id=run_id,
+                        error=profile_enqueue_error,
+                        definitive_rejection=(
+                            profile_enqueue_error is not None
+                            and _is_definitive_chat_queue_rejection(profile_enqueue_error)
+                        ),
+                        v4_capabilities=v4_capabilities,
+                        run_lifecycle=run_lifecycle,
                     )
-                    submission["state"] = "queued"
-                    submission["outcome_json"] = queued_outcome.model_dump(mode="json")
-                profile_resolution = _chat_submission_resolution(submission)
+                else:
+                    profile_resolution = await _record_chat_submission_delivery_receipt(
+                        conn,
+                        principal=principal,
+                        submission_id=submission_id,
+                        run_id=run_id,
+                        receipt=queue_admission,
+                    )
     if profile_bound:
+        if delivery_intents is not None and delivery_intents.enabled:
+            delivery = await deliver_accepted_chat_run(
+                queue_payload,
+                check_existing=True,
+                delivery_intents=delivery_intents,
+                enqueue=enqueue_run_with_metadata,
+                read=read_queue_admission,
+                rejection_type=QueueAdmissionRejected,
+            )
+            if delivery.receipt is not None:
+                return await _persist_chat_submission_delivery_receipt(
+                    principal=principal,
+                    submission_id=submission_id,
+                    run_id=run_id,
+                    receipt=delivery.receipt,
+                    transaction_factory=transaction,
+                )
+            if delivery.error == "delivery_intent_missing":
+                raise HTTPException(status_code=503, detail="run_delivery_intent_missing")
+            if delivery.error in {"queue_payload_invalid", "queue_payload_identity_mismatch"}:
+                raise HTTPException(status_code=503, detail="queue_enqueue_failed")
+            return await _reload_chat_submission_resolution(
+                principal=principal,
+                submission_id=submission_id,
+                transaction_factory=transaction,
+            )
         if profile_enqueue_error is not None and _is_definitive_chat_queue_rejection(
             profile_enqueue_error
         ):
@@ -697,101 +719,55 @@ async def _admit_chat_submission(
             raise HTTPException(status_code=409, detail="chat_submission_not_admitted")
         return profile_resolution
 
-    queue_admission, enqueue_error = await _attempt_chat_queue_admission(
+    delivery = await deliver_accepted_chat_run(
         queue_payload,
         check_existing=True,
+        delivery_intents=delivery_intents,
+        enqueue=enqueue_run_with_metadata,
+        read=read_queue_admission,
+        rejection_type=QueueAdmissionRejected,
     )
+    queue_admission, enqueue_error = delivery.receipt, delivery.error
+    if delivery.durable_intent and queue_admission is None:
+        if enqueue_error == "delivery_intent_missing":
+            raise HTTPException(status_code=503, detail="run_delivery_intent_missing")
+        if enqueue_error in {"queue_payload_invalid", "queue_payload_identity_mismatch"}:
+            raise HTTPException(status_code=503, detail="queue_enqueue_failed")
+        return await _reload_chat_submission_resolution(
+            principal=principal,
+            submission_id=submission_id,
+            transaction_factory=transaction,
+        )
     if enqueue_error is not None and queue_admission is None:
         exc = enqueue_error
         async with transaction() as conn:
-            current_submission = await persistence_chat_submissions.get_chat_submission(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                submission_id=submission_id,
-                for_update=True,
-            )
-            if current_submission is None:
-                raise HTTPException(status_code=404, detail="chat_submission_not_found")
-            # Never replace a concurrent success (or a previously settled
-            # terminal result) with a local enqueue conclusion.
-            if str(current_submission.get("state")) != "accepted_pending_enqueue":
-                return _chat_submission_resolution(current_submission)
-            if not _is_definitive_chat_queue_rejection(exc):
-                # The outcome remains unknown.  The durable submission is
-                # recoverable through retry-admission and immutable Redis
-                # idempotency, without this request posting again.
-                return _chat_submission_resolution(current_submission)
-            current_run = await runs_creation.get_authorized_run(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                run_id=run_id,
-                for_update=True,
-            )
-            if current_run is None:
-                raise HTTPException(status_code=404, detail="run_not_found")
-            if str(current_run.get("status") or "") != "queued":
-                return _chat_submission_resolution(current_submission)
-            # Only the queue module's deterministic pre-admission rejection
-            # can produce enqueue_failed.  This transaction is distinct from
-            # planning and commits before the HTTP error.
-            await terminalize_enqueue_failure(v4_capabilities, conn,
-                tenant_id=principal.tenant_id,
-                lifecycle=run_lifecycle, user_id=principal.user_id,
-                run_id=run_id,
-                trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
-                diagnostic_error=exc,
-            )
-            await persistence_chat_submissions.finalize_chat_submission(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                submission_id=submission_id,
-                state="enqueue_failed",
-                rejection_code="queue_enqueue_failed",
-            )
-        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
-
-    # Record the queue identity in a fresh transaction as well.  This can be
-    # retried from the durable submission if an acknowledgement write fails.
-    async with transaction() as conn:
-        submission = await persistence_chat_submissions.get_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-            for_update=True,
-        )
-        if submission is None:
-            raise HTTPException(status_code=404, detail="chat_submission_not_found")
-        if str(submission.get("state")) in {
-            "admission_rejected",
-            "rejected_before_persist",
-            "enqueue_failed",
-            "needs_confirmation",
-        }:
-            return _chat_submission_resolution(submission)
-        prior_outcome = _chat_stream_response_from_submission(submission)
-        queued_outcome = prior_outcome.model_copy(
-            update={
-                "status": "queued",
-                "queue_position": int(queue_admission.queue_position) or None,
-                "submission_id": submission_id,
-            }
-        )
-        if str(submission.get("state")) != "queued":
-            await _persist_chat_queue_success(
+            resolution = await _settle_chat_submission_enqueue_rejection(
                 conn,
                 principal=principal,
-                run_id=run_id,
-                queue_admission=queue_admission,
-                outcome=queued_outcome,
                 submission_id=submission_id,
+                run_id=run_id,
+                error=exc,
+                definitive_rejection=_is_definitive_chat_queue_rejection(exc),
+                v4_capabilities=v4_capabilities,
+                run_lifecycle=run_lifecycle,
             )
-            submission["state"] = "queued"
-            submission["outcome_json"] = queued_outcome.model_dump(mode="json")
-        return _chat_submission_resolution(submission)
+        if resolution.state != "enqueue_failed":
+            return resolution
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+
+    if queue_admission is None:
+        return await _reload_chat_submission_resolution(
+            principal=principal,
+            submission_id=submission_id,
+            transaction_factory=transaction,
+        )
+    return await _persist_chat_submission_delivery_receipt(
+        principal=principal,
+        submission_id=submission_id,
+        run_id=run_id,
+        receipt=queue_admission,
+        transaction_factory=transaction,
+    )
 
 
 async def _audit_capability_denial(
@@ -864,47 +840,6 @@ async def _attempt_chat_queue_admission(
         rejection_type=QueueAdmissionRejected,
     )
 
-
-async def _persist_chat_queue_success(
-    conn,
-    *,
-    principal: AuthPrincipal,
-    run_id: str,
-    queue_admission: QueueAdmissionMetadata,
-    outcome: ChatStreamResponse,
-    submission_id: str | None,
-) -> None:
-    """Record one queue admission after the durable run is committed."""
-
-    queue_position = int(queue_admission.queue_position)
-    queue_ordinal = int(queue_admission.queue_admission_ordinal)
-    await streaming_run_events.append_event(
-        conn,
-        tenant_id=principal.tenant_id,
-        run_id=run_id,
-        event_type="queued",
-        stage="queue",
-        message="任务队列接纳完成",
-        payload={
-            "visible_to_user": False,
-            "source": "admin_runtime_queue",
-            "queue_position": queue_position or None,
-            "queue_admission_ordinal": queue_ordinal or None,
-            "queue_probe_source": str(queue_admission.source),
-        },
-    )
-    if submission_id is not None:
-        await persistence_chat_submissions.finalize_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-            state="queued",
-            outcome_json=outcome.model_dump(mode="json"),
-            queue_position=queue_position or None,
-            queue_admission_ordinal=queue_ordinal or None,
-            queue_message_id=queue_admission.message_id,
-        )
 
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
     if request.file_ids:
@@ -2083,6 +2018,20 @@ async def chat_stream(
                     "context_snapshot": context_ref,
                 }
             )
+            delivery_intents = getattr(
+                http_request.app.state,
+                "run_delivery_intents",
+                None,
+            )
+            if delivery_intents is not None and delivery_intents.enabled:
+                await record_run_delivery_intent(
+                    delivery_intents,
+                    conn,
+                    queue_payload,
+                    source="chat",
+                    submission_id=str(submission_id) if submission_id is not None else None,
+                    user_message_id=message_id,
+                )
     except HTTPException as exc:
         authorization_error = exc.__cause__
         if isinstance(authorization_error, platform_errors.RepositoryAuthorizationError):
@@ -2208,6 +2157,7 @@ async def chat_stream(
                 submission_id=submission_id,
                 v4_capabilities=http_request.app.state.run_stream_runtime.worker_capabilities,
                 run_lifecycle=http_request.app.state.run_lifecycle,
+                delivery_intents=getattr(http_request.app.state, "run_delivery_intents", None),
             ))
         except HTTPException:
             raise
@@ -2221,10 +2171,33 @@ async def chat_stream(
             status="accepted_pending_enqueue",
             submission_id=submission_id,
         )
-    queue_admission, enqueue_error = await _attempt_chat_queue_admission(
-        queue_payload,
-        check_existing=False,
-    )
+    delivery_intents = getattr(http_request.app.state, "run_delivery_intents", None)
+    if delivery_intents is not None and delivery_intents.enabled:
+        delivery = await deliver_run_delivery_intent(
+            delivery_intents,
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+        )
+        if delivery.receipt is not None:
+            queue_admission = QueueAdmissionMetadata(
+                queue_position=delivery.receipt.queue_position,
+                queue_admission_ordinal=delivery.receipt.queue_admission_ordinal,
+                message_id=delivery.receipt.message_id,
+                source=delivery.receipt.source,
+            )
+            enqueue_error = None
+        else:
+            return ChatStreamResponse(
+                session_id=session_id,
+                run_id=run_id,
+                status="accepted_pending_enqueue",
+                intent_decision=_intent_response(decision_payload, principal),
+            )
+    else:
+        queue_admission, enqueue_error = await _attempt_chat_queue_admission(
+            queue_payload,
+            check_existing=False,
+        )
     if queue_admission is None:
         if enqueue_error is not None and (
             _is_definitive_chat_queue_rejection(enqueue_error)
@@ -2249,22 +2222,20 @@ async def chat_stream(
             intent_decision=_intent_response(decision_payload, principal),
         )
     queue_position = int(queue_admission.queue_position)
-    async with transaction() as conn:
-        await streaming_run_events.append_event(
-            conn,
-            tenant_id=principal.tenant_id,
-            run_id=run_id,
-            event_type="queued",
-            stage="queue",
-            message="任务队列接纳完成",
-            payload={
-                "visible_to_user": False,
-                "source": "admin_runtime_queue",
-                "queue_position": queue_position,
-                "queue_admission_ordinal": int(queue_admission.queue_admission_ordinal),
-                "queue_probe_source": str(queue_admission.source),
-            },
-        )
+    if (
+        delivery_intents is None
+        or not delivery_intents.enabled
+        or not getattr(delivery, "chat_projection_persisted", False)
+    ):
+        async with transaction() as conn:
+            await _persist_chat_queue_success(
+                conn,
+                principal=principal,
+                run_id=run_id,
+                queue_admission=queue_admission,
+                outcome=None,
+                submission_id=None,
+            )
     return ChatStreamResponse(
         session_id=session_id,
         run_id=run_id,
@@ -2317,6 +2288,7 @@ async def retry_chat_submission_admission(
             submission_id=str(submission_id),
             v4_capabilities=request.app.state.run_stream_runtime.worker_capabilities,
             run_lifecycle=request.app.state.run_lifecycle,
+            delivery_intents=getattr(request.app.state, "run_delivery_intents", None),
         ))
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}

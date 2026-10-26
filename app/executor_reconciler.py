@@ -48,6 +48,8 @@ from app.runs.api import (
     TERMINAL_RUN_STATUSES,
 )
 from app.sandbox.api import (
+    SandboxDispatchIdentity,
+    SandboxDispatchIntentService,
     SandboxExecutorReconciliationPort,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     SandboxExecutorHttpError,
@@ -704,9 +706,85 @@ async def _persist_probe_terminal(
                 )
 
 
+def _probe_dispatch_identity(lease_row: dict[str, Any]) -> SandboxDispatchIdentity | None:
+    payload = lease_row.get("lease_payload_json")
+    if not isinstance(payload, dict):
+        return None
+    owner_generation = payload.get("owner_generation")
+    if type(owner_generation) is not int or owner_generation < 1:
+        return None
+    tenant_id = str(lease_row.get("tenant_id") or "")
+    run_id = str(lease_row.get("run_id") or "")
+    attempt_id = str(lease_row.get("attempt_id") or payload.get("attempt_id") or "")
+    lease_id = str(lease_row.get("id") or "")
+    provider = str(lease_row.get("provider") or "")
+    if not all((tenant_id, run_id, attempt_id, lease_id, provider)):
+        return None
+    if payload.get("attempt_id") != attempt_id:
+        return None
+    return SandboxDispatchIdentity(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        owner_generation=owner_generation,
+        lease_id=lease_id,
+        provider=provider,
+        provider_task_id=attempt_id,
+    )
+
+
+async def _record_probe_dispatch_accepted(
+    lease_row: dict[str, Any],
+    status: dict[str, Any],
+    *,
+    dispatch_intents: SandboxDispatchIntentService | None,
+) -> None:
+    observed_status = str(status.get("status") or "").strip().lower()
+    if dispatch_intents is None or observed_status not in {
+        "accepted", "running", "completed", "succeeded", "failed", "cancelled", "canceled",
+    }:
+        return
+    identity = _probe_dispatch_identity(lease_row)
+    if identity is None or (
+        status.get("run_id") != identity.run_id
+        or status.get("attempt_id") != identity.attempt_id
+    ):
+        return
+    try:
+        async with transaction() as conn:
+            dispatch_row = await dispatch_intents.record_outcome(
+                conn, identity=identity, outcome="accepted",
+            )
+        if dispatch_row is None:
+            _logger.warning(
+                "executor_probe_dispatch_observation_unavailable",
+                extra={"run_id": identity.run_id, "attempt_id": identity.attempt_id},
+            )
+        elif dispatch_row.get("status") != "accepted":
+            _logger.warning(
+                "executor_probe_dispatch_observation_conflict",
+                extra={
+                    "run_id": identity.run_id,
+                    "attempt_id": identity.attempt_id,
+                    "dispatch_status": dispatch_row.get("status"),
+                },
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Dispatch status is an observation ledger; its availability must not
+        # become another terminalization authority.
+        _logger.warning(
+            "executor_probe_dispatch_observation_unavailable",
+            extra={"run_id": identity.run_id, "attempt_id": identity.attempt_id},
+            exc_info=True,
+        )
+
+
 async def probe_suspect_executor_tasks_once(
     *,
     lease_port: SandboxExecutorReconciliationPort,
+    dispatch_intents: SandboxDispatchIntentService | None = None,
     run_diagnostics: RunDiagnosticsService | None = None,
     limit: int = _RECONCILIATION_BATCH_SIZE,
 ) -> int:
@@ -753,6 +831,9 @@ async def probe_suspect_executor_tasks_once(
                 run_id=str(lease_row["run_id"]),
                 attempt_id=str(lease_row["attempt_id"]),
                 executor_headers=executor_headers,
+            )
+            await _record_probe_dispatch_accepted(
+                lease_row, status, dispatch_intents=dispatch_intents,
             )
             terminal_result = status.get("terminal_result")
             if terminal_result is not None:
@@ -1082,6 +1163,7 @@ async def run_executor_terminal_reconciler(
     stop_event: asyncio.Event,
     *,
     lease_port: SandboxExecutorReconciliationPort,
+    dispatch_intents: SandboxDispatchIntentService | None = None,
     registry: AdapterRegistry | None = None,
     worker_id: str | None = None,
     v4_capabilities: WorkerV4Capabilities | None = None,
@@ -1149,6 +1231,8 @@ async def run_executor_terminal_reconciler(
 
     async def probe() -> int:
         probe_kwargs = {"lease_port": lease_port}
+        if dispatch_intents is not None:
+            probe_kwargs["dispatch_intents"] = dispatch_intents
         if run_diagnostics is not None:
             probe_kwargs["run_diagnostics"] = run_diagnostics
         probed = await probe_suspect_executor_tasks_once(**probe_kwargs)

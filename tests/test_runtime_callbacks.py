@@ -355,7 +355,10 @@ def test_executor_callback_rejects_valid_foreign_run_token_pair(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
+    async def fail_record_executor_callback(
+        callback, *, capabilities, lease_port, callback_identity=None,
+        run_diagnostics=None, model_token_usage=None,
+    ):
         raise AssertionError("foreign run token must be rejected before recording")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -437,13 +440,17 @@ def test_callback_token_id_rotates_on_attempt_owner_generation(monkeypatch):
 
     assert first != second
     runtime_callbacks._require_valid_callback_token(
-        derived_callback_token("secret", first), first,
-        run_id="run-a", attempt_id="attempt-a",
+        derived_callback_token("secret", first),
+        runtime_callbacks.SandboxCallbackIdentity(
+            run_id="run-a", attempt_id="attempt-a", callback_token_id=first,
+        ),
     )
     with pytest.raises(HTTPException) as caught:
         runtime_callbacks._require_valid_callback_token(
-            derived_callback_token("secret", second), second,
-            run_id="run-a", attempt_id="attempt-b",
+            derived_callback_token("secret", second),
+            runtime_callbacks.SandboxCallbackIdentity(
+                run_id="run-a", attempt_id="attempt-b", callback_token_id=second,
+            ),
         )
     assert caught.value.status_code == 401
 
@@ -568,7 +575,10 @@ def test_executor_callback_rejects_when_token_not_configured(monkeypatch):
 
     from app.routes import runtime_callbacks
 
-    async def fail_record_executor_callback(callback, *, capabilities, **_kwargs):
+    async def fail_record_executor_callback(
+        callback, *, capabilities, lease_port, callback_identity=None,
+        run_diagnostics=None, model_token_usage=None,
+    ):
         raise AssertionError("callback must fail closed when token is not configured")
 
     monkeypatch.setattr(runtime_callbacks, "record_executor_callback", fail_record_executor_callback)
@@ -599,10 +609,14 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             *,
             capabilities,
             lease_port,
+            callback_identity=None,
             run_diagnostics=None,
             model_token_usage=None,
         ):
             recorded.append(callback)
+            assert callback_identity.run_id == callback.run_id
+            assert callback_identity.attempt_id == callback.attempt_id
+            assert callback_identity.callback_token_id == callback.callback_token_id
             assert run_diagnostics is not None
             assert model_token_usage is not None
             return {"accepted": True, "event_count": 1}

@@ -269,14 +269,19 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 **N22：持久投递记录与历史映射 — Conversations/Runs 事实 owner，Execution 调度 owner。依赖 N00、ADR 评审。**
 
 - 产出：优先复用 submission/Run 可重建事实；只有现有字段不足才增加 outbox。覆盖 keyed/unkeyed Chat、直接 Run、retry/resume/copy 的已接受任务；首次记录不要求 Attempt 已存在。
-- 验收：原 Run 与调度意图同事务成立；重复提交不新建事实；保存原消息身份/版本，不能从最新 Profile 重建旧意图；撤权/取消/已有执行时不能授予再执行权。
+- 实现取舍：保留按 `(tenant_id, run_id)` 唯一关联的 `run_delivery_intents`。现有 Run/input/context 与 submission 可重建候选语义，但没有统一保存本次接受时的 canonical queue payload 和 message identity；无 submission 的入口也不能借用 Chat 幂等记录。仅扫描 queued Run 无法区分原消息已入 Redis 但 receipt 未提交的窗口。由 [Redis queue adapter](../../app/execution/infrastructure/run_delivery_queue.py) 冻结原消息、[intent store](../../app/execution/infrastructure/run_delivery_intents_postgres.py) 与 Run 同事务保存，再按原身份 readback；claim/retry 字段用于调度，不作为新增表的必要性论据。明细表只记录投递事实，不复制 Run/Attempt 终态。
+- 验收：原 Run 与调度意图同事务成立；重复提交不新建事实；保存原消息身份/版本，不能从最新 Profile 重建旧意图；撤权/取消/已有执行时不能授予再执行权。启用持久投递时先映射缺少 intent 的 queued 历史 Run：只从其原 `input_json`、context snapshot、Chat submission 或 Run-control operation 证明身份；存在缺失、冲突或无法证明的记录时 API 启动失败，要求先作有限处置，不留下永久 pending。
 - 回退：schema 先展开，writer 默认不启用；保留已写意图及历史读取。不得同时建独立 submission 状态账本或 SSE publication outbox。
 
 **N23：投递恢复与至少一次传输 — Execution owner。依赖 N22 及 R09/claim 并发保护。**
 
 - 产出：短事务 scoped claim -> 原身份投递/读回 -> claim-fenced receipt；持久 next_retry、公平扫描、进展指标；协调现行 stale-run/fence，不提前删除它们。
-- 验收：API commit 后崩溃无需浏览器可恢复；Redis 已写未记账、双 scanner+HTTP retry、旧 I/O 晚到、撤权、取消与 stale 回收竞争均不重复 Run/工具执行；只重试投递。
+- 验收：API commit 后崩溃无需浏览器可恢复；Redis 已写未记账、双 scanner+HTTP retry、旧 I/O 晚到、撤权、取消与 stale 回收竞争均不重复 Run/工具执行；只重试投递。响应与紧随的 readback 都暂时失败但 Attempt 已创建时，scanner 只能用原 payload/message identity 做 readback，不能再次 enqueue；无真实队列 receipt 时保持 pending 并退避，不可伪造完成。receipt-owner 事务失败时须回滚 intent 与 Chat 投影，旧 claim 保持 claim-fenced 至过期后由 scanner 重试；receipt 与 Chat queued/queue identity 同事务提交。过期 claim 可由 scanner 接管，旧 claim 仍不能写入；取消且无 Attempt 的 Run 不得进入队列 I/O。
 - 回退：先停止领取并处理在途命令，再由旧兼容路径消费未完成意图；关闭扫描器不等于 Redis 请求已撤销。保留原 queue owner token/CAS。
+
+N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新读取 Profile、不创建新 Attempt，也不以新队列 identity 覆盖已存在 Redis receipt。Run status/schema 版本 `2026.10.25.1`、delivery intent `2026.10.25.2` 和 Sandbox dispatch `2026.10.25.3` 各自保留。
+
+兼容退出：Phase 2 关闭 intent 时，Chat 的 [queue admission](../../app/conversations/application/queue_admission.py)、Runs 的 create/copy 路由和 [control queue admission](../../app/runs/application/control_queue_admission.py) 仍拥有即时 enqueue/readback；这些分支尚未退役。退出须先完成全部入口切换、历史 identity 映射和在途 claim 排空/交接，再删除其调用、测试与配置消费者。queue lease reclaim、stale Run reconciliation 和 executor terminal reconciler 分别负责队列所有权、失活执行和结算，不能因 outbox 存在一并删除；其迁移依 N23/N33 的实际接管证据。
 
 ### Phase 3：结算投影与监督迁移
 

@@ -4965,6 +4965,85 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
     assert calls["events"] == ["queued"]
 
 
+def test_direct_run_create_http_route_uses_persisted_delivery_intent(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    calls = []
+
+    async def active_harness_agent(_conn, *, tenant_id, agent_id):
+        return {"tenant_id": tenant_id, "id": agent_id, "agent_type": "chat"}
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def create_session(_conn, **kwargs):
+        return kwargs["session_id"]
+
+    async def create_run(_conn, **kwargs):
+        calls.append(("create_run", kwargs["run_id"], kwargs["input_json"]))
+        return kwargs["run_id"]
+
+    async def record_event(_conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+
+    async def active_run_admission(*_args, **_kwargs):
+        return 0
+
+    class DeliveryIntents:
+        enabled = True
+
+        async def record(self, _conn, payload, *, source, **_kwargs):
+            calls.append(("intent", source, payload["run_id"], payload["model_value"]))
+
+        async def deliver_one(self, *, tenant_id, run_id):
+            calls.append(("deliver", tenant_id, run_id))
+            return SimpleNamespace(
+                receipt=QueueAdmissionMetadata(1, 4, "frozen-run-message", "redis_readback_queued"),
+                error_code=None,
+            )
+
+    async def record_context(_conn, **kwargs):
+        return {
+            "context_snapshot_id": "ctx-direct-run",
+            "source": kwargs["source"],
+        }
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(_owner_agent_apps_infrastructure_catalog_postgres, "get_agent", active_harness_agent)
+    monkeypatch.setattr(runs_module, "authorize_selected_chat_mcp_tools", noop)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "enforce_user_active_run_admission", active_run_admission)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, "ensure_user", noop)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, "create_session", create_session)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, "create_run", create_run)
+    monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, "authorize_files_for_run", noop)
+    monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, "bind_files_to_run", noop)
+    monkeypatch.setattr(runs_module, "record_initial_context_snapshot", record_context)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", record_event)
+    monkeypatch.setattr(runs_module, "enqueue_run", lambda *_args, **_kwargs: pytest.fail("legacy enqueue used"))
+
+    app = FastAPI()
+    app.include_router(runs_module.router, prefix="/api/ai")
+    app.dependency_overrides[runs_module.require_principal] = lambda: principal()
+    app.state.run_delivery_intents = DeliveryIntents()
+
+    response = TestClient(app).post(
+        "/api/ai/runs",
+        json={
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "capability_id": "general_chat",
+            "input": {"message": "durable direct run"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert [item[0] for item in calls].count("intent") == 1
+    assert [item[0] for item in calls].count("deliver") == 1
+    assert "enqueue" not in [item[0] for item in calls]
+
+
 @pytest.mark.asyncio
 async def test_create_run_file_admission_denial_precedes_identity_and_run_writes(monkeypatch):
     writes = []

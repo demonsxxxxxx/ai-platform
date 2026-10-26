@@ -34,6 +34,7 @@ from app.bootstrap.skills import configure_skill_markdown
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
+from app.bootstrap.run_delivery_intents import build_run_delivery_intents
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -41,7 +42,7 @@ from app.bootstrap.worker_maintenance import (
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
-from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
+from app.execution.api import RunDeliveryIntents, WorkerQueueLease, stage_stale_run_reconciliation
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -658,6 +659,7 @@ async def _maintenance_until_done(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
     *,
+    run_delivery_intents: RunDeliveryIntents | None = None,
     recovery_already_ran: bool = False,
 ) -> None:
     operations = _worker_cleanup_phases(settings)
@@ -667,6 +669,12 @@ async def _maintenance_until_done(
         attempt_lifecycle=attempt_lifecycle,
         lifecycle=lifecycle,
     ))
+    if (
+        run_delivery_intents is not None
+        and run_delivery_intents.enabled
+        and _worker_role(settings) in {"integrated", "execution"}
+    ):
+        operations["run_delivery_intents"] = run_delivery_intents.scan_once
     phase_tasks = [
         asyncio.create_task(
             maintenance_phase_until_done(
@@ -674,7 +682,7 @@ async def _maintenance_until_done(
                 operation,
                 interval_seconds,
                 _CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS
-                if name in {"queue_reclaim", "stale_run_reconciliation"}
+                if name in {"queue_reclaim", "stale_run_reconciliation", "run_delivery_intents"}
                 else _BULK_MAINTENANCE_PHASE_BUDGET_SECONDS,
                 logger=logger,
                 run_immediately=(
@@ -900,6 +908,12 @@ async def run_once(
     configure_worker_services()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
+    run_delivery_intents = build_run_delivery_intents(
+        settings,
+        transaction,
+        lifecycle=lifecycle,
+        capabilities=v4_capabilities,
+    )
     if _worker_role(settings) == "finalizer":
         raise ValueError("finalizer workers cannot execute a single queue run")
     if run_initial_maintenance:
@@ -917,6 +931,7 @@ async def run_once(
                 v4_capabilities,
                 attempt_lifecycle,
                 lifecycle,
+                run_delivery_intents=run_delivery_intents,
                 recovery_already_ran=run_initial_maintenance,
             ),
             name="ai-platform-worker-maintenance",
@@ -1209,6 +1224,12 @@ async def _run_worker_process(
         attempt_lifecycle = attempt_lifecycle or build_run_attempt_lifecycle_service()
         lifecycle = lifecycle or build_run_lifecycle_service()
         worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
+        run_delivery_intents = build_run_delivery_intents(
+            settings,
+            transaction,
+            lifecycle=lifecycle,
+            capabilities=worker_runtime.capabilities,
+        )
         process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
         if role in {"integrated", "finalizer"}:
             background_tasks.append(asyncio.create_task(
@@ -1231,6 +1252,7 @@ async def _run_worker_process(
                 worker_runtime.capabilities,
                 attempt_lifecycle,
                 lifecycle,
+                run_delivery_intents=run_delivery_intents,
             ),
             name="ai-platform-worker-maintenance",
         ))

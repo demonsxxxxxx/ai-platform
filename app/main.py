@@ -28,6 +28,7 @@ from app.bootstrap.run_lifecycle import (
     build_run_cancellation_use_case,
     build_run_lifecycle_service,
 )
+from app.bootstrap.run_delivery_intents import build_run_delivery_intents
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_inputs import build_run_inputs_service
@@ -161,12 +162,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.run_lifecycle,
     )
     app.state.run_stream_runtime = run_stream_runtime
+    app.state.run_delivery_intents = build_run_delivery_intents(
+        get_settings(),
+        transaction,
+        lifecycle=app.state.run_lifecycle,
+        capabilities=run_stream_runtime.worker_capabilities,
+    )
     app.state.run_cancellation_use_case = build_run_cancellation_use_case(
         attempt_lifecycle=app.state.run_attempt_lifecycle,
         lifecycle=app.state.run_lifecycle,
     )
     primary_error: BaseException | None = None
     try:
+        if app.state.run_delivery_intents.enabled:
+            await app.state.run_delivery_intents.prepare_historical_delivery_intents()
         yield
     except BaseException as exc:
         primary_error = exc

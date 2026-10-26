@@ -9,7 +9,10 @@ import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructu
 import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
+import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -705,6 +708,111 @@ async def test_run_control_queue_admission_keeps_profile_lock_transaction_open(
         assert result.queue_position == 3
 
 
+@pytest.mark.parametrize("action", ["retry", "resume"])
+def test_existing_control_operation_route_uses_frozen_delivery_without_reauthorization(
+    monkeypatch, action
+):
+    from fastapi import FastAPI
+
+    from app.routes import runs as runs_module
+
+    calls = []
+    operation = {
+        "source_run_id": "run-parent",
+        "action": action,
+        "operation_id": RUN_CONTROL_OPERATION_ID,
+        "run_id": "run-child",
+        "session_id": "session-child",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "input_json": {
+            "input": {"message": "frozen operation"},
+            "execution_kind": "skill",
+            **replay_provenance("general-chat", "frozen-version"),
+        },
+        "status": "queued",
+    }
+
+    @asynccontextmanager
+    async def no_op_transaction():
+        yield object()
+
+    async def resolve_operation(_conn, **kwargs):
+        assert kwargs["source_run_id"] == "run-parent"
+        assert kwargs["action"] == action
+        return operation
+
+    async def no_reauthorization(*_args, **_kwargs):
+        raise AssertionError("durable delivery must preserve the accepted operation")
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("existing durable operation must not use legacy queue admission")
+
+    class DeliveryIntents:
+        enabled = True
+
+        async def deliver_one(self, *, tenant_id, run_id):
+            calls.append(("deliver", tenant_id, run_id))
+            return SimpleNamespace(
+                receipt=SimpleNamespace(
+                    queue_position=0,
+                    queue_admission_ordinal=12,
+                    message_id="frozen-message",
+                    source="redis_readback_processing",
+                ),
+                error_code=None,
+            )
+
+    monkeypatch.setattr(runs_module, "transaction", no_op_transaction)
+    monkeypatch.setattr(
+        _owner_runs_infrastructure_control_operations_postgres,
+        "acquire_run_control_operation_lock",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        _owner_runs_infrastructure_control_operations_postgres,
+        "get_run_control_operation",
+        resolve_operation,
+    )
+    monkeypatch.setattr(
+        runs_module._agent_profile_authority,
+        "reauthorize_pinned_run_for_replay",
+        no_reauthorization,
+    )
+    monkeypatch.setattr(runs_module, "enqueue_run", forbidden)
+    monkeypatch.setattr(runs_module, "read_queue_admission", forbidden)
+    monkeypatch.setattr(
+        runs_module,
+        "queue_insight_for_status",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=None),
+    )
+
+    app = FastAPI()
+    app.include_router(runs_module.router, prefix="/api/ai")
+    app.dependency_overrides[runs_module.require_principal] = lambda: AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="default",
+        roles=["user"],
+    )
+    app.state.run_delivery_intents = DeliveryIntents()
+    app.state.run_stream_runtime = SimpleNamespace(worker_capabilities=object())
+    app.state.run_lifecycle = object()
+
+    response = TestClient(app).post(
+        run_control_url("run-parent", action),
+        headers=headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run-child"
+    assert response.json()["status"] == "queued"
+    assert response.json()["queue_position"] == 0
+    assert calls == [("deliver", "default", "run-child")]
+
+
 @pytest.mark.parametrize(
     ("status_code", "detail"),
     [
@@ -918,7 +1026,8 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
 
 
 @pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
-def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
+@pytest.mark.parametrize("delivery_enabled", [False, True])
+def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode, delivery_enabled):
     calls = []
     transaction_active = False
 
@@ -1063,6 +1172,30 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", fail_compensate)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
     client = TestClient(create_app())
+    if delivery_enabled:
+        class DeliveryIntents:
+            enabled = True
+
+            async def record(self, conn, payload, *, source, **_kwargs):
+                assert transaction_active
+                calls.append(("intent", source, payload))
+
+            async def deliver_one(self, *, tenant_id, run_id):
+                assert transaction_active is False
+                calls.append(("delivery", tenant_id, run_id))
+                if enqueue_mode == "unknown":
+                    return SimpleNamespace(receipt=None, error_code="queue_response_unknown")
+                return SimpleNamespace(
+                    receipt=SimpleNamespace(
+                        queue_position=1,
+                        queue_admission_ordinal=1,
+                        message_id="frozen-message",
+                        source="redis_metadata",
+                    ),
+                    error_code=None,
+                )
+
+        client.app.state.run_delivery_intents = DeliveryIntents()
 
     response = client.post("/api/ai/runs/run_old/copy", headers=headers())
 
@@ -1072,6 +1205,12 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     if enqueue_mode == "unknown":
         assert response.json()["status"] == "accepted_pending_enqueue"
         assert response.json()["queue_position"] is None
+        if delivery_enabled:
+            recorded = next(item for item in calls if item[0] == "intent")
+            assert recorded[1] == "copy"
+            assert recorded[2]["run_id"] == "run_new"
+            assert [item[0] for item in calls].count("delivery") == 1
+            assert not any(item[0] == "queue" for item in calls)
         return
     assert response.json()["queue_position"] == 1
     assert response.json()["queue_insight"] == {
@@ -1081,7 +1220,14 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
         "worker_capacity": 1,
         "reason": "worker_capacity_full",
     }
-    queued_payload = calls[-1][1]
+    if delivery_enabled:
+        recorded = next(item for item in calls if item[0] == "intent")
+        assert recorded[1] == "copy"
+        assert [item[0] for item in calls].count("delivery") == 1
+        assert not any(item[0] == "queue" for item in calls)
+        queued_payload = recorded[2]
+    else:
+        queued_payload = calls[-1][1]
     assert queued_payload["run_id"] == "run_new"
     assert queued_payload["skill_version"] == "hash-old"
     assert queued_payload["skill_manifests"] == [

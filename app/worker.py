@@ -10,7 +10,6 @@ from app.bootstrap.worker_run_preparation import prepare_worker_run
 from app.bootstrap.worker_terminal_completion import build_worker_terminal_completion_service
 from app.db import transaction
 from app.execution.api import WorkerQueueLease, WorkerRunCancelled, time
-from app.executors.base import ExecutorDispatchAccepted
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.queue import QUEUE_ATTEMPT_ID_FIELD
@@ -149,17 +148,15 @@ async def process_run_payload(
             execution_owner = worker_execution_bootstrap.build_worker_execution_owner(
                 run_payload, transaction_factory,
             )
-            started_at = time.monotonic()
-            result = await worker_execution_bootstrap.submit_worker_run_until_cancelled(
+            dispatch = await worker_execution_bootstrap.execute_worker_run(
                 prepared.adapter, run_payload, event_sink=event_sink,
                 cancel_requested=cancel_requested, execution_owner=execution_owner,
+                monotonic=time.monotonic,
             )
-            if isinstance(result, ExecutorDispatchAccepted):
-                if not result.lease_id:
-                    raise ValueError("executor_dispatch_acceptance_lease_missing")
-                runtime_sandbox_execution_detached = True
-                return WorkerOutcome(status="running", run_id=run_payload.run_id)
-            latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+            runtime_sandbox_execution_detached = dispatch.detached
+            if dispatch.outcome is not None:
+                return dispatch.outcome
+            result, latency_ms = dispatch.result, dispatch.latency_ms
         except WorkerRunCancelled:
             return await completion.cancel()
         except Exception as exc:  # noqa: BLE001 - worker executor boundary.

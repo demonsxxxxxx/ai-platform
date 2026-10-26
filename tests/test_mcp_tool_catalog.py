@@ -305,10 +305,16 @@ async def test_discovery_keeps_response_guards_beneath_sdk(mock_transport, case)
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=ResponseStream())
 
     requests, clients = mock_transport(_http_peer(page))
-    with pytest.raises(McpToolDiscoveryError):
-        await McpToolDiscoveryAdapter(timeout_seconds=0.15, max_response_bytes=512).discover_definitions(
+    # Exercise response guards after SDK startup; total deadlines have separate tests.
+    with pytest.raises(McpToolDiscoveryError) as caught:
+        await McpToolDiscoveryAdapter(timeout_seconds=2, max_response_bytes=512).discover_definitions(
             "https://mcp.example/tools", jwt_authorization="Bearer user.jwt",
         )
+    expected_reason = {
+        "redirect": "transport_failure",
+        "compressed": "unsupported_content_encoding",
+    }.get(case, "response_too_large")
+    assert caught.value.reason == expected_reason
     list_requests = [
         request for request in requests
         if request.method == "POST" and json.loads(request.content).get("method") == "tools/list"

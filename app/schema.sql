@@ -1475,6 +1475,66 @@ create index if not exists idx_chat_submissions_run
   on chat_submissions(tenant_id, run_id)
   where run_id is not null;
 
+-- Preserve the exact accepted queue message before the API crosses into Redis.
+-- The intent is execution scheduling metadata, not a second Run or submission
+-- state machine; Run and Attempt authority remains in their owning tables.
+create table if not exists run_delivery_intents (
+  tenant_id text not null,
+  run_id text not null,
+  session_id text not null,
+  source text not null,
+  submission_id uuid,
+  user_message_id text,
+  queue_payload_json text not null,
+  queue_message_id text not null,
+  payload_sha256 text not null,
+  state text not null default 'pending',
+  claim_token uuid,
+  claimed_at timestamptz,
+  claim_expires_at timestamptz,
+  attempt_count integer not null default 0,
+  next_retry_at timestamptz not null default now(),
+  last_error_code text,
+  queue_position integer,
+  queue_admission_ordinal bigint,
+  queue_admission_source text,
+  delivered_at timestamptz,
+  suppressed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint run_delivery_intents_pkey primary key (tenant_id, run_id),
+  constraint fk_run_delivery_intents_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  constraint chk_run_delivery_intents_source
+    check (source = any (array['chat'::text, 'create_run'::text, 'copy'::text, 'retry'::text, 'resume'::text])),
+  constraint chk_run_delivery_intents_state
+    check (state = any (array['pending'::text, 'claimed'::text, 'delivered'::text, 'suppressed'::text])),
+  constraint chk_run_delivery_intents_identity
+    check (session_id <> '' and queue_message_id ~ '^[0-9a-f]{64}$' and payload_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint chk_run_delivery_intents_attempt_count
+    check (attempt_count >= 0),
+  constraint chk_run_delivery_intents_claim
+    check (
+      (state = 'claimed' and claim_token is not null and claimed_at is not null
+       and claim_expires_at is not null and claim_expires_at > claimed_at)
+      or (state <> 'claimed' and claim_token is null and claimed_at is null and claim_expires_at is null)
+    ),
+  constraint chk_run_delivery_intents_receipt
+    check (
+      (state = 'delivered' and delivered_at is not null)
+      or (state <> 'delivered' and delivered_at is null)
+    ),
+  constraint chk_run_delivery_intents_suppressed
+    check (
+      (state = 'suppressed' and suppressed_at is not null)
+      or (state <> 'suppressed' and suppressed_at is null)
+    )
+);
+create index if not exists idx_run_delivery_intents_due
+  on run_delivery_intents(state, next_retry_at, created_at, run_id);
+create unique index if not exists uq_run_delivery_intents_queue_identity
+  on run_delivery_intents(queue_message_id);
+
 do $$
 begin
   if exists (
@@ -2717,6 +2777,33 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconcilia
   check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
+
+-- Attempt-owned evidence for one exact provider dispatch. This is an
+-- observation ledger, not a second Run/Attempt execution authority.
+create table if not exists sandbox_execution_dispatches (
+  dispatch_id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null references run_attempts(id),
+  owner_generation bigint not null,
+  lease_id text not null unique references sandbox_leases(id),
+  provider text not null,
+  provider_task_id text not null,
+  status text not null default 'intent',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_sandbox_execution_dispatches_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  constraint uq_sandbox_execution_dispatches_attempt
+    unique (tenant_id, run_id, attempt_id),
+  constraint chk_sandbox_execution_dispatches_identity check (
+    dispatch_id <> '' and tenant_id <> '' and run_id <> '' and attempt_id <> ''
+    and owner_generation > 0 and lease_id <> '' and provider <> '' and provider_task_id <> ''
+  ),
+  constraint chk_sandbox_execution_dispatches_status check (
+    status in ('intent', 'accepted', 'rejected', 'unknown')
+  )
+);
 
 -- Rollback for the additive OpenSandbox renewal observations (after callers retire):
 -- alter table sandbox_leases drop column if exists provider_renewed_at;

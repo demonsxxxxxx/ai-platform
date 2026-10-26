@@ -11,6 +11,13 @@ from app.execution.application.worker_skill_evidence import (
     skill_manifests_for_persistence as skill_manifests_for_persistence,
     skill_snapshot_from_result as skill_snapshot_from_result,
 )
+from app.execution.application.run_delivery_intents import (
+    DeliveryAttemptResult as DeliveryAttemptResult,
+    DeliveryScanResult as DeliveryScanResult,
+    QueueDeliveryError as QueueDeliveryError,
+    QueueDeliveryReceipt as QueueDeliveryReceipt,
+    RunDeliveryIntents as RunDeliveryIntents,
+)
 from app.execution.application.worker_terminal_projection import (
     WorkerExecutorResult as WorkerExecutorResult,
     WorkerTerminalProjection as WorkerTerminalProjection,
@@ -165,8 +172,48 @@ async def resolve_chat_model_selection(
         user_id=user_id,
     )
 
+
+async def record_run_delivery_intent(
+    service: RunDeliveryIntents | None,
+    connection: Any,
+    payload: dict[str, Any],
+    *,
+    source: str,
+    submission_id: str | None = None,
+    user_message_id: str | None = None,
+) -> Any | None:
+    """Persist an accepted queue message through Execution's public boundary."""
+
+    if service is None or not service.enabled:
+        return None
+    return await service.record(
+        connection,
+        payload,
+        source=source,
+        submission_id=submission_id,
+        user_message_id=user_message_id,
+    )
+
+
+async def deliver_run_delivery_intent(
+    service: RunDeliveryIntents,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> DeliveryAttemptResult:
+    """Deliver or read back one already accepted Run through Execution."""
+
+    return await service.deliver_one(tenant_id=tenant_id, run_id=run_id)
+
 __all__ = [
     "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "DeliveryAttemptResult",
+    "DeliveryScanResult",
+    "QueueDeliveryError",
+    "QueueDeliveryReceipt",
+    "RunDeliveryIntents",
+    "record_run_delivery_intent",
+    "deliver_run_delivery_intent",
     "MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS",
     "assert_upstream_model_id",
     "route_office_execution_tier",

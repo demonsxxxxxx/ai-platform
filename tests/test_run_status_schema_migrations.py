@@ -183,7 +183,7 @@ def test_run_status_constraint_source_matches_the_runs_domain_vocabulary():
     readiness_values = set(re.findall(r"'([^']+)'::text", _run_status_definition()))
     assert inline_values == readiness_values == RUN_STATUS_VALUES
     assert ("runs", RUN_STATUS_CONSTRAINT) in schema_migrations.CRITICAL_CONSTRAINTS
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_STATUS_SCHEMA_VERSION
+    assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
     assert schema_migrations.RUN_STATUS_LOCK_TIMEOUT == "2s"
     assert schema_migrations.RUN_STATUS_VALIDATION_TIMEOUT == "30s"
     assert "-- Run status constraint upgrade:" not in table_sql

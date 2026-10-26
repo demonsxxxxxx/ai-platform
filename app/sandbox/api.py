@@ -3,12 +3,22 @@
 from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
 
 from app.sandbox.application.callback_authority import (
+    ProviderSessionAppendIdentity as ProviderSessionAppendIdentity,
+    SandboxCallbackIdentity as SandboxCallbackIdentity,
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
 )
 
 from app.sandbox.application.diagnostic_capture import (
     capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
+)
+
+from app.sandbox.application.dispatch_intent import (
+    DispatchOutcome as DispatchOutcome,
+    SandboxDispatchIdentity as SandboxDispatchIdentity,
+    SandboxDispatchIntentRepository as SandboxDispatchIntentRepository,
+    SandboxDispatchIntentService as SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown as SandboxDispatchOutcomeUnknown,
 )
 
 from app.sandbox.application.reconciliation_receipt import (
