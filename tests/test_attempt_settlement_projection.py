@@ -1124,6 +1124,173 @@ async def test_real_postgres_shadow_claim_and_terminalize_share_source_lock_orde
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped_work(
+    attempt_settlement_db,
+):
+    """An unverifiable receipt stays visible while mapped work makes progress."""
+    connect, *_ = attempt_settlement_db
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+        list_due_attempt_settlements,
+        refresh_attempt_settlement_projection,
+        persist_attempt_settlement_projection,
+    )
+
+    unknown_run_id = f"run-unknown-receipt-{uuid4().hex[:12]}"
+    unknown_context_id = f"context-unknown-receipt-{uuid4().hex[:12]}"
+    unknown_lease_id = f"lease-unknown-receipt-{uuid4().hex[:12]}"
+    async with connect() as conn, conn.transaction():
+        # run-a is the mapped, due settlement from the fixture. Make it due
+        # without changing its immutable receipt or source lease identity.
+        await conn.execute(
+            "update run_attempt_settlements set settlement_phase='pending', "
+            "next_retry_at=null where tenant_id='tenant-a' and run_id='run-a'"
+        )
+        await conn.execute(
+            "insert into runs(id, tenant_id, workspace_id, user_id, session_id, agent_id, "
+            "execution_kind, status, model_id, model_value, model_gateway_revision, "
+            "auto_compact_window, max_output_tokens) values "
+            "(%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'agent-a', "
+            "'harness_chat', 'running', 'model-a', 'claude-test', 3, 200000, 4096)",
+            (unknown_run_id,),
+        )
+        await conn.execute(
+            "insert into run_context_snapshots(id, tenant_id, workspace_id, user_id, session_id, run_id) "
+            "values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s)",
+            (unknown_context_id, unknown_run_id),
+        )
+        await conn.execute(
+            "update runs set context_snapshot_id=%s, input_json=%s::jsonb where id=%s",
+            (
+                unknown_context_id,
+                json.dumps({
+                    "executor_type": "claude-agent-worker",
+                    "context_snapshot_id": unknown_context_id,
+                    "context_snapshot": {"context_snapshot_id": unknown_context_id},
+                }),
+                unknown_run_id,
+            ),
+        )
+        unknown_attempt = await attempt_postgres.start_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id=unknown_run_id,
+            queue_attempt_id=f"qat-{unknown_run_id}",
+            worker_id="worker-unknown-receipt",
+            execution_spec=frozen_spec(
+                run_id=unknown_run_id,
+                context_snapshot_id=unknown_context_id,
+                context_snapshot={"context_snapshot_id": unknown_context_id},
+            ),
+        )
+        await conn.execute(
+            "insert into sandbox_leases("
+            "id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id, "
+            "sandbox_mode, provider, status, lease_payload_json, executor_status, "
+            "executor_terminal_json, executor_terminal_received_at, "
+            "executor_reconciliation_context_json, executor_reconciliation_intent_context_json, "
+            "executor_reconciliation_status, executor_terminal_reconciliation_attempt_count) "
+            "values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s, %s, "
+            "'ephemeral', 'fake', 'active', %s::jsonb, 'completed', %s::jsonb, now(), "
+            "%s::jsonb, %s::jsonb, 'pending', 1)",
+            (
+                unknown_lease_id,
+                unknown_run_id,
+                unknown_attempt["id"],
+                json.dumps({"owner_generation": unknown_attempt["owner_generation"]}),
+                json.dumps({"run_id": unknown_run_id, "status": "succeeded", "answer": "unknown"}),
+                None,
+                json.dumps({"adapter_name": "test", "snapshot": "intent"}),
+            ),
+        )
+        await conn.execute(
+            "insert into sandbox_execution_dispatches("
+            "dispatch_id, tenant_id, run_id, attempt_id, owner_generation, "
+            "lease_id, provider, provider_task_id, status) values "
+            "(%s, 'tenant-a', %s, %s, %s, %s, 'fake', %s, 'unknown')",
+            (
+                f"dispatch-{unknown_run_id}",
+                unknown_run_id,
+                unknown_attempt["id"],
+                unknown_attempt["owner_generation"],
+                unknown_lease_id,
+                unknown_attempt["id"],
+            ),
+        )
+        unknown_projection = await refresh_attempt_settlement_projection(
+            conn,
+            tenant_id="tenant-a",
+            run_id=unknown_run_id,
+            attempt_id=str(unknown_attempt["id"]),
+        )
+        assert unknown_projection is not None
+        assert unknown_projection.to_mapping()["mapping_state"] == "unknown"
+        await persist_attempt_settlement_projection(conn, unknown_projection)
+        # Put the unresolved row first. A batch size of one must still reach
+        # the mapped Run rather than retrying/raising on this row forever.
+        await conn.execute(
+            "update run_attempt_settlements set updated_at=now() "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )
+        await conn.execute(
+            "update run_attempt_settlements set updated_at=now() - interval '1 day' "
+            "where tenant_id='tenant-a' and run_id=%s",
+            (unknown_run_id,),
+        )
+
+        due = await list_due_attempt_settlements(
+            conn, limit=1, stale_after_seconds=30,
+        )
+        assert [row["run_id"] for row in due] == ["run-a"]
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_status='pending', "
+            "executor_reconciliation_retry_not_before=null, "
+            "executor_reconciliation_claim_token=null, executor_reconciliation_claimed_at=null "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )
+        from app.bootstrap.sandbox_lease_ports import (
+            build_sandbox_executor_reconciliation_port,
+        )
+        lease_port = build_sandbox_executor_reconciliation_port()
+        await conn.execute(
+            "update run_attempt_settlement_storage set storage_version='attempt.v1' "
+            "where singleton=true"
+        )
+        reader_claimed = await lease_port.claim_sandbox_executor_reconciliations(
+            conn, claim_token="reader-mapped-run-claim", limit=1, stale_after_seconds=30,
+        )
+        assert [row["run_id"] for row in reader_claimed] == ["run-a"]
+        comparison = await settlement_store.compare_attempt_settlement_projections(
+            conn, limit=800,
+        )
+        assert comparison["unknown_count"] == 1
+        assert comparison["mapped_count"] >= 1
+        await conn.execute(
+            "update run_attempt_settlements set settlement_phase='pending', "
+            "settlement_claim_token=null, settlement_claimed_at=null, "
+            "next_retry_at=null where tenant_id='tenant-a' and run_id='run-a'"
+        )
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version='attempt.v1' "
+            "where singleton=true"
+        )
+        writer_claimed = await lease_port.claim_sandbox_executor_reconciliations(
+            conn, claim_token="writer-mapped-run-claim", limit=1, stale_after_seconds=30,
+        )
+        assert [row["run_id"] for row in writer_claimed] == ["run-a"]
+        unknown_detail = await (
+            await conn.execute(
+                "select mapping_state, dispatch_state, receipt_json, settlement_phase "
+                "from run_attempt_settlements where run_id=%s",
+                (unknown_run_id,),
+            )
+        ).fetchone()
+        assert unknown_detail["mapping_state"] == "unknown"
+        assert unknown_detail["dispatch_state"] == "unknown"
+        assert unknown_detail["receipt_json"]["answer"] == "unknown"
+        assert unknown_detail["settlement_phase"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(attempt_settlement_db):
     connect, original_generation, first, second, status = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()

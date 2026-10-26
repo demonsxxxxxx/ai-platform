@@ -719,9 +719,9 @@ async def list_due_attempt_settlements(
                   and lease.id = detail.source_lease_id
                   and lease.status = 'quarantined'
               )
+              and mapping_state = 'mapped'
               and (
-                mapping_state <> 'mapped'
-                or settlement_phase = 'pending'
+                settlement_phase = 'pending'
                 or (settlement_phase = 'retry' and next_retry_at <= now())
                 or (settlement_phase = 'claimed'
                     and settlement_claimed_at < now() - make_interval(secs => %s))
@@ -733,11 +733,11 @@ async def list_due_attempt_settlements(
             (stale_after_seconds, limit),
         )
     ).fetchall()
-    result = [dict(row) for row in rows]
-    for row in result:
-        if row.get("mapping_state") != "mapped":
-            raise RuntimeError("attempt_settlement_projection_" + str(row.get("mapping_state") or "unknown"))
-    return result
+    # Unknown/conflict mappings remain visible through compare/admin diagnostics
+    # and continue to block cutover, but they are not settlement work. Returning
+    # only mapped rows keeps one unverifiable receipt from poisoning other Runs;
+    # its recovery owner remains the existing dispatch/probe or operator path.
+    return [dict(row) for row in rows]
 
 
 async def next_attempt_settlement_retry_delay(conn: Any) -> float | None:

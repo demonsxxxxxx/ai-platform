@@ -349,9 +349,12 @@ the Sandbox claim CAS. Callback recovery receives the accepted context and
 receipt from the same detail mapping; Runs finalization checks its claim token
 there while Sandbox still locks the exact resource identity and generation.
 Admin Run lease projections and runtime health/diagnostics use this mapping as
-well. Missing details raise an error, and unknown/conflict mappings are exposed
-as unknown or rejected; no reader falls back to Sandbox settlement columns.
-Source fields remain dual-written in N40 to preserve the identified legacy
+well. Missing details raise an error. Unknown/conflict mappings remain visible in
+comparison, admin diagnostics and retirement readiness, but are isolated from
+the due-claim batch so one unverifiable receipt cannot block mapped Runs; their
+existing dispatch/probe or operator recovery owner must resolve them before
+cutover. No reader falls back to Sandbox settlement columns. Source fields
+remain dual-written in N40 to preserve the identified legacy
 reader rollback condition while a fresh full comparison remains zero.
 
 Resource stop/release state, cleanup status/claims, executor heartbeat, and
