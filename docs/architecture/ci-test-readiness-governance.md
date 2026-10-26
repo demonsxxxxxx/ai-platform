@@ -110,8 +110,8 @@ manifest and uploaded with the shard evidence. C-layer execution records
 `sdk_used: false`; its profile observation is configuration evidence, not an
 attestation of enforcement or isolation.
 
-Pull requests targeting `main`, `feat/n01-lifecycle-control-chain`, or
-`feat/lifecycle-phase-*` run the same complete backend and frontend required
+Pull requests targeting `main`, `feat/n01-lifecycle-control-chain`,
+`test/run-lifecycle-control-chain`, or `feat/lifecycle-phase*` run the same complete backend and frontend required
 workflows. Do not add path filters or alter the required aggregate for these
 stacked phase branches.
 

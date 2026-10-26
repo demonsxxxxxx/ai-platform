@@ -7,9 +7,9 @@ import gzip
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-import httpx
+import httpx2 as httpx
 import pytest
-from mcp.types import ListToolsResult, Tool
+from mcp_types import ListToolsResult, Tool
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpToolDiscoveryError
@@ -21,6 +21,54 @@ from app.runs.api import (
 )
 from tests.support.mcp_protocol_peers import RAW_TOOL, local_mcp_peers
 from tests.test_claude_mcp_registration import allow_local_peer, subject
+
+
+@pytest.mark.asyncio
+async def test_client_auto_negotiates_stateless_2026_protocol_and_stamps_tool_headers(monkeypatch):
+    with local_mcp_peers(protocol="modern") as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        config = subject(url=peer.url + "/mcp")["mcp_server_config"]
+        async with client.open_mcp_session(config, timeout_seconds=3) as session:
+            assert session.protocol_version == "2026-07-28"
+            tools = await client.list_mcp_tools(session)
+            result = await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+
+        assert [tool.name for tool in tools] == [RAW_TOOL, "unselected_sibling"]
+        assert result.structured_content == {"sequence": 7}
+        assert peer.deleted == 0
+        assert [method for method, _headers in peer.requests] == [
+            "server/discover", "tools/list", "tools/call",
+        ]
+        headers_by_method = {
+            method: {key.casefold(): value for key, value in headers.items()}
+            for method, headers in peer.requests
+        }
+        assert all(
+            headers["mcp-protocol-version"] == "2026-07-28"
+            for headers in headers_by_method.values()
+        )
+        assert headers_by_method["tools/call"]["mcp-name"] == RAW_TOOL
+        assert all("mcp-session-id" not in headers for headers in headers_by_method.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", ["header_mismatch", "input_required"])
+async def test_v2_tool_call_does_not_replay_one_authorized_dispatch(monkeypatch, response):
+    from mcp import MCPError
+
+    with local_mcp_peers(protocol="modern") as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        peer.call_error = {"code": -32020, "message": "synthetic header mismatch"} if response == "header_mismatch" else None
+        peer.input_required = response == "input_required"
+        config = subject(url=peer.url + "/mcp")["mcp_server_config"]
+        async with client.open_mcp_session(config, timeout_seconds=3) as session:
+            await client.list_mcp_tools(session)
+            with pytest.raises(MCPError if response == "header_mismatch" else RuntimeError):
+                await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+        assert len(peer.calls) == 1
+        assert [method for method, _headers in peer.requests] == [
+            "server/discover", "tools/list", "tools/call",
+        ]
 
 
 @pytest.mark.asyncio

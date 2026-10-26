@@ -397,6 +397,8 @@ BACKEND_TEST_SHARDS = {
 }
 LIFECYCLE_CONTROL_CHAIN_BATCHES = {
     "lifecycle-control-chain-core": (
+        "tests/test_run_execution_lifecycle_integration.py::test_docker_proxy_closes_upstream_when_selector_initialization_fails",
+        "tests/test_run_execution_lifecycle_integration.py::test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user",
         "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[terminal_receipt]",
         "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[kill_at_barrier]",
         "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[answer]",
@@ -539,7 +541,13 @@ def test_backend_required_check_is_stable_for_main_and_stacked_lifecycle_pull_re
     assert "branches:" in pull_request_block
     assert "- main" in pull_request_block
     assert "- feat/n01-lifecycle-control-chain" in pull_request_block
-    assert "- feat/lifecycle-phase-*" in pull_request_block
+    assert "- test/run-lifecycle-control-chain" in pull_request_block
+    assert "- feat/lifecycle-phase*" in pull_request_block
+    from fnmatch import fnmatchcase
+
+    patterns = [line.strip()[2:] for line in pull_request_block.splitlines() if line.strip().startswith("- ")]
+    for branch in ("test/run-lifecycle-control-chain", "feat/lifecycle-phase1", "feat/lifecycle-phase2", "feat/lifecycle-phase3"):
+        assert any(fnmatchcase(branch, pattern) for pattern in patterns), branch
     assert "paths:" not in pull_request_block
     assert (
         "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}"
