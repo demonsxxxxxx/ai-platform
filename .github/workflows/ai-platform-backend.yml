@@ -6,7 +6,9 @@ on:
       - main
       - feat/n01-lifecycle-control-chain
       - test/run-lifecycle-control-chain
-      - feat/lifecycle-phase*
+      - feat/lifecycle-phase1
+      - feat/lifecycle-phase2
+      - feat/lifecycle-phase3
   push:
     branches:
       - main
