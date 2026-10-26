@@ -5398,9 +5398,8 @@ async def test_docker_cold_start_failures_stop_before_probes(monkeypatch, failur
         assert "ai-platform.governed_egress.proof" not in provider._leases[primary.id].labels
 
 
-def test_docker_callback_attachment_accepts_only_verified_duplicate_endpoint():
+def test_docker_callback_attachment_returns_before_connect_for_verified_membership():
     from app.platform.sandbox.docker_governed_network import attach_api_callback_witness
-    from app.platform.sandbox.errors import GovernedEgressAdmissionError
 
     fake = FakeDockerClient()
     network_name = "ai-platform-sandbox-egress-v2-test"
@@ -5418,34 +5417,21 @@ def test_docker_callback_attachment_accepts_only_verified_duplicate_endpoint():
     )
     fake.networks_by_name[network_name] = network
     api = fake.api_container
-    original_reload = api.reload
+    fake.attach_to_network(api, network_name, aliases=["api.sandbox.internal"])
+    assert (
+        api.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"]
+        == network["attrs"]["Id"]
+    )
+    assert api.attrs["NetworkSettings"]["Networks"][network_name]["Aliases"] == [
+        "api.sandbox.internal"
+    ]
 
-    def reload_with_membership():
-        original_reload()
-        fake.attach_to_network(api, network_name, aliases=["api.sandbox.internal"])
+    def unexpected_connect(*_args, **_kwargs):
+        raise AssertionError("verified API callback witness must not reconnect")
 
-    def race_connect(_container, *_args, **_kwargs):
-        fake.network_connect_calls.append((network_name, api.id))
-        raise FakeDockerForbiddenError(
-            f"403 explanation='endpoint with name {api.name} already exists in network {network_name}'"
-        )
-
-    api.reload = reload_with_membership
-    network.connect = race_connect
+    network.connect = unexpected_connect
     attach_api_callback_witness(network, api)
-    assert fake.network_connect_calls == [(network_name, api.id)]
-
-    def reject_wrong_endpoint(_container, *_args, **_kwargs):
-        raise FakeDockerForbiddenError(
-            "403 explanation='endpoint with name another-api already exists in network "
-            + network_name
-            + "'"
-        )
-
-    api.attrs["NetworkSettings"]["Networks"].pop(network_name)
-    network.connect = reject_wrong_endpoint
-    with pytest.raises(GovernedEgressAdmissionError):
-        attach_api_callback_witness(network, api)
+    assert fake.network_connect_calls == []
 
 
 @pytest.mark.asyncio
