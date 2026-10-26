@@ -1136,8 +1136,9 @@ async def test_real_postgres_shadow_claim_and_terminalize_share_source_lock_orde
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("writer_active", [False, True], ids=["legacy-writer", "attempt-writer"])
 async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped_work(
-    attempt_settlement_db, monkeypatch,
+    attempt_settlement_db, monkeypatch, writer_active,
 ):
     """An unverifiable receipt stays visible while mapped work makes progress."""
     connect, *_ = attempt_settlement_db
@@ -1311,8 +1312,9 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
             "next_retry_at=null where tenant_id='tenant-a' and run_id='run-a'"
         )
         await conn.execute(
-            "update run_attempt_settlement_writer set writer_version='attempt.v1' "
-            "where singleton=true"
+            "update run_attempt_settlement_writer set writer_version=%s "
+            "where singleton=true",
+            ("attempt.v1" if writer_active else "sandbox_lease.v1",),
         )
         writer_claimed = await lease_port.claim_sandbox_executor_reconciliations(
             conn, claim_token="writer-mapped-run-claim", limit=1, stale_after_seconds=30,
@@ -1377,13 +1379,23 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
                 json.dumps({"owner_generation": b_attempt["owner_generation"]}),
             ),
         )
-        await projection_service.initialize_attempt_in_transaction(
-            conn,
-            tenant_id="tenant-a",
-            run_id=b_run_id,
-            attempt_id=str(b_attempt["id"]),
-            source_lease_id=b_lease_id,
-        )
+        if writer_active:
+            await projection_service.initialize_attempt_in_transaction(
+                conn,
+                tenant_id="tenant-a",
+                run_id=b_run_id,
+                attempt_id=str(b_attempt["id"]),
+                source_lease_id=b_lease_id,
+            )
+        else:
+            b_projection = await refresh_attempt_settlement_projection(
+                conn,
+                tenant_id="tenant-a",
+                run_id=b_run_id,
+                attempt_id=str(b_attempt["id"]),
+            )
+            assert b_projection is not None
+            assert await persist_attempt_settlement_projection(conn, b_projection)
         await conn.execute(
             "update sandbox_leases set executor_heartbeat_at=now() - interval '1 hour', "
             "updated_at=now() - interval '2 hours' where id=%s",
