@@ -10,13 +10,14 @@ Chat/Profile references, Worker authorization, Sandbox transport, Claude SDK
 registration, tool calls, and public events. MCP owns catalog/reference and
 remote transport constraints; Execution owns the Claude adapter; bootstrap
 assembles concrete adapters. Existing Run/Attempt/lease and callback authorities
-remain unchanged. No new host relay, service, database catalog, or dependency.
+remain unchanged. No new host relay, service or database catalog.
 
 Dependency versions are owned by [pyproject.toml](../../pyproject.toml) and
 [uv.lock](../../uv.lock); the bundled CLI comes from that locked SDK package.
 The SDK 0.2.130 / CLI 2.1.222 pair records the original repair baseline, not an
-independent dependency pin. The current pin is claude-agent-sdk 0.2.165,
-bundled Claude Code 2.1.294. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+independent dependency pin. The current pins are claude-agent-sdk 0.2.174,
+bundled Claude Code 2.1.310 and MCP Python SDK 2.3.0. MCP transport uses
+`httpx2`; other platform HTTP consumers retain `httpx`. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -24,6 +25,50 @@ bundled Claude Code 2.1.294. Official contracts: [MCP](https://code.claude.com/d
 Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
+
+## SDK v2 change contract
+
+MCP owns guarded remote discovery/transport; Execution owns the selected-tool
+SDK bridge and internal Tool Search admission. SDK v2 is a library version,
+separate from both the negotiated MCP protocol and Claude Tool Search.
+The official `Client(mode="auto")` negotiates stateless `2026-07-28` through
+`server/discover`, with SDK-owned fallback to legacy initialization; HTTP and
+legacy SSE remain supported. SDK models use snake_case attributes and preserve
+camelCase wire fields. The low-level Server uses typed constructor handlers.
+
+Acceptance must prove modern and legacy list/call, strict annotations, user
+credential refresh, endpoint/byte guards, cleanup, exact selected schemas and
+call-bound receipts. Tool catalog reads bypass SDK caching so an earlier user's
+or earlier grant's catalog cannot supply current authority. The strict raw-result
+validation hook is pinned to MCP 2.3.0's dispatcher seam and covered by malformed
+annotation regressions. Tool calls use the public low-level session method:
+one native admission permits one dispatch, without the high-level Client's
+header-mismatch re-list/replay or input-required retry loop. Unsupported
+multi-round input and claimed results fail closed pending a platform-owned
+continuation design.
+
+After selected remote tools become available, the bridge adds `ToolSearch` to
+the SDK's explicit built-in tool list and exact automatic-approval list. Its
+tracked PreToolUse adapter permits only a bounded query and optional integer
+`max_results` in 1–20; all other tool calls retain the original policy callback.
+Search reads the already registered run catalog and grants no execution
+authority. It is not a globally declarable business capability. Discovery does
+not satisfy required MCP invocation evidence. No server wildcard is introduced.
+
+`ENABLE_TOOL_SEARCH` survives the runner environment allowlist. Unset uses the
+bundled CLI default (enabled on supported models, including through a custom
+`ANTHROPIC_BASE_URL`); `false` loads upfront, and `auto` / `auto:N` retain the
+SDK's documented context thresholds. Model/provider fallbacks remain SDK-owned.
+See [Tool Search](https://code.claude.com/docs/en/agent-sdk/tool-search).
+Local real-CLI tests use synthetic model/MCP peers for both generic and
+Enterprise Gateway credentials, default/explicit search and upfront loading.
+They prove the emitted catalog, tool references and subsequent selected call;
+they do not establish real-provider acceptance or measured token savings.
+
+Stop on a selection, credential, replay or lifecycle regression. Rollback restores
+the dependency manifest, lockfile and both adapter migrations together; no data
+migration or new public API is involved. Local evidence and independent review
+remain separate from deployment and production acceptance.
 
 ## Enterprise Gateway catalog and user identity
 
@@ -126,7 +171,7 @@ a credential after their context operation has been superseded.
    optional result fields, as observed with SDK 0.2.130. Forwarding through a
    later SDK and model interpretation require their own adapter/provider
    acceptance; a dependency change alone does not prove that the representation
-   can be retired. With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a
+   can be retired. With SDK 0.2.174 / CLI 2.1.310, the loopback check confirms a
    JSON tool-result string containing that structured value. Acceptance checks
    the JSON value, not the previous `[structuredContent]` text marker.
    Forward calls to the original remote names. Do not expose
@@ -171,12 +216,13 @@ a credential after their context operation has been superseded.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
    Both discovery transports and selected execution use the installed official
-   MCP `ClientSession` through `mcp.infrastructure.client`; the platform does not
+   MCP v2 `Client`/`ClientSession` through `mcp.infrastructure.client`; the platform does not
    implement a second JSON-RPC handshake, response parser or session protocol.
    SDK-supported protocol negotiation, request IDs and SSE framing stay SDK-owned.
    Platform-owned strict result validation rejects coercible annotation values
    (for example a string or number standing in for `readOnlyHint`), while valid
-   optional and extension annotations remain supported. SDK wire errors and
+   optional known annotations remain supported. MCP v2 drops unknown annotation
+   keys from its typed projection; they cannot supply platform authority. SDK wire errors and
    response guard failures fail closed, including errors on optional background
    streams; they cannot authorize a retry to another destination or accept a
    later catalog result after malformed input.
@@ -276,6 +322,19 @@ and absence of secrets in public events. That stage remains unclaimed until run.
 
 ## Retirement and compatibility disposition
 
+- Replace the transitive MCP 1.29.0 dependency with the explicit 2.3.0 pin and
+  upgrade Claude SDK/CLI together. Retire v1 `request_handlers`, RootModel result
+  access, camelCase model attribute access and the old HTTP transport dependency
+  in the owning adapters/tests. Legacy wire protocol support remains SDK-owned,
+  with an identified consumer: existing configured HTTP/SSE servers. Retain the
+  platform's unrelated `httpx` consumers. Inventory with
+  `rg 'McpError|request_handlers|\.root|inputSchema|isError|structuredContent' app/mcp/infrastructure/client.py app/execution/infrastructure/claude_mcp.py`
+  and the installed SDK/CLI contract test; only intentional wire-format text
+  remains. No compatibility adapter, persisted schema, endpoint or field is
+  retired. Rollback is the atomic manifest/lockfile/adapter revert above.
+  Unknown custom annotation-key passthrough is superseded by SDK v2's known-field
+  projection; no platform consumer of those keys was identified. Known hints
+  retain strict value checks and their existing advisory status.
 - Replace the administrator's state/role/quota-only cards with a compact Server
   table and live tool count/detail view. Retire the ordinary-only
   discovery helpers, whole-directory failure replacement, old card selectors and

@@ -13,13 +13,14 @@ SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}, "requir
 
 
 @contextmanager
-def local_mcp_peers():
+def local_mcp_peers(*, protocol="legacy"):
     state = SimpleNamespace(
         tools=[{"name": RAW_TOOL, "description": "Synthetic sequence lookup", "inputSchema": SCHEMA},
                {"name": "unselected_sibling", "inputSchema": {"type": "object"}}],
         models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
-        tool_input={"query": "synthetic"},
+        tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
+        call_error=None, input_required=False,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -69,6 +70,7 @@ def local_mcp_peers():
                 self.close_connection = True
 
         def do_DELETE(self):
+            state.deleted += 1
             self.respond({})
 
         def do_POST(self):
@@ -86,6 +88,14 @@ def local_mcp_peers():
                 content = {"type": "text", "text": "Synthetic lookup complete."} if used_tool else {
                     "type": "tool_use", "id": "toolu_synthetic", "name": state.sdk_tool, "input": state.tool_input,
                 }
+                if state.search_tools and len(state.models) == 1:
+                    content = {"type": "tool_use", "id": "toolu_search", "name": "ToolSearch",
+                               "input": {"query": "select:" + state.sdk_tool, "max_results": 1}}
+                    used_tool = False
+                elif state.search_tools and len(state.models) == 2:
+                    content = {"type": "tool_use", "id": "toolu_selected", "name": state.sdk_tool,
+                               "input": state.tool_input}
+                    used_tool = False
                 stop_reason = "end_turn" if used_tool else "tool_use"
                 events = [
                     ("message_start", {"type": "message_start", "message": {
@@ -108,7 +118,18 @@ def local_mcp_peers():
                 ), content_type="text/event-stream")
                 return
             state.requests.append((request["method"], dict(self.headers)))
-            if request["method"] == "initialize":
+            if request["method"] == "server/discover" and state.protocol == "modern":
+                result = {"supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}}}
+            elif request["method"] == "server/discover":
+                response = {"jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": -32601, "message": "Method not found"}}
+                if self.path.startswith("/messages?"):
+                    state.replies.put(response)
+                    self.respond({}, 202)
+                else:
+                    self.respond(response)
+                return
+            elif request["method"] == "initialize":
                 result = {"protocolVersion": request["params"]["protocolVersion"], "capabilities": {"tools": {}},
                           "serverInfo": {"name": "synthetic", "version": "1"}}
             elif request["method"] == "notifications/initialized":
@@ -118,11 +139,18 @@ def local_mcp_peers():
                 result = {"tools": state.tools}
             elif request["method"] == "tools/call":
                 state.calls.append(request["params"])
+                if state.call_error is not None:
+                    self.respond({"jsonrpc": "2.0", "id": request["id"], "error": state.call_error})
+                    return
                 result = {"content": [{"type": "text", "text": "synthetic result"}],
                           "structuredContent": {"sequence": 7}, "isError": state.is_error}
+                if state.input_required:
+                    result = {"resultType": "input_required", "requestState": "synthetic-state"}
             else:
                 self.respond({}, 400)
                 return
+            if state.protocol == "modern" and result.get("resultType") != "input_required":
+                result = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private", **result}
             response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
             if self.path.startswith("/messages?"):
                 state.replies.put(response)
