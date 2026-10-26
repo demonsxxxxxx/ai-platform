@@ -500,7 +500,7 @@ def _is_awaited_call_statement(statement: ast.stmt, qualified_name: str) -> bool
 
 
 def _worker_admission_failures(worker: ast.AST) -> list[str]:
-    dispatch_name = "worker_execution_bootstrap.submit_worker_run_until_cancelled"
+    dispatch_name = "worker_execution_bootstrap.execute_worker_run"
     dispatch_line = _unique_call_line(
         _calls(worker),
         qualified_name=dispatch_name,
@@ -514,10 +514,7 @@ def _worker_admission_failures(worker: ast.AST) -> list[str]:
             ):
                 continue
             for dispatch_index, statement in enumerate(value):
-                if (
-                    dispatch_name,
-                    dispatch_line,
-                ) not in _calls(statement):
+                if (dispatch_name, dispatch_line) not in _calls(statement):
                     continue
                 if any(
                     _is_awaited_call_statement(prior, "admit_v4_stream")
