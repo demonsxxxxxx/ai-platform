@@ -172,6 +172,7 @@ class RunDeliveryIntentStore(Protocol):
         *,
         intent: RunDeliveryIntent,
         receipt: QueueDeliveryReceipt,
+        retry_after_seconds: int = 900,
     ) -> bool: ...
 
     async def reschedule(
@@ -213,11 +214,12 @@ class RunDeliveryIntents:
         claim_ttl_seconds: int,
         retry_base_seconds: int,
         retry_cap_seconds: int,
+        delivered_retry_seconds: int = 900,
         permanent_rejection_owner: Callable[..., Awaitable[bool]] | None = None,
         chat_receipt_owner: Callable[..., Awaitable[None]] | None = None,
         chat_rejection_owner: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
-        if scan_batch_size < 1 or claim_ttl_seconds < 1:
+        if scan_batch_size < 1 or claim_ttl_seconds < 1 or delivered_retry_seconds < 1:
             raise ValueError("run_delivery_configuration_invalid")
         if retry_base_seconds < 1 or retry_cap_seconds < retry_base_seconds:
             raise ValueError("run_delivery_retry_configuration_invalid")
@@ -232,6 +234,7 @@ class RunDeliveryIntents:
         self._claim_ttl_seconds = claim_ttl_seconds
         self._retry_base_seconds = retry_base_seconds
         self._retry_cap_seconds = retry_cap_seconds
+        self._delivered_retry_seconds = delivered_retry_seconds
         self._permanent_rejection_owner = permanent_rejection_owner
         self._chat_receipt_owner = chat_receipt_owner
         self._chat_rejection_owner = chat_rejection_owner
@@ -504,6 +507,7 @@ class RunDeliveryIntents:
                 connection,
                 intent=intent,
                 receipt=receipt,
+                retry_after_seconds=self._delivered_retry_seconds,
             )
             record = await self._store.get(
                 connection,

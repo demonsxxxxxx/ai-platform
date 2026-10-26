@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 import json
 from typing import Any
 
 from app.runs.domain.attempt_settlement_projection import (
     ATTEMPT_SETTLEMENT_PROJECTION_FIELDS,
+    CleanupObservation,
     AttemptSettlementProjectionConflict,
     AttemptSettlementProjection,
     project_legacy_attempt_settlement,
@@ -16,6 +18,8 @@ from app.runs.domain.attempt_settlement_projection import (
 
 MAX_ATTEMPT_SETTLEMENT_PAGE_SIZE = 800
 DEFAULT_ATTEMPT_SETTLEMENT_PAGE_SIZE = 100
+ATTEMPT_SETTLEMENT_STORAGE_VERSIONS = frozenset({"sandbox_lease.v1", "attempt.v1"})
+ATTEMPT_SETTLEMENT_WRITER_VERSIONS = frozenset({"sandbox_lease.v1", "attempt.v1"})
 _JSON_FIELDS = frozenset({
     "receipt_json",
     "intent_recovery_context_json",
@@ -68,6 +72,7 @@ _ATTEMPT_FIELDS = (
     "terminal_reason",
 )
 _IMMUTABLE_FIELDS = (
+    "source_lease_id",
     "receipt_identity",
     "receipt_sha256",
     "receipt_owner_generation",
@@ -75,6 +80,26 @@ _IMMUTABLE_FIELDS = (
     "accepted_context_json",
     "result_sha256",
 )
+
+
+def _canonical_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _mapping(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _settlement_from_row(row: Mapping[str, Any]) -> AttemptSettlementProjection:
+    return AttemptSettlementProjection(
+        {field: row.get(field) for field in ATTEMPT_SETTLEMENT_PROJECTION_FIELDS},
+        CleanupObservation(),
+    )
 
 
 def _page_limit(limit: int) -> int:
@@ -195,11 +220,29 @@ async def lock_attempt_settlement_projection_sources(
     query locks only that Attempt's rows and orders them by lease id.
     """
 
-    attempt, run, _leases = await _load_locked_attempt_facts(
-        conn,
-        key=(tenant_id, run_id, attempt_id),
-        lock=True,
+    run = await (
+        await conn.execute(
+            "select id from runs where tenant_id = %s and id = %s for update",
+            (tenant_id, run_id),
+        )
+    ).fetchone()
+    await conn.execute(
+        """
+        select id from sandbox_leases
+        where tenant_id = %s and run_id = %s and attempt_id = %s
+        order by id asc for update
+        """,
+        (tenant_id, run_id, attempt_id),
     )
+    attempt = await (
+        await conn.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    ).fetchone()
     return attempt is not None and run is not None
 
 
@@ -212,6 +255,7 @@ async def refresh_attempt_settlement_projection(
 ) -> AttemptSettlementProjection | None:
     """Project the current source rows after the caller's transaction write."""
 
+    await _require_legacy_settlement_mapping_phase(conn)
     attempt, run, leases = await _load_locked_attempt_facts(
         conn,
         key=(tenant_id, run_id, attempt_id),
@@ -286,6 +330,16 @@ async def persist_attempt_settlement_projection(
     if current is None:
         raise AttemptSettlementProjectionConflict("attempt_settlement_projection_row_missing")
     current = dict(current)
+    # The explicit acceptance writer stores this immutable context in Runs even
+    # where the old Sandbox row cannot distinguish acceptance from an intent-only
+    # recovery context. A later source refresh must retain that proven fact.
+    if values.get("accepted_context_json") is None and current.get("accepted_context_json") is not None:
+        values["accepted_context_json"] = current["accepted_context_json"]
+        if (
+            values.get("dispatch_state") == "accepted"
+            and values.get("settlement_phase") != "unknown"
+        ):
+            values["mapping_state"] = "mapped"
     if current.get("mapping_state") == "mapped" and values.get("mapping_state") != "mapped":
         raise AttemptSettlementProjectionConflict("attempt_settlement_projection_mapping_regressed")
     for field in _IMMUTABLE_FIELDS:
@@ -327,6 +381,24 @@ def _cursor_after(keys: list[tuple[str, str, str]], limit: int) -> tuple[str, st
     return keys[-1] if len(keys) == limit else None
 
 
+async def _require_legacy_settlement_mapping_phase(conn: Any) -> None:
+    writer = await (
+        await conn.execute(
+            "select writer_version from run_attempt_settlement_writer where singleton = true"
+        )
+    ).fetchone()
+    retirement = await (
+        await conn.execute(
+            "select state from run_attempt_settlement_retirement where singleton = true"
+        )
+    ).fetchone()
+    if (
+        str(writer.get("writer_version") or "") == "attempt.v1"
+        or str(retirement.get("state") or "") == "retired"
+    ):
+        raise RuntimeError("attempt_settlement_legacy_mapping_unavailable_after_writer_cutover")
+
+
 async def backfill_attempt_settlement_projections(
     conn: Any,
     *,
@@ -337,6 +409,7 @@ async def backfill_attempt_settlement_projections(
     """Insert one bounded page of mappings; repeats never overwrite a receipt."""
 
     limit = _page_limit(limit)
+    await _require_legacy_settlement_mapping_phase(conn)
     keys = await _page_attempt_keys(conn, tenant_id=tenant_id, after=after, limit=limit)
     inserted = 0
     existing = 0
@@ -358,6 +431,26 @@ async def backfill_attempt_settlement_projections(
         projection = project_legacy_attempt_settlement(attempt, run, leases)
         values = projection.to_mapping()
         was_inserted = await persist_attempt_settlement_projection(conn, projection, insert_only=True)
+        if values["receipt_json"] is not None:
+            source_lease = next(
+                (lease for lease in leases if lease.get("id") == values["source_lease_id"]),
+                None,
+            )
+            received_at = (
+                source_lease.get("executor_terminal_received_at")
+                or source_lease.get("updated_at")
+                or source_lease.get("created_at")
+                if source_lease is not None else None
+            )
+            if received_at is not None:
+                await conn.execute(
+                    """
+                    update run_attempt_settlements
+                    set receipt_recorded_at = coalesce(receipt_recorded_at, %s)
+                    where tenant_id = %s and run_id = %s and attempt_id = %s
+                    """,
+                    (received_at, *key),
+                )
         inserted += was_inserted
         existing += not was_inserted
         unknown += values["mapping_state"] == "unknown"
@@ -390,6 +483,7 @@ async def compare_attempt_settlement_projections(
     """Compare one bounded page; this result cannot establish global readiness."""
 
     limit = _page_limit(limit)
+    await _require_legacy_settlement_mapping_phase(conn)
     keys = await _page_attempt_keys(conn, tenant_id=tenant_id, after=after, limit=limit)
     counts: dict[str, Any] = {
         "attempt_count": len(keys),
@@ -540,4 +634,350 @@ async def compare_attempt_settlement_snapshot(
         next_after=None,
     )
     return summary
+
+
+async def get_attempt_settlement_storage_version(conn: Any) -> str:
+    """Read the durable storage authority; missing or unknown markers fail closed."""
+    row = await (
+        await conn.execute(
+            "select storage_version from run_attempt_settlement_storage where singleton = true"
+        )
+    ).fetchone()
+    version = str(row.get("storage_version") or "") if row else ""
+    if version not in ATTEMPT_SETTLEMENT_STORAGE_VERSIONS:
+        raise RuntimeError("attempt_settlement_storage_marker_invalid")
+    return version
+
+
+async def lock_attempt_settlement_writer_fence(conn: Any) -> None:
+    """Join the source-writer fence before reading the durable storage marker."""
+    for relation in (
+        "runs", "sandbox_leases", "run_attempts", "sandbox_execution_dispatches",
+        "run_attempt_settlements", "run_attempt_settlement_storage",
+        "run_attempt_settlement_writer", "run_stale_reconciliation_claims",
+    ):
+        await conn.execute(f"lock table {relation} in row exclusive mode")
+
+
+async def read_attempt_settlement(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> dict[str, Any] | None:
+    row = await (
+        await conn.execute(
+            """
+            select * from run_attempt_settlements
+            where tenant_id = %s and run_id = %s and attempt_id = %s
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+async def list_due_attempt_settlements(
+    conn: Any,
+    *,
+    limit: int,
+    stale_after_seconds: int,
+) -> list[dict[str, Any]]:
+    """Select receipt settlement work from the Attempt-owned reader projection."""
+    limit = _page_limit(limit)
+    if (isinstance(stale_after_seconds, bool) or not isinstance(stale_after_seconds, int)
+            or stale_after_seconds < 0):
+        raise ValueError("attempt_settlement_stale_after_invalid")
+    missing = await (
+        await conn.execute(
+            """
+            select 1
+            from run_attempts attempt
+            left join run_attempt_settlements detail
+              on detail.tenant_id = attempt.tenant_id
+             and detail.run_id = attempt.run_id
+             and detail.attempt_id = attempt.id
+            where detail.attempt_id is null
+            limit 1
+            """
+        )
+    ).fetchone()
+    if missing is not None:
+        raise RuntimeError("attempt_settlement_projection_missing")
+    rows = await (
+        await conn.execute(
+            """
+            select * from run_attempt_settlements detail
+            where receipt_json is not null
+              and intent_recovery_context_json is not null
+              and not exists (
+                select 1 from sandbox_leases lease
+                where lease.tenant_id = detail.tenant_id
+                  and lease.run_id = detail.run_id
+                  and lease.attempt_id = detail.attempt_id
+                  and lease.id = detail.source_lease_id
+                  and lease.status = 'quarantined'
+              )
+              and mapping_state = 'mapped'
+              and (
+                settlement_phase = 'pending'
+                or (settlement_phase = 'retry' and next_retry_at <= now())
+                or (settlement_phase = 'claimed'
+                    and settlement_claimed_at < now() - make_interval(secs => %s))
+              )
+            order by coalesce(settlement_claimed_at, updated_at, created_at),
+                     tenant_id, run_id, attempt_id
+            limit %s
+            """,
+            (stale_after_seconds, limit),
+        )
+    ).fetchall()
+    # Unknown/conflict mappings remain visible through compare/admin diagnostics
+    # and continue to block cutover, but they are not settlement work. Returning
+    # only mapped rows keeps one unverifiable receipt from poisoning other Runs;
+    # its recovery owner remains the existing dispatch/probe or operator path.
+    return [dict(row) for row in rows]
+
+
+async def next_attempt_settlement_retry_delay(conn: Any) -> float | None:
+    missing = await (
+        await conn.execute(
+            """
+            select 1 from run_attempts attempt
+            left join run_attempt_settlements detail
+              on detail.tenant_id = attempt.tenant_id
+             and detail.run_id = attempt.run_id
+             and detail.attempt_id = attempt.id
+            where detail.attempt_id is null limit 1
+            """
+        )
+    ).fetchone()
+    if missing is not None:
+        raise RuntimeError("attempt_settlement_projection_missing")
+    row = await (
+        await conn.execute(
+            """
+            select extract(epoch from (min(next_retry_at) - now())) as delay_seconds
+            from run_attempt_settlements
+            where mapping_state = 'mapped' and settlement_phase = 'retry'
+            """
+        )
+    ).fetchone()
+    delay = row.get("delay_seconds") if row else None
+    return max(float(delay), 0.0) if delay is not None else None
+
+
+
+def _cutover_ready(summary: Mapping[str, Any]) -> bool:
+    return bool(
+        summary.get("snapshot_complete") is True
+        and int(summary.get("mapped_count") or 0) == int(summary.get("attempt_count") or 0)
+        and all(
+            int(summary.get(field) or 0) == 0
+            for field in ("missing_count", "unknown_count", "conflict_count", "mismatch_count")
+        )
+    )
+
+
+async def _unbound_execution_lease_count(conn: Any) -> int:
+    """Keep legacy execution evidence outside the Attempt ledger in the denominator."""
+    await _require_legacy_settlement_mapping_phase(conn)
+    row = await (await conn.execute(
+        """
+        select count(*)::bigint as count from sandbox_leases lease
+        where (lease.executor_terminal_json is not null
+               or lease.executor_reconciliation_context_json is not null
+               or lease.executor_heartbeat_at is not null
+               or lease.executor_status is distinct from 'pending')
+          and not exists (
+            select 1 from run_attempts attempt
+            where attempt.tenant_id = lease.tenant_id
+              and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+          )
+        """
+    )).fetchone()
+    return int(row["count"])
+
+
+
+async def prepare_attempt_settlement_storage_cutover(
+    transaction_factory: Any,
+    *,
+    page_limit: int = DEFAULT_ATTEMPT_SETTLEMENT_PAGE_SIZE,
+    max_attempts: int = 10000,
+) -> dict[str, Any]:
+    """Backfill in bounded transactions and report a stable, non-authorizing compare."""
+    page_limit = _page_limit(page_limit)
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("attempt_settlement_cutover_budget_invalid")
+    after: tuple[str, str, str] | None = None
+    backfilled = 0
+    pages = 0
+    while True:
+        async with transaction_factory() as conn:
+            version = await get_attempt_settlement_storage_version(conn)
+            if version == "attempt.v1":
+                return {
+                    "status": "already_active",
+                    "storage_version": version,
+                    "backfilled_attempt_count": backfilled,
+                    "page_count": pages,
+                }
+            page = await backfill_attempt_settlement_projections(
+                conn, after=after, limit=page_limit
+            )
+        pages += 1
+        backfilled += int(page["attempt_count"])
+        if backfilled > max_attempts:
+            return {
+                "status": "budget_exceeded",
+                "storage_version": "sandbox_lease.v1",
+                "backfilled_attempt_count": backfilled,
+                "page_count": pages,
+                "max_attempts": max_attempts,
+            }
+        after = page["next_after"]
+        if after is None:
+            break
+
+    async with transaction_factory() as conn:
+        await conn.execute("set transaction isolation level repeatable read")
+        comparison = await compare_attempt_settlement_snapshot(
+            conn, page_limit=page_limit
+        )
+        unbound_count = await _unbound_execution_lease_count(conn)
+    return {
+        "status": "ready" if _cutover_ready(comparison) and unbound_count == 0 else "blocked",
+        "storage_version": "sandbox_lease.v1",
+        "backfilled_attempt_count": backfilled,
+        "page_count": pages,
+        "comparison": comparison,
+        "unbound_execution_lease_count": unbound_count,
+        "activation_authorized": False,
+    }
+
+
+async def activate_attempt_settlement_storage(
+    conn: Any,
+    *,
+    operator_confirmations: Mapping[str, bool] | None = None,
+    page_limit: int = DEFAULT_ATTEMPT_SETTLEMENT_PAGE_SIZE,
+    max_attempts: int = 10000,
+    lock_timeout_seconds: int = 10,
+    statement_timeout_seconds: int = 300,
+) -> dict[str, Any]:
+    """Fence source writers, recompare the entire live denominator, then set the reader."""
+    required_confirmations = {
+        "run_and_sandbox_writers_drained",
+        "all_source_writers_n40_compatible",
+        "real_sdk_acceptance_complete",
+        "real_sandbox_lifecycle_acceptance_complete",
+        "fourteen_lifecycle_scenarios_complete",
+    }
+    if (
+        operator_confirmations is None
+        or set(operator_confirmations) != required_confirmations
+        or any(operator_confirmations.get(name) is not True for name in required_confirmations)
+    ):
+        raise RuntimeError("attempt_settlement_operator_confirmations_required")
+    page_limit = _page_limit(page_limit)
+    if (
+        isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1
+        or isinstance(lock_timeout_seconds, bool) or not isinstance(lock_timeout_seconds, int)
+        or not 1 <= lock_timeout_seconds <= 120
+        or isinstance(statement_timeout_seconds, bool) or not isinstance(statement_timeout_seconds, int)
+        or not 1 <= statement_timeout_seconds <= 1800
+    ):
+        raise ValueError("attempt_settlement_cutover_budget_invalid")
+    await conn.execute("set transaction isolation level repeatable read")
+    # SET is a utility statement: the first MVCC snapshot must be taken after
+    # the writer fence, including commits we wait for while acquiring it.
+    await conn.execute(f"set local lock_timeout = '{lock_timeout_seconds}s'")
+    await conn.execute(f"set local statement_timeout = '{statement_timeout_seconds}s'")
+    # This order fences every source that contributes to the mapping, including
+    # the dispatch receipt. All writers must use the Runs API lock order too.
+    for relation in (
+        "runs", "sandbox_leases", "run_attempts", "sandbox_execution_dispatches",
+        "run_attempt_settlements",
+    ):
+        await conn.execute(f"lock table {relation} in share row exclusive mode")
+    marker = await (
+        await conn.execute(
+            "select storage_version from run_attempt_settlement_storage "
+            "where singleton = true for update"
+        )
+    ).fetchone()
+    current_version = str(marker.get("storage_version") or "") if marker else ""
+    if current_version not in ATTEMPT_SETTLEMENT_STORAGE_VERSIONS:
+        raise RuntimeError("attempt_settlement_storage_marker_invalid")
+    writer_marker = await (
+        await conn.execute(
+            "select writer_version from run_attempt_settlement_writer where singleton = true"
+        )
+    ).fetchone()
+    retirement_marker = await (
+        await conn.execute(
+            "select state from run_attempt_settlement_retirement where singleton = true"
+        )
+    ).fetchone()
+    writer_version = str(writer_marker.get("writer_version") or "") if writer_marker else ""
+    retirement_state = str(retirement_marker.get("state") or "") if retirement_marker else ""
+    if writer_version == "attempt.v1" or retirement_state == "retired":
+        return {
+            "status": "already_active" if current_version == "attempt.v1" else "blocked",
+            "storage_version": current_version,
+            "writer_version": writer_version,
+            "retirement_state": retirement_state or None,
+            "legacy_comparison": "not_applicable_after_writer_activation",
+            "activation_authorized": False,
+        }
+    count_row = await (
+        await conn.execute("select count(*)::bigint as attempt_count from run_attempts")
+    ).fetchone()
+    attempt_count = int(count_row.get("attempt_count") or 0) if count_row else 0
+    if attempt_count > max_attempts:
+        return {
+            "status": "budget_exceeded",
+            "storage_version": current_version,
+            "attempt_count": attempt_count,
+            "max_attempts": max_attempts,
+            "activation_authorized": False,
+        }
+    comparison = await compare_attempt_settlement_snapshot(conn, page_limit=page_limit)
+    unbound_count = await _unbound_execution_lease_count(conn)
+    ready = (
+        _cutover_ready(comparison) and attempt_count == int(comparison["attempt_count"])
+        and unbound_count == 0
+    )
+    if not ready:
+        return {
+            "status": "blocked",
+            "storage_version": current_version,
+            "attempt_count": attempt_count,
+            "comparison": comparison,
+            "unbound_execution_lease_count": unbound_count,
+            "activation_authorized": False,
+        }
+    if current_version == "attempt.v1":
+        return {
+            "status": "already_active",
+            "storage_version": current_version,
+            "attempt_count": attempt_count,
+            "comparison": comparison,
+            "activation_authorized": True,
+        }
+    await conn.execute(
+        "update run_attempt_settlement_storage "
+        "set storage_version = 'attempt.v1', updated_at = clock_timestamp() "
+        "where singleton = true and storage_version = 'sandbox_lease.v1'"
+    )
+    return {
+        "status": "activated",
+        "storage_version": "attempt.v1",
+        "attempt_count": attempt_count,
+        "comparison": comparison,
+        "activation_authorized": True,
+        "operator_acceptance_verified_by_code": False,
+    }
 

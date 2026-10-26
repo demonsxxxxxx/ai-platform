@@ -15,11 +15,15 @@ from app.runs.infrastructure.postgres import create_run_attempt, transition_run_
 
 
 class _Cursor:
-    def __init__(self, row: dict[str, Any] | None) -> None:
+    def __init__(self, row: dict[str, Any] | None = None, rows: list[dict[str, Any]] | None = None) -> None:
         self._row = row
+        self._rows = rows or ([] if row is None else [row])
 
     async def fetchone(self):
         return self._row
+
+    async def fetchall(self):
+        return self._rows
 
 
 class _Connection:
@@ -637,11 +641,15 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
 
     class AttemptPersistence:
         async def get_latest_run_attempt(self, *_args, **_kwargs):
-            return {"id": "rat-a", "status": "running"}
+            return {"id": "rat-a", "status": "running", "owner_generation": 4}
 
         async def request_run_attempt_cancel(self, *_args, **kwargs):
             cancel_calls.append(kwargs)
-            return {"id": kwargs["attempt_id"], "status": "cancel_requested"}
+            return {
+                "id": kwargs["attempt_id"],
+                "status": "cancel_requested",
+                "owner_generation": 5,
+            }
 
     async def stage(*_args, **_kwargs):
         return None
@@ -677,6 +685,7 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
     )
 
     assert authority is not None and authority.attempt_id == "rat-a"
+    assert authority.attempt_owner_generation == 5
     assert cancel_calls == [
         {
             "tenant_id": "tenant-a",
@@ -684,6 +693,93 @@ async def test_owner_cancel_does_not_transfer_attempt_execution_owner(monkeypatc
             "attempt_id": "rat-a",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_handoff_requires_exact_released_resource_and_transfers_owner():
+    class SequenceConnection:
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                {"status": "running", "cancel_requested_at": "now", "terminalization_target": None},
+                None,
+                {"id": "lease-a"},
+                None,
+                {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 5},
+                {"storage_version": "sandbox_lease.v1"},
+                None,
+                {"id": "rat-a"},
+            ]
+
+        async def execute(self, sql, params=()):
+            self.calls.append((" ".join(sql.split()), params))
+            response = self.responses.pop(0)
+            return _Cursor(response)
+
+    conn = SequenceConnection()
+    persistence = run_attempt_repository.PostgresRunCancellationPersistence(
+        attempt_lifecycle=object(),
+        append_event=None,
+        append_audit_log=None,
+        list_active_sandbox_leases=None,
+    )
+    assert await persistence.handoff_cancelled_attempt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+        expected_owner_generation=5,
+        resource_lease_ids=("lease-a",),
+    ) is True
+    assert "for update" in conn.calls[0][0]
+    assert "status='released'" in conn.calls[2][0]
+    assert "owner_kind='reconciler'" in conn.calls[-1][0]
+    assert "owner_generation=owner_generation+1" in conn.calls[-1][0]
+    assert "lease_expires_at=" not in conn.calls[-1][0]
+    assert "last_heartbeat_at=" not in conn.calls[-1][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_step",
+    ["active_resource", "generation_mismatch", "pending_receipt"],
+)
+async def test_cancel_handoff_rejects_unsafe_resource_or_attempt_state(failure_step):
+    class SequenceConnection:
+        def __init__(self, responses):
+            self.responses = list(responses)
+
+        async def execute(self, _sql, _params=()):
+            return _Cursor(self.responses.pop(0))
+
+    common = [
+        {"status": "running", "cancel_requested_at": "now", "terminalization_target": "cancel_requested"},
+        None,
+        {"id": "lease-a"},
+    ]
+    if failure_step == "active_resource":
+        responses = [*common, {"id": "active"}]
+    elif failure_step == "generation_mismatch":
+        responses = [
+            *common, None,
+            {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 6},
+        ]
+    else:
+        responses = [
+            *common, None,
+            {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 5},
+            {"storage_version": "sandbox_lease.v1"},
+            {"id": "pending"},
+        ]
+    persistence = run_attempt_repository.PostgresRunCancellationPersistence(
+        attempt_lifecycle=object(), append_event=None, append_audit_log=None,
+        list_active_sandbox_leases=None,
+    )
+    assert await persistence.handoff_cancelled_attempt(
+        SequenceConnection(responses), tenant_id="tenant-a", run_id="run-a",
+        attempt_id="rat-a", expected_owner_generation=5,
+        resource_lease_ids=("lease-a",),
+    ) is False
 
 
 @pytest.mark.asyncio

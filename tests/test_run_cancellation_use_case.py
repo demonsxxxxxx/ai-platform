@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -388,6 +389,83 @@ async def test_missing_attempt_skips_publication_and_only_cancelled_status_remov
     receipt = CancelRequestResult("run-a", status, None, (), None)
     assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
     assert order == (["queue", "sandbox"] if status == "cancelled" else ["sandbox"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_handoff_runs_after_successful_resource_release_and_not_after_stop_failure():
+    calls = []
+    handoffs = []
+
+    async def sandbox_cleanup(_leases, **_kwargs):
+        calls.append("sandbox")
+        return [{"id": "lease-a"}]
+
+    async def handoff(**kwargs):
+        calls.append("handoff")
+        handoffs.append(kwargs)
+        return True
+
+    processor = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=sandbox_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    receipt = CancelRequestResult(
+        "run-a", "cancel_requested", None, ({"id": "lease-a"},), None,
+        "attempt-a", 5,
+    )
+    await processor.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == ["sandbox", "handoff"]
+    assert handoffs == [{
+        "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "attempt-a",
+        "expected_owner_generation": 5, "resource_lease_ids": ("lease-a",),
+    }]
+
+    async def repeat_cleanup(_leases, **_kwargs):
+        calls.append("repeat-sandbox")
+        return []
+
+    repeat = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=repeat_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    await repeat.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
+    assert handoffs[-1]["resource_lease_ids"] == ()
+
+    async def failed_cleanup(*_args, **_kwargs):
+        raise RuntimeError("stop failed")
+
+    failed = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=failed_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await failed.post_cancel(
+            receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+            reason="cancel_requested", worker_capabilities=object(),
+        )
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
 
 
 @pytest.mark.asyncio

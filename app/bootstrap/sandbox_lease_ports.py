@@ -51,4 +51,4 @@ def build_sandbox_executor_reconciliation_port() -> SandboxExecutorReconciliatio
 
 
 def build_sandbox_run_lease_reader() -> SandboxRunLeaseReader:
-    return cast(SandboxRunLeaseReader, leases_postgres)
+    return cast(SandboxRunLeaseReader, _shadowed_repository)

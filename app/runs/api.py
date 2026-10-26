@@ -250,7 +250,14 @@ from app.runs.application.attempt_settlement_projection import (
     AttemptSettlementProjectionError as AttemptSettlementProjectionError,
     AttemptSettlementProjectionPorts as AttemptSettlementProjectionPorts,
     AttemptSettlementProjectionService as AttemptSettlementProjectionService,
+    AttemptSettlementReadError as AttemptSettlementReadError,
     project_legacy_attempt_settlement as project_legacy_attempt_settlement,
+)
+from app.runs.domain.settlement_retirement import (
+    LEGACY_ATTEMPT_SETTLEMENT_COLUMNS as LEGACY_ATTEMPT_SETTLEMENT_COLUMNS,
+    LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT as LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT,
+    LEGACY_ATTEMPT_SETTLEMENT_INDEXES as LEGACY_ATTEMPT_SETTLEMENT_INDEXES,
+    RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION as RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
 )
 from app.runs.domain.multi_agent_admission import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED as PLATFORM_MULTI_AGENT_NOT_SUPPORTED,

@@ -11,12 +11,11 @@ from app.settings import get_settings
 def build_run_attempt_lifecycle_service() -> RunAttemptLifecycleService:
     """Build one stateless service over the process-owned database runtime."""
 
-    projection = (
-        build_attempt_settlement_projection_service()
-        if get_settings().run_attempt_settlement_shadow_enabled
-        else None
-    )
+    projection = build_attempt_settlement_projection_service()
     return RunAttemptLifecycleService(
         persistence=run_attempt_persistence,
         settlement_projection=projection,
+        settlement_shadow_enabled=lambda: bool(
+            get_settings().run_attempt_settlement_shadow_enabled
+        ),
     )

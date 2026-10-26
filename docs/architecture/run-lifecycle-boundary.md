@@ -62,6 +62,31 @@ running writer. Worker dispatch locks the session-consistent queued Run through
 PostgreSQL. Pre-dispatch failures without a valid specification retain their
 Run-only terminal paths. Source, tests, image and runtime acceptance remain separate.
 
+### 1.2 Attempt settlement cutover and retirement
+
+Attempt settlement read and write authority use separate PostgreSQL version
+markers and separate operator cutovers. N40's reader activation selects mapped
+Attempt details for terminal receipt, recovery, finalizer and diagnostic reads;
+N41's writer activation stops writes to the inventoried Sandbox settlement
+columns. Neither activation is inferred from schema application or from a
+missing detail row. Their code and lifecycle-specific acceptance inventory are
+owned by [Execution Specification and Attempt Lifecycle](execution-spec-and-attempt-lifecycle.md)
+and the [Phase 4 implementation plan](../exec-plans/run-lifecycle-implementation-plan.md).
+
+N42 retires the Redis stale-Run business fence while preserving queue delivery
+owner tokens, ACK/requeue behavior, capacity controls and the independent SSE
+contract. N43 schema `2026.10.25.11` adds a durable retirement marker and an
+explicit operator path for dropping the eight legacy settlement fields, three
+indexes and old status constraint. `retirement-status` and `prepare-retirement`
+are read-only; only `retire` may drop them after current core readiness, both
+Attempt markers, complete history mapping, and drained Run/resource claims have
+been established. Expired claim TTLs do not prove external I/O stopped. The
+operator records old-binary shutdown, Run/resource drain, backup/restore drill
+and minimum compatible version; the code does not verify those production
+facts. Retirement has no automatic down migration, and legacy mapping/read
+compatibility is rejected afterward. Real SDK/Sandbox, fourteen-scenario and
+deployment acceptance remain separate from local PostgreSQL and CI evidence.
+
 ## 2. Source ownership
 
 | Concern | Canonical owner | Allowed contents | Forbidden contents |
@@ -181,8 +206,20 @@ The migration MUST preserve these observable semantics:
    failure. The existing stop-under-lock compatibility mechanism must remain
    until the Sandbox owner activates its separately proven claim/I/O/receipt
    replacement. Runs never calls a provider or marks
-   a Sandbox lease released. A cancelled Run with cleanup pending does not claim
-   that the Sandbox was released.
+   a Sandbox lease released. After Sandbox returns exact released-lease evidence,
+   Runs may perform one owner-fenced Attempt handoff only when the Run remains
+   `running` with durable cancellation requested, the Attempt is still
+   `cancel_requested` under the captured queue-worker generation, no same-Run
+   active resource remains, and no terminal receipt is pending. The handoff
+   assigns `reconciler/cancel-cleanup` and advances the execution generation,
+   preserving the monotonic heartbeat and lease timestamps. The PG stale owner
+   may consume this exact stopped-owner handoff before the old timestamp expires;
+   other live owners remain excluded. Claim and writeback still require their
+   exact Attempt, generation and claim token. A repeat cancellation can re-read
+   released evidence after an interrupted handoff. Stop failure, tenant/Attempt/
+   generation mismatch, another active resource, or a pending receipt leaves
+   the queue owner and lease untouched. A cancelled Run with cleanup pending
+   does not claim that the Sandbox was released.
 10. **Rollback is atomic.** Any exception before transaction completion rolls
     back the state transition and its event/audit facts together.
 

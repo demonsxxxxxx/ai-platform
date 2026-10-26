@@ -32,6 +32,8 @@ class SandboxLeaseTransportPort(Protocol):
 
     async def get_sandbox_lease(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
+    async def get_resource_sandbox_lease(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
+
     async def renew_sandbox_lease(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
     async def release_sandbox_lease(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
@@ -45,6 +47,10 @@ class SandboxLeaseTransportPort(Protocol):
 
 class SandboxExecutorReconciliationPort(Protocol):
     """Claim and settle durable executor receipts without owning provider I/O."""
+
+    async def read_unknown_receipt_probe_recovery_facts(
+        self, conn: Any, **kwargs: Any
+    ) -> dict[str, Any] | None: ...
 
     async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> Any: ...
 
@@ -73,4 +79,8 @@ class SandboxRunLeaseReader(Protocol):
     async def list_sandbox_leases_for_run(
         self, conn: Any, *, tenant_id: str, run_id: str
     ) -> list[dict[str, Any]]: ...
+
+    async def read_run_runtime_debug(
+        self, conn: Any, *, tenant_id: str, run_id: str
+    ) -> dict[str, Any]: ...
 

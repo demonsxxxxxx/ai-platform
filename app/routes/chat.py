@@ -2201,8 +2201,6 @@ async def chat_stream(
     if queue_admission is None:
         if enqueue_error is not None and (
             _is_definitive_chat_queue_rejection(enqueue_error)
-            or isinstance(enqueue_error, QueueAdmissionRejected)
-            and str(enqueue_error) == "run_reconciliation_in_progress"
         ):
             async with transaction() as conn:
                 await terminalize_enqueue_failure(

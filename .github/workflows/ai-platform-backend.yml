@@ -293,6 +293,8 @@ jobs:
               tests/test_run_delivery_intents.py
               tests/test_run_delivery_intents_postgres.py
               tests/test_execution_supervision_postgres.py
+              tests/test_stale_reconciliation_claims.py
+              tests/test_n42_redis_fence_retirement.py
           - shard: lifecycle-control-chain
             stage: lifecycle-control-chain-core
             runner: ubuntu-latest
@@ -368,6 +370,9 @@ jobs:
               tests/test_public_event_enum_types.py
               tests/test_execution_supervision.py
               tests/test_attempt_settlement_projection.py
+              tests/test_attempt_settlement_authority.py
+              tests/test_attempt_settlement_retirement.py
+              tests/test_sandbox_attempt_authority.py
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py

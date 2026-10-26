@@ -1146,7 +1146,6 @@ async def create_run(
     except Exception as exc:
         if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
             "queue_payload_invalid",
-            "run_reconciliation_in_progress",
         }:
             await _compensate_enqueue_failure(
                 principal=principal, run_id=run_id,
@@ -1278,7 +1277,6 @@ async def copy_run(
         except Exception as exc:
             if isinstance(exc, QueueAdmissionRejected) and str(exc) in {
                 "queue_payload_invalid",
-                "run_reconciliation_in_progress",
             }:
                 await _compensate_enqueue_failure(
                     principal=principal, run_id=str(copied["run_id"]),

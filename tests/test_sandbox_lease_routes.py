@@ -86,10 +86,17 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
         calls.append(("event", kwargs))
         return "evt-a"
 
+    async def disable_projection_write(_self, _conn, _scope):
+        return False
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr(
+        "app.sandbox.application.attempt_settlement_shadow.AttemptSettlementShadowLeaseRepository._write_enabled",
+        disable_projection_write,
+    )
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
@@ -341,6 +348,54 @@ def test_public_real_provider_release_stops_before_db_release(monkeypatch):
     assert transaction_count == 1
     assert calls == [
         ("stop", "docker", "exec-run-a", "cancelled"),
+        ("release", "lease-a", "cancelled"),
+        ("event", "sandbox_lease_released"),
+    ]
+
+
+def test_public_provider_release_uses_resource_authority_without_settlement_detail(monkeypatch):
+    calls = []
+    resource = verified_runtime_lease_row()
+
+    class LeaseTransport:
+        async def get_sandbox_lease(self, _conn, **_kwargs):
+            raise RuntimeError("attempt_settlement_projection_missing")
+
+        async def get_resource_sandbox_lease(self, _conn, **_kwargs):
+            calls.append(("resource_read", "lease-a"))
+            return dict(resource)
+
+        async def release_sandbox_lease(self, _conn, **kwargs):
+            calls.append(("release", kwargs["lease_id"], kwargs["reason"]))
+            return {**resource, "status": "released", "release_reason": kwargs["reason"]}
+
+    async def stop_sandbox_leases(rows, *, reason, provider_factory):
+        assert rows == [resource]
+        calls.append(("stop", "lease-a", reason))
+        return rows
+
+    async def fake_append_event(_conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.main.build_sandbox_lease_transport_port", lambda: LeaseTransport())
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.sandbox_leases._sandbox_cleanup.stop_sandbox_leases", stop_sandbox_leases)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/sandbox/leases/lease-a/release",
+        headers=headers(),
+        json={"reason": "cancelled"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_lease"]["status"] == "released"
+    assert calls == [
+        ("resource_read", "lease-a"),
+        ("stop", "lease-a", "cancelled"),
         ("release", "lease-a", "cancelled"),
         ("event", "sandbox_lease_released"),
     ]

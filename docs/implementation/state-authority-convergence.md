@@ -197,11 +197,15 @@ flowchart LR
 
 S3 同批必须处理补投与 `reconcile_stale_runs_for_worker` 的竞争：明确哪些“从未开始执行、仍在有效准入恢复窗口内”的记录由补投器拥有，stale selector 和最终 CAS 都使用同一判定，防止扫描后状态变化。窗口外也必须先对账队列和执行权，不能无限豁免 pending Run 的收敛。
 
-补投器保留 Redis reconciliation fence 检查；领取失败、所有权未知或其他 owner 正在收敛时退避。若当前 queue 原语不能原子覆盖所需竞争条件，先补齐该原语和对应真实依赖测试，再启用扫描器。
+补投器通过自身持久化投递 claim 与当前 Runs/Attempt 状态重新核验；领取失败、所有权未知或其他 owner 正在收敛时退避，不依赖 Redis 业务 reconciliation fence。若当前持久化 claim 与 queue admission 原语不能原子覆盖所需竞争条件，先补齐对应原语和真实依赖测试，再启用扫描器。
 
 最初复用 Worker 的受监督生命周期，设置批量、并发、单次 deadline、退避上限及公平调度预算。关键发布/恢复有独立调度预算，bulk cleanup 卡住不能阻断它们。终止超时任务时必须继续核算仍未结束的 I/O，不能不断启动替代任务。预算应按 owning settings 定义并测试边界，不为同一含义再添加多套 env 别名。
 
 至少暴露 pending 数量和最老年龄、最近成功进展、成功/未知/拒绝/CAS 丢失计数、重试次数、扫描耗时及超预算次数。指标维度不携带 user/run ID；脱敏日志通过受控 trace 关联。进程 heartbeat 不能替代恢复进展指标。
+
+`run_delivery_intents` 另行负责已接受 Run 的 Redis 投递与回执恢复。PostgreSQL 保存不可变 payload 和 message identity；`delivered` 只表示曾观察到 Redis admission，不代表消息仍在 queued、processing 或 retry 集合中。回执超过 `stale_run_reconciliation_seconds` 后，扫描器重新领取该 intent 并先按原 identity readback；只有当前 Run 仍为 queued、未取消、未 terminalize、没有 Attempt 且 claim 仍有效时，才可用原 payload 和 message identity 重投。已有 Attempt 时只 readback，缺失回执会退避；旧 claim 的迟到回执必须被 token、expiry 和 payload CAS 拒绝。回执再次确认后沿用相同 stale 窗口，避免持续扫描和 Redis I/O 忙循环。
+
+Production Settings 强制启用同一组 intent writer 和 Worker scanner。API startup 与 Worker 在开始接收/执行队列项前都运行 bounded legacy mapper：只使用持久化 Run input/context 和 submission/control-operation identity；存在无法证明的 queued Run 时 startup 失败，要求先处理该记录，不能按最新 Profile 或 catalog 猜测。Development/test 保留显式 opt-in 默认值。
 
 ## 7. S4：按操作收敛执行权
 

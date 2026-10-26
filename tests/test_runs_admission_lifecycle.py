@@ -133,11 +133,26 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
     calls = []
 
     class Connection:
-        async def execute(self, sql, params):
-            calls.append((" ".join(sql.split()), params))
+        async def execute(self, sql, params=()):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith(
+                "select storage_version from run_attempt_settlement_storage"
+            ):
+                return SingleRowCursor({"storage_version": "attempt.v1"})
             return SingleRowCursor(None)
 
+    lifecycle = RunLifecycleService(
+        persistence=PostgresRunLifecyclePersistence(),
+        append_event=_record_noop_event,
+        append_audit_log=_record_noop_event,
+        validate_result_size=require_run_result_size,
+        sanitize_payload=sanitize_public_payload,
+        sanitize_text=sanitize_public_text,
+        make_trace_id=standard_trace_id,
+    )
     staged = await stale_terminalization.stage_stale_run_reconciliation(
+        lifecycle,
         Connection(),
         tenant_id="tenant-a",
         workspace_id="workspace-a",
@@ -153,9 +168,12 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
     )
 
     assert staged is None
-    assert "executor_terminal_json is not null" in calls[0][0]
-    assert "executor_reconciliation_status is distinct from 'finalized'" in calls[0][0]
-    assert calls[0][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
+    stage_sql = calls[1][0]
+    assert "run_attempt_settlements detail" in stage_sql
+    assert "lease.executor_status in ('completed', 'failed', 'cancelled')" in stage_sql
+    assert "executor_terminal_json" not in stage_sql
+    assert "executor_reconciliation_status" not in stage_sql
+    assert calls[1][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
 
 
 @pytest.mark.parametrize(

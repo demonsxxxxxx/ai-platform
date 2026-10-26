@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     worker_maintenance_interval_seconds: float = Field(default=30.0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
-    stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    stale_run_reconciliation_claim_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     executor_heartbeat_stale_seconds: int = Field(default=45, ge=1, le=3600)
     executor_reconciliation_claim_stale_seconds: int = Field(default=300, ge=1, le=3600)
     supervision_claim_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
@@ -109,8 +109,8 @@ class Settings(BaseSettings):
     # permits this replica to execute work while a domain is unified.
     execution_supervision_enabled: bool = Field(default=False)
     execution_supervision_shadow_enabled: bool = Field(default=False)
-    # One switch controls both transactional intent writers and the Worker
-    # recovery scanner so they cannot be enabled independently.
+    # Development and test keep the existing local default. Production turns
+    # this on unconditionally; API/Worker startup must backfill or fail closed.
     run_delivery_intents_enabled: bool = Field(default=False)
     run_delivery_intent_scan_batch_size: int = Field(default=25, ge=1, le=100)
     run_delivery_intent_claim_ttl_seconds: int = Field(default=120, ge=1, le=3600)
@@ -303,6 +303,8 @@ class Settings(BaseSettings):
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
+        if self.deployment_environment == "production":
+            self.run_delivery_intents_enabled = True
         if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
             raise ValueError("object_delete_retry_cap_below_base")
         if self.run_delivery_intent_retry_cap_seconds < self.run_delivery_intent_retry_base_seconds:

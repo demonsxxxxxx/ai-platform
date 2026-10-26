@@ -129,8 +129,8 @@ async def observe_persisted_candidates(
           with due as (
             select 'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
                    lease.id as candidate_id, 'probe_executor'::text as action,
-                   (case when lease.executor_reconciliation_status = 'claimed'
-                     then coalesce(lease.executor_reconciliation_claimed_at,
+                   (case when lease.executor_probe_claim_token is not null
+                     then coalesce(lease.executor_probe_claimed_at,
                                    lease.updated_at, lease.created_at)
                      else coalesce(lease.executor_heartbeat_at,
                                    lease.updated_at, lease.created_at) end) +
@@ -140,16 +140,45 @@ async def observe_persisted_candidates(
                      'executor_status', lease.executor_status) as facts
             from sandbox_leases lease
             join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+            left join run_attempt_settlements detail
+              on detail.tenant_id = lease.tenant_id
+             and detail.run_id = lease.run_id
+             and detail.attempt_id = lease.attempt_id
+             and detail.source_lease_id = lease.id
             where lease.status = 'active'
-              and lease.executor_terminal_json is null
-              and lease.executor_reconciliation_context_json is not null
               and (
-                (lease.executor_reconciliation_status = 'waiting_terminal'
+                lease.executor_status in ('accepted', 'running')
+                or (
+                  lease.executor_status = 'pending'
+                  and (
+                    (detail.mapping_state = 'mapped'
+                    and detail.dispatch_state in ('unknown', 'accepted')
+                    and detail.intent_recovery_context_json is not null
+                    and detail.accepted_context_json is null
+                    and detail.receipt_json is null)
+                    or (
+                      detail.attempt_id is null
+                      and to_jsonb(lease)->>'executor_reconciliation_intent_context_json' is not null
+                      and exists (
+                        select 1 from sandbox_execution_dispatches dispatch
+                        where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
+                          and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
+                          and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+                          and dispatch.status in ('intent', 'unknown', 'accepted')
+                      )
+                    )
+                  )
+                )
+              )
+              and detail.receipt_json is null
+              and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
+              and (
+                (lease.executor_probe_claim_token is null
                  and coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) +
                      (%s * interval '1 second') <= %s)
                 or
-                (lease.executor_reconciliation_status = 'claimed'
-                 and coalesce(lease.executor_reconciliation_claimed_at,
+                (lease.executor_probe_claim_token is not null
+                 and coalesce(lease.executor_probe_claimed_at,
                               lease.updated_at, lease.created_at) +
                      (%s * interval '1 second') <= %s)
               )
@@ -191,23 +220,31 @@ async def observe_persisted_candidates(
           with due as (
             select encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
                    lease.id as candidate_id, 'settle_terminal_receipt'::text as action,
-                   case when lease.executor_reconciliation_status = 'claimed'
-                     then lease.executor_reconciliation_claimed_at +
+                   case when detail.settlement_phase = 'claimed'
+                     then detail.settlement_claimed_at +
                        (%s * interval '1 second')
-                     else coalesce(lease.executor_reconciliation_retry_not_before,
+                     else coalesce(detail.next_retry_at,
                        lease.executor_terminal_received_at, lease.updated_at)
                    end as deadline_at,
                    0::integer as priority,
                    jsonb_build_object('terminal_receipt_present', true,
-                     'reconciliation_status', lease.executor_reconciliation_status) as facts
+                     'reconciliation_status', detail.settlement_phase) as facts
             from sandbox_leases lease
-            where lease.executor_terminal_json is not null
-              and lease.executor_reconciliation_status in ('pending', 'retry', 'claimed')
-              and ((lease.executor_reconciliation_status = 'claimed'
-                    and lease.executor_reconciliation_claimed_at +
+            join run_attempt_settlements detail
+              on detail.tenant_id = lease.tenant_id
+             and detail.run_id = lease.run_id
+             and detail.attempt_id = lease.attempt_id
+             and detail.source_lease_id = lease.id
+            where detail.mapping_state = 'mapped'
+              and lease.status <> 'quarantined'
+              and detail.receipt_json is not null
+              and detail.accepted_context_json is not null
+              and detail.settlement_phase in ('pending', 'retry', 'claimed')
+              and ((detail.settlement_phase = 'claimed'
+                    and detail.settlement_claimed_at +
                       (%s * interval '1 second') <= %s)
-                or (lease.executor_reconciliation_status in ('pending', 'retry')
-                    and coalesce(lease.executor_reconciliation_retry_not_before,
+                or (detail.settlement_phase in ('pending', 'retry')
+                    and coalesce(detail.next_retry_at,
                       lease.executor_terminal_received_at, lease.updated_at) <= %s))
           )
           select * from due
@@ -224,16 +261,30 @@ async def observe_persisted_candidates(
           with due as (
             select 'l.' || encode(convert_to(lease.id, 'UTF8'), 'hex') as scan_key,
                    lease.id as candidate_id, 'cleanup_sandbox_lease'::text as action,
-                   case when lease.executor_reconciliation_status = 'cleanup_pending'
+                   case when lease.executor_cleanup_status in ('cleanup_pending', 'retry', 'failed', 'claimed')
                      then lease.updated_at else lease.expires_at end as deadline_at,
                    100::integer as priority,
                    jsonb_build_object('lease_status', lease.status,
-                     'reconciliation_status', lease.executor_reconciliation_status) as facts
+                     'cleanup_status', lease.executor_cleanup_status) as facts
             from sandbox_leases lease
-            where ((lease.executor_reconciliation_status = 'cleanup_pending'
-                    and lease.updated_at <= %s)
+            where ((lease.executor_cleanup_status in ('cleanup_pending', 'retry', 'failed')
+                    and coalesce(lease.executor_cleanup_retry_not_before, '-infinity'::timestamptz) <= %s)
+                or (lease.executor_cleanup_status = 'waiting_settlement'
+                    and exists (
+                      select 1 from run_attempt_settlements detail
+                      where detail.tenant_id = lease.tenant_id
+                        and detail.run_id = lease.run_id
+                        and detail.attempt_id = lease.attempt_id
+                        and detail.source_lease_id = lease.id
+                        and detail.mapping_state = 'mapped'
+                        and detail.settlement_phase = 'settled'
+                        and detail.result_status in ('succeeded', 'failed', 'cancelled', 'canceled')
+                        and detail.result_json is not null
+                        and detail.settled_at is not null
+                    ))
                 or (lease.status = 'active' and lease.expires_at is not null
-                    and lease.expires_at <= %s))
+                    and lease.expires_at <= %s
+                    and lease.executor_cleanup_status in ('not_required', 'finalized')))
             union all
             select 'o.' || encode(convert_to(outbox.id, 'UTF8'), 'hex') as scan_key,
                    'object:' || outbox.id as candidate_id, 'delete_object'::text as action,

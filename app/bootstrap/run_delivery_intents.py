@@ -90,6 +90,9 @@ def build_run_delivery_intents(
         claim_ttl_seconds=claim_ttl_seconds,
         retry_base_seconds=retry_base_seconds,
         retry_cap_seconds=retry_cap_seconds,
+        delivered_retry_seconds=int(
+            getattr(settings, "stale_run_reconciliation_seconds", 900)
+        ),
         permanent_rejection_owner=failure_owner,
         chat_receipt_owner=persist_chat_receipt,
         chat_rejection_owner=persist_chat_rejection,

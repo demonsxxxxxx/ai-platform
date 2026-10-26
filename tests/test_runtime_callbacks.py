@@ -26,8 +26,37 @@ from app.runtime.sandbox.contracts import (
 )
 from app.streaming.infrastructure import v4 as streaming_v4
 import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
+import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
+
+
+class _LegacyAttemptSettlementReader:
+    """Unit port for callback scenarios backed by legacy Sandbox receipts."""
+
+    async def storage_version(self, _conn):
+        return "sandbox_lease.v1"
+
+    async def writer_fence(self, _conn):
+        return None
+
+    async def lock_writer_fence(self, _conn):
+        return None
+
+    async def lock_sources_in_transaction(self, _conn, **_scope):
+        return None
+
+    async def writes_enabled(self, _conn, *, shadow_enabled):
+        return False
+
+    async def attempt_writer_active(self, _conn):
+        return False
+
+
+@pytest.fixture(autouse=True)
+def legacy_attempt_settlement_reader(monkeypatch):
+    reader = _LegacyAttemptSettlementReader()
+    monkeypatch.setattr(sandbox_lease_ports._shadowed_repository, "_settlement", reader)
 
 
 class CallbackEventPersistence:
