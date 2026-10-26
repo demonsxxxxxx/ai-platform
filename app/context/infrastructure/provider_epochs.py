@@ -24,7 +24,6 @@ from app.context.infrastructure.provider_images import (
 )
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES,
-    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
     provider_entry_json_bytes,
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
@@ -433,10 +432,9 @@ async def _matching_append_receipt(conn, *, epoch, expected_sequence, digest, co
     return previous
 
 
-def _check_append_capacity(epoch, *, count, batch_bytes, structured_bytes):
+def _check_append_capacity(epoch, *, count, batch_bytes):
     if (epoch["entry_count"] + count > MAX_PROVIDER_SESSION_ENTRIES
-        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
-        or epoch["structured_bytes"] + structured_bytes > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES):
+        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
 
 
@@ -462,8 +460,7 @@ async def prepare_callback_media(
             return ProviderMediaTransfer(epoch["id"], epoch["next_sequence"], attempt["owner_generation"], [])
         if projection is None:
             raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-        _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes,
-                               structured_bytes=sum(provider_entry_json_bytes(entry) for entry in projection.entries))
+        _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes)
     return await reserve_provider_images(
         conn, scope=scope, epoch=epoch, attempt=attempt, run_id=run_id,
         attempt_id=attempt_id, projection=projection,
@@ -542,7 +539,7 @@ async def callback_provider_epoch(
         if size > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES:
             raise ProviderSessionConflictError("provider_session_entry_too_large")
         structured_bytes += size
-    _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes, structured_bytes=structured_bytes)
+    _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes)
     if media is not None:
         await promote_provider_images(conn, transfer=media, scope=scope, run_id=run_id, attempt_id=attempt_id)
     for offset, item in enumerate(batch):
@@ -552,11 +549,11 @@ async def callback_provider_epoch(
             """
             insert into provider_session_entries (
               id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json,
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_canonical_json,
               image_references, image_format
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json, %s::jsonb, %s)
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::json, %s::jsonb, %s)
             """, (f"pse_{uuid.uuid4().hex}", *_scope_values(scope), epoch["id"], path,
-                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical,
+                  expected_sequence + offset, item.sdk_entry_uuid, canonical,
                   json.dumps(refs), PROVIDER_MEDIA_FORMAT if refs else None),
         )
     last = expected_sequence + len(batch) - 1
@@ -591,8 +588,7 @@ async def _verified_provider_entries(
     receipt is invented from potentially incomplete history.
     """
     cursor = await conn.execute(
-        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json, "
-        "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
+        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json "
         "from provider_session_entries "
         "where epoch_id = %s order by sequence asc limit %s",
         (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
@@ -642,8 +638,7 @@ async def _verified_provider_entries(
                     ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
                 else:
                     entry = json.loads(original)
-                    if (row.get("canonical_matches") is not True
-                        or _canonical(entry).decode("utf-8") != original):
+                    if _canonical(entry).decode("utf-8") != original:
                         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
                 structured_bytes += provider_entry_json_bytes(entry)
                 refs = row["image_references"]
@@ -744,7 +739,6 @@ async def prepare_provider_epoch(
             or head["coverage_message_count"] != count
             or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
             or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 16 * 1024 * 1024
-            or head["structured_bytes"] > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES - 2 * 1024 * 1024
         ):
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = head["current_epoch_id"]

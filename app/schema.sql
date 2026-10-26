@@ -2009,7 +2009,7 @@ create table if not exists provider_session_entries (
   session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
   epoch_id text not null, subpath text not null default '',
   sequence bigint not null check (sequence >= 1),
-  sdk_entry_uuid text, entry_json jsonb not null,
+  sdk_entry_uuid text, entry_json jsonb,
   created_at timestamptz not null default now(),
   constraint fk_provider_entry_epoch foreign key (
     tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
@@ -2024,10 +2024,15 @@ create unique index if not exists uq_provider_entry_sdk_uuid
 create index if not exists idx_provider_entry_view
   on provider_session_entries(epoch_id, subpath, sequence);
 
--- JSON preserves the append representation used by existing receipts; JSONB
--- alone loses scientific notation and the sign of zero. Legacy rows stay null:
--- reconstructing original bytes from them would manufacture integrity evidence.
+-- JSON preserves the append representation used by receipts and is the only new
+-- writer authority. JSONB is nullable legacy compatibility data: it loses
+-- scientific notation and the sign of zero, so old rows are never backfilled.
 alter table provider_session_entries add column if not exists entry_canonical_json json;
+alter table provider_session_entries alter column entry_json drop not null;
+alter table provider_session_entries drop constraint if exists chk_provider_entry_representation;
+alter table provider_session_entries add constraint chk_provider_entry_representation check (
+  entry_json is not null or entry_canonical_json is not null
+);
 alter table provider_session_entries add column if not exists image_references jsonb not null default '[]'::jsonb;
 alter table provider_session_entries add column if not exists image_format text;
 alter table provider_session_entries drop constraint if exists chk_provider_entry_images;

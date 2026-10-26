@@ -701,11 +701,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
     assert schema_migrations.MODEL_USER_ACCESS_SCHEMA_VERSION == "2026.10.20.1"
     assert schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION == "2026.10.20.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.22.1"
-    assert (
-        schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
-    )
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.26.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -780,6 +777,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
                                     ("coverage_source_sha256", "text", False)),
         "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True),
+                                     ("entry_json", "jsonb", False),
                                      ("entry_canonical_json", "json", False)),
         "provider_session_append_receipts": (("expected_sequence", "int8", True),
                                              ("batch_sha256", "text", True)),
@@ -818,6 +816,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("provider_session_epochs", "fk_provider_epoch_head"),
         ("provider_session_entries", "fk_provider_entry_epoch"),
         ("provider_session_entries", "uq_provider_entry_global_sequence"),
+        ("provider_session_entries", "chk_provider_entry_representation"),
         ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
         ("provider_turn_receipts", "fk_provider_turn_epoch"),
         ("run_input_sessions", "fk_run_input_sessions_run"),
@@ -1062,6 +1061,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert all(item[4].endswith("end ") for item in trigger_contract)
     assert all("\n" in item[4] for item in trigger_contract)
     assert schema_migrations.CRITICAL_CONSTRAINT_DEFINITIONS == (
+        (
+            "provider_session_entries",
+            "chk_provider_entry_representation",
+            "c",
+            "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)",
+        ),
         (
             "users",
             "chk_users_metadata_json_object",

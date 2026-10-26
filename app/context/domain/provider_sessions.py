@@ -14,7 +14,6 @@ MAX_PROVIDER_SESSION_ENTRY_BYTES = 16 * 1024 * 1024
 MAX_PROVIDER_SESSION_BATCH_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES = 256 * 1024
-MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES = MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES + 64 * 1024
 PROVIDER_SESSION_READ_VIEW_HEADER = "X-AI-Platform-Provider-Read-View"
 PROVIDER_SESSION_CHILD_READ_VIEW = "children-v1"
@@ -130,8 +129,6 @@ def normalize_provider_entry(
             raise ProviderSessionContinuityError("provider_session_entry_uuid_too_long")
     else:
         raise ProviderSessionContinuityError("provider_session_entry_uuid_invalid")
-    if sdk_entry_uuid is not None:
-        normalized_entry["uuid"] = sdk_entry_uuid
     return ProviderSessionEntry(
         entry=normalized_entry,
         sdk_entry_uuid=sdk_entry_uuid,

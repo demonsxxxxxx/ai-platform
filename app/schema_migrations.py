@@ -50,7 +50,8 @@ MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
-TARGET_SCHEMA_VERSION = MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION
+PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION = "2026.10.26.1"
+TARGET_SCHEMA_VERSION = PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -305,7 +306,7 @@ CRITICAL_COLUMNS = (
     ("provider_session_entries", "subpath", "text", True),
     ("provider_session_entries", "sequence", "int8", True),
     ("provider_session_entries", "sdk_entry_uuid", "text", False),
-    ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "entry_json", "jsonb", False),
     ("provider_session_entries", "entry_canonical_json", "json", False),
     ("provider_session_entries", "image_references", "jsonb", True),
     ("provider_session_entries", "image_format", "text", False),
@@ -337,6 +338,7 @@ CRITICAL_CONSTRAINTS = (
     ("model_token_usage_scopes", "model_token_usage_scopes_pkey"),
     ("model_token_usage_observations", "model_token_usage_observations_pkey"),
     ("model_token_usage_deltas", "model_token_usage_deltas_pkey"),
+    ("provider_session_entries", "chk_provider_entry_representation"),
     ("provider_session_entries", "chk_provider_entry_images"),
     ("provider_session_images", "provider_session_images_pkey"),
     ("provider_session_images", "provider_session_images_storage_key_key"),
@@ -543,6 +545,12 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
 )
 
 CRITICAL_CONSTRAINT_DEFINITIONS = (
+    (
+        "provider_session_entries",
+        "chk_provider_entry_representation",
+        "c",
+        "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)",
+    ),
     (
         "users",
         "chk_users_metadata_json_object",
