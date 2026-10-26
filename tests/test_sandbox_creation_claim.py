@@ -18,12 +18,25 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
+from app.sandbox.api import SandboxDispatchIntentService
 from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+
+
+class _TestDispatchIntentRepository:
+    async def persist_intent(self, _conn, *, identity, reconciliation_context):
+        return {"lease_id": identity.lease_id, "status": "intent"}, True
+
+    async def record_outcome(self, _conn, *, identity, outcome):
+        return {"lease_id": identity.lease_id, "status": outcome}
 
 
 class SandboxRuntime(_SandboxRuntime):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("lease_port", sandbox_lease_repository)
+        kwargs.setdefault(
+            "dispatch_intents",
+            SandboxDispatchIntentService(_TestDispatchIntentRepository()),
+        )
         super().__init__(*args, **kwargs)
 
 
