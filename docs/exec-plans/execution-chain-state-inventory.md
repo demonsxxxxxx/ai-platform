@@ -95,7 +95,7 @@ N12 当前候选已将 provider lineage 与 v4 终态行组合到
 | F3 | 死信 4 种拼写，共约 140 处 | `dead_letter` 115、`dead_lettered` 13、`dead-letter` 10、`dead-lettered` 2；`runs/infrastructure/creation_postgres.py:26` 同时接受三种 |
 | F4 | 取消 2 种拼写 | `normalize_run_status`（`runs/domain/public_terminal.py:4`）、执行器状态同时接受 `cancelled`/`canceled` |
 | F5 | 执行器与 Run 用不同的成功词 | 执行器 `completed`（亦接受 `succeeded`），Run `succeeded`；`claude_agent_worker.py:92` 需要 `{"completed", "succeeded"}` |
-| F6 | 同一张表两个写入方 | `sandbox_leases` 由 `platform/postgres/sandbox_leases.py`（1116 行）与 `sandbox/infrastructure/leases_postgres.py`（292 行）分别写入；前者位于 `platform` 层却承载 Sandbox 业务状态 |
+| F6 | 历史记录：同一张表两个写入方 | 历史基线中 `sandbox_leases` 曾由 `platform/postgres/sandbox_leases.py` 与 `sandbox/infrastructure/leases_postgres.py` 分别写入；当前唯一活跃租约写入入口为 `sandbox/infrastructure/leases_postgres.py` 及其所属适配器，旧路径已删除。 |
 | F7 | 终态包装层重复（基线） | 基线中的 `provider_terminalization.py` 与 `terminalization_v4.py` 同构；当前候选由 `run_terminalization.py` 组合 |
 | F8 | “是否结束”有多个独立判断者 | P1–P10 中至少 P2、P3、P5、P6、P9、P10 会在不同进程、以不同 fence（Redis 队列租约、对账 fence、`owner_generation`、租约 claim token）独立推进终态 |
 | F9 | 一个沙箱任务需要 6 个维度各自收敛 | 第 3 节维度 1、3、4、5、6、7；竞态与“卡住的任务”多发生在维度之间 |

@@ -6917,6 +6917,7 @@ async def test_docker_provider_recovers_unpublished_endpoint_and_refreshes_inspe
 @pytest.mark.asyncio
 async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(monkeypatch):
     import app.executor_reconciler as executor_reconciler
+    from app.sandbox.infrastructure import leases_postgres
     import app.runtime.sandbox.container_provider as container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -7016,7 +7017,7 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
 
     monkeypatch.setattr(executor_reconciler, "transaction", transaction)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        leases_postgres,
         "claim_sandbox_executor_suspects",
         claim,
     )
@@ -7028,12 +7029,14 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
     )
     monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", ExecutorClient)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        leases_postgres,
         "release_sandbox_executor_probe_claim",
         release,
     )
 
-    assert await executor_reconciler.probe_suspect_executor_tasks_once() == 0
+    assert await executor_reconciler.probe_suspect_executor_tasks_once(
+        lease_port=leases_postgres,
+    ) == 0
     assert len(recovered_requests) == 1
     assert recovered_requests[0].skill_ids == []
     assert recovered_requests[0].mcp_tool_ids == []
