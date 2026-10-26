@@ -131,7 +131,7 @@ async def test_callback_ledger_uses_receipt_transaction_and_final_lease_fence(mo
     monkeypatch.setattr(route,"_lock_callback_authority",authority)
     monkeypatch.setattr(route,"_recheck_callback_authority",recheck)
     monkeypatch.setattr(route.streaming_run_events,"append_event_batch",receipt)
-    monkeypatch.setattr(route.sandbox_lease_repository,"record_sandbox_executor_heartbeat",heartbeat)
+    monkeypatch.setattr(sandbox_lease_reader,"record_sandbox_executor_heartbeat",heartbeat)
     monkeypatch.setattr(route,"get_settings",lambda:SimpleNamespace(sandbox_lease_ttl_seconds=30))
     callback = ExecutorCallbackEvent(session_id="s",run_id="r",attempt_id="a",callback_token_id="cbt:r:a",batch_id="b",status="running",progress=20,
         model_usage_snapshot=dict(scope_id="scope",observation_seq=1,baseline="fresh",models={"a":counts(1)},coverage="partial"))

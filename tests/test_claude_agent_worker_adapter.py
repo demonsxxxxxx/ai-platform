@@ -64,6 +64,7 @@ from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_port
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.application import skill_markdown
 from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
@@ -5846,12 +5847,15 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     row = {"id": "lease-a", "tenant_id": current.tenant_id, "run_id": current.run_id, "provider": "docker"}
     if fail_upload:
         with pytest.raises(RuntimeError) as caught:
-            await executor_reconciler._collect_workspace_and_convert_result(row, registry=registry, claim_token="claim-a")
+            await executor_reconciler._collect_workspace_and_convert_result(
+                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
+            )
         assert caught.value is failure
         assert stored == []
     else:
         result, _provider, _lease = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a")
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
+        )
         assert result.status == "succeeded", result.result
         assert result.result["message"] == "private answer"
         assert result.result["artifact_count"] == 1
@@ -5977,14 +5981,16 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
     ):
         with pytest.raises(asyncio.CancelledError):
             await executor_reconciler._collect_workspace_and_convert_result(
-                row, registry=registry, claim_token="claim-a", run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
+                run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert terminal == original
         if collection_mode != "transaction_exit_cancel":
             assert persistence.value is None
         return
     for _ in range(2):
         result, _, _ = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
+            run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert result.status == ("succeeded" if status == "succeeded" and collection_mode == "ok" else "failed")
         assert result.artifacts == []
         assert terminal == original
