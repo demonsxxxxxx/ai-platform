@@ -264,10 +264,12 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
         'record_sandbox_runtime_cleanup_outcome',
         fail_audit,
     )
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_lease_transport_port
+
     http_request = SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
-                sandbox_lease_transport=_owner_sandbox_infrastructure_leases_postgres,
+                sandbox_lease_transport=build_sandbox_lease_transport_port(),
             )
         )
     )
