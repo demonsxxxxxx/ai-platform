@@ -195,7 +195,7 @@ async def test_executor_entry_loads_selected_mcp_through_bound_platform_callback
     from tests.test_claude_mcp_registration import allow_local_peer, subject
     from tests.support.mcp_protocol_peers import local_mcp_peers
     from tests.test_sandbox_executor_app import callback_ack, sdk_result, task_payload
-    from mcp.types import ListToolsRequest
+    from tests.test_claude_mcp_registration import connected_client
 
     state, platform = route_case(monkeypatch)
     if credential_status is not None:
@@ -232,8 +232,9 @@ async def test_executor_entry_loads_selected_mcp_through_bound_platform_callback
             if credential_status is None:
                 assert registration.unavailable == {}
                 server = options.mcp_servers[registration.server_aliases["gateway"]]["instance"]
-                listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-                listed_names.extend(tool.name for tool in listed.root.tools)
+                async with connected_client(server) as session:
+                    listed = await session.list_tools()
+                    listed_names.extend(tool.name for tool in listed.tools)
             else:
                 assert options.mcp_servers == {}
                 assert registration.unavailable == {"gateway": "authorization_required" if credential_status == 401 else "transport_failure"}

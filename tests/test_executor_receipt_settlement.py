@@ -310,7 +310,7 @@ def _settlement_scenario(
 
     monkeypatch.setattr(r, "transaction", transaction)
     monkeypatch.setattr(
-        r.sandbox_lease_repository, "claim_sandbox_executor_reconciliations", claim
+        leases_postgres, "claim_sandbox_executor_reconciliations", claim
     )
     monkeypatch.setattr(r.runs_postgres, "get_run", get_run)
     monkeypatch.setattr(r, "_collect_workspace_and_convert_result", collect)
@@ -332,7 +332,7 @@ def _settlement_scenario(
 
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row, **_kwargs: SimpleNamespace(provider="fake"))
     monkeypatch.setattr(r._sandbox_cleanup, "_append_event", cleanup_event)
-    monkeypatch.setattr(r.sandbox_lease_repository, "claim_failed_sandbox_executor_reconciliation_cleanups", claim_cleanup)
+    monkeypatch.setattr(leases_postgres, "claim_failed_sandbox_executor_reconciliation_cleanups", claim_cleanup)
 
     async def cleanup_once():
         return await r._sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
@@ -341,6 +341,7 @@ def _settlement_scenario(
 
     async def run_once():
         return await r.reconcile_pending_executor_terminals_once(
+            lease_port=leases_postgres,
             registry=AdapterRegistry(
                 {"claude-agent-worker": w.SuccessfulExecutorStub()}
             ),

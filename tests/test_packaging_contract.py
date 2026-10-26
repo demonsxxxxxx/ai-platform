@@ -60,7 +60,7 @@ def test_python_lock_is_the_install_authority_for_ci_and_the_backend_image():
     assert pyproject["tool"]["uv"]["required-version"] == f"=={UV_VERSION}"
     assert lock["requires-python"] == pyproject["project"]["requires-python"]
     assert any(
-        package["name"] == "claude-agent-sdk" and package["version"] == "0.2.165"
+        package["name"] == "claude-agent-sdk" and package["version"] == "0.2.174"
         for package in lock["package"]
     )
     assert "xlrd>=2.0.2" in pyproject["project"]["dependencies"]

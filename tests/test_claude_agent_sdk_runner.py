@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 import types
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -19,6 +20,7 @@ from app.executors.claude_agent_sdk_runner import (
     _public_skill_replacement,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
+    build_sdk_env,
     run_claude_agent_sdk,
 )
 from app.executors.claude.capability_policy import (
@@ -126,6 +128,36 @@ def _settings():
         anthropic_auth_token="",
         openai_api_key="",
     )
+
+
+def test_sdk_env_preserves_tool_search_override_and_leaves_default_unset(monkeypatch):
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "false")
+    assert build_sdk_env()["ENABLE_TOOL_SEARCH"] == "false"
+
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH")
+    assert "ENABLE_TOOL_SEARCH" not in build_sdk_env()
+
+
+@asynccontextmanager
+async def _mcp_client_session(server):
+    from mcp.client.session import ClientSession
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        server_task = asyncio.create_task(
+            server.run(*server_streams, server.create_initialization_options())
+        )
+        try:
+            async with ClientSession(*client_streams) as session:
+                await session.initialize()
+                yield session
+        finally:
+            if not server_task.done():
+                server_task.cancel()
+            await asyncio.gather(server_task, return_exceptions=True)
 
 
 def _assistant_text_part_roles(events):
@@ -929,8 +961,6 @@ def _scripted_sdk(
                     )
                 yield StreamEvent(value)
             elif kind == "mcp_call":
-                from mcp.types import CallToolRequest, CallToolRequestParams
-
                 hook_input = {
                     "tool_name": value["tool_name"],
                     "tool_use_id": value["call_id"],
@@ -941,14 +971,20 @@ def _scripted_sdk(
                 if admission["permissionDecision"] != "allow":
                     continue
                 server = captured["client_options"].mcp_servers[value["server"]]["instance"]
-                reply = await server.request_handlers[CallToolRequest](CallToolRequest(
-                    method="tools/call",
-                    params=CallToolRequestParams(name=value["name"], arguments=value["arguments"]),
-                ))
-                captured.setdefault("mcp_results", []).append(reply.root)
+                from mcp import MCPError
+                failed = False
+                async with _mcp_client_session(server) as session:
+                    try:
+                        reply = await session.call_tool(value["name"], value["arguments"])
+                    except MCPError:
+                        failed = True
+                if failed:
+                    await invoke_hook(("PostToolUseFailure", hook_input, value["call_id"]))
+                    continue
+                captured.setdefault("mcp_results", []).append(reply)
                 if value.get("omit_terminal_hook"):
                     continue
-                terminal = "PostToolUseFailure" if reply.root.isError else "PostToolUse"
+                terminal = "PostToolUseFailure" if reply.is_error else "PostToolUse"
                 await invoke_hook((terminal, hook_input, value["call_id"]))
             elif kind in {"hook", "cancel_hook"}:
                 if kind == "cancel_hook":
@@ -5099,7 +5135,6 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
     monkeypatch, tmp_path, select_file, publish_events
 ):
     import claude_agent_sdk as installed_sdk
-    from mcp import types as mcp_types
 
     captured, lifecycle, public_events = {}, [], []
     (tmp_path / "final.txt").write_text("synthetic deliverable", encoding="utf-8")
@@ -5113,35 +5148,30 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
 
     async def query(*, prompt, options):
         server = captured["mcp_servers"]["ai-platform-response"]["instance"]
-        listed = await server.request_handlers[mcp_types.ListToolsRequest](
-            mcp_types.ListToolsRequest()
-        )
-        assert [tool.name for tool in listed.root.tools] == ["attach_file"]
         identity = "mcp__ai-platform-response__attach_file"
         assert identity in captured["allowed_tools"]
-        if select_file:
-            args = {"path": "final.txt"}
-            allowed = await captured["can_use_tool"](
-                identity, args, installed_sdk.ToolPermissionContext(tool_use_id="file-call")
-            )
-            assert allowed.behavior == "allow"
-            hook_input = {
-                "tool_name": identity, "tool_input": args, "tool_use_id": "file-call"
-            }
-            before = captured["hooks"]["PreToolUse"][0]
-            admitted = await before.hooks[0](hook_input, "file-call", {})
-            assert admitted["hookSpecificOutput"]["permissionDecision"] == "allow"
-            called = await server.request_handlers[mcp_types.CallToolRequest](
-                mcp_types.CallToolRequest(
-                    params=mcp_types.CallToolRequestParams(name="attach_file", arguments=args)
+        async with _mcp_client_session(server) as session:
+            listed = await session.list_tools()
+            assert [tool.name for tool in listed.tools] == ["attach_file"]
+            if select_file:
+                args = {"path": "final.txt"}
+                allowed = await captured["can_use_tool"](
+                    identity, args, installed_sdk.ToolPermissionContext(tool_use_id="file-call")
                 )
-            )
-            assert called.root.isError is False
-            assert json.loads(called.root.content[0].text) == {"selected": True, "position": 0}
-            after = next(
-                item for item in captured["hooks"]["PostToolUse"] if item.matcher == "mcp__*"
-            )
-            await after.hooks[0](hook_input, "file-call", {})
+                assert allowed.behavior == "allow"
+                hook_input = {
+                    "tool_name": identity, "tool_input": args, "tool_use_id": "file-call"
+                }
+                before = captured["hooks"]["PreToolUse"][0]
+                admitted = await before.hooks[0](hook_input, "file-call", {})
+                assert admitted["hookSpecificOutput"]["permissionDecision"] == "allow"
+                called = await session.call_tool("attach_file", args)
+                assert called.is_error is False
+                assert json.loads(called.content[0].text) == {"selected": True, "position": 0}
+                after = next(
+                    item for item in captured["hooks"]["PostToolUse"] if item.matcher == "mcp__*"
+                )
+                await after.hooks[0](hook_input, "file-call", {})
         async for message in scripted_query(prompt=prompt, options=options):
             yield message
 
@@ -6770,7 +6800,7 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
 @pytest.mark.parametrize("first_result", ["returned_error", "timeout", "missing_hook", "unacknowledged"])
 async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path, first_result):
     from contextlib import asynccontextmanager
-    from mcp.types import CallToolResult, TextContent, Tool
+    from mcp_types import CallToolResult, TextContent, Tool
     from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 
     captured, calls, events = {}, [], []
@@ -7196,7 +7226,7 @@ async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_pat
     sdk = result.runtime_diagnostics["sdk"]
     assert set(sdk) == {"debug"}
     assert sdk["debug"]["component"] == "claude_executor"
-    assert sdk["debug"]["sdk_version"] == "0.2.165"
+    assert sdk["debug"]["sdk_version"] == "0.2.174"
     python_version = sdk["debug"]["python_version"]
     assert (
         isinstance(python_version, str)
