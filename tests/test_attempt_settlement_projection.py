@@ -1155,6 +1155,14 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
     async with connect() as conn:
         # run-a is the mapped, due settlement from the fixture. Make it due
         # without changing its immutable receipt or source lease identity.
+        # Reset the exact legacy source first. Backfill below must preserve this
+        # pending/no-claim source state instead of recreating its one-second retry.
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_status='pending', "
+            "executor_reconciliation_retry_not_before=null, "
+            "executor_reconciliation_claim_token=null, executor_reconciliation_claimed_at=null "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )
         await conn.execute(
             "update run_attempt_settlements set settlement_phase='pending', "
             "next_retry_at=null where tenant_id='tenant-a' and run_id='run-a'"

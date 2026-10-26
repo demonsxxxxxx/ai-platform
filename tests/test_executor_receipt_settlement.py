@@ -162,6 +162,18 @@ def _settlement_scenario(
                     status="quarantined", executor_reconciliation_status="failed"
                 )
                 return Cursor({"id": row["id"]})
+            if "set executor_cleanup_status = 'cleanup_pending'" in sql:
+                assert params[1:] == (row["id"], claimed_tokens[-1])
+                assert row["executor_reconciliation_status"] == "claimed"
+                if row["executor_reconciliation_claim_token"] != params[2]:
+                    return Cursor(None)
+                calls.append(("cleanup_pending", run["status"], attempt["status"]))
+                row.update(
+                    executor_cleanup_status="cleanup_pending",
+                    executor_reconciliation_status="cleanup_pending",
+                    executor_reconciliation_claim_token=None,
+                )
+                return Cursor({"id": row["id"]})
             if "set executor_reconciliation_status = 'cleanup_pending'" in sql:
                 assert params[1:] == (row["id"], claimed_tokens[-1])
                 assert row["executor_reconciliation_status"] == "claimed"

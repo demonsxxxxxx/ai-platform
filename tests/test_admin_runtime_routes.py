@@ -9,6 +9,29 @@ from app.routes.admin_runtime import _backpressure_snapshot, _sanitize_observabi
 from app.runtime.sandbox.contracts import ContainerStatus
 from app.settings import Settings
 from tests.support.db_transactions import opaque_transaction
+import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
+
+
+class _LegacyAttemptSettlementReader:
+    """Unit port for admin projections backed by legacy Sandbox lease rows."""
+
+    async def storage_version(self, _conn):
+        return "sandbox_lease.v1"
+
+    async def writer_fence(self, _conn):
+        return None
+
+    async def lock_writer_fence(self, _conn):
+        return None
+
+    async def lock_sources_in_transaction(self, _conn, **_scope):
+        return None
+
+    async def writes_enabled(self, _conn, *, shadow_enabled):
+        return False
+
+    async def attempt_writer_active(self, _conn):
+        return False
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
@@ -29,6 +52,11 @@ def test_retired_phase_readiness_reports_are_not_importable(module_name):
 
 @pytest.fixture(autouse=True)
 def signed_runtime_proof_key(monkeypatch):
+    monkeypatch.setattr(
+        sandbox_lease_ports._shadowed_repository,
+        "_settlement",
+        _LegacyAttemptSettlementReader(),
+    )
 
     async def empty_executor_reconciliation_summary(_conn, *, tenant_id, slo_seconds):
         assert tenant_id == "default"
