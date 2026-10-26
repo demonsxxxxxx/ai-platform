@@ -25,6 +25,7 @@ from app.context.retrieval import (
 )
 from app.context_manifest import available_context_retrieval_tools
 from app.db import transaction
+from app.bootstrap.provider_epoch_verification import provider_callback_transaction
 from app.files.api import (
     ProfileDriveTransferError,
     open_profile_drive_file,
@@ -67,6 +68,7 @@ from app.runtime.sandbox.contracts import (
     ExecutorContextRetrievalRequest,
     McpCredentialCallbackRequest,
     ProviderSessionCallbackRequest,
+    RecoveryOperationCallbackRequest,
     ProviderSessionCallbackResponse,
     PROVIDER_SESSION_READ_VIEW_HEADER,
     PROVIDER_SESSION_CHILD_READ_VIEW,
@@ -481,6 +483,7 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
             callback_token_id=callback.callback_token_id,
+            allow_provider_tail=callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES,
         )
         return committed_rows, authority, callback_deduplicated
 
@@ -578,6 +581,7 @@ async def record_executor_callback(
                     attempt_id=callback.attempt_id,
                     callback_token_id=callback.callback_token_id,
                     session_id=callback.session_id,
+                    allow_provider_tail=callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES,
                 )
                 committed_rows, authority, callback_deduplicated = await persist_callback(
                     conn, run_identity, lease
@@ -674,15 +678,20 @@ async def run_inputs_callback(
     service = getattr(request.app.state, "run_inputs_service", None)
     if not isinstance(service, RunInputsService):
         raise HTTPException(status_code=503, detail="run_inputs_unavailable")
+    from app.execution.api import RecoveryOperationError
     try:
-        async with transaction() as conn:
+        async with provider_callback_transaction(
+            transaction, authorize=_lock_callback_authority, run_id=callback.run_id,
+            attempt_id=callback.attempt_id, callback_token_id=callback.callback_token_id,
+            allow_provider_tail=False,
+        ) as conn:
             run_identity, _lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
                 callback_token_id=callback.callback_token_id,
             )
-            return await service.callback(
+            result = await service.callback(
                 conn,
                 tenant_id=str(run_identity.get("tenant_id") or ""),
                 run=run_identity,
@@ -699,6 +708,14 @@ async def run_inputs_callback(
                 if callback.input_ids is not None
                 else None,
             )
+            if callback.operation in {"open", "poll"}:
+                from app.bootstrap.recovery_operations import publish_recovery_source_questions
+                result.update(await publish_recovery_source_questions(
+                    conn, run=run_identity, attempt_id=callback.attempt_id,
+                ))
+            return result
+    except RecoveryOperationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
     except RunInputError as exc:
         status_code = (
             409
@@ -706,6 +723,111 @@ async def run_inputs_callback(
             else 422
         )
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
+
+
+@router.post("/runtime/callbacks/recovery-operation")
+async def recovery_operation_callback(
+    callback: RecoveryOperationCallbackRequest,
+    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+) -> dict[str, Any]:
+    from app.bootstrap.recovery_operations import build_recovery_operations
+    from app.execution.api import RecoveryInvocation, RecoveryOperationScope, RecoveryOperationError
+
+    _require_valid_callback_token(callback_token, callback.callback_token_id,
+                                  run_id=callback.run_id, attempt_id=callback.attempt_id)
+    try:
+        async with provider_callback_transaction(
+            transaction, authorize=_lock_callback_authority, run_id=callback.run_id,
+            attempt_id=callback.attempt_id, callback_token_id=callback.callback_token_id,
+            allow_provider_tail=callback.operation in {"completed", "failed"},
+        ) as conn:
+            run, lease = await _lock_callback_authority(
+                conn, run_id=callback.run_id, attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                allow_provider_tail=callback.operation in {"completed", "failed"},
+            )
+            generation = lease["lease_payload_json"]["owner_generation"]
+            invocation = RecoveryInvocation(
+                RecoveryOperationScope(**{key: run[key] for key in (
+                    "tenant_id", "workspace_id", "user_id", "session_id",
+                )}), callback.run_id, callback.attempt_id, generation,
+                callback.invocation_id, callback.tool_identity,
+            )
+            service, _inputs = build_recovery_operations()
+            if callback.operation in {"completed", "failed"}:
+                cursor = await conn.execute(
+                    """select operation_key from execution_recovery_operations where tenant_id=%s
+                       and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s""",
+                    (run["tenant_id"], callback.run_id, callback.attempt_id, callback.invocation_id),
+                )
+                operation = await cursor.fetchone()
+                if operation is None:
+                    raise RecoveryOperationError("recovery_operation_source_invalid")
+                await service.record_reported(conn, invocation=invocation,
+                    operation_key=operation["operation_key"], status=callback.operation)
+                return {"accepted": True}
+            authority = await service._authority(conn, invocation)
+            subject_cursor = await conn.execute(
+                "select execution_spec_json from run_attempts where tenant_id=%s and id=%s and run_id=%s",
+                (run["tenant_id"], callback.attempt_id, callback.run_id),
+            )
+            spec = (await subject_cursor.fetchone())["execution_spec_json"]
+            subjects = spec.get("input", {}).get("_runtime_tool_policy_subjects", [])
+            if not any(item.get("identity") == invocation.tool_identity
+                       and all(item.get(key) is True for key in ("registered", "declared", "active", "distributed"))
+                       for item in subjects if isinstance(item, dict)):
+                raise RecoveryOperationError("recovery_operation_tool_unauthorized")
+            if callback.operation == "query":
+                if not authority.requires_recovery_gate:
+                    raise RecoveryOperationError("recovery_operation_binding_invalid")
+                if not authority.manual_confirmation_available and invocation.tool_identity not in service.authoritative_queries:
+                    return await service.query(conn, invocation=invocation)
+                binding = await service.persistence.get_binding(conn, invocation=invocation)
+                if binding is None:
+                    cursor = await conn.execute(
+                        """select attempt.execution_spec_json->'context_pack'->'conversation_context'->'recovery' as recovery
+                           from run_attempts attempt where tenant_id=%s and run_id=%s and id=%s""",
+                        (run["tenant_id"], callback.run_id, callback.attempt_id),
+                    )
+                    recovery = (await cursor.fetchone())["recovery"] or {}
+                    cursor = await conn.execute(
+                        """select operation_key from execution_recovery_operations
+                           where tenant_id=%s and workspace_id=%s and user_id=%s and session_id=%s
+                             and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s
+                             and tool_identity=%s""",
+                        (*invocation.scope.mapping().values(), recovery.get("source_run_id"),
+                         recovery.get("source_attempt_id"), invocation.invocation_id, invocation.tool_identity),
+                    )
+                    operation = await cursor.fetchone()
+                    if operation is None:
+                        return {"decision": "deny", "reason_code": "recovery_operation_binding_missing"}
+                    await service.bind_invocation(
+                        conn, invocation=invocation, operation_key=operation["operation_key"],
+                        frozen_binding_ref=recovery["provider_epoch_id"],
+                        public_summary=authority.public_summary or "继续原生记录中尚待核实的外部操作",
+                    )
+                return await service.query(conn, invocation=invocation)
+            if callback.operation == "started":
+                return await service.record_started(
+                    conn, invocation=invocation, tool_facts={"write_capable": True},
+                    public_summary="本轮已授权外部工具操作",
+                )
+            if callback.operation == "close":
+                await service.close_invocation(conn, invocation=invocation, reason=callback.reason or "denied")
+            else:
+                cursor = await conn.execute(
+                    """select operation_key from execution_recovery_operations where tenant_id=%s
+                       and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s""",
+                    (run["tenant_id"], callback.run_id, callback.attempt_id, callback.invocation_id),
+                )
+                operation = await cursor.fetchone()
+                if operation is None:
+                    raise RecoveryOperationError("recovery_operation_source_invalid")
+                await service.record_reported(conn, invocation=invocation,
+                                              operation_key=operation["operation_key"], status=callback.operation)
+            return {"accepted": True}
+    except RecoveryOperationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
 
 
 @router.post("/runtime/callbacks/mcp-credential")
@@ -786,6 +908,7 @@ async def provider_session_callback(
             operation = dict(
                 **binding, run_id=callback.run_id, attempt_id=callback.attempt_id,
                 provider_session_id=callback.provider_session_id, action=callback.action,
+                **({"provider_epoch_id": callback.provider_epoch_id} if callback.provider_epoch_id is not None else {}),
                 entries=callback.entries, subpath=callback.subpath,
                 expected_sequence=callback.expected_sequence,
                 **({"include_child_entries": True} if include_children else {}),

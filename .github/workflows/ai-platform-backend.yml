@@ -167,6 +167,7 @@ jobs:
               tests/test_runtime_workspace_permissions.py
               tests/test_workspace_storage_migration.py
               tests/test_sandbox_workspace_manager.py
+              tests/test_workspace_versions.py
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
               tests/test_sandbox_callback_authority.py
@@ -219,6 +220,9 @@ jobs:
               tests/test_mcp_credential_callback.py
               tests/test_mcp_routes.py
               tests/test_mcp_authorization_projection.py
+              tests/test_mcp_public_operation_summary.py
+              tests/test_mcp_public_summary_revocation.py
+              tests/test_recovery_operation_lease_recheck.py
               tests/test_mcp_worker_dispatch_authorization.py
               tests/test_runs_admin.py
               tests/test_runs_admission_lifecycle.py
@@ -323,6 +327,12 @@ jobs:
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
               tests/test_executor_reconciler.py
+              tests/test_lifecycle_control_settlement.py
+              tests/test_lifecycle_review_regressions.py
+              tests/test_recovery_operations.py
+              tests/test_conversation_recovery.py
+              tests/test_provider_unclaimed_continuation.py
+              tests/test_reconciled_cancel_commit.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
               tests/test_run_terminalization_domain.py
@@ -394,6 +404,20 @@ jobs:
               tests/test_skill_release_lifecycle_postgres.py
               tests/test_run_inputs_postgres.py
               tests/test_provider_session_recovery_postgres.py
+              tests/test_conversation_recovery_postgres.py
+              tests/test_provider_unclaimed_continuation_postgres.py
+              tests/test_recovery_operations_postgres.py
+              tests/test_public_operation_summary_postgres.py
+              tests/test_mcp_public_summary_revocation_postgres.py
+              tests/test_recovery_operation_lease_recheck_postgres.py
+              tests/test_conversation_lifecycle_integration.py
+              tests/test_lifecycle_reconciliation_postgres.py
+              tests/test_lifecycle_cancel_handoff_postgres.py
+              tests/test_predispatch_continuation_postgres.py
+              tests/test_reconciled_cancel_commit_postgres.py
+              tests/integration/lifecycle_cli/test_real_cli_interrupt_resume.py
+              tests/integration/lifecycle_cli/test_real_cli_postgres_callback.py
+              tests/integration/lifecycle_cli/test_platform_entry_postgres.py
               tests/test_provider_session_images_postgres.py
               tests/test_frozen_receipt_spec_postgres.py
               tests/test_schema.py

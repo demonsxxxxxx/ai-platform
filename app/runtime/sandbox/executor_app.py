@@ -1173,7 +1173,7 @@ async def _await_task_completion(
     return task.result()
 
 
-async def _cancel_and_await(task: asyncio.Future[Any]) -> None:
+async def _cancel_and_await(task: asyncio.Future[Any]) -> dict[str, Any] | None:
     task.cancel()
     try:
         await _await_task_completion(
@@ -1181,9 +1181,9 @@ async def _cancel_and_await(task: asyncio.Future[Any]) -> None:
             timeout_seconds=_EXECUTOR_CLEANUP_TIMEOUT_SECONDS,
             timeout_message="Executor cleanup exceeded its deadline",
         )
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
         if task.cancelled():
-            return
+            return getattr(exc, "executor_terminal_result", None)
         raise
     except _ExecutorCleanupError:
         raise
@@ -1208,17 +1208,19 @@ async def _await_with_deadline(
     task = asyncio.ensure_future(awaitable)
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
         if on_timeout is not None:
             on_timeout()
-        await _cancel_and_await(task)
+        settlement = await _cancel_and_await(task)
+        if settlement is not None:
+            exc.executor_terminal_result = settlement
         raise
     if task in done:
         return task.result(), False
     if on_timeout is not None:
         on_timeout()
-    await _cancel_and_await(task)
-    return None, True
+    settlement = await _cancel_and_await(task)
+    return settlement, True
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -1386,6 +1388,7 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
     sdk_cleanup_tasks: set[asyncio.Task[Any]] | None = None,
+    recovery_tool_gate_query: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     callback_batch_ids = _CallbackBatchIdFactory()
     try:
@@ -1430,9 +1433,6 @@ async def _default_executor_runner(
         }
 
     skill_ids = _task_skill_ids(request)
-    if skill_ids:
-        await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
-        await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
     model_id = str(request.config.get("model") or "") or None
     bash_subject = next(
         (
@@ -1724,12 +1724,36 @@ async def _default_executor_runner(
         if isinstance(emit_event, _SealableExecutorEventEmitter):
             emit_event.seal_capability_failure()
 
+    async def operation_callback(operation: str, identity: str, invocation_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            response = await client.post(
+                request.callback_target.recovery_operations_url,
+                headers={"X-AI-Platform-Callback-Token": request.callback_token},
+                json={"run_id": request.run_id, "attempt_id": request.attempt_id,
+                      "callback_token_id": request.callback_token_id, "operation": operation,
+                      "tool_identity": identity, "invocation_id": invocation_id},
+            )
+            response.raise_for_status()
+            value = response.json()
+            if not isinstance(value, dict):
+                raise ValueError("recovery_operation_response_invalid")
+            return value
+
+    async def default_recovery_query(**kwargs) -> dict[str, Any]:
+        return await operation_callback("query", kwargs["tool_identity"], kwargs["invocation_id"])
+
     async def bind_capability_evidence(raw: dict[str, str]) -> bool:
         """Bind SDK-hook facts to this request and emit only a safe public event."""
 
         if capability_evidence_error["code"]:
             return False
         try:
+            if raw.get("capability_kind") == "mcp" and request.config.get("operation_receipts_enabled") is True:
+                phase = raw.get("lifecycle_phase")
+                operation = "started" if phase == "invocation_requested" else phase
+                if operation in {"started", "completed", "failed"}:
+                    await operation_callback(operation, str(raw.get("canonical_identity") or ""),
+                                             str(raw.get("tool_call_id") or ""))
             declaration = RequiredCapabilityDeclaration.from_authorized_subject(
                 capability_kind=str(raw.get("capability_kind") or ""),
                 canonical_identity=str(raw.get("canonical_identity") or ""),
@@ -1802,28 +1826,32 @@ async def _default_executor_runner(
             poison_capability_evidence()
             raise
 
-    await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
+    sdk_entered = False
     try:
-        model_limits = ModelTokenLimits.model_validate(request.config["model_token_limits"])
-    except Exception:  # noqa: BLE001 - model budget and validation details stay private.
-        return {
-            "status": "failed", "message": "Run model capacity is unavailable",
-            "error_code": "model_capacity_missing", "error_message": "Run model capacity is unavailable",
-            "sdk_used": False, "executor_mode": "model_capacity_invalid",
-        }
-    provider_session_resume_required = request.config.get(
-        "provider_session_resume_required", False
-    )
-    if type(provider_session_resume_required) is not bool:
-        return {
-            "status": "failed",
-            "message": "Provider session continuity state is invalid",
-            "error_code": "claude_agent_sdk_provider_session_failed",
-            "error_message": "Provider session continuity state is invalid",
-            "sdk_used": False,
-            "executor_mode": "provider_session_state_invalid",
-        }
-    try:
+        if skill_ids:
+            await emit_event(_PlatformExecutionPhaseFact("skill_staging", "started"))
+            await emit_event(_PlatformExecutionPhaseFact("skill_staging", "completed"))
+        await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
+        try:
+            model_limits = ModelTokenLimits.model_validate(request.config["model_token_limits"])
+        except Exception:  # noqa: BLE001 - model budget and validation details stay private.
+            return {
+                "status": "failed", "message": "Run model capacity is unavailable",
+                "error_code": "model_capacity_missing", "error_message": "Run model capacity is unavailable",
+                "sdk_used": False, "executor_mode": "model_capacity_invalid",
+            }
+        provider_session_resume_required = request.config.get(
+            "provider_session_resume_required", False
+        )
+        if type(provider_session_resume_required) is not bool:
+            return {
+                "status": "failed",
+                "message": "Provider session continuity state is invalid",
+                "error_code": "claude_agent_sdk_provider_session_failed",
+                "error_message": "Provider session continuity state is invalid",
+                "sdk_used": False,
+                "executor_mode": "provider_session_state_invalid",
+            }
         session_store = build_claude_session_store(
             callback_url=request.callback_target.provider_session_url,
             callback_token=request.callback_token,
@@ -1831,6 +1859,7 @@ async def _default_executor_runner(
             run_id=request.run_id,
             attempt_id=request.attempt_id,
             provider_session_id=request.sdk_session_id,
+            provider_epoch_id=request.config.get("provider_epoch_id"),
         )
         sdk_kwargs = {
             "interaction_client": build_run_input_callback_client(
@@ -1871,6 +1900,11 @@ async def _default_executor_runner(
             "on_tool_lifecycle": on_tool_lifecycle,
             "tool_policy_subjects": _task_tool_policy_subjects(request),
             "execution_policy": "sandbox_brokered",
+            "recovery_tool_gate": request.config.get("recovery_tool_gate"),
+            "recovery_tool_gate_query": (
+                functools.partial(recovery_tool_gate_query, request=request)
+                if recovery_tool_gate_query is not None else default_recovery_query
+            ),
             "public_skill_metadata": dict(
                 request.config.get("public_skill_metadata") or {}
             ),
@@ -1880,6 +1914,7 @@ async def _default_executor_runner(
         }
         if system_prompt is not None:
             sdk_kwargs["system_prompt"] = system_prompt
+        sdk_entered = True
         sdk_result = await run_claude_agent_sdk(
             **sdk_kwargs,
         )
@@ -1900,8 +1935,26 @@ async def _default_executor_runner(
                 exception=exc,
             ),
         }
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
         log_open_tool_lifecycles("cancelled")
+        sdk_settlement = getattr(exc, "sdk_settlement", None)
+        if not sdk_entered:
+            exc.executor_terminal_result = {"sdk_settlement": {
+                "schema_version": "ai-platform.sdk-settlement.v1", "received_result": False,
+                "input_accepted": False, "ack_unknown": False, "mirror_complete": False,
+                "external_effect_unknown": False,
+            }}
+        elif sdk_settlement is not None:
+            exc.executor_terminal_result = {
+                "provider_session_final_sequence": sdk_settlement.provider_final_sequence,
+                "sdk_session_id": sdk_settlement.session_id,
+                "sdk_usage": sdk_settlement.usage,
+                "sdk_used": sdk_settlement.used_sdk,
+                "sdk_received_structured_terminal": sdk_settlement.received_structured_terminal,
+                "sdk_terminal_reason": sdk_settlement.terminal_reason,
+                "sdk_settlement": sdk_settlement.sdk_settlement,
+                "runtime_diagnostics": sdk_settlement.runtime_diagnostics,
+            }
         raise
     except Exception:
         log_open_tool_lifecycles("runner_exception")
@@ -1956,6 +2009,7 @@ async def _default_executor_runner(
         "sdk_used": used_sdk,
         "sdk_received_structured_terminal": received_structured_terminal,
         "sdk_terminal_reason": getattr(sdk_result, "terminal_reason", None),
+        "sdk_settlement": dict(getattr(sdk_result, "sdk_settlement", {}) or {}),
         "executor_mode": "claude_agent_sdk",
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
@@ -2052,6 +2106,7 @@ def create_executor_app(
     heartbeat_interval_seconds: float = 15.0,
     nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
     callback_retry_sleep: CallbackRetrySleep | None = None,
+    recovery_tool_gate_query: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> FastAPI:
     configure_terminal_stage_logging()
     resolved_callback_sender: CallbackSender = callback_sender or _default_callback_sender
@@ -2062,6 +2117,7 @@ def create_executor_app(
         "run_id": None,
         "attempt_id": None,
         "delivery_error": None,
+        "cancel_requested": False,
     }
     shutdown_state: dict[str, float | bool | None] = {
         "deadline": None,
@@ -2277,6 +2333,7 @@ def create_executor_app(
             emit_event,
             callback_sender=resolved_callback_sender,
             sdk_cleanup_tasks=sdk_cleanup_tasks,
+            recovery_tool_gate_query=recovery_tool_gate_query,
         )
 
     resolved_executor_runner = executor_runner or default_executor_runner
@@ -2792,6 +2849,7 @@ def create_executor_app(
                 else:
                     try:
                         deadline_started_at = time.monotonic()
+                        task_state["runner_dispatched"] = True
                         raw_runner_result = resolved_executor_runner(
                             request,
                             resolved_workspace_root,
@@ -2981,6 +3039,7 @@ def create_executor_app(
             "sdk_used",
             "sdk_received_structured_terminal",
             "sdk_terminal_reason",
+            "sdk_settlement",
             "executor_mode",
             "used_skills",
             "used_skills_source",
@@ -3081,18 +3140,27 @@ def create_executor_app(
 
     async def supervise_task(request: ExecutorTaskRequest) -> None:
         task_state["status"] = "running"
+        task_state["runner_dispatched"] = False
         try:
+            if task_state["cancel_requested"]:
+                raise asyncio.CancelledError
             result = await execute_claimed_task(request)
         except asyncio.CancelledError as exc:
             error_code = "executor_cancelled"
             result = {
+                **dict(getattr(exc, "executor_terminal_result", {}) or {}),
+                **({"sdk_settlement": {
+                    "schema_version": "ai-platform.sdk-settlement.v1", "received_result": False,
+                    "input_accepted": False, "ack_unknown": False, "mirror_complete": False,
+                    "external_effect_unknown": False,
+                }} if not task_state["runner_dispatched"] else {}),
                 "status": "cancelled",
                 "run_id": request.run_id,
                 "message": "Task cancelled",
                 "error_code": error_code,
                 "error_message": "Task cancelled",
                 "runtime_diagnostics": _merge_runtime_diagnostics(
-                    None,
+                    (getattr(exc, "executor_terminal_result", {}) or {}).get("runtime_diagnostics"),
                     error_code=error_code,
                     failure_source="sandbox_supervisor_cancelled",
                     failure_stage="sandbox_submission",
@@ -3210,9 +3278,13 @@ def create_executor_app(
         _require_executor_credential(executor_credential, configured_executor_auth_token)
         validate_control_scope(run_id, attempt_id)
         task = task_state.get("task")
-        if isinstance(task, asyncio.Task) and not task.done():
+        if isinstance(task, asyncio.Task) and not task.done() and not task_state["cancel_requested"]:
+            task_state["cancel_requested"] = True
             ensure_shutdown_deadline()
-            task.cancel()
+            # A queued supervisor must publish its own cancelled receipt; a second
+            # cancel must not interrupt the original writer's mirror drain.
+            if task_state["status"] == "running":
+                task.cancel()
         return {"status": "cancel_requested", "run_id": run_id, "attempt_id": attempt_id}
 
     return app

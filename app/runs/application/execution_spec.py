@@ -44,7 +44,8 @@ async def worker_dispatch_fence(
     row = await loader(
         conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"],
     )
-    if row is None or row["status"] != ("running" if reconciliation else "queued") or row["cancel_requested_at"] is not None:
+    if (row is None or row["status"] != ("running" if reconciliation else "queued")
+        or (not reconciliation and row["cancel_requested_at"] is not None)):
         return "stale"
     if any(str(row[key] or "") != run_identity[key] for key in
            ("tenant_id", "workspace_id", "user_id", "session_id", "agent_id",

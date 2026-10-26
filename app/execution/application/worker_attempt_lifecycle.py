@@ -376,6 +376,15 @@ class WorkerAttemptLifecycle:
                 run_id=self.run_id,
                 attempt_id=str(attempt["id"]),
             )
+        if (self.ports.record_result_diagnostics is not None
+            and isinstance(result_json, dict) and "runtime_diagnostics" in result_json):
+            result_json = await self.ports.record_result_diagnostics(
+                conn, tenant_id=self.tenant_id, run_id=self.run_id,
+                attempt_id=str(attempt["id"]) if attempt is not None else None,
+                source="worker_executor", stage="terminalization",
+                error_code=str(result_json.get("error_code") or "executor_cancelled"),
+                result_json=result_json,
+            )
         progress = await self.ports.cancel_run(
             conn,
             capabilities=capabilities,

@@ -50,6 +50,7 @@ export interface ReplayGapRecoveryOwner extends ReconcileOwner {
 }
 
 export interface SSEConnectionContext extends EventHandlerContext {
+  onRunStatusRead?: (response: ChatRunStatusResponse) => void;
   isMountedRef?: React.MutableRefObject<boolean>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
   isConnectingRef: React.MutableRefObject<boolean>;
@@ -527,6 +528,7 @@ export async function recoverReplayGap(
           settleStatusUnavailable();
           return;
         }
+        ctx.onRunStatusRead?.(statusResult.data);
         const terminalStatus = terminalRunStatus(statusResult.status);
         if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
           if (
@@ -1390,6 +1392,7 @@ async function performReconnectSSE(
     return;
   }
 
+  ctx.onRunStatusRead?.(statusResult.data);
   const terminalStatus = terminalRunStatus(statusResult.status);
   if (terminalStatus) {
     if (ctx.hydrateTerminalRun) {

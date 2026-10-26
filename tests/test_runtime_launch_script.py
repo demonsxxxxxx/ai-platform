@@ -1304,7 +1304,7 @@ def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorit
     match = re.search(r'/api/ai/runtime/callbacks/\(([^)]+)\)\$', template)
     assert match is not None
     assert set(match.group(1).split("|")) == callbacks
-    assert callbacks == {"executor", "context-retrieval", "provider-session", "inputs", "mcp-credential"}
+    assert callbacks == {"executor", "context-retrieval", "provider-session", "inputs", "mcp-credential", "recovery-operation"}
     assert 'location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {' in template
     assert 'location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {' in template
     assert "/api/ai/internal/model-proxy/openai/" in template

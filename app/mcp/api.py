@@ -32,6 +32,10 @@ from app.mcp.domain.authorization_projection import (
     mcp_capability_subject as mcp_capability_subject,
     mcp_tool_lifecycle_status as mcp_tool_lifecycle_status,
 )
+from app.mcp.domain.public_operation_summary import (
+    validate_public_operation_summaries as validate_public_operation_summaries,
+    public_operation_summary as public_operation_summary,
+)
 from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import (
     MCP_JWT_AUTHORIZATION_HEADER,
@@ -182,6 +186,8 @@ async def toggle_mcp_server_distribution(conn: Any, **kwargs: Any) -> dict[str, 
 
 
 __all__ = [
+    "validate_public_operation_summaries",
+    "public_operation_summary",
     "BUILTIN_TOOL_IDENTITIES",
     "BUILTIN_TOOL_PARAMETER_CONTRACTS",
     "RISK_ORDER",

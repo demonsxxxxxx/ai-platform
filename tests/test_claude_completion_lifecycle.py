@@ -421,7 +421,9 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         release_tail.set()
         result = await asyncio.wait_for(task, 2)
         assert result.error == ("claude_agent_sdk_provider_session_failed" if tail_failure else None)
-        assert result.provider_final_sequence == (None if tail_failure else 2)
+        assert result.provider_final_sequence == (1 if tail_failure else 2)
+        assert result.sdk_settlement["mirror_complete"] is (not tail_failure)
+        assert result.sdk_settlement["ack_unknown"] is tail_failure
         assert "IGNORED_RAW" not in "".join(public_text)
         if not tail_failure:
             assert result.message == "done" and "".join(public_text) == "done"
@@ -661,7 +663,8 @@ async def test_executor_sends_terminal_sequence_before_owned_cleanup_finishes(mo
         await release.wait()
         closed.set()
 
-    async def runner(_request, _root, _emit, *, callback_sender, sdk_cleanup_tasks):
+    async def runner(_request, _root, _emit, *, callback_sender, sdk_cleanup_tasks, recovery_tool_gate_query):
+        assert recovery_tool_gate_query is None
         cleanup = asyncio.create_task(physical_cleanup())
         sdk_cleanup_tasks.add(cleanup)
         cleanup.add_done_callback(sdk_cleanup_tasks.discard)

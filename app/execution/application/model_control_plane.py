@@ -44,6 +44,7 @@ _ANTHROPIC_BETA_ALLOWLIST = {
         "mid-conversation-tool-changes-2026-07-01",
         "effort-2025-11-24",
         "thinking-display-updates-2026-08-18",
+        "structured-outputs-2025-12-15",
     }),
     "v1/messages/count_tokens": frozenset({
         "claude-code-20250219",

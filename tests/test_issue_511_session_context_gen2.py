@@ -313,13 +313,18 @@ async def test_legacy_only_session_has_no_implicit_current_status(monkeypatch):
     async def list_runs(_conn, **_kwargs):
         return [{"id": "run-legacy", "status": "running", "session_generation": None}]
 
+    async def get_continuation(_conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "user_id": "user-a", "session_id": "session-a"}
+        return None
+
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", _fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.get_session_continuation", get_continuation)
     monkeypatch.setattr("app.conversations.infrastructure.postgres.get_authorized_lambchat_session", get_session)
     monkeypatch.setattr("app.conversations.infrastructure.session_queries_postgres.list_authorized_session_runs", list_runs)
 
     response = await lambchat_compat.chat_status("session-a", principal=_principal())
 
-    assert response == {"session_id": "session-a", "run_id": None, "status": "idle", "raw_status": "idle"}
+    assert response == {"session_id": "session-a", "run_id": None, "status": "idle", "raw_status": "idle", "continuation": None}
 
 
 def test_public_run_context_projection_contains_only_allowlisted_window():

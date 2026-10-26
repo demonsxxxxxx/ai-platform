@@ -276,6 +276,8 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "materialized_file_names": ["z.docx", "a.docx"],
         "system_prompt": "Private profile instruction",
         "provider_session_resume_required": False,
+        "provider_epoch_id": None,
+        "operation_receipts_enabled": False,
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
@@ -2583,7 +2585,8 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
         sandbox_callback_token = "settings-token"
         sandbox_container_provider = "fake"
         sandbox_container_start_timeout_seconds = 60
-        sandbox_cleanup_timeout_seconds = 0.01
+        # Windows timer ticks can exceed 10 ms; both cleanup deadlines remain exercised.
+        sandbox_cleanup_timeout_seconds = 0.1 if os.name == "nt" else 0.01
 
         sandbox_lease_ttl_seconds = 1800
     async def create_sandbox_lease(_conn, **kwargs):
@@ -3033,3 +3036,108 @@ async def test_runtime_execution_owner_cancel_before_lease_established_releases_
 
     assert stopped.quiescent is True
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["callback", "create", "record", "stage", "dispatch"])
+async def test_runtime_attaches_only_proven_predispatch_continuation_receipt(tmp_path, monkeypatch, phase):
+    calls = []
+    original = ValueError("synthetic startup failure")
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 1800
+
+    class Provider(FakeContainerProvider):
+        async def create_or_reuse(self, req, workspace):
+            calls.append("create")
+            if phase == "create":
+                raise original
+            return await super().create_or_reuse(req, workspace)
+
+        async def stage_workspace(self, *args):
+            calls.append("stage")
+            if phase == "stage":
+                raise original
+
+        async def stop(self, lease, *, reason):
+            calls.append("stop")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*args, **kwargs):
+        calls.append("dispatch")
+        raise original
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: Settings())
+    def record(*args):
+        if phase == "record":
+            raise original
+
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path), provider=Provider(), execute_task=execute,
+        record_lease=record, release_lease=noop_lease,
+    )
+    if phase == "callback":
+        def reject(_provider):
+            raise original
+        monkeypatch.setattr(runtime, "_trusted_callback_target", reject)
+    with pytest.raises(ValueError) as caught:
+        await runtime.submit(request(provider_epoch_id="epoch-a", owner_generation=4))
+    assert caught.value is original
+    settlement = getattr(original, "predispatch_continuation_settlement", None)
+    if phase in {"create", "dispatch"}:
+        assert settlement is None
+    else:
+        assert settlement["stop_evidence"] == ("provider_not_created" if phase == "callback" else "provider_stopped")
+        assert settlement["sdk_settlement"]["owner_generation"] == 4
+        assert settlement["sdk_settlement"]["input_accepted"] is False
+        assert settlement["sdk_settlement"]["ack_unknown"] is False
+        assert settlement["workspace_receipt"] is None
+        assert settlement["attempt_id"] == "qat_test-runtime-attempt"
+    if phase == "callback":
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_status,foreign_container", [("stopped", False), ("failed", False), ("stopped", True)])
+async def test_runtime_predispatch_receipt_requires_exact_stop_and_defers_lease_release(tmp_path, monkeypatch, stop_status, foreign_container):
+    from app.execution.api import ContinuationSettlementPorts
+    released = []
+    original = ValueError("synthetic stage failure")
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 1800
+
+    class Provider(FakeContainerProvider):
+        async def stage_workspace(self, *args):
+            raise original
+
+        async def stop(self, lease, *, reason):
+            return StopResult(status=stop_status, container_id="foreign" if foreign_container else lease.container_id)
+
+    async def unused(*args, **kwargs):
+        raise AssertionError("an unstarted executor has no workspace/SDK receipt")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: Settings())
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path), provider=Provider(),
+        record_lease=lambda *args: {"id": "lease-exact"}, release_lease=lambda *args: released.append(args),
+        continuation_ports=ContinuationSettlementPorts(unused, unused),
+    )
+    expected = ValueError if stop_status == "stopped" and not foreign_container else SandboxRuntimeCleanupError
+    with pytest.raises(expected) as caught:
+        await runtime.submit(request(provider_epoch_id="epoch-a", owner_generation=4))
+    assert released == []
+    if expected is ValueError:
+        assert caught.value is original
+        assert original.predispatch_continuation_settlement["runtime_lease"] == {
+            "lease_id": "lease-exact", "tenant_id": "tenant-a", "user_id": "user-a",
+            "run_id": "run-a", "attempt_id": "qat_test-runtime-attempt",
+        }
+    else:
+        assert caught.value.__cause__ is original
+        assert not hasattr(caught.value, "predispatch_continuation_settlement")
+        assert not hasattr(original, "predispatch_continuation_settlement")
