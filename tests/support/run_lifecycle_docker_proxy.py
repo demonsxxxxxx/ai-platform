@@ -30,14 +30,17 @@ class _ForwardingServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
 class _ForwardingHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         server: _ForwardingServer = self.server  # type: ignore[assignment]
-        upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        selector = selectors.DefaultSelector()
-        sockets = (self.request, upstream)
-        buffers = {self.request: bytearray(), upstream: bytearray()}
-        read_open = {self.request: True, upstream: True}
-        write_open = {self.request: True, upstream: True}
-        shutdown_when_empty = {self.request: False, upstream: False}
+        upstream: socket.socket | None = None
+        selector: selectors.BaseSelector | None = None
+        sockets: tuple[socket.socket, ...] = (self.request,)
         try:
+            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sockets = (self.request, upstream)
+            selector = selectors.DefaultSelector()
+            buffers = {self.request: bytearray(), upstream: bytearray()}
+            read_open = {self.request: True, upstream: True}
+            write_open = {self.request: True, upstream: True}
+            shutdown_when_empty = {self.request: False, upstream: False}
             upstream.connect(server.docker_socket_path)
             for item in sockets:
                 item.setblocking(False)
@@ -90,7 +93,8 @@ class _ForwardingHandler(socketserver.BaseRequestHandler):
             # One Docker API client may close early; the proxy stays available.
             return
         finally:
-            selector.close()
+            if selector is not None:
+                selector.close()
             for item in sockets:
                 try:
                     item.close()

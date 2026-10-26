@@ -78,6 +78,51 @@ uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]), log_level="warning")
 '''
 
 
+def test_docker_proxy_closes_upstream_when_selector_initialization_fails(monkeypatch):
+    import socketserver
+
+    if not hasattr(socketserver, "UnixStreamServer"):
+        monkeypatch.setattr(
+            socketserver, "UnixStreamServer", socketserver.TCPServer, raising=False,
+        )
+    from tests.support import run_lifecycle_docker_proxy as proxy
+
+    class FakeSocket:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    request = FakeSocket()
+    upstream = FakeSocket()
+    created = iter((upstream,))
+
+    def socket_factory(*_args):
+        return next(created)
+
+    def selector_factory():
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(proxy.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(proxy.socket, "SOCK_STREAM", 1, raising=False)
+    monkeypatch.setattr(proxy.socket, "socket", socket_factory)
+    monkeypatch.setattr(proxy.selectors, "DefaultSelector", selector_factory)
+    handler = object.__new__(proxy._ForwardingHandler)
+    handler.request = request
+    handler.server = object()
+
+    handler.handle()
+
+    assert request.closed is True
+    assert upstream.closed is True
+
+
+def test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user():
+    dockerfile = Path("tests/fixtures/run-lifecycle/Dockerfile").read_text(encoding="utf-8")
+    assert "/app/run_lifecycle_identity.py" in dockerfile.split("RUN chmod 0755 ", 1)[1]
+
+
 def _post_json(url: str, payload: dict, *, headers: dict[str, str]) -> tuple[int, dict]:
     request = urllib.request.Request(
         url,
