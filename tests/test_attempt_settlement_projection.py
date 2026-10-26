@@ -1137,7 +1137,7 @@ async def test_real_postgres_shadow_claim_and_terminalize_share_source_lock_orde
 
 @pytest.mark.asyncio
 async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped_work(
-    attempt_settlement_db,
+    attempt_settlement_db, monkeypatch,
 ):
     """An unverifiable receipt stays visible while mapped work makes progress."""
     connect, *_ = attempt_settlement_db
@@ -1151,7 +1151,7 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
     unknown_run_id = f"run-unknown-receipt-{uuid4().hex[:12]}"
     unknown_context_id = f"context-unknown-receipt-{uuid4().hex[:12]}"
     unknown_lease_id = f"lease-unknown-receipt-{uuid4().hex[:12]}"
-    async with connect() as conn, conn.transaction():
+    async with connect() as conn:
         # run-a is the mapped, due settlement from the fixture. Make it due
         # without changing its immutable receipt or source lease identity.
         await conn.execute(
@@ -1408,7 +1408,16 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
         assert await lease_port.release_sandbox_executor_probe_claim(
             conn, lease_id=b_lease_id, claim_token="normal-suspect-claim",
         ) is True
-        await asyncio.sleep(1.1)
+        await conn.execute(
+            "update sandbox_leases set executor_heartbeat_at=now(), "
+            "updated_at=now() where id=%s",
+            (b_lease_id,),
+        )
+        await conn.execute(
+            "update sandbox_leases set updated_at=now() - interval '2 seconds' "
+            "where id=%s",
+            (unknown_lease_id,),
+        )
         after_cooldown = await lease_port.claim_sandbox_executor_suspects(
             conn, claim_token="unknown-cooldown-expired", limit=1, stale_after_seconds=1,
         )
@@ -1416,59 +1425,87 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
         assert await lease_port.release_sandbox_executor_probe_claim(
             conn, lease_id=unknown_lease_id, claim_token="unknown-cooldown-expired",
         ) is True
-
-        # The existing probe owner can now claim the exact unknown receipt. A
-        # provider status proof is represented by the exact dispatch identity
-        # check below; the settlement writes remain one transaction.
-        from app.sandbox.application.attempt_settlement_shadow import (
-            AttemptSettlementShadowDispatchRepository,
+        await conn.execute(
+            "update sandbox_leases set updated_at=now() - interval '2 seconds' "
+            "where id=%s",
+            (unknown_lease_id,),
         )
-        from app.sandbox.application.dispatch_intent import SandboxDispatchIdentity
+        await conn.commit()
+
+        # Exercise the actual probe owner and recovery port with synthetic
+        # provider evidence, rather than manually replaying its two writes.
+        import app.executor_reconciler as executor_reconciler
+        from app.sandbox.api import SandboxDispatchIntentService
         from app.sandbox.infrastructure import dispatch_postgres
+        from types import SimpleNamespace
 
-        dispatch_shadow = AttemptSettlementShadowDispatchRepository(
-            repository=dispatch_postgres,
-            settlement_projection=projection_service,
-            enabled=lambda: True,
+        @asynccontextmanager
+        async def independent_transaction():
+            async with connect() as tx, tx.transaction():
+                yield tx
+
+        class Provider:
+            async def executor_control_endpoint(self, _lease, _request):
+                return "http://executor", {}
+
+        class Client:
+            def __init__(self, *, timeout_seconds):
+                assert timeout_seconds == 10.0
+
+            async def get_status(self, _url, *, run_id, attempt_id, executor_headers):
+                assert run_id == unknown_run_id
+                assert attempt_id == str(unknown_attempt["id"])
+                assert executor_headers == {}
+                return {
+                    "status": "running",
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
+                }
+
+        monkeypatch.setattr(executor_reconciler, "transaction", independent_transaction)
+        monkeypatch.setattr(
+            executor_reconciler,
+            "_context_payload",
+            lambda _row, **_kwargs: ({}, object()),
         )
-        probe_claimed = await lease_port.claim_sandbox_executor_suspects(
-            conn, claim_token="unknown-probe-claim", limit=1, stale_after_seconds=30,
+        monkeypatch.setattr(
+            executor_reconciler,
+            "_reconciliation_request",
+            lambda *_args: object(),
         )
-        assert [row["run_id"] for row in probe_claimed] == [unknown_run_id]
-        dispatch_identity = SandboxDispatchIdentity(
-            tenant_id="tenant-a",
-            run_id=unknown_run_id,
-            attempt_id=str(unknown_attempt["id"]),
-            owner_generation=int(unknown_attempt["owner_generation"]),
-            lease_id=unknown_lease_id,
-            provider="fake",
-            provider_task_id=str(unknown_attempt["id"]),
+        monkeypatch.setattr(
+            executor_reconciler._sandbox_cleanup,
+            "container_lease_from_persisted_row",
+            lambda _row: SimpleNamespace(provider="fake"),
         )
-        await dispatch_shadow.record_outcome(
-            conn, identity=dispatch_identity, outcome="accepted",
+        monkeypatch.setattr(
+            executor_reconciler,
+            "create_container_provider",
+            lambda _provider: Provider(),
         )
-        await lease_port.record_sandbox_executor_accepted(
-            conn,
-            tenant_id="tenant-a",
-            run_id=unknown_run_id,
-            attempt_id=str(unknown_attempt["id"]),
-            lease_id=unknown_lease_id,
-            reconciliation_context={"adapter_name": "test", "snapshot": "intent"},
+        monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", Client)
+        processed = await executor_reconciler.probe_suspect_executor_tasks_once(
+            lease_port=lease_port,
+            dispatch_intents=SandboxDispatchIntentService(dispatch_postgres),
+            limit=1,
         )
-        assert await lease_port.release_sandbox_executor_probe_claim(
-            conn, lease_id=unknown_lease_id, claim_token="unknown-probe-claim",
-        ) is True
-        recovered_claimed = await lease_port.claim_sandbox_executor_reconciliations(
-            conn, claim_token="recovered-unknown-claim", limit=1, stale_after_seconds=30,
-        )
-        assert [row["run_id"] for row in recovered_claimed] == [unknown_run_id]
-        unknown_detail = await (
-            await conn.execute(
-                "select mapping_state, dispatch_state, receipt_json, settlement_phase, "
-                "accepted_context_json from run_attempt_settlements where run_id=%s",
-                (unknown_run_id,),
+        assert processed == 0
+
+        async with independent_transaction() as recovered_conn:
+            recovered_claimed = await lease_port.claim_sandbox_executor_reconciliations(
+                recovered_conn,
+                claim_token="recovered-unknown-claim",
+                limit=1,
+                stale_after_seconds=30,
             )
-        ).fetchone()
+            assert [row["run_id"] for row in recovered_claimed] == [unknown_run_id]
+            unknown_detail = await (
+                await recovered_conn.execute(
+                    "select mapping_state, dispatch_state, receipt_json, settlement_phase, "
+                    "accepted_context_json from run_attempt_settlements where run_id=%s",
+                    (unknown_run_id,),
+                )
+            ).fetchone()
         assert unknown_detail["mapping_state"] == "mapped"
         assert unknown_detail["dispatch_state"] == "accepted"
         assert unknown_detail["receipt_json"]["answer"] == "unknown"
