@@ -1312,6 +1312,13 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
             "next_retry_at=null where tenant_id='tenant-a' and run_id='run-a'"
         )
         await conn.execute(
+            "update sandbox_leases set executor_reconciliation_status='pending', "
+            "executor_reconciliation_retry_not_before=null, "
+            "executor_reconciliation_claim_token=null, "
+            "executor_reconciliation_claimed_at=null, executor_reconciliation_error='' "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )
+        await conn.execute(
             "update run_attempt_settlement_writer set writer_version=%s "
             "where singleton=true",
             ("attempt.v1" if writer_active else "sandbox_lease.v1",),
