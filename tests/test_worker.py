@@ -1218,6 +1218,8 @@ def default_cancel_not_requested(monkeypatch):
 
     async def start_worker_run_attempt(conn, **kwargs):
         return {
+            "tenant_id": kwargs["tenant_id"],
+            "run_id": kwargs["run_id"],
             "id": worker_attempt_lifecycle_module.run_attempt_id_for_queue_attempt(
                 tenant_id=kwargs["tenant_id"],
                 run_id=kwargs["run_id"],
@@ -4195,6 +4197,8 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     async def start_worker_run_attempt(conn, **kwargs):
         calls.append(("start", kwargs))
         return {
+            "tenant_id": kwargs["tenant_id"],
+            "run_id": kwargs["run_id"],
             "id": "rat-run-a",
             "status": "running",
             "owner_kind": "queue_worker",
