@@ -175,6 +175,14 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
         assert detail[3]["accepted_context_json"] == accepted
         assert detail[3]["receipt_json"] == receipt
 
+        fixture_retry = await (await conn.execute(
+            "select next_retry_at from run_attempt_settlements "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )).fetchone()
+        await conn.execute(
+            "update run_attempt_settlements set next_retry_at='infinity' "
+            "where tenant_id='tenant-a' and run_id='run-a'"
+        )
         claims = await writer.claim_due_attempt_settlements(
             conn, claim_token="authority-claim", limit=10, stale_after_seconds=30,
         )
@@ -244,6 +252,11 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
         )
         assert early_detail[3]["settlement_phase"] == "pending"
         assert early_detail[3]["accepted_context_json"] == early_context
+        await conn.execute(
+            "update run_attempt_settlements set next_retry_at=%s "
+            "where tenant_id='tenant-a' and run_id='run-a'",
+            (fixture_retry["next_retry_at"],),
+        )
 
 
 @pytest.mark.asyncio

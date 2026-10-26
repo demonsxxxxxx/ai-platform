@@ -13,6 +13,7 @@ from app.sandbox.infrastructure.executor_reconciliation_postgres import (
     finalize_failed_sandbox_executor_reconciliation_cleanup as finalize_failed_sandbox_executor_reconciliation_cleanup,
     get_sandbox_executor_reconciliation_summary as get_sandbox_executor_reconciliation_summary,
     get_sandbox_resource_cleanup_summary as get_sandbox_resource_cleanup_summary,
+    has_sandbox_executor_probe_claim as has_sandbox_executor_probe_claim,
     has_failed_sandbox_executor_reconciliation_cleanup_claim as has_failed_sandbox_executor_reconciliation_cleanup_claim,
     has_sandbox_executor_reconciliation_claim as has_sandbox_executor_reconciliation_claim,
     is_sandbox_executor_reconciliation_claim_current as is_sandbox_executor_reconciliation_claim_current,

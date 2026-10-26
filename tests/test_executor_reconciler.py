@@ -1013,6 +1013,148 @@ def _suspect_lease_row() -> dict[str, object]:
 
 
 @pytest.mark.asyncio
+async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(monkeypatch):
+    from app.executor_reconciler import _record_probe_dispatch_accepted
+
+    accepted_contexts = []
+    outcomes = []
+
+    class LeasePort:
+        async def has_sandbox_executor_probe_claim(self, _conn, **kwargs):
+            return kwargs == {"lease_id": "lease-a", "claim_token": "probe-a"}
+
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **kwargs):
+            outcomes.append(kwargs)
+            return {"status": "accepted"}
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "owner_generation": 4,
+                "status": "active",
+                "attempt_id": "attempt-a",
+                "lease_payload_json": {"owner_generation": 4},
+                "dispatch_generation": 4,
+                "dispatch_lease_id": "lease-a",
+                "dispatch_provider": "fake",
+                "dispatch_task_id": "attempt-a",
+                "mapping_state": "unknown",
+                "dispatch_state": "unknown",
+                "intent_recovery_context_json": {
+                    "adapter_name": "opensandbox", "frozen": "intent"
+                },
+                "accepted_context_json": None,
+                "receipt_json": {"run_id": "run-a", "status": "succeeded"},
+            }
+
+    class Connection:
+        async def execute(self, _sql, _params):
+            return Cursor()
+
+    @asynccontextmanager
+    async def transaction():
+        yield Connection()
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", transaction)
+    lease_row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "executor_probe_claim_token": "probe-a",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "executor_reconciliation_intent_context_json": {
+            "adapter_name": "opensandbox", "frozen": "intent"
+        },
+    }
+    status = {"status": "completed", "run_id": "run-a", "attempt_id": "attempt-a"}
+    recovered = await _record_probe_dispatch_accepted(
+        lease_row,
+        status,
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is True
+    assert accepted_contexts[0]["reconciliation_context"] == {
+        "adapter_name": "opensandbox", "frozen": "intent"
+    }
+    assert outcomes[0]["outcome"] == "accepted"
+
+    accepted_contexts.clear()
+    outcomes.clear()
+    stale_row = {**lease_row, "lease_payload_json": {"owner_generation": 3, "attempt_id": "attempt-a"}}
+    recovered = await _record_probe_dispatch_accepted(
+        stale_row,
+        status,
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is False
+    assert accepted_contexts == []
+    assert outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_receipt_probe_keeps_unavailable_provider_recoverable(monkeypatch):
+    released = []
+    row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "settlement_dispatch_state": "unknown",
+        "executor_reconciliation_intent_context_json": {
+            "adapter_name": "opensandbox", "executor_request": {}, "adapter_context": {},
+        },
+    }
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "running"}
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+        return True
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            return "http://executor", {}
+
+    class Client:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 10.0
+
+        async def get_status(self, *_args, **_kwargs):
+            raise TimeoutError("provider unavailable")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(sandbox_lease_repository, "claim_sandbox_executor_suspects", claim)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr("app.executor_reconciler.create_container_provider", lambda _name: Provider())
+    monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
+    monkeypatch.setattr(sandbox_lease_repository, "release_sandbox_executor_probe_claim", release)
+
+    assert await probe_suspect_executor_tasks_once() == 0
+    assert len(released) == 1
+    assert released[0]["lease_id"] == "lease-a"
+    assert isinstance(released[0]["claim_token"], str)
+    assert released[0]["error"] == "executor_probe_unknown_receipt_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkeypatch):
     released = []
     claim_tokens = []

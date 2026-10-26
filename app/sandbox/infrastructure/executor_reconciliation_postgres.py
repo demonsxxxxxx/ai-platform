@@ -294,6 +294,26 @@ async def claim_sandbox_executor_suspects(
             and (
               lease.executor_status in ('accepted', 'running')
               or (
+                detail.mapping_state in ('unknown', 'conflict')
+                and detail.dispatch_state = 'unknown'
+                and detail.intent_recovery_context_json is not null
+                and detail.accepted_context_json is null
+                and detail.receipt_json is not null
+                and exists (
+                  select 1 from sandbox_execution_dispatches dispatch
+                  where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
+                    and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
+                    and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+                    and dispatch.status in ('intent', 'unknown')
+                )
+                and exists (
+                  select 1 from run_attempts attempt
+                  where attempt.tenant_id = lease.tenant_id
+                    and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+                    and attempt.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+                )
+              )
+              or (
                 lease.executor_status = 'pending'
                 and (
                   (detail.mapping_state = 'mapped'
@@ -315,7 +335,16 @@ async def claim_sandbox_executor_suspects(
                 )
               )
             )
-            and detail.receipt_json is null
+            and (
+              detail.receipt_json is null
+              or (
+                detail.mapping_state in ('unknown', 'conflict')
+                and detail.dispatch_state = 'unknown'
+                and detail.intent_recovery_context_json is not null
+                and detail.accepted_context_json is null
+                and detail.receipt_json is not null
+              )
+            )
             and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
             and (
               (lease.executor_probe_claim_token is null
@@ -365,7 +394,14 @@ async def release_sandbox_executor_probe_claim(
     compatibility_assignments = ""
     if legacy_settlement_compat:
         compatibility_assignments = """
-            executor_reconciliation_status = 'waiting_terminal',
+            executor_reconciliation_status = case
+              when executor_terminal_json is not null
+               and (
+                 executor_reconciliation_context_json is not null
+                 or executor_reconciliation_intent_context_json is not null
+               ) then 'pending'
+              else 'waiting_terminal'
+            end,
             executor_reconciliation_claim_token = null,
             executor_reconciliation_claimed_at = null,
         """
@@ -392,6 +428,29 @@ async def release_sandbox_executor_probe_claim(
                 and detail.intent_recovery_context_json is not null
                 and detail.accepted_context_json is null
                 and detail.receipt_json is null
+            )
+            or exists (
+              select 1 from run_attempt_settlements detail
+              where detail.tenant_id = sandbox_leases.tenant_id
+                and detail.run_id = sandbox_leases.run_id
+                and detail.attempt_id = sandbox_leases.attempt_id
+                and detail.source_lease_id = sandbox_leases.id
+                and detail.mapping_state in ('unknown', 'conflict')
+                and detail.dispatch_state = 'unknown'
+                and detail.intent_recovery_context_json is not null
+                and detail.accepted_context_json is null
+                and detail.receipt_json is not null
+            )
+            or exists (
+              select 1 from run_attempt_settlements detail
+              where detail.tenant_id = sandbox_leases.tenant_id
+                and detail.run_id = sandbox_leases.run_id
+                and detail.attempt_id = sandbox_leases.attempt_id
+                and detail.source_lease_id = sandbox_leases.id
+                and detail.mapping_state = 'mapped'
+                and detail.dispatch_state = 'accepted'
+                and detail.accepted_context_json is not null
+                and detail.receipt_json is not null
             )
           )
           and executor_probe_claim_token = %s
@@ -484,6 +543,26 @@ async def list_sandbox_executor_suspect_candidate_scopes(
           and (
             lease.executor_status in ('accepted', 'running')
             or (
+              detail.mapping_state in ('unknown', 'conflict')
+              and detail.dispatch_state = 'unknown'
+              and detail.intent_recovery_context_json is not null
+              and detail.accepted_context_json is null
+              and detail.receipt_json is not null
+              and exists (
+                select 1 from sandbox_execution_dispatches dispatch
+                where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
+                  and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
+                  and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+                  and dispatch.status in ('intent', 'unknown')
+              )
+              and exists (
+                select 1 from run_attempts attempt
+                where attempt.tenant_id = lease.tenant_id
+                  and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+                  and attempt.owner_generation::text = lease.lease_payload_json->>'owner_generation'
+              )
+            )
+            or (
               lease.executor_status = 'pending'
               and (
                 (detail.mapping_state = 'mapped'
@@ -505,7 +584,16 @@ async def list_sandbox_executor_suspect_candidate_scopes(
               )
             )
           )
-          and detail.receipt_json is null
+          and (
+            detail.receipt_json is null
+            or (
+              detail.mapping_state in ('unknown', 'conflict')
+              and detail.dispatch_state = 'unknown'
+              and detail.intent_recovery_context_json is not null
+              and detail.accepted_context_json is null
+              and detail.receipt_json is not null
+            )
+          )
           and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
           and (
             (lease.executor_probe_claim_token is null
@@ -931,13 +1019,36 @@ async def quarantine_sandbox_executor_reconciliation(
     claim_token: str,
     error: str,
     legacy_settlement_compat: bool = True,
+    probe_claim_token: str | None = None,
 ) -> bool:
     """Stop automatic claims without falsely recording an unverifiable runtime as released."""
 
     compatibility_assignments = ""
     compatibility_predicate = ""
     parameters: tuple[Any, ...]
-    if legacy_settlement_compat:
+    if probe_claim_token is not None:
+        compatibility_assignments = (
+            """
+            executor_reconciliation_status = 'failed',
+            executor_reconciliation_claim_token = null,
+            executor_reconciliation_claimed_at = null,
+            executor_probe_claim_token = null,
+            executor_probe_claimed_at = null,
+            """
+            if legacy_settlement_compat else
+            """
+            executor_cleanup_status = 'failed',
+            executor_cleanup_claim_token = null,
+            executor_cleanup_claimed_at = null,
+            executor_probe_claim_token = null,
+            executor_probe_claimed_at = null,
+            """
+        )
+        compatibility_predicate = """
+            and executor_probe_claim_token = %s
+        """
+        parameters = (error[:1000], lease_id, probe_claim_token)
+    elif legacy_settlement_compat:
         compatibility_assignments = """
             executor_reconciliation_status = 'failed',
             executor_reconciliation_claim_token = null,

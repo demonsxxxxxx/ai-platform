@@ -1141,6 +1141,7 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
 ):
     """An unverifiable receipt stays visible while mapped work makes progress."""
     connect, *_ = attempt_settlement_db
+    projection_service = build_attempt_settlement_projection_service()
     from app.runs.infrastructure.attempt_settlement_projection_postgres import (
         list_due_attempt_settlements,
         refresh_attempt_settlement_projection,
@@ -1162,7 +1163,7 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
             "execution_kind, status, model_id, model_value, model_gateway_revision, "
             "auto_compact_window, max_output_tokens) values "
             "(%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'agent-a', "
-            "'harness_chat', 'running', 'model-a', 'claude-test', 3, 200000, 4096)",
+            "'harness_chat', 'queued', 'model-a', 'claude-test', 3, 200000, 4096)",
             (unknown_run_id,),
         )
         await conn.execute(
@@ -1289,17 +1290,66 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
             conn, claim_token="writer-mapped-run-claim", limit=1, stale_after_seconds=30,
         )
         assert [row["run_id"] for row in writer_claimed] == ["run-a"]
+
+        # The existing probe owner can now claim the exact unknown receipt. A
+        # provider status proof is represented by the exact dispatch identity
+        # check below; the settlement writes remain one transaction.
+        from app.sandbox.application.attempt_settlement_shadow import (
+            AttemptSettlementShadowDispatchRepository,
+        )
+        from app.sandbox.application.dispatch_intent import SandboxDispatchIdentity
+        from app.sandbox.infrastructure import dispatch_postgres
+
+        dispatch_shadow = AttemptSettlementShadowDispatchRepository(
+            repository=dispatch_postgres,
+            settlement_projection=projection_service,
+            enabled=lambda: True,
+        )
+        probe_claimed = await lease_port.claim_sandbox_executor_suspects(
+            conn, claim_token="unknown-probe-claim", limit=1, stale_after_seconds=30,
+        )
+        assert [row["run_id"] for row in probe_claimed] == [unknown_run_id]
+        dispatch_identity = SandboxDispatchIdentity(
+            tenant_id="tenant-a",
+            run_id=unknown_run_id,
+            attempt_id=str(unknown_attempt["id"]),
+            owner_generation=int(unknown_attempt["owner_generation"]),
+            lease_id=unknown_lease_id,
+            provider="fake",
+            provider_task_id=str(unknown_attempt["id"]),
+        )
+        await dispatch_shadow.record_outcome(
+            conn, identity=dispatch_identity, outcome="accepted",
+        )
+        await lease_port.record_sandbox_executor_accepted(
+            conn,
+            tenant_id="tenant-a",
+            run_id=unknown_run_id,
+            attempt_id=str(unknown_attempt["id"]),
+            lease_id=unknown_lease_id,
+            reconciliation_context={"adapter_name": "test", "snapshot": "intent"},
+        )
+        assert await lease_port.release_sandbox_executor_probe_claim(
+            conn, lease_id=unknown_lease_id, claim_token="unknown-probe-claim",
+        ) is True
+        recovered_claimed = await lease_port.claim_sandbox_executor_reconciliations(
+            conn, claim_token="recovered-unknown-claim", limit=1, stale_after_seconds=30,
+        )
+        assert [row["run_id"] for row in recovered_claimed] == [unknown_run_id]
         unknown_detail = await (
             await conn.execute(
-                "select mapping_state, dispatch_state, receipt_json, settlement_phase "
-                "from run_attempt_settlements where run_id=%s",
+                "select mapping_state, dispatch_state, receipt_json, settlement_phase, "
+                "accepted_context_json from run_attempt_settlements where run_id=%s",
                 (unknown_run_id,),
             )
         ).fetchone()
-        assert unknown_detail["mapping_state"] == "unknown"
-        assert unknown_detail["dispatch_state"] == "unknown"
+        assert unknown_detail["mapping_state"] == "mapped"
+        assert unknown_detail["dispatch_state"] == "accepted"
         assert unknown_detail["receipt_json"]["answer"] == "unknown"
-        assert unknown_detail["settlement_phase"] == "unknown"
+        assert unknown_detail["accepted_context_json"] == {
+            "adapter_name": "test", "snapshot": "intent",
+        }
+        assert unknown_detail["settlement_phase"] == "claimed"
 
 
 @pytest.mark.asyncio

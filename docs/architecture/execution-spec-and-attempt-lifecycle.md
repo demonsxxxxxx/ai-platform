@@ -351,9 +351,16 @@ there while Sandbox still locks the exact resource identity and generation.
 Admin Run lease projections and runtime health/diagnostics use this mapping as
 well. Missing details raise an error. Unknown/conflict mappings remain visible in
 comparison, admin diagnostics and retirement readiness, but are isolated from
-the due-claim batch so one unverifiable receipt cannot block mapped Runs; their
-existing dispatch/probe or operator recovery owner must resolve them before
-cutover. No reader falls back to Sandbox settlement columns. Source fields
+the due-claim batch so one unverifiable receipt cannot block mapped Runs. The
+existing `claim_sandbox_executor_suspects` probe owner also claims the narrow
+unknown-receipt case when its dispatch row, immutable intent context, source
+lease and Attempt generation match. A provider status proving the same
+Run/Attempt/resource/generation permits the existing Sandbox lease port to
+record the frozen context as acceptance and the dispatch CAS in one transaction;
+provider timeout/unavailability releases the probe claim for durable retry, and
+a provider-confirmed absence uses the existing
+`quarantine_sandbox_executor_reconciliation` owner. No reader
+falls back to Sandbox settlement columns. Source fields
 remain dual-written in N40 to preserve the identified legacy
 reader rollback condition while a fresh full comparison remains zero.
 

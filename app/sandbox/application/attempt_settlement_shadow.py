@@ -387,7 +387,9 @@ class AttemptSettlementShadowLeaseRepository:
                 await self._refresh(conn, actual_scopes[key])
         if storage_version == "attempt.v1" or writer_active:
             return [
-                await self._settlement_view(conn, row, require_mapped=True)
+                await self._settlement_view(
+                    conn, row, require_mapped=use_attempt_candidates,
+                )
                 for row in rows
             ]
         return rows
@@ -486,7 +488,8 @@ class AttemptSettlementShadowLeaseRepository:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         write_detail = await self._write_enabled(conn, scope)
         active_writer = await self._writer_active(conn) if write_detail else False
-        if active_writer:
+        probe_claim_token = kwargs.get("probe_claim_token")
+        if active_writer and probe_claim_token is None:
             if scope is None or not await self._settlement.settlement_claim_current(
                 conn, **scope, lease_id=str(kwargs["lease_id"]),
                 claim_token=str(kwargs["claim_token"]),
@@ -497,13 +500,21 @@ class AttemptSettlementShadowLeaseRepository:
         )
         return changed
 
-    async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
+    async def has_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         await self._write_enabled(conn, scope)
+        return await self._repository.has_sandbox_executor_probe_claim(conn, **kwargs)
+
+    async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
+        scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
+        write_detail = await self._write_enabled(conn, scope)
         active_writer = await self._writer_active(conn)
-        return await self._repository.release_sandbox_executor_probe_claim(
+        changed = await self._repository.release_sandbox_executor_probe_claim(
             conn, **kwargs, legacy_settlement_compat=not active_writer,
         )
+        if changed and write_detail and not active_writer:
+            await self._refresh(conn, scope)
+        return changed
 
     async def claim_failed_sandbox_executor_reconciliation_cleanups(
         self, conn: Any, **kwargs: Any
