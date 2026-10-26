@@ -3635,6 +3635,10 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
         concurrency=1,
     )
 
+    from app.sandbox.application.dispatch_intent import SandboxDispatchIntentService
+
+    dispatch_intents = captured.pop("dispatch_intents")
+    assert isinstance(dispatch_intents, SandboxDispatchIntentService)
     assert captured == {
         "stop_event": stop_event,
         "lease_port": lease_port,
