@@ -189,7 +189,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
             "branches": [
                 "main",
                 "feat/n01-lifecycle-control-chain",
-                "feat/lifecycle-phase-*",
+                "test/run-lifecycle-control-chain",
+                "feat/lifecycle-phase*",
             ]
         },
         "push": {"branches": ["main"]},

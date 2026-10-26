@@ -91,7 +91,7 @@ bounded private model keys. They are not exposed in public Run results/events.
 The [official cost contract](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
 distinguishes turn usage from cumulative cost/model usage. The historical
 0.2.130 / CLI 2.1.222 zero-per-process assumption is superseded by the current
-0.2.165 / CLI 2.1.294 pair: native resume restores totals from the transcript's
+0.2.174 / CLI 2.1.310 pair: native resume restores totals from the transcript's
 last matching `cost-state` record. The harness subtracts that immutable preload
 baseline from subsequent cost/model snapshots before projecting this Run.
 It does not modify the stored record or calculate prices itself. Real bundled-CLI
@@ -100,7 +100,7 @@ which start at zero. An invalid baseline makes cost unavailable while retaining
 normal per-turn token usage. SDK prices remain client-side estimates, not billing
 authority; another CLI upgrade must requalify this accounting boundary.
 Current file-task composition and native-resume behavior are documented in
-[the continuity contract](claude-provider-session-continuity.md#file-task-prompt-composition-sdk-02165).
+[the continuity contract](claude-provider-session-continuity.md#file-task-prompt-composition).
 
 The single private `cost_coverage` marker is `complete`, `partial`, or
 `unavailable`. Missing/invalid latest cost does not erase an earlier observation.

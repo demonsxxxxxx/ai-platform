@@ -7,12 +7,36 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp.client.session import ClientSession
+from mcp.shared.memory import create_client_server_memory_streams
+from mcp_types import CallToolResult, TextContent, Tool
 
 from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 from app.mcp.infrastructure import client as mcp_client
 from app.mcp.infrastructure.catalog import _ValidatedDiscoveryTarget
 from tests.support.mcp_protocol_peers import RAW_TOOL, SCHEMA, SDK_TOOL, local_mcp_peers
+
+
+@asynccontextmanager
+async def connected_client(server):
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+        server_task = asyncio.create_task(
+            server.run(
+                server_read,
+                server_write,
+                server.create_initialization_options(),
+            )
+        )
+        try:
+            async with ClientSession(client_read, client_write) as client:
+                await client.initialize()
+                yield client
+        finally:
+            if not server_task.done():
+                server_task.cancel()
+            await asyncio.gather(server_task, return_exceptions=True)
 
 
 def subject(server="gateway", tool=RAW_TOOL, url="https://mcp.example/mcp"):
@@ -85,13 +109,13 @@ async def test_real_mcp_transport_preserves_auth_names_results_and_cleanup(monke
         async with asyncio.timeout(10):
             async with mcp_client.open_mcp_session(config, timeout_seconds=3) as session:
                 tools = await mcp_client.list_mcp_tools(session)
-                assert tools[0].inputSchema == SCHEMA
+                assert tools[0].input_schema == SCHEMA
                 result = await session.call_tool(RAW_TOOL, {"query": "synthetic"})
-                assert result.structuredContent == {"sequence": 7}
-                assert result.isError is False
+                assert result.structured_content == {"sequence": 7}
+                assert result.is_error is False
                 peer.is_error = True
                 failed = await session.call_tool(RAW_TOOL, {"query": "synthetic"})
-                assert failed.isError is True
+                assert failed.is_error is True
         assert [call["name"] for call in peer.calls] == [RAW_TOOL, RAW_TOOL]
         assert all({key.lower(): value for key, value in headers.items()}.get("jwt-authorization") == "Bearer synthetic.jwt" for _, headers in peer.requests)
         assert all({key.lower(): value for key, value in headers.items()}.get("x-static-key") == "synthetic" for _, headers in peer.requests)
@@ -102,8 +126,6 @@ async def test_real_mcp_transport_preserves_auth_names_results_and_cleanup(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["error", "success", "exception", "duplicate", "different_input"])
 async def test_tool_error_result_is_bound_to_one_admitted_call(case):
-    from mcp.types import CallToolRequest, CallToolRequestParams
-
     item = subject(server="files", tool="list_files")
     arguments = {"path": "restricted", "source": "public"}
     @asynccontextmanager
@@ -112,10 +134,10 @@ async def test_tool_error_result_is_bound_to_one_admitted_call(case):
             if case == "exception":
                 raise TimeoutError("response was not received")
             return CallToolResult(content=[TextContent(type="text", text="access_denied")],
-                                  isError=case != "success")
+                                  is_error=case != "success")
         yield SimpleNamespace(call_tool=call_tool)
     async def list_tools(_session):
-        return [Tool(name="list_files", inputSchema={"type": "object"})]
+        return [Tool(name="list_files", input_schema={"type": "object"})]
     registration = ClaudeMcpRegistration(
         {item["identity"]: item}, {"files": item["mcp_server_config"]},
         session_factory=session_factory, list_tools=list_tools,
@@ -124,14 +146,26 @@ async def test_tool_error_result_is_bound_to_one_admitted_call(case):
     if case == "duplicate":
         registration.track_tool_call(item["identity"], "call-b", arguments)
     options = SimpleNamespace()
+    call_failure = None
     async with registration.activate(options):
         server = options.mcp_servers["files"]["instance"]
-        result = await server.request_handlers[CallToolRequest](CallToolRequest(
-            method="tools/call", params=CallToolRequestParams(
-                name="list_files", arguments=arguments if case != "different_input" else {"path": "other"},
-            ),
-        ))
-    assert result.root.isError is (case != "success")
+        async with connected_client(server) as client:
+            if case == "exception":
+                from mcp.shared.exceptions import MCPError
+
+                with pytest.raises(MCPError) as raised:
+                    await client.call_tool("list_files", arguments)
+                call_failure = raised.value
+            else:
+                result = await client.call_tool(
+                    "list_files",
+                    arguments if case != "different_input" else {"path": "other"},
+                )
+    if case == "exception":
+        assert call_failure.code == 0
+        assert call_failure.message == "response was not received"
+    else:
+        assert result.is_error is (case != "success")
     assert registration.consume_tool_error_result(item["identity"], "call-a") is (case == "error")
     assert registration.consume_tool_error_result(item["identity"], "call-a") is False
     assert registration.consume_tool_error_result(item["identity"], "call-b") is False
@@ -148,14 +182,14 @@ async def test_registration_filters_catalog_preserves_results_and_closes_on_canc
     async def session_factory(_config):
         async def call_tool(name, arguments):
             calls.append((name, arguments))
-            return CallToolResult(content=[TextContent(type="text", text="result")], structuredContent={"n": 1}, isError=True)
+            return CallToolResult(content=[TextContent(type="text", text="result")], structured_content={"n": 1}, is_error=True)
         try:
             yield SimpleNamespace(call_tool=call_tool)
         finally:
             closed.append(True)
 
     async def list_tools(_session):
-        return [Tool(name=RAW_TOOL, inputSchema=SCHEMA), Tool(name="unselected", inputSchema={"type": "object"})]
+        return [Tool(name=RAW_TOOL, input_schema=SCHEMA), Tool(name="unselected", input_schema={"type": "object"})]
 
     config = {"gateway": item["mcp_server_config"]}
     registration = ClaudeMcpRegistration({item["identity"]: item}, config, session_factory=session_factory, list_tools=list_tools)
@@ -165,17 +199,15 @@ async def test_registration_filters_catalog_preserves_results_and_closes_on_canc
     async def consume():
         options = SimpleNamespace()
         async with registration.activate(options):
-            from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
             server = options.mcp_servers[registration.server_aliases["gateway"]]["instance"]
-            listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-            assert [tool.name for tool in listed.root.tools] == [registration._tool_aliases[("gateway", RAW_TOOL)]]
-            for name in (registration._tool_aliases[("gateway", RAW_TOOL)], "unselected"):
-                result = await server.request_handlers[CallToolRequest](CallToolRequest(
-                    method="tools/call", params=CallToolRequestParams(name=name, arguments={"query": "synthetic"}),
-                ))
-                assert result.root.isError is True
-                if name != "unselected":
-                    assert result.root.structuredContent == {"n": 1}
+            async with connected_client(server) as client:
+                listed = await client.list_tools()
+                assert [tool.name for tool in listed.tools] == [registration._tool_aliases[("gateway", RAW_TOOL)]]
+                for name in (registration._tool_aliases[("gateway", RAW_TOOL)], "unselected"):
+                    result = await client.call_tool(name, {"query": "synthetic"})
+                    assert result.is_error is True
+                    if name != "unselected":
+                        assert result.structured_content == {"n": 1}
             ready.set()
             await asyncio.Event().wait()
 
@@ -245,12 +277,13 @@ async def test_cancel_during_discovery_closes_owner_without_waiting_for_timeout(
 @pytest.mark.parametrize("remote_error", [False, True])
 @pytest.mark.parametrize("server_name", ["gateway", "server.name"])
 @pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
-async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name, integration_kind):
+async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name, integration_kind, tool_search=False):
     from app.executors import claude_agent_sdk_runner as runner
 
 
     with local_mcp_peers() as peer:
         peer.is_error = remote_error
+        peer.search_tools = tool_search
         selected_subject = {**subject(server=server_name, url=peer.url + "/mcp"), "write_capable": True}
         if integration_kind == "enterprise_gateway":
             selected_subject["mcp_server_config"].update(
@@ -291,6 +324,12 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             for name in ("TEMP", "TMP", "APPDATA", "LOCALAPPDATA"):
                 if name in os.environ:
                     env[name] = os.environ[name]
+            if tool_search == "default":
+                env.pop("ENABLE_TOOL_SEARCH", None)
+            elif tool_search:
+                env["ENABLE_TOOL_SEARCH"] = "true"
+            else:
+                env["ENABLE_TOOL_SEARCH"] = "false"
             return env
 
         monkeypatch.setattr(runner, "build_sdk_env", synthetic_env)
@@ -317,15 +356,15 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert result.error is None, result.runtime_diagnostics
         assert peer.models
         assert sum(method == "initialize" for method, _ in peer.requests) == 1
-        assert all(
-            {tool["name"] for tool in request.get("tools", [])}
-            == {peer.sdk_tool, "mcp__ai-platform-response__attach_file"}
-            for request in peer.models
-        )
-        selected_tool = next(
-            tool for tool in peer.models[0]["tools"] if tool["name"] == peer.sdk_tool
-        )
-        assert selected_tool["input_schema"] == SCHEMA
+        if tool_search:
+            assert any(tool["name"] == "ToolSearch" for tool in peer.models[0].get("tools", [])), peer.models[0].get("tools")
+            assert any(tool.get("defer_loading") for tool in peer.models[0].get("tools", [])), peer.models[0].get("tools")
+        else:
+            assert all(
+                {tool["name"] for tool in request.get("tools", [])}
+                == {peer.sdk_tool, "mcp__ai-platform-response__attach_file"}
+                for request in peer.models
+            )
         tool_result_texts = [
             block.get("content", "")
             for request in peer.models
@@ -333,6 +372,20 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             for block in message.get("content", [])
             if isinstance(block, dict) and block.get("type") == "tool_result"
         ]
+        if tool_search:
+            search_results = [
+                block for request in peer.models for message in request.get("messages", [])
+                for block in message.get("content", [])
+                if isinstance(block, dict) and block.get("tool_use_id") == "toolu_search"
+            ]
+            assert search_results and all(not block.get("is_error") for block in search_results), search_results
+            assert peer.sdk_tool in str(search_results), search_results
+            assert "unselected_sibling" not in str(peer.models)
+        selected_tool = next(
+            tool for request in peer.models for tool in request.get("tools", [])
+            if tool["name"] == peer.sdk_tool
+        )
+        assert selected_tool["input_schema"] == SCHEMA
         if not remote_error:
             assert any(
                 isinstance(content, str)
@@ -369,7 +422,6 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
 async def test_bound_executor_registration_refreshes_credentials_without_platform_store(monkeypatch, transport, integration_kind):
     from app.bootstrap.claude_mcp import prepare_claude_mcp
     from app.mcp.infrastructure import runtime
-    from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
 
     def no_platform_store():
         raise AssertionError("executor must not read platform Redis")
@@ -398,14 +450,14 @@ async def test_bound_executor_registration_refreshes_credentials_without_platfor
         async with registration.activate(options):
             assert registration.unavailable == {}
             server = options.mcp_servers[registration.server_aliases["gateway"]]["instance"]
-            listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-            assert len(listed.root.tools) == 1
-            result = await server.request_handlers[CallToolRequest](CallToolRequest(
-                method="tools/call", params=CallToolRequestParams(
-                    name=listed.root.tools[0].name, arguments={"query": "synthetic"},
-                ),
-            ))
-            assert result.root.isError is False
+            async with connected_client(server) as client:
+                listed = await client.list_tools()
+                assert len(listed.tools) == 1
+                result = await client.call_tool(
+                    listed.tools[0].name,
+                    {"query": "synthetic"},
+                )
+                assert result.is_error is False
         values = [dict((key.lower(), value) for key, value in headers.items())[header.lower()]
                   for _method, headers in peer.requests]
         assert len(refreshed) >= len(values) >= 4
@@ -461,7 +513,7 @@ async def test_registration_keeps_available_selected_tools_when_one_is_missing()
             closed.append(True)
 
     async def list_tools(_session):
-        return [Tool(name="lookup", inputSchema={"type": "object"})]
+        return [Tool(name="lookup", input_schema={"type": "object"})]
 
     registration = ClaudeMcpRegistration(
         {available["identity"]: available, missing["identity"]: missing},
@@ -474,12 +526,11 @@ async def test_registration_keeps_available_selected_tools_when_one_is_missing()
         assert registration.unavailable == {"gateway": "selected_tool_unavailable"}
         assert registration.server_aliases["gateway"] in options.mcp_servers
         server = options.mcp_servers[registration.server_aliases["gateway"]]["instance"]
-        from mcp.types import ListToolsRequest
-
-        listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-        assert [tool.name for tool in listed.root.tools] == [
-            registration._tool_aliases[("gateway", "lookup")]
-        ]
+        async with connected_client(server) as client:
+            listed = await client.list_tools()
+            assert [tool.name for tool in listed.tools] == [
+                registration._tool_aliases[("gateway", "lookup")]
+            ]
     assert closed == [True]
 
 
@@ -517,7 +568,7 @@ async def test_registration_keeps_healthy_server_when_another_is_offline_and_cle
         await asyncio.wait_for(both_discovered.wait(), timeout=0.5)
         if session.server == "offline":
             raise RuntimeError("offline")
-        return [Tool(name="lookup", inputSchema={"type": "object"})]
+        return [Tool(name="lookup", input_schema={"type": "object"})]
 
     registration = ClaudeMcpRegistration(
         {healthy["identity"]: healthy, offline["identity"]: offline},
@@ -534,17 +585,13 @@ async def test_registration_keeps_healthy_server_when_another_is_offline_and_cle
         assert ("offline", "close") in events
         assert ("healthy", "close") not in events
 
-        from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
-
         server = options.mcp_servers[registration.server_aliases["healthy"]]["instance"]
-        listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
-        alias = registration._tool_aliases[("healthy", "lookup")]
-        assert [tool.name for tool in listed.root.tools] == [alias]
-        result = await server.request_handlers[CallToolRequest](CallToolRequest(
-            method="tools/call",
-            params=CallToolRequestParams(name=alias, arguments={"query": "synthetic"}),
-        ))
-        assert result.root.isError is False
+        async with connected_client(server) as client:
+            listed = await client.list_tools()
+            alias = registration._tool_aliases[("healthy", "lookup")]
+            assert [tool.name for tool in listed.tools] == [alias]
+            result = await client.call_tool(alias, {"query": "synthetic"})
+            assert result.is_error is False
 
     assert events.index(("offline", "close")) < events.index(("healthy", "close"))
     assert task_owners["healthy"][0] is task_owners["healthy"][1]
@@ -565,7 +612,7 @@ async def test_registration_timeout_does_not_limit_healthy_session_lifetime(monk
             closed.append(True)
 
     async def list_tools(_session):
-        return [Tool(name="lookup", inputSchema={"type": "object"})]
+        return [Tool(name="lookup", input_schema={"type": "object"})]
 
     from app.execution.infrastructure import claude_mcp
 
@@ -585,10 +632,13 @@ async def test_registration_timeout_does_not_limit_healthy_session_lifetime(monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", [-32602, 408, -(2**53 - 1), 2**53 - 1, True, "408", {}, 2**53])
 async def test_typed_session_failure_is_content_free_and_reraised_unchanged(code):
-    from mcp.shared.exceptions import McpError
-    from mcp.types import CallToolRequest, CallToolRequestParams, ErrorData
+    from mcp.shared.exceptions import MCPError
+    from mcp_types import CallToolRequestParams, ErrorData
 
-    failure = McpError(ErrorData.model_construct(code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"}))
+    failure = MCPError(code=0, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"})
+    failure.error = ErrorData.model_construct(
+        code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"}
+    )
     observations = []
     callbacks = []
 
@@ -603,28 +653,53 @@ async def test_typed_session_failure_is_content_free_and_reraised_unchanged(code
         {}, {}, session_factory=None, list_tools=None,
         callback_wrapper=track, failure_observer=observations.append,
     )
-    server = registration._server("gateway", [("lookup", Tool(name="lookup", inputSchema={}), "lookup")], SimpleNamespace(call_tool=call_tool))["instance"]
-    with pytest.raises(McpError) as raised:
-        await callbacks[0]("lookup", {"query": "PRIVATE_ARGUMENT"})
+    registration._server(
+        "gateway",
+        [("lookup", Tool(name="lookup", input_schema={}), "lookup")],
+        SimpleNamespace(call_tool=call_tool),
+    )
+    with pytest.raises(MCPError) as raised:
+        await callbacks[0](
+            SimpleNamespace(),
+            CallToolRequestParams(name="lookup", arguments={"query": "PRIVATE_ARGUMENT"}),
+        )
     assert raised.value is failure
-    expected = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "McpError"}
+    expected = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "MCPError"}
     if type(code) is int and abs(code) <= 2**53 - 1:
         expected["code"] = code
     assert observations == [expected]
-    # Real low-level MCP handler still converts ordinary McpError to its text result.
-    result = await server.request_handlers[CallToolRequest](CallToolRequest(
-        method="tools/call", params=CallToolRequestParams(name="lookup", arguments={}),
-    ))
-    assert result.root.isError is True
-    assert result.root.content[0].text == "PRIVATE_MESSAGE"
     assert "PRIVATE" not in json.dumps(observations)
+
+
+@pytest.mark.asyncio
+async def test_lowlevel_server_returns_mcp_error_as_jsonrpc_error():
+    from mcp.shared.exceptions import MCPError
+
+    failure = MCPError(code=-32602, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"})
+
+    async def call_tool(_name, _arguments):
+        raise failure
+
+    registration = ClaudeMcpRegistration(
+        {}, {}, session_factory=None, list_tools=None,
+    )
+    server = registration._server(
+        "gateway",
+        [("lookup", Tool(name="lookup", input_schema={}), "lookup")],
+        SimpleNamespace(call_tool=call_tool),
+    )["instance"]
+    async with connected_client(server) as client:
+        with pytest.raises(MCPError) as raised:
+            await client.call_tool("lookup", {})
+    assert raised.value.code == failure.code
+    assert raised.value.message == failure.message
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["ordinary", "result", "cancel", "elicitation", "observer"])
 async def test_session_failure_observation_does_not_change_other_outcomes(kind):
-    from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
-    from mcp.types import ErrorData
+    from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
+    from mcp_types import CallToolRequestParams
 
     observations = []
     callbacks = []
@@ -632,9 +707,13 @@ async def test_session_failure_observation_does_not_change_other_outcomes(kind):
         "ordinary": RuntimeError("timeout permission denied 404"),
         "cancel": asyncio.CancelledError(),
         "elicitation": UrlElicitationRequiredError([]),
-        "observer": McpError(ErrorData(code=-32602, message="PRIVATE")),
+        "observer": MCPError(code=-32602, message="PRIVATE"),
     }.get(kind)
-    result = CallToolResult(content=[TextContent(type="text", text="404 PRIVATE")], structuredContent={"code": 408}, isError=True)
+    result = CallToolResult(
+        content=[TextContent(type="text", text="404 PRIVATE")],
+        structured_content={"code": 408},
+        is_error=True,
+    )
 
     def observe(item):
         observations.append(item)
@@ -651,13 +730,53 @@ async def test_session_failure_observation_does_not_change_other_outcomes(kind):
         return result
 
     registration = ClaudeMcpRegistration({}, {}, session_factory=None, list_tools=None, callback_wrapper=track, failure_observer=observe)
-    registration._server("gateway", [("lookup", Tool(name="lookup", inputSchema={}), "lookup")], SimpleNamespace(call_tool=call_tool))
+    registration._server(
+        "gateway",
+        [("lookup", Tool(name="lookup", input_schema={}), "lookup")],
+        SimpleNamespace(call_tool=call_tool),
+    )
     if failure is not None:
         with pytest.raises(type(failure)) as raised:
-            await callbacks[0]("lookup", {})
+            await callbacks[0](
+                SimpleNamespace(), CallToolRequestParams(name="lookup", arguments={})
+            )
         assert raised.value is failure
     else:
-        returned = await callbacks[0]("lookup", {})
-        assert returned.isError is True
-        assert returned.structuredContent == result.structuredContent
+        returned = await callbacks[0](
+            SimpleNamespace(), CallToolRequestParams(name="lookup", arguments={})
+        )
+        assert returned.is_error is True
+        assert returned.structured_content == result.structured_content
     assert len(observations) == (1 if kind == "observer" else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_mode", [True, "default"])
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_installed_claude_cli_discovers_only_selected_mcp_tools(monkeypatch, tmp_path, search_mode, integration_kind):
+    await test_installed_claude_cli_selected_mcp_end_to_end(
+        monkeypatch, tmp_path, False, "gateway", integration_kind, tool_search=search_mode,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_input", [{"query": "lookup"}, {"query": "lookup", "max_results": 1},
+    {"query": ""}, {"query": "x", "max_results": True}, {"query": "x", "max_results": 21},
+    {"query": "x", "command": "run"}, None])
+async def test_sdk_tool_search_is_bounded_and_other_tools_keep_their_admission(tool_input):
+    registration = ClaudeMcpRegistration({}, {}, session_factory=None, list_tools=None)
+    calls = []
+    async def policy(hook_input, *_args):
+        calls.append(hook_input)
+        return {"ordinary_policy": "denied"}
+    matcher = SimpleNamespace(matcher=None, hooks=[policy])
+    options = SimpleNamespace(tools=[], allowed_tools=[], hooks={"PreToolUse": [matcher]})
+    registration._configure_tool_search(options)
+    assert options.tools == options.allowed_tools == ["ToolSearch"]
+    callback = matcher.hooks[0]
+    result = await callback({"tool_name": "ToolSearch", "tool_input": tool_input})
+    valid = tool_input in ({"query": "lookup"}, {"query": "lookup", "max_results": 1})
+    assert result["hookSpecificOutput"]["permissionDecision"] == ("allow" if valid else "deny")
+    assert calls == []
+    assert await callback({"tool_name": "mcp__other__write", "tool_input": {}}) == {"ordinary_policy": "denied"}
+    assert len(calls) == 1

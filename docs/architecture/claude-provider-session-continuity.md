@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-10-20
+Last updated: 2026-10-25
 
 ## Decision
 
@@ -37,9 +37,9 @@ Claude conversation continuity has one production path: the Claude Agent SDK
 reconstruction are retired. Continuity loss never degrades to `empty_start`
 inside an existing conversation.
 
-## File-task prompt composition (SDK 0.2.165)
+## File-task prompt composition
 
-The dependency is pinned to Python SDK `0.2.165` (bundled CLI `2.1.294`).
+The dependency is pinned to Python SDK `0.2.174` (bundled CLI `2.1.310`).
 Execution passes a custom prompt object with `snapshot: false`: the CLI must
 rebuild the current system prompt when resuming, rather than replay the first
 Run's Profile and material instructions. Ordinary strings use snapshot recording
@@ -68,7 +68,7 @@ are unchanged; no new Agent/browser/network capability is enabled.
 Retirement inventory: the production `claude_code` preset, duplicated language/
 delivery/workspace control prose, empty file placeholders and manifest audit
 rendering are removed. Owning prompt/worker/catalog tests follow the new semantic
-split, and the installed SDK selector is `test_installed_claude_agent_sdk_02165_contract`.
+split, and the installed SDK selector is `test_installed_claude_agent_sdk_02174_contract`.
 The 0.2.130 upgrade document remains historical, not an active dependency pin.
 The owning regressions are `test_context_prompt_continuity.py`,
 `test_authorized_skill_catalog.py`, `test_claude_agent_sdk_runner.py`,
@@ -237,8 +237,8 @@ Neither condition silently resumes a prefix or fabricates replacement receipts.
 
 ### Private image persistence
 
-The pinned Python SDK is `claude-agent-sdk==0.2.165`, with bundled CLI
-`2.1.294`. PostgreSQL remains the owner of ordered entry structure, scope,
+The pinned Python SDK is `claude-agent-sdk==0.2.174`, with bundled CLI
+`2.1.310`. PostgreSQL remains the owner of ordered entry structure, scope,
 sequence, original batch digest, and turn receipts. Only recognized image
 payload strings are stored in MinIO; entire entries/transcripts are not blobs.
 The Execution adapter locates the SDK's typed base64 image blocks and the

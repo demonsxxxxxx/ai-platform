@@ -58,7 +58,7 @@
 |---|---|
 | 提交幂等与队列未知 | [chat_submissions](../../app/persistence/chat_submissions.py)、[queue_admission](../../app/conversations/application/queue_admission.py)、[chat route](../../app/routes/chat.py) |
 | Spec/Attempt 创建与执行绑定 | [worker_dispatch_binding](../../app/runs/application/worker_dispatch_binding.py)、[worker_attempt_lifecycle](../../app/execution/application/worker_attempt_lifecycle.py)、[Attempt persistence](../../app/runs/infrastructure/postgres.py) |
-| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[lease persistence](../../app/sandbox/infrastructure/leases_postgres.py)、[callback route](../../app/routes/runtime_callbacks.py) |
+| dispatch accepted/回调早到 | [Sandbox runtime](../../app/runtime/sandbox/runtime.py)、[Sandbox lease adapter](../../app/sandbox/infrastructure/leases_postgres.py)、[callback route](../../app/routes/runtime_callbacks.py) |
 | 结算、结果与对象补偿 | [executor_reconciler](../../app/executor_reconciler.py)、[worker_result_commit](../../app/runs/application/worker_result_commit.py)、[artifact_storage](../../app/execution/application/artifact_storage.py)、[artifact persistence](../../app/persistence/artifacts.py) |
 | 原生会话结算 | [provider_epochs.commit_provider_turn](../../app/context/infrastructure/provider_epochs.py)、[run_terminalization.persist_assistant_with_provider_coverage](../../app/runs/application/run_terminalization.py) |
 | 取消、发布与清理 | [cancellation](../../app/runs/application/cancellation.py)、[worker_publication_v4](../../app/streaming/application/worker_publication_v4.py)、[runtime_cleanup](../../app/sandbox/application/runtime_cleanup.py) |
@@ -247,7 +247,7 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 
 **N13：Sandbox 租约单一写入责任 — Sandbox application/infrastructure owner。依赖 N00、相关事务/清理回归。**
 
-- 范围：platform/postgres/sandbox_leases、sandbox/infrastructure/leases_postgres、Sandbox public API、bootstrap 与 renew/release/callback/reconciler consumers。
+- 范围：sandbox/infrastructure/leases_postgres、sandbox/infrastructure/executor_reconciliation_postgres、Sandbox public API、bootstrap 与 renew/release/callback/reconciler consumers；`platform/postgres/sandbox_leases.py` 已删除。
 - 产出：写入策略归 Sandbox 应用能力，SQL 留其 infrastructure；platform 只保留通用连接能力。逐个保持 caller connection、Run-before-Attempt 锁序及真实资源 stop-before-release。
 - 验收：R02/R05/R06/R07/R11/R13；公开租约 scope、续租过期规则、claim、失败 stop 责任和审计保持；架构检查拒绝 peer 直接使用新私有 repository。
 - 退役/回退：旧 writer 被迁移后删除；不得复制 SQL 保留两个活跃写方。单独迁移模块所有权，不在本节点改表名、状态图、provider I/O 锁策略。

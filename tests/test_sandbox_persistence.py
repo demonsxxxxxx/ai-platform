@@ -856,7 +856,7 @@ async def executor_acceptance_database():
 
 @pytest.mark.asyncio
 async def test_dispatch_intent_is_attempt_fenced_and_terminal_first_is_preserved(executor_acceptance_database):
-    from app.platform.postgres.sandbox_leases import record_sandbox_executor_terminal
+    from app.sandbox.infrastructure.leases_postgres import record_sandbox_executor_terminal
     from app.sandbox.application.dispatch_intent import SandboxDispatchIdentity
     from app.sandbox.infrastructure.dispatch_postgres import persist_intent, record_outcome
 
@@ -931,7 +931,7 @@ async def test_dispatch_intent_is_attempt_fenced_and_terminal_first_is_preserved
 
 @pytest.mark.asyncio
 async def test_unknown_dispatch_lease_remains_probeable_for_its_original_terminal(executor_acceptance_database):
-    from app.platform.postgres.sandbox_leases import (
+    from app.sandbox.infrastructure.leases_postgres import (
         claim_sandbox_executor_suspects,
         record_sandbox_executor_terminal,
     )
