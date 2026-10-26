@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from app.bootstrap.attempt_settlement_projection import (
-    require_attempt_settlement_reader_active,
-)
 from app.db import transaction
 from app.execution.application.stale_run_reconciliation import (
     StaleRunReconciliationService,
@@ -46,7 +43,6 @@ async def reconcile_worker_stale_runs_with_postgres_claims(
     """Run the Execution application service with worker-owned configuration."""
 
     await require_schema_current()
-    await require_attempt_settlement_reader_active()
     service = build_stale_run_reconciliation_service(
         lifecycle=lifecycle,
         attempt_lifecycle=attempt_lifecycle,

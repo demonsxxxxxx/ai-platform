@@ -376,12 +376,17 @@ a validated reconstruction or forward repair.
 The Redis stale-run business fence has been retired. PostgreSQL owns the stale
 Run claim path through `app/execution/application/stale_run_reconciliation.py`;
 queue delivery `owner_token`, ACK/requeue and capacity controls remain transport
-ownership, and SSE keeps its independent stream contract. Production always
-enables the PostgreSQL Run delivery-intent outbox. API startup maps historical
-queued Runs in bounded, serialized pages from persisted immutable facts and
-fails closed when that history cannot be proven. A delivered intent retries
-with its stored queue message identity, allowing recovery of the original
-queued message.
+ownership, and SSE keeps its independent stream contract. The PostgreSQL stale
+Run owner is marker-aware: its pending-terminal-receipt guard reads either the
+legacy Sandbox settlement columns or the `run_attempt_settlements` detail based
+on the persisted reader marker, so the default `sandbox_lease.v1` and activated
+`attempt.v1` modes both retain stale Run recovery. Schema readiness remains a
+separate fail-closed prerequisite; an unsupported schema/layout or missing
+marker cannot enter the owner. Production always enables the PostgreSQL Run
+delivery-intent outbox. API startup maps historical queued Runs in bounded,
+serialized pages from persisted immutable facts and fails closed when that
+history cannot be proven. A delivered intent retries with its stored queue
+message identity, allowing recovery of the original queued message.
 
 N43's schema retirement is an explicit, one-way operator command. The `.11`
 retirement marker and core schema readiness must be current; preflight accounts

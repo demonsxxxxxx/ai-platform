@@ -34,15 +34,12 @@ def test_queue_module_has_no_redis_business_reconciliation_fence_surface():
 
 
 @pytest.mark.asyncio
-async def test_stale_reconciliation_bootstrap_checks_active_storage_before_dispatch(monkeypatch):
+async def test_stale_reconciliation_bootstrap_dispatches_with_schema_current(monkeypatch):
     calls = []
 
     async def require_current_schema():
         calls.append("schema_current")
         return {"ready": True}
-
-    async def require_active_attempt_storage():
-        calls.append("attempt_storage_active")
 
     class Service:
         async def reconcile_postgres_claims(self, **kwargs):
@@ -61,11 +58,6 @@ async def test_stale_reconciliation_bootstrap_checks_active_storage_before_dispa
     capabilities = object()
     monkeypatch.setattr(
         stale_reconciliation_bootstrap, "require_schema_current", require_current_schema
-    )
-    monkeypatch.setattr(
-        stale_reconciliation_bootstrap,
-        "require_attempt_settlement_reader_active",
-        require_active_attempt_storage,
     )
     monkeypatch.setattr(
         stale_reconciliation_bootstrap,
@@ -90,7 +82,6 @@ async def test_stale_reconciliation_bootstrap_checks_active_storage_before_dispa
     assert results == []
     assert calls == [
         "schema_current",
-        "attempt_storage_active",
         "service_built",
         (
             "claims",

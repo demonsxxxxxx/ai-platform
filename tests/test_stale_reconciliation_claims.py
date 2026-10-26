@@ -294,29 +294,21 @@ async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim()
 
 
 @pytest.mark.asyncio
-async def test_stale_reconciliation_bootstrap_fails_closed_when_attempt_storage_marker_is_missing(monkeypatch):
-    async def current_schema():
-        return {"target_version": schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION}
-
-    async def missing_attempt_storage_marker():
-        raise RuntimeError("attempt_settlement_reader_not_active")
+async def test_stale_reconciliation_bootstrap_preserves_schema_fail_closed_gate(monkeypatch):
+    async def missing_schema():
+        raise RuntimeError("schema_not_current")
 
     def service_must_not_build(*_args, **_kwargs):
-        raise AssertionError("inactive attempt storage must block stale maintenance")
+        raise AssertionError("schema-incomplete maintenance must remain blocked")
 
-    monkeypatch.setattr(stale_reconciliation_bootstrap, "require_schema_current", current_schema)
-    monkeypatch.setattr(
-        stale_reconciliation_bootstrap,
-        "require_attempt_settlement_reader_active",
-        missing_attempt_storage_marker,
-    )
+    monkeypatch.setattr(stale_reconciliation_bootstrap, "require_schema_current", missing_schema)
     monkeypatch.setattr(
         stale_reconciliation_bootstrap,
         "build_stale_run_reconciliation_service",
         service_must_not_build,
     )
 
-    with pytest.raises(RuntimeError, match="attempt_settlement_reader_not_active"):
+    with pytest.raises(RuntimeError, match="schema_not_current"):
         await stale_reconciliation_bootstrap.reconcile_worker_stale_runs_with_postgres_claims(
             object(),
             v4_capabilities=object(),
@@ -625,6 +617,109 @@ async def test_real_postgres_candidate_scan_skips_unclaimable_rows_before_limit(
                 postgres_claim_mode=True,
             )
         assert [row["run_id"] for row in candidates] == [fixtures["eligible"][1]]
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_receipt():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"stale_run_legacy_cancel_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        suffix = uuid.uuid4().hex[:12]
+        async with transaction_factory() as conn:
+            tenant_id, run_id, attempt_id, _worker_id, old = await _seed_running_attempt(
+                conn, suffix=suffix
+            )
+            marker = await (await conn.execute(
+                "select storage_version from run_attempt_settlement_storage where singleton=true"
+            )).fetchone()
+            assert marker["storage_version"] == "sandbox_lease.v1"
+            await conn.execute(
+                "update runs set cancel_requested_at=%s, terminalization_target='cancelled' "
+                "where tenant_id=%s and id=%s",
+                (old, tenant_id, run_id),
+            )
+            await conn.execute(
+                "update run_attempts set lease_expires_at=%s where tenant_id=%s and id=%s",
+                (old, tenant_id, attempt_id),
+            )
+            await conn.execute(
+                "insert into sandbox_leases(id, tenant_id, workspace_id, user_id, session_id, "
+                "run_id, attempt_id, sandbox_mode, provider, status, executor_status) "
+                "values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'fake', 'released', 'pending')",
+                (
+                    f"lease-{suffix}", tenant_id, f"workspace-{suffix}",
+                    f"user-{suffix}", f"session-{suffix}", run_id, attempt_id,
+                ),
+            )
+
+        lifecycle = _run_lifecycle_service()
+        configure_context_services()
+        service = StaleRunReconciliationService(
+            lifecycle=lifecycle,
+            attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
+            v4_capabilities=None,
+            transaction_factory=transaction_factory,
+            append_event=append_event,
+            append_audit_log=append_audit_log,
+        )
+        results = await service.reconcile_postgres_claims(
+            worker_id="legacy-cancel-owner",
+            limit=10,
+            stale_after_seconds=60,
+            cancel_requested_after_seconds=5,
+            claim_ttl_seconds=300,
+        )
+        assert any(
+            row["run_id"] == run_id and row["status"] == "cancelled" and row["did_transition"]
+            for row in results
+        )
+        async with transaction_factory() as conn:
+            run = await (await conn.execute(
+                "select status from runs where tenant_id=%s and id=%s", (tenant_id, run_id)
+            )).fetchone()
+            attempt = await (await conn.execute(
+                "select status from run_attempts where tenant_id=%s and run_id=%s and id=%s",
+                (tenant_id, run_id, attempt_id),
+            )).fetchone()
+            lease = await (await conn.execute(
+                "select status, executor_status, executor_terminal_json, executor_reconciliation_status "
+                "from sandbox_leases where tenant_id=%s and run_id=%s and attempt_id=%s",
+                (tenant_id, run_id, attempt_id),
+            )).fetchone()
+            assert run["status"] == "cancelled"
+            assert attempt["status"] == "cancelled"
+            assert lease["status"] == "released"
+            assert lease["executor_status"] == "pending"
+            assert lease["executor_terminal_json"] is None
+            assert lease["executor_reconciliation_status"] == "pending"
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
