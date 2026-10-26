@@ -127,7 +127,7 @@ _SSE_EVENT_LIMIT_LOCK = asyncio.Lock()
 
 class _SingleDispatchMcpClient(Client):
     def seed_tool_definition(self, tool: Tool) -> None:
-        """Seed SDK result/header validation from the already-authorized live listing."""
+        """Seed native result/header validation from the authorized live listing."""
         self.session._absorb_tool_listing(
             ListToolsResult(tools=[tool], nextCursor=None), complete=False
         )
@@ -262,7 +262,7 @@ async def open_mcp_session(
                     # MCP 2.3 exposes the EventSource budget through a module
                     # helper but not sse_client's public signature. Install it
                     # only while the owned transport enters, under one lock;
-                    # the resulting EventSource keeps the bound budget.
+                    # the EventSource keeps the bounded invocation budget.
                     async with _SSE_EVENT_LIMIT_LOCK:
                         sse_globals = sse_client.__wrapped__.__globals__
                         original_sse_within_origin = sse_globals["sse_within_origin"]

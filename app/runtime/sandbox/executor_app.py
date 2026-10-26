@@ -28,10 +28,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.bootstrap.execution import build_claude_session_store
-from app.bootstrap.claude_mcp import (
-    build_mcp_credential_resolver,
-    build_original_file_delivery,
-)
+from app.bootstrap.claude_mcp import build_mcp_credential_resolver
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
@@ -1826,16 +1823,6 @@ async def _default_executor_runner(
             "sdk_used": False,
             "executor_mode": "provider_session_state_invalid",
         }
-    original_file_delivery = build_original_file_delivery(
-        cwd=workspace_root,
-        tenant_id=request.tenant_id,
-        workspace_id=request.workspace_id,
-        user_id=request.user_id,
-        session_id=request.session_id,
-        run_id=request.run_id,
-        attempt_id=request.attempt_id,
-        lease_id=str(request.config.get("lease_id") or ""),
-    )
     try:
         session_store = build_claude_session_store(
             callback_url=request.callback_target.provider_session_url,
@@ -1861,7 +1848,6 @@ async def _default_executor_runner(
                 attempt_id=request.attempt_id,
             ),
             "cleanup_tasks": sdk_cleanup_tasks,
-            "original_file_delivery": original_file_delivery,
             "prompt": request.prompt,
             "cwd": workspace_root,
             "skill_id": skill_ids[0] if skill_ids else None,
@@ -1921,16 +1907,6 @@ async def _default_executor_runner(
         log_open_tool_lifecycles("runner_exception")
         raise
     finally:
-        if asyncio.current_task() is not None and asyncio.current_task().cancelling():
-            cleaned = await original_file_delivery.cleanup()
-            if not cleaned:
-                _logger.warning(
-                    "original_file_delivery_cleanup_incomplete",
-                    extra={
-                        "sandbox_run_id": request.run_id,
-                        "sandbox_attempt_id": request.attempt_id,
-                    },
-                )
         if sdk_text_checkpoints:
             diagnostics: list[AgentEvent] = []
             append_sdk_text_checkpoints(diagnostics)

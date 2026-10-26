@@ -8,21 +8,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.context_manifest import available_context_retrieval_tools
-from app.files.api import PROFILE_DRIVE_READ_TEXT_IDENTITY, PROFILE_DRIVE_STAGE_TOOL
 from app.required_tool_contract import (
     declaration_from_input,
     with_sandbox_local_tool_capability_subjects,
 )
-from app.mcp.api import (
-    BUILTIN_TOOL_PARAMETER_CONTRACTS,
-    evaluate_tool_policy,
-)
+from app.mcp.api import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
-    PROFILE_DRIVE_STAGE_TOOL,
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
@@ -63,13 +58,6 @@ def sandbox_runtime_tool_policy_subjects(
     sandbox_provider: str,
 ) -> list[dict[str, Any]]:
     subjects = runtime_tool_policy_subjects(payload, context_manifest)
-    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
-        subjects = [
-            subject
-            for subject in subjects
-            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
-        ]
-        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
     return with_sandbox_local_tool_capability_subjects(
         subjects,
         sandbox_provider=sandbox_provider,
@@ -83,21 +71,18 @@ _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id", "max_bytes"),
     "stage_context_file_to_workspace": ("file_id", "max_bytes"),
     "stage_run_artifact_to_workspace": ("artifact_id", "max_bytes"),
-    PROFILE_DRIVE_STAGE_TOOL: ("path",),
     "search_memory": ("query", "limit", "max_tokens"),
 }
 _SDK_INTERNAL_CONTEXT_PUBLIC_LABELS = {
     "read_run_artifact": "读取任务文件",
     "stage_context_file_to_workspace": "准备上下文文件",
     "stage_run_artifact_to_workspace": "准备任务文件",
-    PROFILE_DRIVE_STAGE_TOOL: "准备共享文件",
     "search_memory": "检索记忆",
 }
 _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id",),
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
-    PROFILE_DRIVE_STAGE_TOOL: ("path",),
 }
 _SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
     {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}

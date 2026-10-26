@@ -87,7 +87,6 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -811,9 +810,7 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
-    default_tool_names = (
-        name for name in _SDK_INTERNAL_CONTEXT_TOOLS if name != PROFILE_DRIVE_STAGE_TOOL
-    )
+    default_tool_names = iter(_SDK_INTERNAL_CONTEXT_TOOLS)
     selected_tool_names = {
         name
         for name in (tool_names or default_tool_names)
@@ -837,7 +834,6 @@ def _build_context_retrieval_mcp_server(
                 "context_file_too_large",
                 "context_file_size_required",
                 *ARTIFACT_TRANSFER_SAFE_ERRORS,
-                "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
@@ -880,14 +876,6 @@ def _build_context_retrieval_mcp_server(
         return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
-        PROFILE_DRIVE_STAGE_TOOL,
-        "Copy any file type from the authenticated user's Profile Desktop into the current run workspace and return a workspace-relative path.",
-        {"path": str},
-    )
-    async def stage_profile_drive_file_to_workspace(args):
-        return await _run(PROFILE_DRIVE_STAGE_TOOL, args)
-
-    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -903,7 +891,6 @@ def _build_context_retrieval_mcp_server(
         read_run_artifact,
         stage_context_file_to_workspace,
         stage_run_artifact_to_workspace,
-        stage_profile_drive_file_to_workspace,
         search_memory,
     ]
     return create_server(
@@ -1618,7 +1605,6 @@ async def run_claude_agent_sdk(
     attempt_id: str | None = None,
     interaction_client: RunInteractionProtocol | None = None,
     mcp_credential_resolver: Callable[[str], Awaitable[str]] | None = None,
-    original_file_delivery: Callable[[dict[str, Any], bytes], Awaitable[dict[str, Any]]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
@@ -2136,9 +2122,7 @@ async def run_claude_agent_sdk(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
                 else [
-                    name
-                    for name in _SDK_INTERNAL_CONTEXT_TOOLS
-                    if name != PROFILE_DRIVE_STAGE_TOOL
+                    name for name in _SDK_INTERNAL_CONTEXT_TOOLS
                 ]
             ),
         )
@@ -2166,9 +2150,7 @@ async def run_claude_agent_sdk(
         internal_context_tools: set[str] = set()
     elif tool_policy_subjects is None:
         internal_context_tools = {
-            name
-            for name in _SDK_INTERNAL_CONTEXT_TOOLS
-            if name != PROFILE_DRIVE_STAGE_TOOL
+            name for name in _SDK_INTERNAL_CONTEXT_TOOLS
         }
     else:
         internal_context_tools = set(requested_internal_context_tools)
@@ -2247,7 +2229,6 @@ async def run_claude_agent_sdk(
             authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap,
             failure_observer=observe_mcp_session_failure,
             credential_resolver=mcp_credential_resolver,
-            original_file_delivery=original_file_delivery,
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools

@@ -35,8 +35,6 @@ from app.runtime.sandbox.creation_claim import (
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_STAGE_IDENTITY,
-    PROFILE_DRIVE_STAGE_LEASE_FLAG,
     ContainerLease,
     ExecutorTaskRequest,
     SandboxRuntimeRequest,
@@ -306,25 +304,6 @@ class SandboxRuntime:
         )
         if credential_subjects:
             lease_payload[MCP_CREDENTIAL_SUBJECTS_LEASE_KEY] = credential_subjects
-        if any(
-            isinstance(subject, dict)
-            and subject.get("identity") == PROFILE_DRIVE_STAGE_IDENTITY
-            and subject.get("mcp_server") == "ai-platform-context"
-            and all(
-                subject.get(key) is True
-                for key in (
-                    "registered",
-                    "declared",
-                    "active",
-                    "distributed",
-                    "identity_authorized",
-                    "object_authorized",
-                    "parameters_authorized",
-                )
-            )
-            for subject in request.tool_policy_subjects
-        ):
-            lease_payload[PROFILE_DRIVE_STAGE_LEASE_FLAG] = True
         if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
             lease_payload["internal_test_lease_version"] = "active-v1"
             lease_payload["requested_image"] = image_subject
@@ -513,8 +492,6 @@ class SandboxRuntime:
                     if cancellation is None:
                         cancellation = exc
                 except TimeoutError:
-                    if task.done():
-                        continue
                     task.cancel()
                     task.add_done_callback(consume_background_task)
                     raise TimeoutError("sandbox cleanup timed out") from None
@@ -539,13 +516,25 @@ class SandboxRuntime:
             try:
                 lease_record_id = await asyncio.shield(record_task)
             except asyncio.CancelledError:
-                # Fence the preallocated lease immediately; waiting for a
-                # cancelled persistence task here can deadlock before the
-                # outer compensation path can publish the release fence.
-                lease_record_uncertain = True
-                record_task.cancel()
-                record_task.add_done_callback(consume_background_task)
-                self._force_finish_lease_record(lease_record_id)
+                try:
+                    lease_record_id = await await_bounded_task(record_task)
+                except TimeoutError:
+                    lease_record_uncertain = True
+                    record_task.add_done_callback(consume_background_task)
+                    force_finished = (
+                        self._uses_default_lease_recorder
+                        and self._force_finish_lease_record(lease_record_id)
+                    )
+                    if force_finished and not record_task.done():
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(record_task),
+                                timeout=cleanup_timeout_seconds,
+                            )
+                        except BaseException:
+                            pass
+                except Exception:
+                    pass
                 raise
             except BaseException as exc:
                 try:
@@ -813,8 +802,6 @@ class SandboxRuntime:
                 "materialized_file_names": request.materialized_file_names,
                 "provider_session_resume_required": request.provider_session_resume_required,
             }
-            if lease_record_id is not None:
-                task_config["lease_id"] = lease_record_id
             if request.model_token_limits is not None:
                 task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:

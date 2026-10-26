@@ -148,30 +148,26 @@ a credential after their context operation has been superseded.
 
 ## Implementation
 
-### Opaque original-file delivery
+### Native MCP result consumption
 
-A selected live MCP `Tool` may declare the exact input-schema marker
-`x-ai-platform-result-format: profile-drive.original-file.v1`. The marker is a
-wire-format declaration only; it never grants authorization. The adapter checks
-the live selected Tool schema and keeps ordinary catalog/session traffic at the
-existing 1 MiB response/event bound. Only the actual invocation of that marked
-Tool opens a separate bounded call session with a 16 MiB response/event bound,
-covering an at-most-8 MiB Base64 resource and framing. The ordinary session,
-selected siblings, discovery, credential refresh and single-dispatch/no-replay
-rules are unchanged.
+The selected, authorized MCP bridge forwards standard `CallToolResult` values
+without interpreting them: text, images, embedded resources, structured fields,
+and `isError` semantics remain native MCP data. The platform does not identify a
+server by product name, require private result markers, parse document bytes, or
+copy results into a platform file registry. A resource-capable tool's explicit
+authorization and native result are the sole source for model-facing file use.
 
-The native result must contain exactly the bounded metadata text item and
-`profile-drive://original-file` embedded resource. Execution passes validated
-metadata and unchanged opaque bytes to a bootstrap-composed callback bound to
-the current Agent cwd and exact tenant/workspace/user/session/Run/Attempt/lease.
-The
-callback atomically writes a safe leaf below `inputs/`, returns only a
-workspace-relative path and bounded metadata, and enforces existing input count,
-total-byte, path, symlink and cancellation boundaries. Local delivery failure is
-an adapter-owned failure and never becomes a remote success or fabricated
-remote `isError` receipt. Claude Agent Skills/Bash/commands own all document
-parsing after delivery; the platform does not parse MIME-specific content or
-project document text.
+Catalog-only discovery retains the existing 1 MiB response and event bound.
+Invocation uses the same selected Server boundary and one actual MCP call, with
+a bounded 16 MiB response/event budget for standard result types. A long-lived
+SSE connection is not capped cumulatively across calls. The budget is an
+admission limit, not a replay path: credential refresh, endpoint
+pinning, redirects, origin, cancellation, and receipt semantics remain unchanged.
+
+The former ProfileDrive-specific marker, URI, result DTO/materializer, callback
+and model-only staging alias are retired with their exclusive tests. The existing
+UI ProfileDrive import/download routes remain owned by Files and are unrelated to
+MCP result consumption.
 
 1. Keep `server::raw_tool` references and canonical platform subject identities
    unchanged. Build an explicit canonical-to-SDK alias map in the Claude
