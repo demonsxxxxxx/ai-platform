@@ -5706,7 +5706,8 @@ async def test_release_stopped_sandbox_leases_for_cancel_releases_only_stopped_l
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
     assert "status = 'active'" in lease_updates[0][0]
-    assert "executor_terminal_json is null" in lease_updates[0][0]
+    assert "executor_cleanup_status in ('not_required', 'finalized')" in lease_updates[0][0]
+    assert "executor_terminal_json" not in lease_updates[0][0]
     assert lease_updates[0][1] == (
         "cancel_requested",
         "default",
@@ -6215,7 +6216,8 @@ async def test_release_stopped_sandbox_leases_for_admin_cancel_emits_admin_role(
     assert released == [{"id": "lease-admin", "trace_id": None}]
     lease_updates = [call for call in calls if isinstance(call[0], str) and call[0].startswith("update sandbox_leases")]
     assert len(lease_updates) == 1
-    assert "executor_terminal_json is null" in lease_updates[0][0]
+    assert "executor_cleanup_status in ('not_required', 'finalized')" in lease_updates[0][0]
+    assert "executor_terminal_json" not in lease_updates[0][0]
     assert lease_updates[0][1] == (
         "admin_cancel_requested",
         "default",
