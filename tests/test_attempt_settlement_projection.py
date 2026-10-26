@@ -1374,14 +1374,13 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
                 json.dumps({"owner_generation": b_attempt["owner_generation"]}),
             ),
         )
-        after = None
-        while True:
-            backfill = await projection_service.backfill(
-                conn, after=after, limit=800,
-            )
-            after = backfill["next_after"]
-            if after is None:
-                break
+        await projection_service.initialize_attempt_in_transaction(
+            conn,
+            tenant_id="tenant-a",
+            run_id=b_run_id,
+            attempt_id=str(b_attempt["id"]),
+            source_lease_id=b_lease_id,
+        )
         await conn.execute(
             "update sandbox_leases set executor_heartbeat_at=now() - interval '1 hour', "
             "updated_at=now() - interval '2 hours' where id=%s",
