@@ -198,6 +198,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    advance the diagnostic revision twice. The receipt is retained for protocol
    protocol recovery; reconciliation may append its bounded `diagnostics` list,
    but cannot replace the first receipt fields. It is not the administrator query store.
+   A scoped nonterminal heartbeat may arrive while the active, unexpired lease
+   is still `pending`, before its accepted observation commits. Heartbeat and
+   provider renewal permit only `pending`, `accepted` and `running` executor
+   states; terminal executor states cannot be reopened by a late heartbeat.
    A nonterminal OpenSandbox heartbeat captures the current Run/Attempt/lease
    identity in a short transaction, then verifies and renews the provider outside
    database locks. A second short transaction rechecks the same immutable lease
