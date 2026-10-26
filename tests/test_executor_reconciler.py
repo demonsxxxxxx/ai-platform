@@ -1020,19 +1020,9 @@ async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(mon
     outcomes = []
 
     class LeasePort:
-        async def has_sandbox_executor_probe_claim(self, _conn, **kwargs):
-            return kwargs == {"lease_id": "lease-a", "claim_token": "probe-a"}
-
-        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
-            accepted_contexts.append(kwargs)
-
-    class DispatchIntents:
-        async def record_outcome(self, _conn, **kwargs):
-            outcomes.append(kwargs)
-            return {"status": "accepted"}
-
-    class Cursor:
-        async def fetchone(self):
+        async def read_unknown_receipt_probe_recovery_facts(self, _conn, **kwargs):
+            if kwargs["owner_generation"] != 4:
+                return None
             return {
                 "owner_generation": 4,
                 "status": "active",
@@ -1051,13 +1041,17 @@ async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(mon
                 "receipt_json": {"run_id": "run-a", "status": "succeeded"},
             }
 
-    class Connection:
-        async def execute(self, _sql, _params):
-            return Cursor()
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **kwargs):
+            outcomes.append(kwargs)
+            return {"status": "accepted"}
 
     @asynccontextmanager
     async def transaction():
-        yield Connection()
+        yield object()
 
     monkeypatch.setattr("app.executor_reconciler.transaction", transaction)
     lease_row = {
@@ -1106,18 +1100,7 @@ async def test_unknown_receipt_dispatch_cas_failure_rolls_back_acceptance(monkey
     accepted_contexts = []
 
     class LeasePort:
-        async def has_sandbox_executor_probe_claim(self, _conn, **_kwargs):
-            return True
-
-        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
-            accepted_contexts.append(kwargs)
-
-    class DispatchIntents:
-        async def record_outcome(self, _conn, **_kwargs):
-            return None
-
-    class Cursor:
-        async def fetchone(self):
+        async def read_unknown_receipt_probe_recovery_facts(self, _conn, **_kwargs):
             return {
                 "owner_generation": 4,
                 "status": "active",
@@ -1134,16 +1117,19 @@ async def test_unknown_receipt_dispatch_cas_failure_rolls_back_acceptance(monkey
                 "receipt_json": {"run_id": "run-a", "status": "succeeded"},
             }
 
-    class Connection:
-        async def execute(self, _sql, _params):
-            return Cursor()
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **_kwargs):
+            return None
 
     @asynccontextmanager
     async def transaction():
         record = {"rollback": False}
         transactions.append(record)
         try:
-            yield Connection()
+            yield object()
         except Exception:
             record["rollback"] = True
             raise
@@ -2668,7 +2654,7 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
 
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count" not in statements[0]
-    assert statements[0].count("make_interval(secs => %s)") == 2
+    assert statements[0].count("make_interval(secs => %s)") == 4
     assert (
         "lease.executor_probe_claim_token is null and "
         "coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) "

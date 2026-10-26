@@ -792,42 +792,18 @@ async def _record_probe_dispatch_accepted(
         return False
     try:
         async with transaction() as conn:
-            if not await lease_port.has_sandbox_executor_probe_claim(
-                conn, lease_id=identity.lease_id, claim_token=str(lease_row.get("executor_probe_claim_token") or ""),
-            ):
-                return False
-            identity_row = await (
-                await conn.execute(
-                    """
-                    select attempt.owner_generation, lease.status, lease.attempt_id,
-                           lease.lease_payload_json, dispatch.owner_generation as dispatch_generation,
-                           dispatch.lease_id as dispatch_lease_id,
-                           dispatch.provider as dispatch_provider,
-                           dispatch.provider_task_id as dispatch_task_id,
-                           detail.mapping_state, detail.dispatch_state,
-                           detail.intent_recovery_context_json,
-                           detail.accepted_context_json, detail.receipt_json
-                    from sandbox_leases lease
-                    join run_attempts attempt
-                      on attempt.tenant_id = lease.tenant_id
-                     and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
-                    join sandbox_execution_dispatches dispatch
-                      on dispatch.tenant_id = lease.tenant_id
-                     and dispatch.run_id = lease.run_id
-                     and dispatch.attempt_id = lease.attempt_id
-                     and dispatch.lease_id = lease.id
-                    left join run_attempt_settlements detail
-                      on detail.tenant_id = lease.tenant_id
-                     and detail.run_id = lease.run_id
-                     and detail.attempt_id = lease.attempt_id
-                     and detail.source_lease_id = lease.id
-                    where lease.id = %s and lease.tenant_id = %s
-                      and lease.run_id = %s and lease.attempt_id = %s
-                    for update of lease, attempt
-                    """,
-                    (identity.lease_id, identity.tenant_id, identity.run_id, identity.attempt_id),
-                )
-            ).fetchone()
+            identity_row = await lease_port.read_unknown_receipt_probe_recovery_facts(
+                conn,
+                tenant_id=identity.tenant_id,
+                run_id=identity.run_id,
+                attempt_id=identity.attempt_id,
+                lease_id=identity.lease_id,
+                owner_generation=identity.owner_generation,
+                provider=identity.provider,
+                provider_task_id=identity.provider_task_id,
+                claim_token=str(lease_row.get("executor_probe_claim_token") or ""),
+                intent_context=intent_context,
+            )
             payload = identity_row.get("lease_payload_json") if identity_row else None
             current_generation = identity_row.get("owner_generation") if identity_row else None
             lease_generation = payload.get("owner_generation") if isinstance(payload, dict) else None

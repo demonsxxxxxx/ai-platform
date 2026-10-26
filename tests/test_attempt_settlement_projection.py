@@ -1316,6 +1316,108 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
         )
         assert [row["run_id"] for row in writer_claimed] == ["run-a"]
 
+        # A timeout release uses updated_at as the unknown-receipt probe's
+        # durable last-probe time, not the stale executor heartbeat. A normal
+        # suspect B must use the shared slot while A is cooling down.
+        b_run_id = f"run-normal-suspect-{uuid4().hex[:12]}"
+        b_context_id = f"context-normal-suspect-{uuid4().hex[:12]}"
+        b_lease_id = f"lease-normal-suspect-{uuid4().hex[:12]}"
+        await conn.execute(
+            "insert into runs(id, tenant_id, workspace_id, user_id, session_id, agent_id, "
+            "execution_kind, status, model_id, model_value, model_gateway_revision, "
+            "auto_compact_window, max_output_tokens) values "
+            "(%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'agent-a', "
+            "'harness_chat', 'queued', 'model-a', 'claude-test', 3, 200000, 4096)",
+            (b_run_id,),
+        )
+        await conn.execute(
+            "insert into run_context_snapshots(id, tenant_id, workspace_id, user_id, session_id, run_id) "
+            "values (%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s)",
+            (b_context_id, b_run_id),
+        )
+        await conn.execute(
+            "update runs set context_snapshot_id=%s, input_json=%s::jsonb where id=%s",
+            (
+                b_context_id,
+                json.dumps({
+                    "executor_type": "claude-agent-worker",
+                    "context_snapshot_id": b_context_id,
+                    "context_snapshot": {"context_snapshot_id": b_context_id},
+                }),
+                b_run_id,
+            ),
+        )
+        b_attempt = await attempt_postgres.start_worker_run_attempt(
+            conn,
+            tenant_id="tenant-a",
+            run_id=b_run_id,
+            queue_attempt_id=f"qat-{b_run_id}",
+            worker_id="worker-normal-suspect",
+            execution_spec=frozen_spec(
+                run_id=b_run_id,
+                context_snapshot_id=b_context_id,
+                context_snapshot={"context_snapshot_id": b_context_id},
+            ),
+        )
+        await conn.execute(
+            "insert into sandbox_leases("
+            "id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id, "
+            "sandbox_mode, provider, status, lease_payload_json, executor_status, "
+            "executor_heartbeat_at, updated_at, executor_reconciliation_status) values "
+            "(%s, 'tenant-a', 'workspace-a', 'user-a', 'session-a', %s, %s, "
+            "'ephemeral', 'fake', 'active', %s::jsonb, 'accepted', "
+            "now() - interval '1 hour', now() - interval '1 hour', 'waiting_terminal')",
+            (
+                b_lease_id,
+                b_run_id,
+                b_attempt["id"],
+                json.dumps({"owner_generation": b_attempt["owner_generation"]}),
+            ),
+        )
+        after = None
+        while True:
+            backfill = await projection_service.backfill(
+                conn, after=after, limit=800,
+            )
+            after = backfill["next_after"]
+            if after is None:
+                break
+        await conn.execute(
+            "update sandbox_leases set executor_heartbeat_at=now() - interval '1 hour', "
+            "updated_at=now() - interval '2 hours' where id=%s",
+            (unknown_lease_id,),
+        )
+        await conn.execute(
+            "update sandbox_leases set executor_heartbeat_at=now() - interval '1 hour', "
+            "updated_at=now() - interval '1 hour' where id=%s",
+            (b_lease_id,),
+        )
+        cooldown_claim = await lease_port.claim_sandbox_executor_suspects(
+            conn, claim_token="unknown-cooldown-claim", limit=1, stale_after_seconds=1,
+        )
+        assert [row["id"] for row in cooldown_claim] == [unknown_lease_id]
+        assert await lease_port.release_sandbox_executor_probe_claim(
+            conn,
+            lease_id=unknown_lease_id,
+            claim_token="unknown-cooldown-claim",
+            error="executor_probe_unknown_receipt_unavailable",
+        ) is True
+        normal_claim = await lease_port.claim_sandbox_executor_suspects(
+            conn, claim_token="normal-suspect-claim", limit=1, stale_after_seconds=1,
+        )
+        assert [row["id"] for row in normal_claim] == [b_lease_id]
+        assert await lease_port.release_sandbox_executor_probe_claim(
+            conn, lease_id=b_lease_id, claim_token="normal-suspect-claim",
+        ) is True
+        await asyncio.sleep(1.1)
+        after_cooldown = await lease_port.claim_sandbox_executor_suspects(
+            conn, claim_token="unknown-cooldown-expired", limit=1, stale_after_seconds=1,
+        )
+        assert [row["id"] for row in after_cooldown] == [unknown_lease_id]
+        assert await lease_port.release_sandbox_executor_probe_claim(
+            conn, lease_id=unknown_lease_id, claim_token="unknown-cooldown-expired",
+        ) is True
+
         # The existing probe owner can now claim the exact unknown receipt. A
         # provider status proof is represented by the exact dispatch identity
         # check below; the settlement writes remain one transaction.

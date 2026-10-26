@@ -500,10 +500,14 @@ class AttemptSettlementShadowLeaseRepository:
         )
         return changed
 
-    async def has_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
+    async def read_unknown_receipt_probe_recovery_facts(
+        self, conn: Any, **kwargs: Any
+    ) -> dict[str, Any] | None:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))
         await self._write_enabled(conn, scope)
-        return await self._repository.has_sandbox_executor_probe_claim(conn, **kwargs)
+        return await self._repository.read_unknown_receipt_probe_recovery_facts(
+            conn, **kwargs
+        )
 
     async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool:
         scope = await self._scope_for_lease(conn, str(kwargs["lease_id"]))

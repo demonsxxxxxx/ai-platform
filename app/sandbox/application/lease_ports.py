@@ -48,7 +48,9 @@ class SandboxLeaseTransportPort(Protocol):
 class SandboxExecutorReconciliationPort(Protocol):
     """Claim and settle durable executor receipts without owning provider I/O."""
 
-    async def has_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> bool: ...
+    async def read_unknown_receipt_probe_recovery_facts(
+        self, conn: Any, **kwargs: Any
+    ) -> dict[str, Any] | None: ...
 
     async def release_sandbox_executor_probe_claim(self, conn: Any, **kwargs: Any) -> Any: ...
 
