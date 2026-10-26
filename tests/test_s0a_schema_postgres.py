@@ -805,6 +805,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         from tests.test_streaming_v4_postgres_integration import _callback_capabilities
 
         assert await reconcile_pending_executor_terminals_once(
+            lease_port=sandbox_lease_repository,
             worker_id="worker-a", v4_capabilities=_callback_capabilities(dsn, schema_name),
             attempt_lifecycle=lifecycle,
             lifecycle=build_run_lifecycle_service(),
