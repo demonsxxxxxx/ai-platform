@@ -190,7 +190,7 @@ async def test_real_callback_receipt_ledger_repeat_and_final_fence_rollback(monk
         monkeypatch.setattr(route,"transaction",transaction)
         monkeypatch.setattr(route,"_lock_callback_authority",authority)
         monkeypatch.setattr(route,"_recheck_callback_authority",recheck)
-        monkeypatch.setattr(route.sandbox_lease_repository,"record_sandbox_executor_heartbeat",heartbeat)
+        monkeypatch.setattr(sandbox_lease_reader,"record_sandbox_executor_heartbeat",heartbeat)
         monkeypatch.setattr(route,"get_settings",lambda:SimpleNamespace(sandbox_lease_ttl_seconds=30))
         service = ModelTokenUsageService(PostgresModelTokenUsage(provider_session=provider_session))
         callback = ExecutorCallbackEvent(session_id="session-a",run_id="run-a",attempt_id="attempt-a",
