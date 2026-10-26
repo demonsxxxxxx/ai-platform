@@ -1426,7 +1426,7 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
             conn, lease_id=unknown_lease_id, claim_token="unknown-cooldown-expired",
         ) is True
         await conn.execute(
-            "update sandbox_leases set updated_at=now() - interval '2 seconds' "
+            "update sandbox_leases set updated_at=now() - interval '1 hour' "
             "where id=%s",
             (unknown_lease_id,),
         )
