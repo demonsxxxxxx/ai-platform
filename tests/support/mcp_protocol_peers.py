@@ -21,7 +21,7 @@ def local_mcp_peers(*, protocol="legacy"):
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
         tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
         call_error=None, input_required=False, tool_result=None, model_reply=None,
-        reply_queues=[],
+        reply_queues=[], sse_opened_sessions=queue.Queue(), sse_endpoint_gates={},
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -49,14 +49,19 @@ def local_mcp_peers(*, protocol="legacy"):
                 self.respond({}, 405)
                 return
             state.requests.append(("GET", dict(self.headers)))
+            session_number = len(state.reply_queues) + 1
             replies = queue.Queue()
             state.reply_queues.append(replies)
-            session_id = f"synthetic-{len(state.reply_queues)}"
+            session_id = f"synthetic-{session_number}"
+            state.sse_opened_sessions.put(session_number)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             try:
+                endpoint_gate = state.sse_endpoint_gates.get(session_number)
+                if endpoint_gate is not None:
+                    endpoint_gate.wait()
                 self.wfile.write(f"event: endpoint\ndata: /messages?session_id={session_id}\n\n".encode())
                 self.wfile.flush()
                 while not state.stopped.is_set():

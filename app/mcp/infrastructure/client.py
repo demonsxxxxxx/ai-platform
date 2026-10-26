@@ -9,7 +9,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 from typing import Any, Mapping
 
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 
 import httpx2 as httpx
 from mcp import Client, MCPError
@@ -122,7 +122,26 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
         await self._stream.aclose()
 
 
-_SSE_EVENT_LIMIT_LOCK = asyncio.Lock()
+
+def _sse_client_with_event_limit(max_event_size: int):
+    """Bind MCP 2.3's inner SSE event budget without changing its shared globals."""
+    # MCP 2.3's public sse_client signature has no max_event_size argument. Its
+    # async generator resolves sse_within_origin from module globals, so copy
+    # that function's globals and bind the helper for this session only.
+    sdk_sse_generator = sse_client.__wrapped__
+    session_globals = dict(sdk_sse_generator.__globals__)
+    session_globals["sse_within_origin"] = partial(
+        session_globals["sse_within_origin"], max_event_size=max_event_size,
+    )
+    session_sse_generator = FunctionType(
+        sdk_sse_generator.__code__,
+        session_globals,
+        name=sdk_sse_generator.__name__,
+        argdefs=sdk_sse_generator.__defaults__,
+        closure=sdk_sse_generator.__closure__,
+    )
+    session_sse_generator.__kwdefaults__ = sdk_sse_generator.__kwdefaults__
+    return asynccontextmanager(session_sse_generator)
 
 
 class _SingleDispatchMcpClient(Client):
@@ -259,29 +278,15 @@ async def open_mcp_session(
             # endpoint forever after its reader rejects an early malformed frame.
             async with asyncio.timeout(timeout_seconds):
                 if transport == "sse":
-                    # MCP 2.3 exposes the EventSource budget through a module
-                    # helper but not sse_client's public signature. Install it
-                    # only while the owned transport enters, under one lock;
-                    # the EventSource keeps the bounded invocation budget.
-                    async with _SSE_EVENT_LIMIT_LOCK:
-                        sse_globals = sse_client.__wrapped__.__globals__
-                        original_sse_within_origin = sse_globals["sse_within_origin"]
-                        sse_globals["sse_within_origin"] = partial(
-                            original_sse_within_origin,
-                            max_event_size=max_response_bytes,
-                        )
-                        try:
-                            protocol_transport = sse_client(
-                                target.endpoint, headers=headers, timeout=timeout_seconds,
-                                sse_read_timeout=timeout_seconds,
-                                httpx_client_factory=client_factory,
-                            )
-                            session = await stack.enter_async_context(_SingleDispatchMcpClient(
-                                protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
-                                message_handler=validate_message, cache=None,
-                            ))
-                        finally:
-                            sse_globals["sse_within_origin"] = original_sse_within_origin
+                    protocol_transport = _sse_client_with_event_limit(max_response_bytes)(
+                        target.endpoint, headers=headers, timeout=timeout_seconds,
+                        sse_read_timeout=timeout_seconds,
+                        httpx_client_factory=client_factory,
+                    )
+                    session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                        protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                        message_handler=validate_message, cache=None,
+                    ))
                 else:
                     http_client = await stack.enter_async_context(client_factory(headers=headers, timeout=timeout_seconds))
                     protocol_transport = streamable_http_client(

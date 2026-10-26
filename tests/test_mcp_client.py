@@ -23,6 +23,27 @@ from tests.support.mcp_protocol_peers import RAW_TOOL, local_mcp_peers
 from tests.test_claude_mcp_registration import allow_local_peer, subject
 
 
+def test_sse_event_limit_clones_the_mcp_23_global_helper_per_session():
+    sdk_generator = client.sse_client.__wrapped__
+    sdk_globals = sdk_generator.__globals__
+    original_helper = sdk_globals["sse_within_origin"]
+
+    discovery = client._sse_client_with_event_limit(1024 * 1024).__wrapped__
+    invocation = client._sse_client_with_event_limit(16 * 1024 * 1024).__wrapped__
+
+    assert discovery.__code__ is invocation.__code__ is sdk_generator.__code__
+    assert discovery.__defaults__ is invocation.__defaults__ is sdk_generator.__defaults__
+    assert discovery.__closure__ is invocation.__closure__ is sdk_generator.__closure__
+    assert discovery.__kwdefaults__ is invocation.__kwdefaults__ is sdk_generator.__kwdefaults__
+    assert discovery.__globals__ is not sdk_globals
+    assert invocation.__globals__ is not sdk_globals
+    assert discovery.__globals__["sse_within_origin"].func is original_helper
+    assert invocation.__globals__["sse_within_origin"].func is original_helper
+    assert discovery.__globals__["sse_within_origin"].keywords == {"max_event_size": 1024 * 1024}
+    assert invocation.__globals__["sse_within_origin"].keywords == {"max_event_size": 16 * 1024 * 1024}
+    assert sdk_globals["sse_within_origin"] is original_helper
+
+
 @pytest.mark.asyncio
 async def test_client_auto_negotiates_stateless_2026_protocol_and_stamps_tool_headers(monkeypatch):
     with local_mcp_peers(protocol="modern") as peer:

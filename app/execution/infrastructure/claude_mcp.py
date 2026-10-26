@@ -283,56 +283,57 @@ class ClaudeMcpRegistration:
 
         try:
             async with AsyncExitStack() as stack:
+                credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
+                                      if self._credential_resolver is not None else {})
+                discovery_config = {
+                    **config,
+                    "max_response_bytes": 1024 * 1024,
+                    "max_response_total_bytes": 1024 * 1024,
+                }
                 async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
-                    credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
-                                          if self._credential_resolver is not None else {})
-                    discovery_config = {
-                        **config,
-                        "max_response_bytes": 1024 * 1024,
-                        "max_response_total_bytes": 1024 * 1024,
-                    }
                     async with self._session_factory(discovery_config, **credential_options) as discovery_session:
                         tools = await self._list_tools(discovery_session)
-                by_name = {tool.name: tool for tool in tools}
-                available_names = names.intersection(by_name)
-                if available_names != names:
-                    self.unavailable[server_name] = "selected_tool_unavailable"
-                if not available_names:
-                    if not ready.done():
-                        ready.set_result(None)
-                    return
+                    by_name = {tool.name: tool for tool in tools}
+                    available_names = names.intersection(by_name)
+                    if available_names != names:
+                        self.unavailable[server_name] = "selected_tool_unavailable"
+                    if not available_names:
+                        if not ready.done():
+                            ready.set_result(None)
+                        return
 
-                alias_by_remote = {
-                    remote_name: alias
-                    for (server, remote_name), alias in self._tool_aliases.items()
-                    if server == server_name
-                }
-                selected = []
-                for remote_name in sorted(available_names):
-                    alias = alias_by_remote[remote_name]
-                    tool = by_name[remote_name]
-                    if tool.name != alias:
-                        tool = tool.model_copy(update={"name": alias})
-                    selected.append((alias, tool, remote_name))
-                invocation_config = {
-                    **config,
-                    "max_response_bytes": _MCP_TOOL_INVOCATION_RESPONSE_BYTES,
-                    # SSE spans multiple calls; bound each event, not the whole session.
-                    "max_response_total_bytes": None,
-                }
-                invocation_session = await stack.enter_async_context(
-                    self._session_factory(invocation_config, **credential_options)
-                )
-                seed_tool_definition = getattr(invocation_session, "seed_tool_definition", None)
-                if callable(seed_tool_definition):
-                    for _alias, tool, remote_name in selected:
-                        seed_tool_definition(tool.model_copy(update={"name": remote_name}))
+                    alias_by_remote = {
+                        remote_name: alias
+                        for (server, remote_name), alias in self._tool_aliases.items()
+                        if server == server_name
+                    }
+                    selected = []
+                    for remote_name in sorted(available_names):
+                        alias = alias_by_remote[remote_name]
+                        tool = by_name[remote_name]
+                        if tool.name != alias:
+                            tool = tool.model_copy(update={"name": alias})
+                        selected.append((alias, tool, remote_name))
+                    invocation_config = {
+                        **config,
+                        "max_response_bytes": _MCP_TOOL_INVOCATION_RESPONSE_BYTES,
+                        # SSE spans multiple calls; bound each event, not the whole session.
+                        "max_response_total_bytes": None,
+                    }
+                    invocation_session = await stack.enter_async_context(
+                        self._session_factory(invocation_config, **credential_options)
+                    )
+                    seed_tool_definition = getattr(invocation_session, "seed_tool_definition", None)
+                    if callable(seed_tool_definition):
+                        for _alias, tool, remote_name in selected:
+                            seed_tool_definition(tool.model_copy(update={"name": remote_name}))
 
                 if not ready.done():
                     ready.set_result((selected, invocation_session))
                 # This task owns the session context until activation exits.
                 # The SDK may call the session from another task, but cleanup
-                # always runs in the task that entered the context manager.
+                # always runs in the task that entered the context manager. The
+                # preparation deadline ended before this long-lived wait.
                 await release_event.wait()
         except asyncio.CancelledError:
             if not ready.done():

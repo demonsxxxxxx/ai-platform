@@ -169,6 +169,20 @@ and model-only staging alias are retired with their exclusive tests. The existin
 UI ProfileDrive import/download routes remain owned by Files and are unrelated to
 MCP result consumption.
 
+The [runtime file-access boundary](sandbox-runtime-control-layer.md#native-mcp-file-access)
+exposes the CLI's bound native result directory to Docker commands. Parsing and
+creating final deliverables remain Agent decisions. File-use acceptance checks
+the real CLI result under the command container's actual UID and read-only
+mounts, alongside denial of configuration, transcript and other-session access.
+
+Catalog and invocation sessions retain separate budgets. Their two handshakes
+share one ten-second preparation deadline; successful invocation sessions remain
+alive after that deadline until SDK execution closes. MCP 2.3's SSE transport is
+bound to a session-local copy of its original function globals solely to supply
+the EventSource budget. It executes the SDK's original transport code, with no
+shared module mutation or lock spanning network I/O. This pinned adapter seam
+must be reverified on an SDK upgrade.
+
 1. Keep `server::raw_tool` references and canonical platform subject identities
    unchanged. Build an explicit canonical-to-SDK alias map in the Claude
    adapter; use stable bounded hash suffixes to disambiguate normalized names.

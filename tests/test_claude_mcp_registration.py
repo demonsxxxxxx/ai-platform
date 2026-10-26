@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import threading
 from zipfile import ZIP_STORED, ZipFile
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -57,11 +58,24 @@ def subject(server="gateway", tool=RAW_TOOL, url="https://mcp.example/mcp"):
     }
 
 
-def allow_local_peer(monkeypatch, url):
+def allow_local_peer(monkeypatch, *urls):
+    endpoint_hosts = {
+        url + suffix: url for url in urls for suffix in ("/mcp", "/sse")
+    }
+
     async def target(endpoint):
-        assert endpoint in {url + "/mcp", url + "/sse"}
-        return _ValidatedDiscoveryTarget(endpoint, endpoint, urlsplit(url).netloc, "127.0.0.1")
+        assert endpoint in endpoint_hosts
+        return _ValidatedDiscoveryTarget(
+            endpoint, endpoint, urlsplit(endpoint_hosts[endpoint]).netloc, "127.0.0.1"
+        )
+
     monkeypatch.setattr(mcp_client, "_validated_discovery_target", target)
+
+
+@asynccontextmanager
+async def real_mcp_session(config, **_options):
+    async with mcp_client.open_mcp_session(config, timeout_seconds=3) as session:
+        yield session
 
 
 @pytest.mark.parametrize("pairs", [
@@ -800,6 +814,106 @@ async def test_registration_keeps_healthy_server_when_another_is_offline_and_cle
     assert task_owners["healthy"][0] is task_owners["healthy"][1]
     assert task_owners["offline"][0] is task_owners["offline"][1]
     assert call_names == [("healthy", "lookup", {"query": "synthetic"})]
+
+
+@pytest.mark.asyncio
+async def test_slow_sse_initialization_does_not_block_healthy_registration(monkeypatch):
+    from app.execution.infrastructure import claude_mcp
+
+    slow_endpoint_gate = threading.Event()
+    with local_mcp_peers() as slow_peer, local_mcp_peers() as healthy_peer:
+        allow_local_peer(monkeypatch, slow_peer.url, healthy_peer.url)
+        slow_peer.sse_endpoint_gates[1] = slow_endpoint_gate
+        slow = subject(server="aaa-slow", url=slow_peer.url + "/sse")
+        healthy = subject(server="zzz-healthy", url=healthy_peer.url + "/sse")
+        slow["mcp_server_config"]["type"] = "sse"
+        healthy["mcp_server_config"]["type"] = "sse"
+        registration = ClaudeMcpRegistration(
+            {slow["identity"]: slow, healthy["identity"]: healthy},
+            {
+                "aaa-slow": slow["mcp_server_config"],
+                "zzz-healthy": healthy["mcp_server_config"],
+            },
+            session_factory=real_mcp_session,
+            list_tools=mcp_client.list_mcp_tools,
+        )
+        monkeypatch.setattr(claude_mcp, "_MCP_DISCOVERY_TIMEOUT_SECONDS", 0.75)
+        options = SimpleNamespace()
+        try:
+            async with asyncio.timeout(5):
+                async with registration.activate(options):
+                    assert registration.unavailable == {"aaa-slow": "connection_timeout"}
+                    assert "aaa-slow" not in options.mcp_servers
+                    healthy_alias = registration.server_aliases["zzz-healthy"]
+                    assert options.mcp_servers[healthy_alias]["type"] == "sdk"
+                    assert [method for method, _headers in healthy_peer.requests].count("GET") == 2
+
+                    await asyncio.sleep(0.8)
+                    server = options.mcp_servers[healthy_alias]["instance"]
+                    async with connected_client(server) as caller:
+                        result = await caller.call_tool(
+                            registration._tool_aliases[("zzz-healthy", RAW_TOOL)],
+                            {"query": "synthetic"},
+                        )
+                    assert result.is_error is False
+        finally:
+            slow_endpoint_gate.set()
+
+
+@pytest.mark.asyncio
+async def test_registration_deadline_covers_a_blocked_invocation_handshake(monkeypatch):
+    from app.execution.infrastructure import claude_mcp
+
+    slow_invocation_gate = threading.Event()
+    with local_mcp_peers() as slow_peer, local_mcp_peers() as healthy_peer:
+        allow_local_peer(monkeypatch, slow_peer.url, healthy_peer.url)
+        slow_peer.sse_endpoint_gates[2] = slow_invocation_gate
+        slow = subject(server="aaa-blocked", url=slow_peer.url + "/sse")
+        healthy = subject(server="zzz-healthy", url=healthy_peer.url + "/sse")
+        slow["mcp_server_config"]["type"] = "sse"
+        healthy["mcp_server_config"]["type"] = "sse"
+        registration = ClaudeMcpRegistration(
+            {slow["identity"]: slow, healthy["identity"]: healthy},
+            {
+                "aaa-blocked": slow["mcp_server_config"],
+                "zzz-healthy": healthy["mcp_server_config"],
+            },
+            session_factory=real_mcp_session,
+            list_tools=mcp_client.list_mcp_tools,
+        )
+        monkeypatch.setattr(claude_mcp, "_MCP_DISCOVERY_TIMEOUT_SECONDS", 0.75)
+        options = SimpleNamespace()
+
+        async def activate_and_call_healthy():
+            async with asyncio.timeout(5):
+                async with registration.activate(options):
+                    assert registration.unavailable == {"aaa-blocked": "connection_timeout"}
+                    healthy_alias = registration.server_aliases["zzz-healthy"]
+                    assert options.mcp_servers[healthy_alias]["type"] == "sdk"
+                    # The successful invocation session remains open past the
+                    # preparation deadline and still accepts its selected call.
+                    await asyncio.sleep(0.8)
+                    server = options.mcp_servers[healthy_alias]["instance"]
+                    async with connected_client(server) as caller:
+                        result = await caller.call_tool(
+                            registration._tool_aliases[("zzz-healthy", RAW_TOOL)],
+                            {"query": "synthetic"},
+                        )
+                    assert result.is_error is False
+
+        try:
+            activation = asyncio.create_task(activate_and_call_healthy())
+            opened_sessions = [
+                await asyncio.wait_for(
+                    asyncio.to_thread(slow_peer.sse_opened_sessions.get, timeout=2),
+                    timeout=3,
+                )
+                for _ in range(2)
+            ]
+            assert opened_sessions == [1, 2]
+            await activation
+        finally:
+            slow_invocation_gate.set()
 
 
 @pytest.mark.asyncio
