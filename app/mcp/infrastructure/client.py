@@ -6,16 +6,15 @@ import asyncio
 import re
 from builtins import ExceptionGroup
 from contextlib import AsyncExitStack, asynccontextmanager
-from datetime import timedelta
 from typing import Any, Mapping
 
 from types import SimpleNamespace
 
-import httpx
-from mcp import ClientSession
+import httpx2 as httpx
+from mcp import Client, MCPError
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import ListToolsResult, PaginatedRequestParams
+from mcp_types import ListToolsResult
 from pydantic import ValidationError
 
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
@@ -56,27 +55,35 @@ def _mcp_headers(
     }
 
 
-class _StrictListToolsResult(ListToolsResult):
-    @classmethod
-    def model_validate(cls, obj, *args, **kwargs):
-        # SDK coercion must not turn a remote string/number into a read-only
-        # assertion. Strict validation also applies to nested ToolAnnotations.
-        return super().model_validate(obj, *args, **{**kwargs, "strict": True})
+def _install_strict_tool_list_validation(client) -> None:
+    """Reject coercible tool annotations before MCP types normalize them."""
+    dispatcher = client.session._dispatcher
+    send_raw_request = dispatcher.send_raw_request
 
+    async def validate_tool_list(method, params, opts=None, *, _related_request_id=None):
+        result = await send_raw_request(
+            method, params, opts, _related_request_id=_related_request_id,
+        )
+        if method == "tools/list":
+            try:
+                # ClientSession validates this result again against its negotiated
+                # protocol version; this pass only disables Pydantic coercion.
+                ListToolsResult.model_validate(result, strict=True)
+            except ValidationError:
+                raise McpToolDiscoveryError("protocol_error") from None
+        return result
 
-class _McpClientSession(ClientSession):
-    async def send_request(self, request, result_type, *args, **kwargs):
-        if result_type is ListToolsResult:
-            result_type = _StrictListToolsResult
-        try:
-            return await super().send_request(request, result_type, *args, **kwargs)
-        except ValidationError:
-            raise McpToolDiscoveryError("protocol_error") from None
+    # The v2 Client owns negotiation and typed protocol handling. Its raw
+    # dispatcher result is the narrow seam needed to retain strict authority
+    # annotations, which the SDK's subsequent model validation otherwise coerces.
+    dispatcher.send_raw_request = validate_tool_list
 
 
 def _bounded_failure(exc: Exception) -> str | None:
     if isinstance(exc, McpToolDiscoveryError):
         return exc.reason
+    if isinstance(exc, MCPError):
+        return "protocol_error"
     if isinstance(exc, ExceptionGroup):
         for nested in exc.exceptions:
             reason = _bounded_failure(nested)
@@ -112,6 +119,13 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
 
     async def aclose(self):
         await self._stream.aclose()
+
+
+class _SingleDispatchMcpClient(Client):
+    async def call_tool(self, name, arguments=None):
+        # A native admission authorizes one dispatch. Keep v1's explicit-call
+        # semantics instead of v2 Client's schema-refresh or input-required replay.
+        return await self.session.call_tool(name, arguments)
 
 
 @asynccontextmanager
@@ -189,7 +203,8 @@ async def open_mcp_session(
         # HTTPX closes responses rejected by hooks, including unread bodies.
         if response.is_redirect:
             fail("transport_failure")
-        response.raise_for_status()
+        # The official v2 transport maps non-2xx JSON-RPC errors and lets auto
+        # negotiation fall back when an older endpoint rejects server/discover.
         if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
             fail("unsupported_content_encoding")
         bounded_stream = _BoundedMcpStream(
@@ -223,20 +238,20 @@ async def open_mcp_session(
             # endpoint forever after its reader rejects an early malformed frame.
             async with asyncio.timeout(timeout_seconds):
                 if transport == "sse":
-                    streams = await stack.enter_async_context(sse_client(
+                    protocol_transport = sse_client(
                         target.endpoint, headers=headers, timeout=timeout_seconds,
                         sse_read_timeout=timeout_seconds, httpx_client_factory=client_factory,
-                    ))
+                    )
                 else:
                     http_client = await stack.enter_async_context(client_factory(headers=headers, timeout=timeout_seconds))
-                    streams = await stack.enter_async_context(streamable_http_client(
+                    protocol_transport = streamable_http_client(
                         target.endpoint, http_client=http_client, terminate_on_close=terminate_on_close,
-                    ))
-                session = await stack.enter_async_context(_McpClientSession(
-                    *streams[:2], read_timeout_seconds=timedelta(seconds=timeout_seconds),
-                    message_handler=validate_message,
+                    )
+                session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                    protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                    message_handler=validate_message, cache=None,
                 ))
-                await session.initialize()
+            _install_strict_tool_list_validation(session)
             if guard_failure:
                 raise McpToolDiscoveryError(guard_failure)
             yield session
@@ -257,7 +272,7 @@ async def list_mcp_tools(session):
     cursors = set()
     cursor = None
     for _ in range(MCP_DISCOVERY_PAGE_LIMIT):
-        page = await session.list_tools(params=PaginatedRequestParams(cursor=cursor) if cursor else None)
+        page = await session.list_tools(cursor=cursor, cache_mode="bypass")
         for tool in page.tools:
             definition = _canonical_live_definition(
                 tool.model_dump(by_alias=True, exclude_none=True)
@@ -266,7 +281,7 @@ async def list_mcp_tools(session):
                 raise McpToolDiscoveryError("protocol_error")
             names.add(tool.name)
             tools.append(tool.model_copy(update={"description": definition["description"]}))
-        cursor = page.nextCursor
+        cursor = page.next_cursor
         if cursor is None:
             return tools
         if not cursor or cursor in cursors:

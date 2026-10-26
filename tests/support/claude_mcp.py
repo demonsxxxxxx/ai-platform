@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from mcp.types import CallToolResult, TextContent, Tool
+from mcp_types import CallToolResult, TextContent, Tool
 
 from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 
@@ -24,7 +24,7 @@ def install_mcp_sessions(monkeypatch):
             yield SimpleNamespace(names=names, call_tool=call_tool)
 
         async def list_tools(session):
-            return [Tool(name=name, inputSchema={"type": "object"}) for name in session.names]
+            return [Tool(name=name, input_schema={"type": "object"}) for name in session.names]
 
         return ClaudeMcpRegistration(
             subjects, configs, session_factory=session_factory, list_tools=list_tools,
