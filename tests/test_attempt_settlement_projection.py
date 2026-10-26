@@ -1238,6 +1238,31 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
         assert unknown_projection is not None
         assert unknown_projection.to_mapping()["mapping_state"] == "unknown"
         await persist_attempt_settlement_projection(conn, unknown_projection)
+        # The reader deliberately fails closed when any Attempt detail is
+        # missing. Complete the fixture denominator through the owning bounded
+        # backfill before exercising due fairness; do not weaken that guard.
+        after = None
+        while True:
+            backfill = await projection_service.backfill(
+                conn, after=after, limit=800,
+            )
+            after = backfill["next_after"]
+            if after is None:
+                break
+        missing = await (
+            await conn.execute(
+                """
+                select count(*) as count
+                from run_attempts attempt
+                left join run_attempt_settlements detail
+                  on detail.tenant_id = attempt.tenant_id
+                 and detail.run_id = attempt.run_id
+                 and detail.attempt_id = attempt.id
+                where detail.attempt_id is null
+                """
+            )
+        ).fetchone()
+        assert missing["count"] == 0
         # Put the unresolved row first. A batch size of one must still reach
         # the mapped Run rather than retrying/raising on this row forever.
         await conn.execute(
