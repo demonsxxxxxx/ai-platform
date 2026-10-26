@@ -3333,6 +3333,7 @@ async def test_reconciliation_repository_writes_are_claim_fenced_and_aggregate_o
     assert "expires_at = least" in cleanup_sql
     assert "released_at" not in cleanup_sql
 
+    assert "runtime_handle_verified_at" in " ".join(statement for statement, _ in statements)
     summary_sql, summary_params = statements[3]
     assert "where tenant_id = %s" in summary_sql
     assert "status in ('active', 'released')" in summary_sql
@@ -3359,8 +3360,18 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     lease_row = {
         "id": "lease-a",
         "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
         "user_id": "user-a",
+        "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "provider": "fake",
+        "runtime_container_id": "container-a",
+        "runtime_container_name": "container-a",
+        "runtime_executor_url": "http://executor.invalid",
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": "2026-10-26T00:00:00Z",
     }
     responses = [[lease_row], {"id": "lease-a"}, {"id": "lease-a"}, lease_row, {"id": "lease-a"}]
 
@@ -3388,6 +3399,12 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
         stale_after_seconds=45,
     )
     assert claimed == [lease_row]
+    from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+    recovered_lease = build_sandbox_runtime_cleanup().container_lease_from_persisted_row(
+        claimed[0]
+    )
+    assert recovered_lease is not None
+    assert recovered_lease.container_id == "container-a"
     assert await sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim(
         conn,
         lease_id="lease-a",
@@ -3422,6 +3439,7 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     assert "executor_cleanup_retry_not_before" in claim_sql
     assert "executor_cleanup_claimed_at is null" in claim_sql
     assert "%s::text is null or lease.tenant_id = %s" in claim_sql
+    assert "lease.runtime_handle_verified_at" in claim_sql
     assert "for update of lease skip locked" in claim_sql
     assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a", "cleanup-a")
 

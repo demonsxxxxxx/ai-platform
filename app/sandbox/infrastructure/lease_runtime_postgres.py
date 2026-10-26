@@ -249,7 +249,7 @@ async def record_sandbox_executor_heartbeat(
           and attempt_id = %s
           and status = 'active'
           and (expires_at is null or expires_at > now())
-          and executor_status in ('accepted', 'running')
+          and executor_status in ('pending', 'accepted', 'running')
         returning *
         """,
         (executor_status, executor_status, int(ttl_seconds), lease_id, tenant_id, run_id, attempt_id),
@@ -281,7 +281,7 @@ async def record_opensandbox_renewal_receipt(
           and provider = 'opensandbox'
           and status = 'active'
           and (expires_at is null or expires_at > now())
-          and executor_status in ('accepted', 'running')
+          and executor_status in ('pending', 'accepted', 'running')
         returning *
         """,
         (provider_expires_at, lease_id, tenant_id, run_id, attempt_id),

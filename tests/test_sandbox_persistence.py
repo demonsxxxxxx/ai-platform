@@ -85,7 +85,7 @@ async def test_sandbox_executor_heartbeat_renews_only_unexpired_attempt_lease():
     assert recorded is None
     assert "expires_at = now() + make_interval(secs => %s)" in heartbeat_sql
     assert "(expires_at is null or expires_at > now())" in heartbeat_sql
-    assert "executor_status in ('accepted', 'running')" in heartbeat_sql
+    assert "executor_status in ('pending', 'accepted', 'running')" in heartbeat_sql
     assert heartbeat_params == (
         "running",
         "running",
@@ -125,7 +125,7 @@ async def test_opensandbox_renewal_receipt_is_provider_and_attempt_fenced():
     assert "status = 'active'" in sql
     assert "attempt_id = %s" in sql
     assert "(expires_at is null or expires_at > now())" in sql
-    assert "executor_status in ('accepted', 'running')" in sql
+    assert "executor_status in ('pending', 'accepted', 'running')" in sql
     assert params == (expiration, "lease-a", "tenant-a", "run-a", "attempt-a")
     with pytest.raises(ValueError, match="timezone_invalid"):
         await record_opensandbox_renewal_receipt(
@@ -855,6 +855,55 @@ async def executor_acceptance_database():
     finally:
         await conn.execute(psycopg_sql.SQL("drop schema if exists {} cascade").format(psycopg_sql.Identifier(schema)))
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_lease_accepts_early_heartbeat_without_reopening_terminal(executor_acceptance_database):
+    conn = executor_acceptance_database
+    pending = await (await conn.execute(
+        "select executor_status from sandbox_leases where id='lease-a'"
+    )).fetchone()
+    assert pending["executor_status"] == "pending"
+
+    heartbeat = await record_sandbox_executor_heartbeat(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="running",
+        ttl_seconds=731,
+    )
+    assert heartbeat is not None
+    assert heartbeat["executor_status"] == "running"
+
+    await conn.execute(
+        "update sandbox_leases set provider='opensandbox', executor_status='pending' "
+        "where id='lease-a'"
+    )
+    renewal = await record_opensandbox_renewal_receipt(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        provider_expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
+    assert renewal is not None
+    assert renewal["provider"] == "opensandbox"
+
+    await conn.execute(
+        "update sandbox_leases set executor_status='completed' where id='lease-a'"
+    )
+    assert await record_sandbox_executor_heartbeat(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        lease_id="lease-a",
+        executor_status="running",
+        ttl_seconds=731,
+    ) is None
 
 
 @pytest.mark.asyncio
