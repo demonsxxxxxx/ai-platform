@@ -1138,19 +1138,6 @@ def default_cancel_not_requested(monkeypatch):
         _LEGACY_ATTEMPT_SETTLEMENT_READER,
     )
 
-    async def legacy_lease_scope(_conn, lease_id=None):
-        return {
-            "tenant_id": "tenant-a",
-            "run_id": "run-a",
-            "attempt_id": "attempt-a",
-        }
-
-    monkeypatch.setattr(
-        sandbox_lease_ports._shadowed_repository,
-        "_scope_for_lease",
-        legacy_lease_scope,
-    )
-
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
         parsed = parse_queue_payload(raw)
@@ -2152,7 +2139,53 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_scoped_reconciliation_run", run, raising=False)
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", read)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.lock_scoped_reconciliation_receipt", claim)
+
+    async def exact_legacy_lease_scope(_conn, lease_id):
+        assert lease_id == lease_row["id"]
+        return {
+            "tenant_id": lease_row["tenant_id"],
+            "run_id": lease_row["run_id"],
+            "attempt_id": lease_row["attempt_id"],
+        }
+
+    monkeypatch.setattr(
+        sandbox_lease_ports._shadowed_repository,
+        "_scope_for_lease",
+        exact_legacy_lease_scope,
+    )
     return spec
+
+
+@pytest.mark.asyncio
+async def test_frozen_legacy_receipt_scope_rejects_wrong_lease_id(monkeypatch):
+    persisted = base_payload(
+        _leased=False,
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "scope check"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        agent_profile=None,
+    )
+    lease_row = {
+        "id": "lease-a",
+        "attempt_id": "attempt-a",
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+    }
+    _install_frozen_receipt(monkeypatch, persisted, lease_row)
+    with pytest.raises(AssertionError, match="lease-a"):
+        await sandbox_lease_ports._shadowed_repository._scope_for_lease(
+            object(), "lease-other"
+        )
 
 
 @pytest.mark.asyncio
