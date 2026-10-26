@@ -738,6 +738,49 @@ async def test_cancel_handoff_requires_exact_released_resource_and_transfers_own
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_step",
+    ["active_resource", "generation_mismatch", "pending_receipt"],
+)
+async def test_cancel_handoff_rejects_unsafe_resource_or_attempt_state(failure_step):
+    class SequenceConnection:
+        def __init__(self, responses):
+            self.responses = list(responses)
+
+        async def execute(self, _sql, _params=()):
+            return _Cursor(self.responses.pop(0))
+
+    common = [
+        {"status": "running", "cancel_requested_at": "now", "terminalization_target": "cancel_requested"},
+        None,
+        {"id": "lease-a"},
+    ]
+    if failure_step == "active_resource":
+        responses = [*common, {"id": "active"}]
+    elif failure_step == "generation_mismatch":
+        responses = [
+            *common, None,
+            {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 6},
+        ]
+    else:
+        responses = [
+            *common, None,
+            {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 5},
+            {"storage_version": "sandbox_lease.v1"},
+            {"id": "pending"},
+        ]
+    persistence = run_attempt_repository.PostgresRunCancellationPersistence(
+        attempt_lifecycle=object(), append_event=None, append_audit_log=None,
+        list_active_sandbox_leases=None,
+    )
+    assert await persistence.handoff_cancelled_attempt(
+        SequenceConnection(responses), tenant_id="tenant-a", run_id="run-a",
+        attempt_id="rat-a", expected_owner_generation=5,
+        resource_lease_ids=("lease-a",),
+    ) is False
+
+
+@pytest.mark.asyncio
 async def test_stale_failure_transfers_attempt_to_reconciler_and_expires_owner(
     monkeypatch,
 ):

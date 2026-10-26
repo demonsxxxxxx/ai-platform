@@ -206,8 +206,16 @@ The migration MUST preserve these observable semantics:
    failure. The existing stop-under-lock compatibility mechanism must remain
    until the Sandbox owner activates its separately proven claim/I/O/receipt
    replacement. Runs never calls a provider or marks
-   a Sandbox lease released. A cancelled Run with cleanup pending does not claim
-   that the Sandbox was released.
+   a Sandbox lease released. After Sandbox returns exact released-lease evidence,
+   Runs may perform one owner-fenced Attempt handoff only when the Run remains
+   `running` with durable cancellation requested, the Attempt is still
+   `cancel_requested` under the captured queue-worker generation, no same-Run
+   active resource remains, and no terminal receipt is pending. The handoff
+   assigns the Attempt to the reconciler and expires the old queue lease; an
+   expired timestamp alone is never stop proof. Stop failure, tenant/Attempt/
+   generation mismatch, another active resource, or a pending receipt leaves
+   the queue owner and lease untouched. A cancelled Run with cleanup pending
+   does not claim that the Sandbox was released.
 10. **Rollback is atomic.** Any exception before transaction completion rolls
     back the state transition and its event/audit facts together.
 
