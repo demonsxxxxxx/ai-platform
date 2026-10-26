@@ -596,6 +596,14 @@ async def test_real_postgres_shadow_claim_and_terminalize_share_source_lock_orde
                 terminal_reason="run_failed",
             )
 
+    # Exclude the shared fixture's retry from this race regardless of migration time.
+    async with connect() as conn, conn.transaction():
+        fixture_retry = await (await conn.execute(
+            "select executor_reconciliation_retry_not_before from sandbox_leases where id='lease-a'"
+        )).fetchone()
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_retry_not_before='infinity' where id='lease-a'"
+        )
     claim_task = asyncio.create_task(claim_and_hold_transaction())
     terminalize_task = asyncio.create_task(terminalize_in_parallel())
     try:
@@ -651,6 +659,10 @@ async def test_real_postgres_shadow_claim_and_terminalize_share_source_lock_orde
                 (run_id,),
             )
             await conn.execute("delete from runs where tenant_id='tenant-a' and id=%s", (run_id,))
+            await conn.execute(
+                "update sandbox_leases set executor_reconciliation_retry_not_before=%s where id='lease-a'",
+                (fixture_retry["executor_reconciliation_retry_not_before"],),
+            )
 
 
 @pytest.mark.asyncio
