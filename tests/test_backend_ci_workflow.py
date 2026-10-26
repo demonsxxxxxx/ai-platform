@@ -399,6 +399,7 @@ LIFECYCLE_CONTROL_CHAIN_BATCHES = {
     "lifecycle-control-chain-core": (
         "tests/test_run_execution_lifecycle_integration.py::test_docker_proxy_closes_upstream_when_selector_initialization_fails",
         "tests/test_run_execution_lifecycle_integration.py::test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user",
+        "tests/test_run_execution_lifecycle_integration.py::test_lifecycle_fixture_native_tool_socket_path_stays_under_linux_limit",
         "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[terminal_receipt]",
         "tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[kill_at_barrier]",
         "tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[answer]",
