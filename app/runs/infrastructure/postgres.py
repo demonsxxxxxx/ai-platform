@@ -26,7 +26,11 @@ from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
 )
-from app.runs.infrastructure.lifecycle_postgres import stage_run_terminalization
+from app.runs.infrastructure.lifecycle_postgres import (
+    _attempt_settlement_reader_active,
+    _pending_terminal_receipt_sql,
+    stage_run_terminalization,
+)
 
 
 _RUN_ATTEMPT_STATE_COLUMNS = (
@@ -1405,6 +1409,7 @@ class PostgresRunCancellationPersistence:
             for_update=False,
         )
         attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
+        attempt_owner_generation = int(attempt_row["owner_generation"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
@@ -1423,12 +1428,13 @@ class PostgresRunCancellationPersistence:
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
         if attempt_id is not None and target_status == "cancel_requested":
-            await self._attempt_lifecycle.request_cancel(
+            attempt_row = await self._attempt_lifecycle.request_cancel(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
+            attempt_owner_generation = int(attempt_row["owner_generation"]) if attempt_row is not None else None
         await stage_run_terminalization(
             conn,
             tenant_id=tenant_id,
@@ -1444,6 +1450,7 @@ class PostgresRunCancellationPersistence:
             actor_user_id=owner_user_id,
             requested_by_role="owner",
             source="user",
+            attempt_owner_generation=attempt_owner_generation,
             newly_requested=newly_requested,
             attempt_id=attempt_id,
         )
@@ -1501,6 +1508,7 @@ class PostgresRunCancellationPersistence:
             for_update=False,
         )
         attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
+        attempt_owner_generation = int(attempt_row["owner_generation"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))
         if newly_requested:
             await self._append_event(
@@ -1521,12 +1529,13 @@ class PostgresRunCancellationPersistence:
             )
         target_status = "cancelled" if row["status"] == "queued" else "cancel_requested"
         if attempt_id is not None and target_status == "cancel_requested":
-            await self._attempt_lifecycle.request_cancel(
+            attempt_row = await self._attempt_lifecycle.request_cancel(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
+            attempt_owner_generation = int(attempt_row["owner_generation"]) if attempt_row is not None else None
         await stage_run_terminalization(
             conn,
             tenant_id=tenant_id,
@@ -1542,9 +1551,115 @@ class PostgresRunCancellationPersistence:
             actor_user_id=admin_user_id,
             requested_by_role="admin",
             source="system",
+            attempt_owner_generation=attempt_owner_generation,
             newly_requested=newly_requested,
             attempt_id=attempt_id,
         )
+
+    async def handoff_cancelled_attempt(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        expected_owner_generation: int,
+        resource_lease_ids: tuple[str, ...],
+    ) -> bool:
+        if expected_owner_generation < 2:
+            return False
+        run = await (await conn.execute(
+            "select status, cancel_requested_at, terminalization_target "
+            "from runs where tenant_id=%s and id=%s for update",
+            (tenant_id, run_id),
+        )).fetchone()
+        if (
+            run is None
+            or run.get("status") != "running"
+            or run.get("cancel_requested_at") is None
+            or str(run.get("terminalization_target") or "") not in {"cancel_requested", "cancelled"}
+        ):
+            return False
+        await conn.execute(
+            "select id from sandbox_leases where tenant_id=%s and run_id=%s "
+            "for update",
+            (tenant_id, run_id),
+        )
+        released = await (await conn.execute(
+            """
+            select id from sandbox_leases
+            where tenant_id=%s and run_id=%s and attempt_id=%s
+              and (%s::text[] is null or id = any(%s::text[]))
+              and status='released'
+              and lease_payload_json->>'attempt_id'=%s
+              and lease_payload_json->>'owner_generation'=%s
+            """,
+            (
+                tenant_id, run_id, attempt_id,
+                list(resource_lease_ids) or None, list(resource_lease_ids) or None,
+                attempt_id, str(expected_owner_generation - 1),
+            ),
+        )).fetchall()
+        released_ids = {str(row["id"]) for row in released}
+        if not released_ids or (resource_lease_ids and released_ids != set(resource_lease_ids)):
+            return False
+        active = await (await conn.execute(
+            "select 1 from sandbox_leases where tenant_id=%s and run_id=%s and status='active' limit 1",
+            (tenant_id, run_id),
+        )).fetchone()
+        if active is not None:
+            return False
+        attempt = await (await conn.execute(
+            """
+            select id, owner_kind, owner_id, owner_generation, status
+            from run_attempts
+            where tenant_id=%s and run_id=%s and id=%s
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )).fetchone()
+        if (
+            attempt is None
+            or attempt.get("status") != "cancel_requested"
+            or attempt.get("owner_kind") != "queue_worker"
+            or int(attempt.get("owner_generation") or 0) != expected_owner_generation
+        ):
+            return False
+        if await _attempt_settlement_reader_active(conn):
+            pending = _pending_terminal_receipt_sql(attempt_reader_active=True)
+            row = await (await conn.execute(
+                f"select 1 from runs where tenant_id=%s and id=%s and ({pending})",
+                (tenant_id, run_id),
+            )).fetchone()
+            if row is not None:
+                return False
+        else:
+            row = await (await conn.execute(
+                """
+                select 1 from sandbox_leases
+                where tenant_id=%s and run_id=%s
+                  and executor_terminal_json is not null
+                  and executor_reconciliation_status is distinct from 'finalized'
+                """,
+                (tenant_id, run_id),
+            )).fetchone()
+            if row is not None:
+                return False
+        cursor = await conn.execute(
+            """
+            update run_attempts
+            set owner_kind='reconciler', owner_id='cancel-cleanup',
+                owner_generation=owner_generation+1,
+                lease_expires_at=clock_timestamp(), last_heartbeat_at=clock_timestamp(),
+                updated_at=clock_timestamp()
+            where tenant_id=%s and run_id=%s and id=%s
+              and status='cancel_requested' and owner_kind='queue_worker'
+              and owner_generation=%s
+            returning id
+            """,
+            (tenant_id, run_id, attempt_id, expected_owner_generation),
+        )
+        return await cursor.fetchone() is not None
 
     async def finish_request(
         self,
@@ -1610,4 +1725,5 @@ class PostgresRunCancellationPersistence:
             active_sandbox_leases=tuple(active_leases),
             initial_terminalization_progress=progress,
             attempt_id=authority.attempt_id,
+            attempt_owner_generation=authority.attempt_owner_generation,
         )

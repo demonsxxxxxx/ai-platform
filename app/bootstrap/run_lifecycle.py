@@ -69,14 +69,20 @@ def build_run_cancellation_use_case(
         )
 
     sandbox_cleanup = build_sandbox_runtime_cleanup()
+    persistence = PostgresRunCancellationPersistence(
+        attempt_lifecycle=attempt_lifecycle,
+        append_event=append_event,
+        append_audit_log=append_audit_log,
+        list_active_sandbox_leases=list_active_sandbox_leases_for_run,
+    )
+
+    async def handoff_cancelled_attempt(**kwargs: object) -> bool:
+        async with transaction() as conn:
+            return await persistence.handoff_cancelled_attempt(conn, **kwargs)
+
     return RunCancellationUseCase(
         transaction_factory=transaction,
-        persistence=PostgresRunCancellationPersistence(
-            attempt_lifecycle=attempt_lifecycle,
-            append_event=append_event,
-            append_audit_log=append_audit_log,
-            list_active_sandbox_leases=list_active_sandbox_leases_for_run,
-        ),
+        persistence=persistence,
         event_writer=PostgresRunCancellationEventWriter(
             authority_secret=get_settings().ai_session_secret,
             load_terminal_event_fact=load_current_terminal_event_fact,
@@ -90,5 +96,6 @@ def build_run_cancellation_use_case(
             admit_stream=admit_v4_stream,
             publish_event=publish_run_event,
             warn=_warn_cancellation_publication,
+            handoff_cancelled_attempt=handoff_cancelled_attempt,
         ),
     )

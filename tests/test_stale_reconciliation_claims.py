@@ -724,7 +724,7 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
             assert lease["status"] == "released"
             assert lease["executor_status"] == "pending"
             assert lease["executor_terminal_json"] is None
-            assert lease["executor_reconciliation_status"] == "pending"
+            assert lease["executor_reconciliation_status"] == "waiting_terminal"
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
