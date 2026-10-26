@@ -1209,7 +1209,10 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
                 unknown_lease_id,
                 unknown_run_id,
                 unknown_attempt["id"],
-                json.dumps({"owner_generation": unknown_attempt["owner_generation"]}),
+                json.dumps({
+                    "attempt_id": unknown_attempt["id"],
+                    "owner_generation": unknown_attempt["owner_generation"],
+                }),
                 json.dumps({"run_id": unknown_run_id, "status": "succeeded", "answer": "unknown"}),
                 None,
                 json.dumps({"adapter_name": "test", "snapshot": "intent"}),
