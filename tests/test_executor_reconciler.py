@@ -1099,6 +1099,77 @@ async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(mon
 
 
 @pytest.mark.asyncio
+async def test_unknown_receipt_dispatch_cas_failure_rolls_back_acceptance(monkeypatch):
+    from app.executor_reconciler import _record_probe_dispatch_accepted
+
+    transactions = []
+    accepted_contexts = []
+
+    class LeasePort:
+        async def has_sandbox_executor_probe_claim(self, _conn, **_kwargs):
+            return True
+
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **_kwargs):
+            return None
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "owner_generation": 4,
+                "status": "active",
+                "attempt_id": "attempt-a",
+                "lease_payload_json": {"owner_generation": 4},
+                "dispatch_generation": 4,
+                "dispatch_lease_id": "lease-a",
+                "dispatch_provider": "fake",
+                "dispatch_task_id": "attempt-a",
+                "mapping_state": "unknown",
+                "dispatch_state": "unknown",
+                "intent_recovery_context_json": {"frozen": "intent"},
+                "accepted_context_json": None,
+                "receipt_json": {"run_id": "run-a", "status": "succeeded"},
+            }
+
+    class Connection:
+        async def execute(self, _sql, _params):
+            return Cursor()
+
+    @asynccontextmanager
+    async def transaction():
+        record = {"rollback": False}
+        transactions.append(record)
+        try:
+            yield Connection()
+        except Exception:
+            record["rollback"] = True
+            raise
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", transaction)
+    lease_row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "executor_probe_claim_token": "probe-a",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "executor_reconciliation_intent_context_json": {"frozen": "intent"},
+    }
+    recovered = await _record_probe_dispatch_accepted(
+        lease_row,
+        {"status": "completed", "run_id": "run-a", "attempt_id": "attempt-a"},
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is False
+    assert accepted_contexts
+    assert transactions == [{"rollback": True}]
+
+
+@pytest.mark.asyncio
 async def test_unknown_receipt_probe_keeps_unavailable_provider_recoverable(monkeypatch):
     released = []
     row = {

@@ -383,6 +383,29 @@ async def claim_sandbox_executor_suspects(
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
+
+async def has_sandbox_executor_probe_claim(
+    connection: Any,
+    *,
+    lease_id: str,
+    claim_token: str,
+) -> bool:
+    row = await (
+        await connection.execute(
+            """
+            select id
+            from sandbox_leases
+            where id = %s
+              and status = 'active'
+              and executor_probe_claim_token = %s
+            for update
+            """,
+            (lease_id, claim_token),
+        )
+    ).fetchone()
+    return row is not None
+
+
 async def release_sandbox_executor_probe_claim(
     connection: Any,
     *,

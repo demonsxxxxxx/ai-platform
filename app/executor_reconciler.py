@@ -745,6 +745,10 @@ def _probe_dispatch_identity(lease_row: dict[str, Any]) -> SandboxDispatchIdenti
     )
 
 
+class _ProbeAcceptanceNotCommitted(RuntimeError):
+    """Roll back accepted-context writes when the dispatch CAS is not accepted."""
+
+
 async def _record_probe_dispatch_accepted(
     lease_row: dict[str, Any],
     status: dict[str, Any],
@@ -859,7 +863,7 @@ async def _record_probe_dispatch_accepted(
                 conn, identity=identity, outcome="accepted",
             )
             if dispatch_row is None or dispatch_row.get("status") != "accepted":
-                return False
+                raise _ProbeAcceptanceNotCommitted("executor_probe_dispatch_acceptance_not_committed")
             # Refresh the Runs projection after the dispatch CAS so legacy
             # shadow writers observe the accepted dispatch in this transaction.
             await lease_port.record_sandbox_executor_accepted(
@@ -873,6 +877,8 @@ async def _record_probe_dispatch_accepted(
         return True
     except asyncio.CancelledError:
         raise
+    except _ProbeAcceptanceNotCommitted:
+        return False
     except Exception:
         _logger.warning(
             "executor_probe_dispatch_observation_unavailable",
