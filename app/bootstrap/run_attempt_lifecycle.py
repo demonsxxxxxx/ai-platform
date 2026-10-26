@@ -2,9 +2,21 @@
 
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
+from app.bootstrap.attempt_settlement_projection import (
+    build_attempt_settlement_projection_service,
+)
+from app.settings import get_settings
 
 
 def build_run_attempt_lifecycle_service() -> RunAttemptLifecycleService:
     """Build one stateless service over the process-owned database runtime."""
 
-    return RunAttemptLifecycleService(persistence=run_attempt_persistence)
+    projection = (
+        build_attempt_settlement_projection_service()
+        if get_settings().run_attempt_settlement_shadow_enabled
+        else None
+    )
+    return RunAttemptLifecycleService(
+        persistence=run_attempt_persistence,
+        settlement_projection=projection,
+    )

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
     sandbox_callback_token: str = Field(default="")
     sandbox_egress_policy_enabled: bool = Field(default=False)
+    run_attempt_settlement_shadow_enabled: bool = Field(default=False)
     sandbox_egress_proof_signing_key: str = Field(default="")
     sandbox_egress_proof_key_id: str = Field(default="current")
     sandbox_egress_proof_previous_keys_json: str = Field(default="")
@@ -97,6 +98,17 @@ class Settings(BaseSettings):
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    executor_heartbeat_stale_seconds: int = Field(default=45, ge=1, le=3600)
+    executor_reconciliation_claim_stale_seconds: int = Field(default=300, ge=1, le=3600)
+    supervision_claim_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
+    supervision_delivery_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_probe_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_settlement_capacity: int = Field(default=2, ge=1, le=100)
+    supervision_cleanup_capacity: int = Field(default=1, ge=1, le=100)
+    # PostgreSQL domain claims are mandatory in every mode. This switch only
+    # permits this replica to execute work while a domain is unified.
+    execution_supervision_enabled: bool = Field(default=False)
+    execution_supervision_shadow_enabled: bool = Field(default=False)
     # One switch controls both transactional intent writers and the Worker
     # recovery scanner so they cannot be enabled independently.
     run_delivery_intents_enabled: bool = Field(default=False)

@@ -298,6 +298,21 @@ N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新
 - 比对：身份、原回执摘要、accepted 合并、结算含义、取消/generation、next-retry 和 cleanup 归属；不要求不同表示的时间戳字节相等。影子写失败造成的事务影响也必须测量。
 - 回退：停止 shadow 写；旧事实未被修改。回填不执行旧任务、不重写 Spec 或原 terminal receipt。
 
+当前 N30/N31 投影切片（schema `2026.10.25.5`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果和稳定快照的计数/最高 key 均不证明全量语义一致，也不得授权切读。shadow writer 由 `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` 显式启用，默认关闭；旧 Sandbox writer仍是唯一业务权威。
+
+同事务 hook 与锁序：
+
+| Hook | 受影子化的源字段 | 锁序/边界 |
+|---|---|---|
+| Attempt 创建、Sandbox lease 创建 | Attempt 状态/代际快照、source lease identity | lease shadow 在插入前按 Run → lease id → Attempt 获取源锁；Attempt 创建仍遵守现有 Run owner |
+| Sandbox accepted 与 terminal receipt、dispatch intent | Dispatch intent recovery context、accepted context、receipt identity/content/digest/generation、phase/attempt count | writer 在改源行前按 Run → lease id → Attempt 锁定；intent recovery context 与 accepted semantics 分开，detail 经 Runs API 写入 |
+| terminal reconciliation/probe claim 与 retry | 仅 terminal reconciliation 投影 claim/token/time、retry clock/count；无回执的 probe claim 不投影 settlement token/phase | 先读有界候选，再按 Attempt key 排序锁 Run → lease id → Attempt，最后按候选 lease ID 执行 claim 并刷新 detail；单条 retry 在更新前取得相同源锁序 |
+| Run/Attempt cancel、stale recovery 与 terminalize | Run/Attempt 状态、结果、取消与 owner-generation 快照 | 先取得 Run → lease id → Attempt 源锁，再调用 lifecycle persistence 并刷新 detail；detail 写入本身不迁移 Attempt、不增加 generation |
+| executor heartbeat、cleanup claim、lease release | heartbeat 时间与 Sandbox 资源/清理事实 | 不写 settlement detail；清理状态由 Sandbox lease 保持权威，比较时仍纳入全分母 cleanup 统计 |
+| cleanup pending、cleanup finalize / reconciliation failed | 仅当底层 reconciliation status 改变 settlement phase 时刷新；cleanup claim/retry 字段仍不投影 | 更新前由原 Sandbox writer持有其 lease；hook 只读 source facts 并写 detail，不再请求 Run/Attempt 锁 |
+
+调用方事务中的 shadow SQL 失败会使源写与 detail 一起回滚。页级 compare 保持 page scope。`compare_snapshot` 只在 caller transaction 为 `REPEATABLE READ` 或 `SERIALIZABLE` 时扫描全部分页，提供观测结果，不提供切换证明。未来 N40 必须在新事务重新执行全量语义比对，并在切换提交前 fence `runs`、`run_attempts`、`sandbox_leases` 和 `sandbox_execution_dispatches` 的相关 writer；仅校验 Attempt 数量或最高 key 不能证明投影内容未改变。
+
 **N32：统一监督调度的只读决策阶段 — Execution scheduler + 各决策 owner。依赖 N21/N23/N31。**
 
 - 产出：逐类 deadline、时钟来源、候选索引/上限、互斥规则、外部 I/O 预算和恢复 action。复用 Worker 生命周期，不新增独立进程部署前提；结算与 bulk cleanup 有独立容量。
@@ -311,6 +326,10 @@ N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新
 - 切换：停止旧域领取、确认或交接其在途 claim、启用新域；多副本通过 PG claim/CAS 工作。候选选择和最终写入复核一致，不能靠每进程布尔开关保证 fleet 互斥。
 - 验收：R02–R07/R09–R13，双副本和进程崩溃；旧处理者迟到写回拒绝，远端在途 stop 用精确资源身份/幂等保障。长清理不阻塞结算，永久/暂时错误及取消权限语义不变。
 - 回退：仅在旧版本能读取当前事实且已排空/交接新 claim 后切回，保留新持久记录；无法证明这一点则停止启用并修复，不同时开启两套裁决。
+
+当前监督基础切片（schema `2026.10.25.7`）新增 `execution_supervision_domains` 与在途 claim 记录，四个责任域均初始化为 `legacy`。Worker maintenance 读取持久候选并按既有 deadline/owner 预算分类，只记录 typed candidate，不调用候选动作；delivery 依照实际 store 资格区分 enqueue recovery、Attempt receipt readback 与 suppression，不读取旧队列 lease expiry；probe 使用取消与普通探测各自的公平游标，并各取配置的每 lane 扫描预算，执行 capacity 独立。现有 delivery、probe、settlement、sandbox cleanup 扫描无论本地 `execution_supervision_enabled` 开关状态，都会先读取持久域状态并登记 PostgreSQL domain claim；默认 `legacy` 仍调用原 action owner，`draining` 阻止新 claim，激活要求旧 claim 全部显式排空，claim 过期本身不会释放在途槽位，版本变更后旧 claim 不再 current。该开关只控制本副本是否可在 `unified` 模式执行；schema 不可用时 Worker readiness/startup 失败关闭。四域仍默认 legacy，shadow 开关默认关闭；代码接线不构成真实环境验收，也不授权生产切换。
+
+N33 执行入口使用现有 Worker maintenance 和 executor reconciler 循环，没有增加部署进程或第二份裁决逻辑。每个责任域继续使用自身的批量上限、I/O 超时、轮询/唤醒路径和容量；统一 action 的活动调用在结束前保留 PG claim，调用方取消时先等待 action 收尾再释放。双副本 PostgreSQL 状态迁移回归覆盖单域 `legacy → draining → unified → draining → legacy`，包括旧模式拒绝、在途容量占用及关闭后恢复。该测试是本地 PG 证据，不代表真实 Worker/Redis/Docker 或生产 fleet 的外部验收；如果真实 PG 零跳过检查未执行或失败，须保留为切片退出项。claim 过期不能自动释放在途槽位；恢复只能由人工输入精确 fence 与 stop 证据，平台记录输入但不自动验真，也不把 domain TTL 解释为外部 exactly-once。
 
 ### Phase 4：切读、停写与退役
 

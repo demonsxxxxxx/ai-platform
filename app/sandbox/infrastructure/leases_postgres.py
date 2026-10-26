@@ -15,6 +15,8 @@ from app.sandbox.infrastructure.executor_reconciliation_postgres import (
     has_failed_sandbox_executor_reconciliation_cleanup_claim as has_failed_sandbox_executor_reconciliation_cleanup_claim,
     has_sandbox_executor_reconciliation_claim as has_sandbox_executor_reconciliation_claim,
     is_sandbox_executor_reconciliation_claim_current as is_sandbox_executor_reconciliation_claim_current,
+    list_sandbox_executor_reconciliation_candidate_scopes as list_sandbox_executor_reconciliation_candidate_scopes,
+    list_sandbox_executor_suspect_candidate_scopes as list_sandbox_executor_suspect_candidate_scopes,
     mark_sandbox_executor_reconciliation_cleanup_pending as mark_sandbox_executor_reconciliation_cleanup_pending,
     next_sandbox_executor_reconciliation_retry_delay as next_sandbox_executor_reconciliation_retry_delay,
     quarantine_failed_sandbox_executor_reconciliation_cleanup as quarantine_failed_sandbox_executor_reconciliation_cleanup,
@@ -29,6 +31,7 @@ from app.sandbox.infrastructure.lease_runtime_postgres import (
     cleanup_expired_sandbox_leases as cleanup_expired_sandbox_leases,
     create_sandbox_lease as create_sandbox_lease,
     fence_sandbox_lease_release as fence_sandbox_lease_release,
+    get_sandbox_lease_scope as get_sandbox_lease_scope,
     list_expired_active_sandbox_leases as list_expired_active_sandbox_leases,
     new_lease_id as new_lease_id,
     record_opensandbox_renewal_receipt as record_opensandbox_renewal_receipt,
@@ -171,12 +174,22 @@ async def list_current_sandbox_runtime_leases_for_attempt(
           and sandbox_leases.status = 'active'
           and sandbox_leases.expires_at is not null
           and sandbox_leases.expires_at > clock_timestamp()
-        order by sandbox_leases.created_at asc
-        for update of sandbox_leases, run_attempts
+        order by sandbox_leases.id asc
+        for update of sandbox_leases
         """,
         (tenant_id, run_id, attempt_id),
     )
-    return list(await cursor.fetchall())
+    rows = list(await cursor.fetchall())
+    if rows:
+        await conn.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    return rows
 
 
 async def list_cancelling_provider_tail_leases_for_attempt(
@@ -202,10 +215,20 @@ async def list_cancelling_provider_tail_leases_for_attempt(
           and runs.status = 'running' and runs.cancel_requested_at is not null
           and lease.status = 'active' and lease.released_at is null
           and lease.expires_at is not null and lease.expires_at > clock_timestamp()
-        order by lease.created_at asc for update of lease, attempt
+        order by lease.id asc for update of lease
         """, (tenant_id, run_id, attempt_id),
     )
-    return list(await cursor.fetchall())
+    rows = list(await cursor.fetchall())
+    if rows:
+        await conn.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    return rows
 
 
 async def list_sandbox_leases_for_run(

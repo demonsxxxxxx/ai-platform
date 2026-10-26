@@ -269,6 +269,82 @@ recoverable cross-store effects. The heartbeat path has real PostgreSQL/Redis
 rollback-and-convergence coverage; production Sandbox acceptance and rollback
 evidence remain required before the migration can be called complete.
 
+### 3.2 Attempt settlement detail (N30/N31)
+
+Schema `2026.10.25.5` adds `run_attempt_settlements`, one Runs-owned detail per
+existing `(tenant_id, run_id, attempt_id)`. Its composite foreign key binds the
+detail to that exact `RunAttempt`; it is not a second execution Attempt. The
+detail stores the legacy terminal receipt identity, canonical receipt content
+and digest, accepted reconciliation context, settlement phase/claim/retry
+facts, final Run result mapping, and snapshots of the Run/Attempt status,
+cancellation time and owner generation used for comparison.
+
+| Field group | `run_attempt_settlements` | Authority retained |
+|---|---|---|
+| Receipt identity/content/digest | `receipt_identity`, `receipt_json`, `receipt_sha256`, source lease ID and captured generation | First terminal content remains in `sandbox_leases`; later root diagnostics are excluded from the detail digest |
+| Dispatch intent recovery | `intent_recovery_context_json` | The original Sandbox intent context is retained separately from acceptance |
+| Dispatch acceptance/context | `dispatch_state`, `accepted_context_json` | Dispatch acceptance is observed from its durable dispatch row; accepted context remains Sandbox/Execution-owned |
+| Settlement progress | `settlement_phase`, settlement claim, retry clock/count | Runs detail projection; no execution transition |
+| Business result | Run result status/JSON/digest, error code and settled time | Run remains the committed business result owner |
+| Comparison fence | Run/Attempt status, owner generation and cancellation-time snapshots | Read-only observations of current authority |
+| Stop/release/cleanup | Not copied into the settlement detail | Sandbox lease retains resource and cleanup ownership |
+
+The receipt identity is tied to the original Sandbox lease and Attempt. Because
+the legacy terminal receipt is JSONB, its digest is over canonical JSON; the
+mutable root `diagnostics` field is excluded. The source does not retain the
+original callback bytes or an independent receipt timestamp, so the projection
+does not claim either. The dispatch intent's recovery context is immutable and
+separate from accepted semantics; `dispatch_timings` added at acceptance cannot
+rewrite it. An executor probe claim without a terminal receipt remains a
+Sandbox probe and does not populate the settlement claim token or phase. A
+terminal receipt with `waiting_terminal` and no accepted dispatch remains
+explicitly `receipt_before_acceptance` / `awaiting_context`.
+
+This detail has no Attempt transition trigger. Writing it does not update
+`run_attempts`, `runs.status`, `owner_generation`, lifecycle events, or audit
+facts. It does not change `commit_provider_turn` requirements: Attempt
+`running`, no cancellation, and the exact writer generation remain mandatory.
+The stored status/generation/cancellation values are comparison snapshots, not
+execution authority.
+
+Resource identity, stop/release evidence, cleanup phase, cleanup retry and
+cleanup claim stay Sandbox-owned on `sandbox_leases`. The shared legacy
+reconciliation claim columns are projected as a settlement claim only while
+the legacy phase is `claimed`; in `cleanup_pending` or `failed`, they remain
+cleanup claims and are reported separately by comparison. A released lease can
+therefore remain in the settlement comparison denominator while cleanup owns
+its own outstanding work.
+
+The Runs API exposes bounded keyset backfill and page-scoped read-only
+comparison, with a maximum page of 800 Attempts. Missing rows, unknown
+bindings and conflicts remain in each page's counts. A page result or a stable
+snapshot's row count and maximum key cannot authorize a reader cutover. N40
+must run a fresh complete semantic comparison and keep writers for `runs`,
+`run_attempts`, `sandbox_leases`, and `sandbox_execution_dispatches` fenced until
+the cutover transaction commits. Backfill inserts only and is safe to repeat;
+it never overwrites an existing receipt.
+For each Attempt its lock order is Run, matching Sandbox leases ordered by lease
+id, Attempt, then settlement detail. Sandbox accepted, dispatch intent, and
+terminal-receipt writers use this order before changing source facts, then call
+the Runs-owned `AttemptSettlementProjectionService.persist_in_transaction` in
+the same transaction. Bounded legacy reconciliation claims already hold their
+selected Sandbox leases; their hook reads source facts without acquiring Run or
+Attempt locks and writes the detail. Run/Attempt terminalization refreshes its
+detail in the same transaction. `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` is
+explicit and defaults to false. Heartbeats that only change executor heartbeat
+facts, cleanup claims, and resource release do not write the detail. Cleanup
+pending/finalize/failure writes refresh the detail only when their legacy
+reconciliation status changes the derived settlement phase; cleanup ownership
+and cleanup claim facts remain Sandbox-owned and visible in comparison counts.
+
+Page comparison remains page-scoped. Full comparison is available only inside a
+caller-owned `REPEATABLE READ` or `SERIALIZABLE` transaction and returns the
+complete Attempt denominator plus its count/high-key fence. It does not claim
+cutover readiness. A future reader switch must revalidate the fence in a fresh
+`READ COMMITTED` transaction before enabling reads; the validator holds a short
+`SHARE` lock on `run_attempts` through that transaction so concurrent Attempt
+inserts cannot make the proof stale before commit.
+
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds
 the oldest eligible Run. This removes the fixed tail horizon that could starve

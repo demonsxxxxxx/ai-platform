@@ -44,7 +44,7 @@ def test_only_provider_session_append_receives_tail_writer_identity():
 @pytest.mark.parametrize(
     ("failure", "reason", "expected_calls"),
     [
-        (None, None, ["read", "run_lock", "attempt_lock"]),
+        (None, None, ["read", "run_lock", "lease_lock"]),
         ("missing", "run_not_found", ["read"]),
         ("session", "callback_session_mismatch", ["read"]),
         ("terminal", "run_already_terminal", ["read"]),
@@ -52,11 +52,11 @@ def test_only_provider_session_append_receives_tail_writer_identity():
         ("locked_tenant", "sandbox_runtime_attempt_inactive", ["read", "run_lock"]),
         ("locked_session", "callback_session_mismatch", ["read", "run_lock"]),
         ("locked_terminal", "run_already_terminal", ["read", "run_lock"]),
-        ("no_lease", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "attempt_lock"]),
-        ("duplicate", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "attempt_lock"]),
-        ("attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "attempt_lock"]),
-        ("payload_attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "attempt_lock"]),
-        ("generation", "sandbox_runtime_owner_generation_stale", ["read", "run_lock", "attempt_lock"]),
+        ("no_lease", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "lease_lock"]),
+        ("duplicate", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "lease_lock"]),
+        ("attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "lease_lock"]),
+        ("payload_attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "lease_lock"]),
+        ("generation", "sandbox_runtime_owner_generation_stale", ["read", "run_lock", "lease_lock"]),
     ],
 )
 async def test_assembled_callback_authority_preserves_durable_fences(monkeypatch, entry, failure, reason, expected_calls):
@@ -87,7 +87,7 @@ async def test_assembled_callback_authority_preserves_durable_fences(monkeypatch
     async def current(conn, **scope):
         assert conn is connection
         assert scope == {"tenant_id": "durable-tenant", "run_id": "run", "attempt_id": "attempt"}
-        calls.append("attempt_lock")
+        calls.append("lease_lock")
         row = deepcopy(lease)
         if failure == "no_lease":
             return []

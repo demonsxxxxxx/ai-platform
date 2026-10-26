@@ -2602,6 +2602,9 @@ async def test_worker_startup_does_not_wait_for_blocked_bulk_cleanup(monkeypatch
             slots_started.set()
         await asyncio.Event().wait()
 
+    async def no_supervision_candidates(*_args, **_kwargs):
+        return ()
+
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", blocked_cleanup)
     monkeypatch.setattr("app.worker_main.cleanup_expired_memory_records_for_worker", noop)
@@ -2612,6 +2615,11 @@ async def test_worker_startup_does_not_wait_for_blocked_bulk_cleanup(monkeypatch
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", terminal_reconciler)
     monkeypatch.setattr("app.worker_main.run_once", run_once)
     monkeypatch.setattr("app.worker_main._run_worker_slot", run_worker_slot)
+    monkeypatch.setattr(
+        "app.worker_main.bind_worker_supervision_operation",
+        lambda operation, **_kwargs: operation,
+    )
+    monkeypatch.setattr("app.worker_main.observe_worker_supervision_candidates", no_supervision_candidates)
 
     task = asyncio.create_task(
         worker_main.run_worker_pool(
@@ -3465,11 +3473,19 @@ async def test_run_once_progresses_critical_recovery_while_cleanup_is_blocked(mo
         calls.append(("lease", worker_id))
         return None
 
+    async def no_supervision_candidates(*_args, **_kwargs):
+        return ()
+
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.cleanup_expired_sandbox_leases", blocked_cleanup)
     monkeypatch.setattr("app.worker_main.reconcile_stale_runs_for_worker", reconcile_stale_runs)
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
     monkeypatch.setattr("app.worker_main.queue.lease_run", lease_run)
+    monkeypatch.setattr(
+        "app.worker_main.bind_worker_supervision_operation",
+        lambda operation, **_kwargs: operation,
+    )
+    monkeypatch.setattr("app.worker_main.observe_worker_supervision_candidates", no_supervision_candidates)
 
     outcome = await run_once(timeout_seconds=1, worker_id="worker-a")
 
@@ -3635,10 +3651,12 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
         concurrency=1,
     )
 
-    from app.sandbox.application.dispatch_intent import SandboxDispatchIntentService
-
     dispatch_intents = captured.pop("dispatch_intents")
-    assert isinstance(dispatch_intents, SandboxDispatchIntentService)
+    assert isinstance(
+        dispatch_intents,
+        executor_reconciliation.SandboxDispatchIntentService,
+    )
+    assert dispatch_intents._repository is executor_reconciliation.dispatch_postgres
     assert captured == {
         "stop_event": stop_event,
         "lease_port": lease_port,

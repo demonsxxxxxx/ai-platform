@@ -43,6 +43,7 @@ from app.bootstrap.worker_maintenance import (
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
 from app.execution.api import RunDeliveryIntents, WorkerQueueLease, stage_stale_run_reconciliation
+from app.execution.api import SupervisionDomain
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -53,6 +54,10 @@ from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
 from app.bootstrap.executor_reconciliation import run_executor_terminal_reconciler
+from app.bootstrap.execution_supervision import (
+    bind_worker_supervision_operation,
+    observe_worker_supervision_candidates,
+)
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.storage import ObjectStorage, run_storage_io
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
@@ -634,6 +639,28 @@ def _worker_recovery_phases(
     return phases
 
 
+async def _observe_supervision_candidates(settings: object) -> int:
+    candidates = await observe_worker_supervision_candidates(settings)
+    if candidates:
+        logger.info(
+            "Execution supervision shadow candidates",
+            extra={
+                "candidate_count": len(candidates),
+                "candidates": [
+                    {
+                        "domain": candidate.domain.value,
+                        "candidate_id": candidate.candidate_id,
+                        "action": candidate.action,
+                        "deadline_at": candidate.deadline_at.isoformat(),
+                        "priority": candidate.priority,
+                    }
+                    for candidate in candidates
+                ],
+            },
+        )
+    return len(candidates)
+
+
 async def run_worker_recovery_maintenance(
     settings: object,
     *,
@@ -661,7 +688,9 @@ async def _maintenance_until_done(
     *,
     run_delivery_intents: RunDeliveryIntents | None = None,
     recovery_already_ran: bool = False,
+    worker_id: str | None = None,
 ) -> None:
+    resolved_worker_id = worker_id or default_worker_id()
     operations = _worker_cleanup_phases(settings)
     operations.update(_worker_recovery_phases(
         settings,
@@ -675,6 +704,22 @@ async def _maintenance_until_done(
         and _worker_role(settings) in {"integrated", "execution"}
     ):
         operations["run_delivery_intents"] = run_delivery_intents.scan_once
+    if "sandbox_cleanup" in operations:
+        operations["sandbox_cleanup"] = bind_worker_supervision_operation(
+            operations["sandbox_cleanup"],
+            domain=SupervisionDomain.CLEANUP,
+            worker_id=resolved_worker_id,
+            settings=settings,
+        )
+    if "run_delivery_intents" in operations:
+        operations["run_delivery_intents"] = bind_worker_supervision_operation(
+            operations["run_delivery_intents"],
+            domain=SupervisionDomain.DELIVERY,
+            worker_id=resolved_worker_id,
+            settings=settings,
+        )
+    if bool(getattr(settings, "execution_supervision_shadow_enabled", False)):
+        operations["supervision_shadow"] = lambda: _observe_supervision_candidates(settings)
     phase_tasks = [
         asyncio.create_task(
             maintenance_phase_until_done(
@@ -933,6 +978,7 @@ async def run_once(
                 lifecycle,
                 run_delivery_intents=run_delivery_intents,
                 recovery_already_ran=run_initial_maintenance,
+                worker_id=resolved_worker_id,
             ),
             name="ai-platform-worker-maintenance",
         )
@@ -1253,6 +1299,7 @@ async def _run_worker_process(
                 attempt_lifecycle,
                 lifecycle,
                 run_delivery_intents=run_delivery_intents,
+                worker_id=process_worker_id,
             ),
             name="ai-platform-worker-maintenance",
         ))

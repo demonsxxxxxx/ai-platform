@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.bootstrap import execution_supervision as _worker_supervision
 from app.platform.tracing import safe_exception_log_fields
 
 from app.context.api import ProviderSessionConflictError
@@ -57,6 +58,51 @@ class _Connection:
 @asynccontextmanager
 async def _transaction():
     yield _Connection()
+
+
+class _LegacySupervisionStore:
+    """Model persisted legacy ownership for reconciler unit tests."""
+
+    def __init__(self) -> None:
+        self._claims: dict[str, dict[str, object]] = {}
+        self._next_claim = 0
+
+    async def read_domain_control(self, _connection, *, domain):
+        return {"domain": domain.value, "mode": "legacy", "owner_version": 1}
+
+    async def claim_domain_work(
+        self,
+        _connection,
+        *,
+        domain,
+        owner_mode,
+        worker_id,
+        ttl_seconds,
+        capacity=1,
+    ):
+        assert owner_mode == "legacy"
+        in_flight = sum(
+            claim["domain"] == domain.value for claim in self._claims.values()
+        )
+        if in_flight >= capacity:
+            return None
+        self._next_claim += 1
+        claim = {
+            "domain": domain.value,
+            "owner_mode": owner_mode,
+            "owner_version": 1,
+            "worker_id": worker_id,
+            "ttl_seconds": ttl_seconds,
+            "claim_token": f"test-claim-{self._next_claim}",
+        }
+        self._claims[str(claim["claim_token"])] = claim
+        return claim
+
+    async def claim_is_current(self, _connection, claim):
+        return self._claims.get(str(claim["claim_token"])) == claim
+
+    async def release_domain_work(self, _connection, claim):
+        return self._claims.pop(str(claim["claim_token"]), None) is not None
 
 
 class _EventPersistence:
@@ -132,6 +178,13 @@ def _fake_executor_signal_cursor(monkeypatch):
         "app.executor_reconciler.initialize_executor_reconciliation_signal_cursor",
         initialize,
     )
+
+
+@pytest.fixture(autouse=True)
+def _fake_persisted_supervision_owner(monkeypatch):
+    """Keep business-SQL fakes isolated while requiring a legacy owner claim."""
+    monkeypatch.setattr(_worker_supervision, "transaction", _transaction)
+    monkeypatch.setattr(_worker_supervision, "supervision_postgres", _LegacySupervisionStore())
 
 
 def _lease_row() -> dict[str, object]:
@@ -259,6 +312,7 @@ async def test_reconciler_uses_spare_capacity_while_first_completion_is_blocked(
 
     stop = asyncio.Event()
     first_started = asyncio.Event()
+    finish_first = asyncio.Event()
     second_finished = asyncio.Event()
     first_finished = asyncio.Event()
     calls = 0
@@ -273,11 +327,12 @@ async def test_reconciler_uses_spare_capacity_while_first_completion_is_blocked(
         try:
             if calls == 1:
                 first_started.set()
-                await asyncio.Event().wait()
+                await finish_first.wait()
             else:
                 await first_started.wait()
                 second_finished.set()
                 stop.set()
+                finish_first.set()
             return 1
         finally:
             active -= 1
@@ -334,28 +389,27 @@ async def test_reconciler_scans_while_signal_initialization_is_blocked(monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("concurrency", [1, 2, 4])
-async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_shutdown(monkeypatch, concurrency):
+async def test_reconciler_holds_bounded_slots_until_claimed_work_finishes_on_shutdown(
+    monkeypatch, concurrency
+):
     from app import executor_reconciler
 
     stop = asyncio.Event()
     started = asyncio.Event()
-    cancelled = asyncio.Event()
     release = asyncio.Event()
     calls = 0
-    cancellations = 0
+    monkeypatch.setattr(
+        executor_reconciler,
+        "get_settings",
+        lambda: SimpleNamespace(supervision_settlement_capacity=concurrency),
+    )
 
     async def reconcile(**_kwargs):
-        nonlocal calls, cancellations
+        nonlocal calls
         calls += 1
         if calls == concurrency:
             started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancellations += 1
-            if cancellations == concurrency:
-                cancelled.set()
-            await release.wait()
+        await release.wait()
         return 1
 
     async def no_work(**_kwargs):
@@ -370,7 +424,7 @@ async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_
         await asyncio.sleep(0.02)
         assert calls == concurrency
         stop.set()
-        await asyncio.wait_for(cancelled.wait(), 0.5)
+        await asyncio.sleep(0)
         assert not task.done()
         release.set()
         await asyncio.wait_for(task, 0.5)
@@ -498,6 +552,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
 
     stop_event = asyncio.Event()
     maintenance_started = asyncio.Event()
+    finish_maintenance = asyncio.Event()
     maintenance_finished = asyncio.Event()
     terminal_scanned = asyncio.Event()
     scans = 0
@@ -511,6 +566,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
             assert not maintenance_finished.is_set()
             terminal_scanned.set()
             stop_event.set()
+            finish_maintenance.set()
         return 0
 
     async def blocked(**_kwargs):
@@ -518,7 +574,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
         phase_calls += 1
         maintenance_started.set()
         try:
-            await asyncio.Event().wait()
+            await finish_maintenance.wait()
         finally:
             maintenance_finished.set()
 
@@ -557,7 +613,6 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
 
     stop_event = asyncio.Event()
     started = asyncio.Event()
-    cancelled = asyncio.Event()
     release = asyncio.Event()
     finished = asyncio.Event()
 
@@ -567,9 +622,6 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
     async def cleanup(**_kwargs):
         started.set()
         try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
             await release.wait()
         finally:
             finished.set()
@@ -588,7 +640,9 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
     task = asyncio.create_task(run_executor_terminal_reconciler(stop_event, concurrency=1))
     try:
-        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.wait_for(stop_event.wait(), timeout=1)
+        await asyncio.sleep(0)
         assert not task.done()
         assert not finished.is_set()
         release.set()
@@ -1999,7 +2053,8 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
 
     stop_event = asyncio.Event()
     next_probe_started = asyncio.Event()
-    next_probe_cancelled = asyncio.Event()
+    finish_next_probe = asyncio.Event()
+    next_probe_finished = asyncio.Event()
     calls: list[str] = []
 
     async def reconcile(**_kwargs):
@@ -2007,8 +2062,9 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
             # Observe consumption while the next batch is still blocked, not
             # only when the entire probe backlog has finished.
             await next_probe_started.wait()
-            assert not next_probe_cancelled.is_set()
+            assert not next_probe_finished.is_set()
             stop_event.set()
+            finish_next_probe.set()
         calls.append("reconcile")
         return 0
 
@@ -2022,9 +2078,9 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
             return 1
         next_probe_started.set()
         try:
-            await asyncio.Event().wait()
+            await finish_next_probe.wait()
         finally:
-            next_probe_cancelled.set()
+            next_probe_finished.set()
 
     async def idle_signal(**_kwargs):
         await asyncio.Event().wait()
@@ -2065,7 +2121,7 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
     assert calls.count("reconcile") == 2
     assert calls.count("probe") == 2
     assert calls.count("cleanup") == 1
-    assert next_probe_cancelled.is_set()
+    assert next_probe_finished.is_set()
 
 
 @pytest.mark.asyncio

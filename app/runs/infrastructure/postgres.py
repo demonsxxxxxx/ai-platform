@@ -1402,7 +1402,7 @@ class PostgresRunCancellationPersistence:
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
-            for_update=True,
+            for_update=False,
         )
         attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))
@@ -1498,7 +1498,7 @@ class PostgresRunCancellationPersistence:
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
-            for_update=True,
+            for_update=False,
         )
         attempt_id = str(attempt_row["id"]) if attempt_row is not None else None
         newly_requested = bool(row.get("cancel_requested_newly"))

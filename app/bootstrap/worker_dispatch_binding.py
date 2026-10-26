@@ -16,6 +16,7 @@ from app.execution.api import (
 )
 from app.execution_boundary import ordinary_worker_run_uses_runtime_sandbox
 from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_runtime_lease_port
 from app.mcp import api as mcp_api
 from app.platform.postgres import errors as platform_errors
 from app.runs import api as runs_api
@@ -52,7 +53,7 @@ def _worker_runtime_evidence(*, worker_id: str | None, executor_type: str) -> di
 async def create_worker_runtime_lease(conn: Any, **kwargs: Any) -> Any:
     return await create_worker_runtime_sandbox_lease(
         conn, **kwargs, ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
-        create_lease=sandbox_lease_repository.create_sandbox_lease,
+        create_lease=build_sandbox_runtime_lease_port().create_sandbox_lease,
     )
 
 
