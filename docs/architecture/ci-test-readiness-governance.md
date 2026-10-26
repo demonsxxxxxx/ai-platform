@@ -111,7 +111,8 @@ manifest and uploaded with the shard evidence. C-layer execution records
 attestation of enforcement or isolation.
 
 Pull requests targeting `main`, `feat/n01-lifecycle-control-chain`,
-`test/run-lifecycle-control-chain`, or `feat/lifecycle-phase*` run the same complete backend and frontend required
+`test/run-lifecycle-control-chain`, or `feat/lifecycle-phase1`,
+`feat/lifecycle-phase2`, `feat/lifecycle-phase3` run the same complete backend and frontend required
 workflows. Do not add path filters or alter the required aggregate for these
 stacked phase branches.
 

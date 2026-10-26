@@ -547,12 +547,11 @@ def test_backend_required_check_is_stable_for_main_and_stacked_lifecycle_pull_re
     assert "- main" in pull_request_block
     assert "- feat/n01-lifecycle-control-chain" in pull_request_block
     assert "- test/run-lifecycle-control-chain" in pull_request_block
-    assert "- feat/lifecycle-phase*" in pull_request_block
-    from fnmatch import fnmatchcase
-
-    patterns = [line.strip()[2:] for line in pull_request_block.splitlines() if line.strip().startswith("- ")]
-    for branch in ("test/run-lifecycle-control-chain", "feat/lifecycle-phase1", "feat/lifecycle-phase2", "feat/lifecycle-phase3"):
-        assert any(fnmatchcase(branch, pattern) for pattern in patterns), branch
+    branches = [line.strip()[2:] for line in pull_request_block.splitlines() if line.strip().startswith("- ")]
+    assert branches == [
+        "main", "feat/n01-lifecycle-control-chain", "test/run-lifecycle-control-chain",
+        "feat/lifecycle-phase1", "feat/lifecycle-phase2", "feat/lifecycle-phase3",
+    ]
     assert "paths:" not in pull_request_block
     assert (
         "group: ai-platform-backend-${{ github.event.pull_request.number || github.run_id }}"
