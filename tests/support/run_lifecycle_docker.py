@@ -326,7 +326,7 @@ class LifecycleDockerStack:
         self.name_prefix = f"ai-platform-lifecycle-{self.scope_id}"
         self.network_name = f"{self.name_prefix}-bridge"
         # The production UDS owner checks the daemon-side path against 107 bytes.
-        self.workspace_volume_name = f"n01-{self.scope_id[:16]}"
+        self.workspace_volume_name = f"n{self.scope_id[:16]}"
         self.socket_volume_name = f"{self.name_prefix}-socket"
         self._client: Any | None = None
         self._network: Any | None = None
