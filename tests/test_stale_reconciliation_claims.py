@@ -6,6 +6,7 @@ from dataclasses import fields
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 import os
+import json
 from typing import Any
 import uuid
 
@@ -49,6 +50,7 @@ from app.runs.infrastructure.lifecycle_postgres import (
     stale_run_reconciliation_claim_is_current,
 )
 from app.runs.infrastructure.postgres import (
+    PostgresRunCancellationPersistence,
     create_run_attempt,
     prepare_stale_run_attempt_reconciliation,
     transition_run_attempt,
@@ -725,6 +727,184 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
             assert lease["executor_status"] == "pending"
             assert lease["executor_terminal_json"] is None
             assert lease["executor_reconciliation_status"] == "waiting_terminal"
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_version", ["sandbox_lease.v1", "attempt.v1"])
+async def test_real_postgres_cancel_handoff_recovers_after_release_commit(reader_version):
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"cancel_handoff_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        suffix = uuid.uuid4().hex[:12]
+        async with transaction_factory() as conn:
+            tenant_id, run_id, attempt_id, _worker_id, old = await _seed_running_attempt(
+                conn, suffix=suffix
+            )
+            attempt_row = await run_attempt_persistence.request_run_attempt_cancel(
+                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            )
+            assert attempt_row is not None
+            generation = int(attempt_row["owner_generation"])
+            await conn.execute(
+                "update runs set cancel_requested_at=%s, terminalization_target=null "
+                "where tenant_id=%s and id=%s",
+                (old, tenant_id, run_id),
+            )
+            await conn.execute(
+                "update run_attempt_settlement_storage set storage_version=%s where singleton=true",
+                (reader_version,),
+            )
+            await conn.execute(
+                """
+                insert into sandbox_leases(
+                    id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+                    sandbox_mode, provider, status, lease_payload_json, executor_status
+                ) values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'fake', 'released', %s::jsonb, 'pending')
+                """,
+                (
+                    f"lease-{suffix}", tenant_id, f"workspace-{suffix}",
+                    f"user-{suffix}", f"session-{suffix}", run_id, attempt_id,
+                    json.dumps({"attempt_id": attempt_id, "owner_generation": generation - 1}),
+                ),
+            )
+
+        persistence = PostgresRunCancellationPersistence(
+            attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
+            append_event=append_event,
+            append_audit_log=append_audit_log,
+            list_active_sandbox_leases=lambda *_args, **_kwargs: [],
+        )
+        from app.runs.application.cancellation import CancelRequestResult, RunCancellationPostProcessor
+
+        async def _noop():
+            return None
+
+        async def _empty_list():
+            return []
+
+        async def handoff(**kwargs):
+            async with transaction_factory() as conn:
+                return await persistence.handoff_cancelled_attempt(conn, **kwargs)
+
+        async def released_cleanup(_leases, **_kwargs):
+            return [{"id": f"lease-{suffix}"}]
+
+        first_processor = RunCancellationPostProcessor(
+            queue_cleanup=lambda **_kwargs: _noop(),
+            sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=released_cleanup),
+            provider_factory=object(), transaction_factory=transaction_factory,
+            admit_stream=lambda *_args, **_kwargs: _noop(),
+            publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
+            handoff_cancelled_attempt=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("handoff interrupted")),
+        )
+        receipt = CancelRequestResult(
+            run_id, "cancel_requested", None, ({"id": f"lease-{suffix}"},), None,
+            attempt_id, generation,
+        )
+        with pytest.raises(RuntimeError, match="handoff interrupted"):
+            await first_processor.post_cancel(
+                receipt, tenant_id=tenant_id, user_id=f"user-{suffix}",
+                requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+            )
+
+        repeat_processor = RunCancellationPostProcessor(
+            queue_cleanup=lambda **_kwargs: _noop(),
+            sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=lambda *_args, **_kwargs: _empty_list()),
+            provider_factory=object(), transaction_factory=transaction_factory,
+            admit_stream=lambda *_args, **_kwargs: _noop(),
+            publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
+            handoff_cancelled_attempt=handoff,
+        )
+        await repeat_processor.post_cancel(
+            CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
+            tenant_id=tenant_id, user_id=f"user-{suffix}",
+            requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+        )
+        async with transaction_factory() as conn:
+            final = await (await conn.execute(
+                "select owner_kind, owner_id, owner_generation, lease_expires_at "
+                "from run_attempts where tenant_id=%s and id=%s",
+                (tenant_id, attempt_id),
+            )).fetchone()
+            assert final["owner_kind"] == "reconciler"
+            assert final["owner_id"] == "cancel-cleanup"
+            assert int(final["owner_generation"]) == generation + 1
+            assert final["lease_expires_at"] <= datetime.now(timezone.utc)
+    finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_cancel_handoff_rejects_invalid_reader_marker_before_cas():
+    dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
+    if not dsn:
+        pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
+    schema = f"cancel_handoff_invalid_marker_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema)))
+
+        @asynccontextmanager
+        async def transaction_factory():
+            conn = await psycopg.AsyncConnection.connect(
+                dsn, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+            try:
+                async with conn.transaction():
+                    yield conn
+            finally:
+                await conn.close()
+
+        async def index_connection_factory():
+            return await psycopg.AsyncConnection.connect(
+                dsn, autocommit=True, options=f"-c search_path={schema}", row_factory=dict_row
+            )
+
+        await schema_migrations.apply_migrations(
+            transaction_factory=transaction_factory,
+            index_connection_factory=index_connection_factory,
+        )
+        async with transaction_factory() as conn:
+            await conn.execute(
+                "update run_attempt_settlement_storage set storage_version='invalid' where singleton=true"
+            )
+            with pytest.raises(Exception, match="invalid"):
+                await run_attempt_persistence.PostgresRunCancellationPersistence(
+                    attempt_lifecycle=object(), append_event=None, append_audit_log=None,
+                    list_active_sandbox_leases=lambda *_args, **_kwargs: [],
+                ).handoff_cancelled_attempt(
+                    conn, tenant_id="tenant-a", run_id="run-missing", attempt_id="attempt-missing",
+                    expected_owner_generation=5, resource_lease_ids=("lease-missing",),
+                )
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()

@@ -701,7 +701,7 @@ async def test_cancel_handoff_requires_exact_released_resource_and_transfers_own
         def __init__(self):
             self.calls = []
             self.responses = [
-                {"status": "running", "cancel_requested_at": "now", "terminalization_target": "cancel_requested"},
+                {"status": "running", "cancel_requested_at": "now", "terminalization_target": None},
                 None,
                 {"id": "lease-a"},
                 None,

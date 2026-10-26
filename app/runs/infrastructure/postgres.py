@@ -1577,7 +1577,7 @@ class PostgresRunCancellationPersistence:
             run is None
             or run.get("status") != "running"
             or run.get("cancel_requested_at") is None
-            or str(run.get("terminalization_target") or "") not in {"cancel_requested", "cancelled"}
+            or str(run.get("terminalization_target") or "") not in {"", "cancel_requested", "cancelled"}
         ):
             return False
         await conn.execute(

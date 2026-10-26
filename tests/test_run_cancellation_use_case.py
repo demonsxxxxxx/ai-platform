@@ -428,6 +428,26 @@ async def test_cancel_handoff_runs_after_successful_resource_release_and_not_aft
         "expected_owner_generation": 5, "resource_lease_ids": ("lease-a",),
     }]
 
+    async def repeat_cleanup(_leases, **_kwargs):
+        calls.append("repeat-sandbox")
+        return []
+
+    repeat = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=repeat_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    await repeat.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
+    assert handoffs[-1]["resource_lease_ids"] == ()
+
     async def failed_cleanup(*_args, **_kwargs):
         raise RuntimeError("stop failed")
 
@@ -445,7 +465,7 @@ async def test_cancel_handoff_runs_after_successful_resource_release_and_not_aft
             receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
             reason="cancel_requested", worker_capabilities=object(),
         )
-    assert calls == ["sandbox", "handoff"]
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
 
 
 @pytest.mark.asyncio

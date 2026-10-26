@@ -129,14 +129,13 @@ class RunCancellationPostProcessor:
                 for lease in released_leases
                 if isinstance(lease, dict) and lease.get("id")
             )
-            if released_ids:
-                await self._handoff_cancelled_attempt(
-                    tenant_id=tenant_id,
-                    run_id=cancellation.run_id,
-                    attempt_id=cancellation.attempt_id,
-                    expected_owner_generation=cancellation.attempt_owner_generation,
-                    resource_lease_ids=released_ids,
-                )
+            await self._handoff_cancelled_attempt(
+                tenant_id=tenant_id,
+                run_id=cancellation.run_id,
+                attempt_id=cancellation.attempt_id,
+                expected_owner_generation=cancellation.attempt_owner_generation,
+                resource_lease_ids=released_ids,
+            )
         if queue_cleanup_failures:
             raise RunCancellationQueueCleanupError(queue_cleanup_failures)
         return result
