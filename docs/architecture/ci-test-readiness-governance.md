@@ -88,6 +88,65 @@ Rules:
    `not_affected`; they do not disappear from branch protection.
 9. CI success is CI evidence only.
 
+### Run lifecycle acceptance evidence
+
+The `lifecycle-control-chain` backend shard owns the complete
+`tests/test_run_execution_lifecycle_integration.py` selector set. Two explicit,
+non-overlapping runner stages execute that set in parallel. Each stage uses
+PostgreSQL and Redis services, `--require-zero-skips`, a 1,800-second test
+budget, and a 50-minute job budget. Both matrix results remain inside
+`backend-tests`, which `backend required` already requires. Keep the workflow's
+selector batches and zero-skip rule explicit; a missing selector, dependency, or
+fixture is a failure. Each local runner's `evidence.json`, JUnit report, and
+coverage JSON records its exact selector subset and checkout; both artifacts are
+required for the logical shard to pass.
+
+Each C-layer `control-chain.json` manifest binds the source commit, complete
+non-ignored worktree digest, lockfile digest, inspected candidate image ID and
+labels, observed Python/PostgreSQL/Redis/MinIO versions, and the sandbox profile
+configured in the API container. The runtime-version, image-inspection,
+source-binding, and profile JSON artifacts are content-addressed by the
+manifest and uploaded with the shard evidence. C-layer execution records
+`sdk_used: false`; its profile observation is configuration evidence, not an
+attestation of enforcement or isolation.
+
+Pull requests targeting `main`, `feat/n01-lifecycle-control-chain`, or
+`feat/lifecycle-phase-*` run the same complete backend and frontend required
+workflows. Do not add path filters or alter the required aggregate for these
+stacked phase branches.
+
+Real SDK/provider acceptance remains an L-layer maintainer action. Its report
+uses `tests/support/lifecycle_candidate_evidence.py`; first capture the
+checkout binding with `binding --repo-root .`, then build and inspect the exact
+candidate image with labels for the source commit, complete non-ignored
+worktree source digest, `uv.lock` digest, and dirty-build state. The report must
+match that image ID and those labels, record observed Python, PostgreSQL, Redis,
+MinIO, SDK, and provider versions, and bind an enforced security-profile ID and
+digest. It must include redacted, content-addressed observations for image
+inspection, provider acceptance, SDK invocation, callback receipt, committed
+answer readback, selected-file download, confirmed stop/release, and
+cross-sandbox native resume (R01 and R14).
+
+Validate the report against the same checkout and inspected image:
+
+```bash
+python tests/support/lifecycle_candidate_evidence.py validate <report.json> \
+  --repo-root . --bundle-root <external-bundle> --image-id <inspected-sha256-id>
+```
+
+The image labels are `ai-platform.source-commit`,
+`ai-platform.source-tree-sha256`, `ai-platform.uv-lock-sha256`, and
+`ai-platform.build-dirty`; obtain the image ID from the same candidate with
+`docker image inspect --format '{{.Id}}' <image-ref>`.
+
+The validator rejects incomplete or mismatched evidence; it checks consistency
+and artifact digests, not the authenticity of the operator or observations. An
+authorized reviewer must inspect the redacted bundle's provenance. C-layer
+Docker evidence records a deterministic runner and does not satisfy this L
+acceptance. If no authorized real-provider run exists, keep L acceptance
+pending; do not synthesize a successful report or expose credentials to
+ordinary pull-request runners.
+
 ### Convergence checks and repair feedback
 
 [Source architecture §12](source-code-architecture.md#12-executable-governance)

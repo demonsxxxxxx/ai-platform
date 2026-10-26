@@ -31,6 +31,8 @@ _DROP_TERMINAL_ACK_ENV = "N01_DROP_TERMINAL_ACK_ONCE"
 _TERMINAL_ACK_MARKER_ENV = "N01_TERMINAL_ACK_MARKER_PATH"
 _REJECT_TERMINAL_CALLBACKS_ENV = "N02_REJECT_TERMINAL_CALLBACKS"
 _TERMINAL_CALLBACK_LOSS_MARKER_ENV = "N02_TERMINAL_CALLBACK_LOSS_MARKER_PATH"
+_CAPTURE_EXECUTOR_TIMEOUT_CALLBACK_ENV = "N01_CAPTURE_EXECUTOR_TIMEOUT_CALLBACK"
+_EXECUTOR_TIMEOUT_CALLBACK_MARKER_ENV = "N01_EXECUTOR_TIMEOUT_CALLBACK_MARKER_PATH"
 _RELEASE_TIMEOUT_SECONDS = 240.0
 
 
@@ -51,7 +53,11 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
     release_path.unlink(missing_ok=True)
     entered_path.write_text(
         json.dumps(
-            {"run_id": request.run_id, "attempt_id": request.attempt_id},
+            {
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "resource_limits": request.config.get("resource_limits", {}),
+            },
             separators=(",", ":"),
         ),
         encoding="utf-8",
@@ -212,6 +218,23 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
 
 def main() -> None:
     app_module = os.environ.get("APP_MODULE")
+    if (
+        app_module == _API_APP_MODULE
+        and os.environ.get(_CAPTURE_EXECUTOR_TIMEOUT_CALLBACK_ENV) == "true"
+    ):
+        import uvicorn
+
+        from app.main import create_app
+        from run_lifecycle_faults import CaptureExecutorTimeoutCallback
+
+        marker_path = Path(os.environ[_EXECUTOR_TIMEOUT_CALLBACK_MARKER_ENV])
+        uvicorn.run(
+            CaptureExecutorTimeoutCallback(create_app(), marker_path=marker_path),
+            host="0.0.0.0",
+            port=int(os.environ.get("APP_PORT", "8020")),
+            log_level="info",
+        )
+        return
     if (
         app_module == _API_APP_MODULE
         and os.environ.get(_REJECT_TERMINAL_CALLBACKS_ENV) == "true"
