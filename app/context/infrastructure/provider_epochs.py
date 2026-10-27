@@ -27,6 +27,7 @@ from app.context.domain.provider_sessions import (
     provider_entry_json_bytes,
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     ProviderSessionConflictError,
     ProviderSessionNotFoundError,
     ProviderSessionScope,
@@ -192,7 +193,7 @@ async def read_provider_coverage(
         or type(row["entry_count"]) is not int
         or row["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
         or type(row["transcript_bytes"]) is not int
-        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
     ):
         raise ProviderSessionConflictError("provider_session_requires_new_conversation")
     return {
@@ -738,7 +739,7 @@ async def prepare_provider_epoch(
             or head["coverage_source_sha256"] != digest
             or head["coverage_message_count"] != count
             or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
-            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 16 * 1024 * 1024
+            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
         ):
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = head["current_epoch_id"]

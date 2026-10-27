@@ -16,6 +16,7 @@ from app.context.domain.conversation_authority import (
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     ProviderSessionConflictError,
     ProviderSessionScope,
     normalize_provider_entry_batch,
@@ -284,6 +285,99 @@ async def test_lineage_claim_rejects_a_different_active_run():
     conn.calls.clear()
     await provider_epochs.claim_provider_lineage(conn, scope=SCOPE, run_id="run-a")
     assert any("for update" in sql for sql in conn.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript_bytes", "accepted"),
+    [
+        (
+            MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
+            - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
+            True,
+        ),
+        (
+            MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
+            - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
+            + 1,
+            False,
+        ),
+    ],
+)
+async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_preparation(
+    transcript_bytes, accepted,
+):
+    """Both native-resume gates enforce the same 64 MiB minus 16 MiB boundary."""
+    assert PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES == 16 * 1024 * 1024
+    receipt = source_receipt()
+    context = {
+        "source_sha256": receipt["source_sha256"],
+        "message_count": 0,
+        "current_message_id": "msg-user",
+        "messages": [],
+        "selected_message_count": 0,
+        "selected_turn_count": 0,
+    }
+    coverage_connection = Connection(
+        coverage_row=_coverage_row(
+            coverage_source_sha256=receipt["source_sha256"],
+            transcript_bytes=transcript_bytes,
+        ),
+    )
+    preparation_connection = Connection(
+        head={
+            "active_run_id": "run-current",
+            "current_epoch_id": "pe-old",
+            "next_epoch_number": 2,
+            "state": "ready",
+            "coverage_source_sha256": receipt["source_sha256"],
+            "coverage_message_count": 0,
+            "entry_count": 1,
+            "transcript_bytes": transcript_bytes,
+            "structured_bytes": 100,
+            "writer_run_id": None,
+            "writer_attempt_id": None,
+            "writer_owner_generation": None,
+            "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685",
+        },
+    )
+
+    if accepted:
+        assert await provider_epochs.read_provider_coverage(
+            coverage_connection, scope=SCOPE, run_id="run-current", session_generation=4,
+        ) == {
+            "source_sha256": receipt["source_sha256"],
+            "message_count": 5,
+            "coverage_through_generation": 2,
+        }
+        result = await provider_epochs.prepare_provider_epoch(
+            preparation_connection,
+            scope=SCOPE,
+            run_id="run-current",
+            conversation_context=context,
+        )
+        assert result["execution_mode"] == "native_resume"
+    else:
+        with pytest.raises(
+            ProviderSessionConflictError,
+            match="provider_session_requires_new_conversation",
+        ):
+            await provider_epochs.read_provider_coverage(
+                coverage_connection,
+                scope=SCOPE,
+                run_id="run-current",
+                session_generation=4,
+            )
+        with pytest.raises(
+            ProviderSessionConflictError,
+            match="provider_session_requires_new_conversation",
+        ):
+            await provider_epochs.prepare_provider_epoch(
+                preparation_connection,
+                scope=SCOPE,
+                run_id="run-current",
+                conversation_context=context,
+            )
 
 
 @pytest.mark.asyncio

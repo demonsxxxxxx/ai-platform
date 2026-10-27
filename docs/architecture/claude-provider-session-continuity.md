@@ -268,13 +268,14 @@ at 128 objects and 64 MiB; durable deletion receipts release that reservation
 budget. Cancellation may only persist the existing qualified tail writer.
 
 Limits are separate: 8 MiB per encoded image, 128 extracted fields per batch,
-16 MiB per raw entry, 32 MiB per append batch and 64 MiB per restored transcript.
-The image-free entry remains at most 256 KiB; structured byte totals are retained
-for integrity accounting but impose no aggregate capacity limit. The 4096-entry cap
-and 128-entry/32 MiB append limits remain. CLI stdout buffering and private callback
-response limits accommodate the bounded restored transcript. Public
-assistant-text limits are unchanged. These are resource limits, not a promise
-that every model accepts an image of that size.
+16 MiB per raw entry, 32 MiB per append batch and 64 MiB raw cumulative
+transcript. Native resume retains 16 MiB within that raw limit, so its admission
+boundary is 48 MiB. The image-free entry remains at most 256 KiB; structured byte
+totals are retained for integrity accounting but impose no aggregate capacity
+limit. The 4096-entry cap and 128-entry/32 MiB append limits remain. CLI stdout
+buffering and private callback response limits accommodate the bounded restored
+transcript. Public assistant-text limits are unchanged. These are resource
+limits, not a promise that every model accepts an image of that size.
 
 `provider_session_images` owns private object metadata and survives parent
 session/epoch deletion. The existing deletion outbox owns each provisional
