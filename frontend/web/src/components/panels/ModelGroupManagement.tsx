@@ -483,7 +483,7 @@ export function GroupDrawer({
         <DrawerPortal><DrawerBackdrop /><DrawerPopup placement="right" width="min(48rem, 100vw)" finalFocus={finalFocus} data-model-group-drawer aria-label={`${group.name} 分组`}>
           <DrawerHeader><div className="min-w-0"><DrawerTitle>{group.name}</DrawerTitle><p className="mt-1 font-mono text-xs text-[var(--theme-text-secondary)]">{group.code} · {group.type === "ordinary_default" ? "普通默认组" : "业务组"}</p></div><Button type="text" aria-label="关闭分组抽屉" disabled={Boolean(busy)} onClick={close} icon={<X size={18} />} /></DrawerHeader>
           <DrawerContent>
-            <div className="p-5">
+            <div className="min-w-0 flex-1 p-5">
               {busy === "details" ? <p className="text-sm text-[var(--theme-text-secondary)]">正在加载分组…</p> : null}
               {error ? <p className="mb-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
               {details ? <TabsRoot value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)}>

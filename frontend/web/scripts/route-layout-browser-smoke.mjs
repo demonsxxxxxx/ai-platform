@@ -514,7 +514,9 @@ async function runCase(viewport, scenario) {
         if (!centered) throw new Error('plugins:collapsed-icon-not-centered');
       }
     }
+    let modelGroupDrawer = null;
     if (scenario.name === "models") {
+      const tabs = [];
       await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
         if (!input) throw new Error('synthetic_deepseek_missing');
@@ -528,6 +530,35 @@ async function runCase(viewport, scenario) {
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
+      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"编辑 布局测试组\"]'))", `${viewport.name}:models:group-edit-ready`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="编辑 布局测试组"]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-models]'))", `${viewport.name}:models:drawer-loaded`);
+      await browser.client.waitFor(`(() => {
+        const drawer = document.querySelector('[data-model-group-drawer]');
+        const panel = drawer?.querySelector('[data-drawer-placement]');
+        return panel && Math.abs(panel.getBoundingClientRect().left - drawer.getBoundingClientRect().left) < 2;
+      })()`, `${viewport.name}:models:drawer-settled`);
+      for (const tab of ["基本信息", "模型", "成员"]) {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === ${JSON.stringify(tab)})).click()`);
+        const geometry = await browser.client.evaluate(`(() => {
+          const drawer = document.querySelector('[data-model-group-drawer]');
+          const panel = [...drawer.querySelectorAll('[role=tabpanel]')].find(node => node.checkVisibility());
+          const rect = panel.getBoundingClientRect();
+          const frame = drawer.getBoundingClientRect();
+          return { leftGap: rect.left - frame.left, rightGap: frame.right - rect.right,
+            width: rect.width, scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth };
+        })()`);
+        tabs.push({ tab, ...geometry });
+        if (Math.abs(geometry.leftGap - geometry.rightGap) > 2 || geometry.leftGap > 24 || geometry.scrollWidth > geometry.clientWidth + 1) {
+          throw new Error(`model_group_drawer_width_failed:${viewport.name}:${tab}:${JSON.stringify(geometry)}`);
+        }
+      }
+      await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '模型')).click()`);
+      const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
+      modelGroupDrawer = { tabs, screenshot };
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 布局测试组'", `${viewport.name}:models:group-focus-restored`);
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="catalog"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-admin-control]'))", `${viewport.name}:models:catalog-restored`);
     }
@@ -866,7 +897,7 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, modelGroupDrawer, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
