@@ -50,7 +50,7 @@ def isolate_cleanup_compensation_persistence(monkeypatch):
 
     monkeypatch.setattr("app.bootstrap.sandbox_cleanup.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome",
+        sandbox_runtime_cleanup._outcomes, "record_sandbox_runtime_cleanup_outcome",
         fake_record_cleanup_outcome,
     )
 
@@ -1492,7 +1492,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
         fake_release_stopped_sandbox_leases,
     )
     monkeypatch.setattr(
-        "app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome",
+        sandbox_runtime_cleanup._outcomes, "record_sandbox_runtime_cleanup_outcome",
         fake_record_cleanup_outcome,
     )
     monkeypatch.setattr("app.bootstrap.sandbox_cleanup.transaction", fake_transaction)

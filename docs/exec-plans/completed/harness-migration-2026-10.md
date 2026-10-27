@@ -63,7 +63,7 @@
 - `app/runs/infrastructure/replay_postgres.py:17-18,38-42` 直连 Conversations message writer、Identity audit writer、Skills snapshot persistence 和 Streaming event writer。
 - `app/runs/infrastructure/capability_admission_postgres.py:5,11-13,20-24` 直连 Skills/Identity infrastructure；MCP 查询已通过 `app.mcp.api`，不再登记为内部导入。
 - `app/skills/catalog.py:11-33` 依赖 Identity infrastructure、同域 Skills infrastructure 及 legacy 根模块；同域实现依赖不属于跨 context 越界。
-- `app/sandbox/infrastructure/leases_postgres.py:5-6` 直连 Identity/Streaming writer。
+- Cleanup outcome 候选已由 `app/sandbox/application/runtime_cleanup.py` 的 `SandboxCleanupOutcomes` 拥有；Bootstrap 注入 Identity/Streaming writer，旧 SQL adapter 编排已删除。真实 PG 事务、锁及取消验收未完成，TD-SANDBOX-001 保持开放。
 
 本次 [全量静态库存](quality-baseline-2026-10-13/source-quality-inventory.json) 解析 452 个 app Python 文件、423 个前端生产文件和测试文件索引，0 解析失败；得到 **36 条跨 context 内部导入边**，其中 Agent Apps 13 条、Runs 16 条。完整位置与分母见 [QUALITY_SCORE](quality-baseline-2026-10-13/QUALITY_SCORE.md)，B3–B5 只是首批 bounded scope，不是全部剩余架构债。静态图包含局部/条件/type-only import，不单独证明运行故障。
 

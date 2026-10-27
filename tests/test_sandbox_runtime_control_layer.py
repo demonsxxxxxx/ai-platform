@@ -1,3 +1,5 @@
+import asyncio
+
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
@@ -259,7 +261,7 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
     monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'get_sandbox_lease', get_lease)
     monkeypatch.setattr(sandbox_leases._sandbox_cleanup, "stop_sandbox_leases", fail_stop)
     monkeypatch.setattr(
-        _owner_sandbox_infrastructure_leases_postgres,
+        sandbox_leases._sandbox_cleanup_outcomes,
         'record_sandbox_runtime_cleanup_outcome',
         fail_audit,
     )
@@ -419,3 +421,63 @@ async def test_executor_callback_rejects_disagreeing_first_class_attempt_binding
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "sandbox_runtime_attempt_mismatch"
+
+
+@pytest.mark.parametrize("fault", [None, "event", "audit", "cancel"])
+async def test_explicit_release_failure_uses_new_transaction_for_both_writers(monkeypatch, fault):
+    from app.bootstrap.sandbox_cleanup import build_sandbox_cleanup_outcomes
+
+    trace = []
+    connections = []
+    row = {"id": "lease-a", "tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a",
+           "trace_id": "trace-a", "status": "active", "provider": "docker"}
+
+    class Transaction:
+        async def __aenter__(self):
+            self.conn = object()
+            connections.append(self.conn)
+            trace.append(f"begin:{len(connections)}")
+            return self.conn
+
+        async def __aexit__(self, kind, error, tb):
+            trace.append(f"{'rollback' if kind else 'commit'}:{connections.index(self.conn) + 1}")
+
+    async def get(conn, **kwargs):
+        assert conn is connections[0]
+        assert kwargs == {"tenant_id": "tenant-a", "user_id": "user-a", "run_id": "run-a", "lease_id": "lease-a"}
+        return row
+
+    async def stop(*args, **kwargs):
+        raise SandboxRuntimeCleanupError([{"container_id": "lease-a", "message": "private-marker"}])
+
+    async def event(conn, **kwargs):
+        assert conn is connections[1] and conn is not connections[0]
+        assert trace == ["begin:1", "rollback:1", "begin:2"]
+        assert kwargs["tenant_id"] == "tenant-a" and kwargs["run_id"] == "run-a"
+        assert kwargs["payload"]["visible_to_user"] is False
+        trace.append("event:2")
+        if fault == "event":
+            raise RuntimeError("event")
+
+    async def audit(conn, **kwargs):
+        assert conn is connections[1]
+        assert kwargs["payload_json"]["lease_ids"] == ["lease-a"]
+        assert kwargs["user_id"] == "user-a" and kwargs["trace_id"] == "trace-a"
+        trace.append("audit:2")
+        if fault == "audit":
+            raise RuntimeError("audit")
+        if fault == "cancel":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(sandbox_leases, "transaction", Transaction)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "get_sandbox_lease", get)
+    monkeypatch.setattr(sandbox_leases._sandbox_cleanup, "stop_sandbox_leases", stop)
+    monkeypatch.setattr(sandbox_leases, "_sandbox_cleanup_outcomes", build_sandbox_cleanup_outcomes())
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.run_events_postgres.append_event", event)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.audit_postgres.append_audit_log", audit)
+    principal = AuthPrincipal(user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"])
+    with pytest.raises(asyncio.CancelledError if fault == "cancel" else HTTPException) as caught:
+        await sandbox_leases.release_sandbox_lease("run-a", "lease-a", SandboxLeaseReleaseRequest(reason="cancelled"), principal)
+    if fault != "cancel":
+        assert caught.value.status_code == (502 if fault is None else 503)
+    assert trace == ["begin:1", "rollback:1", "begin:2", "event:2"] + ([] if fault == "event" else ["audit:2"]) + ["commit:2" if fault is None else "rollback:2"]

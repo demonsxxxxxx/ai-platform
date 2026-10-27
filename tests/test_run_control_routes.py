@@ -22,6 +22,7 @@ from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 from app.runs.api import RunAttemptLifecycleService
+from app.sandbox.api import SandboxCleanupOutcomes
 from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.application.cancellation import RunCancellationPostProcessor, RunCancellationUseCase
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -422,14 +423,14 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(
         'app.runs.infrastructure.control_operations_postgres.acquire_run_control_operation_lock',
@@ -4805,9 +4806,9 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        fake_record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(fake_record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
@@ -4989,9 +4990,9 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        fake_record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(fake_record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
     client = TestClient(create_app())
@@ -5112,9 +5113,9 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        fake_record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(fake_record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(route_cancellation_handlers, "create_container_provider", ProviderByName(calls), raising=False)
     client = TestClient(create_app())
@@ -5257,9 +5258,9 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        fake_record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(fake_record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(
         route_cancellation_handlers, "create_container_provider",
@@ -5297,9 +5298,9 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        'app.sandbox.infrastructure.leases_postgres.record_sandbox_runtime_cleanup_outcome',
-        fail_record_sandbox_runtime_cleanup_outcome,
-        raising=False,
+        SandboxCleanupOutcomes,
+        "record_sandbox_runtime_cleanup_outcome",
+        staticmethod(fail_record_sandbox_runtime_cleanup_outcome),
     )
     monkeypatch.setattr(
         route_cancellation_handlers, "create_container_provider",
