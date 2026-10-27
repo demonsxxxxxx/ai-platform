@@ -346,6 +346,14 @@ container/network attachment addresses. The network must disable masquerading;
 Docker's explicit IPv4-enabled/IPv6-disabled defaults are accepted, while other
 options and IPv6 remain rejected.
 
+Callback witness lookup filters by API release role, release owner and source
+commit at the Docker daemon, then reloads matching candidates before checking
+identity, health and uniqueness. Attaching that witness is idempotent only for
+the exact network ID and one `api.sandbox.internal` alias. A concurrent duplicate
+endpoint response must name the same API container and network and pass a fresh
+attachment check; other connection failures deny admission. These checks retain
+the same two-member topology and cleanup ownership requirements.
+
 The optional Docker Compose overlay shares the API network namespace with the
 trusted Worker so both can reach each Attempt's internal bridge. It removes the
 Worker's separate host aliases and starts it after the API is healthy; Compose

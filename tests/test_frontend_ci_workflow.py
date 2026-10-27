@@ -185,7 +185,16 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
     assert contract["on"] == {
-        "pull_request": {"branches": ["main"]},
+        "pull_request": {
+            "branches": [
+                "main",
+                "feat/n01-lifecycle-control-chain",
+                "test/run-lifecycle-control-chain",
+                "feat/lifecycle-phase1",
+                "feat/lifecycle-phase2",
+                "feat/lifecycle-phase3",
+            ]
+        },
         "push": {"branches": ["main"]},
         "workflow_dispatch": "",
     }
