@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { modelPublicApi } from "../services/api/modelPublic";
+import { modelGroupsApi, type PublicModelGroup } from "../services/api/modelGroups";
 
 export interface AvailableModel {
   id: string;
@@ -23,6 +24,11 @@ interface ModelCatalogContextValue {
   isLoading: boolean;
   availableModels: AvailableModel[] | null;
   defaultModel: string;
+  modelGroups: PublicModelGroup[];
+  selectedGroupId: string;
+  selectedGroup: PublicModelGroup | null;
+  selectGroup: (groupId: string) => void;
+  selectionError: string | null;
 }
 
 const ModelCatalogContext = createContext<ModelCatalogContextValue | undefined>(
@@ -61,6 +67,11 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   authSubjectKeyRef.current = authSubjectKey;
   const subjectGenerationRef = useRef(0);
   const subjectOwnerRef = useRef<SubjectRequestOwner | null>(null);
+  const groupRequestRef = useRef<AbortController | null>(null);
+  const requestedGroupIdRef = useRef("");
+  const [modelGroups, setModelGroups] = useState<PublicModelGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [selectionError, setSelectionError] = useState<string | null>(null);
   const [subjectModelCatalog, setSubjectModelCatalog] =
     useState<SubjectModelCatalogSnapshot | null>(null);
   const isCurrentSubjectOwner = useCallback((owner: SubjectRequestOwner) => {
@@ -73,37 +84,98 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    subjectGenerationRef.current += 1;
+    groupRequestRef.current?.abort();
+    groupRequestRef.current = null;
     subjectOwnerRef.current?.abortController.abort();
     subjectOwnerRef.current = null;
+    subjectGenerationRef.current += 1;
+    setModelGroups([]);
+    setSelectedGroupId("");
+    requestedGroupIdRef.current = "";
+    setSelectionError(null);
 
     if (!authSubjectKey) {
       setSubjectModelCatalog(null);
-      return;
+      return undefined;
     }
 
+    setSubjectModelCatalog(emptySubjectModelCatalog(authSubjectKey));
+    const controller = new AbortController();
+    groupRequestRef.current = controller;
+    void modelGroupsApi
+      .listPublic({ signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted || authSubjectKeyRef.current !== authSubjectKey) return;
+        const businessGroups = (result.groups ?? []).filter((group) => group.type === "business" && group.enabled);
+        setModelGroups(result.groups ?? []);
+        const requestedGroupId = requestedGroupIdRef.current;
+        const restoredGroup = businessGroups.find((group) => group.id === requestedGroupId);
+        if (requestedGroupId && !restoredGroup) {
+          setSelectedGroupId("");
+          setSelectionError("恢复的业务组已不可用，请重新选择业务组。");
+        } else {
+          const primary = (result.groups ?? []).find((group) => group.is_primary);
+          const selected = restoredGroup ?? (primary?.enabled && primary.type === "business" ? primary : null);
+          setSelectedGroupId(selected?.id ?? "");
+          setSelectionError(!selected && primary ? "主组已不可用，请明确选择其他业务组或联系管理员。" : null);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted && authSubjectKeyRef.current === authSubjectKey) {
+          setModelGroups([]);
+          setSelectedGroupId("");
+          setSelectionError("业务组暂时无法加载，请重试或联系管理员。");
+        }
+      });
+
+    return () => {
+      controller.abort();
+      if (groupRequestRef.current === controller) groupRequestRef.current = null;
+      subjectOwnerRef.current?.abortController.abort();
+      subjectOwnerRef.current = null;
+    };
+  }, [authSubjectKey]);
+
+  const selectGroup = useCallback((groupId: string) => {
+    requestedGroupIdRef.current = groupId;
+    const group = modelGroups.find((item) => item.id === groupId && item.type === "business" && item.enabled);
+    if (!group) {
+      setSelectedGroupId("");
+      setSelectionError("所选业务组已不可用，请重新选择业务组。");
+      return;
+    }
+    setSelectionError(null);
+    setSelectedGroupId(groupId);
+  }, [modelGroups]);
+
+  useEffect(() => {
+    if (!authSubjectKey) return undefined;
+    if (!selectedGroupId) {
+      subjectOwnerRef.current?.abortController.abort();
+      subjectOwnerRef.current = null;
+      subjectGenerationRef.current += 1;
+      setSubjectModelCatalog({ subjectKey: authSubjectKey, dbModels: null, adminDefaultModelId: "", isLoading: false });
+      return undefined;
+    }
     const owner: SubjectRequestOwner = {
       subjectKey: authSubjectKey,
-      generation: subjectGenerationRef.current,
+      generation: ++subjectGenerationRef.current,
       abortController: new AbortController(),
     };
+    subjectOwnerRef.current?.abortController.abort();
     subjectOwnerRef.current = owner;
     setSubjectModelCatalog(emptySubjectModelCatalog(authSubjectKey));
-
     const patchCurrentSubject = (
       patch: Partial<Omit<SubjectModelCatalogSnapshot, "subjectKey">>,
     ) => {
       if (!isCurrentSubjectOwner(owner)) return;
       setSubjectModelCatalog((previous) => ({
-        ...(previous?.subjectKey === owner.subjectKey
-          ? previous
-          : emptySubjectModelCatalog(owner.subjectKey)),
+        ...(previous?.subjectKey === owner.subjectKey ? previous : emptySubjectModelCatalog(owner.subjectKey)),
         ...patch,
       }));
     };
-
     void modelPublicApi
-      .listAvailable({ signal: owner.abortController.signal })
+      .listAvailable({ groupId: selectedGroupId, signal: owner.abortController.signal })
       .then((data) => {
         const dbModels =
           data.models && data.models.length > 0
@@ -132,7 +204,7 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
       }
       owner.abortController.abort();
     };
-  }, [authSubjectKey, isCurrentSubjectOwner]);
+  }, [authSubjectKey, isCurrentSubjectOwner, selectedGroupId]);
 
   const visibleSubjectModelCatalog =
     authSubjectKey && subjectModelCatalog?.subjectKey === authSubjectKey
@@ -156,10 +228,17 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
     );
   }, [adminDefaultModelId, availableModels]);
 
+  const businessGroups = modelGroups.filter((group) => group.type === "business" && group.enabled);
+  const selectedGroup = businessGroups.find((group) => group.id === selectedGroupId) ?? null;
   const value: ModelCatalogContextValue = {
     availableModels,
     defaultModel,
-    isLoading: visibleSubjectModelCatalog?.isLoading ?? false,
+    modelGroups: businessGroups,
+    selectedGroupId,
+    selectedGroup,
+    selectGroup,
+    selectionError,
+    isLoading: visibleSubjectModelCatalog?.isLoading ?? Boolean(authSubjectKey && selectedGroupId),
   };
 
   return (

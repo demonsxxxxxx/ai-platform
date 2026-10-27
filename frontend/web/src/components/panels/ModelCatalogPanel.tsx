@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DatabaseZap,
   Gauge,
@@ -20,6 +20,8 @@ import {
   ModelAdminControl,
   type ModelAdminControlState,
 } from "./ModelAdminControl";
+import { ModelGroupManagement } from "./ModelGroupManagement";
+import { TabsIndicator, TabsList, TabsRoot, TabsTab } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
 
@@ -93,6 +95,9 @@ export function ModelCatalogPanel() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adminState, setAdminState] = useState<ModelAdminControlState>("loading");
+  const [adminTab, setAdminTab] = useState<"catalog" | "groups">("catalog");
+  const [groupRevision, setGroupRevision] = useState(0);
+  const groupsChanged = useCallback(() => setGroupRevision((current) => current + 1), []);
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
   const adminAvailability = resolveGroupAvailability({
@@ -158,7 +163,21 @@ export function ModelCatalogPanel() {
         data-frontend-governance-state={adminState}
         className={`${workbenchSurface.page} overflow-y-auto lg:overflow-hidden`}
       >
-        <ModelAdminControl onStateChange={setAdminState} />
+        <div className="shrink-0 border-b border-[var(--theme-border)] px-4 pt-3">
+          <TabsRoot value={adminTab} onValueChange={(value) => setAdminTab(value as "catalog" | "groups")}>
+            <TabsList aria-label="模型配置标签" variant="point">
+              <TabsTab value="catalog" variant="point" data-model-admin-tab="catalog">模型配置</TabsTab>
+              <TabsTab value="groups" variant="point" data-model-admin-tab="groups">分组管理</TabsTab>
+              <TabsIndicator variant="point" />
+            </TabsList>
+          </TabsRoot>
+        </div>
+        <div className={adminTab === "catalog" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "catalog"}>
+          <ModelAdminControl onStateChange={setAdminState} groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
+        </div>
+        <div className={adminTab === "groups" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "groups"}>
+          <ModelGroupManagement groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
+        </div>
       </div>
     );
   }
@@ -168,7 +187,7 @@ export function ModelCatalogPanel() {
       title={t("models.title", "模型")}
       subtitle={t(
         "models.subtitle",
-        "查看当前用户可用的模型；管理员可配置模型容量、默认模型和可用用户。",
+        "查看当前业务组可用的模型；管理员通过分组配置模型和成员。",
       )}
       icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
       searchValue={searchQuery}

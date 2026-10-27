@@ -290,7 +290,7 @@ Compatibility disposition: the previous smaller all-inline private limits and
 writer are superseded. The per-entry structured 256 KiB, raw entry 16 MiB, raw
 transcript 64 MiB, batch 32 MiB and count limits remain. Inline history remains a
 read format, not a second writer. Schema/readiness authority advances to
-`2026.10.26.1`; concurrent-index authority is unchanged. Old binaries cannot restore externalized entries or
+`2026.10.27.1`; concurrent-index authority is unchanged. Old binaries cannot restore externalized entries or
 process the new deletion target; an image swap is not a supported rollback.
 Deploy matching API/Worker/Sandbox binaries after migration under the release
 runbook. No migration rewrites historical hashes, failed Runs or dirty epochs.
@@ -414,7 +414,7 @@ sequence/count and byte metadata since its first main implementation in
 `3199a8fd0938444cfdbcc62c3bab34fdfaf93918` (#1397). No supported main writer
 without those receipts was identified. Existing runtime results without a
 `final_sequence` retain their terminal-commit compatibility path; their native
-append receipts remain the verifier's authority. Schema version `2026.10.26.1`
+append receipts remain the verifier's authority. Schema version `2026.10.27.1`
 makes the canonical representation the new writer authority, keeps `entry_json`
 nullable for old JSONB-only rows, and adds the representation constraint without
 backfilling old rows or receipts.

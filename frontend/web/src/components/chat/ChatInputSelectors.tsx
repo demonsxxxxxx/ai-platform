@@ -33,7 +33,8 @@ export interface ChatInputSelectorsProps {
   // Model selector
   availableModels?: ModelOption[];
   currentModelId?: string;
-  onSelectModel?: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
 }
 
 export function ChatInputSelectors({
@@ -53,6 +54,7 @@ export function ChatInputSelectors({
   enableSkills = true,
   availableModels = [],
   currentModelId,
+  modelSelectionMode = "explicit",
   onSelectModel,
 }: ChatInputSelectorsProps) {
   return (
@@ -101,6 +103,7 @@ export function ChatInputSelectors({
             isOpen={activePanel === "model"}
             onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
             onSelectModel={onSelectModel}
+            selectionMode={modelSelectionMode}
             searchSeed={
               commandSearchSeed?.panel === "model"
                 ? commandSearchSeed.query
