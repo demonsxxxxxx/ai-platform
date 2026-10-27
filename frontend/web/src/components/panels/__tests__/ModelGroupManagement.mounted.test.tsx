@@ -6,6 +6,7 @@ import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummar
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import { companyEmployeesApi } from "../../../services/api/companyEmployees.ts";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
+import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 
 const dom = installSelectTestDom();
 installBrowserAuthTestDb();
@@ -20,15 +21,9 @@ const details: AdminModelGroupDetails = { ...summary, members: [], models: [] };
 async function mount(initialDetails = details, shell = false) {
   const React = await import("react");
   const { ModelGroupManagement } = await import("../ModelGroupManagement.tsx");
-  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
-  const { authApi } = await import("../../../services/api/auth.ts");
   const { ModelCatalogPanel } = await import("../ModelCatalogPanel.tsx");
-  const originalAuth = { getCurrentUser: authApi.getCurrentUser, bootstrapAuthContext: authApi.bootstrapAuthContext };
-  if (shell) {
-    authApi.getCurrentUser = async () => ({ id: "admin", tenant_id: "tenant-a", username: "admin", email: "admin@example.test", roles: ["admin"], permissions: ["model:admin"], is_admin: true, is_active: true, created_at: "", updated_at: "" });
-    authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
-  }
   const original = { ...modelGroupsApi };
+  const catalog = shell ? installModelCatalogTestProvider() : null;
   const originalModelGet = modelAdminApi.get;
   const originalEmployees = companyEmployeesApi.list;
   const calls: Array<{ kind: string; body?: unknown }> = [];
@@ -43,10 +38,10 @@ async function mount(initialDetails = details, shell = false) {
   const container = dom.document.createElement("div");
   const root = await createLobeTestRoot(container);
   await React.act(async () => root.render(shell
-    ? React.createElement(AuthProvider, null, React.createElement(ModelCatalogPanel))
+    ? catalog!.wrap(React.createElement(ModelCatalogPanel))
     : React.createElement(ModelGroupManagement)));
   for (let index = 0; index < 20 && !container.querySelector("[data-model-group-table]"); index += 1) await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return { React, container, root, calls, restore: () => { Object.assign(modelGroupsApi, original); Object.assign(authApi, originalAuth); modelAdminApi.get = originalModelGet; companyEmployeesApi.list = originalEmployees; } };
+  return { React, container, root, calls, restore: () => { catalog?.cleanup(); Object.assign(modelGroupsApi, original); modelAdminApi.get = originalModelGet; companyEmployeesApi.list = originalEmployees; } };
 }
 
 test("group management loads, creates, opens drawer and saves model/member lists through atomic endpoints", async () => {
