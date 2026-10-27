@@ -102,8 +102,9 @@ async def test_image_append_restore_and_duplicate_ack(media_db, media_service, m
     result, first = await execute(media_db, service, request)
     assert result.last_sequence == 3 and len(storage.objects) == 1
     async with media_db() as conn:
-        row = await (await conn.execute("select entry_json, image_references from provider_session_entries where sequence=3")).fetchone()
-        assert len(json.dumps(row["entry_json"])) < 1000
+        row = await (await conn.execute("select entry_json, entry_canonical_json::text as entry_canonical_json, image_references from provider_session_entries where sequence=3")).fetchone()
+        assert row["entry_json"] is None
+        assert len(row["entry_canonical_json"]) < 1000
         assert len(row["image_references"]) == 2
         assert row["image_references"][0]["image_id"] == row["image_references"][1]["image_id"]
     restored, _ = await execute(media_db, service, operation("load"))
@@ -195,7 +196,7 @@ async def test_abandoned_upload_cleanup_repeats_after_late_write(media_db, media
         assert second["id"] == first["id"] and second["lease_generation"] == first["lease_generation"] + 1
 
 
-@pytest.mark.parametrize("rejection", ["sequence", "raw_capacity", "structured_capacity", "duplicate_conflict"])
+@pytest.mark.parametrize("rejection", ["sequence", "raw_capacity", "duplicate_conflict"])
 async def test_rejected_append_reserves_no_object(media_db, media_service, rejection):
     service, storage = media_service
     sequence = 3
@@ -206,8 +207,6 @@ async def test_rejected_append_reserves_no_object(media_db, media_service, rejec
             sequence = 1
         elif rejection == "raw_capacity":
             await conn.execute("update provider_session_epochs set transcript_bytes=67108864")
-        else:
-            await conn.execute("update provider_session_epochs set structured_bytes=8388608")
     with pytest.raises(ProviderSessionContinuityError):
         async with media_db() as conn:
             await service.prepare_callback_media(conn, **operation("append", entries=[image_entry()], expected_sequence=sequence))

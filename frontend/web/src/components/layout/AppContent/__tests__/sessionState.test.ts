@@ -3,9 +3,24 @@ import test from "node:test";
 
 import {
   getVisibleConnectionStatus,
+  getRestoredModelSelection,
   isSessionRunning,
   shouldShowStreamingFooterSkeleton,
 } from "../sessionState.ts";
+
+test("legacy explicit model intent survives restore and the Agent request builder", async () => {
+  const { buildAgentAppRunBody } = await import("../../../../services/api/session.ts");
+  const legacy = { agent_options: { model_id: "model-a", model: "provider/model-a" } };
+  const restored = getRestoredModelSelection(legacy);
+  assert.equal(restored.selectionMode, "explicit");
+  const body = buildAgentAppRunBody({ message: "continue", submissionId: "synthetic",
+    agentOptions: {model_id: restored.modelId, model: restored.modelValue, selection_mode: restored.selectionMode},
+  });
+  assert.equal(body.model_id, "model-a");
+  assert.equal(body.model, "provider/model-a");
+  assert.equal(body.selection_mode, "explicit");
+  assert.equal(getRestoredModelSelection({agent_options: {...legacy.agent_options, selection_mode: "auto"}}).selectionMode, "auto");
+});
 
 test("treats loading or visible streaming messages as an active session", () => {
   assert.equal(isSessionRunning([], true), true);

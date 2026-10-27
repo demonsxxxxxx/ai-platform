@@ -27,7 +27,7 @@ from app.auth_sessions import (
 from app.db import transaction
 from app.identity.api import PrincipalResponse
 from app.identity.infrastructure.audit_postgres import append_audit_log
-from app.identity.infrastructure.postgres import ensure_user
+from app.identity.infrastructure.postgres import ensure_company_login_user, ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import (
     AuthContextBootstrapRequest,
@@ -357,6 +357,14 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
         user_id=principal.user_id,
         display_name=principal.display_name,
     )
+    if principal.source == "company-login":
+        await ensure_company_login_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            work_id=principal.user_id,
+            display_name=principal.display_name,
+        )
     await append_audit_log(
         conn,
         tenant_id=principal.tenant_id,

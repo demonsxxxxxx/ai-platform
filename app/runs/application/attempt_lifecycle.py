@@ -200,7 +200,12 @@ class RunAttemptLifecycleService:
                 # Historical v2 attempts froze an input capacity that the runner
                 # clamped into the CLI range to derive the same window.
                 or model_auto_compact_window(frozen) != run.get("auto_compact_window")
-                or frozen.get("model_max_output_tokens") != run.get("max_output_tokens")):
+                or frozen.get("model_max_output_tokens") != run.get("max_output_tokens")
+                or any(frozen.get(key) != run.get(key) for key in (
+                    "model_group_id", "model_group_code", "model_group_type",
+                    "model_group_revision", "model_selection_mode", "usage_scene",
+                    "model_policy_version",
+                ))):
                 raise ValueError("spec binding mismatch")
         except (ValueError, TypeError, KeyError) as exc:
             raise ReconciliationAuthorityError("run_attempt_reconciliation_spec_invalid") from exc

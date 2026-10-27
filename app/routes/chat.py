@@ -64,6 +64,8 @@ from app.execution.api import (
     parse_requested_model_selection,
     resolve_chat_model_selection,
 )
+from app.execution.api import model_selection_error_status, select_chat_route_model
+from app.execution.api import group_snapshot_fields
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -1533,15 +1535,13 @@ async def chat_stream(
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
 
             try:
-                selected_model = await resolve_chat_model_selection(
-                    conn,
-                    selection=requested_model_selection, user_id=principal.user_id,
-                )
+                requested_model_selection, selected_model = await select_chat_route_model(conn, resolver=resolve_chat_model_selection, selection=requested_model_selection, continuation_input=continuation_latest_input_json, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="chat" if admitted_agent_profile is None else "expert")
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
             if selected_model is not None:
                 requested_model_id = selected_model.model_id
                 requested_model_value = selected_model.model_value
+                run_input.update(group_snapshot_fields(selected_model))
             if (
                 request.session_id
                 and request.selected_mcp_tool_ids is None
@@ -1846,6 +1846,7 @@ async def chat_stream(
                     "skill_manifests": skill_manifest_transport,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **group_snapshot_fields(selected_model),
                     **(
                         {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                         if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -1910,6 +1911,7 @@ async def chat_stream(
                     "intent": decision_payload,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **group_snapshot_fields(selected_model),
                     "schema_version": queue_payload["schema_version"],
                     **(
                         {"agent_profile": queue_payload["agent_profile"]}
@@ -1933,9 +1935,7 @@ async def chat_stream(
                 )
             run_id = await runs_creation.create_run(conn, **run_create_kwargs)
             if selected_model is not None:
-                await bind_selected_run_model(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model,
-                )
+                await bind_selected_run_model(conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model)
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await skills_run_snapshots.insert_run_skill_snapshots_at_creation(
                     conn,

@@ -1,0 +1,593 @@
+import {
+  Button,
+  Checkbox,
+  DrawerBackdrop,
+  DrawerContent,
+  DrawerHeader,
+  DrawerPopup,
+  DrawerPortal,
+  DrawerRoot,
+  DrawerTitle,
+  Input,
+  SwitchRoot,
+  SwitchThumb,
+  Table,
+  Tag,
+  TabsIndicator,
+  TabsList,
+  TabsPanel,
+  TabsRoot,
+  TabsTab,
+  TextArea,
+} from "@lobehub/ui/base-ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Archive, ArrowDown, ArrowUp, Edit3, Plus, Save, Search, Trash2, X } from "lucide-react";
+import { ConfirmDialog } from "../common/ConfirmDialog";
+import { ApiRequestError } from "../../services/api/fetch";
+import {
+  modelGroupsApi,
+  type AdminModelGroupDetails,
+  type AdminModelGroupMember,
+  type AdminModelGroupModel,
+  type AdminModelGroupSummary,
+} from "../../services/api/modelGroups";
+import { modelAdminApi, type AdminModelEntry } from "../../services/api/modelAdmin";
+import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+
+const PAGE_SIZE = 100;
+const ERROR_COPY: Record<string, string> = {
+  group_has_no_models: "该组暂无可用模型。",
+  group_models_unavailable: "该组模型暂时无法连接上游。",
+  group_disabled: "该组已停用，不能继续分配成员。",
+  model_group_impact_confirmation_required: "该组包含成员、模型或运行，请先完成迁移。",
+  model_group_references_exist: "该组仍有成员、模型或未完成运行，不能删除。",
+  model_default_group_immutable: "普通默认组不可停用、归档或删除。",
+  model_group_revision_conflict: "分组已被其他管理员更新，请重新加载。",
+  model_policy_changed: "分组已被其他管理员更新，请重新加载。",
+  model_group_primary_required: "请先在用户配置中指定替代主组，再移除此成员。",
+  model_group_fallback_confirmation_required: "移除最后一个业务组需要确认回到默认组并失去对话资格。",
+  group_not_available: "分组不存在、已停用或不属于当前租户。",
+  model_group_member_unknown_user: "成员身份无效或已停用。",
+};
+
+function errorText(error: unknown): string {
+  if (error instanceof ApiRequestError && error.code && ERROR_COPY[error.code]) return ERROR_COPY[error.code];
+  return error instanceof Error ? error.message : "模型分组操作失败，请重试。";
+}
+
+function availabilityCopy(group: AdminModelGroupSummary): string {
+  if (!group.enabled) return "已停用";
+  if (group.model_count === 0) return "空组";
+  return "可用配置";
+}
+
+function boundedInteger(value: string, minimum: number, maximum: number, previous: number): number {
+  if (!value.trim()) return previous;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return previous;
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+interface DirectoryState {
+  query: string;
+  status: "idle" | "loading" | "ready" | "error";
+  employees: CompanyEmployee[];
+  total: number;
+  error: string | null;
+}
+
+const EMPTY_DIRECTORY: DirectoryState = {
+  query: "",
+  status: "idle",
+  employees: [],
+  total: 0,
+  error: null,
+};
+
+function GroupMemberEditor({
+  details,
+  busy,
+  onSave,
+}: {
+  details: AdminModelGroupDetails;
+  busy: boolean;
+  onSave: (members: AdminModelGroupMember[], revision: number) => Promise<void>;
+}) {
+  const [selected, setSelected] = useState<AdminModelGroupMember[]>(details.members);
+  const [query, setQuery] = useState("");
+  const [directory, setDirectory] = useState<DirectoryState>(EMPTY_DIRECTORY);
+  const controllerRef = useRef<AbortController | null>(null);
+  const versionRef = useRef(0);
+
+  useEffect(() => setSelected(details.members), [details.members]);
+  useEffect(() => () => controllerRef.current?.abort(), []);
+
+  const load = useCallback(async (nextQuery: string, append = false) => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const version = ++versionRef.current;
+    const offset = append ? directory.employees.length : 0;
+    setDirectory((current) => ({
+      ...current,
+      query: nextQuery,
+      status: "loading",
+      error: null,
+      ...(append ? {} : { employees: [] }),
+    }));
+    try {
+      const result = await companyEmployeesApi.list({
+        search: nextQuery || undefined,
+        offset,
+        limit: PAGE_SIZE,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || version !== versionRef.current) return;
+      setDirectory((current) => ({
+        ...current,
+        status: "ready",
+        employees: append
+          ? [...current.employees, ...result.employees.filter((item) => !current.employees.some((old) => old.work_id === item.work_id))]
+          : result.employees,
+        total: result.total,
+        error: null,
+      }));
+    } catch (error) {
+      if (controller.signal.aborted || version !== versionRef.current) return;
+      setDirectory((current) => ({ ...current, status: "error", error: errorText(error) }));
+    }
+  }, [directory.employees.length]);
+
+  const selectedIds = useMemo(() => new Set(selected.map((member) => member.work_id ?? member.user_id)), [selected]);
+  const updateMember = (employee: CompanyEmployee) => {
+    if (selectedIds.has(employee.work_id)) {
+      setSelected((current) => current.filter((member) => (member.work_id ?? member.user_id) !== employee.work_id));
+      return;
+    }
+    setSelected((current) => [
+      ...current,
+      { user_id: "", work_id: employee.work_id, display_name: employee.display_name, is_primary: false },
+    ]);
+  };
+  const setPrimary = (memberId: string) => {
+    setSelected((current) => current.map((member) => {
+      const id = member.work_id ?? member.user_id;
+      return id === memberId ? { ...member, is_primary: true } : member;
+    }));
+  };
+
+  return (
+    <section data-model-group-members className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold">成员</h3>
+          <p className="text-xs text-[var(--theme-text-secondary)]">每个用户可独立将本组设为自己的主组。</p>
+        </div>
+        <Tag>{selected.length} 人</Tag>
+      </div>
+      <Input
+        aria-label="搜索公司员工"
+        prefix={<Search size={14} />}
+        placeholder="搜索姓名或工号"
+        value={query}
+        disabled={busy}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          void load(event.target.value);
+        }}
+      />
+      <div className="max-h-56 overflow-auto rounded-md border border-[var(--theme-border)]" data-model-group-member-directory>
+        {directory.status === "idle" ? <p className="p-3 text-xs text-[var(--theme-text-secondary)]">输入姓名或工号加载成员。</p> : null}
+        {directory.status === "loading" ? <p className="p-3 text-xs text-[var(--theme-text-secondary)]">正在加载成员目录…</p> : null}
+        {directory.status === "error" ? (
+          <div className="flex items-center justify-between gap-2 p-3 text-xs text-[var(--theme-danger-text)]" role="alert">
+            <span>{directory.error}</span>
+            <Button size="small" onClick={() => void load(directory.query)} htmlType="button">重试</Button>
+          </div>
+        ) : null}
+        {directory.employees.map((employee) => {
+          const member = selected.find((item) => item.user_id === employee.work_id || item.work_id === employee.work_id);
+          return (
+            <div key={employee.work_id} className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 last:border-b-0">
+              <Checkbox
+                aria-label={`选择成员 ${employee.display_name}`}
+                checked={Boolean(member)}
+                disabled={busy}
+                onChange={() => updateMember(employee)}
+              >
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm">{employee.display_name}</span>
+                  <span className="text-xs text-[var(--theme-text-secondary)]">工号：{employee.work_id}</span>
+                </span>
+              </Checkbox>
+              {member ? (
+                <Button
+                  type={member.is_primary ? "primary" : "text"}
+                  size="small"
+                  htmlType="button"
+                  disabled={busy || member.is_primary}
+                  onClick={() => setPrimary(employee.work_id)}
+                >
+                  {member.is_primary ? "主组" : "设为主组"}
+                </Button>
+              ) : null}
+            </div>
+          );
+        })}
+        {directory.status === "ready" && directory.employees.length < directory.total ? (
+          <Button size="small" className="m-2" disabled={busy} htmlType="button" onClick={() => void load(directory.query, true)}>加载更多</Button>
+        ) : null}
+      </div>
+      {selected.length ? (
+        <div className="flex flex-wrap gap-1">
+          {selected.map((member) => {
+            const id = member.work_id || member.user_id;
+            return <span key={id} className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs" data-model-group-selected-member={id}>
+              {member.display_name || id}
+              <Button type="text" size="small" disabled={busy || member.is_primary} onClick={() => setPrimary(id)} aria-label={`将本组设为 ${member.display_name || id} 的主组`}>{member.is_primary ? "主组" : "设为主组"}</Button>
+              <Button type="text" size="small" disabled={busy} aria-label={`移除成员 ${member.display_name || id}`} onClick={() => setSelected((current) => current.filter((item) => (item.work_id || item.user_id) !== id))} icon={<X size={12} />} />
+            </span>;
+          })}
+        </div>
+      ) : <p className="text-xs text-[var(--theme-warning)]">尚未选择成员。</p>}
+      <Button type="primary" loading={busy} disabled={busy} htmlType="button" onClick={() => void onSave(selected, details.revision)} icon={<Save size={15} />}>保存成员</Button>
+    </section>
+  );
+}
+
+function GroupModelEditor({
+  details,
+  catalog,
+  busy,
+  onSave,
+}: {
+  details: AdminModelGroupDetails;
+  catalog: AdminModelEntry[];
+  busy: boolean;
+  onSave: (models: AdminModelGroupModel[], revision: number) => Promise<void>;
+}) {
+  const [models, setModels] = useState(details.models);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  useEffect(() => setModels(details.models), [details.models]);
+
+  const orderedModels = useMemo(() => [...models].sort((left, right) => left.display_order - right.display_order), [models]);
+  const modelById = useMemo(() => new Map(models.map((model) => [model.model_id, model])), [models]);
+  const unassigned = catalog.filter((model) => !modelById.has(model.id));
+  const renumber = (items: AdminModelGroupModel[]) => items.map((item, index) => ({ ...item, display_order: index }));
+  const toggle = (model: AdminModelEntry) => {
+    setModels((current) => {
+      if (current.some((entry) => entry.model_id === model.id)) return current.filter((entry) => entry.model_id !== model.id);
+      return [...current, {
+        model_id: model.id,
+        model_value: model.value,
+        label: model.label,
+        enabled: true,
+        display_order: current.length,
+        priority: 0,
+        weight: 100,
+      }];
+    });
+  };
+  const move = (modelId: string, direction: -1 | 1) => {
+    setModels((current) => {
+      const ordered = [...current].sort((left, right) => left.display_order - right.display_order);
+      const index = ordered.findIndex((item) => item.model_id === modelId);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= ordered.length) return current;
+      [ordered[index], ordered[nextIndex]] = [ordered[nextIndex], ordered[index]];
+      return renumber(ordered);
+    });
+  };
+  const moveByDrop = (targetId: string) => {
+    if (!draggedId || draggedId === targetId) return;
+    setModels((current) => {
+      const ordered = [...current].sort((left, right) => left.display_order - right.display_order);
+      const from = ordered.findIndex((item) => item.model_id === draggedId);
+      const to = ordered.findIndex((item) => item.model_id === targetId);
+      if (from < 0 || to < 0) return current;
+      const [moved] = ordered.splice(from, 1);
+      ordered.splice(to, 0, moved);
+      return renumber(ordered);
+    });
+    setDraggedId(null);
+  };
+  const update = (modelId: string, patch: Partial<AdminModelGroupModel>) => setModels((current) => current.map((item) => item.model_id === modelId ? { ...item, ...patch } : item));
+  const renderAssigned = (entry: AdminModelGroupModel, index: number) => (
+    <div
+      key={entry.model_id}
+      draggable={!busy}
+      onDragStart={() => setDraggedId(entry.model_id)}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={() => moveByDrop(entry.model_id)}
+      className="grid items-center gap-2 border-b border-[var(--theme-border)] py-2 sm:grid-cols-[minmax(0,1fr)_6rem_6rem_6rem_5rem]"
+      data-model-group-model={entry.model_id}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <Checkbox checked disabled={busy} onChange={() => toggle({ id: entry.model_id, value: entry.model_value, label: entry.label } as AdminModelEntry)}>
+          <span className="min-w-0"><span className="block truncate text-sm">{entry.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{entry.model_value}</span></span>
+        </Checkbox>
+      </div>
+      <div className="flex items-center gap-1" aria-label={`调整 ${entry.label} 展示顺序`}>
+        <Button type="text" size="small" aria-label={`上移 ${entry.label}`} disabled={busy || index === 0} onClick={() => move(entry.model_id, -1)} icon={<ArrowUp size={14} />} />
+        <Button type="text" size="small" aria-label={`下移 ${entry.label}`} disabled={busy || index === orderedModels.length - 1} onClick={() => move(entry.model_id, 1)} icon={<ArrowDown size={14} />} />
+      </div>
+      <label className="text-xs text-[var(--theme-text-secondary)]">优先级<Input aria-label={`${entry.model_value} 优先级`} type="number" min={0} max={1000} value={entry.priority} disabled={busy} onChange={(event) => update(entry.model_id, { priority: boundedInteger(event.target.value, 0, 1000, entry.priority) })} /></label>
+      <label className="text-xs text-[var(--theme-text-secondary)]">权重<Input aria-label={`${entry.model_value} 权重`} type="number" min={1} max={1000} value={entry.weight} disabled={busy} onChange={(event) => update(entry.model_id, { weight: boundedInteger(event.target.value, 1, 1000, entry.weight) })} /></label>
+      <div className="flex items-center gap-2"><span className="text-xs sm:hidden">启用</span><SwitchRoot aria-label={`启用 ${entry.label}`} checked={entry.enabled} disabled={busy} onCheckedChange={(enabled) => update(entry.model_id, { enabled })}><SwitchThumb /></SwitchRoot></div>
+    </div>
+  );
+
+  return (
+    <section data-model-group-models className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div><h3 className="text-sm font-semibold">模型</h3><p className="text-xs text-[var(--theme-text-secondary)]">展示顺序不等于路由优先级；优先级与权重仅用于自动分配。</p></div>
+        <Button type="primary" loading={busy} disabled={busy} htmlType="button" onClick={() => void onSave(renumber(orderedModels), details.revision)} icon={<Save size={15} />}>保存模型</Button>
+      </div>
+      <div className="hidden grid-cols-[minmax(0,1fr)_6rem_6rem_6rem_5rem] gap-2 border-b border-[var(--theme-border)] pb-1 text-xs text-[var(--theme-text-secondary)] sm:grid"><span>已加入模型</span><span>展示顺序</span><span>优先级</span><span>权重</span><span>启用</span></div>
+      <div>{orderedModels.map(renderAssigned)}</div>
+      {unassigned.length ? <div className="max-h-72 space-y-1 overflow-auto border-t border-[var(--theme-border)] pt-3"><p className="text-xs text-[var(--theme-text-secondary)]">未加入目录模型</p>{unassigned.map((model) => <div key={model.id} className="flex items-center gap-2 border-b border-[var(--theme-border)] py-2"><Checkbox checked={false} disabled={busy} onChange={() => toggle(model)}><span className="min-w-0"><span className="block truncate text-sm">{model.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</span></span></Checkbox></div>)}</div> : null}
+    </section>
+  );
+}
+
+export function GroupDrawer({
+  group,
+  catalog,
+  onClose,
+  onChanged,
+  initialTab = "basic",
+  finalFocus,
+}: {
+  group: AdminModelGroupSummary | null;
+  catalog: AdminModelEntry[];
+  onClose: () => void;
+  onChanged: (signal?: AbortSignal) => Promise<void>;
+  initialTab?: "basic" | "models" | "members";
+  finalFocus?: React.RefObject<HTMLElement | null>;
+}) {
+  const [details, setDetails] = useState<AdminModelGroupDetails | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"details" | "meta" | "models" | "members" | "retire" | "delete" | null>(null);
+  const [remark, setRemark] = useState("");
+  const [name, setName] = useState("");
+  const [sortOrder, setSortOrder] = useState(0);
+  const [enabled, setEnabled] = useState(true);
+  const [activeTab, setActiveTab] = useState<"basic" | "models" | "members">("basic");
+  const [confirmAction, setConfirmAction] = useState<"disable" | "retire" | "delete" | null>(null);
+  const [pendingMembers, setPendingMembers] = useState<AdminModelGroupMember[] | null>(null);
+  const loadController = useRef<AbortController | null>(null);
+  const mutationController = useRef<AbortController | null>(null);
+  const versionRef = useRef(0);
+
+  useEffect(() => {
+    loadController.current?.abort();
+    mutationController.current?.abort();
+    const version = ++versionRef.current;
+    if (!group) {
+      setDetails(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    loadController.current = controller;
+    setDetails(null);
+    setPendingMembers(null);
+    setConfirmAction(null);
+    setBusy("details");
+    setError(null);
+    setActiveTab(initialTab);
+    void modelGroupsApi.details(group.id, { signal: controller.signal }).then((value) => {
+      if (controller.signal.aborted || version !== versionRef.current) return;
+      setDetails(value);
+      setRemark(value.remark || "");
+      setName(value.name);
+      setSortOrder(value.sort_order);
+      setEnabled(value.enabled);
+    }).catch((caught) => {
+      if (!controller.signal.aborted && version === versionRef.current) setError(errorText(caught));
+    }).finally(() => {
+      if (!controller.signal.aborted && version === versionRef.current) setBusy(null);
+    });
+    return () => { controller.abort(); mutationController.current?.abort(); };
+  }, [group, initialTab]);
+
+  const close = () => {
+    loadController.current?.abort();
+    mutationController.current?.abort();
+    versionRef.current += 1;
+    setConfirmAction(null);
+    onClose();
+  };
+  const runMutation = async <T,>(operation: Exclude<typeof busy, "details" | null>, action: (signal: AbortSignal) => Promise<T>) => {
+    if (!details || !group || busy) return;
+    const version = ++versionRef.current;
+    const controller = new AbortController();
+    mutationController.current = controller;
+    setBusy(operation);
+    setError(null);
+    try {
+      const result = await action(controller.signal);
+      if (controller.signal.aborted || version !== versionRef.current) return null;
+      await onChanged(controller.signal);
+      if (controller.signal.aborted || version !== versionRef.current) return null;
+      return result;
+    } catch (caught) {
+      if (!controller.signal.aborted && version === versionRef.current) setError(errorText(caught));
+      return null;
+    } finally {
+      if (!controller.signal.aborted && version === versionRef.current) setBusy(null);
+    }
+  };
+  const saveMeta = async () => {
+    if (!details || !group) return;
+    const impact = !enabled && (details.member_count > 0 || details.models.length > 0);
+    if (impact && confirmAction !== "disable") {
+      setConfirmAction("disable");
+      return;
+    }
+    setConfirmAction(null);
+    const result = await runMutation("meta", (signal) => modelGroupsApi.update(group.id, {
+      ...(group.type === "business" ? { name: name.trim(), enabled, sort_order: sortOrder } : {}),
+      remark,
+      revision: details.revision,
+      ...(impact ? { confirm_impact: true } : {}),
+    }, { signal }));
+    if (result) {
+      setDetails((current) => current ? { ...current, ...result } : current);
+    }
+  };
+  const saveModels = async (models: AdminModelGroupModel[], revision: number) => {
+    if (!group) return;
+    const result = await runMutation("models", (signal) => modelGroupsApi.setModels(group.id, { revision, models: models.map(({ model_id, enabled: isEnabled, display_order, priority, weight }) => ({ model_id, enabled: isEnabled, display_order, priority, weight })) }, { signal }));
+    if (result) {
+      setDetails((current) => current ? { ...current, models, model_count: models.length, revision: result.revision } : current);
+    }
+  };
+  const saveMembers = async (members: AdminModelGroupMember[], revision: number, confirmed = false) => {
+    if (!group || !details) return;
+    const ids = new Set(members.map((m) => m.work_id || m.user_id));
+    if (!confirmed && details.members.some((m) => !ids.has(m.work_id || m.user_id))) {
+      setPendingMembers(members);
+      return;
+    }
+    setPendingMembers(null);
+    const result = await runMutation("members", async (signal) => {
+      await modelGroupsApi.setMembers(group.id, {
+        revision, confirm_default_fallback: confirmed,
+        members: members.map((member) => ({ ...(member.work_id ? { work_id: member.work_id } : { user_id: member.user_id }), is_primary: member.is_primary })),
+      }, { signal });
+      return modelGroupsApi.details(group.id, { signal });
+    });
+    if (result) {
+      setDetails((current) => current ? { ...current, members: result.members, member_count: result.member_count, revision: result.revision } : current);
+    }
+  };
+  const confirmRetire = async () => {
+    if (!details || !group || group.type !== "business") return;
+    setConfirmAction(null);
+    const result = await runMutation("retire", (signal) => modelGroupsApi.retire(group.id, { revision: details.revision, confirm_impact: true, delete: false }, { signal }));
+    if (result) close();
+  };
+  const confirmDelete = async () => {
+    if (!details || !group || group.type !== "business" || details.member_count > 0 || details.models.length > 0) return;
+    setConfirmAction(null);
+    const result = await runMutation("delete", (signal) => modelGroupsApi.retire(group.id, { revision: details.revision, confirm_impact: false, delete: true }, { signal }));
+    if (result) close();
+  };
+
+  if (!group) return null;
+  const hasReferences = Boolean(details?.member_count || details?.models.length);
+  return (
+    <>
+      <DrawerRoot open onOpenChange={(open) => { if (!open && !busy) close(); }}>
+        <DrawerPortal><DrawerBackdrop /><DrawerPopup placement="right" width="min(48rem, 100vw)" finalFocus={finalFocus} data-model-group-drawer aria-label={`${group.name} 分组`}>
+          <DrawerHeader><div className="min-w-0"><DrawerTitle>{group.name}</DrawerTitle><p className="mt-1 font-mono text-xs text-[var(--theme-text-secondary)]">{group.code} · {group.type === "ordinary_default" ? "普通默认组" : "业务组"}</p></div><Button type="text" aria-label="关闭分组抽屉" disabled={Boolean(busy)} onClick={close} icon={<X size={18} />} /></DrawerHeader>
+          <DrawerContent>
+            <div className="min-w-0 flex-1 p-5">
+              {busy === "details" ? <p className="text-sm text-[var(--theme-text-secondary)]">正在加载分组…</p> : null}
+              {error ? <p className="mb-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
+              {details ? <TabsRoot value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)}>
+                <TabsList aria-label="分组编辑标签" variant="point"><TabsTab value="basic" variant="point">基本信息</TabsTab><TabsTab value="models" variant="point">模型</TabsTab>{group.type === "business" ? <TabsTab value="members" variant="point">成员</TabsTab> : null}<TabsIndicator variant="point" /></TabsList>
+                <TabsPanel value="basic" keepMounted className="pt-5"><section className="space-y-3"><h3 className="text-sm font-semibold">基本信息</h3>{group.type === "ordinary_default" ? <p className="text-xs text-[var(--theme-warning)]">普通默认组固定身份，不可停用或删除；该组模型不可用于对话。</p> : <label className="block text-sm">名称<Input value={name} disabled={Boolean(busy)} onChange={(event) => setName(event.target.value)} /></label>}<label className="block text-sm">备注<TextArea value={remark} disabled={Boolean(busy)} onChange={(event) => setRemark(event.target.value)} /></label>{group.type === "business" ? <><label className="block text-sm">展示排序<Input type="number" min={0} value={sortOrder} disabled={Boolean(busy)} onChange={(event) => setSortOrder(boundedInteger(event.target.value, 0, 100000, sortOrder))} /></label><div className="flex items-center justify-between"><span className="text-sm">启用该组</span><SwitchRoot aria-label="启用业务组" checked={enabled} disabled={Boolean(busy)} onCheckedChange={setEnabled}><SwitchThumb /></SwitchRoot></div></> : null}<Button type="primary" disabled={Boolean(busy) || (group.type === "business" && !name.trim())} loading={busy === "meta"} onClick={() => void saveMeta()} htmlType="button">保存基本信息</Button></section></TabsPanel>
+                <TabsPanel value="models" keepMounted className="pt-5"><GroupModelEditor details={details} catalog={catalog} busy={Boolean(busy)} onSave={saveModels} /></TabsPanel>
+                {group.type === "business" ? <TabsPanel value="members" keepMounted className="pt-5"><GroupMemberEditor details={details} busy={Boolean(busy)} onSave={saveMembers} /></TabsPanel> : null}
+              </TabsRoot> : null}
+              {details && group.type === "business" ? <section className="mt-6 space-y-2 border-t border-[var(--theme-border)] pt-4"><p className="text-xs text-[var(--theme-text-secondary)]">有成员或模型时请先迁移引用，再归档或删除。</p><div className="flex flex-wrap gap-2"><Button type="default" danger disabled={Boolean(busy) || hasReferences} loading={busy === "retire"} onClick={() => setConfirmAction("retire")} icon={<Archive size={15} />} htmlType="button">停用并归档</Button><Button type="text" danger disabled={Boolean(busy) || hasReferences} loading={busy === "delete"} onClick={() => setConfirmAction("delete")} icon={<Trash2 size={15} />} htmlType="button">删除分组</Button></div></section> : null}
+            </div>
+          </DrawerContent>
+        </DrawerPopup></DrawerPortal>
+      </DrawerRoot>
+      <ConfirmDialog isOpen={pendingMembers !== null} title="确认移除成员" message="这些用户将失去本组权限；移除最后一个业务组的用户会回到普通默认组并失去对话资格。若仍有其他业务组，请先在用户配置中指定替代主组。" confirmText="确认移除" onCancel={() => setPendingMembers(null)} onConfirm={() => { if (pendingMembers && details) void saveMembers(pendingMembers, details.revision, true); }} loading={busy === "members"} variant="warning" />
+      <ConfirmDialog isOpen={confirmAction === "disable"} title="确认停用业务组" message={`停用后该组不再用于新的分配。当前包含 ${details?.member_count ?? 0} 名成员和 ${details?.models.length ?? 0} 个模型，确认继续？`} confirmText="确认停用" onCancel={() => setConfirmAction(null)} onConfirm={() => void saveMeta()} loading={busy === "meta"} variant="warning" />
+      <ConfirmDialog isOpen={confirmAction === "retire"} title="确认停用并归档" message="仅在已迁移全部成员和模型后归档该组。" confirmText="确认归档" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmRetire()} loading={busy === "retire"} variant="warning" />
+      <ConfirmDialog isOpen={confirmAction === "delete"} title="确认删除分组" message="删除后分组配置不可恢复；后端仍会拒绝存在历史引用的删除请求。" confirmText="确认删除" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmDelete()} loading={busy === "delete"} />
+    </>
+  );
+}
+
+export function ModelGroupManagement({ groupRevision = 0, onGroupsChanged }: { groupRevision?: number; onGroupsChanged?: () => void } = {}) {
+  const [groups, setGroups] = useState<AdminModelGroupSummary[]>([]);
+  const [catalog, setCatalog] = useState<AdminModelEntry[]>([]);
+  const [selectedGroup, setSelectedGroup] = useState<AdminModelGroupSummary | null>(null);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newRemark, setNewRemark] = useState("");
+  const [newSortOrder, setNewSortOrder] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const requestVersion = useRef(0);
+  const drawerTrigger = useRef<HTMLElement | null>(null);
+  const openGroup = (group: AdminModelGroupSummary, trigger: HTMLElement) => {
+    drawerTrigger.current = trigger;
+    setSelectedGroup(group);
+  };
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const [groupResult, modelResult] = await Promise.all([modelGroupsApi.listAdmin({ signal }), modelAdminApi.get({ signal })]);
+      if (signal?.aborted || version !== requestVersion.current) return;
+      setGroups(groupResult.groups);
+      setCatalog(modelResult.models);
+    } catch (caught) {
+      if (!signal?.aborted && version === requestVersion.current) setError(errorText(caught));
+    } finally {
+      if (!signal?.aborted && version === requestVersion.current) setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    requestRef.current = controller;
+    void load(controller.signal);
+    return () => {
+      controller.abort();
+      requestVersion.current += 1;
+    };
+  }, [load, groupRevision]);
+  const filtered = groups.filter((group) => {
+    const value = `${group.name} ${group.code}`.toLowerCase();
+    return (!query.trim() || value.includes(query.trim().toLowerCase())) && (status === "all" || (status === "enabled" ? group.enabled : !group.enabled));
+  });
+  const create = async () => {
+    if (!newCode.trim() || !newName.trim() || creating) return;
+    setCreating(true);
+    setError(null);
+    const controller = new AbortController();
+    requestRef.current?.abort();
+    requestRef.current = controller;
+    try {
+      await modelGroupsApi.create({ code: newCode.trim(), name: newName.trim(), remark: newRemark, sort_order: newSortOrder }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setCreateOpen(false);
+      setNewCode(""); setNewName(""); setNewRemark(""); setNewSortOrder(0);
+      await load(controller.signal);
+      if (!controller.signal.aborted) onGroupsChanged?.();
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(errorText(caught));
+    } finally {
+      if (!controller.signal.aborted) setCreating(false);
+    }
+  };
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    await load(signal);
+    if (!signal?.aborted) onGroupsChanged?.();
+  }, [load, onGroupsChanged]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4" data-model-group-management>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">分组管理</h2><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">模型和用户成员通过分组统一授权；普通默认组不可用于对话。</p></div><Button type="primary" htmlType="button" onClick={() => setCreateOpen(true)} icon={<Plus size={16} />}>新建业务组</Button></div>
+      <div className="flex flex-wrap items-center gap-2"><Input aria-label="搜索模型分组" prefix={<Search size={15} />} placeholder="搜索名称或 code" value={query} onChange={(event) => setQuery(event.target.value)} /><LobeSelectField aria-label="筛选分组状态" value={status} onChange={setStatus} options={[{ value: "all", label: "状态：全部" }, { value: "enabled", label: "状态：已启用" }, { value: "disabled", label: "状态：已停用" }]} /><span className="text-xs text-[var(--theme-text-secondary)]">{filtered.length} / {groups.length} 组</span></div>
+      {error ? <p className="text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
+      <div className="min-h-0 flex-1 overflow-auto border-y border-[var(--theme-border)]" data-model-group-table>{loading ? <p className="p-4 text-sm text-[var(--theme-text-secondary)]">正在加载分组…</p> : <Table size="small" pagination={false} dataSource={filtered} rowKey="id" columns={[{ key: "name", title: "名称", render: (_value, group) => <button type="button" className="text-left font-medium text-[var(--theme-primary)] hover:underline" onClick={(event) => openGroup(group, event.currentTarget)}>{group.name}<span className="ml-2 font-mono text-xs text-[var(--theme-text-secondary)]">{group.code}</span></button> }, { key: "type", title: "类型", render: (_value, group) => group.type === "ordinary_default" ? "普通默认组" : "业务组" }, { key: "sort", title: "展示排序", render: (_value, group) => group.sort_order }, { key: "models", title: "模型", render: (_value, group) => group.model_count }, { key: "members", title: "成员", render: (_value, group) => group.member_count }, { key: "status", title: "状态", render: (_value, group) => <Tag color={group.enabled ? "success" : "warning"}>{availabilityCopy(group)}</Tag> }, { key: "actions", title: "操作", render: (_value, group) => <Button type="text" size="small" htmlType="button" aria-label={`编辑 ${group.name}`} onClick={(event) => openGroup(group, event.currentTarget)} icon={<Edit3 size={15} />} /> }]} emptyText="暂无模型分组" />}</div>
+      {createOpen ? <div className="border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-4" data-model-group-create><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">新建业务组</h3><Button type="text" aria-label="取消新建分组" onClick={() => setCreateOpen(false)} icon={<X size={16} />} /></div><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm">Code<Input aria-label="新分组 code" value={newCode} onChange={(event) => setNewCode(event.target.value)} /></label><label className="text-sm">名称<Input aria-label="新分组名称" value={newName} onChange={(event) => setNewName(event.target.value)} /></label><label className="text-sm">展示排序<Input aria-label="新分组展示排序" type="number" min={0} value={newSortOrder} onChange={(event) => setNewSortOrder(boundedInteger(event.target.value, 0, 100000, newSortOrder))} /></label><label className="text-sm sm:col-span-2">备注<TextArea aria-label="新分组备注" value={newRemark} onChange={(event) => setNewRemark(event.target.value)} /></label></div><div className="mt-3 flex justify-end gap-2"><Button htmlType="button" onClick={() => setCreateOpen(false)}>取消</Button><Button type="primary" loading={creating} disabled={creating || !newCode.trim() || !newName.trim()} htmlType="button" onClick={() => void create()}>创建</Button></div></div> : null}
+      <GroupDrawer group={selectedGroup} catalog={catalog} onClose={() => setSelectedGroup(null)} onChanged={refresh} finalFocus={drawerTrigger} />
+    </div>
+  );
+}

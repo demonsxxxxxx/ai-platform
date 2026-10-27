@@ -400,6 +400,56 @@ html[data-mobile-keyboard="true"] #root {
   flex-shrink: 0;
 }
 
+/* Keep the management section legible as a parent group with indented children. */
+.sidebar-management-nav {
+  border: 1px solid var(--theme-border);
+  border-radius: 0.5rem;
+  background-color: var(--theme-sidebar-panel-muted);
+}
+
+.sidebar-management-toggle {
+  background-color: var(--theme-sidebar-panel-muted);
+  color: var(--theme-text);
+}
+
+.sidebar-management-toggle:hover {
+  background-color: var(--theme-sidebar-hover);
+}
+
+.sidebar-management-items {
+  margin: 0.25rem 0.25rem 0.25rem 0.5rem;
+  padding: 0.25rem 0 0.25rem 0.5rem;
+  border-inline-start: 1px solid var(--theme-border-strong);
+  border-radius: 0 0.375rem 0.375rem 0;
+  background-color: var(--theme-bg-sidebar);
+}
+
+.sidebar-management-item {
+  color: var(--theme-text-secondary);
+}
+
+.sidebar-management-item[data-active="true"] {
+  color: var(--theme-text);
+}
+
+/* Portaled workbench menus need an explicit edge against either theme surface. */
+.workbench-menu-popup,
+.workbench-account-menu-popup {
+  border: 1px solid var(--theme-border-strong);
+  background-color: var(--theme-workbench-panel);
+  box-shadow: 0 8px 24px var(--theme-shadow-lg);
+}
+
+.workbench-account-menu-popup [data-user-menu-identity],
+.workbench-account-drawer [data-user-menu-identity] {
+  border-bottom: 1px solid var(--theme-border);
+}
+
+.workbench-account-drawer {
+  border-top: 1px solid var(--theme-border-strong);
+  background-color: var(--theme-workbench-panel);
+}
+
 [data-librechat-expanded-panel] [data-workbench-session-region] {
   background: color-mix(
     in srgb,

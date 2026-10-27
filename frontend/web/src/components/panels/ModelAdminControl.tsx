@@ -1,16 +1,17 @@
-import { Button, Input, Radio, SwitchRoot, SwitchThumb, Table, Tag } from "@lobehub/ui/base-ui";
-import { RadioGroup as BaseRadioGroup } from "@base-ui/react/radio-group";
-import { useCallback, useEffect, useRef, useState, type HTMLAttributes } from "react";
+import { Button, Checkbox, Input, SwitchRoot, SwitchThumb, Table, Tag } from "@lobehub/ui/base-ui";
+import { useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes } from "react";
 import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw } from "lucide-react";
 import {
   modelAdminApi,
   type AdminModelEntry,
   type AdminModelState,
 } from "../../services/api/modelAdmin";
-import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
-import { ModelUserAccess, type UserDirectoryStatus } from "./ModelUserAccess";
 import { ApiRequestError } from "../../services/api/fetch";
+import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummary } from "../../services/api/modelGroups";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+import { GroupDrawer } from "./ModelGroupManagement";
+
+import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 
 const STATUS_FILTERS = [
   ["all", "状态：全部"],
@@ -19,39 +20,7 @@ const STATUS_FILTERS = [
   ["unavailable", "状态：上游缺失"],
 ] as const;
 
-// Matches the company employee directory API page bound (limit <= 100).
-const DIRECTORY_PAGE_SIZE = 100;
-
-/** One model's own directory query; rows never share a page or a search. */
-interface ModelDirectoryState {
-  query: string;
-  mode: UserDirectoryStatus;
-  page: CompanyEmployee[];
-  names: Map<string, CompanyEmployee>;
-  total: number;
-  error: string | null;
-}
-
-const EMPTY_DIRECTORY: ModelDirectoryState = {
-  query: "",
-  mode: "idle",
-  page: [],
-  names: new Map(),
-  total: 0,
-  error: null,
-};
-
-function mergeDirectory(
-  current: CompanyEmployee[],
-  incoming: CompanyEmployee[],
-): CompanyEmployee[] {
-  const known = new Set(current.map((user) => user.work_id));
-  return [...current, ...incoming.filter((user) => !known.has(user.work_id))];
-}
-
 const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
-  company_employee_directory_unavailable: "公司员工目录暂不可用，请重试；新增授权尚未保存。",
-  company_employee_directory_forbidden: "无权访问公司员工目录。",
   model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
   model_connection_endpoint_must_be_origin: "API 地址应为服务根地址或以 /v1 结尾，不能含其它路径。",
   model_connection_endpoint_forbidden: "该 API 地址未获平台网络策略授权。",
@@ -67,9 +36,6 @@ const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_upstream_unavailable: "无法连接模型服务，请检查地址、网络和服务状态。",
   model_catalog_revision_conflict: "模型配置已被更新，请重新加载配置后再发布。",
   model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
-  model_user_access_invalid: "用户访问设置无效，请重新选择。",
-  model_user_access_requires_users: "“仅指定用户”至少需要选择一名用户。",
-  model_user_access_unknown_user: "所选工号不在有效公司员工目录中或存在歧义，请移除后重试。",
 };
 
 function errorMessage(error: unknown): string {
@@ -98,7 +64,7 @@ function validAutoCompactWindow(value: number | undefined): boolean {
     && value >= AUTO_COMPACT_WINDOW_MIN && value <= AUTO_COMPACT_WINDOW_MAX;
 }
 
-type ModelAdminOperation = "load" | "test" | "discover" | "publish";
+type ModelAdminOperation = "load" | "test" | "discover" | "publish" | "batch";
 interface ModelAdminRequestOwner {
   sequence: number;
   connectionVersion: number;
@@ -124,9 +90,8 @@ function connectionOrigin(value: string): string {
 
 function modelDraftSignature(models: AdminModelEntry[]): string {
   return JSON.stringify(models.map((model) => [
-    model.id, model.value, model.label, model.enabled, model.is_default,
+    model.id, model.value, model.label, model.enabled,
     model.order, model.auto_compact_window ?? null, model.max_output_tokens ?? null,
-    model.access_mode ?? "all", [...(model.allowed_user_ids ?? [])].sort(),
   ]));
 }
 
@@ -135,10 +100,8 @@ function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEn
     const previous = draft.find((model) => model.id === candidate.id && model.value === candidate.value);
     return previous ? {
       ...candidate,
-      label: previous.label, enabled: previous.enabled, is_default: previous.is_default,
+      label: previous.label, enabled: previous.enabled,
       auto_compact_window: previous.auto_compact_window, max_output_tokens: previous.max_output_tokens,
-      access_mode: previous.access_mode ?? "all",
-      allowed_user_ids: [...(previous.allowed_user_ids ?? [])],
     } : candidate;
   });
 }
@@ -148,10 +111,15 @@ export type ModelAdminControlState = "loading" | "ready" | "degraded";
 export function ModelAdminControl({
   canManage = true,
   onStateChange,
+  groupRevision = 0,
+  onGroupsChanged,
 }: {
   canManage?: boolean;
   onStateChange?: (state: ModelAdminControlState) => void;
+  groupRevision?: number;
+  onGroupsChanged?: () => void;
 }) {
+  const { refreshModels } = useModelCatalogContext();
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
@@ -163,10 +131,27 @@ export function ModelAdminControl({
   const [publishError, setPublishError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [groupFilter, setGroupFilter] = useState("all");
+  const [editingGroup, setEditingGroup] = useState<AdminModelGroupSummary | null>(null);
+  const [groupTab, setGroupTab] = useState<"models" | "members">("models");
+  const groupTrigger = useRef<HTMLElement | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
-  const [directoryByModel, setDirectoryByModel] = useState<Record<string, ModelDirectoryState>>({});
-  const directoryOwners = useRef(new Map<string, AbortController>());
-  const directoryVersions = useRef(new Map<string, number>());
+  const [groupOptions, setGroupOptions] = useState<AdminModelGroupSummary[]>([]);
+  const [groupDetails, setGroupDetails] = useState<Record<string, AdminModelGroupDetails>>({});
+  const [groupDetailsReady, setGroupDetailsReady] = useState(false);
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [batchOperation, setBatchOperation] = useState<"add" | "replace" | "remove" | null>(null);
+  const [batchGroupIds, setBatchGroupIds] = useState<string[]>([]);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchPreview, setBatchPreview] = useState<Awaited<ReturnType<typeof modelGroupsApi.batchModels>> | null>(null);
+  const [batchPreviewIntent, setBatchPreviewIntent] = useState<{
+    groupIds: string[];
+    modelIds: string[];
+    operation: "add" | "replace" | "remove";
+    revisions: Record<string, number>;
+  } | null>(null);
+  const groupRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
+  const groupRequestSequence = useRef(0);
   const connectionVersion = useRef(0);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ModelAdminRequestOwner | null>(null);
@@ -234,87 +219,46 @@ export function ModelAdminControl({
     } finally { finishRequest(owner); }
   }, [abandonRequest, startRequest, ownsRequest, applyState, onStateChange, finishRequest]);
 
-  const patchDirectory = useCallback((modelId: string, patch: Partial<ModelDirectoryState>) => {
-    setDirectoryByModel((current) => ({
-      ...current,
-      [modelId]: { ...(current[modelId] ?? EMPTY_DIRECTORY), ...patch },
-    }));
-  }, []);
-
-  // Each model owns its own query, page and owner. Rows never mix results, so a
-  // page append always continues the search this row is actually showing.
-  const loadDirectory = useCallback(async (
-    modelId: string,
-    search: string,
-    options: { append?: boolean } = {},
-  ) => {
-    const append = options.append === true;
-    if (activeRequest.current) return;
-    directoryOwners.current.get(modelId)?.abort();
-    const controller = new AbortController();
-    directoryOwners.current.set(modelId, controller);
-    const version = (directoryVersions.current.get(modelId) ?? 0) + 1;
-    directoryVersions.current.set(modelId, version);
-    const owned = () => directoryVersions.current.get(modelId) === version
-      && !controller.signal.aborted;
-    const pageBefore = directoryByModel[modelId]?.page ?? [];
-    patchDirectory(modelId, {
-      query: search, mode: "loading", error: null,
-      ...(!append ? { page: [], total: 0 } : {}),
-    });
-    try {
-      const page = await companyEmployeesApi.list({
-        search: search || undefined,
-        offset: append ? pageBefore.length : 0,
-        limit: DIRECTORY_PAGE_SIZE,
-        signal: controller.signal,
-      });
-      if (!owned()) return;
-      const incoming = page.employees ?? [];
-      setDirectoryByModel((current) => {
-        const previous = current[modelId] ?? EMPTY_DIRECTORY;
-        const nextPage = append ? mergeDirectory(previous.page, incoming) : incoming;
-        const nextNames = new Map(previous.names);
-        for (const user of incoming) nextNames.set(user.work_id, user);
-        return {
-          ...current,
-          [modelId]: {
-            query: search,
-            mode: "ready",
-            page: nextPage,
-            names: nextNames,
-            total: page.total ?? incoming.length,
-            error: null,
-          },
-        };
-      });
-    } catch (caught) {
-      if (!owned()) return;
-      // A failure stays retryable; it is never cached as a successful empty page.
-      patchDirectory(modelId, { mode: "error", error: errorMessage(caught) });
-    }
-  }, [directoryByModel, patchDirectory]);
-
-  const resetDirectoryOwners = useCallback(() => {
-    for (const controller of directoryOwners.current.values()) controller.abort();
-    directoryOwners.current.clear();
-    directoryVersions.current.clear();
-  }, []);
-
   useEffect(() => {
     if (canManage) void load();
     else {
       setState(null); setBaseUrl(""); setCredential(""); setDraft([]);
       setCatalogReceipt(null); setTestState("untested"); setBusy(null);
-      setDirectoryByModel({});
-      resetDirectoryOwners();
     }
     return () => {
       abandonRequest();
       connectionVersion.current += 1;
-      resetDirectoryOwners();
     };
-  }, [canManage, load, abandonRequest, resetDirectoryOwners]);
+  }, [canManage, load, abandonRequest]);
+
+  useEffect(() => {
+    groupRequestRef.current?.controller.abort();
+    groupRequestRef.current = null;
+    setGroupOptions([]);
+    setGroupDetails({});
+    setGroupDetailsReady(false);
+    if (!canManage) return undefined;
+    const controller = new AbortController();
+    const sequence = ++groupRequestSequence.current;
+    groupRequestRef.current = { controller, sequence };
+    void modelGroupsApi.listAdmin({ signal: controller.signal }).then(async (result) => {
+      const details = await Promise.all(result.groups.map(async (group) => {
+        try { return await modelGroupsApi.details(group.id, { signal: controller.signal }); }
+        catch { return null; }
+      }));
+      if (controller.signal.aborted || groupRequestSequence.current !== sequence) return;
+      setGroupOptions(result.groups);
+      setGroupDetailsReady(details.every((item) => item !== null));
+      setGroupDetails(Object.fromEntries(details.filter((item): item is AdminModelGroupDetails => item !== null).map((item) => [item.id, item])));
+    }).catch(() => {
+      if (!controller.signal.aborted && groupRequestSequence.current === sequence) {
+        setGroupOptions([]);
+        setGroupDetails({});
+        setGroupDetailsReady(false);
+      }
+    });
+    return () => controller.abort();
+  }, [canManage, groupRevision]);
 
   const invalidateConnection = () => {
     if (activeRequest.current?.operation === "publish" || activeRequest.current?.operation === "load") return false;
@@ -375,9 +319,7 @@ export function ModelAdminControl({
 
   const updateDraft = (id: string, change: Partial<AdminModelEntry>) => {
     if (activeRequest.current) return;
-    setDraft((current) => current.map((model) => model.id === id
-      ? { ...model, ...change }
-      : change.is_default ? { ...model, is_default: false } : model));
+    setDraft((current) => current.map((model) => model.id === id ? { ...model, ...change } : model));
     setMessage(null); setPublishError(null);
   };
 
@@ -413,22 +355,8 @@ export function ModelAdminControl({
         : `请填写 ${invalid.label}（${invalid.value}）的最大输出 Token（1–10,000,000）和有效的压缩窗口（100,000–1,000,000），或同时留空。`);
       return;
     }
-    if (enabled.filter((model) => model.is_default).length !== 1) {
-      setPublishError("请在已启用模型中指定唯一默认模型。"); return;
-    }
     if (available.some((model) => model.label.trim().length > 160)) {
       setPublishError("平台显示名称最多 160 个字符。"); return;
-    }
-    // Every published row is sent, so the server's non-empty rule applies to
-    // disabled rows too; validate the same set here instead of only enabled ones.
-    const emptySelection = available.find((model) =>
-      (model.access_mode ?? "all") === "selected"
-      && (model.allowed_user_ids ?? []).length === 0);
-    if (emptySelection) {
-      setPublishError(
-        `请为 ${emptySelection.label} 至少选择一名用户，或改为全部已认证用户。`,
-      );
-      return;
     }
     const owner = startRequest("publish");
     if (!owner) return;
@@ -436,19 +364,17 @@ export function ModelAdminControl({
     try {
       const next = await modelAdminApi.publish(
         baseUrl.trim(), credential.trim() || undefined, catalogReceipt.revision,
-        available.map((model) => ({
-          ...model,
-          display_name: model.label.trim(),
-          access_mode: model.access_mode ?? "all",
-          allowed_user_ids:
-            (model.access_mode ?? "all") === "selected" ? model.allowed_user_ids ?? [] : [],
-        })),
+        available.map((model) => ({ ...model, display_name: model.label.trim() })),
         { signal: owner.controller.signal },
       );
       if (!ownsRequest(owner)) return;
       applyState(next);
       setTestState("passed");
-      setMessage("模型配置已保存并生效；用户重新加载聊天页面后获取最新列表。");
+      const refreshed = await refreshModels({ force: true });
+      if (!ownsRequest(owner)) return;
+      setMessage(refreshed
+        ? "模型配置已保存并生效，聊天中的模型列表已重新读取。"
+        : "模型配置已保存并生效；模型列表暂未刷新，打开选择器或回到前台后会重试。");
     } catch (caught) {
       if (!ownsRequest(owner)) return;
       if (caught instanceof ApiRequestError && caught.status === 409) setCatalogReceipt(null);
@@ -457,17 +383,119 @@ export function ModelAdminControl({
   };
 
   const enabledCount = draft.filter((model) => model.enabled).length;
+  const modelGroupIds = useMemo(() => {
+    const ids = new Map<string, string[]>();
+    for (const group of groupOptions) {
+      for (const model of groupDetails[group.id]?.models ?? []) {
+        ids.set(model.model_id, [...(ids.get(model.model_id) ?? []), group.id]);
+      }
+    }
+    return ids;
+  }, [groupDetails, groupOptions]);
+  const selectedModels = draft.filter((model) => selectedModelIds.includes(model.id));
+  const batchGroups = groupOptions.filter((group) => group.enabled);
+  const filteredGroup = groupOptions.find((group) => group.id === groupFilter
+    || (groupFilter === "default" && group.type === "ordinary_default"));
+  const refreshGroups = async (signal?: AbortSignal) => {
+    const result = await modelGroupsApi.listAdmin({ signal });
+    const details = await Promise.all(result.groups.map((g) => modelGroupsApi.details(g.id, { signal })));
+    if (signal?.aborted) return;
+    setGroupOptions(result.groups);
+    setGroupDetails(Object.fromEntries(details.map((g) => [g.id, g])));
+    setGroupDetailsReady(true);
+    onGroupsChanged?.();
+  };
+  const batchAffectedGroupIds = useMemo(() => {
+    const ids = new Set<string>(batchGroupIds);
+    if (batchOperation === "replace") {
+      for (const model of selectedModels) for (const groupId of modelGroupIds.get(model.id) ?? []) ids.add(groupId);
+    }
+    return [...ids];
+  }, [batchGroupIds, batchOperation, modelGroupIds, selectedModels]);
+  const batchRevisions = Object.fromEntries(
+    batchAffectedGroupIds
+      .map((id) => [id, groupDetails[id]?.revision] as const)
+      .filter((entry): entry is readonly [string, number] => typeof entry[1] === "number"),
+  ) as Record<string, number>;
   const visibleDraft = draft.filter((model) => {
     const normalizedQuery = query.trim().toLowerCase();
     const matchesQuery = !normalizedQuery
       || model.label.toLowerCase().includes(normalizedQuery)
       || model.value.toLowerCase().includes(normalizedQuery);
+    const matchesGroup = groupFilter === "all"
+      || (groupFilter === "unassigned" && !modelGroupIds.has(model.id))
+      || (groupFilter === "default" && groupOptions.some((group) => group.id === modelGroupIds.get(model.id)?.[0] && group.type === "ordinary_default"))
+      || (groupFilter === "business" && (modelGroupIds.get(model.id) ?? []).some((id) => groupOptions.find((group) => group.id === id)?.type === "business"))
+      || (groupFilter !== "default" && groupFilter !== "business" && groupFilter !== "unassigned" && (modelGroupIds.get(model.id) ?? []).includes(groupFilter));
     const matchesStatus = statusFilter === "all"
       || (statusFilter === "enabled" && model.enabled)
       || (statusFilter === "disabled" && !model.enabled)
       || (statusFilter === "unavailable" && !model.available);
-    return matchesQuery && matchesStatus;
+    return matchesQuery && matchesGroup && matchesStatus;
   });
+
+  const clearBatchPreview = useCallback(() => {
+    setBatchPreview(null);
+    setBatchPreviewIntent(null);
+  }, []);
+  const currentBatchIntent = useMemo(() => batchOperation ? ({
+    groupIds: [...batchGroupIds].sort(),
+    modelIds: [...selectedModelIds].sort(),
+    operation: batchOperation,
+    revisions: batchRevisions,
+  }) : null, [batchGroupIds, batchOperation, batchRevisions, selectedModelIds]);
+  const sameBatchIntent = useCallback((left: typeof currentBatchIntent, right: NonNullable<typeof batchPreviewIntent>) =>
+    left !== null && left.operation === right.operation
+      && JSON.stringify(left.groupIds) === JSON.stringify(right.groupIds)
+      && JSON.stringify(left.modelIds) === JSON.stringify(right.modelIds)
+      && JSON.stringify(left.revisions) === JSON.stringify(right.revisions), []);
+  useEffect(() => {
+    if (batchPreviewIntent && !sameBatchIntent(currentBatchIntent, batchPreviewIntent)) clearBatchPreview();
+  }, [batchPreviewIntent, currentBatchIntent, clearBatchPreview, sameBatchIntent]);
+
+  const runBatch = async (preview: boolean) => {
+    if (activeRequest.current) return;
+    const previewIntent = currentBatchIntent;
+    const intent = preview ? previewIntent : batchPreviewIntent;
+    if (!intent) return;
+    if (intent.groupIds.length === 0 || intent.modelIds.length === 0) return;
+    if (!preview && (!batchPreview || !sameBatchIntent(currentBatchIntent, intent))) {
+      setBatchError("批量选择或分组版本已变化，请重新预览后确认。");
+      clearBatchPreview();
+      return;
+    }
+    if (!groupDetailsReady || intent.groupIds.length === 0 || Object.keys(intent.revisions).length !== batchAffectedGroupIds.length) {
+      setBatchError("分组版本仍在加载，请刷新分组详情后重试。");
+      return;
+    }
+    const owner = startRequest("batch");
+    if (!owner) return;
+    setBatchError(null);
+    try {
+      const result = await modelGroupsApi.batchModels({ group_ids: intent.groupIds, model_ids: intent.modelIds, operation: intent.operation, expected_group_revisions: intent.revisions, preview }, { signal: owner.controller.signal });
+      if (!ownsRequest(owner)) return;
+      if (preview) {
+        setBatchPreview(result);
+        setBatchPreviewIntent(intent as NonNullable<typeof batchPreviewIntent>);
+      }
+      if (!preview) {
+        setBatchOperation(null);
+        setSelectedModelIds([]);
+        setBatchGroupIds([]);
+        clearBatchPreview();
+        const refreshed = await Promise.all(groupOptions.map((group) => modelGroupsApi.details(group.id, { signal: owner.controller.signal })));
+        if (ownsRequest(owner)) { setGroupDetails(Object.fromEntries(refreshed.map((item) => [item.id, item]))); onGroupsChanged?.(); }
+      }
+    } catch (caught) {
+      if (!ownsRequest(owner)) return;
+      setBatchError(errorMessage(caught));
+      clearBatchPreview();
+      if (caught instanceof ApiRequestError && caught.status === 409) {
+        const refreshed = await Promise.all(Object.keys(intent.revisions).map((id) => modelGroupsApi.details(id, { signal: owner.controller.signal })));
+        if (ownsRequest(owner)) setGroupDetails((current) => ({ ...current, ...Object.fromEntries(refreshed.map((item) => [item.id, item])) }));
+      }
+    } finally { finishRequest(owner); }
+  };
 
   if (!canManage) return null;
 
@@ -556,8 +584,8 @@ export function ModelAdminControl({
 
       <div className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:min-h-0 lg:flex-1 lg:shrink">
         <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3">
-          <h2 className="text-sm font-semibold">模型与默认项</h2>
-          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{catalogReceipt ? "编辑启用状态、默认模型和容量；获取候选会保留已有编辑。" : "连接已修改，请获取当前地址的候选模型后再保存。"}</p>
+          <h2 className="text-sm font-semibold">模型配置</h2>
+          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{catalogReceipt ? "编辑模型启用状态和容量；路由默认项由模型分组管理。" : "连接已修改，请获取当前地址的候选模型后再保存。"}</p>
         </div>
         <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
@@ -572,6 +600,18 @@ export function ModelAdminControl({
               />
             </label>
             <LobeSelectField
+              aria-label="筛选模型分组"
+              disabled={connectionLocked}
+              className="h-10 sm:w-44"
+              onChange={setGroupFilter}
+              value={groupFilter}
+              options={[
+                ["all", "分组：全部"], ["default", "分组：普通默认组"],
+                ["business", "分组：业务组"], ["unassigned", "分组：未分组"],
+                ...groupOptions.filter((group) => group.type === "business").map((group) => [group.id, `分组：${group.name}`] as const),
+              ].map(([value, label]) => ({ value, label }))}
+            />
+            <LobeSelectField
               aria-label="筛选模型状态"
               disabled={connectionLocked}
               className="h-10 sm:w-40"
@@ -584,6 +624,28 @@ export function ModelAdminControl({
             显示 {visibleDraft.length} / {draft.length} 个模型
           </span>
         </div>
+        {filteredGroup ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] p-3" data-model-admin-group-settings>
+          <span className="text-sm font-medium">{filteredGroup.name}</span>
+          <span className="text-xs text-[var(--theme-text-secondary)]">组内启用、展示顺序、优先级与权重独立于模型全局设置。</span>
+          <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("models"); setEditingGroup(filteredGroup); }}>编辑组内模型</Button>
+          {filteredGroup.type === "business" ? <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("members"); setEditingGroup(filteredGroup); }}>管理成员</Button> : null}
+        </div> : null}
+        {selectedModelIds.length ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3" data-model-admin-batch-toolbar>
+          <span className="text-xs font-medium">已选 {selectedModelIds.length} 个模型</span>
+          <div className="flex flex-wrap items-center gap-2" aria-label="批量目标业务组" data-model-admin-batch-groups>
+            {batchGroups.map((group) => <Checkbox key={group.id} aria-label={`批量目标 ${group.name}`} checked={batchGroupIds.includes(group.id)} disabled={busy !== null} onChange={(checked) => setBatchGroupIds((current) => checked ? [...current, group.id] : current.filter((id) => id !== group.id))}>{group.name}</Checkbox>)}
+          </div>
+          <Button size="small" disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("add"); setBatchPreview(null); }} htmlType="button">批量添加</Button>
+          <Button size="small" disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("replace"); setBatchPreview(null); }} htmlType="button">批量替换</Button>
+          <Button size="small" danger disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("remove"); setBatchPreview(null); }} htmlType="button">批量移出</Button>
+          {batchError ? <span role="alert" className="text-xs text-[var(--theme-danger-text)]">{batchError}</span> : null}
+        </div> : null}
+        {batchOperation ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2" data-model-admin-batch-confirm>
+          <span className="text-xs text-[var(--theme-text-secondary)]">{batchOperation === "add" ? "添加" : batchOperation === "replace" ? "替换" : "移出"}前先预览原子影响；确认后一次提交。</span>
+          <Button size="small" loading={busy === "batch"} disabled={busy !== null} onClick={() => void runBatch(true)} htmlType="button">预览影响</Button>
+          {batchPreview ? <><span className="text-xs text-[var(--theme-text-secondary)]" data-model-admin-batch-preview>预览将影响 {batchPreview.groups.filter((group) => group.changed).length} 个分组，{batchPreview.changed ? "确认后原子提交" : "无需变更"}。</span><Button size="small" type="primary" loading={busy === "batch"} disabled={busy !== null || !batchPreview.changed} onClick={() => void runBatch(false)} htmlType="button">确认并保存</Button></> : null}
+          <Button size="small" disabled={busy !== null} onClick={() => { setBatchOperation(null); setBatchPreview(null); }} htmlType="button">取消</Button>
+        </div> : null}
 
         <p
           className="shrink-0 border-b border-[var(--theme-border)] px-3 pb-2 text-xs text-[var(--theme-text-secondary)]"
@@ -592,17 +654,14 @@ export function ModelAdminControl({
           压缩窗口交给 Claude 自动压缩，实际触发时机由引擎决定，可能早于该值；留空按 100000。
         </p>
         <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
-          <BaseRadioGroup
-          aria-label="默认模型" name="default-model"
-          value={draft.find((model) => model.is_default)?.id ?? null}
-          onValueChange={(id) => updateDraft(id as string, { is_default: true })}
-        >
-        <Table
- size="small" pagination={false} scroll={{ x: 1200 }} tableLayout="fixed" sticky
+          <Table
+ size="small" pagination={false} scroll={{ x: 1000 }} tableLayout="fixed" sticky
  dataSource={visibleDraft}
  rowKey={(model) => model.id}
  onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
  columns={[
+{ key: "selected", width: 52, title: "选择",
+render: (_value, model) => <Checkbox aria-label={`选择模型 ${model.label}`} data-model-admin-select={model.id} checked={selectedModelIds.includes(model.id)} disabled={busy !== null} onChange={(checked) => setSelectedModelIds((current) => checked ? [...current, model.id] : current.filter((id) => id !== model.id))} /> },
 { key: "enabled", width: 70, title: "启用",
 render: (_value, model) => (<>
 <label className="inline-flex cursor-pointer items-center">
@@ -612,7 +671,6 @@ render: (_value, model) => (<>
                         disabled={!model.available || busy !== null}
                         onCheckedChange={(checked) => updateDraft(model.id, {
                           enabled: checked,
-                          ...(!checked ? { is_default: false } : {}),
                         })}
                       ><SwitchThumb /></SwitchRoot>
 
@@ -633,28 +691,16 @@ render: (_value, model) => (<>
                           value={model.label}
                         />
                         <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
+                        <div className="mt-1 flex flex-wrap gap-1" data-model-admin-group-tags>
+                          {(modelGroupIds.get(model.id) ?? []).map((groupId) => {
+                            const group = groupOptions.find((item) => item.id === groupId);
+                            return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null;
+                          })}
+                          {!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}
+                        </div>
                       </div>
                     </div>
 </>) },
-{ key: "access", width: 260, title: "可用用户",
-render: (_value, model) => (
-  <ModelUserAccess
-    modelId={model.id}
-    accessMode={model.access_mode ?? "all"}
-    allowedUserIds={model.allowed_user_ids ?? []}
-    directory={directoryByModel[model.id]?.page ?? []}
-    directoryNames={directoryByModel[model.id]?.names ?? EMPTY_DIRECTORY.names}
-    directoryStatus={directoryByModel[model.id]?.mode ?? "idle"}
-    directoryQuery={directoryByModel[model.id]?.query ?? ""}
-    directoryTotal={directoryByModel[model.id]?.total ?? 0}
-    directoryError={directoryByModel[model.id]?.error ?? null}
-    disabled={busy !== null}
-    onDirectoryQuery={(search, options) => { void loadDirectory(model.id, search, options); }}
-    onChange={(mode, userIds) => updateDraft(model.id, {
-      access_mode: mode, allowed_user_ids: mode === "selected" ? userIds : [],
-    })}
-  />
-) },
 { key: "inputTokens", width: 160, title: "压缩窗口",
 render: (_value, model) => (<>
 <Input
@@ -690,17 +736,9 @@ render: (_value, model) => (<>
 render: (_value, model) => (<>
 <Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag>
 </>) },
-{ key: "default", width: 70, title: "默认",
-render: (_value, model) => (<>
-<Radio
-                      aria-label={`设为默认 ${model.label}`}
-                      value={model.id}
-                      disabled={!model.enabled || !model.available || busy !== null}
-                    />
-</>) }
 ]}
  emptyText={draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
-/></BaseRadioGroup>
+/>
         </div>
       </div>
       <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
@@ -727,6 +765,7 @@ render: (_value, model) => (<>
           ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</Button>
         </div>
       </div>
+      <GroupDrawer group={editingGroup} catalog={draft} initialTab={groupTab} onClose={() => setEditingGroup(null)} onChanged={refreshGroups} finalFocus={groupTrigger} />
     </section>
   );
 }

@@ -40,6 +40,8 @@ create table if not exists users (
   display_name text not null,
   email text,
   external_id text,
+  auth_source text not null default 'unknown',
+  model_group_membership_revision bigint not null default 1,
   status text not null default 'active',
   metadata_json jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
@@ -48,6 +50,10 @@ create table if not exists users (
 
 alter table users
   add column if not exists metadata_json jsonb not null default '{}'::jsonb;
+alter table users
+  add column if not exists auth_source text not null default 'unknown';
+alter table users
+  add column if not exists model_group_membership_revision bigint not null default 1;
 
 do $$
 begin
@@ -569,15 +575,104 @@ create table if not exists model_catalog_entries (
     and upstream_model_id = btrim(upstream_model_id)
   ),
   constraint chk_model_catalog_display_name check (length(display_name) between 1 and 160),
-  constraint chk_model_catalog_default_enabled check (not is_default or enabled),
   constraint chk_model_catalog_token_limits check (
     (auto_compact_window is null and max_output_tokens is null)
     or (auto_compact_window is not null and max_output_tokens is not null
         and auto_compact_window between 100000 and 1000000 and max_output_tokens between 1 and 10000000)
   )
 );
-create unique index if not exists uq_model_catalog_default
-  on model_catalog_entries(is_default) where is_default = true;
+
+-- Model groups are tenant-scoped authorization facts. The ordinary default group
+-- is materialized once per tenant; users without business membership are resolved
+-- to it without a membership row.
+create table if not exists model_groups (
+  id text primary key default ('mgrp_' || md5(random()::text || clock_timestamp()::text)),
+  tenant_id text not null references tenants(id),
+  code text not null,
+  name text not null,
+  type text not null default 'business',
+  enabled boolean not null default true,
+  remark text not null default '',
+  sort_order integer not null default 0,
+  revision bigint not null default 1,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  archived_at timestamptz,
+  unique(tenant_id, code),
+  constraint chk_model_groups_type check (type in ('ordinary_default', 'business')),
+  constraint chk_model_groups_default_identity check (
+    (type = 'ordinary_default' and code = 'default' and name = '普通默认组' and enabled)
+    or type = 'business'
+  ),
+  constraint chk_model_groups_code check (code = btrim(code) and length(code) between 1 and 64),
+  constraint chk_model_groups_name check (length(btrim(name)) between 1 and 160),
+  constraint chk_model_groups_sort_order check (sort_order >= 0),
+  constraint chk_model_groups_revision check (revision > 0)
+);
+create unique index if not exists uq_model_groups_default
+  on model_groups(tenant_id) where type = 'ordinary_default';
+create unique index if not exists uq_model_groups_tenant_name
+  on model_groups(tenant_id, lower(btrim(name))) where archived_at is null;
+
+create table if not exists model_group_members (
+  tenant_id text not null references tenants(id),
+  group_id text not null references model_groups(id),
+  user_id text not null references users(id),
+  is_primary boolean not null default false,
+  created_at timestamptz not null default now(),
+  primary key(group_id, user_id),
+  unique(tenant_id, group_id, user_id)
+);
+create unique index if not exists uq_model_group_user_primary
+  on model_group_members(tenant_id, user_id) where is_primary = true;
+
+create table if not exists model_group_models (
+  group_id text not null references model_groups(id),
+  model_id text not null references model_catalog_entries(model_id),
+  enabled boolean not null default true,
+  display_order integer not null default 0,
+  priority integer not null default 0,
+  weight integer not null default 100,
+  revision bigint not null default 1,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key(group_id, model_id),
+  constraint chk_model_group_models_order check (display_order >= 0),
+  constraint chk_model_group_models_priority check (priority between 0 and 1000),
+  constraint chk_model_group_models_weight check (weight between 1 and 1000)
+);
+create unique index if not exists uq_model_group_business_model on model_group_models(group_id, model_id);
+
+create or replace function ai_platform_guard_model_group_models() returns trigger
+language plpgsql as $$
+begin
+  if exists (
+    select 1 from model_groups g where g.id = new.group_id and g.type = 'ordinary_default'
+  ) and exists (
+    select 1 from model_group_models other
+    join model_groups og on og.id = other.group_id and og.type = 'business'
+    join model_groups ng on ng.id = new.group_id
+    where other.model_id = new.model_id and other.group_id <> new.group_id
+      and og.tenant_id = ng.tenant_id
+  ) then
+    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
+  end if;
+  if exists (
+    select 1 from model_groups g where g.id = new.group_id and g.type = 'business'
+  ) and exists (
+    select 1 from model_group_models other
+    join model_groups og on og.id = other.group_id and og.type = 'ordinary_default'
+    join model_groups ng on ng.id = new.group_id
+    where other.model_id = new.model_id and other.group_id <> new.group_id
+      and og.tenant_id = ng.tenant_id
+  ) then
+    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_model_group_models_guard on model_group_models;
+create trigger trg_model_group_models_guard before insert or update on model_group_models
+for each row execute function ai_platform_guard_model_group_models();
 
 create table if not exists runs (
   id text primary key,
@@ -602,6 +697,13 @@ create table if not exists runs (
   model_id text,
   model_value text,
   model_gateway_revision bigint,
+  model_group_id text,
+  model_group_code text,
+  model_group_type text,
+  model_group_revision bigint,
+  model_selection_mode text,
+  usage_scene text,
+  model_policy_version text,
   auto_compact_window bigint,
   max_output_tokens bigint,
   status text not null,
@@ -636,6 +738,14 @@ create table if not exists runs (
   constraint chk_runs_execution_skill_identity check (
     (execution_kind = 'harness_chat' and skill_id is null)
     or (execution_kind = 'skill' and skill_id is not null)
+  ),
+  constraint chk_runs_model_group_snapshot_all_or_none check (
+    (model_group_id is null and model_group_code is null and model_group_type is null
+      and model_group_revision is null and model_selection_mode is null
+      and usage_scene is null and model_policy_version is null)
+    or (model_group_id is not null and model_group_code is not null and model_group_type is not null
+      and model_group_revision is not null and model_selection_mode is not null
+      and usage_scene is not null and model_policy_version is not null)
   ),
   constraint chk_runs_model_token_limits check (
     (auto_compact_window is null and max_output_tokens is null)
@@ -1144,7 +1254,118 @@ alter table runs add column if not exists admitted_agent_profile_hash text;
 alter table runs add column if not exists model_id text;
 alter table runs add column if not exists model_value text;
 alter table runs add column if not exists model_gateway_revision bigint;
+alter table runs add column if not exists model_group_id text;
+alter table runs add column if not exists model_group_code text;
+alter table runs add column if not exists model_group_type text;
+alter table runs add column if not exists model_group_revision bigint;
+alter table runs add column if not exists model_selection_mode text;
+alter table runs add column if not exists usage_scene text;
+alter table runs add column if not exists model_policy_version text;
 alter table model_catalog_entries add column if not exists max_output_tokens bigint;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_group_snapshot_all_or_none') then
+    alter table runs add constraint chk_runs_model_group_snapshot_all_or_none check (
+      (model_group_id is null and model_group_code is null and model_group_type is null
+        and model_group_revision is null and model_selection_mode is null
+        and usage_scene is null and model_policy_version is null)
+      or (model_group_id is not null and model_group_code is not null and model_group_type is not null
+        and model_group_revision is not null and model_selection_mode is not null
+        and usage_scene is not null and model_policy_version is not null)
+    );
+  end if;
+end
+$$;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_group_policy') then
+    alter table runs add constraint chk_runs_model_group_policy check (
+      model_group_id is null or (
+        model_group_id ~ '^[A-Za-z0-9_.:-]{1,128}$'
+        and model_group_code ~ '^[a-z0-9_-]{1,64}$'
+        and model_group_revision > 0
+        and model_selection_mode in ('auto', 'explicit')
+        and usage_scene in ('chat', 'expert', 'skill', 'independent')
+        and model_policy_version = 'model-groups.v1'
+        and ((model_group_type = 'business' and model_group_code <> 'default')
+          or (model_group_type = 'ordinary_default' and model_group_code = 'default'
+              and usage_scene in ('skill', 'independent')))
+      )
+    );
+  end if;
+end
+$$;
+-- Model groups were introduced after the original catalog/Run tables. Keep this
+-- additive block idempotent for existing installations; fresh installs use the
+-- canonical definitions above.
+create table if not exists model_groups (
+  id text primary key default ('mgrp_' || md5(random()::text || clock_timestamp()::text)),
+  tenant_id text not null references tenants(id), code text not null, name text not null,
+  type text not null default 'business', enabled boolean not null default true,
+  remark text not null default '', sort_order integer not null default 0,
+  revision bigint not null default 1, created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(), archived_at timestamptz,
+  unique(tenant_id, code)
+);
+create unique index if not exists uq_model_groups_default on model_groups(tenant_id) where type = 'ordinary_default';
+create unique index if not exists uq_model_groups_tenant_name on model_groups(tenant_id, lower(btrim(name))) where archived_at is null;
+create table if not exists model_group_members (
+  tenant_id text not null references tenants(id), group_id text not null references model_groups(id),
+  user_id text not null references users(id), is_primary boolean not null default false,
+  created_at timestamptz not null default now(), primary key(group_id, user_id)
+);
+create unique index if not exists uq_model_group_user_primary on model_group_members(tenant_id, user_id) where is_primary = true;
+create table if not exists model_group_models (
+  group_id text not null references model_groups(id), model_id text not null references model_catalog_entries(model_id),
+  enabled boolean not null default true, display_order integer not null default 0,
+  priority integer not null default 0, weight integer not null default 100, revision bigint not null default 1,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  primary key(group_id, model_id), check (priority between 0 and 1000), check (weight between 1 and 1000)
+);
+create or replace function ai_platform_guard_model_group_models() returns trigger language plpgsql as $$
+begin
+  if exists (
+    select 1 from model_group_models x
+    join model_groups g on g.id = x.group_id
+    join model_groups ng on ng.id = new.group_id
+    where x.model_id = new.model_id and x.group_id <> new.group_id
+      and g.tenant_id = ng.tenant_id
+      and ((g.type = 'ordinary_default' and ng.type = 'business')
+        or (g.type = 'business' and ng.type = 'ordinary_default'))
+  ) then
+    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_model_group_models_guard on model_group_models;
+create trigger trg_model_group_models_guard before insert or update on model_group_models for each row execute function ai_platform_guard_model_group_models();
+create or replace function ai_platform_guard_model_group_member_scope() returns trigger language plpgsql as $$
+begin
+  if not exists (select 1 from model_groups where id = new.group_id and tenant_id = new.tenant_id)
+     or not exists (select 1 from users where id = new.user_id and tenant_id = new.tenant_id) then
+    raise exception 'model_group_member_scope_invalid' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_model_group_member_scope on model_group_members;
+create trigger trg_model_group_member_scope before insert or update on model_group_members
+for each row execute function ai_platform_guard_model_group_member_scope();
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'model_groups'::regclass and conname = 'chk_model_groups_type') then
+    alter table model_groups add constraint chk_model_groups_type check (type in ('ordinary_default', 'business'));
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_groups'::regclass and conname = 'chk_model_groups_default_identity') then
+    alter table model_groups add constraint chk_model_groups_default_identity check (
+      (type = 'ordinary_default' and code = 'default' and name = '普通默认组' and enabled) or type = 'business'
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_group_models'::regclass and conname = 'chk_model_group_models_priority') then
+    alter table model_group_models add constraint chk_model_group_models_priority check (priority between 0 and 1000);
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'model_group_models'::regclass and conname = 'chk_model_group_models_weight') then
+    alter table model_group_models add constraint chk_model_group_models_weight check (weight between 1 and 1000);
+  end if;
+end $$;
 alter table runs add column if not exists max_output_tokens bigint;
 -- The retired max-input capacity becomes the engine-owned compaction window.
 -- Historical rows keep the window the runner actually derived from them, using
@@ -1220,6 +1441,8 @@ set auto_compact_window = 100000
 where enabled and max_output_tokens is not null and auto_compact_window is null;
 alter table runs drop constraint if exists chk_runs_model_token_limits;
 alter table model_catalog_entries drop constraint if exists chk_model_catalog_token_limits;
+alter table model_catalog_entries drop constraint if exists chk_model_catalog_default_enabled;
+drop index if exists uq_model_catalog_default;
 alter table model_catalog_entries
   add column if not exists access_mode text not null default 'all';
 alter table model_catalog_entries
@@ -2009,7 +2232,7 @@ create table if not exists provider_session_entries (
   session_id text not null, agent_id text not null, engine text not null check (engine = 'claude'),
   epoch_id text not null, subpath text not null default '',
   sequence bigint not null check (sequence >= 1),
-  sdk_entry_uuid text, entry_json jsonb not null,
+  sdk_entry_uuid text, entry_json jsonb,
   created_at timestamptz not null default now(),
   constraint fk_provider_entry_epoch foreign key (
     tenant_id, workspace_id, user_id, session_id, agent_id, engine, epoch_id
@@ -2024,10 +2247,15 @@ create unique index if not exists uq_provider_entry_sdk_uuid
 create index if not exists idx_provider_entry_view
   on provider_session_entries(epoch_id, subpath, sequence);
 
--- JSON preserves the append representation used by existing receipts; JSONB
--- alone loses scientific notation and the sign of zero. Legacy rows stay null:
--- reconstructing original bytes from them would manufacture integrity evidence.
+-- JSON preserves the append representation used by receipts and is the only new
+-- writer authority. JSONB is nullable legacy compatibility data: it loses
+-- scientific notation and the sign of zero, so old rows are never backfilled.
 alter table provider_session_entries add column if not exists entry_canonical_json json;
+alter table provider_session_entries alter column entry_json drop not null;
+alter table provider_session_entries drop constraint if exists chk_provider_entry_representation;
+alter table provider_session_entries add constraint chk_provider_entry_representation check (
+  entry_json is not null or entry_canonical_json is not null
+);
 alter table provider_session_entries add column if not exists image_references jsonb not null default '[]'::jsonb;
 alter table provider_session_entries add column if not exists image_format text;
 alter table provider_session_entries drop constraint if exists chk_provider_entry_images;
