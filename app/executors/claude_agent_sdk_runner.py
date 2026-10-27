@@ -87,7 +87,6 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -102,6 +101,7 @@ from app.sandbox.api import (
     workspace_read_allowed,
 )
 from app.settings import get_settings
+from app.platform.sandbox.claude_native_filesystem import claude_workspace_env
 from app.skills.api import is_valid_executable_skill_name
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
@@ -666,17 +666,7 @@ def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | Non
         if value:
             env[key] = value
     if cwd is not None:
-        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
-        home = cwd / ".home"
-        env["HOME"] = str(home)
-        env["USERPROFILE"] = str(home)
-        env["CLAUDE_CONFIG_DIR"] = str(cwd / ".claude-config")
-        env["XDG_CONFIG_HOME"] = str(home / ".config")
-        env["XDG_CACHE_HOME"] = str(home / ".cache")
-        env["XDG_DATA_HOME"] = str(home / ".local" / "share")
-        env["TMPDIR"] = str(cwd / ".tmp")
-        env["TMP"] = str(cwd / ".tmp")
-        env["TEMP"] = str(cwd / ".tmp")
+        env.update(claude_workspace_env(cwd))
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
     if settings.anthropic_auth_token:
@@ -811,9 +801,7 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
-    default_tool_names = (
-        name for name in _SDK_INTERNAL_CONTEXT_TOOLS if name != PROFILE_DRIVE_STAGE_TOOL
-    )
+    default_tool_names = iter(_SDK_INTERNAL_CONTEXT_TOOLS)
     selected_tool_names = {
         name
         for name in (tool_names or default_tool_names)
@@ -837,7 +825,6 @@ def _build_context_retrieval_mcp_server(
                 "context_file_too_large",
                 "context_file_size_required",
                 *ARTIFACT_TRANSFER_SAFE_ERRORS,
-                "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
@@ -880,14 +867,6 @@ def _build_context_retrieval_mcp_server(
         return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
-        PROFILE_DRIVE_STAGE_TOOL,
-        "Copy any file type from the authenticated user's Profile Desktop into the current run workspace and return a workspace-relative path.",
-        {"path": str},
-    )
-    async def stage_profile_drive_file_to_workspace(args):
-        return await _run(PROFILE_DRIVE_STAGE_TOOL, args)
-
-    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -903,7 +882,6 @@ def _build_context_retrieval_mcp_server(
         read_run_artifact,
         stage_context_file_to_workspace,
         stage_run_artifact_to_workspace,
-        stage_profile_drive_file_to_workspace,
         search_memory,
     ]
     return create_server(
@@ -1139,6 +1117,7 @@ def _workspace_path_parameters_authorized(
     tool_input: object,
     *,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     mutating_key = _WORKSPACE_MUTATING_PATH_PARAMETER.get(tool_name)
     path_bearing_tool = (
@@ -1167,7 +1146,7 @@ def _workspace_path_parameters_authorized(
         return lexical_relative, resolved_relative
 
     def readable_path_parts_authorized(relative: Path) -> bool:
-        return workspace_read_allowed(PurePosixPath(relative.as_posix()))
+        return workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
 
     def writable_path_parts_authorized(relative: Path) -> bool:
         return workspace_mutation_allowed(PurePosixPath(relative.as_posix()))
@@ -1248,6 +1227,7 @@ def _workspace_search_result_path_authorized(
     *,
     search_path: object,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     if not isinstance(raw_path, str) or not raw_path.strip() or "\x00" in raw_path:
         return False
@@ -1270,7 +1250,7 @@ def _workspace_search_result_path_authorized(
             lexical_relative = Path(os.path.abspath(candidate)).relative_to(root)
             resolved_relative = candidate.resolve(strict=False).relative_to(root)
             if not all(
-                workspace_read_allowed(PurePosixPath(relative.as_posix()))
+                workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
                 for relative in (lexical_relative, resolved_relative)
             ):
                 return False
@@ -1304,6 +1284,7 @@ def _filtered_workspace_search_text(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     budget: dict[str, int],
 ) -> tuple[str, bool]:
     output_mode = str(tool_input.get("output_mode") or "files_with_matches")
@@ -1337,7 +1318,7 @@ def _filtered_workspace_search_text(
             allowed = _workspace_search_result_path_authorized(
                 result_path,
                 search_path=search_path,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
             )
         encoded_size = len(line.encode("utf-8")) + 1
         if (
@@ -1361,6 +1342,7 @@ def _filtered_workspace_search_output(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     _budget: dict[str, int] | None = None,
 ) -> tuple[object, bool]:
     """Filter private paths from the SDK result before it returns to the model."""
@@ -1372,7 +1354,7 @@ def _filtered_workspace_search_output(
             tool_response,
             tool_name=tool_name,
             tool_input=tool_input,
-            workspace_root=workspace_root,
+            workspace_root=workspace_root, native_session_id=native_session_id,
             budget=budget,
         )
         if (
@@ -1393,7 +1375,7 @@ def _filtered_workspace_search_output(
                 item,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
                 _budget=budget,
             )
             filtered_items.append(filtered)
@@ -1426,7 +1408,7 @@ def _filtered_workspace_search_output(
             if not _workspace_search_result_path_authorized(
                 path,
                 search_path=tool_input.get("path") or ".",
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
             ):
                 continue
             if (
@@ -1450,7 +1432,7 @@ def _filtered_workspace_search_output(
             tool_response[key],
             tool_name=tool_name,
             tool_input=tool_input,
-            workspace_root=workspace_root,
+            workspace_root=workspace_root, native_session_id=native_session_id,
             _budget=budget,
         )
         filtered_values[key] = filtered
@@ -2135,9 +2117,7 @@ async def run_claude_agent_sdk(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
                 else [
-                    name
-                    for name in _SDK_INTERNAL_CONTEXT_TOOLS
-                    if name != PROFILE_DRIVE_STAGE_TOOL
+                    name for name in _SDK_INTERNAL_CONTEXT_TOOLS
                 ]
             ),
         )
@@ -2165,9 +2145,7 @@ async def run_claude_agent_sdk(
         internal_context_tools: set[str] = set()
     elif tool_policy_subjects is None:
         internal_context_tools = {
-            name
-            for name in _SDK_INTERNAL_CONTEXT_TOOLS
-            if name != PROFILE_DRIVE_STAGE_TOOL
+            name for name in _SDK_INTERNAL_CONTEXT_TOOLS
         }
     else:
         internal_context_tools = set(requested_internal_context_tools)
@@ -2757,7 +2735,7 @@ async def run_claude_agent_sdk(
                     subject,
                     subject_tool_name,
                     tool_input,
-                    workspace_root=cwd,
+                    workspace_root=cwd, native_session_id=session_id,
                 )
             if (
                 parameters_authorized
@@ -3298,7 +3276,7 @@ async def run_claude_agent_sdk(
                         hook_input["tool_response"],
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        workspace_root=cwd,
+                        workspace_root=cwd, native_session_id=session_id,
                     )
                     if changed:
                         return {

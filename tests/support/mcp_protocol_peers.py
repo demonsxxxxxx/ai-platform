@@ -20,7 +20,8 @@ def local_mcp_peers(*, protocol="legacy"):
         models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
         tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
-        call_error=None, input_required=False,
+        call_error=None, input_required=False, tool_result=None, model_reply=None,
+        reply_queues=[], sse_opened_sessions=queue.Queue(), sse_endpoint_gates={},
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -48,16 +49,24 @@ def local_mcp_peers(*, protocol="legacy"):
                 self.respond({}, 405)
                 return
             state.requests.append(("GET", dict(self.headers)))
+            session_number = len(state.reply_queues) + 1
+            replies = queue.Queue()
+            state.reply_queues.append(replies)
+            session_id = f"synthetic-{session_number}"
+            state.sse_opened_sessions.put(session_number)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             try:
-                self.wfile.write(b"event: endpoint\ndata: /messages?session_id=synthetic\n\n")
+                endpoint_gate = state.sse_endpoint_gates.get(session_number)
+                if endpoint_gate is not None:
+                    endpoint_gate.wait()
+                self.wfile.write(f"event: endpoint\ndata: /messages?session_id={session_id}\n\n".encode())
                 self.wfile.flush()
                 while not state.stopped.is_set():
                     try:
-                        reply = state.replies.get(timeout=0.1)
+                        reply = replies.get(timeout=0.1)
                     except queue.Empty:
                         self.wfile.write(b": heartbeat\n\n")
                     else:
@@ -75,6 +84,10 @@ def local_mcp_peers(*, protocol="legacy"):
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            replies = state.replies
+            if "session_id=" in self.path:
+                session_id = self.path.split("session_id=", 1)[1].split("&", 1)[0]
+                replies = state.reply_queues[int(session_id.rsplit("-", 1)[1]) - 1]
             if self.path.startswith("/v1/messages/count_tokens"):
                 self.respond({"input_tokens": 100})
                 return
@@ -96,6 +109,9 @@ def local_mcp_peers(*, protocol="legacy"):
                     content = {"type": "tool_use", "id": "toolu_selected", "name": state.sdk_tool,
                                "input": state.tool_input}
                     used_tool = False
+                if state.model_reply is not None:
+                    content = state.model_reply(request)
+                    used_tool = content["type"] == "text"
                 stop_reason = "end_turn" if used_tool else "tool_use"
                 events = [
                     ("message_start", {"type": "message_start", "message": {
@@ -124,7 +140,7 @@ def local_mcp_peers(*, protocol="legacy"):
                 response = {"jsonrpc": "2.0", "id": request["id"],
                             "error": {"code": -32601, "message": "Method not found"}}
                 if self.path.startswith("/messages?"):
-                    state.replies.put(response)
+                    replies.put(response)
                     self.respond({}, 202)
                 else:
                     self.respond(response)
@@ -142,8 +158,10 @@ def local_mcp_peers(*, protocol="legacy"):
                 if state.call_error is not None:
                     self.respond({"jsonrpc": "2.0", "id": request["id"], "error": state.call_error})
                     return
-                result = {"content": [{"type": "text", "text": "synthetic result"}],
-                          "structuredContent": {"sequence": 7}, "isError": state.is_error}
+                result = state.tool_result if state.tool_result is not None else {
+                    "content": [{"type": "text", "text": "synthetic result"}],
+                    "structuredContent": {"sequence": 7}, "isError": state.is_error,
+                }
                 if state.input_required:
                     result = {"resultType": "input_required", "requestState": "synthetic-state"}
             else:
@@ -153,7 +171,7 @@ def local_mcp_peers(*, protocol="legacy"):
                 result = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private", **result}
             response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
             if self.path.startswith("/messages?"):
-                state.replies.put(response)
+                replies.put(response)
                 self.respond({}, 202)
             else:
                 self.respond(response)
