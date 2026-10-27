@@ -2168,7 +2168,9 @@
     },
     "title": "工具",
     "searchPlaceholder": "搜索工具",
-    "toolsEnabled": "个工具已启用"
+    "toolsEnabled": "个工具已启用",
+    "unknownSource": "未提供服务来源",
+    "toggleGroup": "切换工具来源 {{group}}"
   },
   "users": {
     "user": "个人资料"

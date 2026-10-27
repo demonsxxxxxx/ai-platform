@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Checkbox } from "@lobehub/ui/base-ui";
 import type { ToolState, ToolCategory } from "../../types";
+import { groupKeyForTool, groupLabelForTool } from "./toolGrouping";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
 import {
   canSelectChatMcpTools,
@@ -100,6 +101,7 @@ export function ToolSelector({
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<
     Set<ToolCategory>
   >(new Set(["mcp"]));
@@ -114,19 +116,23 @@ export function ToolSelector({
     setSearchQuery(searchSeed);
   }, [isOpen, searchSeed]);
 
-  // 按类别分组，每组内按工具名称排序 - 使用 useMemo 缓存计算结果
+  // Search the translated unknown-source label as well as the public tool fields.
   const filteredTools = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
     if (!normalized) return tools;
+    const unknownSource = t("tools.unknownSource").toLowerCase();
     return tools.filter(
       (tool) =>
         tool.name.toLowerCase().includes(normalized) ||
         publicToolLabel(tool).toLowerCase().includes(normalized) ||
         tool.description.toLowerCase().includes(normalized) ||
         tool.category.toLowerCase().includes(normalized) ||
-        (tool.server ?? "").toLowerCase().includes(normalized),
+        (tool.server ?? "").toLowerCase().includes(normalized) ||
+        (tool.upstream_server ?? "").toLowerCase().includes(normalized) ||
+        (groupLabelForTool(tool) ?? "").toLowerCase().includes(normalized) ||
+        (groupLabelForTool(tool) === null && unknownSource.includes(normalized)),
     );
-  }, [searchQuery, tools]);
+  }, [searchQuery, t, tools]);
 
   const groupedTools = useMemo(
     () =>
@@ -143,15 +149,21 @@ export function ToolSelector({
     [filteredTools],
   );
 
-  // Sort tools within each category by name
+  // Keep MCP groups adjacent and stable while preserving the existing category order.
   const sortedGroupedTools = useMemo(() => {
     const sorted: Record<string, ToolState[]> = {};
     for (const [category, categoryTools] of Object.entries(groupedTools)) {
-      sorted[category] = [...categoryTools].sort((a, b) =>
-        publicToolLabel(a)
+      sorted[category] = [...categoryTools].sort((a, b) => {
+        if (category === "mcp") {
+          const firstGroup = groupKeyForTool(a);
+          const secondGroup = groupKeyForTool(b);
+          if (firstGroup < secondGroup) return -1;
+          if (firstGroup > secondGroup) return 1;
+        }
+        return publicToolLabel(a)
           .toLowerCase()
-          .localeCompare(publicToolLabel(b).toLowerCase()),
-      );
+          .localeCompare(publicToolLabel(b).toLowerCase());
+      });
     }
     return sorted;
   }, [groupedTools]);
@@ -185,6 +197,25 @@ export function ToolSelector({
     if (!catalogAllowsSelection || tool.system_disabled) return;
     onToggleTool(tool.name);
   };
+
+  const handleGroupToggle = (groupTools: readonly ToolState[]) => {
+    if (!catalogAllowsSelection) return;
+    const selectable = groupTools.filter((tool) => !tool.system_disabled);
+    const enable = selectable.some((tool) => !tool.enabled);
+    selectable.forEach((tool) => {
+      if (tool.enabled !== enable) onToggleTool(tool.name);
+    });
+  };
+
+  const toggleGroupExpand = (groupKey: string) => {
+    setCollapsedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
+  const hasSearchQuery = searchQuery.trim().length > 0;
 
   // Keep the modal subtree mounted when search or expansion state changes.
   const modalContent = (
@@ -355,14 +386,67 @@ export function ToolSelector({
                 {isExpanded && (
                   <div className="animate-[fade-in_150ms_ease-out]">
                     <div className="px-1 sm:px-2 pb-2 pt-1 space-y-0.5">
-                      {categoryTools.map((tool: ToolState) => {
+                      {categoryTools.map((tool: ToolState, toolIndex) => {
                         const isToolExpanded = expandedTools.has(tool.name);
+                        const groupKey = groupKeyForTool(tool);
+                        const groupCollapsed = collapsedGroups.has(groupKey) && !hasSearchQuery;
+                        const previousTool = categoryTools[toolIndex - 1];
+                        const isGroupStart = cat === "mcp" && (
+                          !previousTool || groupKeyForTool(previousTool) !== groupKey
+                        );
+                        const groupTools = isGroupStart
+                          ? categoryTools.filter((candidate) => groupKeyForTool(candidate) === groupKey)
+                          : [];
                         const hasParams =
                           tool.parameters && tool.parameters.length > 0;
 
                         return (
                           <div key={tool.name} className="group">
-                            {/* Tool Row */}
+                            {isGroupStart && (
+                              <div
+                                className="mb-1 mt-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2.5 py-2 first:mt-0"
+                                data-composer-mcp-group={groupKey}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                    aria-expanded={!groupCollapsed}
+                                    onClick={() => toggleGroupExpand(groupKey)}
+                                  >
+                                    <ChevronRight
+                                      size={14}
+                                      className={`shrink-0 text-[var(--theme-text-secondary)] transition-transform ${
+                                        groupCollapsed ? "" : "rotate-90"
+                                      }`}
+                                    />
+                                    <span className="truncate text-xs font-semibold text-[var(--theme-text)]">
+                                      {groupLabelForTool(tool) ?? t("tools.unknownSource")}
+                                    </span>
+                                    {tool.server && (
+                                      <span className="truncate rounded-md bg-[var(--theme-workbench-panel)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--theme-text-secondary)] sm:text-xs">
+                                        {tool.server}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] tabular-nums text-[var(--theme-text-secondary)]">
+                                      {groupTools.filter((candidate) => candidate.enabled).length}/{groupTools.length}
+                                    </span>
+                                  </button>
+                                  <Checkbox
+                                    aria-label={t("tools.toggleGroup", {
+                                      group: groupLabelForTool(tool) ?? t("tools.unknownSource"),
+                                    })}
+                                    checked={groupTools.some((candidate) => !candidate.system_disabled) && groupTools.filter((candidate) => !candidate.system_disabled).every((candidate) => candidate.enabled)}
+                                    onChange={() => handleGroupToggle(groupTools)}
+                                    disabled={!catalogAllowsSelection || groupTools.every((candidate) => candidate.system_disabled)}
+                                    onClick={(event) => event.stopPropagation()}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {(cat !== "mcp" || !groupCollapsed) && (
+                              <>
+                              {/* Tool Row */}
                             <div
                               className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg cursor-pointer transition-all duration-150 ${
                                 tool.system_disabled
@@ -436,8 +520,8 @@ export function ToolSelector({
                               onClick={(event) => event.stopPropagation()} />
                             </div>
 
-                            {/* Parameters - Conditional Render */}
-                            {isToolExpanded && hasParams && (
+                              {/* Parameters - Conditional Render */}
+                              {isToolExpanded && hasParams && (
                               <div className="animate-[fade-in_150ms_ease-out]">
                                 <div className="mx-2 sm:mx-4 mb-1.5 sm:mb-2 rounded-lg border border-[var(--theme-border)] overflow-hidden">
                                   {/* Table Header */}
@@ -486,6 +570,8 @@ render: (_value, param) => (<>
                                   </div>
                                 </div>
                               </div>
+                              )}
+                              </>
                             )}
                           </div>
                         );

@@ -77,6 +77,18 @@ connections. `enterprise_gateway` separates anonymous directory reads from
 user-authenticated MCP sessions; it is explicit, never inferred from a server
 name or URL. The schema change is additive and preserves existing tool IDs.
 
+The ordinary Chat catalog keeps `server` as the stable MCP connection source and
+may expose an optional `upstream_server` display label for enterprise Gateway
+tools. The label is obtained by one bounded anonymous Gateway catalog read and
+is attached only for an exact, unique public tool-name intersection with the
+user-authenticated `tools/list` result. Missing, malformed, duplicate, or failed
+metadata leaves the user-authorized tool unchanged and uses the connection or
+explicit unknown-source fallback in the selector. This is display metadata only:
+it does not grant ACL access, alter `tool_id`, route calls, enter model input, or
+expose Gateway IDs, endpoints, headers, or credentials. Generic MCP connections
+do not perform the anonymous read. Group identity remains connection plus source,
+so the same upstream label on two connections cannot collide.
+
 For enterprise connections, the platform backend reads the same origin's
 `GET /api/mcp/catalog` with a fresh credential-free HTTP client. It neither reads
 the user JWT store nor merges static headers/cookies. DNS pinning, redirect
