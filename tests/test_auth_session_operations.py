@@ -930,6 +930,13 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
     async def fake_ensure_user(*_args, **_kwargs):
         return None
 
+    async def fake_ensure_company_login_user(
+        _conn, *, tenant_id, user_id, work_id, display_name,
+    ):
+        assert tenant_id == settings.default_tenant_id
+        assert user_id == work_id
+        assert display_name == user_id.title()
+
     async def fake_append_audit_log(*_args, **_kwargs):
         return "audit-id"
 
@@ -940,6 +947,7 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
     monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.auth.ensure_company_login_user", fake_ensure_company_login_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
     return settings
 
@@ -2131,12 +2139,21 @@ def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
     async def tracked_ensure_user(conn, *, user_id, **_kwargs):
         conn.append(("user", user_id))
 
+    async def tracked_ensure_company_login_user(
+        conn, *, tenant_id, user_id, work_id, display_name,
+    ):
+        assert tenant_id == "default"
+        assert user_id == work_id
+        assert display_name == user_id.title()
+        conn.append(("company_identity", user_id))
+
     async def tracked_append_audit_log(conn, *, user_id, **_kwargs):
         conn.append(("audit", user_id))
         return "audit-id"
 
     monkeypatch.setattr("app.routes.auth.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", tracked_ensure_user)
+    monkeypatch.setattr("app.routes.auth.ensure_company_login_user", tracked_ensure_company_login_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", tracked_append_audit_log)
     client_a = TestClient(create_app())
     context_cookie = bootstrap(client_a)
@@ -2163,8 +2180,8 @@ def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
 
     assert response_b.status_code == 200
     assert response_a.status_code == 409
-    assert committed_effects == [("user", "user-b"), ("audit", "user-b")]
-    assert rolled_back_effects == [[("user", "user-a"), ("audit", "user-a")]]
+    assert committed_effects == [("user", "user-b"), ("company_identity", "user-b"), ("audit", "user-b")]
+    assert rolled_back_effects == [[("user", "user-a"), ("company_identity", "user-a"), ("audit", "user-a")]]
 
 
 def test_late_logout_cannot_clear_newer_login_or_context_cookie(monkeypatch):
