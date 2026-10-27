@@ -492,6 +492,12 @@ underlying copy/hash/fsync work, and does not establish production latency.
 Durable Attempt snapshot retention is separate; this path does not delete
 historical directories after cancellation.
 
+The artifact collector publishes selected files as opaque bytes. Agent/Skill
+execution owns document format and quality checks; the collector does not unpack
+DOCX or parse XML. Path confinement, file-count, raw per-file/total-byte limits,
+artifact authorization and storage receipts remain mandatory. Declared required
+artifact types are checked once by terminal completion, after collection.
+
 The previous recursive workspace
 manifest and file-upload helpers have been removed from both modules.
 
@@ -534,7 +540,12 @@ workspace boundary remain platform-authorized, while ordinary tool parameter
 names and shapes are validated by the SDK/tool implementation. Glob/Grep
 workspace search scopes remain platform-checked; brace, extglob, character-class,
 and question-mark patterns use native tool semantics within that scope. Every
-returned path still passes the workspace and private-root boundary. Skill identity and
+returned path still passes the workspace and private-root boundary. Safe native
+search fields retain SDK semantics; when platform filtering or output budgets
+remove results, complete totals are omitted and Glob is marked truncated rather
+than claiming that the visible subset is complete. Grep pagination parameters
+remain intact, and global totals are omitted for filtered or paginated results.
+Skill identity and
 object constraints, platform context tools, external MCP schemas, and the
 Docker-native command proxy's command/timeout limits remain platform-owned.
 This contract does not claim support for background Bash jobs; a local Bash
