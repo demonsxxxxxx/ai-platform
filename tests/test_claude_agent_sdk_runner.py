@@ -2920,13 +2920,15 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     lifecycle = []
 
     @asynccontextmanager
-    async def session_factory(_config):
-        lifecycle.append("mcp_open")
+    async def session_factory(config):
+        phase = "catalog" if config["max_response_bytes"] == 1024 * 1024 else "mcp"
+        lifecycle.append(f"{phase}_open")
         try:
             yield types.SimpleNamespace()
         finally:
-            assert captured.get("client_disconnected") is True
-            lifecycle.append("mcp_closed")
+            if phase == "mcp":
+                assert captured.get("client_disconnected") is True
+            lifecycle.append(f"{phase}_closed")
 
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
@@ -2963,7 +2965,7 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     assert result.error == (
         "claude_agent_sdk_provider_session_failed" if mirror_error else None
     )
-    assert lifecycle == ["mcp_open", "mcp_closed"]
+    assert lifecycle == ["catalog_open", "catalog_closed", "mcp_open", "mcp_closed"]
 
 
 
@@ -6810,9 +6812,13 @@ async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path,
     def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         @asynccontextmanager
         async def session_factory(config):
+            connection = {
+                key: value for key, value in config.items()
+                if key not in {"max_response_bytes", "max_response_total_bytes"}
+            }
             names = [item["mcp_tool"] for item in subjects.values()
                      if item.get("mcp_server") in configs
-                     and configs[item["mcp_server"]] == config]
+                     and configs[item["mcp_server"]] == connection]
             async def call_tool(name, arguments):
                 calls.append((name, arguments))
                 if name == "list_files" and first_result == "timeout":

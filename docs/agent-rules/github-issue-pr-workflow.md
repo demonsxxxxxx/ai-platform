@@ -88,8 +88,9 @@ Do not publish raw transcripts, private prompts, credentials, or sensitive paths
 
 Use the existing [evidence levels](../architecture/ci-test-readiness-governance.md).
 Link the observed result for its actual source. Local, CI, packaged, deployed,
-and end-user observations remain distinct; a later fix invalidates earlier
-fixed-source verification claims.
+and end-user observations remain distinct. Follow [change verification](change-verification.md)
+to rerun checks affected by later changes; preserve the original source and scope
+of unaffected evidence. An old result does not certify a new candidate as a whole.
 
 ## Merge and release
 

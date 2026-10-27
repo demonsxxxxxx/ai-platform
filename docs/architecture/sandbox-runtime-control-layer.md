@@ -403,27 +403,28 @@ thread-isolation adapter. Docker's previous application-loop SDK calls and
 shared-default-executor probes are retired; OpenSandbox keeps its existing async
 SDK lifecycle. No provider ownership checks or durable release semantics change.
 
-## ProfileDrive retrieval staging ownership
+## Native MCP file access
 
-The executor's `PlatformContextRetrievalClient` owns only the temporary file it
-successfully creates with exclusive open for a scoped ProfileDrive transfer.
-It closes the local output before validating the complete byte count and atomically
-replacing the target. A zero-byte response remains a valid complete transfer.
-Until that handoff succeeds, every exit, including cancellation, synchronously
-attempts removal of this owned temporary file. A failed exclusive open conveys
-no ownership; existing target files and other staging files are never cleanup
-targets. Cleanup does not scan the workspace or change file authorization.
+The locked Claude CLI owns decoding and saving standard MCP resource results.
+Its project directory is pinned with `CLAUDE_CODE_PROJECT_DIR_NAME=ai-platform`;
+files remain in `.claude-config/projects/ai-platform/{sdk_session_id}/tool-results`.
+The existing provider session identity and Attempt workspace bind this location.
+Platform session-store loading and resume decisions retain their existing owner.
 
-A close failure during body failure or cancellation, or an unlink failure during
-cleanup, is secondary: it cannot replace the primary error or cancellation.
-Only a stable warning label is logged, without source paths, credentials or raw
-exception details. Warning-sink failures cannot replace that primary result.
-If unlink fails, the temporary file may remain; failure is
-not reported as a successful transfer. A close failure after a successful body
-retains the existing callback-failure mapping and prevents replacement. Existing
-scope, encoding, content-length, maximum-byte checks and callback mappings remain
-unchanged. The Files upstream transfer and HTTP response/client context owners
-remain separate from this executor-local temporary-file owner.
+Docker native filesystem version 3 exposes only that bound session's result
+directory through a read-only bind. An empty, traversable configuration mask
+provides its parent path; credentials, transcripts, other sessions, and other
+runtime-private roots stay hidden. Directory preparation rejects symlinks and
+non-directories. Cached native filesystems from earlier versions fail existing
+reuse validation and must be recreated through the provider lifecycle.
+
+SDK path admission and search-result filtering permit only the current provider
+session's native result files, including lexical and resolved-path checks. Writes and artifact collection still reject this
+runtime root. The Agent uses its authorized Bash or Skill to parse the file and
+can create a deliverable in an ordinary workspace directory for explicit attachment.
+The platform maintains the mount and access boundary; the CLI owns file bytes
+and the Agent owns document processing. Files-owned UI import/download and
+platform-uploaded attachment staging keep their separate contracts.
 
 ## Task workspace and Claude project instructions
 
