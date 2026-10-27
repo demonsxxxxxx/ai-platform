@@ -412,6 +412,7 @@ export function ChatAppContent({
   const {
     availableModels,
     defaultModel,
+    refreshModels,
     modelGroups,
     selectedGroupId,
     selectedGroup,
@@ -718,11 +719,15 @@ export function ChatAppContent({
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (catalogSelectionError) setModelSelectionError(catalogSelectionError);
+    if (catalogSelectionError) {
+      setCurrentModelId("");
+      setCurrentModelValue("");
+      setModelSelectionError(catalogSelectionError);
+    }
   }, [catalogSelectionError]);
 
   useEffect(() => {
-    if (!availableModels) return;
+    if (!availableModels || catalogSelectionError) return;
     if (modelSelectionMode === "auto") {
       if (currentModelId) setCurrentModelId("");
       if (currentModelValue) setCurrentModelValue("");
@@ -752,7 +757,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -1440,6 +1445,7 @@ export function ChatAppContent({
             selectedGroupId={selectedGroupId}
             onSelectGroup={handleSelectGroup}
             onSelectModel={handleSelectModel}
+            onModelSelectorOpen={refreshModels}
             onSendMessage={handleSendMessage}
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}

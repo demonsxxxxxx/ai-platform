@@ -1,3 +1,4 @@
+import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
@@ -173,21 +174,22 @@ test("Model admin discovery is a draft and only publication changes the active c
 
   const container = dom.document.createElement("div");
   const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
   try {
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, {
+      root.render(catalog.wrap(React.createElement(ModelAdminControl, {
         canManage: false,
         onStateChange,
-      }));
+      })));
     });
     assert.equal(container.querySelectorAll("[data-model-admin-control]").length, 0);
     assert.equal(calls.get, 0, "non-admin projection must not call the admin API");
 
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, {
+      root.render(catalog.wrap(React.createElement(ModelAdminControl, {
         canManage: true,
         onStateChange,
-      }));
+      })));
     });
     await waitFor(
       React,
@@ -238,6 +240,8 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[0].credential, undefined);
     assert.equal(calls.publish[0].models[0].auto_compact_window, 150_000);
 
+    assert.equal(catalog.calls(), 2, "successful publish rereads the grouped public catalog");
+    assert.match(nodeText(container), /聊天中的模型列表已重新读取/);
     const keyInput = inputByLabel(container, "模型 API Key");
     await React.act(async () => {
       changeMountedInput(keyInput, "super-secret-key");
@@ -353,16 +357,16 @@ test("Model admin discovery is a draft and only publication changes the active c
       throw new ApiRequestError("模型服务不可用", 503);
     };
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, {
+      root.render(catalog.wrap(React.createElement(ModelAdminControl, {
         canManage: false,
         onStateChange,
-      }));
+      })));
     });
     await React.act(async () => {
-      root.render(React.createElement(ModelAdminControl, {
+      root.render(catalog.wrap(React.createElement(ModelAdminControl, {
         canManage: true,
         onStateChange,
-      }));
+      })));
     });
     await waitFor(
       React,
@@ -374,6 +378,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     await React.act(async () => {
       root.unmount();
     });
+    catalog.cleanup();
     modelAdminApi.get = original.get;
     modelAdminApi.discover = original.discover;
     modelAdminApi.publish = original.publish;

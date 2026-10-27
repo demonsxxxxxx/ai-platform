@@ -11,6 +11,8 @@ import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummar
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { GroupDrawer } from "./ModelGroupManagement";
 
+import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
+
 const STATUS_FILTERS = [
   ["all", "状态：全部"],
   ["enabled", "状态：已启用"],
@@ -117,6 +119,7 @@ export function ModelAdminControl({
   groupRevision?: number;
   onGroupsChanged?: () => void;
 }) {
+  const { refreshModels } = useModelCatalogContext();
   const [state, setState] = useState<AdminModelState | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
@@ -367,7 +370,11 @@ export function ModelAdminControl({
       if (!ownsRequest(owner)) return;
       applyState(next);
       setTestState("passed");
-      setMessage("模型配置已保存并生效；用户重新加载聊天页面后获取最新列表。");
+      const refreshed = await refreshModels({ force: true });
+      if (!ownsRequest(owner)) return;
+      setMessage(refreshed
+        ? "模型配置已保存并生效，聊天中的模型列表已重新读取。"
+        : "模型配置已保存并生效；模型列表暂未刷新，打开选择器或回到前台后会重试。");
     } catch (caught) {
       if (!ownsRequest(owner)) return;
       if (caught instanceof ApiRequestError && caught.status === 409) setCatalogReceipt(null);

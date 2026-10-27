@@ -95,7 +95,7 @@ export function ChatInputSelectors({
             />
           </LibreChatSelectorModal>
         )}
-      {onSelectModel && availableModels.length > 0 && (
+      {onSelectModel && (
         <LibreChatSelectorModal panel="model">
           <ComposerModelPicker
             models={availableModels}

@@ -203,6 +203,7 @@ interface ChatViewProps {
   selectedGroupId?: string;
   onSelectGroup?: (groupId: string) => void;
   onSelectModel: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -278,6 +279,7 @@ export function ChatView({
   selectedGroupId,
   onSelectGroup,
   onSelectModel,
+  onModelSelectorOpen,
   onSendMessage,
   canRetryPendingSubmission,
   onRetryPendingSubmission,
@@ -984,6 +986,7 @@ export function ChatView({
     selectedGroupId,
     onSelectGroup,
     onSelectModel,
+    onModelSelectorOpen,
     attachments,
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,

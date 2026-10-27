@@ -63,16 +63,13 @@ test("chat input exposes the existing model panel from a visible composer contro
   assert.match(input, /availableModels\s*=\s*\[\]/);
   assert.match(input, /currentModelId/);
   assert.match(input, /onSelectModel/);
-  assert.match(input, /models:\s*!!availableModels\?\.length && !!onSelectModel/);
+  assert.match(input, /models:\s*!!onSelectModel/);
   assert.match(input, /availableModels=\{availableModels\}/);
   assert.match(input, /onSelectModel=\{onSelectModel\}/);
   assert.match(input, /\s+showModelSelector\s*\n/);
   assert.match(toolbar, /showModelSelector && onSelectModel/);
   assert.match(toolbar, /data-composer-model-trigger/);
-  assert.match(
-    toolbar,
-    /onActivePanelChange\(activePanel === "model" \? null : "model"\)/,
-  );
+  assert.match(input, /if \(activePanel === "model"\) void onModelSelectorOpen\?\.\(\)/);
   assert.match(input, /dispatchComposerSelection\(\{ type: "clear-kind", kind: "model" \}\)/);
   assert.doesNotMatch(input, /id:\s*`model:\$\{currentModelId\}`/);
   assert.match(input, /handleSelectModelChip/);

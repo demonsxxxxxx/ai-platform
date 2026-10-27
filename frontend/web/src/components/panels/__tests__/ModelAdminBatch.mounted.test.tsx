@@ -1,3 +1,4 @@
+import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
@@ -32,8 +33,9 @@ test("mounted batch toolbar previews then atomically applies selected models", a
   modelGroupsApi.batchModels = async (body) => { calls.push({ preview: body.preview, body }); return { tenant_id: "tenant-a", operation: body.operation, preview: body.preview, changed: true, groups: [{ group_id: group.id, group_type: "business", before: { revision: 3, member_count: 0, models: [] }, after: { revision: 4, member_count: 0, models: [], affected_model_ids: body.model_ids }, changed: true }] }; };
   const container = dom.document.createElement("div");
   const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
   try {
-    await React.act(async () => root.render(React.createElement(ModelAdminControl)));
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl))));
     await flush(React, () => Boolean(container.querySelector("[data-model-admin-control]")));
     await flush(React, () => Boolean(container.querySelector('[data-model-admin-select="model-a"]')));
     const modelCheckbox = container.querySelector<HTMLElement>('[data-model-admin-select="model-a"]');
@@ -59,6 +61,7 @@ test("mounted batch toolbar previews then atomically applies selected models", a
     assert.deepEqual(calls[2].body, { ...(calls[1].body as object), preview: false });
   } finally {
     await React.act(async () => root.unmount());
+    catalog.cleanup();
     modelAdminApi.get = originals.get; modelAdminApi.discover = originals.discover; modelAdminApi.publish = originals.publish;
     modelGroupsApi.listAdmin = originals.listAdmin; modelGroupsApi.details = originals.details; modelGroupsApi.batchModels = originals.batchModels;
   }

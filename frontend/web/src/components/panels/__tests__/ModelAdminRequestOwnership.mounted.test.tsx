@@ -1,3 +1,4 @@
+import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
@@ -36,6 +37,7 @@ function deferred<T>() {
 }
 interface View {
   React: ReactModule; container: Container;
+  catalog: ReturnType<typeof installModelCatalogTestProvider>;
   input(label: string): Field;
   button(attribute: string): QueryNode;
   change(label: string, value: string): Promise<void>;
@@ -49,7 +51,8 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   const original = { ...modelAdminApi };
   Object.assign(modelAdminApi, { get: async () => saved(), ...api });
   const container = dom.document.createElement("div"); const root = await createLobeTestRoot(container);
-  const render = async (canManage: boolean) => { await React.act(async () => { root.render(React.createElement(ModelAdminControl, { canManage })); }); };
+  const catalog = installModelCatalogTestProvider();
+  const render = async (canManage: boolean) => { await React.act(async () => { root.render(catalog.wrap(React.createElement(ModelAdminControl, { canManage }))); }); };
   const input = (label: string) => {
     const found = Array.from(container.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
   };
@@ -58,7 +61,7 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   };
   try {
     await render(true);
-    await run({ React, container, input, button, render,
+    await run({ React, container, input, button, render, catalog,
       unmount: async () => { await React.act(async () => root.render(null)); },
       change: async (label, value) => { await React.act(async () => {
         const field = input(label);
@@ -67,7 +70,7 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
       }); },
       click: async (attribute) => { await React.act(async () => { (button(attribute) as HTMLButtonElement).click(); await Promise.resolve(); }); },
     });
-  } finally { await React.act(async () => root.unmount()); Object.assign(modelAdminApi, original); }
+  } finally { await React.act(async () => root.unmount()); catalog.cleanup(); Object.assign(modelAdminApi, original); }
 }
 
 test("GET never claims test success; successive saves use acknowledged revisions without rediscovery or key masks", async () => {
@@ -370,5 +373,33 @@ test("disabled capacity fields still honor request and upstream-availability loc
         assert.equal(props(input(`mock/second ${label}`)).disabled, true);
       }
       await React.act(async () => pending.resolve(initial));
+    });
+});
+
+test("successful publication remains successful when the grouped catalog refresh fails", async () => {
+  await withControl({ publish: async (_url, _key, _revision, models) => ({ ...saved(5), models }) },
+    async ({ catalog, change, click, container, button }) => {
+      catalog.failRefresh();
+      await change("mock/gpt 压缩窗口 Token", "150000");
+      await click("data-model-admin-publish");
+      assert.equal(catalog.calls(), 2);
+      assert.match(text(container), /模型配置已保存并生效；模型列表暂未刷新/);
+      assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
+      assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    });
+});
+
+test("publication refresh completion cannot write into a replacement admin owner", async () => {
+  const pending = deferred<{ models: []; count: number; enabled_count: number }>();
+  await withControl({ publish: async (_url, _key, _revision, models) => ({ ...saved(5), models }) },
+    async ({ change, click, render, React, container }) => {
+      const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+      modelPublicApi.listAvailable = () => pending.promise;
+      await change("mock/gpt 压缩窗口 Token", "150000");
+      await click("data-model-admin-publish");
+      await render(false);
+      await render(true);
+      await React.act(async () => pending.resolve({ models: [], count: 0, enabled_count: 0 }));
+      assert.doesNotMatch(text(container), /聊天中的模型列表已重新读取|模型列表暂未刷新/);
     });
 });
