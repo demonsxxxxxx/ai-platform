@@ -68,7 +68,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
     <>
       {trigger}
       <Drawer open={showMenu} onClose={() => setShowMenu(false)} placement="bottom" height="auto" closable={false}
-        title={t("users.user")} classNames={{ wrapper: "workbench-account-drawer" }} styles={{ panel: { maxHeight: "85dvh" } }}
+        title={t("users.user")} classNames={{ panel: "workbench-account-drawer" }} styles={{ panel: { maxHeight: "85dvh" } }}
         extra={<Button type="text" aria-label={t("common.close")} onClick={() => setShowMenu(false)} icon={<X size={18} />} />}
       >
         <div ref={(element) => { swipeRef.current = element; }}>
