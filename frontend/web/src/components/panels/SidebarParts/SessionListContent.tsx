@@ -604,14 +604,13 @@ export function SessionListContent({
         <div
           data-workbench-management-nav={isAiAdmin ? true : undefined}
           data-workbench-capabilities-nav={isAiAdmin ? undefined : true}
-          className="shrink-0 border-t border-[var(--theme-border)] px-2 py-1"
+          className="sidebar-management-nav shrink-0 border-t border-[var(--theme-border)] px-2 py-2"
         >
           <Button type="text"
             aria-controls="workbench-management-nav-items"
             aria-expanded={isManagementOpen}
             htmlType="button"
-            className="group/section flex h-8 w-full items-center justify-between rounded-md px-[9px] text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-            style={{ justifyContent: "flex-start", textAlign: "left" }}
+            className="sidebar-management-toggle group/section flex h-9 w-full items-center justify-between rounded-md px-[9px] text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
             onClick={() => isAiAdmin
               ? setManagementCollapsed((collapsed) => !collapsed)
               : setCapabilitiesOpen((open) => !open)}
@@ -632,7 +631,11 @@ export function SessionListContent({
               size={14}
             />
           </Button>
-          <div id="workbench-management-nav-items" hidden={!isManagementOpen}>
+          <div
+            id="workbench-management-nav-items"
+            className="sidebar-management-items"
+            hidden={!isManagementOpen}
+          >
             {visibleManagementNavItems.map(({ key, icon: Icon, label, onClick }) => {
               const isActive = activeNavItem === key;
               return (
@@ -642,7 +645,7 @@ export function SessionListContent({
                   aria-current={isActive ? "page" : undefined}
                   data-active={isActive ? "true" : "false"}
                   data-workbench-nav-item={key}
-                  className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
+                  className="sidebar-nav-btn sidebar-management-item flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
                 >
                   <Icon size={19} />
                   <span className="min-w-0 truncate">{label}</span>
