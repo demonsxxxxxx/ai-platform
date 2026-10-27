@@ -60,6 +60,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
   );
   if (!isMobile) return (
     <DropdownMenu open={showMenu} onOpenChange={setShowMenu} placement={showLabel ? "topLeft" : "rightBottom"}
+      popupProps={{ className: "workbench-account-menu-popup" }}
       header={identity} items={[{ key: "logout", icon: LogOut, label: t("auth.logout"), danger: true, onClick: leave }]}
     >{trigger}</DropdownMenu>
   );
@@ -67,7 +68,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
     <>
       {trigger}
       <Drawer open={showMenu} onClose={() => setShowMenu(false)} placement="bottom" height="auto" closable={false}
-        title={t("users.user")} styles={{ panel: { maxHeight: "85dvh" } }}
+        title={t("users.user")} classNames={{ wrapper: "workbench-account-drawer" }} styles={{ panel: { maxHeight: "85dvh" } }}
         extra={<Button type="text" aria-label={t("common.close")} onClick={() => setShowMenu(false)} icon={<X size={18} />} />}
       >
         <div ref={(element) => { swipeRef.current = element; }}>
