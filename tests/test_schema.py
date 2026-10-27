@@ -95,7 +95,7 @@ def test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog():
     assert "upstream_available boolean not null default true" in schema
     assert "first_seen_revision bigint not null references model_gateway_revisions(revision)" in schema
     assert "last_seen_revision bigint not null references model_gateway_revisions(revision)" in schema
-    assert "create unique index if not exists uq_model_catalog_default" in schema
+    assert "create unique index if not exists uq_model_catalog_default" not in schema
     assert "chk_model_gateway_revision_positive" in schema
     assert "chk_model_gateway_base_url" in schema
     assert "chk_model_gateway_key_fingerprint" in schema

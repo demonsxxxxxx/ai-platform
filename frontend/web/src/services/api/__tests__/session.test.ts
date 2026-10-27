@@ -678,6 +678,8 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       agentOptions: {
         model_id: "public-model-id",
         model: "provider/public-model",
+        group_id: "group-support",
+        selection_mode: "explicit",
         enable_thinking: "high",
         selected_skill: "must-not-pass",
         mcp_tool_ids: "must-not-pass",
@@ -691,6 +693,8 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       thinking_effort: "high",
       model_id: "public-model-id",
       model: "provider/public-model",
+      group_id: "group-support",
+      selection_mode: "explicit",
       user_timezone: "Asia/Shanghai",
     },
   );
@@ -746,6 +750,8 @@ test("pinned Agent conversations submit only through the dedicated selector-free
         model_id: "client-override",
         model: "provider/client-model",
         enable_thinking: "high",
+        group_id: "group-support",
+        selection_mode: "auto",
       },
       [],
       ["client-disabled-skill"],
@@ -768,6 +774,8 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.thinking_effort, "high");
     assert.equal(calls[0]?.body.model_id, "client-override");
     assert.equal(calls[0]?.body.model, "provider/client-model");
+    assert.equal(calls[0]?.body.group_id, "group-support");
+    assert.equal(calls[0]?.body.selection_mode, "auto");
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

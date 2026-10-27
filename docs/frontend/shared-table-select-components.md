@@ -12,18 +12,14 @@ Management pages import `Table` and `Pagination` directly from `@lobehub/ui/base
 
 Complex department/role selections, market-tag autocomplete and model/Skill/MCP catalogs retain their data and authority owners while using Lobe Select/Popover/AutoComplete/Modal controls. Department selections preserve authority IDs, unresolved values, duplicate restrictions and the 128-choice limit. Expert access editing remains department-only; historical API fields are preserved.
 
-Model user access is employee-only, separate from expert department access.
-`ModelUserAccess` uses a compact Lobe Popover trigger with Lobe Radio, Checkbox,
-and Input controls, backed by the administrator company employee API
-(`companyEmployeesApi`), not the local-user diagnostics API. The trigger shows
-whether access is for all authenticated users or a selected-user count; the
-popover owns mode selection, search, scrollable employee results, selected-user
-summary chips, completion, focus restoration, and Escape handling. Options and
-selected labels show name plus work ID; `allowed_user_ids` retains its
-historical field name but carries work IDs. Each model owns its server-side
-search/page and abortable request; retained selections survive searches and
-pagination, and directory failures remain retryable. Publication disables all
-access controls; losing management permission clears pending directory state.
+Model-group membership is separate from expert department access. Model
+administration uses `ModelGroupManagement` and `ModelGroupUserDrawer`, backed by
+revisioned group/model/member and atomic user-membership APIs. Employee search,
+pagination, work-ID display, abortable requests, retryable directory failures,
+permission gates, Escape and focus restoration belong to the group member owner;
+model-directory ACL controls are retired. The catalog publication request does
+not send `is_default`, `access_mode`, or `allowed_user_ids`; those historical
+fields are migration-only inputs and cannot silently reset authorization.
 
 Avatar candidates remain four columns inside the editor card. Viewport width alone does not establish room for eight fixed-size avatars. Actual rendered candidates must stay within their buttons without overlap.
 

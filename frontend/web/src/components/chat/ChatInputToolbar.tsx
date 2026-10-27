@@ -9,8 +9,10 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { AgentOptionButton } from "./AgentOptionButton";
 import type { ModelOption } from "../../services/api/modelPublic";
+import type { PublicModelGroup } from "../../services/api/modelGroups";
 import type { AgentOption, FileCategory } from "../../types";
 
 export interface ChatInputToolbarProps {
@@ -27,7 +29,11 @@ export interface ChatInputToolbarProps {
   totalSkillsCount: number;
   availableModels: ModelOption[];
   currentModelId?: string;
-  onSelectModel?: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  modelGroups?: PublicModelGroup[];
+  selectedGroupId?: string;
+  onSelectGroup?: (groupId: string) => void;
+  onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
   showModelSelector?: boolean;
   agentOptions?: Record<string, AgentOption>;
   agentOptionValues?: Record<string, boolean | string | number>;
@@ -59,6 +65,10 @@ export function ChatInputToolbar({
   totalSkillsCount,
   availableModels,
   currentModelId,
+  modelSelectionMode = "explicit",
+  modelGroups = [],
+  selectedGroupId,
+  onSelectGroup,
   onSelectModel,
   showModelSelector = false,
   agentOptions,
@@ -99,8 +109,17 @@ export function ChatInputToolbar({
 
   return (
     <ComposerToolbar>
-      <div className="min-w-0 flex-1">
-        {showModelSelector && onSelectModel && availableModels.length > 0 ? (
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        {modelGroups.length > 0 && onSelectGroup ? (
+          <LobeSelectField
+            aria-label="选择模型分组"
+            value={selectedGroupId ?? ""}
+            onChange={onSelectGroup}
+            options={modelGroups.map((group) => ({ value: group.id, label: group.name }))}
+            className="min-w-32 max-w-48"
+          />
+        ) : null}
+        {showModelSelector && onSelectModel ? (
           <Button type={activePanel === "model" ? "primary" : "default"} size="large"
             htmlType="button"
             data-composer-model-trigger
@@ -117,8 +136,9 @@ export function ChatInputToolbar({
             aria-expanded={activePanel === "model"}
           >
             <span className="truncate">
-              {currentModel?.label ??
-                t("composerCommand.modelSelector.title", "选择模型")}
+              {modelSelectionMode === "auto"
+                ? "自动选择"
+                : currentModel?.label ?? t("composerCommand.modelSelector.title", "选择模型")}
             </span>
             <ChevronDown
               size={15}

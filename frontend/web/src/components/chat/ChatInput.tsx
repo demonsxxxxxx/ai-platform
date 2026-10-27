@@ -111,7 +111,12 @@ export const ChatInput = memo(function ChatInput({
   onToggleAgentOption,
   availableModels = [],
   currentModelId,
+  modelSelectionMode = "explicit",
+  modelGroups = [],
+  selectedGroupId,
+  onSelectGroup,
   onSelectModel,
+  onModelSelectorOpen,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   uploadControls: sharedUploadControls,
@@ -506,11 +511,10 @@ export const ChatInput = memo(function ChatInput({
     () => ({
       skills: skillsAvailable,
       tools: toolsAvailable,
-      models: !!availableModels?.length && !!onSelectModel,
+      models: !!onSelectModel,
       files: uploadCategories.length > 0,
     }),
     [
-      availableModels?.length,
       onSelectModel,
       skillsAvailable,
       toolsAvailable,
@@ -764,6 +768,10 @@ export const ChatInput = memo(function ChatInput({
     [activePanel, closeSlashMenu, commandSearchSeed],
   );
 
+  useEffect(() => {
+    if (activePanel === "model") void onModelSelectorOpen?.();
+  }, [activePanel, onModelSelectorOpen]);
+
   const handleSelectTaskSkill = useCallback(
     (skill: PublicSkillResponse) => {
       onSelectSkill?.(skill);
@@ -840,8 +848,8 @@ export const ChatInput = memo(function ChatInput({
   }, [currentModelId]);
 
   const handleSelectModelChip = useCallback(
-    (modelId: string, modelValue: string) => {
-      onSelectModel?.(modelId, modelValue);
+    (modelId: string, modelValue: string, mode?: "auto" | "explicit") => {
+      onSelectModel?.(modelId, modelValue, mode);
       dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
       setInput((current) =>
         clearModelCommandDraft(
@@ -1071,6 +1079,10 @@ export const ChatInput = memo(function ChatInput({
                 totalSkillsCount={totalSkillsCount}
                 availableModels={availableModels}
                 currentModelId={currentModelId}
+                modelSelectionMode={modelSelectionMode}
+                modelGroups={modelGroups}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={onSelectGroup}
                 onSelectModel={onSelectModel}
                 showModelSelector
                 agentOptions={agentOptions}
@@ -1106,6 +1118,7 @@ export const ChatInput = memo(function ChatInput({
         enableSkills={enableSkills}
         availableModels={availableModels}
         currentModelId={currentModelId}
+        modelSelectionMode={modelSelectionMode}
         onSelectModel={handleSelectModelChip}
       />
 

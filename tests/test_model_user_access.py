@@ -13,15 +13,10 @@ from app.execution.application.model_control_plane import ModelControlPlaneServi
 from app.execution.application import model_selection
 from app.execution.domain.model_catalog import (
     normalize_model_display_name,
-    normalize_model_user_access,
     platform_model_id,
     public_model_projection,
 )
-from app.execution.infrastructure.model_management import (
-    model_access_excludes_user,
-    resolve_run_model,
-)
-from app.execution.transport.model_management import _translate_control_plane_error
+from app.execution.infrastructure.model_management import resolve_run_model
 
 
 def _service(repository, directory=None):
@@ -77,7 +72,6 @@ def _entry(**overrides):
         "value": "openai/gpt-5",
         "display_name": "GPT-5",
         "enabled": True,
-        "is_default": True,
         "order": 1,
         "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
@@ -109,30 +103,6 @@ class _PublishRepository:
         return 2, kwargs["models"]
 
 
-def test_access_normalization_never_silently_widens():
-    # Omitted mode with a user list is an explicit restriction, not "everyone".
-    assert normalize_model_user_access(None, ["user-a", "user-a", "user-b"]) == (
-        "selected", ["user-a", "user-b"],
-    )
-    # A model that never configured access stays fully available.
-    assert normalize_model_user_access(None, None) == ("all", [])
-    # Omitted fields on a restricted model keep the saved restriction.
-    assert normalize_model_user_access(None, None, current=("selected", ["user-a"])) == (
-        "selected", ["user-a"],
-    )
-    assert normalize_model_user_access(None, [], current=("selected", ["user-a"])) == (
-        "selected", ["user-a"],
-    )
-    # An explicit empty selection is rejected rather than meaning "everyone".
-    for mode, users in (("selected", []), ("selected", ()), ("selected", None)):
-        with pytest.raises(ValueError, match="model_user_access_(requires_users|invalid)"):
-            normalize_model_user_access(mode, users)
-    for invalid in (("everyone", []), ("selected", "user-a"), ("selected", [""]),
-                    ("selected", ["user a"]), ("selected", ["../etc"]), ("selected", [3])):
-        with pytest.raises(ValueError, match="model_user_access_invalid"):
-            normalize_model_user_access(*invalid)
-
-
 def test_display_name_clears_to_upstream_value_only_when_explicitly_empty():
     assert normalize_model_display_name(None, fallback="openai/gpt-5") == "openai/gpt-5"
     assert normalize_model_display_name("", fallback="openai/gpt-5") == "openai/gpt-5"
@@ -147,29 +117,16 @@ def test_display_name_clears_to_upstream_value_only_when_explicitly_empty():
 
 
 @pytest.mark.asyncio
-async def test_publication_persists_company_work_id_without_local_login_and_rejects_unknown_users():
+async def test_publication_rejects_legacy_acl_fields():
     repository = _PublishRepository(existing={"user-a"})
-    published = await _service(repository).publish(
-        base_url="https://gateway.example", api_key="synthetic",
-        expected_revision=1,
-        models=[_entry(access_mode="selected", allowed_user_ids=["user-a"])],
-        actor_user_id="admin-a", tenant_id="tenant-a",
-    )
-    assert published["revision"] == 2
-    assert repository.published["models"][0]["access_mode"] == "selected"
-    assert repository.published["models"][0]["allowed_user_ids"] == ["user-a"]
-
-    # A user that is not an active member of this tenant is refused.
-    for users in (["user-b"], ["user-a", "user-b"]):
-        repository = _PublishRepository(existing={"user-a"})
-        with pytest.raises(ValueError, match="model_user_access_unknown_user"):
-            await _service(repository).publish(
-                base_url="https://gateway.example", api_key="synthetic",
-                expected_revision=1,
-                models=[_entry(access_mode="selected", allowed_user_ids=users)],
-                actor_user_id="admin-a", tenant_id="tenant-a",
-            )
-        assert repository.published is None
+    with pytest.raises(ValueError, match="model_user_access_retired"):
+        await _service(repository).publish(
+            base_url="https://gateway.example", api_key="synthetic",
+            expected_revision=1,
+            models=[_entry(access_mode="selected", allowed_user_ids=["user-a"])],
+            actor_user_id="admin-a", tenant_id="tenant-a",
+        )
+    assert repository.published is None
 
 
 @pytest.mark.asyncio
@@ -188,8 +145,8 @@ async def test_publication_keeps_saved_restriction_when_update_omits_access_fiel
         expected_revision=1, models=[_entry()],  # no access_mode / allowed_user_ids
         actor_user_id="admin-a", tenant_id="tenant-a",
     )
-    assert repository.published["models"][0]["access_mode"] == "selected"
-    assert repository.published["models"][0]["allowed_user_ids"] == ["user-a"]
+    assert "access_mode" not in repository.published["models"][0]
+    assert "allowed_user_ids" not in repository.published["models"][0]
     assert repository.published["models"][0]["display_name"] == "GPT-5"
 
     # An omitted display name keeps the saved one.
@@ -221,44 +178,6 @@ def test_public_projection_default_follows_the_filtered_rows():
     assert public_model_projection([])["default_model_id"] is None
 
 
-class _AccessCursor:
-    def __init__(self, row):
-        self._row = row
-
-    async def fetchone(self):
-        return self._row
-
-
-class _AccessConnection:
-    def __init__(self, row):
-        self._row = row
-
-    async def execute(self, _sql, _params=None):
-        return _AccessCursor(self._row)
-
-
-@pytest.mark.asyncio
-async def test_new_run_admission_fails_closed_for_excluded_or_missing_models():
-    # A new Run may not use a model whose current list excludes this user.
-    assert await model_access_excludes_user(
-        _AccessConnection({"access_mode": "selected", "allowed_user_ids": ["user-a"]}),
-        model_id="mdl", user_id="user-b",
-    )
-    # A current user list that includes the caller admits the new Run.
-    assert not await model_access_excludes_user(
-        _AccessConnection({"access_mode": "selected", "allowed_user_ids": ["user-b"]}),
-        model_id="mdl", user_id="user-b",
-    )
-    assert not await model_access_excludes_user(
-        _AccessConnection({"access_mode": "all", "allowed_user_ids": []}),
-        model_id="mdl", user_id="user-b",
-    )
-    # A retired catalog row must not become a new-Run bypass.
-    assert await model_access_excludes_user(
-        _AccessConnection(None), model_id="mdl", user_id="user-b",
-    )
-
-
 class _ResolveCursor:
     def __init__(self, row):
         self._row = row
@@ -278,21 +197,16 @@ class _ResolveConnection:
 
 
 @pytest.mark.asyncio
-async def test_run_resolution_filters_by_the_calling_user_in_one_predicate():
+async def test_run_resolution_requires_tenant_group_policy():
     conn = _ResolveConnection({
         "connection_revision": 3, "model_id": "mdl", "upstream_model_id": "openai/gpt-5",
         "auto_compact_window": 200_000, "max_output_tokens": 2048,
     })
-    for selection in ({"id": "mdl"}, {"value": "openai/gpt-5"}, {}):
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
         await resolve_run_model(
-            conn,
-            model_id=selection.get("id"),
-            model_value=selection.get("value"),
-            user_id="user-b",
+            conn, model_id="mdl", model_value=None, user_id="user-b",
         )
-        sql, params = conn.calls[-1]
-        assert "allowed_user_ids ? %s" in sql
-        assert params[0] == "user-b"
+    assert conn.calls == []
 
 
 def test_default_model_selection_carries_the_calling_user():
@@ -314,13 +228,6 @@ def test_default_model_selection_carries_the_calling_user():
         )
     )
     assert captured == {"model_id": None, "model_value": None, "user_id": "user-b"}
-
-
-def test_access_errors_map_to_validation_responses():
-    for code in ("model_user_access_invalid", "model_user_access_requires_users",
-                 "model_user_access_unknown_user"):
-        error = _translate_control_plane_error(ValueError(code))
-        assert (error.status_code, error.detail) == (422, code)
 
 
 def test_publication_transport_carries_tenant_scope(monkeypatch):
@@ -349,19 +256,18 @@ def test_publication_transport_carries_tenant_scope(monkeypatch):
         "models": [{
             "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
             "display_name": "GPT-5",
-            "enabled": True, "is_default": True, "order": 1,
-            "access_mode": "selected", "allowed_user_ids": ["user-a"],
+            "enabled": True, "order": 1,
             "auto_compact_window": 200_000, "max_output_tokens": 2048,
         }],
     })
     assert response.status_code == 200
     assert captured["tenant_id"] == "tenant-a"
-    assert captured["models"][0]["access_mode"] == "selected"
-    assert captured["models"][0]["allowed_user_ids"] == ["user-a"]
+    assert "access_mode" not in captured["models"][0]
+    assert "allowed_user_ids" not in captured["models"][0]
 
 
 @pytest.mark.asyncio
-async def test_directory_outage_blocks_new_grants_but_allows_carryover_and_removal():
+async def test_publication_does_not_depend_on_legacy_directory_acl():
     from app.identity.api import CompanyEmployeeDirectoryService, CompanyEmployeeDirectoryUnavailable
 
     async def unavailable():
@@ -371,21 +277,11 @@ async def test_directory_outage_blocks_new_grants_but_allows_carryover_and_remov
     repository = _PublishRepository(saved={platform_model_id("openai/gpt-5"): {
         "display_name": "Saved", "access_mode": "selected", "allowed_user_ids": ["E001", "E002"],
     }})
-    for fields in ({}, {"access_mode": "selected", "allowed_user_ids": ["E001"]}):
-        await _service(repository, directory).publish(
-            base_url="https://gateway.example", api_key="synthetic", expected_revision=1,
-            models=[_entry(**fields)], actor_user_id="admin-a", tenant_id="tenant-a",
-        )
-        assert repository.published is not None
-    repository.published = None
-    with pytest.raises(CompanyEmployeeDirectoryUnavailable):
-        await _service(repository, directory).publish(
-            base_url="https://gateway.example", api_key="synthetic", expected_revision=1,
-            models=[_entry(access_mode="selected", allowed_user_ids=["E001", "E003"])],
-            actor_user_id="admin-a", tenant_id="tenant-a",
-        )
-    assert repository.published is None
-    assert _translate_control_plane_error(CompanyEmployeeDirectoryUnavailable()).status_code == 503
+    await _service(repository, directory).publish(
+        base_url="https://gateway.example", api_key="synthetic", expected_revision=1,
+        models=[_entry()], actor_user_id="admin-a", tenant_id="tenant-a",
+    )
+    assert repository.published is not None
 
 
 def test_publication_transport_rejects_foreign_tenant_before_directory_read_or_publish(monkeypatch):
@@ -413,9 +309,8 @@ def test_publication_transport_rejects_foreign_tenant_before_directory_read_or_p
         response = client.post("/api/ai/admin/models/publish", json={
             "base_url": "https://gateway.example", "credential": "synthetic",
             "expected_revision": 1,
-            "models": [_entry(access_mode="selected", allowed_user_ids=["E001"])],
+            "models": [_entry()],
         })
-    assert response.status_code == 403
-    assert response.json() == {"detail": "company_employee_directory_forbidden"}
+    assert response.status_code == 200
     assert reader_calls == []
-    assert repository.published is None
+    assert repository.published is not None

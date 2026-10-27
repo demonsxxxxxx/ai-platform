@@ -8,6 +8,10 @@ export async function resolve(specifier, context, nextResolve) {
 }
 
 export async function load(url, context, nextLoad) {
+  // Match Vite's static-asset URL import without replacing any UI component.
+  if (new URL(url).pathname.endsWith(".svg")) {
+    return { format: "module", shortCircuit: true, source: `export default ${JSON.stringify(url)};` };
+  }
   if (!url.startsWith(prefix)) return nextLoad(url, context);
   const target = JSON.stringify(decodeURIComponent(url.slice(prefix.length)));
   return {

@@ -51,9 +51,9 @@ from app.runtime.sandbox.callback_tokens import (
 from app.execution.transport import model_management as model_routes
 from app.runs.infrastructure.postgres import (
     bind_run_model,
-    inherit_run_model,
     load_run_model_snapshot,
 )
+from app.runs.application.model_reauthorization import trusted_usage_scene
 
 
 def _key() -> str:
@@ -150,7 +150,7 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
         with pytest.raises(ValidationError):
             model_routes.ModelPublicationEntry(
                 id="mdl_gpt", value="openai/gpt-5", display_name="GPT-5",
-                enabled=True, is_default=True, order=1,
+                enabled=True, order=1,
                 auto_compact_window=budget, max_output_tokens=2048,
             )
 
@@ -217,7 +217,7 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
     assert candidate["models"][0]["order"] == 1
     entry = {
         "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
-        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "display_name": "GPT-5", "enabled": True,
         "order": 1, "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     upstream_ids[:] = ["different-model"]
@@ -233,9 +233,45 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
         expected_revision=None, models=[entry], actor_user_id="admin-user",
     )
     assert published["revision"] == 1
-    assert publications[0]["models"] == [
-        {**entry, "access_mode": "all", "allowed_user_ids": []}
-    ]
+    assert publications[0]["models"] == [entry]
+
+
+def test_model_group_batch_endpoint_is_atomic_contract(monkeypatch) -> None:
+    from app.execution.transport import model_management as transport
+
+    captured = {}
+
+    class Service:
+        async def batch_group_models(self, **kwargs):
+            captured.update(kwargs)
+            return {"preview": True, "groups": []}
+
+    principal = SimpleNamespace(user_id="admin-a", tenant_id="tenant-a")
+    app = FastAPI()
+    monkeypatch.setattr(transport, "configured_model_control_plane", lambda: Service())
+    app.include_router(
+        transport.build_model_management_router(
+            principal_dependency=lambda: principal,
+            is_admin=lambda _principal: True,
+        ),
+        prefix="/api/ai",
+    )
+    response = TestClient(app).post("/api/ai/admin/model-groups/models/batch", json={
+        "group_ids": ["group-a", "group-b"],
+        "model_ids": ["model-a", "model-b"],
+        "operation": "replace",
+        "expected_group_revisions": {"group-a": 3, "group-b": 8},
+        "preview": True,
+    })
+    assert response.status_code == 200
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "group_ids": ["group-a", "group-b"],
+        "model_ids": ["model-a", "model-b"],
+        "operation": "replace",
+        "expected_group_revisions": {"group-a": 3, "group-b": 8},
+        "preview": True,
+    }
 
 
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
@@ -269,7 +305,7 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
     )
     entry = {
         "id": "mdl_gpt", "value": "openai/gpt-5", "display_name": "GPT-5",
-        "enabled": True, "is_default": True, "order": 1,
+        "enabled": True, "order": 1,
         "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     with TestClient(app) as client:
@@ -291,6 +327,10 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
             "base_url": "https://gateway.example", "credentail": "synthetic-secret",
             "models": [entry],
         })
+        legacy_field = client.post("/api/ai/admin/models/publish", json={
+            "base_url": "https://gateway.example", "credential": "synthetic-secret",
+            "models": [{**entry, "is_default": True}],
+        })
         retired = client.put("/api/ai/admin/models/connection", json={
             "base_url": "https://gateway.example", "credential": "synthetic-secret",
         })
@@ -305,19 +345,18 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
     assert invalid.status_code == 422
     assert forbidden_field.status_code == 422
     assert unknown_key.json() == {"detail": "model_publication_request_invalid"}
+    assert legacy_field.status_code == 422
     assert retired.status_code == 404
     assert denied.status_code == 403
     assert all("synthetic-secret" not in response.text for response in (
-        found, published, invalid, forbidden_field, unknown_key, retired, denied
+        found, published, invalid, forbidden_field, unknown_key, legacy_field, retired, denied
     ))
     assert calls == [
         ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret"}),
         ("publish", {
             "base_url": "https://gateway.example", "api_key": "synthetic-secret",
-            "expected_revision": 1, "actor_user_id": "admin-user",
-            "models": [{
-                **entry, "access_mode": None, "allowed_user_ids": None,
-            }], "tenant_id": "tenant-a",
+            "expected_revision": 1, "models": [entry],
+            "actor_user_id": "admin-user", "tenant_id": "tenant-a",
         }),
     ]
 
@@ -485,6 +524,8 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         connection_revision=7,
         auto_compact_window=200_000,
         max_output_tokens=2048,
+        group_id="group-a", group_code="alpha", group_type="business", group_revision=1,
+        selection_mode="auto", usage_scene="chat", policy_version="model-groups.v1",
     )
 
     sql, params = conn.calls[0]
@@ -495,11 +536,58 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
+        "group-a", "alpha", "business", 1, "auto", "chat", "model-groups.v1",
         200_000,
         2048,
         "tenant-a",
         "run-child",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"group_id": "group-a"},
+        {"group_code": "sales"},
+        {"group_id": "group-a", "group_code": "default", "group_type": "ordinary_default", "group_revision": 2, "policy_version": "model-groups.v1", "usage_scene": "chat"},
+    ],
+)
+async def test_bind_run_model_rejects_partial_or_forbidden_group_snapshot(kwargs) -> None:
+    conn = _RunModelMutationConnection([{"id": "run-child"}])
+    with pytest.raises(ValueError, match="run_model_group_snapshot_invalid"):
+        await bind_run_model(
+            conn, tenant_id="tenant-a", run_id="run-child", model_id="model-public",
+            model_value="openai/gpt-5", connection_revision=7,
+            auto_compact_window=200_000, max_output_tokens=2048, **kwargs,
+        )
+    assert not conn.calls
+
+
+@pytest.mark.parametrize(
+    ("execution_kind", "session", "requested_scene", "has_session", "expected"),
+    [
+        ("skill", {"status": "active", "purpose": "conversation"}, "skill", True, "expert"),
+        ("skill", {"status": "active", "purpose": "builder_test"}, "expert", True, "skill"),
+        ("skill", None, "independent", False, "skill"),
+        ("harness_chat", None, "independent", True, "chat"),
+    ],
+)
+def test_trusted_usage_scene_uses_server_session_not_skill_claim(
+    execution_kind, session, requested_scene, has_session, expected,
+):
+    assert trusted_usage_scene(
+        execution_kind=execution_kind, session=session,
+        requested_scene=requested_scene, has_session=has_session,
+    ) == expected
+
+
+def test_trusted_usage_scene_rejects_missing_bound_session():
+    with pytest.raises(ValueError, match="model_not_available_to_user"):
+        trusted_usage_scene(
+            execution_kind="skill", session=None, requested_scene="expert", has_session=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -546,97 +634,26 @@ async def test_bind_run_model_fails_when_run_snapshot_update_does_not_match() ->
             connection_revision=7,
             auto_compact_window=200_000,
             max_output_tokens=2048,
+            group_id="group-a", group_code="alpha", group_type="business", group_revision=1,
+            selection_mode="explicit", usage_scene="chat", policy_version="model-groups.v1",
         )
 
 
 @pytest.mark.asyncio
-async def test_inherit_run_model_requires_exact_copy_relation_and_updates_child() -> None:
-    conn = _RunModelMutationConnection(
-        [
-            {
-                "model_id": "model-public",
-                "model_value": "openai/gpt-5",
-                "model_gateway_revision": 7,
-                "auto_compact_window": 200_000,
-                "max_output_tokens": 2048,
-            },
-            {
-                "status": "queued",
-                "copied_from_run_id": "run-source",
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-            },
-            {"id": "run-child"},
-        ]
-    )
-
-    await inherit_run_model(
-        conn,
-        tenant_id="tenant-a",
-        source_run_id="run-source",
-        child_run_id="run-child",
-    )
-
-    assert "for update" in conn.calls[0][0].lower()
-    assert "copied_from_run_id" in conn.calls[1][0]
-    update_sql, update_params = conn.calls[2]
-    assert "returning id" in update_sql
-    assert update_params == (
-        "model-public",
-        "openai/gpt-5",
-        7,
-        200_000,
-        2048,
-        "tenant-a",
-        "run-child",
-    )
-
-
-@pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
-@pytest.mark.asyncio
-async def test_inherit_run_model_rejects_legacy_source_without_capacity(operation: str) -> None:
-    conn = _RunModelMutationConnection(
-        [
-            {"model_id": "model-public", "model_value": "openai/gpt-5", "model_gateway_revision": 7,
-             "auto_compact_window": None, "max_output_tokens": None},
-            {"status": "queued", "copied_from_run_id": "run-source", "model_id": None,
-             "model_value": None, "model_gateway_revision": None},
-        ]
-    )
-    with pytest.raises(ValueError, match="run_model_capacity_missing"):
-        await inherit_run_model(conn, tenant_id="tenant-a", source_run_id="run-source", child_run_id=f"run-{operation}")
-    assert len(conn.calls) == 2
-
-
-@pytest.mark.asyncio
-async def test_inherit_run_model_rejects_child_from_a_different_source() -> None:
-    conn = _RunModelMutationConnection(
-        [
-            {
-                "model_id": "model-public",
-                "model_value": "openai/gpt-5",
-                "model_gateway_revision": 7,
-            },
-            {
-                "status": "queued",
-                "copied_from_run_id": "run-other",
-                "model_id": None,
-                "model_value": None,
-                "model_gateway_revision": None,
-            },
-        ]
-    )
-
-    with pytest.raises(ValueError, match="run_model_child_source_mismatch"):
-        await inherit_run_model(
-            conn,
-            tenant_id="tenant-a",
-            source_run_id="run-source",
-            child_run_id="run-child",
-        )
-
-    assert len(conn.calls) == 2
+async def test_reauthorized_model_snapshot_requires_unattempted_exact_copy_and_rolls_back():
+    from app.runs.infrastructure.postgres import replace_run_model_snapshot
+    kwargs = dict(tenant_id="tenant-a", run_id="child", model_id="m", model_value="provider/m",
+                  connection_revision=2, auto_compact_window=200000, max_output_tokens=2048,
+                  group_id="g", group_code="sales", group_type="business", group_revision=1,
+                  selection_mode="explicit", usage_scene="chat", policy_version="model-groups.v1")
+    conn = _RunModelMutationConnection([{"id":"child"}])
+    await replace_run_model_snapshot(conn, **kwargs)
+    statement, params = conn.calls[0]
+    assert "source.id = runs.copied_from_run_id" in statement
+    assert "not exists (select 1 from run_attempts" in statement
+    assert params[-4:] == ("m", "provider/m", "m", "provider/m")
+    with pytest.raises(ValueError, match="run_model_reauthorization_failed"):
+        await replace_run_model_snapshot(_RunModelMutationConnection([None]), **kwargs)
 
 
 class _ActivationConnection:
@@ -746,7 +763,7 @@ async def test_connection_activation_rejects_platform_identity_collision_before_
 async def test_publication_checks_revision_before_changing_gateway_and_writes_one_catalog() -> None:
     entry = {
         "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
-        "display_name": "GPT-5", "enabled": True, "is_default": True,
+        "display_name": "GPT-5", "enabled": True,
         "order": 1, "auto_compact_window": 200_000, "max_output_tokens": 2048,
     }
     kwargs = {
@@ -766,7 +783,7 @@ async def test_publication_checks_revision_before_changing_gateway_and_writes_on
     assert revision == 3
     applied = [params for sql, params in conn.calls
                if "update model_catalog_entries" in sql and "set display_name" in sql]
-    assert applied == [("GPT-5", True, True, 1, 200_000, 2048, "all", "[]",
+    assert applied == [("GPT-5", True, 1, 200_000, 2048,
                         platform_model_id("openai/gpt-5"), "openai/gpt-5", 3)]
 
 
@@ -835,34 +852,23 @@ async def test_run_model_resolution_uses_enabled_available_catalog_and_pins_revi
         }
     )
 
-    selection = await resolve_run_model(
-        conn,
-        model_id="mdl_public",
-        model_value="openai/gpt-5",
-        user_id="user-a",
-    )
-
-    assert selection is not None
-    assert selection.model_id == "mdl_public"
-    assert selection.model_value == "openai/gpt-5"
-    assert selection.connection_revision == 9
-    assert (selection.auto_compact_window, selection.max_output_tokens) == (200_000, 2048)
-    assert len(conn.calls) == 2
-    assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
-    model_query, params = conn.calls[1]
-    assert "catalog.enabled = true" in model_query
-    assert "catalog.upstream_available = true" in model_query
-    assert "catalog.last_seen_revision = active_gateway.revision" in model_query
-    assert params == ("user-a", "mdl_public", "mdl_public", "openai/gpt-5", "openai/gpt-5")
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
+        await resolve_run_model(
+            conn,
+            model_id="mdl_public",
+            model_value="openai/gpt-5",
+            user_id="user-a",
+        )
 
 
 @pytest.mark.asyncio
-async def test_run_model_resolution_without_gateway_returns_none() -> None:
+async def test_run_model_resolution_without_tenant_scope_fails_closed() -> None:
     conn = _ResolveConnection(row=None)
-    assert await resolve_run_model(
-        conn, model_id="mdl_public", model_value="openai/gpt-5", user_id="user-a",
-    ) is None
-    assert len(conn.calls) == 2
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
+        await resolve_run_model(
+            conn, model_id="mdl_public", model_value="openai/gpt-5", user_id="user-a",
+        )
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -870,11 +876,11 @@ async def test_chat_model_resolution_fails_without_governed_connection(monkeypat
     monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
     monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
     conn = _ResolveConnection(row=None)
-    with pytest.raises(ValueError, match="model_connection_not_configured"):
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
         await model_selection.resolve_chat_model_selection(
             conn, selection=None, user_id="user-a", resolve_governed_model=resolve_run_model,
         )
-    assert "pg_advisory_xact_lock_shared" in conn.calls[0][0]
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -886,7 +892,7 @@ async def test_run_model_resolution_rejects_missing_capacity() -> None:
         "auto_compact_window": None,
         "max_output_tokens": None,
     })
-    with pytest.raises(ValueError, match="model_capacity_missing"):
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
         await resolve_run_model(
             conn, model_id="mdl_public", model_value="openai/gpt-5", user_id="user-a",
         )
@@ -896,12 +902,12 @@ async def test_run_model_resolution_rejects_missing_capacity() -> None:
 async def test_run_model_resolution_rejects_active_but_unavailable_catalog_entry() -> None:
     conn = _ResolveConnection(row={"connection_revision": 9, "model_id": None, "upstream_model_id": None})
 
-    with pytest.raises(ValueError, match="model_id_not_available"):
+    with pytest.raises(ValueError, match="model_policy_unavailable"):
         await resolve_run_model(
             conn, model_id="missing", model_value="missing", user_id="user-a",
         )
 
-    assert len(conn.calls) == 2
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio

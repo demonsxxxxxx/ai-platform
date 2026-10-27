@@ -101,9 +101,16 @@ CI lane alongside the fetch parser and history consumers.
 ### Public model catalog and selection
 
 The shared composer uses `ChatInputToolbar` and the Elements `ComposerModelPicker` to select
-an administrator-enabled public model. `ModelCatalogProvider` hydrates only
-`/api/agent/models/available`; its subject-scoped read remains abortable and
-rejects stale completions after login changes or unmount. `default_model_id`
+an administrator-enabled public model. `ModelCatalogProvider` reads business
+groups from `/api/ai/models/groups` before `/api/agent/models/available?group_id=...`.
+Its unified `refreshModels` refreshes both projections on picker open (including
+slash commands), visible focus/foreground return, successful admin publication,
+and same-page group changes. Concurrent reads merge; publication supersedes old
+reads. Subject/group switches and unmount abort and fence stale completions.
+Pending/transient refreshes retain same-subject options and valid selections;
+401/403 clears grants. Empty catalogs retain the picker retry entry. Lost groups
+or explicit models require reselection, never an automatic alternative; frozen
+Runs are unchanged. `default_model_id`
 is the public catalog's administrator-selected default; the composer resolves
 its model value, falling back to the first available model when necessary.
 

@@ -486,6 +486,8 @@ export interface AgentAppRunRequest {
   thinking_effort: AgentThinkingEffort;
   model_id?: string;
   model?: string;
+  group_id?: string;
+  selection_mode?: "auto" | "explicit";
   user_timezone?: string;
 }
 
@@ -511,6 +513,14 @@ export function buildAgentAppRunBody({
         .filter((key) => key.length > 0),
     ),
   ];
+  return {
+    message, submission_id: submissionId, file_ids: fileIds, thinking_effort: thinkingEffort,
+    ...agentRunModelOptions(agentOptions),
+    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+  };
+}
+
+export function agentRunModelOptions(agentOptions?: Record<string, boolean | string | number>): Pick<AgentAppRunRequest, "model_id" | "model" | "group_id" | "selection_mode"> {
   const modelId =
     typeof agentOptions?.model_id === "string" && agentOptions.model_id.trim()
       ? agentOptions.model_id
@@ -519,14 +529,16 @@ export function buildAgentAppRunBody({
     typeof agentOptions?.model === "string" && agentOptions.model.trim()
       ? agentOptions.model
       : undefined;
+  const groupId =
+    typeof agentOptions?.group_id === "string" && agentOptions.group_id.trim()
+      ? agentOptions.group_id
+      : undefined;
+  const selectionMode = agentOptions?.selection_mode === "explicit" ? "explicit" : agentOptions?.selection_mode === "auto" ? "auto" : undefined;
   return {
-    message,
-    submission_id: submissionId,
-    file_ids: fileIds,
-    thinking_effort: thinkingEffort,
     ...(modelId ? { model_id: modelId } : {}),
     ...(model ? { model } : {}),
-    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+    ...(groupId ? { group_id: groupId } : {}),
+    ...(selectionMode ? { selection_mode: selectionMode } : {}),
   };
 }
 
