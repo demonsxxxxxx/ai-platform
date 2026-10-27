@@ -57,6 +57,22 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function normalizeUpstreamServer(value: unknown): string | null {
+  if (!isNonEmptyString(value)) return null;
+  const label = value.trim();
+  if (
+    label.length > 128 ||
+    new TextEncoder().encode(label).length > 128 ||
+    Array.from(label).some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127;
+    })
+  ) {
+    return null;
+  }
+  return label;
+}
+
 function unavailableMessageKey(reason: string): ChatMcpUnavailableMessageKey {
   switch (reason) {
     case "discovery_failed":
@@ -80,6 +96,9 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
   ) {
     return null;
   }
+  const upstreamServer = value.upstream_server;
+  const normalizedUpstreamServer =
+    upstreamServer === undefined ? undefined : normalizeUpstreamServer(upstreamServer);
 
   return {
     name: value.tool_id,
@@ -87,6 +106,9 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
     description: value.description,
     category: "mcp",
     server: value.server,
+    ...(normalizedUpstreamServer !== undefined
+      ? { upstream_server: normalizedUpstreamServer }
+      : {}),
     parameters: [],
     system_disabled: false,
     user_disabled: false,

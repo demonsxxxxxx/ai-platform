@@ -68,6 +68,40 @@ test("validates ready, empty, and degraded Chat MCP catalogs without retaining p
   ]);
 });
 
+test("projects optional Gateway upstream source metadata without exposing extra fields", () => {
+  const catalog = parseChatMcpCatalogResponse(response({
+    tools: [{
+      ...response().tools[0],
+      upstream_server: "项目一",
+      gateway_internal_id: "must-not-reach-tools",
+    }],
+  }));
+  assert.equal(catalog.tools[0].upstream_server, "项目一");
+  assert.equal("gateway_internal_id" in catalog.tools[0], false);
+
+  const unknown = parseChatMcpCatalogResponse(response({
+    tools: [{ ...response().tools[0], upstream_server: null }],
+  }));
+  assert.equal(unknown.tools[0].upstream_server, null);
+  const malformedSource = parseChatMcpCatalogResponse(response({
+    tools: [{ ...response().tools[0], upstream_server: 42 }],
+  }));
+  assert.equal(malformedSource.tools.length, 1);
+  assert.equal(malformedSource.tools[0].upstream_server, null);
+
+  const oversizedSource = parseChatMcpCatalogResponse(response({
+    tools: [{ ...response().tools[0], upstream_server: "x".repeat(129) }],
+  }));
+  assert.equal(oversizedSource.tools[0].upstream_server, null);
+
+  assert.throws(
+    () => parseChatMcpCatalogResponse(response({
+      tools: [{ ...response().tools[0], tool_id: 42 }],
+    })),
+    /chat_mcp_catalog_tool_invalid/,
+  );
+});
+
 test("rejects malformed responses instead of treating them as an empty catalog", () => {
   assert.throws(
     () => parseChatMcpCatalogResponse(response({ count: 2 })),
