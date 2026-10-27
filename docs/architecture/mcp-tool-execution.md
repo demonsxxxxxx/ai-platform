@@ -148,6 +148,41 @@ a credential after their context operation has been superseded.
 
 ## Implementation
 
+### Native MCP result consumption
+
+The selected, authorized MCP bridge forwards standard `CallToolResult` values
+without interpreting them: text, images, embedded resources, structured fields,
+and `isError` semantics remain native MCP data. The platform does not identify a
+server by product name, require private result markers, parse document bytes, or
+copy results into a platform file registry. A resource-capable tool's explicit
+authorization and native result are the sole source for model-facing file use.
+
+Catalog-only discovery retains the existing 1 MiB response and event bound.
+Invocation uses the same selected Server boundary and one actual MCP call, with
+a bounded 16 MiB response/event budget for standard result types. A long-lived
+SSE connection is not capped cumulatively across calls. The budget is an
+admission limit, not a replay path: credential refresh, endpoint
+pinning, redirects, origin, cancellation, and receipt semantics remain unchanged.
+
+The former ProfileDrive-specific marker, URI, result DTO/materializer, callback
+and model-only staging alias are retired with their exclusive tests. The existing
+UI ProfileDrive import/download routes remain owned by Files and are unrelated to
+MCP result consumption.
+
+The [runtime file-access boundary](sandbox-runtime-control-layer.md#native-mcp-file-access)
+exposes the CLI's bound native result directory to Docker commands. Parsing and
+creating final deliverables remain Agent decisions. File-use acceptance checks
+the real CLI result under the command container's actual UID and read-only
+mounts, alongside denial of configuration, transcript and other-session access.
+
+Catalog and invocation sessions retain separate budgets. Their two handshakes
+share one ten-second preparation deadline; successful invocation sessions remain
+alive after that deadline until SDK execution closes. MCP 2.3's SSE transport is
+bound to a session-local copy of its original function globals solely to supply
+the EventSource budget. It executes the SDK's original transport code, with no
+shared module mutation or lock spanning network I/O. This pinned adapter seam
+must be reverified on an SDK upgrade.
+
 1. Keep `server::raw_tool` references and canonical platform subject identities
    unchanged. Build an explicit canonical-to-SDK alias map in the Claude
    adapter; use stable bounded hash suffixes to disambiguate normalized names.

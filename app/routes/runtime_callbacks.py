@@ -3,7 +3,6 @@ import hashlib
 import json
 import logging
 from contextlib import nullcontext
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
@@ -25,15 +24,9 @@ from app.context.retrieval import (
 )
 from app.context_manifest import available_context_retrieval_tools
 from app.db import transaction
-from app.files.api import (
-    ProfileDriveTransferError,
-    open_profile_drive_file,
-    profile_drive_streaming_response,
-)
 from app.mcp.api import (
     MCP_CREDENTIAL_SUBJECTS_LEASE_KEY,
     McpRuntimeContextError,
-    get_mcp_principal_jwt_store,
     read_mcp_execution_credential,
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
@@ -60,9 +53,6 @@ from app.runtime.sandbox.callback_tokens import (
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.runs.api import ModelTokenUsageService, normalize_model_usage_snapshot
 from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_STAGE_LEASE_FLAG,
-    PROFILE_DRIVE_STAGE_MAX_BYTES,
-    PROFILE_DRIVE_STAGE_TOOL,
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     McpCredentialCallbackRequest,
@@ -891,90 +881,6 @@ async def executor_callback(
     )
 
 
-async def _profile_drive_file_response(
-    request: ExecutorContextRetrievalRequest,
-) -> Any:
-    arguments = request.arguments
-    path = arguments.get("path") if set(arguments) == {"path"} else None
-    if (
-        not isinstance(path, str)
-        or not path
-        or len(path) > 1024
-        or "\x00" in path
-    ):
-        raise HTTPException(status_code=422, detail="context_retrieval_parameters_invalid")
-
-    async with transaction() as conn:
-        run_identity, lease = await _lock_callback_authority(
-            conn,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            session_id=request.session_id,
-        )
-        lease_payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
-        if not isinstance(lease_payload, dict) or lease_payload.get(PROFILE_DRIVE_STAGE_LEASE_FLAG) is not True:
-            raise HTTPException(status_code=403, detail="context_retrieval_not_authorized")
-        tenant_id = str(run_identity.get("tenant_id") or "")
-        user_id = str(run_identity.get("user_id") or "")
-
-    settings = get_settings()
-    try:
-        jwt = await get_mcp_principal_jwt_store().get(
-            SimpleNamespace(tenant_id=tenant_id, user_id=user_id)
-        )
-    except McpRuntimeContextError as exc:
-        raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
-
-    try:
-        transfer = await open_profile_drive_file(
-            upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
-            ca_cert_file=str(
-                getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
-            ),
-            jwt=jwt,
-            path=path,
-            max_bytes=PROFILE_DRIVE_STAGE_MAX_BYTES,
-            require_nonempty=False,
-            not_found_status=403,
-            too_large_detail="profile_drive_file_too_large",
-            read_timeout_seconds=settings.profile_drive_transfer_read_timeout_seconds,
-            total_timeout_seconds=settings.profile_drive_transfer_total_timeout_seconds,
-        )
-    except ProfileDriveTransferError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-    try:
-        with transfer.budget():
-            async with transaction() as conn:
-                await _recheck_callback_authority(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=request.run_id,
-                    attempt_id=request.attempt_id,
-                    callback_token_id=request.callback_token_id,
-                )
-                await streaming_run_events.append_event(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=request.run_id,
-                    event_type="context_retrieved",
-                    stage="context",
-                    message="Sandbox context retrieval admitted",
-                    payload={
-                        "action": PROFILE_DRIVE_STAGE_TOOL,
-                        "result": "allowed",
-                        "visible_to_user": False,
-                    },
-                )
-        return profile_drive_streaming_response(transfer)
-    except BaseException as exc:
-        await transfer.__aexit__(type(exc), exc, exc.__traceback__)
-        if isinstance(exc, ProfileDriveTransferError):
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-        raise
-
-
 @router.post("/runtime/callbacks/context-retrieval")
 async def executor_context_retrieval_callback(
     request: ExecutorContextRetrievalRequest,
@@ -989,8 +895,6 @@ async def executor_context_retrieval_callback(
         run_id=request.run_id,
         attempt_id=request.attempt_id,
     )
-    if request.action == PROFILE_DRIVE_STAGE_TOOL:
-        return await _profile_drive_file_response(request)
     if request.action == "stage_run_artifact_to_workspace" and accept == "application/octet-stream":
         try:
             return await build_artifact_transfer_response(

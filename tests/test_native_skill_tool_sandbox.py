@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 import signal
 import shlex
 import sys
@@ -12,6 +13,92 @@ from fastapi.testclient import TestClient
 
 from app.executors import claude_agent_sdk_runner
 from app.runtime.sandbox import native_tool_app, native_tool_health_probe
+
+
+@pytest.mark.parametrize("link_depth", range(5))
+def test_native_result_mount_rejects_symlink_ancestors(tmp_path, link_depth):
+    from app.platform.sandbox.claude_native_filesystem import prepare_claude_tool_results
+    parts = [".claude-config", "projects", "ai-platform", "session-a", "tool-results"]
+    parent = tmp_path.joinpath(*parts[:link_depth])
+    parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (parent / parts[link_depth]).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="native_tool_results_path_invalid"):
+        prepare_claude_tool_results(tmp_path, "session-a")
+
+
+def test_native_filesystem_exposes_only_bound_cli_result_directory(tmp_path):
+    from app.platform.sandbox.docker_native_filesystem import native_container_filesystem
+    from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+    layout = native_container_filesystem(str(tmp_path), "/workspace", tmp_path / "socket",
+        read_only_paths={}, private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS, sdk_session_id="session-a")
+    native = ".claude-config/projects/ai-platform/session-a/tool-results"
+    assert layout["volumes"][str(tmp_path / native)] == {"bind": "/workspace/" + native, "mode": "ro"}
+    assert "mode=0711" in layout["tmpfs"]["/workspace/.claude-config"]
+    assert "mode=000" in layout["tmpfs"]["/workspace/.ai-platform"]
+    assert not any("other-session" in path for path in layout["volumes"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get("AI_PLATFORM_NATIVE_MCP_TEST_IMAGE"), reason="Requires a prepared native command image and local Docker")
+async def test_real_cli_file_result_is_usable_in_docker_native_sidecar(monkeypatch, tmp_path):
+    import docker
+    from app.platform.sandbox.docker_native_filesystem import native_container_filesystem
+    from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+    from tests import test_claude_mcp_registration as native_check
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o777)
+    workspace.chmod(0o777)
+    socket_parent = tmp_path / "socket"
+    socket_parent.mkdir()
+    session_id = "5e6dfc4d-1b04-4d94-80a2-719f58746ae1"
+    layout = native_container_filesystem(str(workspace), str(workspace), socket_parent,
+        read_only_paths={}, private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS, sdk_session_id=session_id)
+    real_runner = claude_agent_sdk_runner.run_claude_agent_sdk
+    async def run_bound(**kwargs):
+        return await real_runner(**{**kwargs, "session_id": session_id})
+    monkeypatch.setattr(claude_agent_sdk_runner, "run_claude_agent_sdk", run_bound)
+    await native_check.test_platform_runner_uses_native_mcp_file_with_authorized_bash(
+        monkeypatch, workspace, "http", True)
+    relative = ".claude-config/projects/ai-platform/" + session_id
+    saved = next((workspace / relative / "tool-results").glob("*.docx"))
+    (workspace / ".claude-config/settings.json").write_text("synthetic-private-config")
+    (workspace / relative / "transcript.jsonl").write_text("synthetic-private-transcript")
+    other = workspace / ".claude-config/projects/ai-platform/other-session/tool-results"
+    other.mkdir(parents=True)
+    (other / "private.txt").write_text("other session")
+    # The CLI runs on the host; the command runs under the sidecar's actual
+    # Linux identity and mount layout. Broker/UDS behavior has separate tests.
+    layout.update(user="10001:10001", cap_add=[])
+    script = f"""
+import os
+from pathlib import Path
+from docx import Document
+p = Path({str(workspace)!r})
+assert os.getuid() == os.getgid() == 10001
+source = Path({str(saved)!r})
+doc = Document(source)
+assert [doc.paragraphs[0].text, doc.tables[0].cell(0,0).text] == ['native paragraph', 'native table']
+for private in ['.claude-config/settings.json', {str(relative + '/transcript.jsonl')!r}, {str(other.relative_to(workspace) / 'private.txt')!r}]:
+    assert not (p / private).exists()
+try:
+    source.write_bytes(b'tampered')
+except OSError:
+    pass
+else:
+    raise AssertionError('native result mount is writable')
+(p / 'docker-parsed.txt').write_text('native paragraph|native table')
+"""
+    client = docker.from_env()
+    try:
+        output = client.containers.run(os.environ["AI_PLATFORM_NATIVE_MCP_TEST_IMAGE"],
+            entrypoint=["python", "-c"], command=[script], network_mode="none", remove=True, **layout)
+        assert output == b""
+        assert (workspace / "docker-parsed.txt").read_text() == "native paragraph|native table"
+    finally:
+        client.close()
 
 
 def test_native_tool_launcher_binds_then_drops_privileges_before_serving(monkeypatch):

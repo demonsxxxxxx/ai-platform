@@ -1,7 +1,14 @@
 import asyncio
+import base64
+import io
 import json
 import os
+from pathlib import Path
 import re
+import shlex
+import sys
+import threading
+from zipfile import ZIP_STORED, ZipFile
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -9,7 +16,7 @@ from urllib.parse import urlsplit
 import pytest
 from mcp.client.session import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
-from mcp_types import CallToolResult, TextContent, Tool
+from mcp_types import BlobResourceContents, CallToolResult, EmbeddedResource, TextContent, Tool
 
 from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 from app.mcp.infrastructure import client as mcp_client
@@ -51,11 +58,24 @@ def subject(server="gateway", tool=RAW_TOOL, url="https://mcp.example/mcp"):
     }
 
 
-def allow_local_peer(monkeypatch, url):
+def allow_local_peer(monkeypatch, *urls):
+    endpoint_hosts = {
+        url + suffix: url for url in urls for suffix in ("/mcp", "/sse")
+    }
+
     async def target(endpoint):
-        assert endpoint in {url + "/mcp", url + "/sse"}
-        return _ValidatedDiscoveryTarget(endpoint, endpoint, urlsplit(url).netloc, "127.0.0.1")
+        assert endpoint in endpoint_hosts
+        return _ValidatedDiscoveryTarget(
+            endpoint, endpoint, urlsplit(endpoint_hosts[endpoint]).netloc, "127.0.0.1"
+        )
+
     monkeypatch.setattr(mcp_client, "_validated_discovery_target", target)
+
+
+@asynccontextmanager
+async def real_mcp_session(config, **_options):
+    async with mcp_client.open_mcp_session(config, timeout_seconds=3) as session:
+        yield session
 
 
 @pytest.mark.parametrize("pairs", [
@@ -93,6 +113,73 @@ def test_ambiguous_canonical_names_fail_before_registration():
     from app.executors.claude.capability_policy import _canonical_tool_policy_subjects
     with pytest.raises(ValueError, match="mcp_identity_collision"):
         _canonical_tool_policy_subjects([subject("a__b", "c"), subject("a", "b__c")])
+
+
+@pytest.mark.asyncio
+async def test_selected_bridge_preserves_unmarked_native_resource_result():
+    raw = bytes(range(256)) * 8193
+    item = subject()
+
+    async def call_tool(_name, _arguments):
+        return CallToolResult(content=[EmbeddedResource(resource=BlobResourceContents(
+            uri="memory://synthetic-resource", mime_type="application/octet-stream",
+            blob=__import__("base64").b64encode(raw).decode("ascii"),
+        ))])
+
+    registration = ClaudeMcpRegistration(
+        {item["identity"]: item}, {}, session_factory=None, list_tools=None,
+    )
+    bridge = registration._server(
+        "gateway", [(registration._tool_aliases[("gateway", RAW_TOOL)], Tool(name=RAW_TOOL, input_schema=SCHEMA), RAW_TOOL)],
+        SimpleNamespace(call_tool=call_tool),
+    )["instance"]
+    async with connected_client(bridge) as client:
+        result = await client.call_tool(registration._tool_aliases[("gateway", RAW_TOOL)], {"query": "synthetic"})
+    assert result.is_error is False
+    assert result.content[0].resource.blob == __import__("base64").b64encode(raw).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_selected_bridge_uses_catalog_and_invocation_budgets(monkeypatch):
+    configs = []
+    item = subject()
+
+    @asynccontextmanager
+    async def session_factory(config):
+        configs.append(config)
+        yield SimpleNamespace(
+            call_tool=lambda *_args: asyncio.sleep(0, result=CallToolResult(
+                content=[TextContent(type="text", text="ok")]
+            ))
+        )
+
+    async def list_tools(_session):
+        return [Tool(name=RAW_TOOL, input_schema=SCHEMA)]
+
+    registration = ClaudeMcpRegistration(
+        {item["identity"]: item}, {"gateway": item["mcp_server_config"]},
+        session_factory=session_factory, list_tools=list_tools,
+    )
+    options = SimpleNamespace()
+    async with registration.activate(options):
+        server = options.mcp_servers["gateway"]["instance"]
+        async with connected_client(server) as client:
+            await client.call_tool(registration._tool_aliases[("gateway", RAW_TOOL)], {})
+    assert [config["max_response_bytes"] for config in configs] == [1024 * 1024, 16 * 1024 * 1024]
+    assert [config["max_response_total_bytes"] for config in configs] == [1024 * 1024, None]
+
+    def reject(reason):
+        raise ValueError(reason)
+
+    stream = mcp_client._BoundedMcpStream(
+        None, event_stream=True, limit=configs[1]["max_response_bytes"],
+        total_limit=configs[1]["max_response_total_bytes"], fail=reject,
+    )
+    frame = b"data: " + b"x" * (9 * 1024 * 1024) + b"\n\n"
+    stream.check_chunk(frame)
+    stream.check_chunk(frame)
+    with pytest.raises(ValueError, match="response_too_large"):
+        stream.check_chunk(b"x" * (16 * 1024 * 1024 + 1))
 
 
 @pytest.mark.asyncio
@@ -218,7 +305,7 @@ async def test_registration_filters_catalog_preserves_results_and_closes_on_canc
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-    assert closed == [True]
+    assert closed == [True, True]
     assert calls == [(RAW_TOOL, {"query": "synthetic"})]
 
 
@@ -355,7 +442,8 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert credential_reads and set(credential_reads) == {server_name}
         assert result.error is None, result.runtime_diagnostics
         assert peer.models
-        assert sum(method == "initialize" for method, _ in peer.requests) == 1
+        # Discovery uses catalog-only; invocation uses the bounded session.
+        assert sum(method == "initialize" for method, _ in peer.requests) == 2
         if tool_search:
             assert any(tool["name"] == "ToolSearch" for tool in peer.models[0].get("tools", [])), peer.models[0].get("tools")
             assert any(tool.get("defer_loading") for tool in peer.models[0].get("tools", [])), peer.models[0].get("tools")
@@ -414,6 +502,135 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert peer.sdk_tool not in str([value.payload for value in events])
 
         assert "synthetic.jwt" not in str([value.payload for value in events])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport,authorized", [("http", True), ("sse", True), ("http", False)])
+async def test_platform_runner_uses_native_mcp_file_with_authorized_bash(monkeypatch, tmp_path, transport, authorized):
+    from docx import Document
+    from app.executors import claude_agent_sdk_runner as runner
+    from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
+
+    workspace = Path(str(tmp_path)[4:]) if str(tmp_path).startswith("\\\\?\\") else tmp_path
+    document = Document()
+    document.add_paragraph("native paragraph")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "native table"
+    buffer = io.BytesIO()
+    document.save(buffer)
+    with ZipFile(buffer, "a", compression=ZIP_STORED) as archive:
+        archive.writestr("opaque-padding.bin", b"P" * (1024 * 1024))
+    raw = buffer.getvalue()
+    assert len(raw) > 1024 * 1024
+    parsed = tmp_path / "parsed.json"
+    saved = {}
+    receipts, lifecycle, events = [], [], []
+
+    async def evidence(value):
+        receipts.append(value)
+        return True
+
+    async def native_lifecycle(value):
+        lifecycle.append(value)
+        return True
+
+    async def agent_events(values):
+        events.extend(values)
+        return True
+
+    with local_mcp_peers() as peer:
+        peer.tools = [{"name": "get_file", "description": "Return an ordinary file resource",
+                       "inputSchema": {"type": "object", "properties": {}}}]
+        peer.tool_result = {"content": [{"type": "resource", "resource": {
+            "uri": "memory://sample.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "blob": base64.b64encode(raw).decode("ascii"),
+        }}], "isError": False}
+        item = subject(server="files", tool="get_file", url=peer.url + ("/sse" if transport == "sse" else "/mcp"))
+        item["identity_authorized"] = authorized
+        item["mcp_server_config"]["type"] = transport
+        registration = ClaudeMcpRegistration({item["identity"]: item}, {}, session_factory=None, list_tools=None)
+        peer.sdk_tool = registration.sdk_names[item["identity"]]
+        allow_local_peer(monkeypatch, peer.url)
+
+        def model_reply(request):
+            results = {
+                block.get("tool_use_id"): block
+                for message in request.get("messages", [])
+                for block in message.get("content", [])
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            }
+            if "toolu_file" not in results:
+                return {"type": "tool_use", "id": "toolu_file", "name": peer.sdk_tool, "input": {}}
+            if not authorized or "toolu_parse" in results:
+                return {"type": "text", "text": "Native file check complete."}
+            content = results["toolu_file"].get("content", [])
+            text = content if isinstance(content, str) else "\n".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
+            match = re.search(r"saved to (.+?\.docx)(?:\n|$)", text)
+            assert match, text
+            source = os.path.abspath(match.group(1))
+            config_root = os.path.abspath(workspace / ".claude-config")
+            assert os.path.commonpath([source, config_root]) == config_root
+            if os.name == "nt" and not source.startswith("\\\\?\\"):
+                source = "\\\\?\\" + source
+            saved["path"] = source
+            source_argument = Path(source).as_posix()
+            script = (
+                "import io,json; from pathlib import Path; from docx import Document; "
+                f"d=Document(io.BytesIO(Path({source_argument!r}).read_bytes())); "
+                f"Path({parsed.as_posix()!r}).write_text(json.dumps([d.paragraphs[0].text,d.tables[0].cell(0,0).text]),encoding='utf-8')"
+            )
+            executable = sys.executable.replace("\\", "/")
+            command = f"{shlex.quote(executable)} -c {shlex.quote(script)}"
+            return {"type": "tool_use", "id": "toolu_parse", "name": "Bash", "input": {"command": command}}
+
+        peer.model_reply = model_reply
+        settings = SimpleNamespace(
+            claude_agent_sdk_enabled=True, claude_agent_sdk_max_turns=5,
+            claude_agent_sdk_timeout_seconds=45, claude_agent_sdk_skills="",
+            claude_agent_permission_mode="dontAsk", claude_agent_model="claude-sonnet-4-6",
+            anthropic_model="", anthropic_base_url=peer.url,
+            anthropic_auth_token="synthetic-model-token", openai_api_key="",
+        )
+        monkeypatch.setattr(runner, "get_settings", lambda: settings)
+        real_env = runner.build_sdk_env
+
+        def synthetic_env(*, cwd, model_max_output_tokens=None):
+            env = real_env(cwd=cwd, model_max_output_tokens=model_max_output_tokens)
+            env.update({"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                        "NO_PROXY": "127.0.0.1,localhost", "ENABLE_TOOL_SEARCH": "false"})
+            for key in ("TEMP", "TMP", "APPDATA", "LOCALAPPDATA"):
+                if key in os.environ:
+                    env[key] = os.environ[key]
+            return env
+
+        monkeypatch.setattr(runner, "build_sdk_env", synthetic_env)
+        subjects = with_sandbox_local_tool_capability_subjects(
+            [item], sandbox_provider="opensandbox",
+            authorized_sandbox_tool_identities={"Bash"} if authorized else set(),
+        )
+        result = await runner.run_claude_agent_sdk(
+            prompt="Get the selected file, then use authorized Bash to read its paragraph and table.",
+            cwd=workspace, skill_id=None, skills=[], execution_policy="sandbox_brokered",
+            tool_policy_subjects=subjects, on_capability_evidence=evidence,
+            on_agent_event=agent_events, on_tool_lifecycle=native_lifecycle,
+            run_id="run_native_file", attempt_id="attempt_native_file",
+        )
+        if not authorized:
+            assert not peer.calls
+            assert not parsed.exists()
+            assert not saved
+            return
+        assert result.error is None, result.runtime_diagnostics
+        assert peer.calls == [{"name": "get_file", "arguments": {}}]
+        assert Path(saved["path"]).read_bytes() == raw
+        assert json.loads(parsed.read_text(encoding="utf-8")) == ["native paragraph", "native table"]
+        assert lifecycle
+        selected_receipts = [value for value in receipts if value["canonical_identity"] == item["identity"]]
+        assert [value["lifecycle_phase"] for value in selected_receipts] == ["invocation_requested", "completed"]
+        assert "synthetic.jwt" not in str([value.payload for value in events])
+        assert ".claude-config" not in str([value.payload for value in events])
 
 
 @pytest.mark.asyncio
@@ -531,7 +748,7 @@ async def test_registration_keeps_available_selected_tools_when_one_is_missing()
             assert [tool.name for tool in listed.tools] == [
                 registration._tool_aliases[("gateway", "lookup")]
             ]
-    assert closed == [True]
+    assert closed == [True, True]
 
 
 @pytest.mark.asyncio
@@ -583,7 +800,7 @@ async def test_registration_keeps_healthy_server_when_another_is_offline_and_cle
         assert options.mcp_servers[registration.server_aliases["healthy"]]["type"] == "sdk"
         assert options.mcp_servers[registration.server_aliases["healthy"]]["type"] == "sdk"
         assert ("offline", "close") in events
-        assert ("healthy", "close") not in events
+        assert events.count(("healthy", "close")) == 1
 
         server = options.mcp_servers[registration.server_aliases["healthy"]]["instance"]
         async with connected_client(server) as client:
@@ -597,6 +814,106 @@ async def test_registration_keeps_healthy_server_when_another_is_offline_and_cle
     assert task_owners["healthy"][0] is task_owners["healthy"][1]
     assert task_owners["offline"][0] is task_owners["offline"][1]
     assert call_names == [("healthy", "lookup", {"query": "synthetic"})]
+
+
+@pytest.mark.asyncio
+async def test_slow_sse_initialization_does_not_block_healthy_registration(monkeypatch):
+    from app.execution.infrastructure import claude_mcp
+
+    slow_endpoint_gate = threading.Event()
+    with local_mcp_peers() as slow_peer, local_mcp_peers() as healthy_peer:
+        allow_local_peer(monkeypatch, slow_peer.url, healthy_peer.url)
+        slow_peer.sse_endpoint_gates[1] = slow_endpoint_gate
+        slow = subject(server="aaa-slow", url=slow_peer.url + "/sse")
+        healthy = subject(server="zzz-healthy", url=healthy_peer.url + "/sse")
+        slow["mcp_server_config"]["type"] = "sse"
+        healthy["mcp_server_config"]["type"] = "sse"
+        registration = ClaudeMcpRegistration(
+            {slow["identity"]: slow, healthy["identity"]: healthy},
+            {
+                "aaa-slow": slow["mcp_server_config"],
+                "zzz-healthy": healthy["mcp_server_config"],
+            },
+            session_factory=real_mcp_session,
+            list_tools=mcp_client.list_mcp_tools,
+        )
+        monkeypatch.setattr(claude_mcp, "_MCP_DISCOVERY_TIMEOUT_SECONDS", 0.75)
+        options = SimpleNamespace()
+        try:
+            async with asyncio.timeout(5):
+                async with registration.activate(options):
+                    assert registration.unavailable == {"aaa-slow": "connection_timeout"}
+                    assert "aaa-slow" not in options.mcp_servers
+                    healthy_alias = registration.server_aliases["zzz-healthy"]
+                    assert options.mcp_servers[healthy_alias]["type"] == "sdk"
+                    assert [method for method, _headers in healthy_peer.requests].count("GET") == 2
+
+                    await asyncio.sleep(0.8)
+                    server = options.mcp_servers[healthy_alias]["instance"]
+                    async with connected_client(server) as caller:
+                        result = await caller.call_tool(
+                            registration._tool_aliases[("zzz-healthy", RAW_TOOL)],
+                            {"query": "synthetic"},
+                        )
+                    assert result.is_error is False
+        finally:
+            slow_endpoint_gate.set()
+
+
+@pytest.mark.asyncio
+async def test_registration_deadline_covers_a_blocked_invocation_handshake(monkeypatch):
+    from app.execution.infrastructure import claude_mcp
+
+    slow_invocation_gate = threading.Event()
+    with local_mcp_peers() as slow_peer, local_mcp_peers() as healthy_peer:
+        allow_local_peer(monkeypatch, slow_peer.url, healthy_peer.url)
+        slow_peer.sse_endpoint_gates[2] = slow_invocation_gate
+        slow = subject(server="aaa-blocked", url=slow_peer.url + "/sse")
+        healthy = subject(server="zzz-healthy", url=healthy_peer.url + "/sse")
+        slow["mcp_server_config"]["type"] = "sse"
+        healthy["mcp_server_config"]["type"] = "sse"
+        registration = ClaudeMcpRegistration(
+            {slow["identity"]: slow, healthy["identity"]: healthy},
+            {
+                "aaa-blocked": slow["mcp_server_config"],
+                "zzz-healthy": healthy["mcp_server_config"],
+            },
+            session_factory=real_mcp_session,
+            list_tools=mcp_client.list_mcp_tools,
+        )
+        monkeypatch.setattr(claude_mcp, "_MCP_DISCOVERY_TIMEOUT_SECONDS", 0.75)
+        options = SimpleNamespace()
+
+        async def activate_and_call_healthy():
+            async with asyncio.timeout(5):
+                async with registration.activate(options):
+                    assert registration.unavailable == {"aaa-blocked": "connection_timeout"}
+                    healthy_alias = registration.server_aliases["zzz-healthy"]
+                    assert options.mcp_servers[healthy_alias]["type"] == "sdk"
+                    # The successful invocation session remains open past the
+                    # preparation deadline and still accepts its selected call.
+                    await asyncio.sleep(0.8)
+                    server = options.mcp_servers[healthy_alias]["instance"]
+                    async with connected_client(server) as caller:
+                        result = await caller.call_tool(
+                            registration._tool_aliases[("zzz-healthy", RAW_TOOL)],
+                            {"query": "synthetic"},
+                        )
+                    assert result.is_error is False
+
+        try:
+            activation = asyncio.create_task(activate_and_call_healthy())
+            opened_sessions = [
+                await asyncio.wait_for(
+                    asyncio.to_thread(slow_peer.sse_opened_sessions.get, timeout=2),
+                    timeout=3,
+                )
+                for _ in range(2)
+            ]
+            assert opened_sessions == [1, 2]
+            await activation
+        finally:
+            slow_invocation_gate.set()
 
 
 @pytest.mark.asyncio
@@ -625,8 +942,8 @@ async def test_registration_timeout_does_not_limit_healthy_session_lifetime(monk
     async with registration.activate(options):
         await asyncio.sleep(0.1)
         assert registration.server_aliases["gateway"] in options.mcp_servers
-        assert closed == []
-    assert closed == [True]
+        assert closed == [True]
+    assert closed == [True, True]
 
 
 @pytest.mark.asyncio
