@@ -119,6 +119,14 @@ from app.execution.application.follow_up_completion import (
     FollowUpSuggestionService as FollowUpSuggestionService,
     configured_follow_up_suggestions as configured_follow_up_suggestions,
 )
+from app.execution.application.model_selection_bridge import (
+    select_chat_route_model as select_chat_route_model,
+    model_selection_error_status as model_selection_error_status,
+)
+from app.execution.application.model_snapshot_projection import (
+    group_snapshot_fields as group_snapshot_fields,
+    restored_session_model_metadata as restored_session_model_metadata,
+)
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
 from app.execution.application.run_interaction import RunInteractionProtocol, RunQuestionNeedsInput
@@ -139,17 +147,13 @@ from app.execution.domain.input_limits import (
 )
 
 
-async def list_public_models(conn: Any, *, user_id: str) -> dict[str, object]:
-    return await configured_model_control_plane().public_models(conn, user_id=user_id)
-
-
-async def model_access_excludes_user(
-    conn: Any, *, model_id: str, user_id: str
-) -> bool:
-    """Return whether the current model user list excludes this user."""
-
-    return await configured_model_control_plane().model_access_excludes_user(
-        conn, model_id=model_id, user_id=user_id
+async def list_public_models(
+    conn: Any, *, user_id: str, tenant_id: str | None = None,
+    usage_scene: str = "independent", group_id: str | None = None,
+) -> dict[str, object]:
+    return await configured_model_control_plane().public_models(
+        conn, user_id=user_id, tenant_id=tenant_id, usage_scene=usage_scene,
+        group_id=group_id,
     )
 
 
@@ -158,11 +162,19 @@ async def resolve_chat_model_selection(
     *,
     selection: dict[str, str] | None,
     user_id: str,
+    tenant_id: str | None = None,
+    group_id: str | None = None,
+    selection_mode: str = "auto",
+    usage_scene: str = "independent",
 ) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
         user_id=user_id,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        selection_mode=selection_mode,
+        usage_scene=usage_scene,
     )
 
 __all__ = [
@@ -231,7 +243,6 @@ __all__ = [
     "submit_run_until_cancelled",
     "configured_follow_up_suggestions",
     "list_public_models",
-    "model_access_excludes_user",
     "bind_selected_run_model",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",

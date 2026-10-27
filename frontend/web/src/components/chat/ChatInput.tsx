@@ -111,6 +111,10 @@ export const ChatInput = memo(function ChatInput({
   onToggleAgentOption,
   availableModels = [],
   currentModelId,
+  modelSelectionMode = "explicit",
+  modelGroups = [],
+  selectedGroupId,
+  onSelectGroup,
   onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
@@ -840,8 +844,8 @@ export const ChatInput = memo(function ChatInput({
   }, [currentModelId]);
 
   const handleSelectModelChip = useCallback(
-    (modelId: string, modelValue: string) => {
-      onSelectModel?.(modelId, modelValue);
+    (modelId: string, modelValue: string, mode?: "auto" | "explicit") => {
+      onSelectModel?.(modelId, modelValue, mode);
       dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
       setInput((current) =>
         clearModelCommandDraft(
@@ -1071,6 +1075,10 @@ export const ChatInput = memo(function ChatInput({
                 totalSkillsCount={totalSkillsCount}
                 availableModels={availableModels}
                 currentModelId={currentModelId}
+                modelSelectionMode={modelSelectionMode}
+                modelGroups={modelGroups}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={onSelectGroup}
                 onSelectModel={onSelectModel}
                 showModelSelector
                 agentOptions={agentOptions}
@@ -1106,6 +1114,7 @@ export const ChatInput = memo(function ChatInput({
         enableSkills={enableSkills}
         availableModels={availableModels}
         currentModelId={currentModelId}
+        modelSelectionMode={modelSelectionMode}
         onSelectModel={handleSelectModelChip}
       />
 

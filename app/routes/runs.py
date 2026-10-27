@@ -30,7 +30,13 @@ from app.control_plane_contracts import (
 )
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import model_access_excludes_user, resolve_chat_model_selection
+from app.execution.api import resolve_chat_model_selection
+from app.execution.api import group_snapshot_fields
+from app.execution.api import model_selection_error_status
+from app.runs.api import (
+    reauthorize_model, requested_run_model_selection, selected_model_binding_fields,
+    direct_run_usage_scene,
+)
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -109,8 +115,8 @@ from app.runs.api import (
     RunCancellationQueueCleanupError,
     RunDiagnosticsService,
     bind_run_model,
-    inherit_run_model,
     public_run_outcome,
+    replace_run_model_snapshot,
     run_retry_block_reason,
     run_unconfirmed_execution_block_reason,
 )
@@ -133,6 +139,16 @@ from app.streaming.api import (
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.kernel.identifiers import assert_safe_principal_user_id
+
+async def _require_inherited_model_access(conn, *, snapshot: dict[str, Any], principal: AuthPrincipal):
+    try:
+        return await reauthorize_model(
+            conn, snapshot=snapshot, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            load_session=conversations_postgres.get_session_for_action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="model_not_available_to_user") from exc
+
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
@@ -595,30 +611,6 @@ def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | Non
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
-async def _require_inherited_model_access(
-    conn: Any,
-    *,
-    snapshot: dict[str, Any],
-    principal: AuthPrincipal,
-) -> None:
-    """Reject a new child Run whose frozen model now excludes this user.
-
-    This runs inside the child-Run transaction before queue admission, so a
-    rejection rolls the child back instead of leaving an unauthorized queued
-    Run. Existing Runs and Attempts never pass through here and keep their
-    snapshot and proxy access. A child with no frozen model is unbound: no
-    proxy request can succeed for it, so it is not a model-access path.
-    """
-
-    model_id = snapshot.get("model_id")
-    if not isinstance(model_id, str) or not model_id:
-        return
-    if await model_access_excludes_user(
-        conn, model_id=model_id, user_id=principal.user_id
-    ):
-        raise HTTPException(status_code=403, detail="model_not_available_to_user")
-
-
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -637,11 +629,19 @@ async def prepare_copied_run_for_queue(
     )
     if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
-    await _require_inherited_model_access(
+    selected_model = await _require_inherited_model_access(
         conn,
-        snapshot=copied_snapshot,
+        snapshot={**copied_snapshot, "session_id": copied["session_id"]},
         principal=effective_principal,
     )
+    if selected_model is not None:
+        copied_snapshot.update(group_snapshot_fields(selected_model))
+        await replace_run_model_snapshot(
+            conn,
+            tenant_id=effective_principal.tenant_id,
+            run_id=str(copied["run_id"]),
+            **selected_model_binding_fields(selected_model),
+        )
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
@@ -944,16 +944,27 @@ async def create_run(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            session_id = request.session_id or platform_values.new_id("ses")
             try:
+                requested_selection = requested_run_model_selection(request)
+                usage_scene = await direct_run_usage_scene(
+                    conn, execution_kind=execution_kind, session_id=request.session_id,
+                    tenant_id=tenant_id, user_id=user_id, workspace_id=request.workspace_id,
+                    load_session=conversations_postgres.get_session_for_action,
+                )
                 selected_model = await resolve_chat_model_selection(
-                    conn, selection=None, user_id=principal.user_id,
+                    conn,
+                    selection=requested_selection,
+                    user_id=principal.user_id,
+                    tenant_id=principal.tenant_id,
+                    usage_scene=usage_scene,
                 )
             except ValueError as exc:
-                raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
+                status = model_selection_error_status(str(exc))
+                raise HTTPException(status_code=status, detail=str(exc) if status != 503 else "run_model_unavailable") from exc
             if selected_model is None:
                 raise HTTPException(status_code=503, detail="run_model_unavailable")
             skill_manifest_transport = skills_run_snapshots.skill_manifest_refs(skill_manifests)
-            session_id = request.session_id or platform_values.new_id("ses")
             run_id = platform_values.new_id("run")
             base_queue_payload = {
                 "tenant_id": tenant_id,
@@ -972,6 +983,7 @@ async def create_run(
                 "skill_manifests": skill_manifest_transport,
                 "model_id": selected_model.model_id,
                 "model_value": selected_model.model_value,
+                **group_snapshot_fields(selected_model),
                 **(
                     {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -979,11 +991,6 @@ async def create_run(
                 ),
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
-            await conversations_postgres.ensure_workspace_belongs_to_tenant(
-                conn,
-                tenant_id=tenant_id,
-                workspace_id=request.workspace_id,
-            )
             await files_run_bindings.authorize_files_for_run(
                 conn,
                 tenant_id=tenant_id,
@@ -994,10 +1001,11 @@ async def create_run(
                 file_ids=request.file_ids,
                 input_modes=input_modes,
             )
+            await conversations_postgres.ensure_workspace_belongs_to_tenant(
+                conn, tenant_id=tenant_id, workspace_id=request.workspace_id,
+            )
             await identity_postgres.ensure_user(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
+                conn, tenant_id=tenant_id, user_id=user_id,
                 display_name=principal.display_name,
             )
             session_id = await conversations_postgres.create_session(
@@ -1028,6 +1036,7 @@ async def create_run(
                     "skill_manifests": queue_payload["skill_manifests"],
                     "model_id": selected_model.model_id,
                     "model_value": selected_model.model_value,
+                    **group_snapshot_fields(selected_model),
                     "schema_version": queue_payload["schema_version"],
                 },
                 principal_roles=principal.roles,
@@ -1042,11 +1051,7 @@ async def create_run(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
-                model_id=selected_model.model_id,
-                model_value=selected_model.model_value,
-                connection_revision=selected_model.connection_revision,
-                auto_compact_window=selected_model.auto_compact_window,
-                max_output_tokens=selected_model.max_output_tokens,
+                **selected_model_binding_fields(selected_model),
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await skills_run_snapshots.insert_run_skill_snapshots_at_creation(
@@ -1188,12 +1193,6 @@ async def copy_run(
                 principal_department_ids=principal.department_ids,
             )
             if copied is not None:
-                await inherit_run_model(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    source_run_id=run_id,
-                    child_run_id=str(copied["run_id"]),
-                )
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,
                     copied=copied,
@@ -1451,12 +1450,6 @@ async def _mutate_run_control_child(
                     principal_department_ids=principal.department_ids,
                 )
                 if copied is not None:
-                    await inherit_run_model(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        source_run_id=run_id,
-                        child_run_id=str(copied["run_id"]),
-                    )
                     queue_payload = await prepare_copied_run_for_queue(
                         conn,
                         copied=copied,

@@ -16,6 +16,13 @@ class RunModelSelection:
     connection_revision: int | None
     auto_compact_window: int | None = None
     max_output_tokens: int | None = None
+    group_id: str | None = None
+    group_code: str | None = None
+    group_type: str | None = None
+    group_revision: int | None = None
+    selection_mode: str = "auto"
+    usage_scene: str = "independent"
+    policy_version: str | None = None
 
 
 class GovernedModelResolver(Protocol):
@@ -32,22 +39,43 @@ class GovernedModelResolver(Protocol):
 async def bind_selected_run_model(
     conn: Any, *, tenant_id: str, run_id: str, selected_model: RunModelSelection,
 ) -> None:
+    snapshot_kwargs = {}
+    if selected_model.group_id:
+        snapshot_kwargs = {
+            "group_id": selected_model.group_id,
+            "group_code": selected_model.group_code,
+            "group_type": selected_model.group_type,
+            "group_revision": selected_model.group_revision,
+            "selection_mode": selected_model.selection_mode,
+            "usage_scene": selected_model.usage_scene,
+            "policy_version": selected_model.policy_version,
+        }
     await bind_run_model(
         conn, tenant_id=tenant_id, run_id=run_id,
         model_id=selected_model.model_id, model_value=selected_model.model_value,
         connection_revision=selected_model.connection_revision,
         auto_compact_window=selected_model.auto_compact_window,
         max_output_tokens=selected_model.max_output_tokens,
+        **snapshot_kwargs,
     )
 
 
 def parse_requested_model_selection(agent_options: object) -> dict[str, str] | None:
-    """Validate the public Chat model selector before persistence side effects."""
+    """Validate the public model/group selector before persistence side effects."""
 
     options = agent_options if isinstance(agent_options, dict) else {}
     raw_model_id = options.get("model_id")
     raw_model_value = options.get("model")
-    if raw_model_id is None and raw_model_value is None:
+    raw_group_id = options.get("group_id")
+    raw_selection_mode = options.get("selection_mode")
+    if raw_group_id is not None and (
+        not isinstance(raw_group_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", raw_group_id)
+    ):
+        raise ValueError("group_not_available")
+    if raw_selection_mode is not None and raw_selection_mode not in {"auto", "explicit"}:
+        raise ValueError("model_selection_conflict")
+    if raw_model_id is None and raw_model_value is None and raw_group_id is None and raw_selection_mode is None:
         return None
     if raw_model_id is not None and (
         not isinstance(raw_model_id, str)
@@ -62,9 +90,16 @@ def parse_requested_model_selection(agent_options: object) -> dict[str, str] | N
         or any(ord(char) < 32 or ord(char) == 127 for char in raw_model_value)
     ):
         raise ValueError("model_id_not_available")
+    if raw_model_id is None and raw_model_value is None and raw_group_id is None and raw_selection_mode is None:
+        return None
+    inferred_mode = "explicit" if raw_model_id is not None or raw_model_value is not None else "auto"
+    if raw_selection_mode == "auto" and inferred_mode == "explicit":
+        raise ValueError("model_selection_conflict")
     return {
         **({"id": raw_model_id} if raw_model_id is not None else {}),
         **({"value": raw_model_value} if raw_model_value is not None else {}),
+        **({"group_id": raw_group_id} if raw_group_id is not None else {}),
+        **({"selection_mode": raw_selection_mode} if raw_selection_mode is not None else {}),
     }
 
 

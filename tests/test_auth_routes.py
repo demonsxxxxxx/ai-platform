@@ -104,9 +104,19 @@ def auth_settings(**overrides):
     return SimpleNamespace(**values)
 
 
+class _FakeAuthCursor:
+    async def fetchone(self):
+        return None
+
+
+class _FakeAuthConnection:
+    async def execute(self, _sql, _params=None):
+        return _FakeAuthCursor()
+
+
 @asynccontextmanager
 async def fake_transaction():
-    yield object()
+    yield _FakeAuthConnection()
 
 
 @pytest.fixture(autouse=True)

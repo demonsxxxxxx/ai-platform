@@ -32,7 +32,7 @@ from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
-from app.execution.api import list_public_models
+from app.execution.api import list_public_models, restored_session_model_metadata, model_selection_error_status
 from app.models import SessionRenameRequest
 from app.projection_redaction import (
     PUBLIC_RETIRED_AGENT_ID,
@@ -41,12 +41,6 @@ from app.projection_redaction import (
     is_retired_agent_for_projection,
     public_agent_id_for_projection,
     public_skill_display_label,
-)
-from app.streaming.api import (
-    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    PUBLIC_EXECUTION_EVENT_TYPES,
-    public_execution_event_from_row,
-    validate_public_agent_progress_payload,
 )
 from app.routes.files import MAX_UPLOAD_BYTES
 from app.routes.runs import (
@@ -63,6 +57,10 @@ from app.runs import api as runs_api
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.settings import get_settings
 from app.streaming.api import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PUBLIC_EXECUTION_EVENT_TYPES,
+    public_execution_event_from_row,
+    validate_public_agent_progress_payload,
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
@@ -256,22 +254,21 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
-    raw_agent_id = row.get("agent_id")
     retired_agent = is_retired_agent_for_projection(
-        raw_agent_id,
+        row.get("agent_id"),
         row.get("agent_default_skill_id"),
         row.get("agent_profile_has_retired_skill"),
     )
     agent_id = (
         PUBLIC_RETIRED_AGENT_ID
         if retired_agent
-        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
+        else public_agent_id_for_projection(row.get("agent_id"), row.get("agent_default_skill_id"))
     )
     return {
         "id": row["id"],
         "agent_id": agent_id,
         "name": PUBLIC_RETIRED_SESSION_TITLE if retired_agent else row.get("title") or "新会话",
-        "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"]},
+        "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"], **restored_session_model_metadata(row.get("latest_model_selection"))},
         "is_active": row.get("status", "active") == "active",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -1441,11 +1438,14 @@ CHAT_STREAM_TERMINAL_EVENT_TYPES = {
 @router.get("/agent/models/available")
 async def available_models(
     response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal), group_id: str | None = Query(default=None, max_length=128),
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
-        return await list_public_models(conn, user_id=principal.user_id)
+        try:
+            return await list_public_models(conn, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="chat", group_id=group_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
 
 
 @router.get("/upload/config")

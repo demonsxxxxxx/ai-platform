@@ -25,11 +25,11 @@ function props(node: object) {
 }
 function saved(revision = 4): AdminModelState {
   return { connection: { configured: true, revision, base_url: "https://gateway-a.example", key_fingerprint: "synthetic-marker" }, models: [{
-    id: "mdl_gpt", value: "mock/gpt", label: "合成模型", provider: "compatible", enabled: true, available: true, is_default: true,
+    id: "mdl_gpt", value: "mock/gpt", label: "合成模型", provider: "compatible", enabled: true, available: true,
     order: 1, last_seen_revision: revision, last_seen_at: "2026-10-09T00:00:00Z", auto_compact_window: 200_000, max_output_tokens: 2048,
   }] };
 }
-const candidate = (revision = 4) => ({ ...saved(revision), base_url: "https://gateway-a.example", models: [{ ...saved(revision).models[0], enabled: false, is_default: false, auto_compact_window: undefined, max_output_tokens: undefined }] });
+const candidate = (revision = 4) => ({ ...saved(revision), base_url: "https://gateway-a.example", models: [{ ...saved(revision).models[0], enabled: false, auto_compact_window: undefined, max_output_tokens: undefined }] });
 function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
   const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject };
@@ -114,7 +114,7 @@ test("late A failure cannot replace successful B result", async () => {
 
 test("test probes the editable draft only; new endpoint needs its own key and discovery before saving", async () => {
   const calls: Array<{ url: string; key?: string }> = [];
-  await withControl({ discover: async (url, key) => { calls.push({ url, key }); return { ...candidate(), models: [{ ...saved().models[0], id: "mdl_new", value: "mock/new", label: "新候选", enabled: false, is_default: false }] }; } }, async ({ change, click, input, button }) => {
+  await withControl({ discover: async (url, key) => { calls.push({ url, key }); return { ...candidate(), models: [{ ...saved().models[0], id: "mdl_new", value: "mock/new", label: "新候选", enabled: false }] }; } }, async ({ change, click, input, button }) => {
     await change("模型 API Key", "synthetic-a"); await change("模型 API 地址", "https://gateway-b.example/v1");
     assert.equal(input("模型 API Key").value, ""); assert.equal(props(button("data-model-admin-test")).disabled, true);
     await change("模型 API Key", "synthetic-b"); await click("data-model-admin-test");
@@ -212,7 +212,7 @@ for (const discoveredRevision of [3, 5]) {
         assert.equal(input("mock/gpt 压缩窗口 Token").value, "150000");
         assert.equal(input("mock/gpt 最大输出 Token").value, "4096");
         assert.equal(choice(container, "启用 我的未保存名称").getAttribute("aria-checked"), "true");
-        assert.equal(choice(container, "设为默认 我的未保存名称").getAttribute("aria-checked"), "true");
+        assert.doesNotMatch(text(container), /设为默认/);
         assert.equal(input("模型 API Key").value, "synthetic-unsaved");
         assert.equal(props(button("data-model-admin-publish")).disabled, true);
         assert.match(text(container), /未保存编辑已保留，请重新加载配置后再发布/);
@@ -254,7 +254,7 @@ function savedWithSecondModel(): AdminModelState {
   const state = saved();
   return { ...state, models: [...state.models, {
     ...state.models[0], id: "mdl_second", value: "mock/second", label: "第二模型",
-    is_default: false, order: 2,
+    order: 2,
   }] };
 }
 
@@ -338,10 +338,12 @@ for (const clearCapacity of [false, true]) {
           assert.equal(requests.length, 2);
           assert.equal(requests[1].expected_revision, 4);
           assert.equal(requests[1].credential, "undefined" === typeof requests[1].credential ? undefined : requests[1].credential);
+          assert.equal("is_default" in requests[1].models[1], false);
+          assert.equal("access_mode" in requests[1].models[1], false);
+          assert.equal("allowed_user_ids" in requests[1].models[1], false);
           assert.deepEqual(requests[1].models[1], {
             id: "mdl_second", value: "mock/second", display_name: "停用草稿",
-            enabled: false, is_default: false, order: 2,
-            access_mode: "all", allowed_user_ids: [],
+            enabled: false, order: 2,
             ...(clearCapacity ? {} : { auto_compact_window: 150_000, max_output_tokens: 10000000 }),
           });
           assert.equal(input("模型 API Key").value, "");

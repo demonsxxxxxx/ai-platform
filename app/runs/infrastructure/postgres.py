@@ -22,6 +22,7 @@ from app.runs.domain.attempt_lifecycle import (
     run_attempt_id_for_queue_attempt,
 )
 from app.runs.domain.execution_spec import ExecutionSpec
+from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
 from app.runs.domain.terminalization import (
     RunTerminalEventFact,
     RunTerminalizationProgress,
@@ -82,6 +83,8 @@ async def load_worker_dispatch_run_facts(
         select id, tenant_id, workspace_id, user_id, session_id, agent_id,
           execution_kind, skill_id, status, cancel_requested_at,
           context_snapshot_id, model_id, model_value, model_gateway_revision,
+          model_group_id, model_group_code, model_group_type, model_group_revision,
+          model_selection_mode, usage_scene, model_policy_version,
           auto_compact_window, max_output_tokens
         from runs where tenant_id = %s and id = %s for update
         """,
@@ -195,7 +198,10 @@ async def get_scoped_reconciliation_run(
         select id, tenant_id, workspace_id, user_id, session_id, agent_id, status,
           cancel_requested_at, execution_kind, skill_id, context_snapshot_id,
           input_json->>'executor_type' as executor_type,
-          model_id, model_value, model_gateway_revision, auto_compact_window, max_output_tokens
+          model_id, model_value, model_gateway_revision,
+          model_group_id, model_group_code, model_group_type, model_group_revision,
+          model_selection_mode, usage_scene, model_policy_version,
+          auto_compact_window, max_output_tokens
         from runs where tenant_id = %s and id = %s
           and workspace_id = %s and user_id = %s and session_id = %s and agent_id = %s
           and status = 'running'
@@ -1131,6 +1137,8 @@ async def load_run_model_snapshot(
     cursor = await conn.execute(
         """
         select model_id, model_value, model_gateway_revision,
+               model_group_id, model_group_code, model_group_type, model_group_revision,
+               model_selection_mode, usage_scene, model_policy_version,
                auto_compact_window, max_output_tokens
         from runs
         where tenant_id = %s and id = %s
@@ -1154,138 +1162,97 @@ async def bind_run_model(
     connection_revision: int,
     auto_compact_window: int,
     max_output_tokens: int,
+    group_id: str | None = None,
+    group_code: str | None = None,
+    group_type: str | None = None,
+    group_revision: int | None = None,
+    selection_mode: str = "auto",
+    usage_scene: str = "independent",
+    policy_version: str | None = None,
 ) -> None:
-    """Persist an Execution-admitted five-field snapshot on a queued Run."""
+    """Persist an Execution-admitted model and group snapshot on a queued Run."""
 
     if not model_id or not model_value or type(connection_revision) is not int or connection_revision < 1:
         raise ValueError("run_model_binding_invalid")
     if any(type(value) is not int or not 1 <= value <= 10_000_000
            for value in (auto_compact_window, max_output_tokens)):
         raise ValueError("run_model_capacity_invalid")
+    validate_model_group_snapshot(
+        group_id=group_id, group_code=group_code, group_type=group_type,
+        group_revision=group_revision, selection_mode=selection_mode,
+        usage_scene=usage_scene, policy_version=policy_version,
+    )
     cursor = await conn.execute(
         """
         update runs
-        set model_id = %s,
-            model_value = %s,
-            model_gateway_revision = %s,
-            auto_compact_window = %s,
-            max_output_tokens = %s
-        where tenant_id = %s
-          and id = %s
-          and status = 'queued'
-          and model_id is null
-          and model_value is null
-          and model_gateway_revision is null
-          and auto_compact_window is null
+        set model_id = %s, model_value = %s, model_gateway_revision = %s,
+            model_group_id = %s, model_group_code = %s, model_group_type = %s,
+            model_group_revision = %s, model_selection_mode = %s, usage_scene = %s,
+            model_policy_version = %s, auto_compact_window = %s, max_output_tokens = %s
+        where tenant_id = %s and id = %s and status = 'queued'
+          and model_id is null and model_value is null
+          and model_gateway_revision is null and auto_compact_window is null
           and max_output_tokens is null
         returning id
         """,
         (
-            model_id,
-            model_value,
-            connection_revision,
-            auto_compact_window,
-            max_output_tokens,
-            tenant_id,
-            run_id,
+            model_id, model_value, connection_revision, group_id, group_code,
+            group_type, group_revision, selection_mode, usage_scene,
+            policy_version, auto_compact_window, max_output_tokens,
+            tenant_id, run_id,
         ),
     )
     if await cursor.fetchone() is None:
         raise ValueError("run_model_binding_invalid")
 
 
-async def inherit_run_model(
+async def replace_run_model_snapshot(
     conn: AsyncConnection,
     *,
     tenant_id: str,
-    source_run_id: str,
-    child_run_id: str,
+    run_id: str,
+    model_id: str,
+    model_value: str,
+    connection_revision: int,
+    auto_compact_window: int,
+    max_output_tokens: int,
+    group_id: str,
+    group_code: str,
+    group_type: str,
+    group_revision: int,
+    selection_mode: str,
+    usage_scene: str,
+    policy_version: str,
 ) -> None:
-    """Copy the exact source model snapshot into a new queued child Run."""
-
-    if source_run_id == child_run_id:
-        raise ValueError("run_model_inheritance_invalid")
-    source_cursor = await conn.execute(
-        """
-        select model_id, model_value, model_gateway_revision,
-               auto_compact_window, max_output_tokens
-        from runs
-        where tenant_id = %s and id = %s
-        for update
-        """,
-        (tenant_id, source_run_id),
+    validate_model_group_snapshot(
+        group_id=group_id, group_code=group_code, group_type=group_type,
+        group_revision=group_revision, selection_mode=selection_mode,
+        usage_scene=usage_scene, policy_version=policy_version,
     )
-    source = await source_cursor.fetchone()
-    if source is None:
-        raise ValueError("run_model_source_missing")
-    child_cursor = await conn.execute(
+    if not model_id or not model_value or type(connection_revision) is not int or connection_revision < 1:
+        raise ValueError("run_model_binding_invalid")
+    if any(type(v) is not int or v < 1 for v in (auto_compact_window, max_output_tokens)):
+        raise ValueError("run_model_capacity_invalid")
+    cursor = await conn.execute(
         """
-        select status, copied_from_run_id, model_id, model_value,
-               model_gateway_revision, auto_compact_window, max_output_tokens
-        from runs
-        where tenant_id = %s and id = %s
-        for update
-        """,
-        (tenant_id, child_run_id),
-    )
-    child = await child_cursor.fetchone()
-    if child is None:
-        raise ValueError("run_model_child_missing")
-    if str(child.get("status") or "") != "queued":
-        raise ValueError("run_model_child_state_invalid")
-    if str(child.get("copied_from_run_id") or "") != source_run_id:
-        raise ValueError("run_model_child_source_mismatch")
-
-    source_model_id = source.get("model_id")
-    source_model_value = source.get("model_value")
-    source_revision = source.get("model_gateway_revision")
-    source_auto_compact_window = source.get("auto_compact_window")
-    source_max_output_tokens = source.get("max_output_tokens")
-    if (
-        not isinstance(source_model_id, str) or not source_model_id
-        or not isinstance(source_model_value, str) or not source_model_value
-        or type(source_revision) is not int or source_revision < 1
-        or any(type(value) is not int or not 1 <= value <= 10_000_000
-               for value in (source_auto_compact_window, source_max_output_tokens))
-    ):
-        raise ValueError("run_model_capacity_missing")
-    if any(
-        value is not None
-        for value in (
-            child.get("model_id"),
-            child.get("model_value"),
-            child.get("model_gateway_revision"),
-            child.get("auto_compact_window"),
-            child.get("max_output_tokens"),
-        )
-    ):
-        raise ValueError("run_model_child_partial")
-    update_cursor = await conn.execute(
-        """
-        update runs
-        set model_id = %s,
-            model_value = %s,
-            model_gateway_revision = %s,
-            auto_compact_window = %s,
-            max_output_tokens = %s
+        update runs set model_id = %s, model_value = %s, model_gateway_revision = %s,
+          model_group_id = %s, model_group_code = %s, model_group_type = %s,
+          model_group_revision = %s, model_selection_mode = %s, usage_scene = %s,
+          model_policy_version = %s, auto_compact_window = %s, max_output_tokens = %s
         where tenant_id = %s and id = %s and status = 'queued'
-          and model_id is null and model_value is null
-          and model_gateway_revision is null
-          and auto_compact_window is null and max_output_tokens is null
+          and ((model_id is null and model_value is null) or (model_id = %s and model_value = %s))
+          and exists (select 1 from runs source where source.tenant_id = runs.tenant_id
+                      and source.id = runs.copied_from_run_id
+                      and source.model_id = %s and source.model_value = %s)
+          and not exists (select 1 from run_attempts a where a.tenant_id = runs.tenant_id and a.run_id = runs.id)
         returning id
         """,
-        (
-            source_model_id,
-            source_model_value,
-            source_revision,
-            source_auto_compact_window,
-            source_max_output_tokens,
-            tenant_id,
-            child_run_id,
-        ),
+        (model_id, model_value, connection_revision, group_id, group_code, group_type,
+         group_revision, selection_mode, usage_scene, policy_version,
+         auto_compact_window, max_output_tokens, tenant_id, run_id, model_id, model_value, model_id, model_value),
     )
-    if await update_cursor.fetchone() is None:
-        raise ValueError("run_model_child_update_failed")
+    if await cursor.fetchone() is None:
+        raise ValueError("run_model_reauthorization_failed")
 
 
 class PostgresRunModelSnapshotRepository:
@@ -1295,8 +1262,8 @@ class PostgresRunModelSnapshotRepository:
     async def bind(self, conn: AsyncConnection, **kwargs: Any) -> None:
         await bind_run_model(conn, **kwargs)
 
-    async def inherit(self, conn: AsyncConnection, **kwargs: Any) -> None:
-        await inherit_run_model(conn, **kwargs)
+    async def replace(self, conn: AsyncConnection, **kwargs: Any) -> None:
+        await replace_run_model_snapshot(conn, **kwargs)
 class _AppendRunEvent(Protocol):
     async def __call__(
         self,
