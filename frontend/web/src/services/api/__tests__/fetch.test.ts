@@ -9,6 +9,7 @@ import { parseSessionRunInputs, sessionApi } from "../session.ts";
 import { AUTH_SESSION_MARKER_KEY } from "../token.ts";
 import { authenticatedRequest } from "../authenticatedRequest.ts";
 import { AuthSessionChangedError, refreshTokens } from "../tokenManager.ts";
+import { registerExpiredSessionRecovery } from "../expiredSessionRecovery.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -787,4 +788,152 @@ test("an expired platform context signals login recovery without refreshing or r
     assert.equal(calls, 1);
     assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
   } finally { stubs.restore(); }
+});
+
+test("parallel expired-session reads share one AD recovery and replay once each", async () => {
+  const calls: string[] = [];
+  const refreshResponse = deferred<Response>();
+  const refreshStarted = deferred<void>();
+  const bothReadsStarted = deferred<void>();
+  const recoveryStarted = deferred<void>();
+  const finishRecovery = deferred<void>();
+  let readCalls = 0;
+  let refreshCalls = 0;
+  let recoveryCalls = 0;
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === "/api/read") {
+        readCalls += 1;
+        if (readCalls === 2) bothReadsStarted.resolve();
+        if (readCalls <= 2) {
+          return new Response(JSON.stringify({ detail: "company_login_expired" }), {
+            status: 401,
+            headers: {
+              "X-Force-Relogin": "true",
+              "X-Auth-Rejected-Before-Execution": "true",
+            },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (url.endsWith("/auth/refresh")) {
+        refreshCalls += 1;
+        refreshStarted.resolve();
+        return refreshResponse.promise;
+      }
+      assert.fail(`unexpected request ${url}`);
+    },
+  });
+  const unregister = registerExpiredSessionRecovery(async (expectedMarker) => {
+    recoveryCalls += 1;
+    assert.equal(expectedMarker, "owner-a");
+    recoveryStarted.resolve();
+    await finishRecovery.promise;
+    stubs.store.set(AUTH_SESSION_MARKER_KEY, "owner-b");
+    return {
+      status: "recovered",
+      sessionMarker: "owner-b",
+      principalMatchesPrevious: true,
+    };
+  });
+
+  try {
+    const requests = [authFetch<{ ok: boolean }>("/api/read"), authFetch<{ ok: boolean }>("/api/read")];
+    await bothReadsStarted.promise;
+    await refreshStarted.promise;
+    assert.equal(refreshCalls, 1);
+    refreshResponse.resolve(new Response(JSON.stringify({ detail: "auth_context_missing" }), { status: 401 }));
+    await recoveryStarted.promise;
+    assert.equal(recoveryCalls, 1);
+    finishRecovery.resolve();
+
+    assert.deepEqual(await Promise.all(requests), [{ ok: true }, { ok: true }]);
+    assert.equal(readCalls, 4);
+    assert.equal(calls.filter((url) => url.endsWith("/auth/refresh")).length, 1);
+    assert.deepEqual(stubs.events, []);
+  } finally {
+    unregister();
+    stubs.restore();
+  }
+});
+
+test("expired-session recovery never replays an ambiguous POST", async () => {
+  const calls: string[] = [];
+  let recoveryCalls = 0;
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async (input) => {
+      calls.push(String(input));
+      return String(input).endsWith("/auth/refresh")
+        ? new Response(JSON.stringify({ detail: "auth_context_missing" }), { status: 401 })
+        : new Response(JSON.stringify({ detail: "company_login_expired" }), {
+          status: 401,
+          headers: { "X-Force-Relogin": "true" },
+        });
+    },
+  });
+  const unregister = registerExpiredSessionRecovery(async () => {
+    recoveryCalls += 1;
+    stubs.store.set(AUTH_SESSION_MARKER_KEY, "owner-b");
+    return {
+      status: "recovered",
+      sessionMarker: "owner-b",
+      principalMatchesPrevious: true,
+    };
+  });
+
+  try {
+    await assert.rejects(
+      authFetch("/api/write", { method: "POST", body: "{}" }),
+      AuthSessionChangedError,
+    );
+    assert.equal(recoveryCalls, 1);
+    assert.deepEqual(calls, ["/api/write", "/api/ai/auth/refresh"]);
+    assert.deepEqual(stubs.events, []);
+  } finally {
+    unregister();
+    stubs.restore();
+  }
+});
+
+test("revoked authority failures never invoke expired-session recovery", async () => {
+  for (const scenario of ["refresh-authority-denied", "stale-company-authority"] as const) {
+    let recoveryCalls = 0;
+    let refreshCalls = 0;
+    const stubs = installFetchAuthStubs({
+      initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+      fetchImpl: async (input) => {
+        if (String(input).endsWith("/auth/refresh")) {
+          refreshCalls += 1;
+          return new Response(JSON.stringify({ detail: "auth_refresh_authority_denied" }), {
+            status: 401,
+            headers: { "X-Force-Relogin": "true" },
+          });
+        }
+        return new Response(JSON.stringify({ detail: scenario === "stale-company-authority"
+          ? "stale_company_authority"
+          : "company_login_expired" }), {
+          status: 401,
+          headers: { "X-Force-Relogin": "true" },
+        });
+      },
+    });
+    const unregister = registerExpiredSessionRecovery(async () => {
+      recoveryCalls += 1;
+      return { status: "unavailable" };
+    });
+
+    try {
+      await assert.rejects(authFetch("/api/read"), ApiRequestError);
+      assert.equal(recoveryCalls, 0);
+      assert.equal(refreshCalls, scenario === "refresh-authority-denied" ? 1 : 0);
+      assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
+    } finally {
+      unregister();
+      stubs.restore();
+    }
+  }
 });

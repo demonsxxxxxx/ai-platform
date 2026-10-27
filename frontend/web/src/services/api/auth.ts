@@ -198,14 +198,21 @@ export const authApi = {
   },
 
   /** Exchange one company-authenticated JWT for a platform session. */
-  async loginWithAD(companyJwt: string, signal?: AbortSignal): Promise<void> {
+  async loginWithAD(
+    companyJwt: string,
+    signal?: AbortSignal,
+    expectedPrincipal?: { user_id: string; tenant_id: string },
+  ): Promise<void> {
     await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/ad-login`,
       {
         method: "POST",
         skipAuth: true,
         credentials: "include",
-        body: JSON.stringify({ token: companyJwt }),
+        body: JSON.stringify({
+          token: companyJwt,
+          ...(expectedPrincipal ? { expected_principal: expectedPrincipal } : {}),
+        }),
         headers: { "Content-Type": "application/json" },
         signal: withAuthRequestTimeout(signal),
       },

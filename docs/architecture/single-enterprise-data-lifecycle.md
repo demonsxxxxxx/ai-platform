@@ -34,11 +34,21 @@ Windows login first obtains the company-signed JWT from `GetADName`. AI Platform
 accepts only that JWT, verifies its HS256 signature, issuer, audience, and
 lifetime, and projects the signed identity and role claims into platform
 authority. The original `depart` claim remains company metadata for JWT renewal.
+Automatic reauthentication also supplies an optional `expected_principal`
+constraint. A different verified user or tenant is rejected before session
+commit; browser-supplied fields never grant identity or roles.
 It does not trust browser-supplied identity fields or repeat the PermissionMS
 user-info lookup already performed by `GetADName`. It separately resolves
 DingTalk membership for the verified `workid`. The superseded AD request shape and login-time requery have no
 compatibility owner and are removed atomically; password login and Worker
 current-authority revalidation continue to use the existing user-info endpoint.
+
+After a browser context expires, the shared HTTP transport can ask AuthProvider
+to perform one fresh AD login before surfacing the expiry. Concurrent requests
+share the attempt; safe replay requires the verified user and tenant to match
+the previous principal. The browser never retains the password or uses an
+expired credential as a new grant. [ADR 0007](../adr/0007-fixed-browser-authentication-day.md#automatic-company-reauthentication-after-context-expiry)
+owns cancellation, replay and login-fallback behavior.
 
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
 authentication lifetime: the signed platform token and server authentication
