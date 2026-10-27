@@ -212,6 +212,11 @@ async def apply_mapping(mapping_path: Path) -> dict[str, Any]:
             if current_models.get(key, {}) != item["models"]:
                 for m in item["models"].values():
                     await conn.execute("insert into model_group_models(group_id,model_id,enabled,display_order,priority,weight) values (%s,%s,%s,%s,%s,%s)", (groups[key]["id"], m["model_id"], m["enabled"], m["display_order"], m["priority"], m["weight"]))
+                old_default = groups[key].get("default_model_id")
+                new_default = old_default if old_default in item["models"] else None
+                if not current_models.get(key) and item["models"]:
+                    new_default = min(item["models"].values(), key=lambda m: (m["display_order"], m["model_id"]))["model_id"]
+                await conn.execute("update model_groups set default_model_id=%s where id=%s", (new_default, groups[key]["id"]))
         changed_users = 0
         for key in state["covered_users"]:
             before, after = state["grants"][key], state["desired_grants"][key]

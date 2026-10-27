@@ -14,7 +14,6 @@ from app.execution.domain.model_groups import (
     SELECTION_EXPLICIT,
     USAGE_SCENE_CHAT,
     USAGE_SCENE_EXPERT,
-    choose_weighted_model,
     normalize_group_code,
     normalize_group_name,
 )
@@ -107,12 +106,17 @@ async def list_public_group_models(
 ) -> dict[str, Any]:
     group = await _effective_group(conn, tenant_id=tenant_id, user_id=user_id, group_id=group_id, usage_scene=usage_scene)
     rows = await _available_group_models(conn, str(group["id"]))
+    default_model_id = str(group.get("default_model_id") or "")
+    available_ids = {str(row["model_id"]) for row in rows}
+    if default_model_id not in available_ids:
+        default_model_id = ""
     return {
         "models": [{"id": r["model_id"], "value": r["upstream_model_id"],
                     "label": r["display_name"], "provider": r["provider"],
                     "profile": {"auto_compact_window": r["auto_compact_window"],
                                 "max_output_tokens": r["max_output_tokens"]}} for r in rows],
-        "count": len(rows), "enabled_count": len(rows), "default_model_id": None,
+        "count": len(rows), "enabled_count": len(rows),
+        "default_model_id": default_model_id or None,
     }
 
 
@@ -142,7 +146,7 @@ async def list_groups_for_user(conn: Any, *, tenant_id: str, user_id: str) -> li
     cursor = await conn.execute(
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision,
-               m.is_primary,
+               g.default_model_id, m.is_primary,
                case when g.type = 'ordinary_default' then '[]'::jsonb else
                  coalesce((select jsonb_agg(jsonb_build_object(
                    'model_id', gm.model_id, 'model_value', c.upstream_model_id,
@@ -189,6 +193,7 @@ async def list_groups_for_user(conn: Any, *, tenant_id: str, user_id: str) -> li
             "enabled": bool(row["enabled"]),
             "revision": int(row["revision"]),
             "is_primary": bool(row.get("is_primary")),
+            "default_model_id": row.get("default_model_id"),
             "models": [
                 {
                     "id": str(model["model_id"]),
@@ -209,6 +214,7 @@ async def get_admin_group_details(
     cursor = await conn.execute(
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision, g.remark, g.sort_order,
+          g.default_model_id,
           (g.type = 'ordinary_default') as members_are_implicit,
           case when g.type = 'ordinary_default' then
             (select count(*) from users u where u.tenant_id = g.tenant_id and u.status = 'active'
@@ -239,7 +245,7 @@ async def list_admin_groups(conn: Any, *, tenant_id: str) -> list[dict[str, Any]
     cursor = await conn.execute(
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision,
-               g.remark, g.sort_order,
+               g.remark, g.sort_order, g.default_model_id,
                (g.type = 'ordinary_default') as members_are_implicit,
                case when g.type = 'ordinary_default' then
                  (select count(*) from users u where u.tenant_id = g.tenant_id and u.status = 'active'
@@ -337,10 +343,10 @@ async def update_group(conn: Any, *, tenant_id: str, group_id: str, name: str | 
     return dict(row)
 
 
-async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision: int, models: list[dict[str, Any]]) -> dict[str, Any]:
+async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision: int, models: list[dict[str, Any]], default_model_id: str | None = None) -> dict[str, Any]:
     await conn.execute("select pg_advisory_xact_lock(%s)", (_GROUP_LOCK_KEY,))
     group_cursor = await conn.execute(
-        "select id, type, revision from model_groups where tenant_id = %s and id = %s for update",
+        "select id, type, revision, default_model_id from model_groups where tenant_id = %s and id = %s for update",
         (tenant_id, group_id),
     )
     group = await group_cursor.fetchone()
@@ -351,6 +357,12 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
     model_ids = [str(item.get("model_id") or "") for item in models]
     if any(not model_id for model_id in model_ids) or len(model_ids) != len(set(model_ids)):
         raise ModelGroupPolicyError("model_group_model_duplicate")
+    first_model = min(models, key=lambda item: (int(item.get("display_order", 0)), str(item.get("model_id") or "")), default=None)
+    chosen_default = default_model_id or (str(group.get("default_model_id")) if group.get("default_model_id") in model_ids else None) or (str(first_model["model_id"]) if first_model else None)
+    if chosen_default is not None and chosen_default not in model_ids:
+        raise ModelGroupPolicyError("model_group_default_model_invalid")
+    if chosen_default is not None and not any(str(item.get("model_id")) == chosen_default and bool(item.get("enabled", True)) for item in models):
+        raise ModelGroupPolicyError("model_group_default_model_invalid")
     current = await (await conn.execute(
         "select model_id, enabled, display_order, priority, weight from model_group_models where group_id = %s",
         (group_id,),
@@ -359,7 +371,16 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
                 "display_order": m.get("display_order", 0), "priority": m.get("priority", 0),
                 "weight": m.get("weight", 100)} for m in models]
     if sorted((dict(m) for m in current), key=lambda m: m["model_id"]) == sorted(desired, key=lambda m: m["model_id"]):
-        return {"group_id": group_id, "revision": revision}
+        if str(group.get("default_model_id") or "") == str(chosen_default or ""):
+            return {"group_id": group_id, "revision": revision, "default_model_id": chosen_default}
+        cursor = await conn.execute(
+            "update model_groups set default_model_id = %s, revision = revision + 1, updated_at = now() where id = %s and revision = %s returning revision, default_model_id",
+            (chosen_default, group_id, revision),
+        )
+        updated = await cursor.fetchone()
+        if updated is None:
+            raise ModelGroupPolicyError("model_group_revision_conflict")
+        return {"group_id": group_id, "revision": int(updated["revision"]), "default_model_id": updated["default_model_id"]}
     active = await (await conn.execute(
         """select 1 from runs where tenant_id = %s and model_id = any(%s)
            and model_group_type is distinct from %s and status not in ('succeeded','failed','cancelled','canceled','dead-letter') limit 1""",
@@ -389,11 +410,11 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
         if await cursor.fetchone() is None:
             raise ModelGroupPolicyError("model_not_available")
     cursor = await conn.execute(
-        "update model_groups set revision = revision + 1, updated_at = now() where id = %s returning revision",
-        (group_id,),
+        "update model_groups set default_model_id = %s, revision = revision + 1, updated_at = now() where id = %s returning revision, default_model_id",
+        (chosen_default, group_id),
     )
     current = await cursor.fetchone()
-    return {"group_id": group_id, "revision": int(current["revision"])}
+    return {"group_id": group_id, "revision": int(current["revision"]), "default_model_id": current["default_model_id"]}
 
 
 async def archive_or_delete_group(
@@ -471,7 +492,13 @@ async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_
             "select 1 from model_group_models where group_id = %s and enabled limit 1", (group["id"],),
         )).fetchone()
         raise ModelGroupPolicyError("group_models_unavailable" if configured else "group_has_no_models")
-    row = rows[0] if explicit else choose_weighted_model(rows)
+    if not explicit:
+        default_id = str(group.get("default_model_id") or "")
+        row = next((candidate for candidate in rows if str(candidate["model_id"]) == default_id), None)
+        if row is None:
+            raise ModelGroupPolicyError("model_not_available")
+    else:
+        row = rows[0]
     return ModelGroupSelection(
         group_id=str(group["id"]), group_code=str(group["code"]), group_type=str(group["type"]),
         group_revision=int(group["revision"]), policy_version="model-groups.v1", selection_mode=selection_mode,

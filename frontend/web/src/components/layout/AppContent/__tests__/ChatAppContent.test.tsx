@@ -22,6 +22,7 @@ const {
   isExactAgentWorkspaceBinding,
   recoverAgentConversationIdentity,
 } = await import("../ChatAppContent.tsx");
+const { reconcileCurrentModelSelection } = await import("../modelSelection.ts");
 const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
 const { sessionApi } = await import("../../../../services/api/session.ts");
 
@@ -73,6 +74,12 @@ test("explicit Agent new-task reset clears the pinned operation id", () => {
   const handler = source.slice(handlerStart, handlerEnd);
   assert.match(handler, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id/);
   assert.match(handler, /clearAgentConversationOperationId[\s\S]*invalidateAgentWorkspaceFirstSend/);
+});
+
+test("the configured group default wins over display order and manual selection is retained", () => {
+  const availableModels = [{ id: "a", value: "provider/a" }, { id: "b", value: "provider/b" }];
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultValue: "provider/b" }), { modelId: "b", modelValue: "provider/b" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelId: "a", storedDefaultValue: "provider/b" }), { modelId: "a", modelValue: "provider/a" });
 });
 
 test("stale model selection is cleared and blocks send until explicit selection", () => {

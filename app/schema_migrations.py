@@ -53,7 +53,8 @@ MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
 MODEL_GROUPS_SCHEMA_VERSION = "2026.10.26.1"
 MODEL_GROUPS_LEGACY_DEFAULT_RETIREMENT_SCHEMA_VERSION = "2026.10.26.2"
 PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION = "2026.10.27.1"
-TARGET_SCHEMA_VERSION = PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION
+MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION = "2026.10.27.2"
+TARGET_SCHEMA_VERSION = MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -177,6 +178,7 @@ CRITICAL_COLUMNS = (
     ("model_groups", "type", "text", True),
     ("model_groups", "enabled", "bool", True),
     ("model_groups", "revision", "int8", True),
+    ("model_groups", "default_model_id", "text", False),
     ("model_group_members", "tenant_id", "text", True),
     ("model_group_members", "group_id", "text", True),
     ("model_group_members", "user_id", "text", True),

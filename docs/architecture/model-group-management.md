@@ -15,8 +15,10 @@ never falls back to `default`.
 The model-group resolver is the single policy used by `/api/ai/models/groups`
 and new Run admission. It checks the user's current membership, enabled group
 models, global catalog availability, gateway revision, and execution capacity
-before returning one model. `auto` chooses only the highest priority layer and
-uses weight within that layer. `explicit` never substitutes another model.
+before returning one model. Each group has a designated default model; chat selects
+that model initially and submits it explicitly. A user may choose another model in
+the same group. Neither explicit selection nor an unavailable default substitutes
+another model. Legacy `auto` requests resolve only the designated group default.
 
 Chat and expert usage scenes reject ordinary-default models. Direct independent
 business/skill execution may use the ordinary default group only after the normal
@@ -57,7 +59,8 @@ price, quota, channel pool, or fallback platform is introduced.
 - `PATCH /api/ai/admin/model-groups/{group_id}` updates mutable business fields
   with a required revision fence.
 - `PUT /api/ai/admin/model-groups/{group_id}/models` replaces one group's model
-  associations with priority/weight and a revision fence. Default/business
+  associations and its `default_model_id` with a revision fence. Legacy priority/weight
+  fields remain accepted for existing clients but no longer choose the model. Default/business
   conversion waits for unfinished executions of that model in the other class;
   removing its earlier association does not bypass this guard.
 - `POST /api/ai/admin/model-groups/models/batch` atomically adds, replaces, or

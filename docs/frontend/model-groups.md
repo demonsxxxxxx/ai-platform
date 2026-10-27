@@ -8,7 +8,7 @@
 - `GET/PUT /api/ai/admin/users/{user_id}/model-groups` 一次替换用户业务组与主组，清空成员必须明确确认回默认组；
 - `/api/ai/models/groups` 和 `/api/agent/models/available?group_id=...` 是普通用户公开投影，不包含管理备注、权重、成员或存储信息。
 
-对话选择器先选择一个公开业务组，再选择自动或显式模型。普通默认组不进入对话选择器；失去组或模型资格时前端清空模型并阻止发送，服务端仍是最终准入 authority。新会话和续聊通过 `group_id`、`selection_mode` 与（explicit 时）`model_id`/`model`提交，不能用客户端场景绕过服务端授权。
+对话选择器先选择一个公开业务组，进入或切组时选中该组的默认模型，用户可以再手动切换到同组其他模型。普通默认组不进入对话选择器；默认模型不可用时提示用户手动选择，不自动替换或跨组回退。失去组或模型资格时前端清空模型并阻止发送，服务端仍是最终准入 authority。新会话和续聊提交具体 `group_id`、`selection_mode=explicit`、`model_id`/`model`，不能用客户端场景绕过服务端授权。
 
 ## 无需重登录刷新
 

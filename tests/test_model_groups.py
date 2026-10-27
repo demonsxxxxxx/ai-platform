@@ -35,6 +35,24 @@ def test_weighted_selection_uses_highest_priority_layer_and_weight():
 
 
 @pytest.mark.asyncio
+async def test_unavailable_group_default_never_substitutes_another_model(monkeypatch):
+    from app.execution.infrastructure import model_groups
+
+    async def group(*args, **kwargs):
+        return {"id": "group-a", "default_model_id": "model-a"}
+
+    async def models(*args, **kwargs):
+        return [{"model_id": "model-b", "upstream_model_id": "provider/b", "display_name": "B", "provider": "test", "auto_compact_window": 100, "max_output_tokens": 10}]
+
+    monkeypatch.setattr(model_groups, "_effective_group", group)
+    monkeypatch.setattr(model_groups, "_available_group_models", models)
+    public = await model_groups.list_public_group_models(None, tenant_id="t", user_id="u", group_id="group-a", usage_scene="chat")
+    assert public["default_model_id"] is None
+    with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
+        await model_groups.resolve_group_model(None, tenant_id="t", user_id="u", group_id="group-a", model_id=None, model_value=None, selection_mode="auto", usage_scene="chat")
+
+
+@pytest.mark.asyncio
 async def test_work_id_resolution_requires_one_company_login_mapping_in_the_same_tenant():
     class Cursor:
         def __init__(self, rows):

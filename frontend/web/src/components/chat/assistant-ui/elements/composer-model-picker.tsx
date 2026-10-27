@@ -34,10 +34,6 @@ export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChan
     <Input value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search size={16} />}
       aria-label={t("composerCommand.modelSelector.searchPlaceholder")} placeholder={t("composerCommand.modelSelector.searchPlaceholder")} />
     <div role="listbox" aria-label={title} className="min-h-0 overflow-y-auto">
-      <ComposerMenuItem role="option" aria-selected={selectionMode === "auto"} data-composer-model-option="auto" active={selectionMode === "auto"} onClick={() => { onSelectModel("", "", "auto"); onOpenChange(false); }}>
-        <span className="min-w-0 flex-1 truncate">自动选择（按组内优先级）</span>
-        {selectionMode === "auto" && <Check size={16} aria-hidden />}
-      </ComposerMenuItem>
       {filtered.map((model) => <ComposerMenuItem key={model.id} role="option" aria-selected={model.id === currentModelId && selectionMode === "explicit"}
         data-composer-model-option={model.id} active={model.id === currentModelId && selectionMode === "explicit"}
         onClick={() => { onSelectModel(model.id, model.value, "explicit"); onOpenChange(false); }}>

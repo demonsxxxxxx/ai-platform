@@ -302,6 +302,31 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
 
 
 @pytest.mark.asyncio
+async def test_model_groups_postgres_default_model_is_explicit_and_first_legacy_model_fallback() -> None:
+    dsn = _postgres_dsn()
+    schema_name = f"model_groups_default_model_{uuid.uuid4().hex}"
+    conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await _prepare_schema(conn, schema_name)
+        await conn.execute("insert into model_groups(id, tenant_id, code, name, type) values ('group-a', 'tenant-a', 'alpha', 'Alpha', 'business')")
+        await conn.execute("insert into model_group_models(group_id, model_id, display_order) values ('group-a', 'model-b', 1), ('group-a', 'model-a', 0)")
+        await conn.execute('alter table model_groups drop column default_model_id')
+        await conn.execute(Path('app/schema.sql').read_text(encoding='utf-8'))
+        await set_user_group_memberships(conn, tenant_id='tenant-a', user_id='user-a', group_ids=['group-a'], primary_group_id='group-a', expected_revision=1)
+        from app.execution.infrastructure.model_groups import list_public_group_models
+        public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
+        assert public['default_model_id'] == 'model-a'
+        await set_group_models(conn, tenant_id='tenant-a', group_id='group-a', revision=2, default_model_id='model-b', models=[{'model_id': 'model-a', 'display_order': 0, 'enabled': True}, {'model_id': 'model-b', 'display_order': 1, 'enabled': True}])
+        public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
+        assert public['default_model_id'] == 'model-b'
+        selected = await resolve_group_model(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', model_id=None, model_value=None, selection_mode='auto', usage_scene='independent')
+        assert selected.model_id == 'model-b'
+    finally:
+        await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_model_groups_postgres_default_group_is_unique_and_implicit() -> None:
     dsn = _postgres_dsn()
     schema_name = f"model_groups_default_{uuid.uuid4().hex}"

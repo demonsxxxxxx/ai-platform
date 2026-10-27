@@ -65,7 +65,6 @@ export function ChatInputToolbar({
   totalSkillsCount,
   availableModels,
   currentModelId,
-  modelSelectionMode = "explicit",
   modelGroups = [],
   selectedGroupId,
   onSelectGroup,
@@ -136,9 +135,7 @@ export function ChatInputToolbar({
             aria-expanded={activePanel === "model"}
           >
             <span className="truncate">
-              {modelSelectionMode === "auto"
-                ? "自动选择"
-                : currentModel?.label ?? t("composerCommand.modelSelector.title", "选择模型")}
+              {currentModel?.label ?? t("composerCommand.modelSelector.title", "选择模型")}
             </span>
             <ChevronDown
               size={15}

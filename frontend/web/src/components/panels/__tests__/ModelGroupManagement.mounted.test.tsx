@@ -16,7 +16,7 @@ const summary: AdminModelGroupSummary = {
   id: "group-sales", code: "sales", name: "销售组", type: "business", enabled: true,
   revision: 4, remark: "", sort_order: 1, model_count: 1, member_count: 0,
 };
-const details: AdminModelGroupDetails = { ...summary, members: [], models: [] };
+const details: AdminModelGroupDetails = { ...summary, members: [], models: [], default_model_id: null };
 
 async function mount(initialDetails = details, shell = false) {
   const React = await import("react");
@@ -103,7 +103,7 @@ test("group management loads, creates, opens drawer and saves model/member lists
 
 
 test("drawer keeps drafts across tabs, reorders models and preserves each member's primary", async () => {
-  const view = await mount({ ...summary, member_count: 2, members: [
+  const view = await mount({ ...summary, member_count: 2, default_model_id: "a", members: [
     { user_id: "a", display_name: "甲", is_primary: true },
     { user_id: "b", display_name: "乙", is_primary: false },
   ], models: ["a", "b"].map((id, index) => ({ model_id: id, model_value: id, label: id, enabled: true, display_order: index, priority: 0, weight: 100 })) });
@@ -116,13 +116,17 @@ test("drawer keeps drafts across tabs, reorders models and preserves each member
     await click("模型");
     await click("上移 b");
     assert.deepEqual([...document.querySelectorAll("[data-model-group-model]")].map((node) => node.getAttribute("data-model-group-model")), ["b", "a"]);
+    const radio = document.querySelector<HTMLInputElement>('input[aria-label="设为默认模型 b"]');
+    assert.ok(radio);
+    await view.React.act(async () => radio.click());
     await click("成员");
     await click("将本组设为 乙 的主组");
     await click("基本信息");
     await click("模型");
     await click("保存模型");
-    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string }[] };
+    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string }[]; default_model_id: string };
     assert.deepEqual(saved.models.map((model) => model.model_id), ["b", "a"]);
+    assert.equal(saved.default_model_id, "b");
     await click("成员");
     await click("保存成员");
     const members = view.calls.find((call) => call.kind === "members")?.body as { members: { user_id: string; is_primary: boolean }[] };
