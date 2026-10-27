@@ -92,6 +92,7 @@ export interface ChatInputProps {
   selectedGroupId?: string;
   onSelectGroup?: (groupId: string) => void;
   onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   attachments?: MessageAttachment[];
   onAttachmentsChange?: (
     attachments:

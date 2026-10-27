@@ -116,6 +116,7 @@ export const ChatInput = memo(function ChatInput({
   selectedGroupId,
   onSelectGroup,
   onSelectModel,
+  onModelSelectorOpen,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   uploadControls: sharedUploadControls,
@@ -510,11 +511,10 @@ export const ChatInput = memo(function ChatInput({
     () => ({
       skills: skillsAvailable,
       tools: toolsAvailable,
-      models: !!availableModels?.length && !!onSelectModel,
+      models: !!onSelectModel,
       files: uploadCategories.length > 0,
     }),
     [
-      availableModels?.length,
       onSelectModel,
       skillsAvailable,
       toolsAvailable,
@@ -767,6 +767,10 @@ export const ChatInput = memo(function ChatInput({
     },
     [activePanel, closeSlashMenu, commandSearchSeed],
   );
+
+  useEffect(() => {
+    if (activePanel === "model") void onModelSelectorOpen?.();
+  }, [activePanel, onModelSelectorOpen]);
 
   const handleSelectTaskSkill = useCallback(
     (skill: PublicSkillResponse) => {

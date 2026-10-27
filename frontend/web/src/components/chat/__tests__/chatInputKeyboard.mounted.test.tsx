@@ -163,6 +163,37 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);
     });
+    await t.test("opening the model picker refreshes once, keeps drafts, and recovers an empty list", async () => {
+      let refreshCalls = 0;
+      await render({ disableSlashCommands: false, availableModels: [],
+        onSelectModel: () => undefined, onModelSelectorOpen: () => { refreshCalls += 1; } });
+      await type("保留模型刷新草稿");
+      const trigger = () => container.querySelector<HTMLButtonElement>("[data-composer-model-trigger]")!;
+      assert.ok(trigger(), "empty catalogs keep the retry entry visible");
+      await act(async () => trigger().click());
+      assert.equal(refreshCalls, 1);
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await render({ availableModels: [{ id: "model-b", value: "model-b", label: "Model B" }] });
+      assert.equal(refreshCalls, 1, "catalog updates do not reopen the picker");
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await act(async () => trigger().click());
+      await type("/model");
+      assert.equal(refreshCalls, 2, "slash command opens the same refresh seam");
+      await type("/model B");
+      assert.equal(refreshCalls, 2, "editing search must not request another catalog");
+      await key("Escape");
+      await type("/");
+      for (let i = 0; i < 8 && container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item") !== "model"; i += 1) {
+        await key("ArrowDown");
+      }
+      assert.equal(container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item"), "model");
+      await key("Enter");
+      assert.equal(refreshCalls, 3, "slash menu selection refreshes as well");
+      await key("Escape");
+      await render({ onSelectModel: undefined, onModelSelectorOpen: undefined, availableModels: [] });
+    });
     await t.test("native suggestions, send and permission/upload gates use the platform payload", async () => {
       const submitted: Parameters<ChatInputProps["onSend"]>[] = [];
       let accepted = false;

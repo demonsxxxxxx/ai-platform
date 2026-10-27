@@ -119,7 +119,7 @@ export function ChatInputToolbar({
             className="min-w-32 max-w-48"
           />
         ) : null}
-        {showModelSelector && onSelectModel && availableModels.length > 0 ? (
+        {showModelSelector && onSelectModel ? (
           <Button type={activePanel === "model" ? "primary" : "default"} size="large"
             htmlType="button"
             data-composer-model-trigger

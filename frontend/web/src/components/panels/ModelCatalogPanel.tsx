@@ -23,6 +23,7 @@ import {
 import { ModelGroupManagement } from "./ModelGroupManagement";
 import { TabsIndicator, TabsList, TabsRoot, TabsTab } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../hooks/useAuth";
+import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 import { Permission } from "../../types";
 
 type ProviderProjection = {
@@ -97,7 +98,11 @@ export function ModelCatalogPanel() {
   const [adminState, setAdminState] = useState<ModelAdminControlState>("loading");
   const [adminTab, setAdminTab] = useState<"catalog" | "groups">("catalog");
   const [groupRevision, setGroupRevision] = useState(0);
-  const groupsChanged = useCallback(() => setGroupRevision((current) => current + 1), []);
+  const { refreshModels } = useModelCatalogContext();
+  const groupsChanged = useCallback(() => {
+    setGroupRevision((current) => current + 1);
+    void refreshModels({ force: true });
+  }, [refreshModels]);
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
   const adminAvailability = resolveGroupAvailability({
