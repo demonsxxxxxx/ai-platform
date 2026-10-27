@@ -52,7 +52,7 @@ price, quota, channel pool, or fallback platform is introduced.
   distinguish a disabled primary from no membership and must not silently choose
   another group. They are not selectable. The response excludes members, remarks,
   priorities, weights, credentials, gateway URLs, and runtime paths.
-- `GET /api/ai/admin/model-groups` returns tenant-scoped administrative counts.
+- `GET /api/ai/admin/model-groups` returns tenant-scoped administrative counts. For the immutable ordinary default group, `member_count` is the number of active users with no business-group membership, `members_are_implicit=true`, and no member rows are stored.
 - `POST /api/ai/admin/model-groups` creates a business group.
 - `PATCH /api/ai/admin/model-groups/{group_id}` updates mutable business fields
   with a required revision fence.
@@ -68,7 +68,9 @@ price, quota, channel pool, or fallback platform is introduced.
 - `GET /api/ai/admin/model-groups/{group_id}` returns the admin-only group
   details, including member `user_id`, `work_id` only for a verified
   `company-login` identity, `auth_source`, and display name, plus model
-  association details.
+  association details. The ordinary default group returns
+  `members_are_implicit=true`, its implicit active-user `member_count`, and an
+  empty `members` array because default membership is computed, not stored.
 - `GET /api/ai/admin/users/{user_id}/model-groups` returns the same-tenant
   user's business memberships and implicit-default state.
 - `PUT /api/ai/admin/users/{user_id}/model-groups` atomically replaces that

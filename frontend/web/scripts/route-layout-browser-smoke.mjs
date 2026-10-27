@@ -206,12 +206,20 @@ function bootstrapSource(loading = false, chatFiles = false) {
         count: 1, version: 'model-groups.v1'
       });
       if (url.pathname === '/api/ai/admin/model-groups') return json({
-        groups: [{ id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }], version: 'model-groups.v1'
+        groups: ${groupCase === "default" ? `[
+          { id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true },
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }
+        ]` : `[
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }
+        ]`}, version: 'model-groups.v1'
       });
       if (url.pathname === '/api/ai/admin/users') return json({
         schema_version: 'ai-platform.admin-user-diagnostics.v1', users: [{ user_id: 'layout-user', display_name: 'Layout Admin', status: 'active', session_count: 0, run_count: 0, queued_run_count: 0, running_run_count: 0, succeeded_run_count: 0, failed_run_count: 0, cancelled_run_count: 0 }], total: 1, offset: 0, limit: 50
       });
       if (url.pathname === '/api/ai/admin/users/layout-user/model-groups') return json({ user_id: 'layout-user', revision: 1, groups: [], primary_group_id: null, default_implicit: true });
+      if (url.pathname === '/api/ai/admin/model-groups/group-default') return json({
+        id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true, members: [], models: []
+      });
       if (url.pathname === '/api/ai/admin/model-groups/group-layout') return json({
         id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1,
         members: [{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }],
@@ -380,6 +388,7 @@ const viewports = [
 ];
 const requestedCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_CASE;
 const requestedViewport = process.env.AI_PLATFORM_ROUTE_LAYOUT_VIEWPORT;
+const groupCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_GROUP_CASE || "business";
 const selectedCases = requestedCase
   ? cases.filter((scenario) => scenario.name === requestedCase)
   : cases;
@@ -517,28 +526,30 @@ async function runCase(viewport, scenario) {
     let modelGroupDrawer = null;
     if (scenario.name === "models") {
       const tabs = [];
-      await browser.client.evaluate(`(() => {
+      if (groupCase !== "default") await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
         if (!input) throw new Error('synthetic_deepseek_missing');
         input.focus();
         input.click();
       })()`);
-      await browser.client.waitFor(
+      if (groupCase !== "default") await browser.client.waitFor(
         `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
-      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"编辑 布局测试组\"]'))", `${viewport.name}:models:group-edit-ready`);
-      await browser.client.evaluate(`document.querySelector('[aria-label="编辑 布局测试组"]').click()`);
+      const groupName = groupCase === "default" ? "普通默认组" : "布局测试组";
+      await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="编辑 ${groupName}"]'))`, `${viewport.name}:models:group-edit-ready`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="编辑 ${groupName}"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-models]'))", `${viewport.name}:models:drawer-loaded`);
       await browser.client.waitFor(`(() => {
         const drawer = document.querySelector('[data-model-group-drawer]');
         const panel = drawer?.querySelector('[data-drawer-placement]');
         return panel && Math.abs(panel.getBoundingClientRect().left - drawer.getBoundingClientRect().left) < 2;
       })()`, `${viewport.name}:models:drawer-settled`);
-      for (const tab of ["基本信息", "模型", "成员"]) {
+      const drawerTabs = groupCase === "default" ? ["基本信息", "模型"] : ["基本信息", "模型", "成员"];
+      for (const tab of drawerTabs) {
         await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === ${JSON.stringify(tab)})).click()`);
         const geometry = await browser.client.evaluate(`(() => {
           const drawer = document.querySelector('[data-model-group-drawer]');
@@ -554,11 +565,12 @@ async function runCase(viewport, scenario) {
         }
       }
       await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '模型')).click()`);
+      if (groupCase === "default") await browser.client.waitFor("document.body.innerText.includes('普通默认组模型仅供独立业务入口') && document.body.innerText.includes('暂无已加入模型')", `${viewport.name}:models:default-empty-state`);
       const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
       modelGroupDrawer = { tabs, screenshot };
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor("!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 布局测试组'", `${viewport.name}:models:group-focus-restored`);
+      await browser.client.waitFor(`!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 ${groupName}'`, `${viewport.name}:models:group-focus-restored`);
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="catalog"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-admin-control]'))", `${viewport.name}:models:catalog-restored`);
     }
@@ -609,7 +621,7 @@ async function runCase(viewport, scenario) {
         requests: [...requestedPaths],
       };
     })()`);
-    if (scenario.name === "models") {
+    if (scenario.name === "models" && groupCase !== "default") {
       await browser.client.evaluate(`document.querySelector('[data-model-admin-publish]').click()`);
       await browser.client.waitFor(
         `Boolean(document.querySelector('[data-model-admin-action-bar] [role="alert"]'))`,
@@ -631,7 +643,7 @@ async function runCase(viewport, scenario) {
       throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable, missingRequests })}`);
     }
     let modelLayout = null;
-    if (scenario.name === "models") {
+    if (scenario.name === "models" && groupCase !== "default") {
       modelLayout = await browser.client.evaluate(`(() => {
         const table = document.querySelector('[data-model-admin-table-scroll]');
         const header = table.querySelector('thead').getBoundingClientRect();

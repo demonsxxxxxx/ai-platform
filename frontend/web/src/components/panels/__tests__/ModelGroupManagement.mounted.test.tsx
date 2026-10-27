@@ -27,7 +27,7 @@ async function mount(initialDetails = details, shell = false) {
   const originalModelGet = modelAdminApi.get;
   const originalEmployees = companyEmployeesApi.list;
   const calls: Array<{ kind: string; body?: unknown }> = [];
-  modelGroupsApi.listAdmin = async () => ({ groups: [summary], version: "model-groups.v1" });
+  modelGroupsApi.listAdmin = async () => ({ groups: [initialDetails], version: "model-groups.v1" });
   modelGroupsApi.details = async () => initialDetails;
   modelGroupsApi.create = async (payload) => { calls.push({ kind: "create", body: payload }); return summary; };
   modelGroupsApi.update = async (_id, payload) => { calls.push({ kind: "update", body: payload }); return summary; };
@@ -71,6 +71,7 @@ test("group management loads, creates, opens drawer and saves model/member lists
     await view.React.act(async () => { (document.querySelector('[role="tab"][data-value="models"]') as HTMLElement | null
       ?? [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent === "模型"))?.click(); });
     assert.ok(document.querySelector("[data-model-group-models]"));
+    await view.React.act(async () => document.querySelector<HTMLElement>('[data-model-group-add-models] summary')?.click());
     const modelCheckbox = document.querySelector('[data-model-group-models] [role="checkbox"]') as HTMLElement | null;
     assert.ok(modelCheckbox);
     await view.React.act(async () => modelCheckbox.click());
@@ -136,6 +137,38 @@ test("drawer keeps drafts across tabs, reorders models and preserves each member
   } finally {
     await view.React.act(async () => view.root.unmount()); view.restore();
   }
+});
+
+
+test("default group explains computed users and keeps model assignment available", async () => {
+  const view = await mount({ ...details, id: "group-default", code: "default", name: "普通默认组",
+    type: "ordinary_default", member_count: 32, members_are_implicit: true });
+  const click = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label || b.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  try {
+    assert.match(view.container.textContent ?? "", /32自动归属/);
+    await click("编辑 普通默认组");
+    await click("模型");
+    const drawer = document.querySelector("[data-model-group-drawer]");
+    assert.ok(drawer);
+    assert.match(drawer.textContent ?? "", /自动归属 32 人/);
+    assert.match(drawer.textContent ?? "", /不是钉钉全员或历史登录人数/);
+    assert.match(drawer.textContent ?? "", /暂无已加入模型/);
+    assert.equal([...drawer.querySelectorAll('[role="tab"]')].some((tab) => tab.textContent === "成员"), false);
+    assert.equal(drawer.querySelector('[aria-label="搜索公司员工"]'), null);
+    const addModels = drawer.querySelector<HTMLDetailsElement>("[data-model-group-add-models]");
+    assert.ok(addModels);
+    assert.equal(addModels.open, false);
+    await view.React.act(async () => addModels.querySelector("summary")!.click());
+    const checkbox = addModels.querySelector<HTMLElement>('[role="checkbox"]');
+    assert.ok(checkbox);
+    await view.React.act(async () => checkbox.click());
+    assert.equal(drawer.querySelectorAll("[data-model-group-model]").length, 1);
+    await click("保存模型");
+    assert.equal(view.calls.some((call) => call.kind === "models"), true);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });
 
 

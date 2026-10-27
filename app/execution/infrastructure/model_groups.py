@@ -209,6 +209,13 @@ async def get_admin_group_details(
     cursor = await conn.execute(
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision, g.remark, g.sort_order,
+          (g.type = 'ordinary_default') as members_are_implicit,
+          case when g.type = 'ordinary_default' then
+            (select count(*) from users u where u.tenant_id = g.tenant_id and u.status = 'active'
+              and not exists (select 1 from model_group_members bm join model_groups bg on bg.id = bm.group_id
+                where bm.tenant_id = u.tenant_id and bm.user_id = u.id and bg.type = 'business'))
+            else (select count(*) from model_group_members m where m.group_id = g.id) end as member_count,
+          (select count(*) from model_group_models gm where gm.group_id = g.id) as model_count,
           coalesce((select jsonb_agg(jsonb_build_object(
             'user_id', u.id, 'work_id', case when u.auth_source = 'company-login' then u.external_id else null end,
             'display_name', u.display_name, 'auth_source', u.auth_source, 'is_primary', m.is_primary
@@ -233,6 +240,7 @@ async def list_admin_groups(conn: Any, *, tenant_id: str) -> list[dict[str, Any]
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision,
                g.remark, g.sort_order,
+               (g.type = 'ordinary_default') as members_are_implicit,
                case when g.type = 'ordinary_default' then
                  (select count(*) from users u where u.tenant_id = g.tenant_id and u.status = 'active'
                    and not exists (select 1 from model_group_members bm join model_groups bg on bg.id = bm.group_id

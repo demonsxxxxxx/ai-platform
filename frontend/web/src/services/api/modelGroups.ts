@@ -39,6 +39,7 @@ export interface AdminModelGroupSummary {
   sort_order: number;
   model_count: number;
   member_count: number;
+  members_are_implicit?: boolean;
 }
 
 export interface AdminModelGroupMember {

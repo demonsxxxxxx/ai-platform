@@ -315,6 +315,16 @@ async def test_model_groups_postgres_default_group_is_unique_and_implicit() -> N
             "select count(*) as count from model_group_members where tenant_id = 'tenant-a'"
         )
         assert (await cursor.fetchone())["count"] == 0
+        from app.execution.infrastructure.model_groups import get_admin_group_details, list_admin_groups
+        await conn.execute("insert into users(id, tenant_id, display_name, auth_source, external_id) values ('user-c', 'tenant-a', 'User C', 'company-login', 'W003')")
+        admin_groups = await list_admin_groups(conn, tenant_id="tenant-a")
+        default_summary = next(item for item in admin_groups if item["id"] == first)
+        assert default_summary["members_are_implicit"] is True
+        assert default_summary["member_count"] == 3
+        details = await get_admin_group_details(conn, tenant_id="tenant-a", group_id=first)
+        assert details["members_are_implicit"] is True
+        assert details["member_count"] == 3
+        assert details["members"] == []
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
