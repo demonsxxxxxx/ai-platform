@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -12,9 +11,9 @@ from app.execution.application.model_selection import RunModelSelection
 from app.execution.domain.model_catalog import (
     admin_model_projection,
     discovered_model_mapping,
-    model_visible_to_user,
-    public_model_projection,
 )
+from app.execution.domain.model_groups import ModelGroupPolicyError
+from app.execution.infrastructure.model_groups import resolve_group_model
 
 from .model_security import decrypt_api_key, encrypt_api_key
 
@@ -97,8 +96,11 @@ async def get_run_connection(
          and sandbox_leases.tenant_id = runs.tenant_id
         where runs.id = %s
           and run_attempts.id = %s
-          and run_attempts.execution_spec_schema_version in (
+          and (
+            run_attempts.execution_spec_schema_version in (
             'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3'
+          )
+            or run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v4'
           )
           and run_attempts.execution_spec_json->>'model_value' = runs.model_value
           -- v3 froze the window itself; v2 froze an input capacity the runner
@@ -106,10 +108,31 @@ async def get_run_connection(
           and case run_attempts.execution_spec_schema_version
                 when 'ai-platform.execution-spec.v3'
                   then run_attempts.execution_spec_json->>'model_auto_compact_window'
+                when 'ai-platform.execution-spec.v4'
+                  then run_attempts.execution_spec_json->>'model_auto_compact_window'
                 else (least(1000000, greatest(100000,
                        (run_attempts.execution_spec_json->>'model_max_input_tokens')::bigint)))::text
               end = runs.auto_compact_window::text
           and run_attempts.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
+          and ((run_attempts.execution_spec_schema_version <> 'ai-platform.execution-spec.v4'
+                and runs.model_group_id is null and runs.model_group_code is null
+                and runs.model_group_type is null and runs.model_group_revision is null
+                and runs.model_selection_mode is null and runs.usage_scene is null
+                and runs.model_policy_version is null)
+               or (run_attempts.execution_spec_schema_version = 'ai-platform.execution-spec.v4'
+                   and run_attempts.execution_spec_json->>'model_id' = runs.model_id
+                   and run_attempts.execution_spec_json->>'model_gateway_revision' = runs.model_gateway_revision::text
+                   and run_attempts.execution_spec_json->>'model_group_id' = runs.model_group_id
+                   and run_attempts.execution_spec_json->>'model_group_code' = runs.model_group_code
+                   and run_attempts.execution_spec_json->>'model_group_type' = runs.model_group_type
+                   and (run_attempts.execution_spec_json->>'model_group_revision')::bigint = runs.model_group_revision
+                   and run_attempts.execution_spec_json->>'model_selection_mode' = runs.model_selection_mode
+                   and run_attempts.execution_spec_json->>'usage_scene' = runs.usage_scene
+                   and run_attempts.execution_spec_json->>'model_policy_version' = runs.model_policy_version
+                   and not (
+                     runs.model_group_type = 'ordinary_default'
+                     and runs.usage_scene in ('chat', 'expert')
+                   )))
           and sandbox_leases.attempt_id = %s
           and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
           and runs.model_value = %s
@@ -164,6 +187,29 @@ async def get_run_model_completion_connection(
           and runs.model_id is not null
           and runs.model_value is not null
           and runs.model_gateway_revision is not null
+          and runs.model_group_id is not null and runs.model_group_id <> ''
+          and runs.model_group_type = 'business' and runs.model_group_code <> 'default'
+          and runs.model_group_code <> '' and runs.model_group_revision > 0
+          and runs.model_selection_mode in ('auto', 'explicit')
+          and runs.usage_scene in ('chat', 'expert')
+          and runs.model_policy_version = 'model-groups.v1'
+          and exists (
+            select 1 from run_attempts a
+            where a.tenant_id = runs.tenant_id and a.run_id = runs.id and a.status = 'succeeded'
+              and a.execution_spec_schema_version = 'ai-platform.execution-spec.v4'
+              and a.execution_spec_json->>'model_id' = runs.model_id
+              and a.execution_spec_json->>'model_value' = runs.model_value
+              and a.execution_spec_json->>'model_gateway_revision' = runs.model_gateway_revision::text
+              and a.execution_spec_json->>'model_group_id' = runs.model_group_id
+              and a.execution_spec_json->>'model_group_code' = runs.model_group_code
+              and a.execution_spec_json->>'model_group_type' = runs.model_group_type
+              and a.execution_spec_json->>'model_group_revision' = runs.model_group_revision::text
+              and a.execution_spec_json->>'model_selection_mode' = runs.model_selection_mode
+              and a.execution_spec_json->>'usage_scene' = runs.usage_scene
+              and a.execution_spec_json->>'model_policy_version' = runs.model_policy_version
+              and a.execution_spec_json->>'model_auto_compact_window' = runs.auto_compact_window::text
+              and a.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
+          )
           and catalog.enabled = true
           and catalog.upstream_available = true
           and runs.auto_compact_window is not null
@@ -252,13 +298,6 @@ async def activate_connection_and_sync(
                 revision,
             ),
         )
-    await conn.execute(
-        """
-        update model_catalog_entries
-        set is_default = false
-        where is_default = true and (enabled = false or upstream_available = false)
-        """
-    )
     return revision, await list_admin_models(conn)
 
 
@@ -266,9 +305,8 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id, display_name, provider, enabled,
-               upstream_available, is_default, display_order, last_seen_revision,
-               last_seen_at, auto_compact_window, max_output_tokens,
-               access_mode, allowed_user_ids
+               upstream_available, display_order, last_seen_revision,
+               last_seen_at, auto_compact_window, max_output_tokens
         from model_catalog_entries
         order by display_order, model_id
         """
@@ -277,34 +315,16 @@ async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
 
 
 async def list_public_models(
-    conn: AsyncConnection, *, user_id: str
+    conn: AsyncConnection, *, user_id: str, tenant_id: str | None = None,
+    usage_scene: str = "independent", group_id: str | None = None,
 ) -> dict[str, Any] | None:
-    configured = await conn.execute(
-        "select 1 from model_gateway_revisions where active = true limit 1"
+    if tenant_id is None:
+        raise ModelGroupPolicyError("model_policy_unavailable")
+    from app.execution.infrastructure.model_groups import list_public_group_models
+    return await list_public_group_models(
+        conn, tenant_id=tenant_id, user_id=user_id, usage_scene=usage_scene,
+        group_id=group_id,
     )
-    if await configured.fetchone() is None:
-        return None
-    cursor = await conn.execute(
-        """
-        select model_id, upstream_model_id, display_name, provider, is_default,
-               auto_compact_window, max_output_tokens
-        from model_catalog_entries
-        where enabled = true and upstream_available = true
-          and auto_compact_window is not null and max_output_tokens is not null
-          and (
-            access_mode = 'all'
-            or (
-              access_mode = 'selected'
-              and allowed_user_ids ? %s
-            )
-          )
-        order by is_default desc, display_order, model_id
-        """,
-        (user_id,),
-    )
-    return public_model_projection(await cursor.fetchall())
-
-
 async def publish_models(
     conn: AsyncConnection,
     *,
@@ -322,24 +342,21 @@ async def publish_models(
     revision, _ = await activate_connection_and_sync(
         conn, upstream_model_ids=connection.pop("upstream_model_ids"), **connection
     )
-    await conn.execute("update model_catalog_entries set enabled = false, is_default = false")
+    await conn.execute("update model_catalog_entries set enabled = false")
     for model in models:
         cursor = await conn.execute(
             """
             update model_catalog_entries
-            set display_name = %s, enabled = %s, is_default = %s,
-                display_order = %s, auto_compact_window = %s, max_output_tokens = %s,
-                access_mode = %s, allowed_user_ids = %s::jsonb
+            set display_name = %s, enabled = %s,
+                display_order = %s, auto_compact_window = %s, max_output_tokens = %s
             where model_id = %s and upstream_model_id = %s
               and upstream_available = true and last_seen_revision = %s
             returning model_id
             """,
             (
-                model["display_name"], model["enabled"], model["is_default"],
+                model["display_name"], model["enabled"],
                 model["order"], model.get("auto_compact_window"),
                 model.get("max_output_tokens"),
-                model.get("access_mode") or "all",
-                json.dumps(model.get("allowed_user_ids") or []),
                 model["id"], model["value"], revision,
             ),
         )
@@ -348,94 +365,43 @@ async def publish_models(
     return revision, await list_admin_models(conn)
 
 
-async def model_access_excludes_user(
-    conn: AsyncConnection, *, model_id: str, user_id: str
-) -> bool:
-    """Return whether a *new* Run may not use this model for this user.
-
-    Fail closed when the catalog row is gone: a new child Run must not be
-    admitted against a model the catalog no longer exposes. Existing Runs and
-    Attempts never call this; they keep their frozen snapshot.
-    """
-
-    cursor = await conn.execute(
-        """
-        select access_mode, allowed_user_ids
-        from model_catalog_entries
-        where model_id = %s
-        """,
-        (model_id,),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return True
-    return not model_visible_to_user(row, user_id=user_id)
-
-
 async def resolve_run_model(
     conn: AsyncConnection,
     *,
     model_id: str | None,
     model_value: str | None,
     user_id: str,
+    tenant_id: str | None = None,
+    group_id: str | None = None,
+    selection_mode: str = "auto",
+    usage_scene: str = "independent",
 ) -> RunModelSelection | None:
-    await conn.execute("select pg_advisory_xact_lock_shared(%s)", (_CONNECTION_LOCK_KEY,))
-    cursor = await conn.execute(
-        """
-        with active_gateway as (
-          select revision
-          from model_gateway_revisions
-          where active = true
-          order by revision desc
-          limit 1
+    if tenant_id is None:
+        raise ModelGroupPolicyError("model_policy_unavailable")
+    if tenant_id is not None:
+        await conn.execute("select pg_advisory_xact_lock_shared(%s)", (_CONNECTION_LOCK_KEY,))
+        try:
+            grouped = await resolve_group_model(
+                conn, tenant_id=tenant_id, user_id=user_id, group_id=group_id,
+                model_id=model_id, model_value=model_value,
+                selection_mode=selection_mode, usage_scene=usage_scene,
+            )
+        except ModelGroupPolicyError:
+            raise
+        return RunModelSelection(
+            model_id=grouped.model_id,
+            model_value=grouped.model_value,
+            connection_revision=grouped.gateway_revision,
+            auto_compact_window=grouped.auto_compact_window,
+            max_output_tokens=grouped.max_output_tokens,
+            group_id=grouped.group_id,
+            group_code=grouped.group_code,
+            group_type=grouped.group_type,
+            group_revision=grouped.group_revision,
+            selection_mode=grouped.selection_mode,
+            usage_scene=usage_scene,
+            policy_version=grouped.policy_version,
         )
-        select active_gateway.revision as connection_revision,
-               catalog.model_id,
-               catalog.upstream_model_id,
-               catalog.auto_compact_window,
-               catalog.max_output_tokens
-        from active_gateway
-        left join model_catalog_entries catalog
-          on catalog.enabled = true
-         and catalog.upstream_available = true
-         and catalog.last_seen_revision = active_gateway.revision
-         and (
-           catalog.access_mode = 'all'
-           or (catalog.access_mode = 'selected' and catalog.allowed_user_ids ? %s)
-         )
-         and (%s::text is null or catalog.model_id = %s)
-         and (%s::text is null or catalog.upstream_model_id = %s)
-        order by catalog.is_default desc nulls last,
-                 catalog.display_order asc nulls last,
-                 catalog.model_id asc nulls last
-        limit 1
-        """,
-        (user_id, model_id, model_id, model_value, model_value),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
-    if row.get("model_id") is None or row.get("upstream_model_id") is None:
-        raise ValueError("model_id_not_available")
-    if row.get("auto_compact_window") is None or row.get("max_output_tokens") is None:
-        raise ValueError("model_capacity_missing")
-    return RunModelSelection(
-        model_id=str(row["model_id"]),
-        model_value=str(row["upstream_model_id"]),
-        connection_revision=int(row["connection_revision"]),
-        auto_compact_window=(
-            int(row["auto_compact_window"])
-            if row.get("auto_compact_window") is not None
-            else None
-        ),
-        max_output_tokens=(
-            int(row["max_output_tokens"])
-            if row.get("max_output_tokens") is not None
-            else None
-        ),
-    )
-
-
 class PostgresModelManagementRepository:
     async def connection_projection(self, conn: AsyncConnection) -> dict[str, Any]:
         return await get_connection_projection(conn)
@@ -467,17 +433,13 @@ class PostgresModelManagementRepository:
 
         cursor = await conn.execute(
             """
-            select model_id, display_name, access_mode, allowed_user_ids
+            select model_id, display_name
             from model_catalog_entries
             """
         )
         return {
             str(row["model_id"]): {
                 "display_name": str(row["display_name"]),
-                "access_mode": str(row.get("access_mode") or "all"),
-                "allowed_user_ids": [
-                    str(item) for item in (row.get("allowed_user_ids") or [])
-                ],
             }
             for row in await cursor.fetchall()
         }
@@ -492,10 +454,60 @@ class PostgresModelManagementRepository:
     ) -> RunModelSelection | None:
         return await resolve_run_model(conn, **kwargs)
 
-    async def model_access_excludes_user(
-        self, conn: AsyncConnection, **kwargs: Any
-    ) -> bool:
-        return await model_access_excludes_user(conn, **kwargs)
+    async def resolve_group_model(self, conn: AsyncConnection, **kwargs: Any) -> Any:
+        return await resolve_group_model(conn, **kwargs)
+
+    async def list_groups_for_user(self, conn: AsyncConnection, **kwargs: Any) -> list[dict[str, Any]]:
+        from app.execution.infrastructure.model_groups import list_groups_for_user
+        return await list_groups_for_user(conn, **kwargs)
+
+    async def list_admin_groups(self, conn: AsyncConnection, **kwargs: Any) -> list[dict[str, Any]]:
+        from app.execution.infrastructure.model_groups import list_admin_groups
+        return await list_admin_groups(conn, **kwargs)
+
+    async def get_admin_group_details(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any] | None:
+        from app.execution.infrastructure.model_groups import get_admin_group_details
+        return await get_admin_group_details(conn, **kwargs)
+
+    async def create_group(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import create_group
+        return await create_group(conn, **kwargs)
+
+    async def update_group(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import update_group
+        return await update_group(conn, **kwargs)
+
+    async def archive_or_delete_group(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import archive_or_delete_group
+        return await archive_or_delete_group(conn, **kwargs)
+
+    async def set_group_models(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import set_group_models
+        return await set_group_models(conn, **kwargs)
+
+    async def set_group_members(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import set_group_members
+        return await set_group_members(conn, **kwargs)
+
+    async def batch_group_models(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_group_batches import batch_group_models
+        return await batch_group_models(conn, **kwargs)
+
+    async def get_user_group_memberships(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any] | None:
+        from app.execution.infrastructure.model_groups import get_user_group_memberships
+        return await get_user_group_memberships(conn, **kwargs)
+
+    async def set_user_group_memberships(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import set_user_group_memberships
+        return await set_user_group_memberships(conn, **kwargs)
+
+    async def set_users_group_memberships_batch(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from app.execution.infrastructure.model_groups import set_users_group_memberships_batch
+        return await set_users_group_memberships_batch(conn, **kwargs)
+
+    async def resolve_company_employee_user(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, str]:
+        from app.execution.infrastructure.model_groups import resolve_company_employee_user
+        return await resolve_company_employee_user(conn, **kwargs)
 
 
 def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveConnection:

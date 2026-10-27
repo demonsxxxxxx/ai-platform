@@ -3,6 +3,7 @@ import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
 import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
+import { modelGroupsApi } from "../../../services/api/modelGroups.ts";
 import type { AdminModelEntry, AdminModelState } from "../../../services/api/modelAdmin.ts";
 import type { ModelAdminControlState } from "../ModelAdminControl.tsx";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
@@ -24,10 +25,7 @@ function model(overrides: ModelOverrides = {}): AdminModelEntry {
     provider: "compatible",
     enabled: false,
     available: true,
-    is_default: false,
     order: 1,
-    access_mode: "all" as const,
-    allowed_user_ids: [],
     last_seen_revision: 1,
     last_seen_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -121,6 +119,8 @@ test("Model admin discovery is a draft and only publication changes the active c
     get: modelAdminApi.get,
     discover: modelAdminApi.discover,
     publish: modelAdminApi.publish,
+    listAdmin: modelGroupsApi.listAdmin,
+    details: modelGroupsApi.details,
   };
   const controlStates: ModelAdminControlState[] = [];
   const onStateChange = (next: ModelAdminControlState) => controlStates.push(next);
@@ -141,12 +141,14 @@ test("Model admin discovery is a draft and only publication changes the active c
       key_fingerprint: "0123456789abcdef",
     },
     models: [model({
-      enabled: true, is_default: true,
+      enabled: true,
       auto_compact_window: 200_000, max_output_tokens: 2048,
       last_seen_revision: 4,
     })],
   });
 
+  modelGroupsApi.listAdmin = async () => ({ groups: [{ id: "group-sales", code: "sales", name: "销售组", type: "business", enabled: true, revision: 1, remark: "", sort_order: 1, model_count: 1, member_count: 1 }], version: "model-groups.v1" });
+  modelGroupsApi.details = async () => ({ id: "group-sales", code: "sales", name: "销售组", type: "business", enabled: true, revision: 1, remark: "", sort_order: 1, model_count: 1, member_count: 1, members: [], models: [{ model_id: "mdl_gpt", model_value: "openai/gpt-5", label: "GPT-5", enabled: true, display_order: 0, priority: 100, weight: 100 }] });
   modelAdminApi.get = async () => {
     calls.get += 1;
     return published;
@@ -286,7 +288,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.ok(actionBar);
     assert.match(nodeText(actionBar), /已启用 0 \/ 1/);
     await React.act(async () => { buttonByLabel(container, "启用 GPT-5").click(); });
-    await React.act(async () => { buttonByLabel(container, "设为默认 GPT-5").click(); });
+    assert.doesNotMatch(nodeText(container), /默认模型|设为默认/);
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
     // An empty window falls back to the platform default; the output cap stays required.
     const windowField = Array.from(container.querySelectorAll("input"))
@@ -321,7 +323,9 @@ test("Model admin discovery is a draft and only publication changes the active c
     );
     assert.equal(calls.publish[1].expectedRevision, 4);
     assert.equal(calls.publish[1].models[0].enabled, true);
-    assert.equal(calls.publish[1].models[0].is_default, true);
+    assert.equal("is_default" in calls.publish[1].models[0], false);
+    assert.equal("access_mode" in calls.publish[1].models[0], false);
+    assert.equal("allowed_user_ids" in calls.publish[1].models[0], false);
     assert.equal(calls.publish[1].models[0].auto_compact_window, 200_000);
     assert.equal(calls.publish[1].models[0].max_output_tokens, 2048);
     assert.match(nodeText(container), /已生效配置/);
@@ -373,5 +377,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     modelAdminApi.get = original.get;
     modelAdminApi.discover = original.discover;
     modelAdminApi.publish = original.publish;
+    modelGroupsApi.listAdmin = original.listAdmin;
+    modelGroupsApi.details = original.details;
   }
 });

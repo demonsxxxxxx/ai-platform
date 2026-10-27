@@ -117,6 +117,7 @@ import {
 } from "../../workbench/profileDriveDrag";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
+import type { PublicModelGroup } from "../../../services/api/modelGroups";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
 import { downloadPreviewUrl } from "../../documents/documentPreviewSources";
 import {
@@ -197,7 +198,11 @@ interface ChatViewProps {
   onToggleAgentOption: (key: string, value: boolean | string | number) => void;
   availableModels: ModelOption[];
   currentModelId: string;
-  onSelectModel: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  modelGroups?: PublicModelGroup[];
+  selectedGroupId?: string;
+  onSelectGroup?: (groupId: string) => void;
+  onSelectModel: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -268,6 +273,10 @@ export function ChatView({
   onToggleAgentOption,
   availableModels,
   currentModelId,
+  modelSelectionMode = "explicit",
+  modelGroups = [],
+  selectedGroupId,
+  onSelectGroup,
   onSelectModel,
   onSendMessage,
   canRetryPendingSubmission,
@@ -970,6 +979,10 @@ export function ChatView({
     onToggleAgentOption,
     availableModels,
     currentModelId,
+    modelSelectionMode,
+    modelGroups,
+    selectedGroupId,
+    onSelectGroup,
     onSelectModel,
     attachments,
     onAttachmentsChange,

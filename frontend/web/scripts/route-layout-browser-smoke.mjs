@@ -195,11 +195,27 @@ function bootstrapSource(loading = false, chatFiles = false) {
           id: 'mdl-' + index,
           value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
           label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
-          provider: 'compatible', enabled: index < 2, available: true, is_default: index === 0,
+          provider: 'compatible', enabled: index < 2, available: true,
           order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
           auto_compact_window: index < 2 ? 200000 : undefined,
           max_output_tokens: index < 2 ? 2048 : undefined
         }))
+      });
+      if (url.pathname === '/api/ai/models/groups') return json({
+        groups: [{ id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, is_primary: true, availability: 'available', models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', enabled: true }] }],
+        count: 1, version: 'model-groups.v1'
+      });
+      if (url.pathname === '/api/ai/admin/model-groups') return json({
+        groups: [{ id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }], version: 'model-groups.v1'
+      });
+      if (url.pathname === '/api/ai/admin/users') return json({
+        schema_version: 'ai-platform.admin-user-diagnostics.v1', users: [{ user_id: 'layout-user', display_name: 'Layout Admin', status: 'active', session_count: 0, run_count: 0, queued_run_count: 0, running_run_count: 0, succeeded_run_count: 0, failed_run_count: 0, cancelled_run_count: 0 }], total: 1, offset: 0, limit: 50
+      });
+      if (url.pathname === '/api/ai/admin/users/layout-user/model-groups') return json({ user_id: 'layout-user', revision: 1, groups: [], primary_group_id: null, default_implicit: true });
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout') return json({
+        id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1,
+        members: [{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }],
+        models: [{ model_id: 'mdl-0', model_value: 'demo/model-0', label: 'Model 0', enabled: true, display_order: 0, priority: 100, weight: 100 }]
       });
       if (url.pathname === '/api/agent/models/available') return json({
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
@@ -340,12 +356,20 @@ const cases = [
     requiredRequests: ["/api/ai/admin/runs/monitor"],
   },
   {
+    path: "/users",
+    selector: "[data-workbench-projection-page=users]",
+    name: "users",
+    scroller: "[data-projection-list-panel]",
+    requiredSelectors: ["[data-workbench-projection-page=users]", "[data-user-model-groups=layout-user]"],
+    requiredRequests: ["/api/ai/admin/users"],
+  },
+  {
     path: "/models",
     selector: "[data-model-admin-control]",
     name: "models",
     scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
-    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]"],
-    requiredRequests: ["/api/ai/admin/models"],
+    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]", "[data-model-admin-tab=groups]"],
+    requiredRequests: ["/api/ai/admin/models", "/api/ai/admin/model-groups"],
   },
 ];
 const viewports = [
@@ -501,6 +525,11 @@ async function runCase(viewport, scenario) {
         `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="catalog"]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-admin-control]'))", `${viewport.name}:models:catalog-restored`);
     }
     const responsiveLayout = await browser.client.evaluate(`(() => {
       const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();

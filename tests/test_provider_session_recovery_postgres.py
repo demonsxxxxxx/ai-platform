@@ -745,12 +745,12 @@ async def test_real_pg_sequence_change_before_child_view_is_not_adopted(
 
 
 @pytest.mark.parametrize("schema_version", [
-    "ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3",
+    "ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3", "ai-platform.execution-spec.v4",
 ])
-async def test_real_pg_callback_load_binds_both_frozen_spec_versions(
+async def test_real_pg_callback_load_binds_all_model_spec_versions(
     recovery_db, schema_version
 ):
-    """The callback authority accepts a v3 attempt, not only the frozen v2 one."""
+    """Grouped v4 and historical attempts retain callback authority."""
 
     async with recovery_db() as conn:
         await conn.execute(

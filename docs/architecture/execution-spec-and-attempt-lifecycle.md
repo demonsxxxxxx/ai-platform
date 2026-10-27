@@ -109,15 +109,14 @@ an Agent, Skill, file, model, tool, or policy not present in the admitted facts.
 
 ### 2.3 Model-capacity expansion
 
-The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes,
-the frozen `ai-platform.execution-spec.v2` mapping, and an exact-field
-`ai-platform.execution-spec.v3` mapping. Both model-bearing versions freeze the
-`model_gateway_revision` and `model_max_output_tokens`; v3 freezes
-`model_auto_compact_window` while v2 keeps its original
-`model_max_input_tokens`. The dispatcher can compile v3 only from an
-independently locked Runs-owned model snapshot matching its model identity, not
-from Redis queue fields. Worker dispatch writes v3 and rejects a missing or
-mismatched durable model snapshot. The sandbox transport carries the paired
+The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes
+and the frozen v2/v3 mappings. Grouped executions use the exact-field
+`ai-platform.execution-spec.v4` mapping. All model-bearing versions freeze
+`model_gateway_revision` and `model_max_output_tokens`; v3/v4 freeze
+`model_auto_compact_window` while v2 keeps its original `model_max_input_tokens`.
+The dispatcher compiles from an independently locked Runs-owned model snapshot,
+not Redis queue fields. It writes v4 for grouped Runs and v3 for historical
+ungrouped Runs, rejecting missing or mismatched durable model facts. The sandbox transport carries the paired
 `model_token_limits` projection; the Run/Attempt-bound proxy verifies the
 binding and output limit. The compaction window configures SDK-owned automatic
 compaction, not an additional proxy input recount. The detailed enforcement
@@ -132,14 +131,17 @@ the engine window maps their `model_max_input_tokens` through the clamp the
 runner applied (`min(1M, max(100k, value))`). That mapping lives with the model
 catalog policy and has no new writers; the Runs application-layer projection
 calls it through Execution's public API, while the domain codec preserves the
-original v2 values. v3 is the only version the dispatcher compiles.
+original v2 values.
 
-Every other Run/Attempt-bound reader that gates on the specification version
-accepts both model-bearing versions rather than v2 alone, so a v3 Attempt keeps
-the same Context and terminal authority. Provider-session epoch, lineage and
-turn-commit lookups therefore match `v2` and `v3` while keeping their existing
-tenant, workspace, user, Run, Attempt, owner-generation and lease checks. The
-stored `execution_spec_schema_version` is never rewritten to imitate v2.
+v4 additionally freezes group identity/type/revision, selection mode, trusted
+usage scene and policy version under the [model-group contract](model-group-management.md).
+Reconciliation snapshots and their restored queue payloads retain these fields;
+they do not authorize a new choice. Gateway access compares them with the Run.
+
+Run/Attempt-bound readers accept all model-bearing versions. Provider-session
+epoch, lineage and turn-commit lookups match `v2`, `v3` and `v4` while retaining
+their tenant, workspace, user, Run, Attempt, owner-generation and lease checks.
+Stored specifications and their schema versions are never rewritten.
 
 ## 3. Durable attempt state machine
 

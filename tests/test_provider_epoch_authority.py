@@ -616,21 +616,22 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
 
 _V2 = "ai-platform.execution-spec.v2"
 _V3 = "ai-platform.execution-spec.v3"
+_V4 = "ai-platform.execution-spec.v4"
 
 
 def _spec_version_predicate(sql: str) -> str:
     """Return the run_attempts schema-version predicate of one locked query."""
 
     lines = [line for line in sql.splitlines() if "execution_spec_schema_version" in line
-             or _V2 in line or _V3 in line]
+             or _V2 in line or _V3 in line or _V4 in line]
     assert lines, sql
     return " ".join(" ".join(lines).split())
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_locked_callback_epoch_binds_both_frozen_spec_versions(version):
-    """A v3 attempt must reach the same authority checks as a v2 attempt."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_locked_callback_epoch_binds_all_model_spec_versions(version):
+    """Grouped and historical attempts use the same callback authority checks."""
 
     class RecordingCallbackConnection(CallbackConnection):
         def __init__(self):
@@ -647,14 +648,14 @@ async def test_locked_callback_epoch_binds_both_frozen_spec_versions(version):
                           if "attempt.execution_spec_sha256" in sql)
     predicate = _spec_version_predicate(attempt_lookup)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_prepare_epoch_finds_a_running_attempt_of_either_spec_version(version):
-    """Lineage preparation must not skip a v3 attempt when freezing the context."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_prepare_epoch_finds_a_running_attempt_of_each_model_spec_version(version):
+    """Lineage preparation must not skip a grouped attempt when freezing context."""
 
     receipt = source_receipt()
     context = {"source_sha256": receipt["source_sha256"], "message_count": 1,
@@ -676,14 +677,14 @@ async def test_prepare_epoch_finds_a_running_attempt_of_either_spec_version(vers
     lookup = next(sql for sql in conn.calls if "select execution_spec_json->'context_pack'" in sql)
     predicate = _spec_version_predicate(lookup)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_terminal_commit_locks_a_writer_of_either_spec_version(version):
-    """The terminal receipt fence must accept both frozen spec versions."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_terminal_commit_locks_a_writer_of_each_model_spec_version(version):
+    """The terminal receipt fence must accept all model-bearing spec versions."""
 
     conn = Connection()
     conn.terminal_row = None
@@ -696,5 +697,5 @@ async def test_terminal_commit_locks_a_writer_of_either_spec_version(version):
     writer_lock = next(sql for sql in conn.calls if "select runs.tenant_id" in sql)
     predicate = _spec_version_predicate(writer_lock)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate

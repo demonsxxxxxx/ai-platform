@@ -32,6 +32,7 @@ import {
   type CapabilitySuggestion,
   type ChatStreamResponse,
 } from "../services/api";
+import { agentRunModelOptions } from "../services/api/session";
 import {
   CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION,
   type ChatSubmissionPreLedgerAbsenceResolution,
@@ -2644,14 +2645,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ...agentOptions,
         };
         const fullAgentOptions = isBoundAgentConversation
-          ? {
-              ...(typeof mergedAgentOptions.model_id === "string"
-                ? { model_id: mergedAgentOptions.model_id }
-                : {}),
-              ...(typeof mergedAgentOptions.model === "string"
-                ? { model: mergedAgentOptions.model }
-                : {}),
-            }
+          ? agentRunModelOptions(mergedAgentOptions)
           : mergedAgentOptions;
 
         // Option getters are application extension seams. A getter can

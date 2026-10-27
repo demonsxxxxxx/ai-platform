@@ -18,6 +18,13 @@ LOCKED_RUN_SNAPSHOT_FIELDS = (
     "context_snapshot",
     "model_id",
     "model_value",
+    "model_group_id",
+    "model_group_code",
+    "model_group_type",
+    "model_group_revision",
+    "model_selection_mode",
+    "usage_scene",
+    "model_policy_version",
     "agent_profile",
     "schema_version",
 )
@@ -40,6 +47,7 @@ def locked_run_payload_candidate(
     durable_model_id = locked_run.get("model_id")
     durable_model_value = locked_run.get("model_value")
     durable_gateway_revision = locked_run.get("model_gateway_revision")
+    durable_group_id = locked_run.get("model_group_id")
     if not (
         isinstance(durable_model_id, str) and durable_model_id
         and isinstance(durable_model_value, str) and durable_model_value
@@ -50,6 +58,13 @@ def locked_run_payload_candidate(
         return None
     candidate["model_id"] = durable_model_id
     candidate["model_value"] = durable_model_value
+    if durable_group_id is not None:
+        for field in (
+            "model_group_id", "model_group_code", "model_group_type",
+            "model_group_revision", "model_selection_mode", "usage_scene",
+            "model_policy_version",
+        ):
+            candidate[field] = locked_run.get(field)
     if (
         candidate.get("execution_kind") == harness_execution_kind
         and candidate.get("skill_id") == ""
@@ -258,6 +273,9 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "context_snapshot_id": payload.context_snapshot_id,
             "model_id": payload.model_id,
             "model_value": payload.model_value,
+            **{key: getattr(payload, key, None) for key in LOCKED_RUN_SNAPSHOT_FIELDS
+               if key.startswith("model_group_") or key in ("model_selection_mode", "usage_scene", "model_policy_version")
+               if getattr(payload, "model_group_id", None) is not None},
             "model_gateway_revision": payload.model_gateway_revision,
             "model_auto_compact_window": payload.model_auto_compact_window,
             "model_max_output_tokens": payload.model_max_output_tokens,
@@ -353,6 +371,9 @@ def restored_executor_reconciliation_queue_payload(
         context_snapshot=run_payload.context_snapshot,
         model_id=run_payload.model_id or None,
         model_value=run_payload.model_value or None,
+        **{key: getattr(run_payload, key, None) for key in LOCKED_RUN_SNAPSHOT_FIELDS
+           if key.startswith("model_group_") or key in ("model_selection_mode", "usage_scene", "model_policy_version")
+           if getattr(run_payload, "model_group_id", None) is not None},
         agent_profile=run_payload.agent_profile or None,
         schema_version=run_payload.schema_version,
     )

@@ -240,6 +240,7 @@ async function mountModelCatalogHarness(
   configure: (
     authApi: typeof import("../../services/api/auth.ts").authApi,
     modelApi: typeof import("../../services/api/modelPublic.ts").modelPublicApi,
+    groupApi: typeof import("../../services/api/modelGroups.ts").modelGroupsApi,
   ) => void,
 ) {
   const React = await import("react");
@@ -250,12 +251,14 @@ async function mountModelCatalogHarness(
   );
   const { authApi } = await import("../../services/api/auth.ts");
   const { modelPublicApi } = await import("../../services/api/modelPublic.ts");
+  const { modelGroupsApi } = await import("../../services/api/modelGroups.ts");
   const originals = {
     getCurrentUser: authApi.getCurrentUser,
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     login: authApi.login,
     logout: authApi.logout,
     listAvailable: modelPublicApi.listAvailable,
+    listPublic: modelGroupsApi.listPublic,
   };
   const restoreApis = () => {
     Object.assign(authApi, {
@@ -267,6 +270,9 @@ async function mountModelCatalogHarness(
     Object.assign(modelPublicApi, {
       listAvailable: originals.listAvailable,
     });
+    Object.assign(modelGroupsApi, {
+      listPublic: originals.listPublic,
+    });
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -274,7 +280,8 @@ async function mountModelCatalogHarness(
     generation: request.generation,
   });
   try {
-    configure(authApi, modelPublicApi);
+    modelGroupsApi.listPublic = async () => ({ groups: [{ id: "group-test", code: "test", name: "测试组", type: "business", enabled: true, revision: 1, is_primary: true, availability: "available", models: [] }], count: 1, version: "model-groups.v1" });
+    configure(authApi, modelPublicApi, modelGroupsApi);
   } catch (error) {
     restoreApis();
     throw error;
@@ -485,6 +492,45 @@ test("ModelCatalogProvider aborts pending subject work on unmount", async () => 
   } finally {
     await harness.cleanup();
   }
+});
+
+for (const restoredId of ["group-second", "removed-group"]) {
+  test(`late group response validates restored intent ${restoredId} without replacing it`, async () => {
+    const groups = deferred<Awaited<ReturnType<typeof import("../../services/api/modelGroups.ts").modelGroupsApi.listPublic>>>();
+    const listed: string[] = [];
+    const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
+      authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+      groupApi.listPublic = () => groups.promise;
+      modelApi.listAvailable = async (options) => { listed.push(options?.groupId ?? ""); return modelProjection("model-a", "A"); };
+    });
+    try {
+      await harness.React.act(async () => harness.modelCatalog.selectGroup(restoredId));
+      groups.resolve({ groups: ["group-primary", "group-second"].map((id, index) => ({
+        id, code: id, name: id, type: "business", enabled: true, revision: 1,
+        is_primary: index === 0, availability: "available", models: [],
+      })), count: 2, version: "model-groups.v1" });
+      await harness.flush();
+      assert.equal(harness.modelCatalog.selectedGroupId, restoredId === "group-second" ? restoredId : "");
+      assert.deepEqual(listed, restoredId === "group-second" ? [restoredId] : []);
+      assert.equal(Boolean(harness.modelCatalog.selectionError), restoredId === "removed-group");
+    } finally { await harness.cleanup(); }
+  });
+}
+
+test("a disabled primary never silently selects another business group", async () => {
+  const harness = await mountModelCatalogHarness((authApi, _modelApi, groupApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    groupApi.listPublic = async () => ({ groups: [true, false].map((is_primary) => ({
+      id: is_primary ? "primary" : "other", code: is_primary ? "primary" : "other", name: "业务组",
+      type: "business", enabled: !is_primary, revision: 1, is_primary,
+      availability: is_primary ? "group_disabled" : "available", models: [],
+    })), count: 2, version: "model-groups.v1" });
+  });
+  try {
+    await harness.flush();
+    assert.equal(harness.modelCatalog.selectedGroupId, "");
+    assert.match(harness.modelCatalog.selectionError ?? "", /主组已不可用/);
+  } finally { await harness.cleanup(); }
 });
 
 for (const [defaultModelId, expectedValue] of [
