@@ -303,6 +303,9 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
             replacement = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-b"}]}], "users": []}
             with pytest.raises(ValueError, match="model_group_default_change_required"):
                 await migration.preview_mapping(replacement)
+            disabled = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-a", "enabled": False, "display_order": 0, "priority": 0, "weight": 100}]}], "users": []}
+            with pytest.raises(ValueError, match="model_group_default_model_invalid"):
+                await migration.preview_mapping(disabled)
             assert await (await conn.execute("select default_model_id, revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"default_model_id": "model-a", "revision": group_row["revision"]}
         finally:
             mapping_path.unlink(missing_ok=True)
