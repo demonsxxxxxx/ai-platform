@@ -401,7 +401,7 @@ def test_selected_profile_rejects_client_owned_capability_selectors():
 
 
 def test_selected_profile_accepts_user_owned_model_selectors():
-    for selector in ({"model": "legacy-model"}, {"model_id": "catalog-model"}):
+    for selector in ({"model": "legacy-model"}, {"model_id": "catalog-model"}, {"group_id": "group-a", "selection_mode": "explicit", "model_id": "catalog-model"}):
         request = ChatStreamRequest(
             message="Help me",
             agent_options=selector,

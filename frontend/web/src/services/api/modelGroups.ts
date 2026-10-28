@@ -25,6 +25,7 @@ export interface PublicModelGroup {
   revision: number;
   is_primary: boolean;
   availability: ModelGroupAvailability;
+  default_model_id?: string | null;
   models: PublicModelGroupModel[];
 }
 
@@ -39,6 +40,8 @@ export interface AdminModelGroupSummary {
   sort_order: number;
   model_count: number;
   member_count: number;
+  members_are_implicit?: boolean;
+  default_model_id?: string | null;
 }
 
 export interface AdminModelGroupMember {
@@ -144,7 +147,7 @@ export const modelGroupsApi = {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups/models/batch`, requestOptions(options, "POST", payload));
   },
 
-  async setModels(groupId: string, payload: { revision: number; models: Array<{ model_id: string; enabled: boolean; display_order: number; priority: number; weight: number }> }, options: RequestOptions = {}): Promise<{ group_id: string; revision: number }> {
+  async setModels(groupId: string, payload: { revision: number; default_model_id?: string | null; models: Array<{ model_id: string; enabled: boolean; display_order: number; priority?: number; weight?: number }> }, options: RequestOptions = {}): Promise<{ group_id: string; revision: number; default_model_id?: string | null }> {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups/${encodeURIComponent(groupId)}/models`, requestOptions(options, "PUT", payload));
   },
 

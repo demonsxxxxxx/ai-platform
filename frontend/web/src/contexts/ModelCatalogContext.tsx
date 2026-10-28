@@ -205,13 +205,8 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   }, [dbModels]);
 
   const defaultModel = useMemo(() => {
-    if (!availableModels || availableModels.length === 0) {
-      return "";
-    }
-    return (
-      availableModels.find((model) => model.id === adminDefaultModelId)
-        ?.value || availableModels[0].value
-    );
+    if (!availableModels || availableModels.length === 0) return "";
+    return availableModels.find((model) => model.id === adminDefaultModelId)?.value || "";
   }, [adminDefaultModelId, availableModels]);
 
   const businessGroups = (visibleSubjectModelCatalog ? modelGroups : []).filter((group) => group.type === "business" && group.enabled);

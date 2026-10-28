@@ -598,6 +598,7 @@ create table if not exists model_groups (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   archived_at timestamptz,
+  default_model_id text,
   unique(tenant_id, code),
   constraint chk_model_groups_type check (type in ('ordinary_default', 'business')),
   constraint chk_model_groups_default_identity check (
@@ -1350,6 +1351,17 @@ end $$;
 drop trigger if exists trg_model_group_member_scope on model_group_members;
 create trigger trg_model_group_member_scope before insert or update on model_group_members
 for each row execute function ai_platform_guard_model_group_member_scope();
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = current_schema() and table_name = 'model_groups'
+                   and column_name = 'default_model_id') then
+    alter table model_groups add column default_model_id text;
+    update model_groups g set default_model_id = (
+      select m.model_id from model_group_models m where m.group_id = g.id
+      order by m.display_order, m.model_id limit 1
+    );
+  end if;
+end $$;
 do $$ begin
   if not exists (select 1 from pg_constraint where conrelid = 'model_groups'::regclass and conname = 'chk_model_groups_type') then
     alter table model_groups add constraint chk_model_groups_type check (type in ('ordinary_default', 'business'));

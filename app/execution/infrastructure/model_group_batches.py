@@ -55,7 +55,7 @@ async def batch_group_models(
             raise ModelGroupPolicyError("model_group_active_runs")
     groups_cursor = await conn.execute(
         """
-        select id, type, enabled, archived_at, revision,
+        select id, type, enabled, archived_at, revision, default_model_id,
           (select count(*) from model_group_members m where m.group_id = model_groups.id) as member_count
         from model_groups where tenant_id = %s and id = any(%s) for update
         """,
@@ -155,17 +155,25 @@ async def batch_group_models(
             }
         changed = set(current) != desired
         before = {model_id: dict(row) for model_id, row in current.items()}
+        default_before = groups[group_id].get("default_model_id")
+        if default_before and default_before not in desired and desired:
+            raise ModelGroupPolicyError("model_group_default_change_required")
+        default_after = default_before if default_before in desired else None
+        if not current and desired:
+            default_after = min(projected.values(), key=lambda item: (item["display_order"], item["model_id"]))["model_id"]
         changes.append({
             "group_id": group_id,
             "group_type": str(groups[group_id]["type"]),
             "before": {
                 "revision": int(groups[group_id]["revision"]),
                 "member_count": int(groups[group_id]["member_count"]),
+                "default_model_id": default_before,
                 "models": list(before.values()),
             },
             "after": {
                 "revision": int(groups[group_id]["revision"]) + int(changed),
                 "member_count": int(groups[group_id]["member_count"]),
+                "default_model_id": default_after,
                 "models": list(projected.values()),
                 "affected_model_ids": sorted(set(before) ^ set(projected)),
             },
@@ -197,8 +205,8 @@ async def batch_group_models(
                 )
             if set(current) != desired:
                 await conn.execute(
-                    "update model_groups set revision = revision + 1, updated_at = now() where tenant_id = %s and id = %s and revision = %s",
-                    (tenant_id, group_id, int(groups[group_id]["revision"])),
+                    "update model_groups set default_model_id = %s, revision = revision + 1, updated_at = now() where tenant_id = %s and id = %s and revision = %s",
+                    (next(item["after"]["default_model_id"] for item in changes if item["group_id"] == group_id), tenant_id, group_id, int(groups[group_id]["revision"])),
                 )
     return {
         "tenant_id": tenant_id,

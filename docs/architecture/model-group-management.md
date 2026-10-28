@@ -15,8 +15,10 @@ never falls back to `default`.
 The model-group resolver is the single policy used by `/api/ai/models/groups`
 and new Run admission. It checks the user's current membership, enabled group
 models, global catalog availability, gateway revision, and execution capacity
-before returning one model. `auto` chooses only the highest priority layer and
-uses weight within that layer. `explicit` never substitutes another model.
+before returning one model. Each group has a designated default model; chat selects
+that model initially and submits it explicitly. A user may choose another model in
+the same group. Neither explicit selection nor an unavailable default substitutes
+another model. Legacy `auto` requests resolve only the designated group default.
 
 Chat and expert usage scenes reject ordinary-default models. Direct independent
 business/skill execution may use the ordinary default group only after the normal
@@ -52,12 +54,15 @@ price, quota, channel pool, or fallback platform is introduced.
   distinguish a disabled primary from no membership and must not silently choose
   another group. They are not selectable. The response excludes members, remarks,
   priorities, weights, credentials, gateway URLs, and runtime paths.
-- `GET /api/ai/admin/model-groups` returns tenant-scoped administrative counts.
+- `GET /api/ai/admin/model-groups` returns tenant-scoped administrative counts. For the immutable ordinary default group, `member_count` is the number of active users with no business-group membership, `members_are_implicit=true`, and no member rows are stored.
 - `POST /api/ai/admin/model-groups` creates a business group.
 - `PATCH /api/ai/admin/model-groups/{group_id}` updates mutable business fields
   with a required revision fence.
 - `PUT /api/ai/admin/model-groups/{group_id}/models` replaces one group's model
-  associations with priority/weight and a revision fence. Default/business
+  associations and its `default_model_id` with a revision fence. Legacy priority/weight
+  fields remain accepted for existing clients but no longer choose the model. Batch removal
+  or confirmed migration that removes a group's default while retaining other models is
+  rejected; an administrator must first choose a replacement default. Default/business
   conversion waits for unfinished executions of that model in the other class;
   removing its earlier association does not bypass this guard.
 - `POST /api/ai/admin/model-groups/models/batch` atomically adds, replaces, or
@@ -68,7 +73,9 @@ price, quota, channel pool, or fallback platform is introduced.
 - `GET /api/ai/admin/model-groups/{group_id}` returns the admin-only group
   details, including member `user_id`, `work_id` only for a verified
   `company-login` identity, `auth_source`, and display name, plus model
-  association details.
+  association details. The ordinary default group returns
+  `members_are_implicit=true`, its implicit active-user `member_count`, and an
+  empty `members` array because default membership is computed, not stored.
 - `GET /api/ai/admin/users/{user_id}/model-groups` returns the same-tenant
   user's business memberships and implicit-default state.
 - `PUT /api/ai/admin/users/{user_id}/model-groups` atomically replaces that

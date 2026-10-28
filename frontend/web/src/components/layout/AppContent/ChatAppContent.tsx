@@ -715,7 +715,7 @@ export function ChatAppContent({
 
   const [currentModelId, setCurrentModelId] = useState("");
   const [currentModelValue, setCurrentModelValue] = useState("");
-  const [modelSelectionMode, setModelSelectionMode] = useState<"auto" | "explicit">("auto");
+  const [modelSelectionMode, setModelSelectionMode] = useState<"auto" | "explicit">("explicit");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -729,9 +729,7 @@ export function ChatAppContent({
   useEffect(() => {
     if (!availableModels || catalogSelectionError) return;
     if (modelSelectionMode === "auto") {
-      if (currentModelId) setCurrentModelId("");
-      if (currentModelValue) setCurrentModelValue("");
-      return;
+      setModelSelectionMode("explicit");
     }
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
     const stillAvailable = availableModels.some((model) =>
@@ -744,11 +742,15 @@ export function ChatAppContent({
       return;
     }
     if (modelSelectionError) return;
+    if (!currentModelId && !currentModelValue && !defaultModel) {
+      setModelSelectionError("默认模型暂不可用，请手动选择同组模型。");
+      return;
+    }
     const nextSelection = reconcileCurrentModelSelection({
       availableModels,
       currentModelId,
       currentModelValue,
-      fallbackDefaultValue: defaultModel,
+      storedDefaultValue: defaultModel,
     });
 
     if (nextSelection.modelId !== currentModelId) {
@@ -783,7 +785,7 @@ export function ChatAppContent({
 
   const handleSelectGroup = useCallback((groupId: string) => {
     selectGroup(groupId);
-    setModelSelectionMode("auto");
+    setModelSelectionMode("explicit");
     setCurrentModelId("");
     setCurrentModelValue("");
     setModelSelectionError(null);
@@ -1066,7 +1068,7 @@ export function ChatAppContent({
 
     resetAgentOptionDefaults();
 
-    setModelSelectionMode("auto");
+    setModelSelectionMode("explicit");
     setCurrentModelId("");
     setCurrentModelValue("");
     setModelSelectionError(null);

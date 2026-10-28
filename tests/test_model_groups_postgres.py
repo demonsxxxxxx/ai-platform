@@ -218,13 +218,19 @@ async def test_model_groups_postgres_batch_preview_apply_rollback_and_revision_f
         assert applied["changed"] is True
         assert applied["groups"][0]["after"]["revision"] == 2
         assert await (await conn.execute("select model_id from model_group_models where group_id = 'group-a'")).fetchone() == {"model_id": "model-a"}
+        await batch_group_models(conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-b"], operation="add", expected_group_revisions={"group-a": 2}, preview=False)
+        for preview_flag in (True, False):
+            with pytest.raises(ModelGroupPolicyError, match="model_group_default_change_required"):
+                async with conn.transaction():
+                    await batch_group_models(conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-a"], operation="remove", expected_group_revisions={"group-a": 3}, preview=preview_flag)
+        assert (await (await conn.execute("select default_model_id, revision from model_groups where id='group-a'")).fetchone()) == {"default_model_id": "model-a", "revision": 3}
 
         with pytest.raises(ModelGroupPolicyError, match="model_policy_changed"):
             await batch_group_models(
                 conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-b"],
                 operation="add", expected_group_revisions={"group-a": 1}, preview=False,
             )
-        assert await (await conn.execute("select model_id from model_group_models where group_id = 'group-a'")).fetchone() == {"model_id": "model-a"}
+        assert (await (await conn.execute("select count(*) as count from model_group_models where group_id = 'group-a'")).fetchone()) == {"count": 2}
 
         with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
             async with conn.transaction():
@@ -294,8 +300,40 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
             assert second["changed_users"] == 0
             assert await (await conn.execute("select revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"revision": group_row["revision"]}
             assert await (await conn.execute("select model_group_membership_revision from users where id = 'user-a'")).fetchone() == user_row
+            replacement = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-b"}]}], "users": []}
+            with pytest.raises(ValueError, match="model_group_default_change_required"):
+                await migration.preview_mapping(replacement)
+            disabled = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-a", "enabled": False, "display_order": 0, "priority": 0, "weight": 100}]}], "users": []}
+            with pytest.raises(ValueError, match="model_group_default_model_invalid"):
+                await migration.preview_mapping(disabled)
+            assert await (await conn.execute("select default_model_id, revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"default_model_id": "model-a", "revision": group_row["revision"]}
         finally:
             mapping_path.unlink(missing_ok=True)
+    finally:
+        await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_model_groups_postgres_default_model_is_explicit_and_first_legacy_model_fallback() -> None:
+    dsn = _postgres_dsn()
+    schema_name = f"model_groups_default_model_{uuid.uuid4().hex}"
+    conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    try:
+        await _prepare_schema(conn, schema_name)
+        await conn.execute("insert into model_groups(id, tenant_id, code, name, type) values ('group-a', 'tenant-a', 'alpha', 'Alpha', 'business')")
+        await conn.execute("insert into model_group_models(group_id, model_id, display_order) values ('group-a', 'model-b', 1), ('group-a', 'model-a', 0)")
+        await conn.execute('alter table model_groups drop column default_model_id')
+        await conn.execute(Path('app/schema.sql').read_text(encoding='utf-8'))
+        await set_user_group_memberships(conn, tenant_id='tenant-a', user_id='user-a', group_ids=['group-a'], primary_group_id='group-a', expected_revision=1)
+        from app.execution.infrastructure.model_groups import list_public_group_models
+        public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
+        assert public['default_model_id'] == 'model-a'
+        await set_group_models(conn, tenant_id='tenant-a', group_id='group-a', revision=2, default_model_id='model-b', models=[{'model_id': 'model-a', 'display_order': 0, 'enabled': True}, {'model_id': 'model-b', 'display_order': 1, 'enabled': True}])
+        public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
+        assert public['default_model_id'] == 'model-b'
+        selected = await resolve_group_model(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', model_id=None, model_value=None, selection_mode='auto', usage_scene='independent')
+        assert selected.model_id == 'model-b'
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
@@ -315,6 +353,16 @@ async def test_model_groups_postgres_default_group_is_unique_and_implicit() -> N
             "select count(*) as count from model_group_members where tenant_id = 'tenant-a'"
         )
         assert (await cursor.fetchone())["count"] == 0
+        from app.execution.infrastructure.model_groups import get_admin_group_details, list_admin_groups
+        await conn.execute("insert into users(id, tenant_id, display_name, auth_source, external_id) values ('user-c', 'tenant-a', 'User C', 'company-login', 'W003')")
+        admin_groups = await list_admin_groups(conn, tenant_id="tenant-a")
+        default_summary = next(item for item in admin_groups if item["id"] == first)
+        assert default_summary["members_are_implicit"] is True
+        assert default_summary["member_count"] == 3
+        details = await get_admin_group_details(conn, tenant_id="tenant-a", group_id=first)
+        assert details["members_are_implicit"] is True
+        assert details["member_count"] == 3
+        assert details["members"] == []
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
