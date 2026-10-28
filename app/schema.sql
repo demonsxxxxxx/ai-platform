@@ -1313,7 +1313,8 @@ do $$ begin
     from affected a where u.tenant_id = a.tenant_id and u.id = a.user_id returning u.id
   )
   update model_groups set revision = revision + 1, updated_at = now()
-  where id in (select group_id from model_group_members m join affected a
+  where id in (select group_id from removed union
+               select group_id from model_group_members m join affected a
                on m.tenant_id = a.tenant_id and m.user_id = a.user_id);
   update model_group_members set is_primary = true where not is_primary;
 end $$;

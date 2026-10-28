@@ -150,12 +150,14 @@ async def test_single_membership_upgrade_retains_primary_and_rejects_ambiguous_u
             async with conn.transaction():
                 await conn.execute(schema_sql)
         assert (await (await conn.execute("select count(*) as n from model_group_members")).fetchone())["n"] == 4
-        await conn.execute("update model_group_members set is_primary=true where user_id='user-b' and group_id='b'")
+        await conn.execute("update model_group_members set is_primary=true where user_id='user-b' and group_id='a'")
         await conn.execute(schema_sql)
-        expected = [{"user_id": "user-a", "group_id": "a", "is_primary": True}, {"user_id": "user-b", "group_id": "b", "is_primary": True}]
+        expected = [{"user_id": "user-a", "group_id": "a", "is_primary": True}, {"user_id": "user-b", "group_id": "a", "is_primary": True}]
         assert await (await conn.execute("select user_id,group_id,is_primary from model_group_members order by user_id")).fetchall() == expected
         assert await (await conn.execute("select model_group_membership_revision as revision from users where tenant_id='tenant-a' order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
         assert await (await conn.execute("select revision from model_groups where id in ('a','b') order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
+        with pytest.raises(ModelGroupPolicyError, match="model_policy_changed"):
+            await set_group_members(conn, tenant_id="tenant-a", group_id="b", revision=1, members=[{"user_id": "user-a"}])
         await conn.execute(schema_sql)
         assert await (await conn.execute("select model_group_membership_revision as revision from users where tenant_id='tenant-a' order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
         with pytest.raises(psycopg.errors.UniqueViolation):
