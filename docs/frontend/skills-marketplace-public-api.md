@@ -279,10 +279,12 @@ which returns the current user's JWT to an authenticated page with
 - the document translator keeps it only in memory, validates the child window
   and nonce, and sends it to the fixed translator origin; the translator keeps
   it in tab-scoped `sessionStorage` for its API calls;
-- the administrator-only ProfileDrive marketplace page keeps it only for one
-  request to the fixed same-origin `/api/profile-drive/` proxy. That proxy
-  strips the AI Platform session cookie and forwards the JWT as
-  `Authorization` to the configured connector.
+- ProfileDrive keeps it only for one request to the fixed same-origin
+  `/api/profile-drive/` proxy. That proxy strips the AI Platform session cookie
+  and forwards the JWT as `Authorization` to the configured connector. The
+  connector page and file area reuse the same authentication dialog and flow;
+  profile and public files share the connection, and successful authentication
+  refreshes the file area.
 
 Neither flow places the JWT in a URL or AI Platform browser storage. At MCP
 execution time the Worker reuses the existing Capability Distribution and Tool
