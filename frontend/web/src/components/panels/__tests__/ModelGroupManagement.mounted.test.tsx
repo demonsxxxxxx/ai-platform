@@ -152,6 +152,43 @@ test("organization picker ignores late employee results and preserves selections
 });
 
 
+test("department directory failure retries on reopen and ignores a closed request", async () => {
+  const view = await mount();
+  const click = async (label: string) => view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label); node.click();
+  });
+  const originalDirectory = capabilityDistributionApi.departmentDirectory;
+  let oldSignal: AbortSignal | undefined;
+  let resolveOld: ((value: Awaited<ReturnType<typeof capabilityDistributionApi.departmentDirectory>>) => void) | undefined;
+  let attempts = 0;
+  try {
+    await click("编辑 销售组"); await click("成员");
+    capabilityDistributionApi.departmentDirectory = async () => { attempts += 1; throw new Error("synthetic-directory-outage"); };
+    await click("按组织架构选择人员");
+    assert.match(document.body.textContent ?? "", /组织架构加载失败/);
+    assert.match(document.querySelector("[data-model-group-member-directory]")?.textContent ?? "", /员工 A/);
+    const search = document.querySelector<HTMLInputElement>('[aria-label="搜索公司员工"]'); assert.ok(search);
+    assert.equal(search.disabled, false);
+    await click("关闭选人下拉框");
+    capabilityDistributionApi.departmentDirectory = (options) => {
+      attempts += 1; oldSignal = options?.signal;
+      return new Promise((resolve) => { resolveOld = resolve; });
+    };
+    await click("按组织架构选择人员"); await click("关闭选人下拉框");
+    assert.equal(oldSignal?.aborted, true);
+    capabilityDistributionApi.departmentDirectory = async () => { attempts += 1; return originalDirectory(); };
+    await click("按组织架构选择人员");
+    await view.React.act(async () => resolveOld!([{ directoryId: "999", authorityId: "999", name: "旧部门", path: "旧部门", children: [], selectable: true, reason: null }]));
+    const select = document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [role=combobox]'); assert.ok(select);
+    await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    assert.match(document.body.textContent ?? "", /总公司/);
+    assert.doesNotMatch(document.body.textContent ?? "", /旧部门/);
+    assert.equal(attempts, 3);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
 test("drawer keeps drafts across tabs, reorders models and saves single-group members", async () => {
   const view = await mount({ ...summary, member_count: 2, default_model_id: "a", members: [
     { user_id: "a", display_name: "甲", is_primary: true },
