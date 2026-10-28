@@ -207,6 +207,27 @@ test("delete group requires an explicit member destination and displays active r
 });
 
 
+test("canceling deletion does not advance the edit draft revision", async () => {
+  const view = await mount({ ...details, member_count: 0, active_run_count: 0, remark: "原备注" });
+  const click = async (label: string) => view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label); node.click();
+  });
+  try {
+    await click("编辑 销售组");
+    modelGroupsApi.details = async () => ({ ...details, revision: 9, enabled: false, name: "另一管理员修改", remark: "新备注", member_count: 0, active_run_count: 0 });
+    await click("删除分组"); await click("取消");
+    await click("保存基本信息");
+    const saved = view.calls.find((call) => call.kind === "update")?.body as { revision: number; enabled: boolean; name: string; remark: string };
+    assert.equal(saved.revision, 4);
+    assert.equal(saved.name, "销售组");
+    assert.equal(saved.remark, "原备注");
+    await click("删除分组"); await click("确认删除");
+    assert.equal((view.calls.find((call) => call.kind === "delete")?.body as { revision: number }).revision, 9);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
 test("model catalog tabs keep unsaved model names mounted", async () => {
   const view = await mount(details, true);
   try {
