@@ -10,7 +10,7 @@ from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import parse_requested_model_selection
+from app.execution.api import parse_requested_model_selection, list_public_models, model_selection_error_status
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentProfileDraftRequest,
@@ -189,6 +189,25 @@ async def get_agent_profile(
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
         return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+
+
+@router.get("/agent-profiles/{agent_id}/models")
+async def get_agent_profile_models(
+    agent_id: str,
+    group_id: str | None = Query(default=None, max_length=128),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Resolve models only through an authorized, published expert entry."""
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+        try:
+            return await list_public_models(conn, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="expert", group_id=group_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
 
 
 @router.put("/agent-profiles/{agent_id}/favorite")

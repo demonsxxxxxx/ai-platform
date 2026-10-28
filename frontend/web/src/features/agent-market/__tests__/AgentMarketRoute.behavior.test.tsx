@@ -102,13 +102,13 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     count: 1, version: "model-groups.v1",
   });
   modelPublicApi.listAvailable = async () => ({
-    models: [{
+    models: [{ id: "model-first", value: "model-first", label: "非默认模型" }, {
       id: "model-default",
       value: "model-default",
       label: "默认模型",
     }],
-    count: 1,
-    enabled_count: 1,
+    count: 2,
+    enabled_count: 2,
     default_model_id: "model-default",
   });
 
@@ -707,6 +707,12 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     );
     assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    const options = submissions[expectedCount - 1]?.[2] as Record<string, unknown>;
+    assert.equal(options.group_id, "group-enterprise");
+    assert.equal(options.model_id, "model-default");
+    assert.equal(options.model, "model-default");
+    assert.equal(options.selection_mode, "explicit");
+    assert.equal(container.querySelector('[aria-label="选择模型分组"]'), null);
     assert.deepEqual(submissions[expectedCount - 1]?.[10], {
       agent_id: profile.agent_id,
     });

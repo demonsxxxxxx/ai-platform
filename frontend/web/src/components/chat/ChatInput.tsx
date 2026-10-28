@@ -112,9 +112,6 @@ export const ChatInput = memo(function ChatInput({
   availableModels = [],
   currentModelId,
   modelSelectionMode = "explicit",
-  modelGroups = [],
-  selectedGroupId,
-  onSelectGroup,
   onSelectModel,
   onModelSelectorOpen,
   attachments: externalAttachments,
@@ -1080,9 +1077,6 @@ export const ChatInput = memo(function ChatInput({
                 availableModels={availableModels}
                 currentModelId={currentModelId}
                 modelSelectionMode={modelSelectionMode}
-                modelGroups={modelGroups}
-                selectedGroupId={selectedGroupId}
-                onSelectGroup={onSelectGroup}
                 onSelectModel={onSelectModel}
                 showModelSelector
                 agentOptions={agentOptions}

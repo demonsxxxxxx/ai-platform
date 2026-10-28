@@ -928,3 +928,21 @@ test("legacy generic Agent sessions redirect to the canonical dedicated route", 
   assert.match(source, /buildAgentMarketWorkspacePath\([\s\S]*identity\.agent_id/);
   assert.match(source, /navigate\([\s\S]*\{ replace: true \}/);
 });
+
+test("chat group selection is retired across the ordinary and expert composer chain", () => {
+  for (const path of ["../ChatAppContent.tsx", "../ChatView.tsx", "../../../chat/ChatInput.tsx", "../../../chat/chatInputTypes.ts", "../../../chat/ChatInputToolbar.tsx"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /onSelectGroup|selectGroup|modelGroups|选择模型分组/);
+  }
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /group_id: selectedGroupId/);
+  assert.match(source, /model_id: currentModelId/);
+  assert.match(source, /model: currentModelValue/);
+});
+
+test("missing designated defaults never fall back to the first catalog model", () => {
+  const availableModels = [{ id: "a", value: "provider/a" }];
+  for (const storedDefaultValue of ["", "provider/removed"]) {
+    assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultValue }), { modelId: "", modelValue: "" });
+  }
+});

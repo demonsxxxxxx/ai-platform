@@ -131,7 +131,7 @@ async def get_run_connection(
                    and run_attempts.execution_spec_json->>'model_policy_version' = runs.model_policy_version
                    and not (
                      runs.model_group_type = 'ordinary_default'
-                     and runs.usage_scene in ('chat', 'expert')
+                     and runs.usage_scene = 'chat'
                    )))
           and sandbox_leases.attempt_id = %s
           and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
@@ -188,7 +188,8 @@ async def get_run_model_completion_connection(
           and runs.model_value is not null
           and runs.model_gateway_revision is not null
           and runs.model_group_id is not null and runs.model_group_id <> ''
-          and runs.model_group_type = 'business' and runs.model_group_code <> 'default'
+          and ((runs.model_group_type = 'business' and runs.model_group_code <> 'default')
+            or (runs.model_group_type = 'ordinary_default' and runs.model_group_code = 'default' and runs.usage_scene = 'expert'))
           and runs.model_group_code <> '' and runs.model_group_revision > 0
           and runs.model_selection_mode in ('auto', 'explicit')
           and runs.usage_scene in ('chat', 'expert')

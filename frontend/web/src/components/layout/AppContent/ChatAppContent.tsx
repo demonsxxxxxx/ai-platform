@@ -413,10 +413,8 @@ export function ChatAppContent({
     availableModels,
     defaultModel,
     refreshModels,
-    modelGroups,
     selectedGroupId,
     selectedGroup,
-    selectGroup,
     selectionError: catalogSelectionError,
   } = useModelCatalogContext();
   const { user, hasPermission, isAuthenticated } = useAuth();
@@ -718,6 +716,8 @@ export function ChatAppContent({
   const [modelSelectionMode, setModelSelectionMode] = useState<"auto" | "explicit">("explicit");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
+  const modelGroupRef = useRef(selectedGroupId);
+
   useEffect(() => {
     if (catalogSelectionError) {
       setCurrentModelId("");
@@ -727,6 +727,15 @@ export function ChatAppContent({
   }, [catalogSelectionError]);
 
   useEffect(() => {
+    if (modelGroupRef.current !== selectedGroupId) {
+      modelGroupRef.current = selectedGroupId;
+      const groupDefault = availableModels?.find((model) => model.value === defaultModel);
+      setCurrentModelId(groupDefault?.id ?? "");
+      setCurrentModelValue(groupDefault?.value ?? "");
+      setModelSelectionMode("explicit");
+      setModelSelectionError(catalogSelectionError);
+      return;
+    }
     if (!availableModels || catalogSelectionError) return;
     if (modelSelectionMode === "auto") {
       setModelSelectionMode("explicit");
@@ -759,7 +768,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode, selectedGroupId]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -782,14 +791,6 @@ export function ChatAppContent({
     },
     [],
   );
-
-  const handleSelectGroup = useCallback((groupId: string) => {
-    selectGroup(groupId);
-    setModelSelectionMode("explicit");
-    setCurrentModelId("");
-    setCurrentModelValue("");
-    setModelSelectionError(null);
-  }, [selectGroup]);
 
   const lockedAgentOptions: typeof currentAgentOptions = currentAgentOptions.enable_thinking
     ? { enable_thinking: currentAgentOptions.enable_thinking }
@@ -1020,10 +1021,7 @@ export function ChatAppContent({
         restoreAgentOptions(config.agent_options);
 
         const restoredModelSelection = getRestoredModelSelection(config);
-        const restoredOptions = config.agent_options as Record<string, unknown>;
-        const restoredGroupId = typeof restoredOptions.group_id === "string" ? restoredOptions.group_id : "";
         const restoredMode = restoredModelSelection.selectionMode;
-        if (restoredGroupId) selectGroup(restoredGroupId);
         setModelSelectionMode(restoredMode);
         setModelSelectionError(null);
         if (restoredModelSelection.modelId) {
@@ -1034,7 +1032,7 @@ export function ChatAppContent({
         }
       }
     },
-    [restoreSessionConfig, restoreAgentOptions, selectGroup],
+    [restoreSessionConfig, restoreAgentOptions],
   );
 
   const { handleSelectSession, handleNewSession } = useSessionSync({
@@ -1443,9 +1441,6 @@ export function ChatAppContent({
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
             modelSelectionMode={modelSelectionMode}
-            modelGroups={modelGroups}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={handleSelectGroup}
             onSelectModel={handleSelectModel}
             onModelSelectorOpen={refreshModels}
             onSendMessage={handleSendMessage}

@@ -23,5 +23,5 @@ def validate_model_group_snapshot(
         raise ValueError("run_model_group_snapshot_invalid")
     if (group_type == "ordinary_default") != (group_code == "default"):
         raise ValueError("run_model_group_snapshot_invalid")
-    if group_type == "ordinary_default" and usage_scene in {"chat", "expert"}:
+    if group_type == "ordinary_default" and usage_scene == "chat":
         raise ValueError("run_model_group_snapshot_invalid")

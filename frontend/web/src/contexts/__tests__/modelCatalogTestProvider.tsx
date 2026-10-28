@@ -1,4 +1,5 @@
 import { createElement, type ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "../../hooks/useAuth";
 import { ModelCatalogProvider } from "../ModelCatalogContext";
 import { authApi } from "../../services/api/auth";
@@ -28,7 +29,7 @@ export function installModelCatalogTestProvider() {
   };
   localStorage.setItem("ai_platform_session_present", "synthetic-session");
   return {
-    wrap: (children: ReactNode) => createElement(AuthProvider, null, createElement(ModelCatalogProvider, null, children)),
+    wrap: (children: ReactNode) => createElement(MemoryRouter, null, createElement(AuthProvider, null, createElement(ModelCatalogProvider, null, children))),
     calls: () => calls,
     failRefresh: () => { fail = true; },
     cleanup: () => {

@@ -413,6 +413,35 @@ async def test_model_groups_postgres_default_group_is_unique_and_implicit() -> N
         assert details["members_are_implicit"] is True
         assert details["member_count"] == 3
         assert details["members"] == []
+        await set_group_models(conn, tenant_id="tenant-a", group_id=first, revision=1,
+                               default_model_id="model-b", models=[{"model_id": "model-a"}, {"model_id": "model-b"}])
+        from app.execution.infrastructure.model_groups import list_public_group_models
+        expert = await list_public_group_models(conn, tenant_id="tenant-a", user_id="user-a", group_id=first, usage_scene="expert")
+        assert expert["default_model_id"] == "model-b" and len(expert["models"]) == 2
+        with pytest.raises(ModelGroupPolicyError, match="group_not_available"):
+            await list_public_group_models(conn, tenant_id="tenant-a", user_id="user-a", group_id=first, usage_scene="chat")
+        from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
+        for scene in ("expert", "chat"):
+            snapshot = dict(group_id=first, group_code="default", group_type="ordinary_default", group_revision=2,
+                            selection_mode="explicit", usage_scene=scene, policy_version="model-groups.v1")
+            if scene == "chat":
+                with pytest.raises(ValueError):
+                    validate_model_group_snapshot(**snapshot)
+            else:
+                validate_model_group_snapshot(**snapshot)
+        # Upgrade a deployed old constraint without modifying frozen rows.
+        await conn.execute("alter table runs drop constraint chk_runs_model_group_policy")
+        await conn.execute("alter table runs add constraint chk_runs_model_group_policy check (model_group_type is distinct from 'ordinary_default' or usage_scene in ('skill','independent'))")
+        await conn.execute(Path('app/schema.sql').read_text(encoding='utf-8'))
+        await conn.execute("insert into workspaces(id,tenant_id,name) values ('w','tenant-a','W')")
+        await conn.execute("insert into agents(id,tenant_id,name,agent_type) values ('a','tenant-a','A','chat')")
+        await conn.execute("insert into sessions(id,tenant_id,workspace_id,user_id,agent_id,title) values ('s','tenant-a','w','user-a','a','S')")
+        query = """insert into runs(id,tenant_id,workspace_id,user_id,agent_id,session_id,execution_kind,status,
+            model_group_id,model_group_code,model_group_type,model_group_revision,model_selection_mode,usage_scene,model_policy_version)
+            values (%s,'tenant-a','w','user-a','a','s','harness_chat','queued',%s,'default','ordinary_default',2,'explicit',%s,'model-groups.v1')"""
+        await conn.execute(query, ('expert-run', first, 'expert'))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(query, ('chat-run', first, 'chat'))
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
@@ -499,7 +528,7 @@ async def test_confirmed_migration_removes_covered_users_old_grants_and_configur
         with pytest.raises(ValueError, match="preview_changed"):
             await migration.apply_mapping(path)
         default = await ensure_default_group(conn, tenant_id="tenant-a")
-        for scene in ("chat", "expert"):
+        for scene in ("chat",):
             with pytest.raises(ModelGroupPolicyError):
                 await list_public_group_models(conn, tenant_id="tenant-a", user_id="user-a", group_id=default, usage_scene=scene)
         with pytest.raises(ModelGroupPolicyError):

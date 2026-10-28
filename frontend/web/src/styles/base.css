@@ -475,3 +475,19 @@ html[data-mobile-keyboard="true"] #root {
   width: 2.5rem !important;
   height: 0.35rem !important;
 }
+
+/* Composer-only attachment framing; message previews keep their own presentation. */
+.composer-attachment-card {
+  display: flex;
+  align-items: center;
+  width: 280px;
+  max-width: calc(100vw - 112px);
+  padding-right: 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  background: var(--theme-bg-sidebar);
+}
+
+.composer-attachment-tile {
+  overflow: hidden;
+}

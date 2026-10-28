@@ -57,10 +57,7 @@ export function resolveDefaultModelSelection({
     }
   }
 
-  const firstModel = availableModels[0];
-  return firstModel
-    ? { modelId: firstModel.id, modelValue: firstModel.value }
-    : emptySelection(fallbackDefaultValue);
+  return emptySelection();
 }
 
 export function reconcileCurrentModelSelection({

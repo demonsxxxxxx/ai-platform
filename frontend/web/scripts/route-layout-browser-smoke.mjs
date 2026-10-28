@@ -225,6 +225,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
         members: [{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }],
         models: [{ model_id: 'mdl-0', model_value: 'demo/model-0', label: 'Model 0', enabled: true, display_order: 0, priority: 100, weight: 100 }]
       });
+      if (url.pathname === '/api/ai/files/long-name' && method === 'DELETE') return json({ key: 'long-name', deleted: true });
       if (url.pathname === '/api/agent/models/available') return json({
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
