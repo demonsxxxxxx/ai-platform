@@ -9,6 +9,11 @@ import {
   DrawerRoot,
   DrawerTitle,
   Input,
+  PopoverRoot,
+  PopoverTriggerElement,
+  PopoverPortal,
+  PopoverPositioner,
+  PopoverPopup,
   SwitchRoot,
   SwitchThumb,
   Table,
@@ -34,6 +39,8 @@ import {
 import { modelAdminApi, type AdminModelEntry } from "../../services/api/modelAdmin";
 import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+import { capabilityDistributionApi, type DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
+import { flattenDepartmentDirectory } from "./departmentDirectorySelection";
 
 const PAGE_SIZE = 100;
 const ERROR_COPY: Record<string, string> = {
@@ -97,13 +104,28 @@ function GroupMemberEditor({
   const [selected, setSelected] = useState<AdminModelGroupMember[]>(details.members);
   const [query, setQuery] = useState("");
   const [directory, setDirectory] = useState<DirectoryState>(EMPTY_DIRECTORY);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [departments, setDepartments] = useState<DepartmentDirectoryNode[] | null>(null);
+  const [departmentError, setDepartmentError] = useState(false);
+  const [departmentId, setDepartmentId] = useState("");
+  const pickerTrigger = useRef<HTMLButtonElement>(null);
+  const departmentOptions = useMemo(() => departments ? flattenDepartmentDirectory(departments) : [], [departments]);
   const controllerRef = useRef<AbortController | null>(null);
   const versionRef = useRef(0);
 
   useEffect(() => setSelected(details.members), [details.members]);
   useEffect(() => () => controllerRef.current?.abort(), []);
+  useEffect(() => {
+    if (!pickerOpen || departments) return;
+    const controller = new AbortController();
+    setDepartmentError(false);
+    void capabilityDistributionApi.departmentDirectory({ signal: controller.signal }).then((value) => {
+      if (!controller.signal.aborted) setDepartments(value);
+    }).catch(() => { if (!controller.signal.aborted) setDepartmentError(true); });
+    return () => controller.abort();
+  }, [pickerOpen, departments]);
 
-  const load = useCallback(async (nextQuery: string, append = false) => {
+  const load = useCallback(async (nextQuery: string, append = false, nextDepartment = departmentId) => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -119,6 +141,7 @@ function GroupMemberEditor({
     try {
       const result = await companyEmployeesApi.list({
         search: nextQuery || undefined,
+        departmentId: nextDepartment || undefined,
         offset,
         limit: PAGE_SIZE,
         signal: controller.signal,
@@ -137,7 +160,7 @@ function GroupMemberEditor({
       if (controller.signal.aborted || version !== versionRef.current) return;
       setDirectory((current) => ({ ...current, status: "error", error: errorText(error) }));
     }
-  }, [directory.employees.length]);
+  }, [directory.employees.length, departmentId]);
 
   const selectedIds = useMemo(() => new Set(selected.map((member) => member.work_id ?? member.user_id)), [selected]);
   const updateMember = (employee: CompanyEmployee) => {
@@ -169,7 +192,22 @@ function GroupMemberEditor({
           </div>;
         }) : <div className="flex flex-col items-center gap-2 px-4 py-8 text-center"><Users size={24} className="text-[var(--theme-text-secondary)]" /><p className="text-sm font-medium">暂无成员</p><p className="text-sm text-[var(--theme-text-secondary)]">从下方公司员工目录选择人员加入。</p></div>}
       </div>
-      <div className="space-y-3 pt-3"><h3 className="text-sm font-semibold">添加公司员工</h3>
+      <PopoverRoot open={pickerOpen} onOpenChange={(open) => {
+        setPickerOpen(open);
+        if (open) void load(query);
+        else controllerRef.current?.abort();
+      }}>
+        <PopoverTriggerElement disabled={busy}><Button ref={pickerTrigger} type="default" disabled={busy} htmlType="button" aria-label="按组织架构选择人员" icon={<Plus size={15} />}>按组织架构添加人员</Button></PopoverTriggerElement>
+        <PopoverPortal><PopoverPositioner placement="bottomLeft" sideOffset={6} collisionPadding={8}>
+          <PopoverPopup aria-label="公司组织架构选人" finalFocus={pickerTrigger} style={{ width: 420, maxWidth: "calc(100vw - 32px)", maxHeight: "min(70dvh, 32rem, var(--available-height))", overflowY: "auto", padding: 12 }} onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
+      <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">按组织架构选择人员</h3><Button type="text" size="small" aria-label="关闭选人下拉框" onClick={() => { controllerRef.current?.abort(); setPickerOpen(false); }} icon={<X size={15} />} /></div>
+      <LobeSelectField aria-label="筛选人员所属部门" value={departmentId || "__all_departments__"} disabled={busy || departments === null} onChange={(value) => {
+        const id = value === "__all_departments__" ? "" : value;
+        setDepartmentId(id); void load(query, false, id);
+      }} options={[{ value: "__all_departments__", label: "全部部门" }, ...departmentOptions.map((node) => ({ value: node.directoryId, label: node.path, disabled: !node.selectable }))]} />
+      {departments === null ? <p className="text-xs text-[var(--theme-text-secondary)]" role={departmentError ? "alert" : "status"}>{departmentError ? "组织架构加载失败，请关闭后重试；仍可按姓名或工号选人。" : "正在加载组织架构…"}</p> : null}
+      <p className="text-xs text-[var(--theme-text-secondary)]">按部门路径选择直属人员；勾选只添加具体人员，不授予整个部门权限。</p>
       <Input
         aria-label="搜索公司员工"
         prefix={<Search size={14} />}
@@ -214,6 +252,7 @@ function GroupMemberEditor({
       </div>
       {directory.status === "ready" && directory.employees.length === 0 ? <p className="text-sm text-[var(--theme-text-secondary)]">没有匹配的公司员工，请调整姓名或工号。</p> : null}
       </div>
+      </PopoverPopup></PopoverPositioner></PopoverPortal></PopoverRoot>
     </section>
   );
 }
@@ -491,7 +530,7 @@ export function GroupDrawer({
           </DrawerContent>
         </DrawerPopup></DrawerPortal>
       </DrawerRoot>
-      <ConfirmDialog isOpen={pendingMembers !== null} title="确认移除成员" message="这些用户将失去本组权限；移除最后一个业务组的用户会回到普通默认组并失去对话资格。若仍有其他业务组，请先在用户配置中指定替代主组。" confirmText="确认移除" onCancel={() => setPendingMembers(null)} onConfirm={() => { if (pendingMembers && details) void saveMembers(pendingMembers, details.revision, true); }} loading={busy === "members"} variant="warning" />
+      <ConfirmDialog isOpen={pendingMembers !== null} title="确认移除成员" message="这些用户将失去本组权限；移除最后一个业务组的用户会回到普通默认组并失去对话资格。需要保留对话资格的用户，请先在用户配置中转入其他业务组。" confirmText="确认移除" onCancel={() => setPendingMembers(null)} onConfirm={() => { if (pendingMembers && details) void saveMembers(pendingMembers, details.revision, true); }} loading={busy === "members"} variant="warning" />
       <ConfirmDialog isOpen={confirmAction === "disable"} title="确认停用业务组" message={`停用后该组不再用于新的分配。当前包含 ${details?.member_count ?? 0} 名成员和 ${details?.models.length ?? 0} 个模型，确认继续？`} confirmText="确认停用" onCancel={() => setConfirmAction(null)} onConfirm={() => void saveMeta()} loading={busy === "meta"} variant="warning" />
       <ConfirmDialog isOpen={confirmAction === "retire"} title="确认停用并归档" message="仅在已迁移全部成员和模型后归档该组。" confirmText="确认归档" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmRetire()} loading={busy === "retire"} variant="warning" />
       <ConfirmDialog isOpen={confirmAction === "delete"} title="确认删除分组" message="删除后分组配置不可恢复；后端仍会拒绝存在历史引用的删除请求。" confirmText="确认删除" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmDelete()} loading={busy === "delete"} />

@@ -35,6 +35,7 @@ def build_company_employees_router(
     @router.get("/admin/company-employees", response_model=CompanyEmployeeListResponse)
     async def list_company_employees(
         search: str = Query(default="", max_length=128),
+        department_id: str = Query(default="", pattern=r"^(?:[1-9][0-9]{0,9})?$"),
         offset: int = Query(default=0, ge=0, le=50_000),
         limit: int = Query(default=50, ge=1, le=100),
         principal: Any = Depends(principal_dependency),
@@ -44,6 +45,7 @@ def build_company_employees_router(
         try:
             return await service.list_employees(
                 tenant_id=principal.tenant_id, search=search, offset=offset, limit=limit,
+                department_id=department_id,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from None

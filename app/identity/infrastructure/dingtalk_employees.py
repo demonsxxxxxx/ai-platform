@@ -19,6 +19,7 @@ def parse_dingtalk_employees(payload: object) -> list[CompanyEmployee]:
         raise CompanyEmployeeDirectoryUnavailable()
     records: dict[str, set[tuple[str, str, str | None]]] = {}
     ids: dict[str, set[str]] = {}
+    departments: dict[str, set[tuple[str, ...]]] = {}
     for row in payload:
         if not isinstance(row, dict) or not {"userId", "username", "workid", "status"} <= row.keys():
             raise CompanyEmployeeDirectoryUnavailable()
@@ -31,6 +32,10 @@ def parse_dingtalk_employees(payload: object) -> list[CompanyEmployee]:
         status = row["status"]
         ids.setdefault(user_id, set()).add(work_id)
         records.setdefault(work_id, set()).add((user_id, name, status))
+        raw_departments = row.get("departId")
+        parts = list(dict.fromkeys(part.strip() for part in raw_departments.split(";") if part.strip())) if isinstance(raw_departments, str) else []
+        valid = len(parts) <= 128 and all(re.fullmatch(r"[1-9][0-9]{0,9}", part) for part in parts)
+        departments.setdefault(work_id, set()).add(tuple(sorted(parts)) if valid else ())
     employees = []
     for work_id, identities in sorted(records.items()):
         if not _WORK_ID.fullmatch(work_id) or ".." in work_id or len(identities) != 1:
@@ -40,7 +45,9 @@ def parse_dingtalk_employees(payload: object) -> list[CompanyEmployee]:
                 or not name or len(name) > 160 or any(ord(c) < 32 for c in name)
                 or status not in {"正式员工", "试用期"}):
             continue
-        employees.append(CompanyEmployee(work_id=work_id, display_name=name))
+        department_sets = departments[work_id]
+        department_ids = next(iter(department_sets)) if len(department_sets) == 1 else ()
+        employees.append(CompanyEmployee(work_id=work_id, display_name=name, department_ids=department_ids))
     return employees
 
 
