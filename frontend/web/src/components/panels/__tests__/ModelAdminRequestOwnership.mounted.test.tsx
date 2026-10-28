@@ -47,6 +47,7 @@ interface View {
 }
 async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View) => Promise<void>) {
   const React = await import("react");
+  const { flushSync } = await import("react-dom");
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
   const original = { ...modelAdminApi };
   Object.assign(modelAdminApi, { get: async () => saved(), ...api });
@@ -54,7 +55,16 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   const catalog = installModelCatalogTestProvider();
   const render = async (canManage: boolean) => { await React.act(async () => { root.render(catalog.wrap(React.createElement(ModelAdminControl, { canManage }))); }); };
   const input = (label: string) => {
-    const found = Array.from(container.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
+    let found = Array.from(dom.document.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label);
+    if (!found && label.startsWith("mock/")) {
+      const value = label.split(" ")[0];
+      const row = Array.from(dom.document.querySelectorAll("[data-model-admin-model]")).find((node) => node.textContent?.includes(value));
+      assert.ok(row, value);
+      React.act(() => { flushSync(() => { dom.document.querySelector<HTMLElement>('[aria-label="关闭模型编辑"]')?.click(); }); });
+      React.act(() => { flushSync(() => { row.querySelector<HTMLElement>("[data-model-admin-edit]")?.click(); }); });
+      found = Array.from(dom.document.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label);
+    }
+    assert.ok(found, label); return found as unknown as Field;
   };
   const button = (attribute: string) => {
     const found = Array.from(container.querySelectorAll("button")).find((node) => node.getAttribute(attribute) !== null); assert.ok(found, attribute); return found;
@@ -79,7 +89,8 @@ test("GET never claims test success; successive saves use acknowledged revisions
     assert.equal(credential, undefined); revisions.push(expected); return { ...saved(++revision), models };
   } }, async ({ input, change, click, button, container }) => {
     assert.match(text(container), /已配置 · 尚未测试/); assert.doesNotMatch(text(container), /连接正常|测试通过|synthetic-marker/);
-    assert.equal(input("模型 API Key").value, ""); assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    assert.equal(input("模型 API Key").value, ""); assert.equal(container.querySelectorAll("[data-model-admin-publish]").length, 0);
+    assert.equal(container.querySelectorAll("[data-model-admin-reload]").length, 0);
     await change("mock/gpt 压缩窗口 Token", "150000"); await click("data-model-admin-publish");
     await change("mock/gpt 最大输出 Token", "4096"); assert.equal(props(button("data-model-admin-publish")).disabled, false);
     await click("data-model-admin-publish"); assert.deepEqual(revisions, [4, 5]); assert.equal(input("mock/gpt 压缩窗口 Token").value, "150000");
@@ -140,12 +151,16 @@ test("cancel aborts discovery, clears entered key and restores saved models; lat
   });
 });
 
-test("dirty reload updates saved baseline; discovery preserves edits and failures retain the draft", async () => {
+test("conflict recovery updates saved baseline; discovery preserves edits and failures retain the draft", async () => {
   let gets = 0; let discoveries = 0;
   await withControl({ get: async () => saved(++gets === 1 ? 4 : 7), discover: async () => {
-    if (++discoveries === 1) return candidate(7); throw new ApiRequestError("unavailable", 502, "model_upstream_unavailable");
+    if (++discoveries <= 2) return candidate(7); throw new ApiRequestError("unavailable", 502, "model_upstream_unavailable");
   } }, async ({ change, click, input, container }) => {
-    await change("mock/gpt 压缩窗口 Token", "150000"); await change("模型 API Key", "synthetic-b"); await click("data-model-admin-reload");
+    await change("mock/gpt 压缩窗口 Token", "150000"); await change("模型 API Key", "synthetic-b");
+    assert.equal(container.querySelectorAll("[data-model-admin-reload]").length, 0);
+    await click("data-model-admin-discover");
+    assert.match(text(container), /放弃草稿并读取最新配置/);
+    await click("data-model-admin-reload");
     assert.equal(gets, 2); assert.equal(input("模型 API Key").value, ""); assert.equal(input("mock/gpt 压缩窗口 Token").value, "200000");
     await change("mock/gpt 压缩窗口 Token", "150000"); await change("mock/gpt 平台显示名称", "我的模型"); await click("data-model-admin-discover");
     assert.equal(input("mock/gpt 压缩窗口 Token").value, "150000"); assert.equal(choice(container, "启用 我的模型").getAttribute("aria-checked"), "true");
@@ -378,14 +393,14 @@ test("disabled capacity fields still honor request and upstream-availability loc
 
 test("successful publication remains successful when the grouped catalog refresh fails", async () => {
   await withControl({ publish: async (_url, _key, _revision, models) => ({ ...saved(5), models }) },
-    async ({ catalog, change, click, container, button }) => {
+    async ({ catalog, change, click, container }) => {
       catalog.failRefresh();
       await change("mock/gpt 压缩窗口 Token", "150000");
       await click("data-model-admin-publish");
       assert.equal(catalog.calls(), 2);
       assert.match(text(container), /模型配置已保存并生效；模型列表暂未刷新/);
       assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
-      assert.equal(props(button("data-model-admin-publish")).disabled, true);
+      assert.equal(container.querySelectorAll("[data-model-admin-publish]").length, 0);
     });
 });
 
