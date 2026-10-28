@@ -5,6 +5,7 @@ import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummary } from "../../../services/api/modelGroups.ts";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import { companyEmployeesApi } from "../../../services/api/companyEmployees.ts";
+import { capabilityDistributionApi } from "../../../services/api/capabilityDistribution.ts";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
 import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 
@@ -26,6 +27,7 @@ async function mount(initialDetails = details, shell = false) {
   const catalog = shell ? installModelCatalogTestProvider() : null;
   const originalModelGet = modelAdminApi.get;
   const originalEmployees = companyEmployeesApi.list;
+  const originalDepartments = capabilityDistributionApi.departmentDirectory;
   const calls: Array<{ kind: string; body?: unknown }> = [];
   modelGroupsApi.listAdmin = async () => ({ groups: [initialDetails], version: "model-groups.v1" });
   modelGroupsApi.details = async () => initialDetails;
@@ -34,14 +36,15 @@ async function mount(initialDetails = details, shell = false) {
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelAdminApi.get = async () => ({ connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
-  companyEmployeesApi.list = async () => ({ employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100 });
+  companyEmployeesApi.list = async (options) => { calls.push({ kind: "employees", body: options }); return { employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100 }; };
+  capabilityDistributionApi.departmentDirectory = async () => [{ directoryId: "123", authorityId: "123", name: "总公司", path: "总公司", selectable: true, reason: null, children: [{ directoryId: "456", authorityId: "456", name: "销售部", path: "总公司 / 销售部", children: [], selectable: true, reason: null }] }];
   const container = dom.document.createElement("div");
   const root = await createLobeTestRoot(container);
   await React.act(async () => root.render(shell
     ? catalog!.wrap(React.createElement(ModelCatalogPanel))
     : React.createElement(ModelGroupManagement)));
   for (let index = 0; index < 20 && !container.querySelector("[data-model-group-table]"); index += 1) await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  return { React, container, root, calls, restore: () => { catalog?.cleanup(); Object.assign(modelGroupsApi, original); modelAdminApi.get = originalModelGet; companyEmployeesApi.list = originalEmployees; } };
+  return { React, container, root, calls, restore: () => { catalog?.cleanup(); Object.assign(modelGroupsApi, original); modelAdminApi.get = originalModelGet; companyEmployeesApi.list = originalEmployees; capabilityDistributionApi.departmentDirectory = originalDepartments; } };
 }
 
 test("group management loads, creates, opens drawer and saves model/member lists through atomic endpoints", async () => {
@@ -81,6 +84,16 @@ test("group management loads, creates, opens drawer and saves model/member lists
     assert.equal(view.calls.some((call) => call.kind === "models"), true);
     await view.React.act(async () => { [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent === "成员")?.click(); });
     assert.ok(document.querySelector("[data-model-group-members]"));
+    const picker = document.querySelector<HTMLElement>('[aria-label="按组织架构选择人员"]');
+    assert.ok(picker);
+    await view.React.act(async () => picker.click());
+    const department = document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [role="combobox"]');
+    assert.ok(department);
+    await view.React.act(async () => department.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    assert.equal((view.calls.filter((call) => call.kind === "employees").at(-1)?.body as { departmentId: string }).departmentId, "456");
+    assert.match(document.body.textContent ?? "", /总公司 \/ 销售部/);
     const employeeSearch = document.querySelector<HTMLInputElement>('input[aria-label="搜索公司员工"]');
     assert.ok(employeeSearch);
     await view.React.act(async () => {
@@ -91,6 +104,7 @@ test("group management loads, creates, opens drawer and saves model/member lists
     const employee = document.querySelector('[data-model-group-member-directory] [role="checkbox"]') as HTMLElement | null;
     assert.ok(employee);
     await view.React.act(async () => employee.click());
+    await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="关闭选人下拉框"]')!.click());
     const saveMembers = [...document.querySelectorAll("button")].find((button) => button.textContent === "保存成员");
     assert.ok(saveMembers);
     await view.React.act(async () => saveMembers.click());
@@ -99,6 +113,42 @@ test("group management loads, creates, opens drawer and saves model/member lists
     await view.React.act(async () => view.root.unmount());
     view.restore();
   }
+});
+
+
+test("organization picker ignores late employee results and preserves selections on directory failure", async () => {
+  const view = await mount();
+  const click = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  const initialEmployees = companyEmployeesApi.list;
+  let resolveOld: ((value: Awaited<ReturnType<typeof companyEmployeesApi.list>>) => void) | undefined;
+  let oldSignal: AbortSignal | undefined;
+  try {
+    await click("编辑 销售组"); await click("成员");
+    companyEmployeesApi.list = (options) => { oldSignal = options?.signal; return new Promise((resolve) => { resolveOld = resolve; }); };
+    await click("按组织架构选择人员");
+    companyEmployeesApi.list = initialEmployees;
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索公司员工"]');
+    assert.ok(search);
+    await view.React.act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "员工 A");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.equal(oldSignal?.aborted, true);
+    await view.React.act(async () => resolveOld!({ employees: [{ work_id: "late", display_name: "旧结果" }], total: 1, offset: 0, limit: 100 }));
+    assert.doesNotMatch(document.querySelector("[data-model-group-member-directory]")?.textContent ?? "", /旧结果/);
+    await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="选择成员 员工 A"]')!.click());
+    await click("关闭选人下拉框");
+    companyEmployeesApi.list = async () => { throw new Error("公司员工目录暂时不可用"); };
+    await click("按组织架构选择人员");
+    assert.match(document.body.textContent ?? "", /公司员工目录暂时不可用/);
+    assert.equal(document.querySelectorAll("[data-model-group-selected-member]").length, 1);
+    companyEmployeesApi.list = initialEmployees;
+    await click("重试");
+    assert.match(document.querySelector("[data-model-group-member-directory]")?.textContent ?? "", /员工 A/);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });
 
 
