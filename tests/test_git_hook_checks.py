@@ -13,8 +13,8 @@ from tools import git_hook_checks as hooks
 
 def git(root, *args, check=True, data=None):
     result = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True, text=True)
-    if check:
-        assert result.returncode == 0, result.stdout + result.stderr
+    if check and result.returncode != 0:
+        raise AssertionError(result.stdout + result.stderr)
     return result
 
 
