@@ -38,8 +38,9 @@ class ModelGroupSelection:
 class ModelGroupPolicyError(ValueError):
     """Stable model-group policy error code."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, **details: object) -> None:
         self.code = code
+        self.details = details
         super().__init__(code)
 
 

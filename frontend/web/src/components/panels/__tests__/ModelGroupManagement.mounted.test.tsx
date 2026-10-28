@@ -31,6 +31,7 @@ async function mount(initialDetails = details, shell = false) {
   modelGroupsApi.details = async () => initialDetails;
   modelGroupsApi.create = async (payload) => { calls.push({ kind: "create", body: payload }); return summary; };
   modelGroupsApi.update = async (_id, payload) => { calls.push({ kind: "update", body: payload }); return summary; };
+  modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelAdminApi.get = async () => ({ connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
@@ -172,6 +173,36 @@ test("default group explains computed users and keeps model assignment available
     assert.equal(drawer.querySelectorAll("[data-model-group-model]").length, 1);
     await click("保存模型");
     assert.equal(view.calls.some((call) => call.kind === "models"), true);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("delete group requires an explicit member destination and displays active run count", async () => {
+  const view = await mount({ ...details, member_count: 2, active_run_count: 0 });
+  const click = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  try {
+    await click("编辑 销售组");
+    assert.doesNotMatch(document.body.textContent ?? "", /停用并归档/);
+    await click("删除分组");
+    let modal = document.querySelector<HTMLElement>('[aria-label="确认删除分组"]');
+    assert.ok(modal);
+    assert.equal([...modal.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认删除")?.disabled, true);
+    const select = modal.querySelector<HTMLElement>('[role=combobox]'); assert.ok(select);
+    await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    assert.match(modal.textContent ?? "", /失去对话资格/);
+    await click("确认删除");
+    assert.deepEqual(view.calls.find((call) => call.kind === "delete")?.body, { revision: 4, confirm_impact: true, delete: true, confirm_default_fallback: true });
+    // Reopen against a changed server projection: active runs block submit, even with a migration choice.
+    modelGroupsApi.details = async () => ({ ...details, member_count: 2, active_run_count: 3 });
+    await click("编辑 销售组"); await click("删除分组");
+    modal = document.querySelector<HTMLElement>('[aria-label="确认删除分组"]'); assert.ok(modal);
+    assert.match(modal.textContent ?? "", /3 个未完成任务/);
+    assert.equal([...modal.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认删除")?.disabled, true);
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });
 
