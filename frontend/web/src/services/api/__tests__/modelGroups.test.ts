@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { modelGroupsApi } from "../modelGroups";
+import { companyEmployeesApi } from "../companyEmployees";
 
 test("model group mutations use dedicated atomic endpoints and preserve abort ownership", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -20,7 +21,7 @@ test("model group mutations use dedicated atomic endpoints and preserve abort ow
       expected_group_revisions: { "g_sales": 7 }, preview: true,
     }, { signal: controller.signal });
     await modelGroupsApi.setUserMemberships("user/a", {
-      group_ids: ["g_sales", "g_support"],
+      group_ids: ["g_sales"],
       primary_group_id: "g_sales",
       expected_revision: 3,
       confirm_default_fallback: false,
@@ -39,7 +40,7 @@ test("model group mutations use dedicated atomic endpoints and preserve abort ow
     });
     assert.equal(calls[2].url, "/api/ai/admin/users/user%2Fa/model-groups");
     assert.deepEqual(JSON.parse(String(calls[2].init?.body)), {
-      group_ids: ["g_sales", "g_support"],
+      group_ids: ["g_sales"],
       primary_group_id: "g_sales",
       expected_revision: 3,
       confirm_default_fallback: false,
@@ -47,6 +48,24 @@ test("model group mutations use dedicated atomic endpoints and preserve abort ow
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("employee picker scopes search and pagination to an exact department and forwards cancellation", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; signal?: AbortSignal | null }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), signal: init?.signal });
+    return new Response(JSON.stringify({ employees: [], total: 0, offset: 100, limit: 100 }), { status: 200 });
+  };
+  try {
+    const controller = new AbortController();
+    await companyEmployeesApi.list({ departmentId: "123", search: " 员工 A ", offset: 100, limit: 100, signal: controller.signal });
+    const url = new URL(calls[0].url, "https://synthetic.test");
+    assert.equal(url.searchParams.get("department_id"), "123");
+    assert.equal(url.searchParams.get("search"), "员工 A");
+    assert.equal(url.searchParams.get("offset"), "100");
+    assert.equal(calls[0].signal, controller.signal);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("public model listing scopes the selected group without leaking admin fields", async () => {

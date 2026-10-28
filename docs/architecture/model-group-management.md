@@ -135,6 +135,15 @@ server resolves only to exactly one same-tenant active `users` row whose
 Display-name or string equality is never used as an identity binding. Ambiguous
 or unmapped work IDs fail closed.
 
+The employee picker joins the existing pure DingTalk department directory with
+employee `departId` values from the same source. The admin-only employee list
+accepts an optional exact `department_id` filter before search/pagination; it
+still projects only work ID and display name. Department filtering selects direct
+members, not descendants or a department grant. Invalid or ambiguous department
+metadata cannot match a filtered query but does not remove a valid employee from
+unfiltered search. Selecting a person remains an explicit membership write with
+normal identity and revision validation.
+
 All writes require the existing model-admin predicate and tenant from the
 authenticated principal. New publication rejects the retired per-model
 `access_mode`/`allowed_user_ids`/`is_default` fields; migration inventory may read
