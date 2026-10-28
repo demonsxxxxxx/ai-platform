@@ -64,6 +64,28 @@ def test_inactive_or_unknown_status_is_not_selectable(status):
     assert adapter.parse_dingtalk_employees([employee(status=status)]) == []
 
 
+@pytest.mark.asyncio
+async def test_department_filter_uses_exact_ids_and_preserves_unfiltered_employees():
+    rows = [employee("E001", departId="123; 456;123"), employee("E002", departId="1234"),
+            employee("E003", departId="invalid"), employee("E004", departId=None)]
+
+    async def reader():
+        return adapter.parse_dingtalk_employees(rows)
+
+    service = CompanyEmployeeDirectoryService(reader, tenant_id="default")
+    assert (await service.list_employees(tenant_id="default"))["total"] == 4
+    assert (await service.list_employees(tenant_id="default", department_id="123"))["employees"] == [
+        {"work_id": "E001", "display_name": "Employee E001"}]
+    assert (await service.list_employees(tenant_id="default", department_id="456", search="e001"))["total"] == 1
+    assert (await service.list_employees(tenant_id="default", department_id="123", search="e002"))["total"] == 0
+    for value in ("0", "0123", "123;456", "department-name", "１２３", "1" * 11):
+        with pytest.raises(ValueError, match="company_employee_directory_query_invalid"):
+            await service.list_employees(tenant_id="default", department_id=value)
+    rows.append(employee("E001", departId="789"))
+    assert (await service.list_employees(tenant_id="default", department_id="123"))["total"] == 0
+    assert (await service.list_employees(tenant_id="default"))["total"] == 4
+
+
 def test_duplicate_and_ambiguous_identities_fail_closed():
     rows = [employee(), employee(), employee("trial", status="试用期"),
             employee("", userId="blank"), employee("bad id"),
@@ -91,6 +113,9 @@ async def test_server_pagination_beyond_100_and_literal_search(monkeypatch):
     assert (await service.list_employees(tenant_id="default", search="employee e204"))["total"] == 1
     for query in ("%", "_", ".*"):
         assert (await service.list_employees(tenant_id="default", search=query))["total"] == 0
+    filtered = await service.list_employees(tenant_id="default", department_id="123", offset=200, limit=100)
+    assert filtered["total"] == 205 and len(filtered["employees"]) == 5
+    assert filtered["employees"][0]["work_id"] == "E200"
 
 
 @pytest.mark.asyncio
@@ -133,14 +158,16 @@ def test_admin_and_tenant_scope_ignore_client_tenant_and_hide_private_fields():
         assert response.status_code == 200
         assert set(response.json()["employees"][0]) == {"work_id", "display_name"}
         assert "private" not in json.dumps(response.json())
-        for query in ("limit=101", "offset=50001", "offset=-1", "search=" + "x" * 129):
+        assert client.get("/admin/company-employees?department_id=123").json()["total"] == 1
+        assert client.get("/admin/company-employees?department_id=1234").json()["total"] == 0
+        for query in ("limit=101", "offset=50001", "offset=-1", "search=" + "x" * 129, "department_id=123;456", "department_id=0123"):
             assert client.get("/admin/company-employees?" + query).status_code == 422
         principal.admin = False
         assert client.get("/admin/company-employees").status_code == 403
         principal.admin = True
         principal.tenant_id = "foreign"
         assert client.get("/admin/company-employees?tenant_id=default").status_code == 403
-        assert len(calls) == 1
+        assert len(calls) == 3
 
 
 def test_transport_unavailable_is_retryable_503():

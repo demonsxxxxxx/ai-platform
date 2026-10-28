@@ -214,7 +214,9 @@ async def get_admin_group_details(
     cursor = await conn.execute(
         """
         select g.id, g.code, g.name, g.type, g.enabled, g.revision, g.remark, g.sort_order,
-          g.default_model_id,
+          g.default_model_id, g.archived_at,
+          (select count(*) from runs r where r.tenant_id = g.tenant_id and r.model_group_id = g.id
+            and r.status not in ('succeeded','failed','cancelled')) as active_run_count,
           (g.type = 'ordinary_default') as members_are_implicit,
           case when g.type = 'ordinary_default' then
             (select count(*) from users u where u.tenant_id = g.tenant_id and u.status = 'active'
@@ -253,7 +255,7 @@ async def list_admin_groups(conn: Any, *, tenant_id: str) -> list[dict[str, Any]
                      where bm.tenant_id = u.tenant_id and bm.user_id = u.id and bg.type = 'business'))
                  else (select count(*) from model_group_members m where m.group_id = g.id) end as member_count,
                (select count(*) from model_group_models gm where gm.group_id = g.id) as model_count
-        from model_groups g where g.tenant_id = %s
+        from model_groups g where g.tenant_id = %s and g.archived_at is null
         order by (g.type = 'ordinary_default') desc, g.sort_order, g.id
         """,
         (tenant_id,),
@@ -299,13 +301,6 @@ async def update_group(conn: Any, *, tenant_id: str, group_id: str, name: str | 
         name is not None or enabled is not None or sort_order is not None
     ):
         raise ModelGroupPolicyError("model_default_group_immutable")
-    if group["type"] == BUSINESS_GROUP_TYPE and enabled is False and bool(group["enabled"]):
-        member_cursor = await conn.execute(
-            "select exists(select 1 from model_group_members where tenant_id = %s and group_id = %s) as has_members",
-            (tenant_id, group_id),
-        )
-        if bool((await member_cursor.fetchone() or {}).get("has_members")) and not confirm_impact:
-            raise ModelGroupPolicyError("model_group_impact_confirmation_required")
     changes: list[str] = []
     params: list[Any] = []
     if name is not None:
@@ -346,11 +341,13 @@ async def update_group(conn: Any, *, tenant_id: str, group_id: str, name: str | 
 async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision: int, models: list[dict[str, Any]], default_model_id: str | None = None) -> dict[str, Any]:
     await conn.execute("select pg_advisory_xact_lock(%s)", (_GROUP_LOCK_KEY,))
     group_cursor = await conn.execute(
-        "select id, type, revision, default_model_id from model_groups where tenant_id = %s and id = %s for update",
+        "select id, type, enabled, archived_at, revision, default_model_id from model_groups where tenant_id = %s and id = %s for update",
         (tenant_id, group_id),
     )
     group = await group_cursor.fetchone()
     if group is None or group["type"] not in {BUSINESS_GROUP_TYPE, DEFAULT_GROUP_TYPE}:
+        raise ModelGroupPolicyError("group_not_available")
+    if group["archived_at"] is not None:
         raise ModelGroupPolicyError("group_not_available")
     if int(group["revision"]) != revision:
         raise ModelGroupPolicyError("model_policy_changed")
@@ -413,41 +410,94 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
 async def archive_or_delete_group(
     conn: Any, *, tenant_id: str, group_id: str, revision: int,
     confirm_impact: bool = False, delete: bool = False,
+    target_group_id: str | None = None,
+    confirm_default_fallback: bool = False,
+    target_group_revision: int | None = None,
 ) -> dict[str, Any]:
+    """Logically delete a business group without touching Run snapshots.
+
+    ``delete=False`` remains the legacy archive operation. Both spellings use the
+    same member migration and revision fence; physical deletion is retired.
+    """
+    del confirm_impact  # Retained for old clients; it cannot replace migration choice.
     await conn.execute("select pg_advisory_xact_lock(%s)", (_GROUP_LOCK_KEY,))
     cursor = await conn.execute(
         """
-        select id, type, revision, archived_at,
-          (select count(*) from model_group_members m where m.group_id = g.id) as member_count,
+        select id, type, enabled, revision, archived_at,
+          (select count(*) from model_group_members m where m.tenant_id = g.tenant_id and m.group_id = g.id) as member_count,
           (select count(*) from model_group_models gm where gm.group_id = g.id) as model_count,
-          exists(select 1 from runs r where r.model_group_id = g.id) as has_run_references,
-          exists(select 1 from runs r where r.model_group_id = g.id and r.status not in ('succeeded','failed','cancelled','canceled')) as has_active_runs
+          (select count(*) from runs r where r.tenant_id = g.tenant_id and r.model_group_id = g.id
+             and r.status not in ('succeeded','failed','cancelled')) as active_run_count
         from model_groups g where tenant_id = %s and id = %s for update
         """,
         (tenant_id, group_id),
     )
     group = await cursor.fetchone()
-    if group is None:
+    if group is None or group["archived_at"] is not None:
         raise ModelGroupPolicyError("group_not_available")
     if group["type"] == DEFAULT_GROUP_TYPE:
         raise ModelGroupPolicyError("model_default_group_immutable")
-    if int(group["member_count"]) or int(group["model_count"]):
-        raise ModelGroupPolicyError("model_group_references_exist")
-    if group["has_active_runs"]:
-        raise ModelGroupPolicyError("model_group_active_runs")
-    if delete:
-        if group["has_run_references"]:
-            raise ModelGroupPolicyError("model_group_references_exist")
-        deleted = await conn.execute(
-            "delete from model_groups where tenant_id = %s and id = %s and revision = %s returning id",
-            (tenant_id, group_id, revision),
+    if int(group["revision"]) != revision:
+        raise ModelGroupPolicyError("model_group_revision_conflict")
+    if target_group_id and confirm_default_fallback:
+        raise ModelGroupPolicyError("model_group_migration_choice_conflict")
+    active_run_count = int(group["active_run_count"])
+    if active_run_count:
+        raise ModelGroupPolicyError("model_group_active_runs", active_run_count=active_run_count)
+
+    member_cursor = await conn.execute(
+        "select user_id from model_group_members where tenant_id = %s and group_id = %s for update",
+        (tenant_id, group_id),
+    )
+    member_ids = [str(row["user_id"]) for row in await member_cursor.fetchall()]
+    has_members = bool(member_ids)
+    if has_members and not target_group_id and not confirm_default_fallback:
+        raise ModelGroupPolicyError("model_group_migration_required")
+
+    target = None
+    if target_group_id:
+        if target_group_id == group_id:
+            raise ModelGroupPolicyError("model_group_migration_target_invalid")
+        if type(target_group_revision) is not int:
+            raise ModelGroupPolicyError("model_group_target_revision_required")
+        target_cursor = await conn.execute(
+            """select id, type, enabled, archived_at, revision
+               from model_groups where tenant_id = %s and id = %s for update""",
+            (tenant_id, target_group_id),
         )
-        if await deleted.fetchone() is None:
-            raise ModelGroupPolicyError("model_group_revision_conflict")
-        return {"group_id": group_id, "deleted": True, "archived": False}
+        target = await target_cursor.fetchone()
+        if (
+            target is None or target["type"] != BUSINESS_GROUP_TYPE
+            or target["archived_at"] is not None or not bool(target["enabled"])
+        ):
+            raise ModelGroupPolicyError("model_group_migration_target_invalid")
+        if int(target["revision"]) != target_group_revision:
+            raise ModelGroupPolicyError("model_group_target_revision_conflict")
+
+    if has_members:
+        await conn.execute(
+            "delete from model_group_members where tenant_id = %s and group_id = %s",
+            (tenant_id, group_id),
+        )
+        if target is not None:
+            await conn.execute(
+                """insert into model_group_members(tenant_id, group_id, user_id, is_primary)
+                   select %s, %s, unnest(%s::text[]), true""",
+                (tenant_id, target_group_id, member_ids),
+            )
+        await conn.execute(
+            "update users set model_group_membership_revision = model_group_membership_revision + 1 where tenant_id = %s and id = any(%s)",
+            (tenant_id, member_ids),
+        )
+        if target is not None:
+            await conn.execute(
+                "update model_groups set revision = revision + 1, updated_at = now() where tenant_id = %s and id = %s",
+                (tenant_id, target_group_id),
+            )
+    await conn.execute("delete from model_group_models where group_id = %s", (group_id,))
     updated = await conn.execute(
         """
-        update model_groups set enabled = false, archived_at = coalesce(archived_at, now()),
+        update model_groups set enabled = false, default_model_id = null, archived_at = now(),
           revision = revision + 1, updated_at = now()
         where tenant_id = %s and id = %s and revision = %s
         returning revision, archived_at
@@ -457,7 +507,14 @@ async def archive_or_delete_group(
     row = await updated.fetchone()
     if row is None:
         raise ModelGroupPolicyError("model_group_revision_conflict")
-    return {"group_id": group_id, "deleted": False, "archived": True, "revision": int(row["revision"])}
+    return {
+        "group_id": group_id,
+        "deleted": bool(delete),
+        "archived": True,
+        "revision": int(row["revision"]),
+        "migrated_member_count": len(member_ids),
+        "target_group_id": target_group_id if target is not None else None,
+    }
 
 
 async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_id: str | None, model_id: str | None, model_value: str | None, selection_mode: str, usage_scene: str) -> ModelGroupSelection:

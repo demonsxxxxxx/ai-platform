@@ -205,8 +205,8 @@ function serializeUpdate(update: CapabilityDistributionUpdate) {
 }
 
 export const capabilityDistributionApi = {
-  async departmentDirectory(): Promise<DepartmentDirectoryNode[]> {
-    const response = await authFetch<unknown>(buildDepartmentDirectoryUrl());
+  async departmentDirectory(options: { signal?: AbortSignal } = {}): Promise<DepartmentDirectoryNode[]> {
+    const response = await authFetch<unknown>(buildDepartmentDirectoryUrl(), options);
     return normalizeDepartmentDirectory(response);
   },
 
