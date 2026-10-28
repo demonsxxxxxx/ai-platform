@@ -113,6 +113,9 @@ class ModelGroupRetireRequest(BaseModel):
     revision: StrictInt = Field(ge=1)
     confirm_impact: StrictBool = False
     delete: StrictBool = False
+    target_group_id: str | None = Field(default=None, min_length=1, max_length=128)
+    target_group_revision: StrictInt | None = Field(default=None, ge=1)
+    confirm_default_fallback: StrictBool = False
 
 
 class ModelGroupModelsRequest(BaseModel):
@@ -167,6 +170,13 @@ def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
 
 def _translate_control_plane_error(exc: Exception) -> HTTPException:
     code = str(exc)
+    if code == "model_group_active_runs":
+        count = getattr(exc, "details", {}).get("active_run_count")
+        return HTTPException(status_code=409, detail={"code": code, "active_run_count": count} if type(count) is int and count >= 0 else code)
+    if code in {"model_group_target_revision_conflict"}:
+        return HTTPException(status_code=409, detail=code)
+    if code in {"model_group_migration_required", "model_group_migration_choice_conflict", "model_group_migration_target_invalid", "model_group_target_revision_required"}:
+        return HTTPException(status_code=422, detail=code)
     if code in {
         "group_not_available",
         "group_disabled",
