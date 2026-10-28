@@ -716,7 +716,7 @@ export function ChatAppContent({
   const [modelSelectionMode, setModelSelectionMode] = useState<"auto" | "explicit">("explicit");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
-  const modelGroupRef = useRef(selectedGroupId);
+  const modelGroupRef = useRef(selectedGroupId || null);
 
   useEffect(() => {
     if (catalogSelectionError) {
@@ -727,8 +727,9 @@ export function ChatAppContent({
   }, [catalogSelectionError]);
 
   useEffect(() => {
-    if (modelGroupRef.current !== selectedGroupId) {
-      modelGroupRef.current = selectedGroupId;
+    const priorGroupId = modelGroupRef.current;
+    if (selectedGroupId) modelGroupRef.current = selectedGroupId;
+    if (priorGroupId && selectedGroupId && priorGroupId !== selectedGroupId) {
       const groupDefault = availableModels?.find((model) => model.value === defaultModel);
       setCurrentModelId(groupDefault?.id ?? "");
       setCurrentModelValue(groupDefault?.value ?? "");
