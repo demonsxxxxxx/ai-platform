@@ -4579,7 +4579,7 @@ def test_resolve_run_selector_requires_explicit_skill_for_named_agent():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("session_id", "purpose", "group_type", "allowed"), [
     (None, None, "ordinary_default", True),
-    ("existing", "conversation", "ordinary_default", False),
+    ("existing", "conversation", "ordinary_default", True),
     ("existing", "conversation", "business", True),
     ("existing", "builder_test", "ordinary_default", True),
 ])

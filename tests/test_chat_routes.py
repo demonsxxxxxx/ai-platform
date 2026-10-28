@@ -5840,10 +5840,11 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
         async def deny_default_model(_conn, *, usage_scene, **_kwargs):
             assert usage_scene == "expert"
             from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
-            with pytest.raises(ValueError):
-                validate_model_group_snapshot(group_id="default-group", group_code="default", group_type="ordinary_default",
-                    group_revision=1, selection_mode="auto", usage_scene=usage_scene, policy_version="model-groups.v1")
-            raise ValueError("group_not_available")
+            validate_model_group_snapshot(group_id="default-group", group_code="default", group_type="ordinary_default",
+                group_revision=1, selection_mode="auto", usage_scene=usage_scene, policy_version="model-groups.v1")
+            return SimpleNamespace(model_id="default-model", model_value="provider/default", connection_revision=1,
+                auto_compact_window=200000, max_output_tokens=2048, group_id="default-group", group_code="default",
+                group_type="ordinary_default", group_revision=1, selection_mode="auto", usage_scene="expert", policy_version="model-groups.v1")
         monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", deny_default_model)
 
     async def authorize_transport_mcp_defaults(*_args, **_kwargs):
@@ -5895,11 +5896,6 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
             principal=principal(),
         )
 
-    if default_group:
-        assert caught.value.status_code == 403
-        assert caught.value.detail == "group_not_available"
-        assert calls == ["user_lock", "principal", "bound_profile"]
-        return
     assert caught.value.detail == "captured_profile_skill", repr(caught.value.__cause__)
     assert calls == [
         "user_lock",

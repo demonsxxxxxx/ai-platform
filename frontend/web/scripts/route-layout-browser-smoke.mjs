@@ -584,7 +584,7 @@ async function runCase(viewport, scenario) {
         }
       }
       await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '模型')).click()`);
-      if (groupCase === "default") await browser.client.waitFor("document.body.innerText.includes('普通默认组模型仅供独立业务入口') && document.body.innerText.includes('暂无已加入模型')", `${viewport.name}:models:default-empty-state`);
+      if (groupCase === "default") await browser.client.waitFor("document.body.innerText.includes('普通默认组模型可供专家及独立业务入口') && document.body.innerText.includes('暂无已加入模型')", `${viewport.name}:models:default-empty-state`);
       const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
       let memberPicker = null;
       if (groupCase === "members") {

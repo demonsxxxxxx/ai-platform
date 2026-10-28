@@ -22,7 +22,7 @@ that model initially and submits it explicitly. A user may choose another model 
 the same group. Neither explicit selection nor an unavailable default substitutes
 another model. Legacy `auto` requests resolve only the designated group default.
 
-Chat and expert usage scenes reject execution through the ordinary-default group;
+Only ordinary chat rejects execution through the ordinary-default group; authorized expert entry points permit it.
 a model shared with a business group remains usable through that business group. Direct independent
 business/skill execution may use the ordinary default group only after the normal
 trusted entry-point admission. The server derives this scene from the trusted
@@ -75,7 +75,7 @@ Session detail restores only the latest frozen model ID/value and group ID as
 explicit selection metadata. It never exposes arbitrary Run input or grants;
 each subsequent submission reauthorizes that choice.
 Gateway and reconciliation compare the v4 group fields to the Run before accepting
-the lease. Auxiliary chat completions require a matching succeeded v4 business-group
+the lease. Auxiliary chat completions require a matching succeeded v4 business-group or authorized default-group expert
 attempt; old ungrouped histories remain readable but do not obtain a new completion.
 
 Actual token usage remains attributed to the frozen Run model and group; no group

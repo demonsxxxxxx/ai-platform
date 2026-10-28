@@ -96,7 +96,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     has_more: false,
   });
   modelGroupsApi.listPublic = async () => ({
-    groups: [{ id: "group-enterprise", code: "enterprise", name: "企业业务组", type: "business",
+    groups: [{ id: "group-enterprise", code: "default", name: "普通默认组", type: "ordinary_default",
       enabled: true, revision: 1, is_primary: true, availability: "available",
       models: [{ id: "model-default", value: "model-default", label: "默认模型", enabled: true }] }],
     count: 1, version: "model-groups.v1",
