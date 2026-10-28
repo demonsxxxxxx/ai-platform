@@ -274,6 +274,33 @@ def test_model_group_batch_endpoint_is_atomic_contract(monkeypatch) -> None:
     }
 
 
+def test_group_retire_projects_active_count_and_keeps_admin_tenant_boundary(monkeypatch):
+    from app.execution.domain.model_groups import ModelGroupPolicyError
+    principal = SimpleNamespace(tenant_id="tenant-a")
+    authorized = True
+    calls = []
+
+    class Service:
+        async def archive_or_delete_model_group(self, **kwargs):
+            calls.append(kwargs)
+            raise ModelGroupPolicyError("model_group_active_runs", active_run_count=3, private_payload="never-project")
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: Service())
+    app = FastAPI()
+    app.include_router(model_routes.build_model_management_router(principal_dependency=lambda: principal, is_admin=lambda _: authorized))
+    with TestClient(app) as client:
+        payload = {"revision": 4, "delete": True, "target_group_id": "target", "target_group_revision": 2}
+        response = client.post("/admin/model-groups/source/retire", json=payload)
+        assert response.status_code == 409
+        assert response.json() == {"detail": {"code": "model_group_active_runs", "active_run_count": 3}}
+        assert calls[0] == {"tenant_id": "tenant-a", "group_id": "source", "revision": 4, "delete": True, "confirm_impact": False, "target_group_id": "target", "target_group_revision": 2, "confirm_default_fallback": False}
+        authorized = False
+        assert client.post("/admin/model-groups/source/retire", json=payload).status_code == 403
+        assert len(calls) == 1
+        authorized = True
+        assert client.post("/admin/model-groups/source/retire", json={**payload, "target_group_revision": True}).status_code == 422
+
+
 def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) -> None:
     principal = SimpleNamespace(user_id="admin-user", tenant_id="tenant-a")
     authorized = {"value": True}

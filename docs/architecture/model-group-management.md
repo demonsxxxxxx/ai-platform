@@ -28,6 +28,39 @@ business/skill execution may use the ordinary default group only after the norma
 trusted entry-point admission. The server derives this scene from the trusted
 route/profile path; a client `scene` field is not an authorization input.
 
+## Group retirement
+
+Disabling a business group is reversible: its members and model associations stay
+in place, but new admissions are denied. Ordinary default identity remains immutable.
+
+`POST /api/ai/admin/model-groups/{group_id}/retire` logically deletes a business
+group using `archived_at`; no physical group delete occurs. The UI exposes one
+Delete action instead of separate archive and physical-delete actions. The existing
+`delete`/`confirm_impact` request fields remain accepted for known clients; both
+legacy archive and delete spellings use the same atomic retirement rules.
+
+The request fences the source with `revision`. If members exist, choose exactly
+one destination: `target_group_id` plus `target_group_revision` for another enabled,
+unarchived business group in the same tenant, or `confirm_default_fallback=true`.
+The latter removes stored membership and restores implicit ordinary-default status,
+which removes chat eligibility. A generic impact confirmation cannot make this choice.
+Empty groups require no member destination. Source/target/self/tenant checks occur
+before writes; a stale source or target aborts the transaction.
+
+All nonterminal Runs block retirement; admin details expose `active_run_count`, and
+an admission race is rechecked under the shared group-policy advisory lock. A denied
+retirement returns a safe count without private execution payloads. Existing terminal
+Run/Attempt snapshots are neither rewritten nor removed and do not block deletion.
+
+Within the owning application transaction, retirement transfers or clears members,
+advances affected user and source/target group revisions, clears the designated
+default and this group's model associations, and sets `enabled=false, archived_at`.
+Model entities and associations in other groups are untouched. Deleted groups are
+hidden from normal admin/public lists; admin detail remains available for historical
+inspection. Metadata, model/member/batch and mapping writes reject archived groups.
+There is no restore/physical-cleanup API. Code rollback cannot recover transferred
+members: an authorized correction uses current membership APIs and audit evidence.
+
 ## Frozen snapshots
 
 A grouped Run stores `model_group_id`, code, type, revision, selection mode,

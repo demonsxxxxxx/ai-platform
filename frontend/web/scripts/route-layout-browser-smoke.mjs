@@ -382,7 +382,7 @@ const cases = [
     selector: "[data-model-admin-control]",
     name: "models",
     scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
-    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]", "[data-model-admin-tab=groups]"],
+    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-tab=groups]"],
     requiredRequests: ["/api/ai/admin/models", "/api/ai/admin/model-groups"],
   },
 ];
@@ -548,6 +548,12 @@ async function runCase(viewport, scenario) {
         `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-edit="mdl-18"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填'`, `${viewport.name}:models:editor-limits`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="关闭模型编辑"]').click()`);
+        await browser.client.waitFor(`!document.querySelector('[data-model-admin-editor]')`, `${viewport.name}:models:editor-closed`);
+      }
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
@@ -601,6 +607,24 @@ async function runCase(viewport, scenario) {
         await browser.client.waitFor(`!document.querySelector('[aria-label="公司组织架构选人"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.getAttribute('aria-label') === '按组织架构选择人员' && document.querySelectorAll('[data-model-group-selected-member]').length === 2`, "members:escape-draft-focus");
       }
       modelGroupDrawer = { tabs, screenshot, memberPicker };
+      if (groupCase === "delete") {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] button')].find(node => node.textContent === '删除分组')).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="确认删除分组"] [role=combobox]'))`, "delete:confirmation");
+        await browser.client.evaluate(`document.querySelector('[aria-label="确认删除分组"] [role=combobox]').focus()`);
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowDown", windowsVirtualKeyCode: 40 });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowDown", windowsVirtualKeyCode: 40 });
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].find(node => node.checkVisibility()))`, "delete:destinations");
+        await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find(node => node.textContent.includes('确认全部回普通默认组'))).click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="确认删除分组"]').innerText.includes('确认删除即确认')`, "delete:fallback-warning");
+        await browser.client.waitFor(`!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true })`, "delete:selection-settled");
+        const geometry = await browser.client.evaluate(`(() => { const modal = document.querySelector('[aria-label="确认删除分组"]'); const rect = modal.getBoundingClientRect(); const submit = [...modal.querySelectorAll('button')].find(node => node.textContent === '确认删除'); return { contained: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1, enabled: !submit.disabled }; })()`);
+        geometry.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-delete`);
+        if (!geometry.contained || !geometry.enabled) throw new Error(`delete_confirmation_failed:${JSON.stringify(geometry)}`);
+        modelGroupDrawer.deletion = geometry;
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.waitFor(`!document.querySelector('[aria-label="确认删除分组"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.textContent === '删除分组'`, "delete:cancel-preserves-drawer");
+      }
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.waitFor(`!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 ${groupName}'`, `${viewport.name}:models:group-focus-restored`);
@@ -695,7 +719,6 @@ async function runCase(viewport, scenario) {
           fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
           rows: table.querySelectorAll('[data-model-admin-model]').length,
           enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
-          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
           actionBottomGap: Math.round(innerHeight - bar.bottom),
@@ -709,7 +732,7 @@ async function runCase(viewport, scenario) {
         };
       })()`);
       if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
-        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {

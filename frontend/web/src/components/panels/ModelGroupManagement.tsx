@@ -14,6 +14,7 @@ import {
   PopoverPortal,
   PopoverPositioner,
   PopoverPopup,
+  ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalHeader, ModalTitle, ModalContent, ModalFooter,
   SwitchRoot,
   SwitchThumb,
   Table,
@@ -26,7 +27,7 @@ import {
   TextArea,
 } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, ArrowDown, ArrowUp, Boxes, Edit3, Info, Plus, Save, Search, Trash2, Users, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Boxes, Edit3, Info, Plus, Save, Search, Trash2, Users, X } from "lucide-react";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { ApiRequestError } from "../../services/api/fetch";
 import {
@@ -48,7 +49,12 @@ const ERROR_COPY: Record<string, string> = {
   group_models_unavailable: "该组模型暂时无法连接上游。",
   group_disabled: "该组已停用，不能继续分配成员。",
   model_group_impact_confirmation_required: "该组包含成员、模型或运行，请先完成迁移。",
-  model_group_references_exist: "该组仍有成员、模型或未完成运行，不能删除。",
+  model_group_active_runs: "该组还有运行中任务，请等待结束后重新打开删除。",
+  model_group_migration_required: "请选择成员迁入组，或明确确认回普通默认组。",
+  model_group_migration_choice_conflict: "转入业务组与回默认组不能同时选择。",
+  model_group_migration_target_invalid: "目标组不可用，请重新选择有效业务组。",
+  model_group_target_revision_conflict: "目标组已变化，请重新打开删除并确认。",
+  model_group_target_revision_required: "请重新打开删除以获取目标组最新配置。",
   model_default_group_immutable: "普通默认组不可停用、归档或删除。",
   model_group_revision_conflict: "分组已被其他管理员更新，请重新加载。",
   model_policy_changed: "分组已被其他管理员更新，请重新加载。",
@@ -380,13 +386,17 @@ export function GroupDrawer({
 }) {
   const [details, setDetails] = useState<AdminModelGroupDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"details" | "meta" | "models" | "members" | "retire" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"details" | "meta" | "models" | "members" | "delete" | null>(null);
   const [remark, setRemark] = useState("");
   const [name, setName] = useState("");
   const [sortOrder, setSortOrder] = useState(0);
   const [enabled, setEnabled] = useState(true);
   const [activeTab, setActiveTab] = useState<"basic" | "models" | "members">("basic");
-  const [confirmAction, setConfirmAction] = useState<"disable" | "retire" | "delete" | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"disable" | "delete" | null>(null);
+  const [deleteDetails, setDeleteDetails] = useState<AdminModelGroupDetails | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<AdminModelGroupSummary[]>([]);
+  const [memberDestination, setMemberDestination] = useState("");
+  const deleteTrigger = useRef<HTMLButtonElement>(null);
   const [pendingMembers, setPendingMembers] = useState<AdminModelGroupMember[] | null>(null);
   const loadController = useRef<AbortController | null>(null);
   const mutationController = useRef<AbortController | null>(null);
@@ -403,6 +413,7 @@ export function GroupDrawer({
     const controller = new AbortController();
     loadController.current = controller;
     setDetails(null);
+    setDeleteDetails(null);
     setPendingMembers(null);
     setConfirmAction(null);
     setBusy("details");
@@ -430,7 +441,7 @@ export function GroupDrawer({
     setConfirmAction(null);
     onClose();
   };
-  const runMutation = async <T,>(operation: Exclude<typeof busy, "details" | null>, action: (signal: AbortSignal) => Promise<T>) => {
+  const runMutation = async <T,>(operation: Exclude<typeof busy, null>, action: (signal: AbortSignal) => Promise<T>) => {
     if (!details || !group || busy) return;
     const version = ++versionRef.current;
     const controller = new AbortController();
@@ -440,7 +451,7 @@ export function GroupDrawer({
     try {
       const result = await action(controller.signal);
       if (controller.signal.aborted || version !== versionRef.current) return null;
-      await onChanged(controller.signal);
+      if (operation !== "details") await onChanged(controller.signal);
       if (controller.signal.aborted || version !== versionRef.current) return null;
       return result;
     } catch (caught) {
@@ -494,21 +505,40 @@ export function GroupDrawer({
       setDetails((current) => current ? { ...current, members: result.members, member_count: result.member_count, revision: result.revision } : current);
     }
   };
-  const confirmRetire = async () => {
-    if (!details || !group || group.type !== "business") return;
-    setConfirmAction(null);
-    const result = await runMutation("retire", (signal) => modelGroupsApi.retire(group.id, { revision: details.revision, confirm_impact: true, delete: false }, { signal }));
-    if (result) close();
+  const openDelete = async () => {
+    if (!group || busy) return;
+    const result = await runMutation("details", async (signal) => {
+      const [current, available] = await Promise.all([modelGroupsApi.details(group.id, { signal }), modelGroupsApi.listAdmin({ signal })]);
+      return { current, available };
+    });
+    if (result) {
+      setDeleteDetails(result.current);
+      setDeleteTargets(result.available.groups.filter((item) => item.id !== group.id && item.type === "business" && item.enabled));
+      setMemberDestination("");
+      setConfirmAction("delete");
+    }
   };
   const confirmDelete = async () => {
-    if (!details || !group || group.type !== "business" || details.member_count > 0 || details.models.length > 0) return;
-    setConfirmAction(null);
-    const result = await runMutation("delete", (signal) => modelGroupsApi.retire(group.id, { revision: details.revision, confirm_impact: false, delete: true }, { signal }));
+    if (!deleteDetails || !group || group.type !== "business" || deleteDetails.active_run_count || (deleteDetails.member_count > 0 && !memberDestination)) return;
+    const target = deleteTargets.find((item) => item.id === memberDestination);
+    const result = await runMutation("delete", async (signal) => {
+      try {
+        return await modelGroupsApi.retire(group.id, {
+          revision: deleteDetails.revision, confirm_impact: true, delete: true,
+          ...(deleteDetails.member_count > 0 ? target ? { target_group_id: target.id, target_group_revision: target.revision } : { confirm_default_fallback: true } : {}),
+        }, { signal });
+      } catch (caught) {
+        if (caught instanceof ApiRequestError && caught.code === "model_group_active_runs") {
+          const current = await modelGroupsApi.details(group.id, { signal });
+          if (!signal.aborted) setDeleteDetails(current);
+        }
+        throw caught;
+      }
+    });
     if (result) close();
   };
 
   if (!group) return null;
-  const hasReferences = Boolean(details?.member_count || details?.models.length);
   return (
     <>
       <DrawerRoot open onOpenChange={(open) => { if (!open && !busy) close(); }}>
@@ -525,15 +555,19 @@ export function GroupDrawer({
                 {group.type === "business" ? <TabsPanel value="members" keepMounted className="min-h-0 pt-5"><GroupMemberEditor details={details} busy={Boolean(busy)} onSave={saveMembers} /></TabsPanel> : null}
               </TabsRoot> : null}
               {details && group.type === "ordinary_default" ? <div className="mt-5 flex items-center gap-2 rounded-lg border border-[var(--theme-border)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"><Users size={15} className="shrink-0" /><span>自动归属 {details.member_count} 人：平台内尚未加入业务组的有效账号，不是钉钉全员或历史登录人数。</span></div> : null}
-              {details && group.type === "business" ? <section className="mt-6 space-y-2 border-t border-[var(--theme-border)] pt-4"><p className="text-xs text-[var(--theme-text-secondary)]">有成员或模型时请先迁移引用，再归档或删除。</p><div className="flex flex-wrap gap-2"><Button type="default" danger disabled={Boolean(busy) || hasReferences} loading={busy === "retire"} onClick={() => setConfirmAction("retire")} icon={<Archive size={15} />} htmlType="button">停用并归档</Button><Button type="text" danger disabled={Boolean(busy) || hasReferences} loading={busy === "delete"} onClick={() => setConfirmAction("delete")} icon={<Trash2 size={15} />} htmlType="button">删除分组</Button></div></section> : null}
+              {details && group.type === "business" ? <section className="mt-6 space-y-2 border-t border-[var(--theme-border)] pt-4"><p className="text-xs text-[var(--theme-text-secondary)]">删除会处理成员去向并解除本组模型关联，保留历史任务；不会删除模型。</p><Button ref={deleteTrigger} type="text" danger disabled={Boolean(busy)} loading={busy === "delete"} onClick={() => void openDelete()} icon={<Trash2 size={15} />} htmlType="button">删除分组</Button></section> : null}
             </div>
           </DrawerContent>
         </DrawerPopup></DrawerPortal>
       </DrawerRoot>
       <ConfirmDialog isOpen={pendingMembers !== null} title="确认移除成员" message="这些用户将失去本组权限；移除最后一个业务组的用户会回到普通默认组并失去对话资格。需要保留对话资格的用户，请先在用户配置中转入其他业务组。" confirmText="确认移除" onCancel={() => setPendingMembers(null)} onConfirm={() => { if (pendingMembers && details) void saveMembers(pendingMembers, details.revision, true); }} loading={busy === "members"} variant="warning" />
       <ConfirmDialog isOpen={confirmAction === "disable"} title="确认停用业务组" message={`停用后该组不再用于新的分配。当前包含 ${details?.member_count ?? 0} 名成员和 ${details?.models.length ?? 0} 个模型，确认继续？`} confirmText="确认停用" onCancel={() => setConfirmAction(null)} onConfirm={() => void saveMeta()} loading={busy === "meta"} variant="warning" />
-      <ConfirmDialog isOpen={confirmAction === "retire"} title="确认停用并归档" message="仅在已迁移全部成员和模型后归档该组。" confirmText="确认归档" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmRetire()} loading={busy === "retire"} variant="warning" />
-      <ConfirmDialog isOpen={confirmAction === "delete"} title="确认删除分组" message="删除后分组配置不可恢复；后端仍会拒绝存在历史引用的删除请求。" confirmText="确认删除" onCancel={() => setConfirmAction(null)} onConfirm={() => void confirmDelete()} loading={busy === "delete"} />
+      <ModalRoot open={confirmAction === "delete"} onOpenChange={(open) => { if (!open && !busy) setConfirmAction(null); }}><ModalPortal><ModalBackdrop /><ModalPopup width={440} className="workbench-modal" finalFocus={deleteTrigger} aria-label="确认删除分组"><ModalHeader><ModalTitle>删除 {group.name}</ModalTitle></ModalHeader><ModalContent><div className="space-y-4">
+        <p className="text-sm">本组包含 {deleteDetails?.member_count ?? 0} 名成员、{deleteDetails?.model_count ?? 0} 个模型。删除后从管理列表隐藏，历史任务保留；模型本身及其他组的关联不受影响。</p>
+        {deleteDetails?.active_run_count ? <p role="alert" className="text-sm text-[var(--theme-danger-text)]">当前有 {deleteDetails?.active_run_count} 个未完成任务，请等待结束后重新打开删除。</p> : null}
+        {deleteDetails?.member_count ? <><LobeSelectField aria-label="删除后成员去向" value={memberDestination || "__choose__"} disabled={Boolean(busy)} onChange={(value) => setMemberDestination(value === "__choose__" ? "" : value)} options={[{ value: "__choose__", label: "请选择成员去向", disabled: true }, ...deleteTargets.map((item) => ({ value: item.id, label: `全部转入：${item.name}` })), { value: "__default__", label: "确认全部回普通默认组，失去对话资格" }]} />{memberDestination === "__default__" ? <p className="text-sm text-[var(--theme-warning-text)]">确认删除即确认这些成员回到普通默认组，并失去对话资格。</p> : null}</> : null}
+        {error ? <p role="alert" className="text-sm text-[var(--theme-danger-text)]">{error}</p> : null}
+      </div></ModalContent><ModalFooter><Button disabled={Boolean(busy)} onClick={() => setConfirmAction(null)}>取消</Button><Button type="primary" danger loading={busy === "delete"} disabled={Boolean(busy) || Boolean(deleteDetails?.active_run_count) || Boolean(deleteDetails?.member_count && !memberDestination)} onClick={() => void confirmDelete()}>确认删除</Button></ModalFooter></ModalPopup></ModalPortal></ModalRoot>
     </>
   );
 }

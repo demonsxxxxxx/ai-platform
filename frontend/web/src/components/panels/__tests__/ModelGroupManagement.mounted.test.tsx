@@ -33,6 +33,7 @@ async function mount(initialDetails = details, shell = false) {
   modelGroupsApi.details = async () => initialDetails;
   modelGroupsApi.create = async (payload) => { calls.push({ kind: "create", body: payload }); return summary; };
   modelGroupsApi.update = async (_id, payload) => { calls.push({ kind: "update", body: payload }); return summary; };
+  modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelAdminApi.get = async () => ({ connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
@@ -263,21 +264,77 @@ test("default group explains computed users and keeps model assignment available
 });
 
 
+test("delete group requires an explicit member destination and displays active run count", async () => {
+  const view = await mount({ ...details, member_count: 2, active_run_count: 0 });
+  const click = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  try {
+    await click("编辑 销售组");
+    assert.doesNotMatch(document.body.textContent ?? "", /停用并归档/);
+    await click("删除分组");
+    let modal = document.querySelector<HTMLElement>('[aria-label="确认删除分组"]');
+    assert.ok(modal);
+    assert.equal([...modal.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认删除")?.disabled, true);
+    const select = modal.querySelector<HTMLElement>('[role=combobox]'); assert.ok(select);
+    await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    assert.match(modal.textContent ?? "", /失去对话资格/);
+    await click("确认删除");
+    assert.deepEqual(view.calls.find((call) => call.kind === "delete")?.body, { revision: 4, confirm_impact: true, delete: true, confirm_default_fallback: true });
+    // Reopen against a changed server projection: active runs block submit, even with a migration choice.
+    modelGroupsApi.details = async () => ({ ...details, member_count: 2, active_run_count: 3 });
+    await click("编辑 销售组"); await click("删除分组");
+    modal = document.querySelector<HTMLElement>('[aria-label="确认删除分组"]'); assert.ok(modal);
+    assert.match(modal.textContent ?? "", /3 个未完成任务/);
+    assert.equal([...modal.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "确认删除")?.disabled, true);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("canceling deletion does not advance the edit draft revision", async () => {
+  const view = await mount({ ...details, member_count: 0, active_run_count: 0, remark: "原备注" });
+  const click = async (label: string) => view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label); node.click();
+  });
+  try {
+    await click("编辑 销售组");
+    modelGroupsApi.details = async () => ({ ...details, revision: 9, enabled: false, name: "另一管理员修改", remark: "新备注", member_count: 0, active_run_count: 0 });
+    await click("删除分组"); await click("取消");
+    await click("保存基本信息");
+    const saved = view.calls.find((call) => call.kind === "update")?.body as { revision: number; enabled: boolean; name: string; remark: string };
+    assert.equal(saved.revision, 4);
+    assert.equal(saved.name, "销售组");
+    assert.equal(saved.remark, "原备注");
+    await click("删除分组"); await click("确认删除");
+    assert.equal((view.calls.find((call) => call.kind === "delete")?.body as { revision: number }).revision, 9);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
 test("model catalog tabs keep unsaved model names mounted", async () => {
   const view = await mount(details, true);
   try {
-    for(let i=0; i<40 && !view.container.querySelector('input[aria-label="model-a 平台显示名称"]'); i++) {
-      await view.React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    }
-    const field = view.container.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]');
+    const openEditor = async () => {
+      const edit = view.container.querySelector<HTMLElement>('[data-model-admin-edit]');
+      assert.ok(edit);
+      await view.React.act(async () => edit.click());
+    };
+    await openEditor();
+    const field = document.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]');
     assert.ok(field);
     await view.React.act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "未保存名称");
       field.dispatchEvent(new Event("input", {bubbles:true}));
     });
+    await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="关闭模型编辑"]')!.click());
     for(const value of ["groups", "catalog"]) {
       await view.React.act(async () => view.container.querySelector<HTMLElement>('[data-model-admin-tab="'+value+'"]')?.click());
     }
-    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]')?.value, "未保存名称");
+    await openEditor();
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]')?.value, "未保存名称");
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });

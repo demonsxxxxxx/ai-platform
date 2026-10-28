@@ -63,6 +63,8 @@ export interface AdminModelGroupModel {
 }
 
 export interface AdminModelGroupDetails extends AdminModelGroupSummary {
+  active_run_count?: number;
+  archived_at?: string | null;
   members: AdminModelGroupMember[];
   models: AdminModelGroupModel[];
 }
@@ -139,7 +141,7 @@ export const modelGroupsApi = {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups/${encodeURIComponent(groupId)}`, requestOptions(options, "PATCH", payload));
   },
 
-  async retire(groupId: string, payload: { revision: number; confirm_impact: boolean; delete: boolean }, options: RequestOptions = {}): Promise<{ group_id: string; deleted: boolean; archived: boolean; revision?: number }> {
+  async retire(groupId: string, payload: { revision: number; confirm_impact: boolean; delete: boolean; target_group_id?: string; target_group_revision?: number; confirm_default_fallback?: boolean }, options: RequestOptions = {}): Promise<{ group_id: string; deleted: boolean; archived: boolean; revision?: number }> {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups/${encodeURIComponent(groupId)}/retire`, requestOptions(options, "POST", payload));
   },
 
