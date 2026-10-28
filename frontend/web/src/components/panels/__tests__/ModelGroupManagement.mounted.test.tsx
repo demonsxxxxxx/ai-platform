@@ -179,18 +179,23 @@ test("default group explains computed users and keeps model assignment available
 test("model catalog tabs keep unsaved model names mounted", async () => {
   const view = await mount(details, true);
   try {
-    for(let i=0; i<40 && !view.container.querySelector('input[aria-label="model-a 平台显示名称"]'); i++) {
-      await view.React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    }
-    const field = view.container.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]');
+    const openEditor = async () => {
+      const edit = view.container.querySelector<HTMLElement>('[data-model-admin-edit]');
+      assert.ok(edit);
+      await view.React.act(async () => edit.click());
+    };
+    await openEditor();
+    const field = document.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]');
     assert.ok(field);
     await view.React.act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "未保存名称");
       field.dispatchEvent(new Event("input", {bubbles:true}));
     });
+    await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="关闭模型编辑"]')!.click());
     for(const value of ["groups", "catalog"]) {
       await view.React.act(async () => view.container.querySelector<HTMLElement>('[data-model-admin-tab="'+value+'"]')?.click());
     }
-    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]')?.value, "未保存名称");
+    await openEditor();
+    assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]')?.value, "未保存名称");
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });
