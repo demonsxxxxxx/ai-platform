@@ -537,7 +537,7 @@ test("a disabled primary never silently selects another business group", async (
 
 for (const [defaultModelId, expectedValue] of [
   ["model-b", "provider/model-b"],
-  ["unavailable-model", "provider/model-a"],
+  ["unavailable-model", ""],
 ] as const) {
   test(`catalog hydration is read-only and resolves public default ${defaultModelId}`, async () => {
     const originalFetch = globalThis.fetch;
