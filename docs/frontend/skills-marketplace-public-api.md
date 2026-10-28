@@ -244,7 +244,14 @@ while each Gateway owns its internal catalog and ACL caching. A single
 unavailable Server does not hide tools from other Servers. Responses expose
 stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
-internal IDs, or cache keys. Execution resolves only Server-qualified references.
+internal IDs, or cache keys. For an enterprise Gateway, a fresh anonymous
+catalog read may add the optional `upstream_server` display field only when its
+public tool name has one unique exact match in the user-authorized `tools/list`
+result. A missing, invalid, duplicate, or unavailable source leaves the
+user-effective tool selectable with `upstream_server: null`; this metadata is
+not an ACL, identity, execution route, or model input. Generic MCP connections
+do not perform this anonymous read and retain connection-based grouping.
+Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
 Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain

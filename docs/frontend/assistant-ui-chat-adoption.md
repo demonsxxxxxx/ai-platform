@@ -38,7 +38,7 @@
 | `empty-state.tsx`、`loading-state.tsx`、`connection-state.tsx` | 同名 Elements；WelcomePage、MessageParts、ChatConnectionStatus | 单一等待/生成/同步反馈，重连保持原入口；不添加无接口的 Retry/Continue |
 | `markdown-text.tsx` | `assistant-ui/elements/markdown-text.tsx`、`ChatMessage/MarkdownRenderer.tsx` | primitive、memoized slots、CodeHeader；共享 GFM/breaks/math/KaTeX、安全链接/图片、CodeMirror/Mermaid、表格导出和标题锚点 |
 | `attachment.aui.tsx`、`message-attachment.tsx`、`file.tsx` | `components/common/AttachmentCard.tsx`、`ChatInputAttachments.tsx`、`assistant-ui/MessageAttachments.tsx` | 上传卡和已发送文件展示；安全图片 URL、取消/删除、专业预览；上传只由 useFileUpload 执行 |
-| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；无 raw request/result fallback |
+| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，连续成功工具合并为可展开记录且默认隐藏耗时；无 raw request/result fallback |
 | `subagent-list.tsx`、`task-card.tsx`、`todo-list.tsx` | `ChatMessage/elements/TaskCard.tsx`、`SubagentList.tsx`、`TodoList.tsx`；SubagentBlocks、TodoBlock | 公开父子关系、三级递归与持久面板导航；只显示真实进度，Todo 保留平台三种状态 |
 | `artifact-card.tsx` | `ChatMessage/elements/ArtifactCard.tsx`；MessagePartRenderer | 已登记公开产物和原授权下载/预览；不发明 registered/delivery_scope 字段或新准入条件 |
 | `thread-list.tsx` | `components/panels/SidebarParts/ThreadList.tsx`、`components/panels/SidebarParts/sessionThreadListAdapter.ts`；SessionListContent、SessionItem | 受控行、Lobe 按钮、可访问未读；原专家/时间分组、loadMore、迟到改名删除隔离 |

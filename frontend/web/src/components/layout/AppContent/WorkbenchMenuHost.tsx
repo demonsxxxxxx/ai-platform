@@ -70,7 +70,7 @@ export function WorkbenchMenuHost({
     <DropdownMenuRoot open={menuOpen} modal={false} onOpenChange={setMenuOpen}>
       <DropdownMenuPortal>
         <DropdownMenuPositioner anchor={anchor} placement={menuPosition.left == null ? "topRight" : "topLeft"}>
-          <DropdownMenuPopup className="w-56" aria-label={t("common.menu")}>
+          <DropdownMenuPopup className="workbench-menu-popup w-56" aria-label={t("common.menu")}>
             {showOutlineButton && onToggleOutline ? <DropdownMenuItem onClick={() => { onToggleOutline(); setMenuOpen(false); }}><ListTree size={16} />{t("chat.outline")}</DropdownMenuItem> : null}
             {showRunPlaybackButton ? <DropdownMenuItem onClick={() => { onOpenRunPlayback?.(); setMenuOpen(false); }}><History size={16} />{t("runPlayback.menuLabel")}</DropdownMenuItem> : null}
             {activeTab === "chat" && allowNewSessionAction ? <DropdownMenuItem onClick={() => { onNewSession(); setMenuOpen(false); }}><MessageSquarePlus size={16} />{newSessionActionLabel ?? t("sidebar.newChat")}</DropdownMenuItem> : null}
