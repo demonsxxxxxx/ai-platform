@@ -156,6 +156,8 @@ async def batch_group_models(
         changed = set(current) != desired
         before = {model_id: dict(row) for model_id, row in current.items()}
         default_before = groups[group_id].get("default_model_id")
+        if default_before and default_before not in desired and desired:
+            raise ModelGroupPolicyError("model_group_default_change_required")
         default_after = default_before if default_before in desired else None
         if not current and desired:
             default_after = min(projected.values(), key=lambda item: (item["display_order"], item["model_id"]))["model_id"]

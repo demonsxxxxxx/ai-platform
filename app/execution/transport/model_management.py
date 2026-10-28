@@ -185,6 +185,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_group_batch_revision_required",
         "model_group_model_parameters_invalid",
         "model_group_default_model_invalid",
+        "model_group_default_change_required",
         "model_group_default_business_mutually_exclusive",
         "model_group_model_duplicate",
         "model_group_member_duplicate",

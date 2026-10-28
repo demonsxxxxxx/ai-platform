@@ -218,13 +218,19 @@ async def test_model_groups_postgres_batch_preview_apply_rollback_and_revision_f
         assert applied["changed"] is True
         assert applied["groups"][0]["after"]["revision"] == 2
         assert await (await conn.execute("select model_id from model_group_models where group_id = 'group-a'")).fetchone() == {"model_id": "model-a"}
+        await batch_group_models(conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-b"], operation="add", expected_group_revisions={"group-a": 2}, preview=False)
+        for preview_flag in (True, False):
+            with pytest.raises(ModelGroupPolicyError, match="model_group_default_change_required"):
+                async with conn.transaction():
+                    await batch_group_models(conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-a"], operation="remove", expected_group_revisions={"group-a": 3}, preview=preview_flag)
+        assert (await (await conn.execute("select default_model_id, revision from model_groups where id='group-a'")).fetchone()) == {"default_model_id": "model-a", "revision": 3}
 
         with pytest.raises(ModelGroupPolicyError, match="model_policy_changed"):
             await batch_group_models(
                 conn, tenant_id="tenant-a", group_ids=["group-a"], model_ids=["model-b"],
                 operation="add", expected_group_revisions={"group-a": 1}, preview=False,
             )
-        assert await (await conn.execute("select model_id from model_group_models where group_id = 'group-a'")).fetchone() == {"model_id": "model-a"}
+        assert (await (await conn.execute("select count(*) as count from model_group_models where group_id = 'group-a'")).fetchone()) == {"count": 2}
 
         with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
             async with conn.transaction():
@@ -294,6 +300,10 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
             assert second["changed_users"] == 0
             assert await (await conn.execute("select revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"revision": group_row["revision"]}
             assert await (await conn.execute("select model_group_membership_revision from users where id = 'user-a'")).fetchone() == user_row
+            replacement = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-b"}]}], "users": []}
+            with pytest.raises(ValueError, match="model_group_default_change_required"):
+                await migration.preview_mapping(replacement)
+            assert await (await conn.execute("select default_model_id, revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"default_model_id": "model-a", "revision": group_row["revision"]}
         finally:
             mapping_path.unlink(missing_ok=True)
     finally:

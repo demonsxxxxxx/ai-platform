@@ -60,7 +60,9 @@ price, quota, channel pool, or fallback platform is introduced.
   with a required revision fence.
 - `PUT /api/ai/admin/model-groups/{group_id}/models` replaces one group's model
   associations and its `default_model_id` with a revision fence. Legacy priority/weight
-  fields remain accepted for existing clients but no longer choose the model. Default/business
+  fields remain accepted for existing clients but no longer choose the model. Batch removal
+  or confirmed migration that removes a group's default while retaining other models is
+  rejected; an administrator must first choose a replacement default. Default/business
   conversion waits for unfinished executions of that model in the other class;
   removing its earlier association does not bypass this guard.
 - `POST /api/ai/admin/model-groups/models/batch` atomically adds, replaces, or

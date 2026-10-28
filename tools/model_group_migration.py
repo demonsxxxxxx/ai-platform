@@ -113,6 +113,8 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
             raise ValueError("group_not_available")
         if set(group["models"]) - catalog_ids:
             raise ValueError("model_group_migration_reference_unknown")
+        if old and old.get("default_model_id") and old["default_model_id"] not in group["models"] and group["models"]:
+            raise ValueError("model_group_default_change_required")
         desired_models[key] = group["models"]
     for tenant in tenants:
         default_models = set(desired_models.get((tenant, "default"), {}))

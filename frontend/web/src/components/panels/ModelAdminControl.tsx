@@ -488,7 +488,9 @@ export function ModelAdminControl({
       }
     } catch (caught) {
       if (!ownsRequest(owner)) return;
-      setBatchError(errorMessage(caught));
+      setBatchError(caught instanceof ApiRequestError && caught.code === "model_group_default_change_required"
+        ? "操作会移除分组的默认模型，请先在分组中指定其他默认模型，再重新预览。"
+        : errorMessage(caught));
       clearBatchPreview();
       if (caught instanceof ApiRequestError && caught.status === 409) {
         const refreshed = await Promise.all(Object.keys(intent.revisions).map((id) => modelGroupsApi.details(id, { signal: owner.controller.signal })));
