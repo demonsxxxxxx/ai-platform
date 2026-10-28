@@ -199,7 +199,7 @@ function GroupMemberEditor({
       }}>
         <PopoverTriggerElement disabled={busy}><Button ref={pickerTrigger} type="default" disabled={busy} htmlType="button" aria-label="按组织架构选择人员" icon={<Plus size={15} />}>按组织架构添加人员</Button></PopoverTriggerElement>
         <PopoverPortal><PopoverPositioner placement="bottomLeft" sideOffset={6} collisionPadding={8}>
-          <PopoverPopup aria-label="公司组织架构选人" finalFocus={pickerTrigger} style={{ width: 420, maxWidth: "calc(100vw - 32px)", maxHeight: "min(70dvh, 32rem, var(--available-height))", overflowY: "auto", padding: 12 }} onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
+          <PopoverPopup aria-label="公司组织架构选人" finalFocus={pickerTrigger} className="w-[420px] max-w-[calc(100vw-32px)] max-h-[min(70dvh,32rem,var(--available-height))] overflow-y-auto p-3" onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
       <div className="space-y-3">
       <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">按组织架构选择人员</h3><Button type="text" size="small" aria-label="关闭选人下拉框" onClick={() => { controllerRef.current?.abort(); setPickerOpen(false); }} icon={<X size={15} />} /></div>
       <LobeSelectField aria-label="筛选人员所属部门" value={departmentId || "__all_departments__"} disabled={busy || departments === null} onChange={(value) => {
