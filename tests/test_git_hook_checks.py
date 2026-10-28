@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -11,8 +12,10 @@ from tools import git_hook_checks as hooks
 
 
 def git(root, *args, check=True, data=None):
-    return subprocess.run(["git", *args], cwd=root, input=data, capture_output=True,
-                          text=True, check=check)
+    result = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        raise AssertionError(result.stdout + result.stderr)
+    return result
 
 
 @pytest.fixture
@@ -121,14 +124,126 @@ def test_affected_tests_follow_imports_and_deleted_modules(tmp_path):
     assert hooks.affected_tests(tmp_path, ["uv.lock"]) == ["tests/test_other.py", "tests/test_rate.py"]
 
 
+def _commit_all(root, message):
+    git(root, "add", ".")
+    git(root, "commit", "-m", message)
+
+
+def _add_bare_remote(repo, tmp_path):
+    # Git for Windows cannot migrate received objects in the deeper pytest test directory.
+    remote = tempfile.mkdtemp(prefix="remote-", dir=tmp_path.parent)
+    name = os.path.basename(remote)
+    git(tmp_path.parent, "init", "--bare", name)
+    git(repo, "remote", "add", "origin", f"../../{name}")
+    git(repo, "push", "origin", "main")
+
+
+def test_prepush_rejects_deleted_test_still_selected_by_workflow_contract(repo, tmp_path):
+    write(repo, "tests/test_deleted.py", "def test_deleted():\n    assert True\n")
+    write(repo, ".github/workflows/backend.yml", "run: python -m pytest tests/test_deleted.py\n")
+    write(
+        repo,
+        "tests/test_backend_ci_workflow.py",
+        "from pathlib import Path\n"
+        "\n"
+        "ROOT = Path(__file__).resolve().parents[1]\n"
+        "WORKFLOW = ROOT / '.github/workflows/backend.yml'\n"
+        "EXPECTED_SELECTOR = 'tests/test_deleted.py'\n\n"
+        "def test_workflow_selector_matches_mirror_and_exists():\n"
+        "    workflow = WORKFLOW.read_text(encoding='utf-8')\n"
+        "    selector = next(line.split()[-1] for line in workflow.splitlines() if line.startswith('run:'))\n"
+        "    assert selector == EXPECTED_SELECTOR, f'workflow selector drift: {selector!r} != {EXPECTED_SELECTOR!r}'\n"
+        "    assert (ROOT / selector).is_file(), f'workflow selector target missing: {selector}'\n",
+    )
+    _commit_all(repo, "fixture workflow selector")
+    _add_bare_remote(repo, tmp_path)
+
+    (repo / "tests/test_deleted.py").unlink()
+    _commit_all(repo, "delete test without migrating selectors")
+    result = git(repo, "-c", "core.hooksPath=.githooks", "push", "origin", "main", check=False)
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "test_backend_ci_workflow" in output
+    assert "workflow selector target missing: tests/test_deleted.py" in output
+
+    write(repo, ".github/workflows/backend.yml", "run: python -m pytest tests/test_replacement.py\n")
+    _commit_all(repo, "migrate workflow without mirror")
+    result = git(repo, "-c", "core.hooksPath=.githooks", "push", "origin", "main", check=False)
+    assert result.returncode != 0
+    assert "workflow selector drift:" in result.stdout + result.stderr
+
+    write(repo, "tests/test_replacement.py", "def test_replacement():\n    assert True\n")
+    for relative in (".github/workflows/backend.yml", "tests/test_backend_ci_workflow.py"):
+        path = repo / relative
+        path.write_text(path.read_text().replace("tests/test_deleted.py", "tests/test_replacement.py"))
+    _commit_all(repo, "migrate workflow selectors")
+    result = git(repo, "-c", "core.hooksPath=.githooks", "push", "origin", "main", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 passed" in result.stdout + result.stderr
+
+
+def test_prepush_rejects_unchanged_fake_after_production_interface_addition(repo, tmp_path):
+    write(repo, "app/cancellation.py", "class CancellationUseCase:\n    async def request_cancel(self):\n        return 'cancelled'\n")
+    write(
+        repo,
+        "app/route.py",
+        "from app.cancellation import CancellationUseCase\n\n"
+        "async def cancel(use_case: CancellationUseCase):\n"
+        "    return await use_case.request_cancel()\n",
+    )
+    write(
+        repo,
+        "tests/test_cancel_adapter.py",
+        "import pytest\n\n"
+        "from app.route import cancel\n\n"
+        "class FakeCancellation:\n"
+        "    async def request_cancel(self):\n"
+        "        return 'cancelled'\n\n"
+        "@pytest.mark.asyncio\n"
+        "async def test_cancel_uses_fake():\n"
+        "    assert await cancel(FakeCancellation()) == 'cancelled'\n",
+    )
+    _commit_all(repo, "fixture cancellation contract")
+    _add_bare_remote(repo, tmp_path)
+
+    write(
+        repo,
+        "app/cancellation.py",
+        "class CancellationUseCase:\n"
+        "    async def request_cancel(self):\n"
+        "        return 'cancelled'\n\n"
+        "    async def post_cancel(self):\n"
+        "        return 'cancelled'\n",
+    )
+    write(
+        repo,
+        "app/route.py",
+        "from app.cancellation import CancellationUseCase\n\n"
+        "async def cancel(use_case: CancellationUseCase):\n"
+        "    return await use_case.post_cancel()\n",
+    )
+    _commit_all(repo, "add post cancel interface")
+    result = git(repo, "-c", "core.hooksPath=.githooks", "push", "origin", "main", check=False)
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "test_cancel_adapter" in output
+    assert "AttributeError" in output
+    assert "has no attribute 'post_cancel'" in output
+
+    path = repo / "tests/test_cancel_adapter.py"
+    path.write_text(path.read_text().replace("    async def request_cancel(self):\n        return 'cancelled'\n", "    async def request_cancel(self):\n        return 'cancelled'\n\n    async def post_cancel(self):\n        return 'cancelled'\n"))
+    _commit_all(repo, "align cancellation fake")
+    result = git(repo, "-c", "core.hooksPath=.githooks", "push", "origin", "main", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout + result.stderr
+
+
 def test_local_prepush_checks_commit_not_uncommitted_worktree(repo, tmp_path):
     write(repo, "app/rate.py", "RATE = 1\n")
     write(repo, "tests/test_rate.py", "from app.rate import RATE\ndef test_rate():\n    assert RATE == 2\n")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "base for hook")
-    git(tmp_path, "init", "--bare", "remote.git")
-    git(repo, "remote", "add", "origin", "../remote.git")
-    git(repo, "push", "origin", "main")
+    _add_bare_remote(repo, tmp_path)
     write(repo, "app/rate.py", "RATE = 2\n")
     git(repo, "add", "app/rate.py")
     git(repo, "commit", "-m", "fixed rate")
