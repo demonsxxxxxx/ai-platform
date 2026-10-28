@@ -400,39 +400,7 @@ html[data-mobile-keyboard="true"] #root {
   flex-shrink: 0;
 }
 
-/* Keep the management section legible as a parent group with indented children. */
-.sidebar-management-nav {
-  border: 1px solid var(--theme-border);
-  border-radius: 0.5rem;
-  background-color: var(--theme-sidebar-panel-muted);
-}
-
-.sidebar-management-toggle {
-  background-color: var(--theme-sidebar-panel-muted);
-  color: var(--theme-text);
-}
-
-.sidebar-management-toggle:hover {
-  background-color: var(--theme-sidebar-hover);
-}
-
-.sidebar-management-items {
-  margin: 0.25rem 0.25rem 0.25rem 0.5rem;
-  padding: 0.25rem 0 0.25rem 0.5rem;
-  border-inline-start: 1px solid var(--theme-border-strong);
-  border-radius: 0 0.375rem 0.375rem 0;
-  background-color: var(--theme-bg-sidebar);
-}
-
-.sidebar-management-item {
-  color: var(--theme-text-secondary);
-}
-
-.sidebar-management-item[data-active="true"] {
-  color: var(--theme-text);
-}
-
-/* Portaled workbench menus need an explicit edge against either theme surface. */
+/* Keep portaled workbench menus distinct without adding internal card layers. */
 .workbench-menu-popup,
 .workbench-account-menu-popup {
   border: 1px solid var(--theme-border-strong);
@@ -440,14 +408,17 @@ html[data-mobile-keyboard="true"] #root {
   box-shadow: 0 8px 24px var(--theme-shadow-lg);
 }
 
-.workbench-account-menu-popup [data-user-menu-identity],
-.workbench-account-drawer [data-user-menu-identity] {
-  border-bottom: 1px solid var(--theme-border);
+.workbench-account-action {
+  min-height: 2rem;
+  border-radius: 0.5rem;
+  color: var(--theme-text-secondary);
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.workbench-account-drawer {
-  border-top: 1px solid var(--theme-border-strong);
-  background-color: var(--theme-workbench-panel);
+.workbench-account-action:hover,
+.workbench-account-action[aria-expanded="true"] {
+  background-color: var(--theme-sidebar-hover);
+  color: var(--theme-text);
 }
 
 [data-librechat-expanded-panel] [data-workbench-session-region] {

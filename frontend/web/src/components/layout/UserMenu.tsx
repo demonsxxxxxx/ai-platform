@@ -52,8 +52,12 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
   const leave = () => { logout(); setShowMenu(false); };
   const trigger = (
     <Button type="text" ref={buttonRef} data-user-menu-trigger aria-label={displayName}
+      aria-expanded={isMobile ? showMenu : undefined}
       onClick={isMobile ? () => setShowMenu((open) => !open) : undefined}
-      className={showLabel ? "min-w-0 px-1" : undefined} icon={renderAvatar("size-5")}
+      className={showLabel
+        ? "workbench-account-action w-full min-w-0 justify-start px-2"
+        : "workbench-account-action"}
+      icon={renderAvatar("size-5")}
     >
       {showLabel ? <span className="truncate text-xs">{displayName}</span> : null}
     </Button>
@@ -68,7 +72,7 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
     <>
       {trigger}
       <Drawer open={showMenu} onClose={() => setShowMenu(false)} placement="bottom" height="auto" closable={false}
-        title={t("users.user")} classNames={{ panel: "workbench-account-drawer" }} styles={{ panel: { maxHeight: "85dvh" } }}
+        title={t("users.user")} styles={{ panel: { maxHeight: "85dvh" } }}
         extra={<Button type="text" aria-label={t("common.close")} onClick={() => setShowMenu(false)} icon={<X size={18} />} />}
       >
         <div ref={(element) => { swipeRef.current = element; }}>

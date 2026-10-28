@@ -321,7 +321,7 @@ export function SidebarRail({
         <UserMenu />
         <Button type="text"
           aria-label="设置"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
+          className="workbench-account-action flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             window.dispatchEvent(
