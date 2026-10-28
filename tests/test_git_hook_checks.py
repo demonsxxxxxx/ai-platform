@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -11,8 +12,10 @@ from tools import git_hook_checks as hooks
 
 
 def git(root, *args, check=True, data=None):
-    return subprocess.run(["git", *args], cwd=root, input=data, capture_output=True,
-                          text=True, check=check)
+    result = subprocess.run(["git", *args], cwd=root, input=data, capture_output=True, text=True)
+    if check:
+        assert result.returncode == 0, result.stdout + result.stderr
+    return result
 
 
 @pytest.fixture
@@ -127,8 +130,11 @@ def _commit_all(root, message):
 
 
 def _add_bare_remote(repo, tmp_path):
-    git(tmp_path, "init", "--bare", "remote.git")
-    git(repo, "remote", "add", "origin", "../remote.git")
+    # Git for Windows cannot migrate received objects in the deeper pytest test directory.
+    remote = tempfile.mkdtemp(prefix="remote-", dir=tmp_path.parent)
+    name = os.path.basename(remote)
+    git(tmp_path.parent, "init", "--bare", name)
+    git(repo, "remote", "add", "origin", f"../../{name}")
     git(repo, "push", "origin", "main")
 
 
@@ -237,9 +243,7 @@ def test_local_prepush_checks_commit_not_uncommitted_worktree(repo, tmp_path):
     write(repo, "tests/test_rate.py", "from app.rate import RATE\ndef test_rate():\n    assert RATE == 2\n")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "base for hook")
-    git(tmp_path, "init", "--bare", "remote.git")
-    git(repo, "remote", "add", "origin", "../remote.git")
-    git(repo, "push", "origin", "main")
+    _add_bare_remote(repo, tmp_path)
     write(repo, "app/rate.py", "RATE = 2\n")
     git(repo, "add", "app/rate.py")
     git(repo, "commit", "-m", "fixed rate")
