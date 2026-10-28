@@ -20,9 +20,11 @@ from pydantic import ValidationError
 
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.domain.headers import mcp_user_jwt_header, normalize_static_mcp_headers
+from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
+    MCP_TOOL_DESCRIPTION_MAX_LENGTH,
     _canonical_live_definition,
     _ValidatedDiscoveryTarget,
     _validated_discovery_target,
@@ -291,6 +293,7 @@ async def open_mcp_session(
                     http_client = await stack.enter_async_context(client_factory(headers=headers, timeout=timeout_seconds))
                     protocol_transport = streamable_http_client(
                         target.endpoint, http_client=http_client, terminate_on_close=terminate_on_close,
+                        max_sse_event_size=max_response_bytes,
                     )
                     session = await stack.enter_async_context(_SingleDispatchMcpClient(
                         protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
@@ -319,17 +322,26 @@ async def list_mcp_tools(session):
     for _ in range(MCP_DISCOVERY_PAGE_LIMIT):
         page = await session.list_tools(cursor=cursor, cache_mode="bypass")
         for tool in page.tools:
-            definition = _canonical_live_definition(
-                tool.model_dump(by_alias=True, exclude_none=True)
-            )
+            if (
+                not isinstance(tool.name, str)
+                or not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(tool.name)
+            ):
+                raise McpToolDiscoveryError("protocol_error")
+            description = tool.description
+            if description is None:
+                description = ""
+            elif not isinstance(description, str):
+                raise McpToolDiscoveryError("protocol_error")
             if tool.name in names:
                 raise McpToolDiscoveryError("protocol_error")
             names.add(tool.name)
-            tools.append(tool.model_copy(update={"description": definition["description"]}))
+            tools.append(tool.model_copy(update={
+                "description": description[:MCP_TOOL_DESCRIPTION_MAX_LENGTH],
+            }))
         cursor = page.next_cursor
         if cursor is None:
             return tools
-        if not cursor or cursor in cursors:
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
             raise McpToolDiscoveryError("protocol_error")
         cursors.add(cursor)
     raise McpToolDiscoveryError("page_limit_exceeded")

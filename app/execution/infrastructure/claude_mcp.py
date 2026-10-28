@@ -249,22 +249,12 @@ class ClaudeMcpRegistration:
                 # cannot prove which admitted call received this error result.
                 if len(matching) == 1:
                     self._tool_error_results.add(matching[0])
-            # MCP model attributes are snake_case; Server.run() emits their
-            # camelCase wire aliases. Keep structured output visible in content
-            # while retaining the original typed field for MCP callers.
-            structured = result.structured_content if isinstance(result, CallToolResult) else None
-            if isinstance(structured, dict):
-                result = result.model_copy(update={
-                    "content": [
-                        *result.content,
-                        TextContent(
-                            type="text",
-                            text="[structuredContent]\n" + json.dumps(
-                                structured, ensure_ascii=True, separators=(",", ":")
-                            ),
-                        ),
-                    ],
-                })
+            # The locked CLI forwards native structured success results, but its
+            # error branch consumes only content. Preserve that value there.
+            if isinstance(result, CallToolResult) and result.is_error and isinstance(result.structured_content, dict):
+                result = result.model_copy(update={"content": [*result.content, TextContent(
+                    type="text", text=json.dumps(result.structured_content, ensure_ascii=True, separators=(",", ":")),
+                )]})
             return result
 
         server = Server(

@@ -1211,7 +1211,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         )
 
 
-def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, tmp_path):
+def test_collect_workspace_artifacts_preserves_selected_docx_bytes(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
@@ -1240,157 +1240,71 @@ def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, t
     assert stored[0][1] == content
 
 
-def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "document.docx").write_bytes(b"not-a-docx")
-
-    storage_calls = []
-
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("invalid required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="synthetic-document-skill", agent_id="synthetic-document-agent"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize(
-    ("content_types_xml", "relationships_xml"),
-    [
-        (
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types" />',
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" />',
-        ),
-        (
-            (
-                '<?xml version="1.0" encoding="UTF-16"?>'
-                '<!DOCTYPE Types [<!ENTITY main "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">]>'
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" ContentType="&main;" />'
-                "</Types>"
-            ).encode("utf-16"),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="//word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "<Override PartName=\"/word/document.xml\" ContentType=\"text/plain\" />"
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="other/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-    ],
-    ids=(
-        "missing-opc-references",
-        "utf16-internal-entity",
-        "noncanonical-target",
-        "ambiguous-main-declarations",
-    ),
-)
-def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
-    monkeypatch,
-    tmp_path,
-    content_types_xml,
-    relationships_xml,
+def test_collect_workspace_artifacts_delivers_opaque_docx_bytes_with_mixed_files(
+    monkeypatch, tmp_path
 ):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    with zipfile.ZipFile(output / "document.docx", "w") as archive:
-        archive.writestr("[Content_Types].xml", content_types_xml)
-        archive.writestr("_rels/.rels", relationships_xml)
-        archive.writestr(
-            "word/document.xml",
-            '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
-        )
+    opaque_docx = b"original selected docx bytes"
+    (output / "nonstandard.docx").write_bytes(opaque_docx)
 
-    storage_calls = []
+    malformed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(malformed_docx_stream, "w") as archive:
+        archive.writestr("word/document.xml", b"<broken")
+    malformed_docx = malformed_docx_stream.getvalue()
+    (output / "malformed.docx").write_bytes(malformed_docx)
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("malformed required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="qa-file-reviewer"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
-def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    document_path = output / "document.docx"
-    with zipfile.ZipFile(document_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    compressed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(
+        compressed_docx_stream, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         archive.writestr("word/document.xml", b"A" * 1025)
-
-    monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
-
+    compressed_docx = compressed_docx_stream.getvalue()
+    assert len(compressed_docx) < 1025
+    (output / "compressed.docx").write_bytes(compressed_docx)
+    (output / "notes.txt").write_bytes(b"selected alongside DOCX")
     storage_calls = []
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("oversized required artifacts must not be uploaded")
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            storage_calls.append((content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FakeStorage)
 
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id=skill_id),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"),
+        workspace,
+        response_files=[
+            "output/nonstandard.docx",
+            "output/malformed.docx",
+            "output/compressed.docx",
+            "output/notes.txt",
+        ],
+    )
+
+    assert [artifact.artifact_type for artifact in artifacts] == [
+        "result_docx",
+        "result_docx",
+        "result_docx",
+        "report_txt",
+    ]
+    assert storage_calls == [
+        (
+            opaque_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            malformed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            compressed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (b"selected alongside DOCX", "text/plain; charset=utf-8"),
+    ]
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(

@@ -211,16 +211,15 @@ must be reverified on an SDK upgrade.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool at the MCP boundary; the adapter does not rely on it reaching the
-   model. The platform adapter appends `structuredContent` as a bounded JSON text
-   item while retaining the typed field for direct MCP callers. This compatibility
-   representation preserves the structured value when an SDK bridge omits
-   optional result fields, as observed with SDK 0.2.130. Forwarding through a
-   later SDK and model interpretation require their own adapter/provider
-   acceptance; a dependency change alone does not prove that the representation
-   can be retired. With SDK 0.2.174 / CLI 2.1.310, the loopback check confirms a
-   JSON tool-result string containing that structured value. Acceptance checks
-   the JSON value, not the previous `[structuredContent]` text marker.
+   typed Tool at the MCP boundary. The locked SDK's native in-process bridge
+   forwards successful `CallToolResult` values with their native
+   `structuredContent` and content blocks. The old unconditional duplicate JSON
+   text representation is retired. The locked CLI's error branch still consumes
+   content only, so error results retain a JSON text representation of structured
+   content alongside their typed field and `isError`. Remove that bounded
+   compatibility branch only after a real-CLI synthetic peer check proves native
+   structured errors reach model input. SDK upgrades must cover structured-only,
+   text, image/resource and error results.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,
@@ -273,10 +272,17 @@ must be reverified on an SDK upgrade.
    response guard failures fail closed, including errors on optional background
    streams; they cannot authorize a retry to another destination or accept a
    later catalog result after malformed input.
+   Typed catalog pagination validates platform names, duplicate names and
+   description bounds without serializing each Tool into a second validation
+   model. Public catalog projection occurs once; the typed execution definition
+   retains output schemas and annotations.
    Discovery applies one total deadline across DNS resolution, initialization,
    all catalog pages and local cleanup, in addition to per-request and page limits.
    HTTP discovery retains the whole-response byte limit, including SSE responses;
-   long-lived SSE sessions retain per-event limits. The injected HTTP client pins
+   long-lived SSE sessions retain per-event limits. Streamable HTTP explicitly
+   passes the same phase budget to the SDK SSE decoder, including POST responses;
+   its SDK default must not impose a second 1 MiB invocation ceiling. The injected
+   HTTP client pins
    every SDK request, including optional Streamable HTTP GETs, to the validated
    address and original Host/SNI. A server may reject the optional GET with 405.
    Discovery closes local resources without sending remote session DELETE;

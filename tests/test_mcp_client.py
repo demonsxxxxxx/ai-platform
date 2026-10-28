@@ -47,6 +47,13 @@ def test_sse_event_limit_clones_the_mcp_23_global_helper_per_session():
 @pytest.mark.asyncio
 async def test_client_auto_negotiates_stateless_2026_protocol_and_stamps_tool_headers(monkeypatch):
     with local_mcp_peers(protocol="modern") as peer:
+        output_schema = {
+            "type": "object",
+            "properties": {"sequence": {"type": "integer"}},
+            "required": ["sequence"],
+            "additionalProperties": False,
+        }
+        peer.tools[0]["outputSchema"] = output_schema
         allow_local_peer(monkeypatch, peer.url)
         config = subject(url=peer.url + "/mcp")["mcp_server_config"]
         async with client.open_mcp_session(config, timeout_seconds=3) as session:
@@ -55,6 +62,8 @@ async def test_client_auto_negotiates_stateless_2026_protocol_and_stamps_tool_he
             result = await session.call_tool(RAW_TOOL, {"query": "synthetic"})
 
         assert [tool.name for tool in tools] == [RAW_TOOL, "unselected_sibling"]
+        assert tools[0].output_schema == output_schema
+        assert tools[0].model_dump(by_alias=True, exclude_none=True)["outputSchema"] == output_schema
         assert result.structured_content == {"sequence": 7}
         assert peer.deleted == 0
         assert [method for method, _headers in peer.requests] == [
@@ -209,6 +218,43 @@ async def test_transport_rejects_unsafe_responses_before_followup(monkeypatch, c
             async with client.open_mcp_session(config, timeout_seconds=1, max_response_bytes=64):
                 pytest.fail("unsafe response admitted")
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_limit,expected_failure",
+    [(2 * 1024 * 1024, False), (1024 * 1024, True), (16 * 1024 * 1024, True)],
+)
+async def test_http_event_stream_response_uses_configured_event_budget_without_replay(
+    monkeypatch, response_limit, expected_failure,
+):
+    payload_size = response_limit + 64 * 1024 if expected_failure else 1024 * 1024 + 64 * 1024
+    text = "x" * payload_size
+    with local_mcp_peers() as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        peer.tool_response_content_type = "text/event-stream"
+        peer.tool_result = {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": {"length": len(text)},
+            "isError": False,
+        }
+        config = subject(url=peer.url + "/mcp")["mcp_server_config"]
+        config["max_response_bytes"] = response_limit
+        # The full 16 MiB event exercises real streaming and decoder work.
+        async with asyncio.timeout(30):
+            if expected_failure:
+                with pytest.raises(McpToolDiscoveryError, match="response_too_large"):
+                    async with client.open_mcp_session(config, timeout_seconds=20) as session:
+                        await client.list_mcp_tools(session)
+                        await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+            else:
+                async with client.open_mcp_session(config, timeout_seconds=20) as session:
+                    await client.list_mcp_tools(session)
+                    result = await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+                assert result.content[0].text == text
+                assert result.structured_content == {"length": len(text)}
+        assert len(peer.calls) == 1
+        assert sum(method == "tools/call" for method, _headers in peer.requests) == 1
 
 
 @pytest.mark.asyncio
