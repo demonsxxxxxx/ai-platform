@@ -9,8 +9,10 @@ Owner: `execution` bounded context, with Run snapshots owned by `runs`.
 `model_groups`, `model_group_members`, and `model_group_models` are tenant-scoped
 facts. `default` is the one immutable ordinary-default group per tenant. A user
 with no business membership is resolved to that group without a stored default
-membership row. A disabled business group is not treated as no membership and
-never falls back to `default`.
+membership row. Each user has at most one stored business membership; this is
+also enforced by a unique `(tenant_id, user_id)` index. A model may belong to any
+number of business and ordinary-default groups simultaneously. A disabled business
+group is not treated as no membership and never falls back to `default`.
 
 The model-group resolver is the single policy used by `/api/ai/models/groups`
 and new Run admission. It checks the user's current membership, enabled group
@@ -20,7 +22,8 @@ that model initially and submits it explicitly. A user may choose another model 
 the same group. Neither explicit selection nor an unavailable default substitutes
 another model. Legacy `auto` requests resolve only the designated group default.
 
-Chat and expert usage scenes reject ordinary-default models. Direct independent
+Chat and expert usage scenes reject execution through the ordinary-default group;
+a model shared with a business group remains usable through that business group. Direct independent
 business/skill execution may use the ordinary default group only after the normal
 trusted entry-point admission. The server derives this scene from the trusted
 route/profile path; a client `scene` field is not an authorization input.
@@ -62,9 +65,8 @@ price, quota, channel pool, or fallback platform is introduced.
   associations and its `default_model_id` with a revision fence. Legacy priority/weight
   fields remain accepted for existing clients but no longer choose the model. Batch removal
   or confirmed migration that removes a group's default while retaining other models is
-  rejected; an administrator must first choose a replacement default. Default/business
-  conversion waits for unfinished executions of that model in the other class;
-  removing its earlier association does not bypass this guard.
+  rejected; an administrator must first choose a replacement default. Sharing models
+  with another group does not change existing Run snapshots or require draining Runs.
 - `POST /api/ai/admin/model-groups/models/batch` atomically adds, replaces, or
   removes selected `model_ids` across `group_ids`. It requires an expected
   revision for every group and supports `preview: true`; both preview and apply
@@ -79,18 +81,16 @@ price, quota, channel pool, or fallback platform is introduced.
 - `GET /api/ai/admin/users/{user_id}/model-groups` returns the same-tenant
   user's business memberships and implicit-default state.
 - `PUT /api/ai/admin/users/{user_id}/model-groups` atomically replaces that
-  user's business memberships and primary. `expected_revision` fences stale
-  editors. Multiple users may be primary in the same group; each user has at
-  most one primary across groups. Clearing the last membership requires
+  user's single business membership. `group_ids` accepts zero or one ID; more
+  than one is rejected. `expected_revision` fences stale editors. The retained
+  `primary_group_id` compatibility field is always the sole business group. Clearing the last membership requires
   `confirm_default_fallback: true` and creates no default membership row.
 - `PUT /api/ai/admin/users/model-groups/batch` applies bounded cross-user
   membership replacements in one transaction, with per-user expected revisions
   and `before`/`after` projections for the management UI.
-- `PUT /api/ai/admin/model-groups/{group_id}/members` replaces business
-  membership and accepts multiple requested primaries in one group. A user's
-  primary is unique across all business groups; adding a user to another group
-  without a primary request preserves the existing primary. Removing the primary
-  while other groups remain requires a replacement through the user editor.
+- `PUT /api/ai/admin/model-groups/{group_id}/members` replaces the group's members.
+  Adding a user transfers their sole membership from the prior group to this group;
+  `is_primary` remains a compatibility field and stored memberships are always primary.
   Both editing surfaces advance revisions of every changed user and group;
   no-op writes preserve revisions. Membership removal that leaves no business
   group requires `confirm_default_fallback: true`.
@@ -124,7 +124,7 @@ python tools/model_group_migration.py --confirm --mapping mapping.json
 ```
 
 The `model-groups.v3` file explicitly lists complete model sets for named groups
-and complete business memberships for named users. Omitted groups/users retain
+and zero or one business membership for each named user. Omitted groups/users retain
 their relationships. Changing a shared group's models affects its other members;
 the preview includes those affected users too, along with retained groups/users
 and explicit covered/outside tenant inventories. Neither `access_mode=all` nor
@@ -156,6 +156,19 @@ make no revision changes. Keep the inventory and reviewed mapping as the recover
 record; rollback of permissions is another reviewed mapping, not old ACL activation.
 
 ## Retirement and compatibility
+
+- Schema `2026.10.28.1` removes `trg_model_group_models_guard` and
+  `ai_platform_guard_model_group_models`; application, batch and mapping mutual-exclusion
+  checks and category-conversion drain guards are removed. Tenant/group/model admission
+  and immutable historical snapshots remain in force.
+- Existing multi-group users retain their unique primary membership; other rows are
+  removed transactionally and affected user/group revisions advance. A multi-group user
+  without exactly one primary aborts migration with
+  `model_group_single_membership_migration_primary_required`; explicitly assign a
+  primary before retrying. A sole membership is normalized to primary.
+- Multi-group selection and per-member primary buttons are retired. Old request array
+  fields remain for existing API clients but reject multiple groups. Rollback to a
+  multi-group writer is unsupported; deploy the schema and compatible writers together.
 
 - Runtime per-model ACL and global-default routing are replaced by group routing.
   Legacy catalog columns remain read-only input for administrator migration, with

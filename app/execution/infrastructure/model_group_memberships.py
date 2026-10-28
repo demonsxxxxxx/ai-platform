@@ -49,12 +49,10 @@ async def set_user_group_memberships(
         raise ModelGroupPolicyError("group_not_available")
     if len(set(group_ids)) != len(group_ids):
         raise ModelGroupPolicyError("model_group_duplicate")
+    if len(group_ids) > 1:
+        raise ModelGroupPolicyError("model_group_single_membership_required")
     previous = {g["id"]: bool(g["is_primary"]) for g in current["groups"]}
-    primary = primary_group_id
-    if primary is None and current["primary_group_id"] in group_ids:
-        primary = current["primary_group_id"]
-    elif primary is None and not previous and len(group_ids) == 1:
-        primary = group_ids[0]
+    primary = primary_group_id or (group_ids[0] if group_ids else None)
     if (group_ids and primary not in group_ids) or (not group_ids and primary is not None):
         raise ModelGroupPolicyError("model_group_primary_required")
     desired = {g: g == primary for g in group_ids}
@@ -121,16 +119,8 @@ async def set_group_members(
     # The surrounding control-plane transaction owns rollback across every member.
     for user_id in sorted(states):
         current = states[user_id]
-        ids = [g["id"] for g in current["groups"] if g["id"] != group_id]
-        primary = current["primary_group_id"]
-        if user_id in wanted:
-            ids.append(group_id)
-            if wanted[user_id].get("is_primary"):
-                primary = group_id
-        if primary == group_id and user_id not in wanted:
-            primary = None
-            if ids:
-                raise ModelGroupPolicyError("model_group_primary_required")
+        ids = [group_id] if user_id in wanted else []
+        primary = group_id if ids else None
         await set_user_group_memberships(
             conn, tenant_id=tenant_id, user_id=user_id, group_ids=ids,
             primary_group_id=primary, expected_revision=current["revision"],

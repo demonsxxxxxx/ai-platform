@@ -418,6 +418,11 @@ async function runCase(viewport, scenario) {
       }))()`);
       throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
     }
+    if (scenario.name === "users") {
+      await browser.client.waitFor("Boolean(document.querySelector('button[data-user-model-groups=layout-user]'))", "users:group-trigger");
+      await browser.client.evaluate("document.querySelector('button[data-user-model-groups=layout-user]').click()");
+      await browser.client.waitFor("Boolean(document.querySelector('[data-user-model-groups=layout-user] [role=combobox]'))", "users:single-group-ready");
+    }
     if (scenario.name === "builder") {
       await browser.client.evaluate(`(() => {
         const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === '新建专家');

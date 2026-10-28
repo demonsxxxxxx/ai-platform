@@ -66,19 +66,8 @@ async def batch_group_models(
         raise ModelGroupPolicyError("group_not_available")
     if any(row["archived_at"] is not None or not bool(row["enabled"]) for row in groups.values()):
         raise ModelGroupPolicyError("group_not_available")
-    if operation != "replace" and {str(row["type"]) for row in groups.values()} == {"ordinary_default", "business"}:
-        raise ModelGroupPolicyError("model_group_default_business_mutually_exclusive")
     if any(int(groups[group_id]["revision"]) != int(expected_group_revisions[group_id]) for group_id in group_ids):
         raise ModelGroupPolicyError("model_policy_changed")
-    if operation in {"add", "replace"}:
-        for target_type in {groups[gid]["type"] for gid in requested_group_ids}:
-            active = await (await conn.execute(
-                """select 1 from runs where tenant_id = %s and model_id = any(%s)
-                   and model_group_type is distinct from %s and status not in ('succeeded','failed','cancelled','canceled','dead-letter') limit 1""",
-                (tenant_id, model_ids, target_type),
-            )).fetchone()
-            if active is not None:
-                raise ModelGroupPolicyError("model_group_active_runs")
     models_cursor = await conn.execute(
         "select model_id from model_catalog_entries where model_id = any(%s) for update",
         (model_ids,),
@@ -97,35 +86,6 @@ async def batch_group_models(
     current_by_group: dict[str, dict[str, dict[str, Any]]] = {group_id: {} for group_id in group_ids}
     for row in current_rows:
         current_by_group[str(row["group_id"])][str(row["model_id"])] = row
-    if operation in {"add", "replace"}:
-        opposite_cursor = await conn.execute(
-            """
-            select gm.model_id, g.type, g.id
-            from model_group_models gm join model_groups g on g.id = gm.group_id
-            where g.tenant_id = %s and gm.model_id = any(%s)
-            """,
-            (tenant_id, model_ids),
-        )
-        opposite_rows = [dict(row) for row in await opposite_cursor.fetchall()]
-        existing_locations: dict[str, list[tuple[str, str]]] = {}
-        for row in opposite_rows:
-            existing_locations.setdefault(str(row["model_id"]), []).append(
-                (str(row["type"]), str(row["id"]))
-            )
-        for group_id in group_ids:
-            target_type = str(groups[group_id]["type"])
-            for model_id in model_ids:
-                has_opposite = any(
-                    existing_group_id != group_id
-                    and not (operation == "replace" and existing_group_id in existing_group_ids)
-                    and {
-                        existing_type,
-                        target_type,
-                    } == {"ordinary_default", "business"}
-                    for existing_type, existing_group_id in existing_locations.get(model_id, [])
-                )
-                if has_opposite:
-                    raise ModelGroupPolicyError("model_group_default_business_mutually_exclusive")
     desired_by_group: dict[str, set[str]] = {}
     for group_id in group_ids:
         current = current_by_group[group_id]
@@ -180,8 +140,6 @@ async def batch_group_models(
             "changed": changed,
         })
     if not preview:
-        # Remove before adding so a default/business conversion cannot trip the
-        # mutual-exclusion trigger while its old association is still present.
         for group_id, desired in desired_by_group.items():
             current = current_by_group[group_id]
             for model_id in set(current) - desired:

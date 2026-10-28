@@ -54,7 +54,8 @@ MODEL_GROUPS_SCHEMA_VERSION = "2026.10.26.1"
 MODEL_GROUPS_LEGACY_DEFAULT_RETIREMENT_SCHEMA_VERSION = "2026.10.26.2"
 PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION = "2026.10.27.1"
 MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION = "2026.10.27.2"
-TARGET_SCHEMA_VERSION = MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION
+MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION = "2026.10.28.1"
+TARGET_SCHEMA_VERSION = MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -475,6 +476,7 @@ CRITICAL_TRIGGERS = (
     ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    ("model_group_members", "chk_model_group_member_primary", "c", "CHECK (is_primary)"),
     (
         "model_groups",
         "chk_model_groups_default_identity",
@@ -1159,18 +1161,18 @@ STATIC_INDEX_DEFINITIONS = (
         key_expressions=("tenant_id", "lower(btrim(name))"),
     ),
     StaticIndexDefinition(
-        "uq_model_group_user_primary",
+        "uq_model_group_user_single",
         "model_group_members",
         ("tenant_id", "user_id"),
         (False, False),
-        "is_primary = true",
+        "",
         unique=True,
     ),
 )
 RETIRED_CONSTRAINTS = (
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
 )
-RETIRED_INDEXES = ("uq_model_catalog_default",)
+RETIRED_INDEXES = ("uq_model_catalog_default", "uq_model_group_user_primary")
 
 CRITICAL_INDEXES = (
     ("uq_model_gateway_active", True),

@@ -45,7 +45,7 @@ const ERROR_COPY: Record<string, string> = {
   model_default_group_immutable: "普通默认组不可停用、归档或删除。",
   model_group_revision_conflict: "分组已被其他管理员更新，请重新加载。",
   model_policy_changed: "分组已被其他管理员更新，请重新加载。",
-  model_group_primary_required: "请先在用户配置中指定替代主组，再移除此成员。",
+  model_group_single_membership_required: "每位用户只能归属一个模型组。",
   model_group_fallback_confirmation_required: "移除最后一个业务组需要确认回到默认组并失去对话资格。",
   group_not_available: "分组不存在、已停用或不属于当前租户。",
   model_group_member_unknown_user: "成员身份无效或已停用。",
@@ -147,14 +147,8 @@ function GroupMemberEditor({
     }
     setSelected((current) => [
       ...current,
-      { user_id: "", work_id: employee.work_id, display_name: employee.display_name, is_primary: false },
+      { user_id: "", work_id: employee.work_id, display_name: employee.display_name, is_primary: true },
     ]);
-  };
-  const setPrimary = (memberId: string) => {
-    setSelected((current) => current.map((member) => {
-      const id = member.work_id ?? member.user_id;
-      return id === memberId ? { ...member, is_primary: true } : member;
-    }));
   };
 
   return (
@@ -162,7 +156,7 @@ function GroupMemberEditor({
       <div className="flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">已选成员 · {selected.length} 人</h3>
-          <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">每位成员可独立设置本组为自己的主组。</p>
+          <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">每人只归属一个组；保存后，新增成员将从原业务组转入本组。</p>
         </div>
         <Button type="primary" loading={busy} disabled={busy} htmlType="button" onClick={() => void onSave(selected, details.revision)} icon={<Save size={15} />}>保存成员</Button>
       </div>
@@ -171,7 +165,6 @@ function GroupMemberEditor({
           const id = member.work_id || member.user_id;
           return <div key={id} className="flex items-center gap-3 border-b border-[var(--theme-border)] px-3 py-3 last:border-b-0" data-model-group-selected-member={id}>
             <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{member.display_name || id}</p><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{member.work_id ? `工号：${member.work_id}` : `平台账号：${member.user_id}`}</p></div>
-            <Button type={member.is_primary ? "default" : "text"} size="small" disabled={busy || member.is_primary} onClick={() => setPrimary(id)} aria-label={`将本组设为 ${member.display_name || id} 的主组`}>{member.is_primary ? "主组" : "设为主组"}</Button>
             <Button type="text" size="small" disabled={busy} aria-label={`移除成员 ${member.display_name || id}`} onClick={() => setSelected((current) => current.filter((item) => (item.work_id || item.user_id) !== id))} icon={<X size={15} />} />
           </div>;
         }) : <div className="flex flex-col items-center gap-2 px-4 py-8 text-center"><Users size={24} className="text-[var(--theme-text-secondary)]" /><p className="text-sm font-medium">暂无成员</p><p className="text-sm text-[var(--theme-text-secondary)]">从下方公司员工目录选择人员加入。</p></div>}
@@ -212,17 +205,6 @@ function GroupMemberEditor({
                   <span className="text-xs text-[var(--theme-text-secondary)]">工号：{employee.work_id}</span>
                 </span>
               </Checkbox>
-              {member ? (
-                <Button
-                  type={member.is_primary ? "primary" : "text"}
-                  size="small"
-                  htmlType="button"
-                  disabled={busy || member.is_primary}
-                  onClick={() => setPrimary(employee.work_id)}
-                >
-                  {member.is_primary ? "主组" : "设为主组"}
-                </Button>
-              ) : null}
             </div>
           );
         })}

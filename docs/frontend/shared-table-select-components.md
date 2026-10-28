@@ -14,7 +14,10 @@ Complex department/role selections, market-tag autocomplete and model/Skill/MCP 
 
 Model-group membership is separate from expert department access. Model
 administration uses `ModelGroupManagement` and `ModelGroupUserDrawer`, backed by
-revisioned group/model/member and atomic user-membership APIs. Employee search,
+revisioned group/model/member and atomic user-membership APIs. A model can belong
+to any groups; a user has one effective group. The user drawer uses LobeSelectField
+to replace that membership; per-member primary controls and multi-group checkboxes
+are retired. Employee search,
 pagination, work-ID display, abortable requests, retryable directory failures,
 permission gates, Escape and focus restoration belong to the group member owner;
 model-directory ACL controls are retired. The catalog publication request does

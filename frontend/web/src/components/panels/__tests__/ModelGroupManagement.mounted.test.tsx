@@ -102,10 +102,10 @@ test("group management loads, creates, opens drawer and saves model/member lists
 });
 
 
-test("drawer keeps drafts across tabs, reorders models and preserves each member's primary", async () => {
+test("drawer keeps drafts across tabs, reorders models and saves single-group members", async () => {
   const view = await mount({ ...summary, member_count: 2, default_model_id: "a", members: [
     { user_id: "a", display_name: "甲", is_primary: true },
-    { user_id: "b", display_name: "乙", is_primary: false },
+    { user_id: "b", display_name: "乙", is_primary: true },
   ], models: ["a", "b"].map((id, index) => ({ model_id: id, model_value: id, label: id, enabled: true, display_order: index, priority: 0, weight: 100 })) });
   const click = async (label: string) => view.React.act(async () => {
     const button = [...document.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === label || b.getAttribute("aria-label") === label);
@@ -120,7 +120,7 @@ test("drawer keeps drafts across tabs, reorders models and preserves each member
     assert.ok(radio);
     await view.React.act(async () => radio.click());
     await click("成员");
-    await click("将本组设为 乙 的主组");
+    assert.doesNotMatch(document.body.textContent ?? "", /设为主组/);
     await click("基本信息");
     await click("模型");
     await click("保存模型");

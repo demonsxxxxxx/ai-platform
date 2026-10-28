@@ -624,8 +624,6 @@ create table if not exists model_group_members (
   primary key(group_id, user_id),
   unique(tenant_id, group_id, user_id)
 );
-create unique index if not exists uq_model_group_user_primary
-  on model_group_members(tenant_id, user_id) where is_primary = true;
 
 create table if not exists model_group_models (
   group_id text not null references model_groups(id),
@@ -643,37 +641,6 @@ create table if not exists model_group_models (
   constraint chk_model_group_models_weight check (weight between 1 and 1000)
 );
 create unique index if not exists uq_model_group_business_model on model_group_models(group_id, model_id);
-
-create or replace function ai_platform_guard_model_group_models() returns trigger
-language plpgsql as $$
-begin
-  if exists (
-    select 1 from model_groups g where g.id = new.group_id and g.type = 'ordinary_default'
-  ) and exists (
-    select 1 from model_group_models other
-    join model_groups og on og.id = other.group_id and og.type = 'business'
-    join model_groups ng on ng.id = new.group_id
-    where other.model_id = new.model_id and other.group_id <> new.group_id
-      and og.tenant_id = ng.tenant_id
-  ) then
-    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
-  end if;
-  if exists (
-    select 1 from model_groups g where g.id = new.group_id and g.type = 'business'
-  ) and exists (
-    select 1 from model_group_models other
-    join model_groups og on og.id = other.group_id and og.type = 'ordinary_default'
-    join model_groups ng on ng.id = new.group_id
-    where other.model_id = new.model_id and other.group_id <> new.group_id
-      and og.tenant_id = ng.tenant_id
-  ) then
-    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
-  end if;
-  return new;
-end $$;
-drop trigger if exists trg_model_group_models_guard on model_group_models;
-create trigger trg_model_group_models_guard before insert or update on model_group_models
-for each row execute function ai_platform_guard_model_group_models();
 
 create table if not exists runs (
   id text primary key,
@@ -1315,7 +1282,6 @@ create table if not exists model_group_members (
   user_id text not null references users(id), is_primary boolean not null default false,
   created_at timestamptz not null default now(), primary key(group_id, user_id)
 );
-create unique index if not exists uq_model_group_user_primary on model_group_members(tenant_id, user_id) where is_primary = true;
 create table if not exists model_group_models (
   group_id text not null references model_groups(id), model_id text not null references model_catalog_entries(model_id),
   enabled boolean not null default true, display_order integer not null default 0,
@@ -1323,23 +1289,43 @@ create table if not exists model_group_models (
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   primary key(group_id, model_id), check (priority between 0 and 1000), check (weight between 1 and 1000)
 );
-create or replace function ai_platform_guard_model_group_models() returns trigger language plpgsql as $$
-begin
-  if exists (
-    select 1 from model_group_models x
-    join model_groups g on g.id = x.group_id
-    join model_groups ng on ng.id = new.group_id
-    where x.model_id = new.model_id and x.group_id <> new.group_id
-      and g.tenant_id = ng.tenant_id
-      and ((g.type = 'ordinary_default' and ng.type = 'business')
-        or (g.type = 'business' and ng.type = 'ordinary_default'))
-  ) then
-    raise exception 'model_group_default_business_mutually_exclusive' using errcode = '23514';
-  end if;
-  return new;
-end $$;
 drop trigger if exists trg_model_group_models_guard on model_group_models;
-create trigger trg_model_group_models_guard before insert or update on model_group_models for each row execute function ai_platform_guard_model_group_models();
+drop function if exists ai_platform_guard_model_group_models();
+do $$ begin
+  lock table model_group_members in share row exclusive mode;
+  if exists (
+    select 1 from model_group_members group by tenant_id, user_id
+    having count(*) > 1 and count(*) filter (where is_primary) <> 1
+  ) then
+    raise exception 'model_group_single_membership_migration_primary_required' using errcode = '23514';
+  end if;
+  with affected as materialized (
+    select tenant_id, user_id from model_group_members
+    group by tenant_id, user_id having count(*) > 1 or not bool_or(is_primary)
+  ), removed as (
+    delete from model_group_members m using affected a
+    where m.tenant_id = a.tenant_id and m.user_id = a.user_id and not m.is_primary
+      and exists (select 1 from model_group_members p where p.tenant_id = m.tenant_id
+                  and p.user_id = m.user_id and p.is_primary)
+    returning m.group_id
+  ), bumped_users as (
+    update users u set model_group_membership_revision = model_group_membership_revision + 1
+    from affected a where u.tenant_id = a.tenant_id and u.id = a.user_id returning u.id
+  )
+  update model_groups set revision = revision + 1, updated_at = now()
+  where id in (select group_id from removed union
+               select group_id from model_group_members m join affected a
+               on m.tenant_id = a.tenant_id and m.user_id = a.user_id);
+  update model_group_members set is_primary = true where not is_primary;
+end $$;
+drop index if exists uq_model_group_user_primary;
+create unique index if not exists uq_model_group_user_single on model_group_members(tenant_id, user_id);
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'model_group_members'::regclass
+                 and conname = 'chk_model_group_member_primary') then
+    alter table model_group_members add constraint chk_model_group_member_primary check (is_primary);
+  end if;
+end $$;
 create or replace function ai_platform_guard_model_group_member_scope() returns trigger language plpgsql as $$
 begin
   if not exists (select 1 from model_groups where id = new.group_id and tenant_id = new.tenant_id)

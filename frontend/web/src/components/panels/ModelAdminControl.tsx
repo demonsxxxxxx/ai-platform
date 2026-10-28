@@ -424,7 +424,7 @@ export function ModelAdminControl({
       || model.value.toLowerCase().includes(normalizedQuery);
     const matchesGroup = groupFilter === "all"
       || (groupFilter === "unassigned" && !modelGroupIds.has(model.id))
-      || (groupFilter === "default" && groupOptions.some((group) => group.id === modelGroupIds.get(model.id)?.[0] && group.type === "ordinary_default"))
+      || (groupFilter === "default" && groupOptions.some((group) => (modelGroupIds.get(model.id) ?? []).includes(group.id) && group.type === "ordinary_default"))
       || (groupFilter === "business" && (modelGroupIds.get(model.id) ?? []).some((id) => groupOptions.find((group) => group.id === id)?.type === "business"))
       || (groupFilter !== "default" && groupFilter !== "business" && groupFilter !== "unassigned" && (modelGroupIds.get(model.id) ?? []).includes(groupFilter));
     const matchesStatus = statusFilter === "all"
@@ -628,7 +628,7 @@ export function ModelAdminControl({
         </div>
         {filteredGroup ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] p-3" data-model-admin-group-settings>
           <span className="text-sm font-medium">{filteredGroup.name}</span>
-          <span className="text-xs text-[var(--theme-text-secondary)]">组内启用、展示顺序、优先级与权重独立于模型全局设置。</span>
+          <span className="text-xs text-[var(--theme-text-secondary)]">模型可加入多个组；各组的启用、展示顺序与默认模型独立配置。</span>
           <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("models"); setEditingGroup(filteredGroup); }}>编辑组内模型</Button>
           {filteredGroup.type === "business" ? <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("members"); setEditingGroup(filteredGroup); }}>管理成员</Button> : null}
         </div> : null}
