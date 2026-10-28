@@ -381,13 +381,6 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
         if updated is None:
             raise ModelGroupPolicyError("model_group_revision_conflict")
         return {"group_id": group_id, "revision": int(updated["revision"]), "default_model_id": updated["default_model_id"]}
-    active = await (await conn.execute(
-        """select 1 from runs where tenant_id = %s and model_id = any(%s)
-           and model_group_type is distinct from %s and status not in ('succeeded','failed','cancelled','canceled','dead-letter') limit 1""",
-        (tenant_id, model_ids, group["type"]),
-    )).fetchone()
-    if active is not None:
-        raise ModelGroupPolicyError("model_group_active_runs")
     await conn.execute("delete from model_group_models where group_id = %s", (group_id,))
     for item in desired:
         model_id = str(item["model_id"])

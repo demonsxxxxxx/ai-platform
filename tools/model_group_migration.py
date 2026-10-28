@@ -67,6 +67,8 @@ def _mapping(value: object) -> dict[str, Any]:
         codes = raw.get("group_codes")
         if not isinstance(raw.get("tenant_id"), str) or not isinstance(codes, list) or any(not isinstance(c, str) or c == "default" for c in codes) or len(codes) != len(set(codes)):
             raise ValueError("model_group_migration_mapping_invalid")
+        if len(codes) > 1:
+            raise ValueError("model_group_single_membership_required")
         primary = raw.get("primary_group_code")
         if (codes and primary not in codes) or (not codes and primary is not None):
             raise ValueError("model_group_migration_primary_invalid")
@@ -124,10 +126,6 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
             if not bool(first_model.get("enabled", True)):
                 raise ValueError("model_group_default_model_invalid")
         desired_models[key] = group["models"]
-    for tenant in tenants:
-        default_models = set(desired_models.get((tenant, "default"), {}))
-        if any(default_models & set(models) for (tid, code), models in desired_models.items() if tid == tenant and code != "default"):
-            raise ValueError("model_group_default_business_mutually_exclusive")
     user_rows = await (await conn.execute("select id, tenant_id, auth_source, external_id, status, model_group_membership_revision from users where tenant_id=any(%s) order by tenant_id,id", (tenants,))).fetchall()
     members = await (await conn.execute("select m.*, g.code from model_group_members m join model_groups g on g.id=m.group_id where m.tenant_id=any(%s) order by m.tenant_id,m.user_id,g.code", (tenants,))).fetchall()
     user_grants = {(u["tenant_id"], u["id"]): {m["code"]: bool(m["is_primary"]) for m in members if m["tenant_id"] == u["tenant_id"] and m["user_id"] == u["id"]} for u in user_rows}

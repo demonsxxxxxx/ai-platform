@@ -24,6 +24,12 @@ def test_group_names_and_codes_are_normalized_and_reserved_default_is_not_a_busi
         parse_requested_model_selection({"group_id": "bad/id"})
 
 
+def test_migration_mapping_rejects_multiple_user_groups():
+    from tools.model_group_migration import VERSION, _mapping
+    with pytest.raises(ValueError, match="model_group_single_membership_required"):
+        _mapping({"version": VERSION, "groups": [], "users": [{"tenant_id": "tenant-a", "user_id": "user-a", "group_codes": ["sales", "support"], "primary_group_code": "sales"}]})
+
+
 def test_weighted_selection_uses_highest_priority_layer_and_weight():
     rows = [
         {"model_id": "low", "priority": 1, "weight": 100},

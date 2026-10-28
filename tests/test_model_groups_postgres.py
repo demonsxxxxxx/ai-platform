@@ -88,7 +88,7 @@ async def test_model_groups_postgres_atomic_primary_and_tenant_scope() -> None:
         )
         await set_user_group_memberships(
             conn, tenant_id="tenant-a", user_id="user-a",
-            group_ids=["group-a", "group-b"], primary_group_id="group-b", expected_revision=1,
+            group_ids=["group-b"], primary_group_id="group-b", expected_revision=1,
         )
         await set_user_group_memberships(
             conn, tenant_id="tenant-a", user_id="user-b",
@@ -98,19 +98,18 @@ async def test_model_groups_postgres_atomic_primary_and_tenant_scope() -> None:
             "select user_id, group_id, is_primary from model_group_members order by user_id, group_id"
         )
         assert await cursor.fetchall() == [
-            {"user_id": "user-a", "group_id": "group-a", "is_primary": False},
             {"user_id": "user-a", "group_id": "group-b", "is_primary": True},
             {"user_id": "user-b", "group_id": "group-a", "is_primary": True},
         ]
 
         result = await set_group_members(
-            conn, tenant_id="tenant-a", group_id="group-a", revision=3,
+            conn, tenant_id="tenant-a", group_id="group-a", revision=2,
             members=[
                 {"user_id": "user-a", "is_primary": True},
                 {"user_id": "user-b", "is_primary": True},
             ],
         )
-        assert result["revision"] == 4
+        assert result["revision"] == 3
         cursor = await conn.execute(
             "select user_id from model_group_members where group_id = 'group-a' and is_primary order by user_id"
         )
@@ -118,7 +117,7 @@ async def test_model_groups_postgres_atomic_primary_and_tenant_scope() -> None:
 
         with pytest.raises(ModelGroupPolicyError, match="model_group_member_unknown_user"):
             await set_group_members(
-                conn, tenant_id="tenant-a", group_id="group-a", revision=4,
+                conn, tenant_id="tenant-a", group_id="group-a", revision=3,
                 members=[{"user_id": "missing", "is_primary": True}],
             )
         cursor = await conn.execute(
@@ -133,6 +132,40 @@ async def test_model_groups_postgres_atomic_primary_and_tenant_scope() -> None:
             )
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_single_membership_upgrade_retains_primary_and_rejects_ambiguous_users():
+    conn = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+    schema = f"group_single_upgrade_{uuid.uuid4().hex}"
+    try:
+        await _prepare_schema(conn, schema)
+        await conn.execute("drop index uq_model_group_user_single")
+        await conn.execute("alter table model_group_members drop constraint chk_model_group_member_primary")
+        await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('a','tenant-a','a','A','business'),('b','tenant-a','b','B','business')")
+        await conn.execute("insert into model_group_members(tenant_id,group_id,user_id,is_primary) values ('tenant-a','a','user-a',true),('tenant-a','b','user-a',false),('tenant-a','a','user-b',false),('tenant-a','b','user-b',false)")
+        schema_sql = Path('app/schema.sql').read_text(encoding='utf-8')
+        with pytest.raises(psycopg.errors.CheckViolation, match="model_group_single_membership_migration_primary_required"):
+            async with conn.transaction():
+                await conn.execute(schema_sql)
+        assert (await (await conn.execute("select count(*) as n from model_group_members")).fetchone())["n"] == 4
+        await conn.execute("update model_group_members set is_primary=true where user_id='user-b' and group_id='b'")
+        await conn.execute(schema_sql)
+        expected = [{"user_id": "user-a", "group_id": "a", "is_primary": True}, {"user_id": "user-b", "group_id": "b", "is_primary": True}]
+        assert await (await conn.execute("select user_id,group_id,is_primary from model_group_members order by user_id")).fetchall() == expected
+        assert await (await conn.execute("select model_group_membership_revision as revision from users where tenant_id='tenant-a' order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
+        assert await (await conn.execute("select revision from model_groups where id in ('a','b') order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
+        await conn.execute(schema_sql)
+        assert await (await conn.execute("select model_group_membership_revision as revision from users where tenant_id='tenant-a' order by id")).fetchall() == [{"revision": 2}, {"revision": 2}]
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            async with conn.transaction():
+                await conn.execute("insert into model_group_members(tenant_id,group_id,user_id,is_primary) values ('tenant-a','b','user-a',true)")
+        with pytest.raises(ModelGroupPolicyError, match="model_group_single_membership_required"):
+            await set_user_group_memberships(conn, tenant_id="tenant-a", user_id="user-a", group_ids=["a", "b"], primary_group_id="a", expected_revision=2)
+        assert await (await conn.execute("select user_id,group_id,is_primary from model_group_members order by user_id")).fetchall() == expected
+    finally:
+        await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await conn.close()
 
 
@@ -245,7 +278,7 @@ async def test_model_groups_postgres_batch_preview_apply_rollback_and_revision_f
 
 
 @pytest.mark.asyncio
-async def test_model_groups_postgres_default_business_exclusivity_is_tenant_scoped() -> None:
+async def test_model_groups_postgres_models_can_belong_to_default_and_business_groups() -> None:
     dsn = _postgres_dsn()
     schema_name = f"model_groups_tenant_trigger_{uuid.uuid4().hex}"
     conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
@@ -259,8 +292,18 @@ async def test_model_groups_postgres_default_business_exclusivity_is_tenant_scop
             """
         )
         await conn.execute("insert into model_group_models(group_id, model_id) values ('default-a', 'model-a')")
-        await conn.execute("insert into model_group_models(group_id, model_id) values ('business-b', 'model-a')")
-        assert await (await conn.execute("select count(*) as count from model_group_models where model_id = 'model-a'")).fetchone() == {"count": 2}
+        await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('business-a','tenant-a','alpha','Alpha','business')")
+        await conn.execute("insert into model_group_models(group_id, model_id) values ('business-b', 'model-a'), ('business-a', 'model-a')")
+        assert await (await conn.execute("select count(*) as count from model_group_models where model_id = 'model-a'")).fetchone() == {"count": 3}
+        await set_group_models(conn, tenant_id="tenant-a", group_id="default-a", revision=1, default_model_id="model-a", models=[{"model_id": "model-a"}, {"model_id": "model-b"}])
+        await batch_group_models(conn, tenant_id="tenant-a", group_ids=["default-a", "business-a"], model_ids=["model-b"], operation="add", expected_group_revisions={"default-a": 2, "business-a": 1})
+        assert (await (await conn.execute("select count(*) as n from model_group_models where model_id='model-b'")).fetchone())["n"] == 2
+        assert (await (await conn.execute("select count(*) as n from pg_trigger where tgrelid='model_group_models'::regclass and tgname='trg_model_group_models_guard'")).fetchone())["n"] == 0
+        await set_user_group_memberships(conn, tenant_id="tenant-a", user_id="user-a", group_ids=["business-a"], primary_group_id=None, expected_revision=1)
+        selected = await resolve_group_model(conn, tenant_id="tenant-a", user_id="user-a", group_id="business-a", model_id="model-a", model_value=None, selection_mode="explicit", usage_scene="chat")
+        assert selected.group_id == "business-a"
+        with pytest.raises(ModelGroupPolicyError, match="group_not_available"):
+            await resolve_group_model(conn, tenant_id="tenant-a", user_id="user-a", group_id="default-a", model_id="model-a", model_value=None, selection_mode="explicit", usage_scene="chat")
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
@@ -307,6 +350,11 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
             with pytest.raises(ValueError, match="model_group_default_model_invalid"):
                 await migration.preview_mapping(disabled)
             assert await (await conn.execute("select default_model_id, revision from model_groups where id = %s", (group_row["id"],))).fetchone() == {"default_model_id": "model-a", "revision": group_row["revision"]}
+            shared = {"version": migration.VERSION, "groups": [{"tenant_id": "tenant-a", "code": "default", "name": "普通默认组", "models": [{"model_id": "model-a"}]}], "users": []}
+            shared["expected_state"] = (await migration.preview_mapping(shared))["expected_state"]
+            mapping_path.write_text(json.dumps(shared), encoding="utf-8")
+            await migration.apply_mapping(mapping_path)
+            assert (await (await conn.execute("select count(*) as n from model_group_models where model_id='model-a'")).fetchone())["n"] == 2
         finally:
             mapping_path.unlink(missing_ok=True)
     finally:
@@ -376,7 +424,7 @@ async def test_membership_fences_both_editing_surfaces_and_requires_replacement_
         await _prepare_schema(conn, schema)
         await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('a','tenant-a','a','A','business'),('b','tenant-a','b','B','business'),('c','tenant-a','c','C','business')")
         async with conn.transaction():
-            first = await set_user_group_memberships(conn, tenant_id="tenant-a", user_id="user-a", group_ids=["a", "b"], primary_group_id="a", expected_revision=1)
+            first = await set_user_group_memberships(conn, tenant_id="tenant-a", user_id="user-a", group_ids=["a"], primary_group_id="a", expected_revision=1)
         assert first["revision"] == 2
         for primary, expected in [(None, 2), ("b", 1)]:
             with pytest.raises(ModelGroupPolicyError):
@@ -386,7 +434,7 @@ async def test_membership_fences_both_editing_surfaces_and_requires_replacement_
             async with conn.transaction():
                 await set_group_members(conn, tenant_id="tenant-a", group_id="a", revision=1, members=[])
         async with conn.transaction():
-            await set_group_members(conn, tenant_id="tenant-a", group_id="b", revision=2, members=[{"user_id": "user-a", "is_primary": True}])
+            await set_group_members(conn, tenant_id="tenant-a", group_id="b", revision=1, members=[{"user_id": "user-a", "is_primary": True}])
         with pytest.raises(ModelGroupPolicyError, match="revision_conflict"):
             async with conn.transaction():
                 await set_user_group_memberships(conn, tenant_id="tenant-a", user_id="user-a", group_ids=["a"], primary_group_id="a", expected_revision=2)
@@ -536,27 +584,26 @@ async def test_group_snapshot_binding_replay_and_completion_boundaries():
         assert await gateway() is None
         await conn.execute("update runs set model_group_revision=1 where id='r'")
         default_id = await ensure_default_group(conn, tenant_id="tenant-a")
-        with pytest.raises(ModelGroupPolicyError, match="model_group_active_runs"):
-            await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=1,
-                                   models=[{"model_id":"model-a"}])
-        with pytest.raises(ModelGroupPolicyError, match="model_group_active_runs"):
-            await batch_group_models(conn, tenant_id="tenant-a", group_ids=[default_id], model_ids=["model-a"],
-                                     operation="add", expected_group_revisions={default_id:1})
+        added = await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=1,
+                                       models=[{"model_id":"model-a"}])
+        assert added["revision"] == 2
+        assert await gateway() is not None
+        await batch_group_models(conn, tenant_id="tenant-a", group_ids=[default_id], model_ids=["model-a"],
+                                 operation="add", expected_group_revisions={default_id:2})
         await conn.execute("update sandbox_leases set released_at=now() where id='lease'")
         assert await gateway() is None
         await conn.execute("update runs set status='succeeded' where id='r'")
         await conn.execute("update runs set status='running' where id='old'")
         await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('legacy-group','tenant-a','legacy','Legacy','business')")
         await conn.execute("insert into model_group_models(group_id,model_id) values ('legacy-group','model-a')")
-        with pytest.raises(ModelGroupPolicyError, match="model_group_active_runs"):
-            await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=1,
-                                   models=[{"model_id":"model-a"}])
-        with pytest.raises(ModelGroupPolicyError, match="model_group_active_runs"):
-            await batch_group_models(conn, tenant_id="tenant-a", group_ids=[default_id], model_ids=["model-a"],
-                                     operation="replace", expected_group_revisions={default_id:1,"legacy-group":1})
+        same = await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=2,
+                                      models=[{"model_id":"model-a"}])
+        assert same["revision"] == 2
+        await batch_group_models(conn, tenant_id="tenant-a", group_ids=[default_id], model_ids=["model-a"],
+                                 operation="add", expected_group_revisions={default_id:2})
         await conn.execute("update runs set status='succeeded' where id='old'")
         await conn.execute("delete from model_group_models where group_id='legacy-group'")
-        converted = await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=1,
+        converted = await set_group_models(conn, tenant_id="tenant-a", group_id=default_id, revision=2,
                                           models=[{"model_id":"model-a"}])
         assert converted["revision"] == 2
     finally:

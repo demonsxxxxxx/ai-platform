@@ -5,10 +5,10 @@
 - `GET /api/ai/admin/model-groups` 和 `GET /{group_id}` 读取管理投影；
 - `POST /api/ai/admin/model-groups`、`PATCH /{group_id}`、`POST /{group_id}/retire` 管理业务组；
 - `PUT /{group_id}/models` 与 `PUT /{group_id}/members` 按 revision 一次替换组模型/成员；模型配置页的批量添加/替换/移出使用 `POST /api/ai/admin/model-groups/models/batch`，先 `preview:true` 校验 before/after，再用同一组 revision 的 `preview:false` 原子提交；409 保留选中草稿并要求刷新详情。
-- `GET/PUT /api/ai/admin/users/{user_id}/model-groups` 一次替换用户业务组与主组，清空成员必须明确确认回默认组；
+- `GET/PUT /api/ai/admin/users/{user_id}/model-groups` 通过单选一次替换用户唯一业务组，清空成员必须明确确认回默认组；
 - `/api/ai/models/groups` 和 `/api/agent/models/available?group_id=...` 是普通用户公开投影，不包含管理备注、权重、成员或存储信息。
 
-对话选择器先选择一个公开业务组，进入或切组时选中该组的默认模型，用户可以再手动切换到同组其他模型。普通默认组不进入对话选择器；默认模型不可用时提示用户手动选择，不自动替换或跨组回退。失去组或模型资格时前端清空模型并阻止发送，服务端仍是最终准入 authority。新会话和续聊提交具体 `group_id`、`selection_mode=explicit`、`model_id`/`model`，不能用客户端场景绕过服务端授权。
+模型可同时加入普通默认组和任意业务组。每个用户只归属一个组，未分配业务组时自动归属普通默认组。用户分组抽屉使用单选，组成员编辑新增人员会转移其旧归属，不再提供主组按钮。对话初始化当前唯一业务组及其默认模型，用户可以再手动切换到同组其他模型。普通默认组不进入对话选择器；默认模型不可用时提示用户手动选择，不自动替换或跨组回退。失去组或模型资格时前端清空模型并阻止发送，服务端仍是最终准入 authority。新会话和续聊提交具体 `group_id`、`selection_mode=explicit`、`model_id`/`model`，不能用客户端场景绕过服务端授权。
 
 ## 无需重登录刷新
 

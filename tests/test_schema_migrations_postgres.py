@@ -401,7 +401,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
         )
         assert result == {
             "status": "applied",
-            "version": "2026.10.27.2",
+            "version": "2026.10.28.1",
             "checksum_sha256": schema_migrations.schema_checksum(),
         }
         async with factory() as conn:
