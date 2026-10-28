@@ -6,12 +6,13 @@ import { useTranslation } from "react-i18next";
 import type { ModelOption } from "../../../../services/api/modelPublic";
 import { ComposerMenuItem } from "./composer";
 
-export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel, searchSeed }: {
+export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel, searchSeed, selectionMode = "explicit" }: {
   models: ModelOption[];
   currentModelId?: string;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelectModel: (id: string, value: string) => void;
+  onSelectModel: (id: string, value: string, mode?: "auto" | "explicit") => void;
+  selectionMode?: "auto" | "explicit";
   searchSeed?: string;
 }) {
   const { t } = useTranslation();
@@ -33,9 +34,9 @@ export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChan
     <Input value={query} onChange={(event) => setQuery(event.target.value)} prefix={<Search size={16} />}
       aria-label={t("composerCommand.modelSelector.searchPlaceholder")} placeholder={t("composerCommand.modelSelector.searchPlaceholder")} />
     <div role="listbox" aria-label={title} className="min-h-0 overflow-y-auto">
-      {filtered.map((model) => <ComposerMenuItem key={model.id} role="option" aria-selected={model.id === currentModelId}
-        data-composer-model-option={model.id} active={model.id === currentModelId}
-        onClick={() => { onSelectModel(model.id, model.value); onOpenChange(false); }}>
+      {filtered.map((model) => <ComposerMenuItem key={model.id} role="option" aria-selected={model.id === currentModelId && selectionMode === "explicit"}
+        data-composer-model-option={model.id} active={model.id === currentModelId && selectionMode === "explicit"}
+        onClick={() => { onSelectModel(model.id, model.value, "explicit"); onOpenChange(false); }}>
         <span className="min-w-0 flex-1 truncate">{model.label}</span>
         {model.id === currentModelId && <Check size={16} aria-hidden />}
       </ComposerMenuItem>)}

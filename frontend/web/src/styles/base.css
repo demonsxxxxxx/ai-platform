@@ -400,6 +400,27 @@ html[data-mobile-keyboard="true"] #root {
   flex-shrink: 0;
 }
 
+/* Keep portaled workbench menus distinct without adding internal card layers. */
+.workbench-menu-popup,
+.workbench-account-menu-popup {
+  border: 1px solid var(--theme-border-strong);
+  background-color: var(--theme-workbench-panel);
+  box-shadow: 0 8px 24px var(--theme-shadow-lg);
+}
+
+.workbench-account-action {
+  min-height: 2rem;
+  border-radius: 0.5rem;
+  color: var(--theme-text-secondary);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.workbench-account-action:hover,
+.workbench-account-action[aria-expanded="true"] {
+  background-color: var(--theme-sidebar-hover);
+  color: var(--theme-text);
+}
+
 [data-librechat-expanded-panel] [data-workbench-session-region] {
   background: color-mix(
     in srgb,

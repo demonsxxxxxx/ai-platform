@@ -27,7 +27,7 @@ test("useAuth listens for cross-tab cookie-session marker changes", () => {
   assert.match(useAuthSource, /window\.addEventListener\("storage", handleStorage\)/);
   assert.match(
     useAuthSource,
-    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*classifyBrowserAuthStorageEvent\(event\);[\s\S]*clearAuthPresentation\(owner, false\);[\s\S]*hydrateOwnedUser\(owner, true\);[\s\S]*};/,
+    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*classifyBrowserAuthStorageEvent\(event\);[\s\S]*clearAuthPresentation\(owner, false\);[\s\S]*hydrateOwnedUser\(owner, true\)\.finally\(\(\) => finishAuthOperation\(owner\)\);[\s\S]*};/,
   );
   assert.match(
     useAuthSource,

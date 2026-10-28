@@ -27,7 +27,7 @@ from app.auth_sessions import (
 from app.db import transaction
 from app.identity.api import PrincipalResponse
 from app.identity.infrastructure.audit_postgres import append_audit_log
-from app.identity.infrastructure.postgres import ensure_user
+from app.identity.infrastructure.postgres import ensure_company_login_user, ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.models import (
     AuthContextBootstrapRequest,
@@ -251,7 +251,7 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
 async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalResponse:
     """Verify a company JWT, then create the corresponding platform session."""
 
-    if set(request) != {"token"}:
+    if set(request) not in ({"token"}, {"token", "expected_principal"}):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_ad_login_request")
     company_jwt = request["token"]
     if (
@@ -261,12 +261,26 @@ async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalR
     ):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_ad_login_request")
 
+    expected = request.get("expected_principal")
+    if "expected_principal" in request and (
+        not isinstance(expected, dict)
+        or set(expected) != {"user_id", "tenant_id"}
+        or any(not isinstance(value, str) or not value or len(value) > 256 for value in expected.values())
+    ):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_ad_login_request")
+
     operation = await _begin_browser_operation(http_request, "ad-login")
     try:
         principal = resolve_company_login_jwt(
             company_jwt.strip(),
             settings=get_settings(),
         )
+        # Automatic recovery may constrain the verified subject, never supply
+        # identity authority. Reject a different Windows account before commit.
+        if expected is not None and (
+            principal.user_id != expected["user_id"] or principal.tenant_id != expected["tenant_id"]
+        ):
+            raise PrincipalAuthorityDenied()
         principal = await bind_department_authority(principal, settings=get_settings(), fresh=True)
     except CompanyLoginJwtUnavailable as exc:
         raise HTTPException(
@@ -357,6 +371,14 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
         user_id=principal.user_id,
         display_name=principal.display_name,
     )
+    if principal.source == "company-login":
+        await ensure_company_login_user(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            work_id=principal.user_id,
+            display_name=principal.display_name,
+        )
     await append_audit_log(
         conn,
         tenant_id=principal.tenant_id,

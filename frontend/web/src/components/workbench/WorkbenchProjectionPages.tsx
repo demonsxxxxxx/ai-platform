@@ -31,6 +31,7 @@ import type { WorkbenchGovernance } from "../../services/api/workbench";
 import { Permission } from "../../types";
 import { formatDateTimeShort } from "../../utils/datetime";
 import { AdminUserDiagnosticsDrawer } from "./AdminUserDiagnosticsDrawer";
+import { ModelGroupUserDrawer } from "./ModelGroupUserDrawer";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
 
@@ -488,12 +489,19 @@ export function WorkbenchUsersProjectionPanel() {
   const [diagnostics, setDiagnostics] = useState<AdminUserDiagnosticsResponse | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [modelGroupUser, setModelGroupUser] = useState<AdminUserSummary | null>(null);
+  const modelGroupTriggerRef = useRef<HTMLElement | null>(null);
   const diagnosticsRequest = useRef(0);
   const users = useProjection(
     () => adminUsersApi.list({ limit: 50, search: searchQuery }),
     [searchQuery],
   );
   const rows = users.data?.users ?? [];
+  const { hasAnyPermission } = useAuth();
+  const canManageModelGroups = hasAnyPermission([Permission.MODEL_ADMIN]);
+  useEffect(() => {
+    if (!canManageModelGroups) setModelGroupUser(null);
+  }, [canManageModelGroups]);
   const activeCount = rows.filter((user) => user.status === "active").length;
   const runCount = rows.reduce((total, user) => total + user.run_count, 0);
   const failedRunCount = rows.reduce((total, user) => total + user.failed_run_count, 0);
@@ -621,6 +629,14 @@ export function WorkbenchUsersProjectionPanel() {
                         failed: user.failed_run_count,
                       })}
                     </span>
+                    {canManageModelGroups ? <Button type="default"
+                      htmlType="button"
+                      data-user-model-groups={user.user_id}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
+                      onClick={(event) => { modelGroupTriggerRef.current = event.currentTarget as HTMLElement; setModelGroupUser(user); }}
+                    >
+                      <SlidersHorizontal size={14} />模型分组
+                    </Button> : null}
                     <Button type="default"
                       htmlType="button"
                       data-user-run-debug={user.user_id}
@@ -638,6 +654,7 @@ export function WorkbenchUsersProjectionPanel() {
         </div>
       </ProjectionShell>
 
+      {modelGroupUser ? <ModelGroupUserDrawer user={modelGroupUser} finalFocus={modelGroupTriggerRef} onClose={() => setModelGroupUser(null)} /> : null}
       {selectedUser ? (
         <AdminUserDiagnosticsDrawer
           user={selectedUser}

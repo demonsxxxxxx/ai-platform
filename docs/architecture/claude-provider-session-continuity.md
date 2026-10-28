@@ -248,8 +248,9 @@ text remain inline. Identical image strings within one append share one object.
 Context stores the exact UTF-8 bytes of each encoded image string, without
 base64 re-encoding, conversion, resizing or recompression. The entry's private
 `image-payloads-v1` sidecar records the JSON leaf path, image ID, size and digest;
-its PostgreSQL JSON/JSONB representation contains the structure with empty
-image leaves. Restore verifies object bytes and fills every leaf before checking
+the canonical PostgreSQL JSON representation contains the structure with empty
+image leaves, while the sidecar remains JSONB metadata. Restore verifies object
+bytes and fills every leaf before checking
 the unchanged full-entry batch digest and transcript byte count. The SDK receives
 deep-equal original entries, never image IDs, storage keys or URLs. A missing or
 corrupt object fails continuity; it cannot become a placeholder or summary.
@@ -267,12 +268,14 @@ at 128 objects and 64 MiB; durable deletion receipts release that reservation
 budget. Cancellation may only persist the existing qualified tail writer.
 
 Limits are separate: 8 MiB per encoded image, 128 extracted fields per batch,
-16 MiB per raw entry, 32 MiB per append batch and 64 MiB per restored transcript.
-The image-free entry remains at most 256 KiB and accumulated structured entries
-at most 8 MiB; the 4096-entry cap remains. CLI stdout buffering and private
-callback response limits accommodate the bounded restored transcript. Public
-assistant-text limits are unchanged. These are resource limits, not a promise
-that every model accepts an image of that size.
+16 MiB per raw entry, 32 MiB per append batch and 64 MiB raw cumulative
+transcript. Native resume retains 16 MiB within that raw limit, so its admission
+boundary is 48 MiB. The image-free entry remains at most 256 KiB; structured byte
+totals are retained for integrity accounting but impose no aggregate capacity
+limit. The 4096-entry cap and 128-entry/32 MiB append limits remain. CLI stdout
+buffering and private callback response limits accommodate the bounded restored
+transcript. Public assistant-text limits are unchanged. These are resource
+limits, not a promise that every model accepts an image of that size.
 
 `provider_session_images` owns private object metadata and survives parent
 session/epoch deletion. The existing deletion outbox owns each provisional
@@ -283,10 +286,11 @@ remainder and physically removed parents. Images use the disjoint
 `provider_image_*` outbox states, preventing old artifact/file workers from
 claiming them. No public File/Artifact row or new cleanup worker is introduced.
 
-Compatibility disposition: the previous raw 256 KiB / 2 MiB / 8 MiB private
-limits and all-inline writer are superseded. Inline history remains a read
-format, not a second writer. Schema/readiness and concurrent-index authority
-advance to `2026.10.14.1`. Old binaries cannot restore externalized entries or
+Compatibility disposition: the previous smaller all-inline private limits and
+writer are superseded. The per-entry structured 256 KiB, raw entry 16 MiB, raw
+transcript 64 MiB, batch 32 MiB and count limits remain. Inline history remains a
+read format, not a second writer. Schema/readiness authority advances to
+`2026.10.27.1`; concurrent-index authority is unchanged. Old binaries cannot restore externalized entries or
 process the new deletion target; an image swap is not a supported rollback.
 Deploy matching API/Worker/Sandbox binaries after migration under the release
 runbook. No migration rewrites historical hashes, failed Runs or dirty epochs.
@@ -346,13 +350,15 @@ store, not two continuity implementations. With a fitting view, ordinary SDK
 resume does two whole-epoch verifications regardless of child count: main
 preload and child enumeration. Oversized views retain the prior n+2 bound.
 
-New appends also store their canonical structured representation in the nullable
-`entry_canonical_json` JSON column, in the same transaction as JSONB and the
-existing full-entry receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
-then restores images and verifies the original full representation. JSONB alone changes
-scientific notation and negative zero, so reserializing it cannot always prove
-the original append digest or byte count. This preserves ACK retry identity and
-the existing transcript byte budget without a new digest format.
+New appends store the canonical structured representation in `entry_canonical_json`
+(JSON) as the only writer-owned original, in the same transaction as the existing
+full-entry receipt. `entry_json` is nullable and remains only the read-compatible
+mirror for historical JSONB-only rows; when both columns exist, canonical JSON is
+authoritative and JSONB drift is ignored. Loading extracts the complete canonical
+column as text and uses Python `json.loads`, then restores images and verifies the
+original full representation. JSONB alone changes scientific notation and negative
+zero, so it cannot authenticate the original append digest. The schema requires at
+least one representation, without backfilling old rows or changing receipts.
 
 Cancellation advances the Attempt owner generation and revokes ordinary
 runtime callbacks. Only provider `append` may drain the already-claimed writer
@@ -408,8 +414,10 @@ sequence/count and byte metadata since its first main implementation in
 `3199a8fd0938444cfdbcc62c3bab34fdfaf93918` (#1397). No supported main writer
 without those receipts was identified. Existing runtime results without a
 `final_sequence` retain their terminal-commit compatibility path; their native
-append receipts remain the verifier's authority. Schema version `2026.10.10.1`
-adds the nullable JSON representation without backfilling old rows or receipts.
+append receipts remain the verifier's authority. Schema version `2026.10.27.1`
+makes the canonical representation the new writer authority, keeps `entry_json`
+nullable for old JSONB-only rows, and adds the representation constraint without
+backfilling old rows or receipts.
 Legacy JSONB-only batches may resume when their original digest and byte count
 can still be verified. If that digest does not match and numeric representation
 is ambiguous (for example, original `1e21` or `-0.0`), the callback reports
@@ -417,8 +425,9 @@ is ambiguous (for example, original `1e21` or `-0.0`), the callback reports
 refuses to resume. Recovering such an old conversation requires a trusted
 original append payload or backup in a separately authorized migration;
 otherwise the user must start a new conversation. The verifier does not guess
-numeric combinations or accept a newly computed legacy digest. Old binaries
-can still append nullable representation rows, subject to this legacy limit.
+numeric combinations or accept a newly computed legacy digest. Old binaries can still read legacy JSONB-only rows, but they cannot safely append
+new canonical-only rows or restore canonical-only rows; the matching binary is the
+compatibility owner for the new writer path.
 The unshipped experimental binding
 layout already requires explicit data disposition in `schema.sql`. A database
 with imported or missing receipts has unverified continuity and is rejected;
@@ -433,20 +442,24 @@ candidate artifact and separate release evidence.
 
 ## Rollback
 
-Rollback means reverting the complete source change. It must not re-enable
-`platform_bootstrap`, checkpoint summarization, or prompt reconstruction as a
-runtime fallback, and it must not delete provider or checkpoint rows ad hoc.
-The additive nullable JSON column may remain during a binary rollback; reverting
-the readiness version does not authorize deleting it or overwriting migration
-ledger entries. Apply the schema migration before starting the new binary.
+Rollback is source-level only and cannot restore a new canonical-only row with an
+old binary. It must not re-enable `platform_bootstrap`, checkpoint summarization,
+or prompt reconstruction as a runtime fallback, and it must not delete provider or
+checkpoint rows ad hoc. The additive canonical column and representation constraint
+remain installed during a binary rollback; reverting the readiness version does not
+authorize deleting either column, rewriting old rows, or overwriting migration
+ledger entries. Old binaries can read legacy JSONB-only rows, but the migrated
+canonical-only writer path must remain disabled until matching binaries are active.
+Apply the schema migration before starting the new binary.
 
 ### SDK mirror batch sizing and retry boundary
 
 The Claude SDK eager mirror may coalesce many buffered frames into one
 `SessionStore.append`. The adapter deterministically splits that one call into
-host callbacks bounded by the existing 128-entry, 256-KiB single-entry and 2-MiB
-request-envelope limits. It validates the complete input before sending any
-chunk. A single oversize JSON entry is rejected without splitting or truncating
+host callbacks bounded by the existing 128-entry, 16-MiB raw-entry and 32-MiB
+request-envelope limits. The image-free structured representation remains capped
+at 256 KiB per entry; extracted image payloads have their separate 8 MiB limit.
+It validates the complete input before sending any chunk. A single oversize JSON entry is rejected without splitting or truncating
 its opaque SDK data; that is a platform resource limit, not an SDK guarantee.
 
 Chunk sizing reuses the compact UTF-8 JSON lengths already checked on the

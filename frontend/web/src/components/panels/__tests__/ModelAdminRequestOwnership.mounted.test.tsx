@@ -1,3 +1,4 @@
+import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
@@ -25,17 +26,18 @@ function props(node: object) {
 }
 function saved(revision = 4): AdminModelState {
   return { connection: { configured: true, revision, base_url: "https://gateway-a.example", key_fingerprint: "synthetic-marker" }, models: [{
-    id: "mdl_gpt", value: "mock/gpt", label: "合成模型", provider: "compatible", enabled: true, available: true, is_default: true,
+    id: "mdl_gpt", value: "mock/gpt", label: "合成模型", provider: "compatible", enabled: true, available: true,
     order: 1, last_seen_revision: revision, last_seen_at: "2026-10-09T00:00:00Z", auto_compact_window: 200_000, max_output_tokens: 2048,
   }] };
 }
-const candidate = (revision = 4) => ({ ...saved(revision), base_url: "https://gateway-a.example", models: [{ ...saved(revision).models[0], enabled: false, is_default: false, auto_compact_window: undefined, max_output_tokens: undefined }] });
+const candidate = (revision = 4) => ({ ...saved(revision), base_url: "https://gateway-a.example", models: [{ ...saved(revision).models[0], enabled: false, auto_compact_window: undefined, max_output_tokens: undefined }] });
 function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
   const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject };
 }
 interface View {
   React: ReactModule; container: Container;
+  catalog: ReturnType<typeof installModelCatalogTestProvider>;
   input(label: string): Field;
   button(attribute: string): QueryNode;
   change(label: string, value: string): Promise<void>;
@@ -49,7 +51,8 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   const original = { ...modelAdminApi };
   Object.assign(modelAdminApi, { get: async () => saved(), ...api });
   const container = dom.document.createElement("div"); const root = await createLobeTestRoot(container);
-  const render = async (canManage: boolean) => { await React.act(async () => { root.render(React.createElement(ModelAdminControl, { canManage })); }); };
+  const catalog = installModelCatalogTestProvider();
+  const render = async (canManage: boolean) => { await React.act(async () => { root.render(catalog.wrap(React.createElement(ModelAdminControl, { canManage }))); }); };
   const input = (label: string) => {
     const found = Array.from(container.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
   };
@@ -58,7 +61,7 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   };
   try {
     await render(true);
-    await run({ React, container, input, button, render,
+    await run({ React, container, input, button, render, catalog,
       unmount: async () => { await React.act(async () => root.render(null)); },
       change: async (label, value) => { await React.act(async () => {
         const field = input(label);
@@ -67,7 +70,7 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
       }); },
       click: async (attribute) => { await React.act(async () => { (button(attribute) as HTMLButtonElement).click(); await Promise.resolve(); }); },
     });
-  } finally { await React.act(async () => root.unmount()); Object.assign(modelAdminApi, original); }
+  } finally { await React.act(async () => root.unmount()); catalog.cleanup(); Object.assign(modelAdminApi, original); }
 }
 
 test("GET never claims test success; successive saves use acknowledged revisions without rediscovery or key masks", async () => {
@@ -114,7 +117,7 @@ test("late A failure cannot replace successful B result", async () => {
 
 test("test probes the editable draft only; new endpoint needs its own key and discovery before saving", async () => {
   const calls: Array<{ url: string; key?: string }> = [];
-  await withControl({ discover: async (url, key) => { calls.push({ url, key }); return { ...candidate(), models: [{ ...saved().models[0], id: "mdl_new", value: "mock/new", label: "新候选", enabled: false, is_default: false }] }; } }, async ({ change, click, input, button }) => {
+  await withControl({ discover: async (url, key) => { calls.push({ url, key }); return { ...candidate(), models: [{ ...saved().models[0], id: "mdl_new", value: "mock/new", label: "新候选", enabled: false }] }; } }, async ({ change, click, input, button }) => {
     await change("模型 API Key", "synthetic-a"); await change("模型 API 地址", "https://gateway-b.example/v1");
     assert.equal(input("模型 API Key").value, ""); assert.equal(props(button("data-model-admin-test")).disabled, true);
     await change("模型 API Key", "synthetic-b"); await click("data-model-admin-test");
@@ -212,7 +215,7 @@ for (const discoveredRevision of [3, 5]) {
         assert.equal(input("mock/gpt 压缩窗口 Token").value, "150000");
         assert.equal(input("mock/gpt 最大输出 Token").value, "4096");
         assert.equal(choice(container, "启用 我的未保存名称").getAttribute("aria-checked"), "true");
-        assert.equal(choice(container, "设为默认 我的未保存名称").getAttribute("aria-checked"), "true");
+        assert.doesNotMatch(text(container), /设为默认/);
         assert.equal(input("模型 API Key").value, "synthetic-unsaved");
         assert.equal(props(button("data-model-admin-publish")).disabled, true);
         assert.match(text(container), /未保存编辑已保留，请重新加载配置后再发布/);
@@ -254,7 +257,7 @@ function savedWithSecondModel(): AdminModelState {
   const state = saved();
   return { ...state, models: [...state.models, {
     ...state.models[0], id: "mdl_second", value: "mock/second", label: "第二模型",
-    is_default: false, order: 2,
+    order: 2,
   }] };
 }
 
@@ -338,10 +341,12 @@ for (const clearCapacity of [false, true]) {
           assert.equal(requests.length, 2);
           assert.equal(requests[1].expected_revision, 4);
           assert.equal(requests[1].credential, "undefined" === typeof requests[1].credential ? undefined : requests[1].credential);
+          assert.equal("is_default" in requests[1].models[1], false);
+          assert.equal("access_mode" in requests[1].models[1], false);
+          assert.equal("allowed_user_ids" in requests[1].models[1], false);
           assert.deepEqual(requests[1].models[1], {
             id: "mdl_second", value: "mock/second", display_name: "停用草稿",
-            enabled: false, is_default: false, order: 2,
-            access_mode: "all", allowed_user_ids: [],
+            enabled: false, order: 2,
             ...(clearCapacity ? {} : { auto_compact_window: 150_000, max_output_tokens: 10000000 }),
           });
           assert.equal(input("模型 API Key").value, "");
@@ -368,5 +373,33 @@ test("disabled capacity fields still honor request and upstream-availability loc
         assert.equal(props(input(`mock/second ${label}`)).disabled, true);
       }
       await React.act(async () => pending.resolve(initial));
+    });
+});
+
+test("successful publication remains successful when the grouped catalog refresh fails", async () => {
+  await withControl({ publish: async (_url, _key, _revision, models) => ({ ...saved(5), models }) },
+    async ({ catalog, change, click, container, button }) => {
+      catalog.failRefresh();
+      await change("mock/gpt 压缩窗口 Token", "150000");
+      await click("data-model-admin-publish");
+      assert.equal(catalog.calls(), 2);
+      assert.match(text(container), /模型配置已保存并生效；模型列表暂未刷新/);
+      assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
+      assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    });
+});
+
+test("publication refresh completion cannot write into a replacement admin owner", async () => {
+  const pending = deferred<{ models: []; count: number; enabled_count: number }>();
+  await withControl({ publish: async (_url, _key, _revision, models) => ({ ...saved(5), models }) },
+    async ({ change, click, render, React, container }) => {
+      const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+      modelPublicApi.listAvailable = () => pending.promise;
+      await change("mock/gpt 压缩窗口 Token", "150000");
+      await click("data-model-admin-publish");
+      await render(false);
+      await render(true);
+      await React.act(async () => pending.resolve({ models: [], count: 0, enabled_count: 0 }));
+      assert.doesNotMatch(text(container), /聊天中的模型列表已重新读取|模型列表暂未刷新/);
     });
 });

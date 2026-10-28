@@ -6,35 +6,18 @@ from typing import Any, Protocol
 
 
 class RunModelSnapshotRepository(Protocol):
-    async def load(
-        self,
-        conn: Any,
-        *,
-        tenant_id: str,
-        run_id: str,
-    ) -> dict[str, Any]: ...
+    async def load(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]: ...
 
     async def bind(
-        self,
-        conn: Any,
-        *,
-        tenant_id: str,
-        run_id: str,
-        model_id: str,
-        model_value: str,
-        connection_revision: int,
-        auto_compact_window: int,
-        max_output_tokens: int,
+        self, conn: Any, *, tenant_id: str, run_id: str, model_id: str, model_value: str,
+        connection_revision: int, auto_compact_window: int, max_output_tokens: int,
+        group_id: str | None = None, group_code: str | None = None,
+        group_type: str | None = None, group_revision: int | None = None,
+        selection_mode: str = "auto", usage_scene: str = "independent",
+        policy_version: str | None = None,
     ) -> None: ...
 
-    async def inherit(
-        self,
-        conn: Any,
-        *,
-        tenant_id: str,
-        source_run_id: str,
-        child_run_id: str,
-    ) -> None: ...
+    async def replace(self, conn: Any, **kwargs: Any) -> None: ...
 
 
 class RunModelSnapshotService:
@@ -47,8 +30,8 @@ class RunModelSnapshotService:
     async def bind(self, conn: Any, **kwargs: Any) -> None:
         await self._repository.bind(conn, **kwargs)
 
-    async def inherit(self, conn: Any, **kwargs: Any) -> None:
-        await self._repository.inherit(conn, **kwargs)
+    async def replace(self, conn: Any, **kwargs: Any) -> None:
+        await self._repository.replace(conn, **kwargs)
 
 
 _service: RunModelSnapshotService | None = None
@@ -73,5 +56,5 @@ async def bind_run_model(conn: Any, **kwargs: Any) -> None:
     await _configured_service().bind(conn, **kwargs)
 
 
-async def inherit_run_model(conn: Any, **kwargs: Any) -> None:
-    await _configured_service().inherit(conn, **kwargs)
+async def replace_run_model_snapshot(conn: Any, **kwargs: Any) -> None:
+    await _configured_service().replace(conn, **kwargs)

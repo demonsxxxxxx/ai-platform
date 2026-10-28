@@ -1282,7 +1282,6 @@ class ClaudeAgentWorkerAdapter:
             response_files=response_files,
             response_file_descriptors=response_file_descriptors,
             allowed_skill_names=allowed_skill_names,
-            required_artifact_types=(),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,
             ensure_inside=ensure_path_inside,

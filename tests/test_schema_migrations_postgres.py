@@ -34,6 +34,9 @@ REPOSITORY_SKILL_RETIREMENT_BASE_CHECKSUM = (
 HUMAN_APPROVAL_RETIREMENT_BASE_COMMIT = (
     "0a1f24526e94a6c7700516cee787cccdd8078b01"
 )
+ORIGIN_MAIN_MODEL_GROUPS_COMMIT = (
+    "5ca18da3ec298ed5d9bd017ca1f284faa8877cce"
+)
 
 
 def _schema_source_at_commit(commit: str) -> str:
@@ -232,6 +235,275 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
                 for item in definition_mismatches
             )
     finally:
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and_provider_history(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_main_to_provider_canonical_{uuid.uuid4().hex}"
+    previous = _load_schema_migrations_at_commit(
+        tmp_path, ORIGIN_MAIN_MODEL_GROUPS_COMMIT
+    )
+    admin = await psycopg.AsyncConnection.connect(
+        dsn, autocommit=True, row_factory=dict_row
+    )
+    legacy_entry = {
+        "type": "assistant",
+        "uuid": "legacy-entry",
+        "message": {"role": "assistant", "content": "preserved"},
+    }
+    batch_bytes = json.dumps(
+        ["", [legacy_entry]],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    batch_digest = hashlib.sha256(batch_bytes).hexdigest()
+    try:
+        assert previous.TARGET_SCHEMA_VERSION == "2026.10.26.2"
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+        base_result = await previous.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert base_result["version"] == previous.TARGET_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await previous.schema_status(conn))["ready"] is True
+
+        await admin.execute(
+            "insert into tenants(id, name) values ('upgrade-tenant', 'Upgrade Tenant')"
+        )
+        await admin.execute(
+            "insert into workspaces(id, tenant_id, name) values ('upgrade-workspace', 'upgrade-tenant', 'Upgrade Workspace')"
+        )
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) values ('upgrade-user', 'upgrade-tenant', 'Upgrade User')"
+        )
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) values ('upgrade-agent', 'upgrade-tenant', 'Upgrade Agent', 'chat')"
+        )
+        await admin.execute(
+            "insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title) "
+            "values ('upgrade-session', 'upgrade-tenant', 'upgrade-workspace', 'upgrade-user', 'upgrade-agent', 'Legacy session')"
+        )
+        await admin.execute(
+            "insert into model_gateway_revisions(revision, base_url, api_key_ciphertext, "
+            "key_fingerprint, active, created_by) values (1, 'https://synthetic.example', "
+            "decode('00', 'hex'), '0123456789abcdef', true, 'upgrade-user')"
+        )
+        await admin.execute(
+            "insert into model_catalog_entries(model_id, upstream_model_id, display_name, "
+            "provider, enabled, upstream_available, is_default, display_order, "
+            "first_seen_revision, last_seen_revision) values ('upgrade-model', 'upstream-upgrade', "
+            "'Upgrade model', 'compatible', true, true, false, 1, 1, 1)"
+        )
+        await admin.execute(
+            "insert into model_groups(id, tenant_id, code, name, type, enabled, revision) "
+            "values ('upgrade-group', 'upgrade-tenant', 'upgrade', 'Upgrade group', 'business', true, 7)"
+        )
+        await admin.execute(
+            "insert into model_group_members(tenant_id, group_id, user_id, is_primary) "
+            "values ('upgrade-tenant', 'upgrade-group', 'upgrade-user', true)"
+        )
+        await admin.execute(
+            "insert into model_group_models(group_id, model_id, priority, weight, revision) "
+            "values ('upgrade-group', 'upgrade-model', 3, 80, 4)"
+        )
+        await admin.execute(
+            """
+            insert into provider_session_heads(
+                tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                current_epoch_id, next_epoch_number
+            ) values ('upgrade-tenant', 'upgrade-workspace', 'upgrade-user',
+                'upgrade-session', 'upgrade-agent', 'claude', null, 2)
+            """
+        )
+        await admin.execute(
+            """
+            insert into provider_session_epochs(
+                id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                epoch_number, provider_session_id, state, next_sequence, entry_count,
+                transcript_bytes, coverage_source_sha256, coverage_through_generation,
+                coverage_message_count
+            ) values ('upgrade-epoch', 'upgrade-tenant', 'upgrade-workspace', 'upgrade-user',
+                'upgrade-session', 'upgrade-agent', 'claude', 1,
+                '00000000-0000-4000-8000-000000000091', 'ready', 2, 1,
+                %s, repeat('a', 64), 1, 1)
+            """,
+            (len(json.dumps(legacy_entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),),
+        )
+        await admin.execute(
+            "update provider_session_heads set current_epoch_id = 'upgrade-epoch' "
+            "where tenant_id = 'upgrade-tenant' and session_id = 'upgrade-session'"
+        )
+        await admin.execute(
+            """
+            insert into provider_session_entries(
+                id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                epoch_id, sequence, sdk_entry_uuid, entry_json
+            ) values ('upgrade-entry', 'upgrade-tenant', 'upgrade-workspace', 'upgrade-user',
+                'upgrade-session', 'upgrade-agent', 'claude', 'upgrade-epoch', 1,
+                'legacy-entry', %s::jsonb)
+            """,
+            (json.dumps(legacy_entry, ensure_ascii=False),),
+        )
+        await admin.execute(
+            """
+            insert into provider_session_append_receipts(
+                epoch_id, expected_sequence, batch_sha256, entry_count, last_sequence,
+                run_id, attempt_id, owner_generation
+            ) values ('upgrade-epoch', 1, %s, 1, 1, 'legacy-run', 'legacy-attempt', 1)
+            """,
+            (batch_digest,),
+        )
+        await admin.execute(
+            """
+            insert into provider_turn_receipts(
+                id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                epoch_id, run_id, attempt_id, execution_spec_sha256, start_sequence,
+                final_sequence, state
+            ) values ('upgrade-turn', 'upgrade-tenant', 'upgrade-workspace', 'upgrade-user',
+                'upgrade-session', 'upgrade-agent', 'claude', 'upgrade-epoch',
+                'legacy-run', 'legacy-attempt', repeat('b', 64), 1, 1, 'committed')
+            """
+        )
+        before_entry = await (
+            await admin.execute(
+                "select entry_json, entry_canonical_json from provider_session_entries "
+                "where id = 'upgrade-entry'"
+            )
+        ).fetchone()
+        assert before_entry == {"entry_json": legacy_entry, "entry_canonical_json": None}
+        before_epoch = await (
+            await admin.execute(
+                "select id, provider_session_id, state, next_sequence, entry_count, "
+                "transcript_bytes, structured_bytes, coverage_source_sha256, "
+                "coverage_through_generation, coverage_message_count "
+                "from provider_session_epochs where id = 'upgrade-epoch'"
+            )
+        ).fetchone()
+        before_turn = await (
+            await admin.execute(
+                "select id, epoch_id, run_id, attempt_id, execution_spec_sha256, "
+                "start_sequence, final_sequence, state "
+                "from provider_turn_receipts where id = 'upgrade-turn'"
+            )
+        ).fetchone()
+
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert result == {
+            "status": "applied",
+            "version": "2026.10.28.1",
+            "checksum_sha256": schema_migrations.schema_checksum(),
+        }
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True
+        columns = await (
+            await admin.execute(
+                "select column_name, is_nullable from information_schema.columns "
+                "where table_schema = %s and table_name = 'provider_session_entries' "
+                "and column_name in ('entry_json', 'entry_canonical_json') order by column_name",
+                (schema_name,),
+            )
+        ).fetchall()
+        assert columns == [
+            {"column_name": "entry_canonical_json", "is_nullable": "YES"},
+            {"column_name": "entry_json", "is_nullable": "YES"},
+        ]
+        constraints = await (
+            await admin.execute(
+                "select pg_get_constraintdef(oid, true) as definition from pg_constraint "
+                "where conrelid = to_regclass(%s) and conname = 'chk_provider_entry_representation'",
+                (f"{schema_name}.provider_session_entries",),
+            )
+        ).fetchall()
+        assert constraints == [
+            {"definition": "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)"}
+        ]
+        after_entry = await (
+            await admin.execute(
+                "select entry_json, entry_canonical_json from provider_session_entries "
+                "where id = 'upgrade-entry'"
+            )
+        ).fetchone()
+        assert after_entry == before_entry
+        after_epoch = await (
+            await admin.execute(
+                "select id, provider_session_id, state, next_sequence, entry_count, "
+                "transcript_bytes, structured_bytes, coverage_source_sha256, "
+                "coverage_through_generation, coverage_message_count "
+                "from provider_session_epochs where id = 'upgrade-epoch'"
+            )
+        ).fetchone()
+        after_turn = await (
+            await admin.execute(
+                "select id, epoch_id, run_id, attempt_id, execution_spec_sha256, "
+                "start_sequence, final_sequence, state "
+                "from provider_turn_receipts where id = 'upgrade-turn'"
+            )
+        ).fetchone()
+        assert after_epoch == before_epoch
+        assert after_turn == before_turn
+        assert await (
+            await admin.execute(
+                "select batch_sha256, entry_count, last_sequence from provider_session_append_receipts "
+                "where epoch_id = 'upgrade-epoch' and expected_sequence = 1"
+            )
+        ).fetchone() == {
+            "batch_sha256": batch_digest, "entry_count": 1, "last_sequence": 1,
+        }
+        assert await (
+            await admin.execute(
+                "select id, code, revision from model_groups where id = 'upgrade-group'"
+            )
+        ).fetchone() == {"id": "upgrade-group", "code": "upgrade", "revision": 7}
+        assert await (
+            await admin.execute(
+                "select tenant_id, group_id, user_id, is_primary from model_group_members "
+                "where group_id = 'upgrade-group'"
+            )
+        ).fetchone() == {
+            "tenant_id": "upgrade-tenant", "group_id": "upgrade-group",
+            "user_id": "upgrade-user", "is_primary": True,
+        }
+        assert await (
+            await admin.execute(
+                "select group_id, model_id, priority, weight, revision from model_group_models "
+                "where group_id = 'upgrade-group'"
+            )
+        ).fetchone() == {
+            "group_id": "upgrade-group", "model_id": "upgrade-model", "priority": 3,
+            "weight": 80, "revision": 4,
+        }
+        assert (await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        ))["status"] == "current"
+        ledger_rows = await (
+            await admin.execute(
+                "select version, checksum_sha256 from schema_migrations order by version"
+            )
+        ).fetchall()
+        assert ledger_rows[-2:] == [
+            {
+                "version": previous.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": previous.schema_checksum(),
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+            },
+        ]
+    finally:
+        sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin.close()
 
@@ -1416,7 +1688,11 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",
         "alter table run_attempts drop column lease_expires_at",
-        "alter table provider_session_entries drop column entry_canonical_json",
+        """
+        alter table provider_session_entries drop constraint chk_provider_entry_representation;
+        alter table provider_session_entries drop column entry_canonical_json;
+        """,
+        "alter table provider_session_entries drop constraint chk_provider_entry_representation",
         "alter table provider_session_entries alter column entry_canonical_json type jsonb using entry_canonical_json::jsonb",
         "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_ordinal_key",
         "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_queue_attempt_id_key",

@@ -20,7 +20,7 @@ def local_mcp_peers(*, protocol="legacy"):
         models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
         tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
-        call_error=None, input_required=False, tool_result=None, model_reply=None,
+        call_error=None, input_required=False, tool_result=None, tool_response_content_type="application/json", model_reply=None,
         reply_queues=[], sse_opened_sessions=queue.Queue(), sse_endpoint_gates={},
     )
 
@@ -173,6 +173,9 @@ def local_mcp_peers(*, protocol="legacy"):
             if self.path.startswith("/messages?"):
                 replies.put(response)
                 self.respond({}, 202)
+            elif request["method"] == "tools/call" and state.tool_response_content_type == "text/event-stream":
+                event = f"event: message\ndata: {json.dumps(response)}\n\n".encode()
+                self.respond(event, content_type="text/event-stream")
             else:
                 self.respond(response)
 

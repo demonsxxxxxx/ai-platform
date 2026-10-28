@@ -16,7 +16,7 @@ from app.context.domain.conversation_authority import (
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
-    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     ProviderSessionConflictError,
     ProviderSessionScope,
     normalize_provider_entry_batch,
@@ -288,6 +288,99 @@ async def test_lineage_claim_rejects_a_different_active_run():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript_bytes", "accepted"),
+    [
+        (
+            MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
+            - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
+            True,
+        ),
+        (
+            MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
+            - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
+            + 1,
+            False,
+        ),
+    ],
+)
+async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_preparation(
+    transcript_bytes, accepted,
+):
+    """Both native-resume gates enforce the same 64 MiB minus 16 MiB boundary."""
+    assert PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES == 16 * 1024 * 1024
+    receipt = source_receipt()
+    context = {
+        "source_sha256": receipt["source_sha256"],
+        "message_count": 0,
+        "current_message_id": "msg-user",
+        "messages": [],
+        "selected_message_count": 0,
+        "selected_turn_count": 0,
+    }
+    coverage_connection = Connection(
+        coverage_row=_coverage_row(
+            coverage_source_sha256=receipt["source_sha256"],
+            transcript_bytes=transcript_bytes,
+        ),
+    )
+    preparation_connection = Connection(
+        head={
+            "active_run_id": "run-current",
+            "current_epoch_id": "pe-old",
+            "next_epoch_number": 2,
+            "state": "ready",
+            "coverage_source_sha256": receipt["source_sha256"],
+            "coverage_message_count": 0,
+            "entry_count": 1,
+            "transcript_bytes": transcript_bytes,
+            "structured_bytes": 100,
+            "writer_run_id": None,
+            "writer_attempt_id": None,
+            "writer_owner_generation": None,
+            "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685",
+        },
+    )
+
+    if accepted:
+        assert await provider_epochs.read_provider_coverage(
+            coverage_connection, scope=SCOPE, run_id="run-current", session_generation=4,
+        ) == {
+            "source_sha256": receipt["source_sha256"],
+            "message_count": 5,
+            "coverage_through_generation": 2,
+        }
+        result = await provider_epochs.prepare_provider_epoch(
+            preparation_connection,
+            scope=SCOPE,
+            run_id="run-current",
+            conversation_context=context,
+        )
+        assert result["execution_mode"] == "native_resume"
+    else:
+        with pytest.raises(
+            ProviderSessionConflictError,
+            match="provider_session_requires_new_conversation",
+        ):
+            await provider_epochs.read_provider_coverage(
+                coverage_connection,
+                scope=SCOPE,
+                run_id="run-current",
+                session_generation=4,
+            )
+        with pytest.raises(
+            ProviderSessionConflictError,
+            match="provider_session_requires_new_conversation",
+        ):
+            await provider_epochs.prepare_provider_epoch(
+                preparation_connection,
+                scope=SCOPE,
+                run_id="run-current",
+                conversation_context=context,
+            )
+
+
+@pytest.mark.asyncio
 async def test_empty_bootstrap_without_persisted_mutation_releases_cleanly_after_failure():
     for next_sequence, expected in ((1, "ready"), (2, "dirty")):
         conn = Connection()
@@ -342,7 +435,6 @@ async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume(
         {"coverage_message_count": 0},
         {"entry_count": MAX_PROVIDER_SESSION_ENTRIES},
         {"transcript_bytes": MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES},
-        {"structured_bytes": MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES},
     ],
 )
 async def test_existing_conversation_requires_new_conversation_when_native_epoch_is_unusable(
@@ -429,6 +521,22 @@ async def test_running_attempt_restores_frozen_native_resume_before_epoch_readin
     assert result == frozen
 
 
+def test_entry_normalization_preserves_uuid_values_and_json_string_boundaries():
+    entry = {
+        "type": "assistant",
+        "uuid": "  sdk-entry  ",
+        "message": {
+            "content": "real\x00nul and literal\\u0000",
+            "nested": ["中文", -0.0, 1e-21, 10**30],
+        },
+        "unknown": {"preserve": True},
+    }
+    normalized = normalize_provider_entry_batch([entry])[0][0]
+    assert normalized.sdk_entry_uuid == "sdk-entry"
+    assert normalized.entry == entry
+    assert normalized.entry["message"]["content"] == "real\x00nul and literal\\u0000"
+
+
 @pytest.mark.asyncio
 async def test_uuidless_batch_response_loss_reuses_db_receipt_not_uuid(monkeypatch):
     conn = Connection()
@@ -457,6 +565,10 @@ async def test_uuidless_batch_response_loss_reuses_db_receipt_not_uuid(monkeypat
     with pytest.raises(ProviderSessionConflictError, match="append_conflict"):
         await provider_epochs.callback_provider_epoch(conn, entries=batch, **{**base, "expected_sequence": 3})
     assert normalize_provider_entry_batch(batch)[0][0].sdk_entry_uuid is None
+    original = {"uuid": "  sdk-id  ", "value": "unchanged"}
+    normalized = normalize_provider_entry_batch([original])[0][0]
+    assert normalized.sdk_entry_uuid == "sdk-id"
+    assert normalized.entry == original
 
 
 async def _lock_callback_epoch(conn):
@@ -616,21 +728,22 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
 
 _V2 = "ai-platform.execution-spec.v2"
 _V3 = "ai-platform.execution-spec.v3"
+_V4 = "ai-platform.execution-spec.v4"
 
 
 def _spec_version_predicate(sql: str) -> str:
     """Return the run_attempts schema-version predicate of one locked query."""
 
     lines = [line for line in sql.splitlines() if "execution_spec_schema_version" in line
-             or _V2 in line or _V3 in line]
+             or _V2 in line or _V3 in line or _V4 in line]
     assert lines, sql
     return " ".join(" ".join(lines).split())
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_locked_callback_epoch_binds_both_frozen_spec_versions(version):
-    """A v3 attempt must reach the same authority checks as a v2 attempt."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_locked_callback_epoch_binds_all_model_spec_versions(version):
+    """Grouped and historical attempts use the same callback authority checks."""
 
     class RecordingCallbackConnection(CallbackConnection):
         def __init__(self):
@@ -647,14 +760,14 @@ async def test_locked_callback_epoch_binds_both_frozen_spec_versions(version):
                           if "attempt.execution_spec_sha256" in sql)
     predicate = _spec_version_predicate(attempt_lookup)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_prepare_epoch_finds_a_running_attempt_of_either_spec_version(version):
-    """Lineage preparation must not skip a v3 attempt when freezing the context."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_prepare_epoch_finds_a_running_attempt_of_each_model_spec_version(version):
+    """Lineage preparation must not skip a grouped attempt when freezing context."""
 
     receipt = source_receipt()
     context = {"source_sha256": receipt["source_sha256"], "message_count": 1,
@@ -676,14 +789,14 @@ async def test_prepare_epoch_finds_a_running_attempt_of_either_spec_version(vers
     lookup = next(sql for sql in conn.calls if "select execution_spec_json->'context_pack'" in sql)
     predicate = _spec_version_predicate(lookup)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", [_V2, _V3])
-async def test_terminal_commit_locks_a_writer_of_either_spec_version(version):
-    """The terminal receipt fence must accept both frozen spec versions."""
+@pytest.mark.parametrize("version", [_V2, _V3, _V4])
+async def test_terminal_commit_locks_a_writer_of_each_model_spec_version(version):
+    """The terminal receipt fence must accept all model-bearing spec versions."""
 
     conn = Connection()
     conn.terminal_row = None
@@ -696,5 +809,5 @@ async def test_terminal_commit_locks_a_writer_of_either_spec_version(version):
     writer_lock = next(sql for sql in conn.calls if "select runs.tenant_id" in sql)
     predicate = _spec_version_predicate(writer_lock)
     assert " in (" in predicate
-    assert _V2 in predicate and _V3 in predicate
+    assert _V2 in predicate and _V3 in predicate and _V4 in predicate
     assert version in predicate

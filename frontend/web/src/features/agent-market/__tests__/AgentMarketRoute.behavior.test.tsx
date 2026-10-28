@@ -59,11 +59,13 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+  const { modelGroupsApi } = await import("../../../services/api/modelGroups.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
+    listPublicGroups: modelGroupsApi.listPublic,
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -92,6 +94,12 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     skip: 0,
     limit: 20,
     has_more: false,
+  });
+  modelGroupsApi.listPublic = async () => ({
+    groups: [{ id: "group-enterprise", code: "enterprise", name: "企业业务组", type: "business",
+      enabled: true, revision: 1, is_primary: true, availability: "available",
+      models: [{ id: "model-default", value: "model-default", label: "默认模型", enabled: true }] }],
+    count: 1, version: "model-groups.v1",
   });
   modelPublicApi.listAvailable = async () => ({
     models: [{
@@ -124,6 +132,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       authApi.getCurrentUser = originals.getCurrentUser;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
+      modelGroupsApi.listPublic = originals.listPublicGroups;
     },
   };
 }

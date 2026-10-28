@@ -610,8 +610,7 @@ export function SessionListContent({
             aria-controls="workbench-management-nav-items"
             aria-expanded={isManagementOpen}
             htmlType="button"
-            className="group/section flex h-8 w-full items-center justify-between rounded-md px-[9px] text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-            style={{ justifyContent: "flex-start", textAlign: "left" }}
+            className="sidebar-nav-btn group/section flex h-9 w-full items-center justify-between rounded-md px-[9px] text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
             onClick={() => isAiAdmin
               ? setManagementCollapsed((collapsed) => !collapsed)
               : setCapabilitiesOpen((open) => !open)}
@@ -632,7 +631,11 @@ export function SessionListContent({
               size={14}
             />
           </Button>
-          <div id="workbench-management-nav-items" hidden={!isManagementOpen}>
+          <div
+            id="workbench-management-nav-items"
+            className="mt-0.5 ml-4"
+            hidden={!isManagementOpen}
+          >
             {visibleManagementNavItems.map(({ key, icon: Icon, label, onClick }) => {
               const isActive = activeNavItem === key;
               return (
@@ -659,7 +662,7 @@ export function SessionListContent({
             aria-label="设置"
             size="small"
             icon={<Settings aria-hidden="true" size={18} />}
-            className="shrink-0 text-[var(--theme-text-secondary)]"
+            className="workbench-account-action flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--theme-text-secondary)]"
             onClick={(event) => {
               const rect = event.currentTarget.getBoundingClientRect();
               window.dispatchEvent(

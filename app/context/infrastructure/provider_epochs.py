@@ -24,10 +24,10 @@ from app.context.infrastructure.provider_images import (
 )
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES,
-    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
     provider_entry_json_bytes,
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     ProviderSessionConflictError,
     ProviderSessionNotFoundError,
     ProviderSessionScope,
@@ -193,7 +193,7 @@ async def read_provider_coverage(
         or type(row["entry_count"]) is not int
         or row["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
         or type(row["transcript_bytes"]) is not int
-        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
     ):
         raise ProviderSessionConflictError("provider_session_requires_new_conversation")
     return {
@@ -317,9 +317,9 @@ async def _locked_callback_epoch(
         join sandbox_leases lease on lease.tenant_id = attempt.tenant_id
           and lease.run_id = attempt.run_id and lease.attempt_id = attempt.id
         where attempt.tenant_id = %s and attempt.run_id = %s and attempt.id = %s
-          -- v2 froze an input capacity, v3 the window; both stay bound here.
+          -- Historical capacity/window and grouped specs keep the same owner fence.
           and attempt.execution_spec_schema_version in (
-            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
           and (
             (attempt.status = 'running'
              and lease.lease_payload_json->>'owner_generation' = attempt.owner_generation::text)
@@ -433,10 +433,9 @@ async def _matching_append_receipt(conn, *, epoch, expected_sequence, digest, co
     return previous
 
 
-def _check_append_capacity(epoch, *, count, batch_bytes, structured_bytes):
+def _check_append_capacity(epoch, *, count, batch_bytes):
     if (epoch["entry_count"] + count > MAX_PROVIDER_SESSION_ENTRIES
-        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
-        or epoch["structured_bytes"] + structured_bytes > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES):
+        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
 
 
@@ -462,8 +461,7 @@ async def prepare_callback_media(
             return ProviderMediaTransfer(epoch["id"], epoch["next_sequence"], attempt["owner_generation"], [])
         if projection is None:
             raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-        _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes,
-                               structured_bytes=sum(provider_entry_json_bytes(entry) for entry in projection.entries))
+        _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes)
     return await reserve_provider_images(
         conn, scope=scope, epoch=epoch, attempt=attempt, run_id=run_id,
         attempt_id=attempt_id, projection=projection,
@@ -542,7 +540,7 @@ async def callback_provider_epoch(
         if size > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES:
             raise ProviderSessionConflictError("provider_session_entry_too_large")
         structured_bytes += size
-    _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes, structured_bytes=structured_bytes)
+    _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes)
     if media is not None:
         await promote_provider_images(conn, transfer=media, scope=scope, run_id=run_id, attempt_id=attempt_id)
     for offset, item in enumerate(batch):
@@ -552,11 +550,11 @@ async def callback_provider_epoch(
             """
             insert into provider_session_entries (
               id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json,
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_canonical_json,
               image_references, image_format
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json, %s::jsonb, %s)
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::json, %s::jsonb, %s)
             """, (f"pse_{uuid.uuid4().hex}", *_scope_values(scope), epoch["id"], path,
-                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical,
+                  expected_sequence + offset, item.sdk_entry_uuid, canonical,
                   json.dumps(refs), PROVIDER_MEDIA_FORMAT if refs else None),
         )
     last = expected_sequence + len(batch) - 1
@@ -591,8 +589,7 @@ async def _verified_provider_entries(
     receipt is invented from potentially incomplete history.
     """
     cursor = await conn.execute(
-        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json, "
-        "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
+        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json "
         "from provider_session_entries "
         "where epoch_id = %s order by sequence asc limit %s",
         (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
@@ -642,8 +639,7 @@ async def _verified_provider_entries(
                     ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
                 else:
                     entry = json.loads(original)
-                    if (row.get("canonical_matches") is not True
-                        or _canonical(entry).decode("utf-8") != original):
+                    if _canonical(entry).decode("utf-8") != original:
                         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
                 structured_bytes += provider_entry_json_bytes(entry)
                 refs = row["image_references"]
@@ -722,7 +718,7 @@ async def prepare_provider_epoch(
         select execution_spec_json->'context_pack'->'conversation_context' as frozen_context
         from run_attempts where tenant_id = %s and run_id = %s
           and status = 'running' and execution_spec_schema_version in (
-            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
         order by ordinal desc limit 1
         """, (scope.tenant_id, run_id),
     )
@@ -743,8 +739,7 @@ async def prepare_provider_epoch(
             or head["coverage_source_sha256"] != digest
             or head["coverage_message_count"] != count
             or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
-            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 16 * 1024 * 1024
-            or head["structured_bytes"] > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
         ):
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = head["current_epoch_id"]
@@ -836,7 +831,7 @@ async def commit_provider_turn(
         where runs.tenant_id = %s and runs.id = %s
           and runs.status = 'running' and runs.cancel_requested_at is null
           and attempt.execution_spec_schema_version in (
-            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
         for update of head, epoch, turn
         """, (attempt_id, tenant_id, run_id),
     )
