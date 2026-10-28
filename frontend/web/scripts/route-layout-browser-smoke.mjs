@@ -376,7 +376,7 @@ const cases = [
     selector: "[data-model-admin-control]",
     name: "models",
     scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
-    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]", "[data-model-admin-tab=groups]"],
+    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-tab=groups]"],
     requiredRequests: ["/api/ai/admin/models", "/api/ai/admin/model-groups"],
   },
 ];
@@ -541,6 +541,12 @@ async function runCase(viewport, scenario) {
         `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-edit="mdl-18"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填'`, `${viewport.name}:models:editor-limits`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="关闭模型编辑"]').click()`);
+        await browser.client.waitFor(`!document.querySelector('[data-model-admin-editor]')`, `${viewport.name}:models:editor-closed`);
+      }
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
@@ -685,7 +691,6 @@ async function runCase(viewport, scenario) {
           fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
           rows: table.querySelectorAll('[data-model-admin-model]').length,
           enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
-          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
           actionBottomGap: Math.round(innerHeight - bar.bottom),
@@ -699,7 +704,7 @@ async function runCase(viewport, scenario) {
         };
       })()`);
       if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
-        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {

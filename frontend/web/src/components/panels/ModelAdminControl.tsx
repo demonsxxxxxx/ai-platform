@@ -1,6 +1,6 @@
-import { Button, Checkbox, Input, SwitchRoot, SwitchThumb, Table, Tag } from "@lobehub/ui/base-ui";
+import { Button, Checkbox, DrawerBackdrop, DrawerContent, DrawerFooter, DrawerHeader, DrawerPopup, DrawerPortal, DrawerRoot, DrawerTitle, Input, SwitchRoot, SwitchThumb, Table, Tag } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes } from "react";
-import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw } from "lucide-react";
+import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw, X } from "lucide-react";
 import {
   modelAdminApi,
   type AdminModelEntry,
@@ -135,6 +135,8 @@ export function ModelAdminControl({
   const [editingGroup, setEditingGroup] = useState<AdminModelGroupSummary | null>(null);
   const [groupTab, setGroupTab] = useState<"models" | "members">("models");
   const groupTrigger = useRef<HTMLElement | null>(null);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const modelTrigger = useRef<HTMLElement | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [groupOptions, setGroupOptions] = useState<AdminModelGroupSummary[]>([]);
   const [groupDetails, setGroupDetails] = useState<Record<string, AdminModelGroupDetails>>({});
@@ -382,7 +384,13 @@ export function ModelAdminControl({
     } finally { finishRequest(owner); }
   };
 
-  const enabledCount = draft.filter((model) => model.enabled).length;
+  const editingModel = draft.find((model) => model.id === editingModelId);
+  const changedModelIds = new Set([...draft, ...(state?.models ?? [])].filter((model) => {
+    const current = draft.find((item) => item.id === model.id);
+    const saved = state?.models.find((item) => item.id === model.id);
+    return !current || !saved || modelDraftSignature([current]) !== modelDraftSignature([saved]);
+  }).map((model) => model.id));
+  const pendingCount = changedModelIds.size + (credential.trim() || connectionOrigin(baseUrl) !== connectionOrigin(state?.connection.base_url ?? "") ? 1 : 0);
   const modelGroupIds = useMemo(() => {
     const ids = new Map<string, string[]>();
     for (const group of groupOptions) {
@@ -421,7 +429,8 @@ export function ModelAdminControl({
     const normalizedQuery = query.trim().toLowerCase();
     const matchesQuery = !normalizedQuery
       || model.label.toLowerCase().includes(normalizedQuery)
-      || model.value.toLowerCase().includes(normalizedQuery);
+      || model.value.toLowerCase().includes(normalizedQuery)
+      || model.provider.toLowerCase().includes(normalizedQuery);
     const matchesGroup = groupFilter === "all"
       || (groupFilter === "unassigned" && !modelGroupIds.has(model.id))
       || (groupFilter === "default" && groupOptions.some((group) => (modelGroupIds.get(model.id) ?? []).includes(group.id) && group.type === "ordinary_default"))
@@ -507,88 +516,34 @@ export function ModelAdminControl({
       className="flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink"
       data-model-admin-control
     >
-      <div className="shrink-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">连接信息</h2>
-            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">兼容模型网关 · 测试和获取候选不会修改已生效配置</p>
-          </div>
-          <Button type="text"
-            size="small"
-            data-model-admin-reload
-            disabled={connectionLocked}
-            onClick={() => void load()}
-            htmlType="button"
-          ><RefreshCw size={14} aria-hidden="true" />重新加载已保存配置</Button>
-        </div>
-        <div className="grid min-w-0 gap-3 md:grid-cols-2">
-          <label className="flex min-w-0 flex-col gap-1.5 text-sm">
-            <span className="font-medium">API 地址</span>
-            <Input
-              aria-label="模型 API 地址"
-              aria-describedby="model-address-help"
-              size="large"
-              disabled={connectionLocked}
-              onChange={(event) => {
-                if (!invalidateConnection()) return;
-                setBaseUrl(event.target.value);
-                setCredential("");
-              }}
-              placeholder="https://gateway.example.com"
-              value={baseUrl}
-            />
-            <span id="model-address-help" className="text-xs text-[var(--theme-text-secondary)]">支持服务根地址或 /v1；更换地址后需重新填写 Key。</span>
+      <div className="shrink-0">
+        <div className="flex flex-wrap items-end gap-3 border-y border-[var(--theme-border)] py-3">
+          <label className="flex w-full min-w-0 flex-none flex-col gap-1 text-xs sm:min-w-56 sm:flex-1">
+            <span>API 地址</span>
+            <Input aria-label="模型 API 地址" disabled={connectionLocked}
+              onChange={(event) => { if (!invalidateConnection()) return; setBaseUrl(event.target.value); setCredential(""); }}
+              placeholder="https://gateway.example.com" value={baseUrl} />
           </label>
-          <label className="flex min-w-0 flex-col gap-1.5 text-sm">
-            <span className="font-medium">API Key</span>
-            <Input
-              aria-label="模型 API Key"
-              aria-describedby="model-key-help"
-              autoComplete="new-password"
-              size="large"
-              disabled={connectionLocked}
-              onChange={(event) => {
-                if (!invalidateConnection()) return;
-                setCredential(event.target.value);
-              }}
-              placeholder={reuseSavedCredential ? "留空则保持已保存的 Key" : "输入当前地址对应的 API Key"}
-              type="password"
-              value={credential}
-            />
-            <span id="model-key-help" className="text-xs text-[var(--theme-text-secondary)]">{reuseSavedCredential ? "已保存的 Key 不回显；填写后将替换。" : "新地址不会复用已保存的 Key。"}</span>
+          <label className="flex w-full min-w-0 flex-none flex-col gap-1 text-xs sm:min-w-48 sm:flex-1">
+            <span>API Key · {reuseSavedCredential ? "已保存（不回显）" : "未保存"}</span>
+            <Input aria-label="模型 API Key" autoComplete="new-password" disabled={connectionLocked}
+              onChange={(event) => { if (!invalidateConnection()) return; setCredential(event.target.value); }}
+              placeholder={reuseSavedCredential ? "留空保持已保存的 Key" : "输入 API Key"} type="password" value={credential} />
           </label>
-        </div>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
           <Tag color={testState === "passed" ? "success" : testState === "failed" ? "error" : undefined} role="status" data-model-admin-test-state={testState}>
             {busy === "load" ? "正在加载配置" : testState === "testing" ? "正在测试当前连接"
               : testState === "passed" ? "当前连接测试通过" : testState === "failed" ? "当前连接测试失败"
                 : state?.connection.configured && reuseSavedCredential && !credential ? "已配置 · 尚未测试" : "连接草稿 · 尚未测试"}
           </Tag>
-          <div className="flex flex-wrap gap-2">
-            <Button type="default"
-            data-model-admin-test
-              disabled={busy !== null || !connectionReady}
-              onClick={() => void discover("test")}
-              htmlType="button"
-            ><PlugZap size={16} aria-hidden="true" />测试连接</Button>
-            <Button type="primary"
-              loading={busy === "discover"}
-              data-model-admin-discover
-              disabled={busy !== null || !connectionReady}
-              onClick={() => void discover("discover")}
-              htmlType="button"
-            ><RefreshCw size={16} aria-hidden="true" />获取候选模型</Button>
-          </div>
+          <Button data-model-admin-test disabled={busy !== null || !connectionReady} onClick={() => void discover("test")} htmlType="button" icon={<PlugZap size={16} />}>测试连接</Button>
+          <Button data-model-admin-discover loading={busy === "discover"} disabled={busy !== null || !connectionReady} onClick={() => void discover("discover")} htmlType="button" icon={<RefreshCw size={16} />}>获取上游模型</Button>
         </div>
         {error ? <p className="mt-3 text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
+        {error || (publishError && !catalogReceipt) ? <Button type="text" size="small" data-model-admin-reload disabled={connectionLocked} onClick={() => void load()} htmlType="button">{hasChanges ? "放弃草稿并读取最新配置" : "重试读取配置"}</Button> : null}
         {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
       </div>
 
       <div className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:min-h-0 lg:flex-1 lg:shrink">
-        <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3">
-          <h2 className="text-sm font-semibold">模型配置</h2>
-          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{catalogReceipt ? "编辑模型启用状态和容量；路由默认项由模型分组管理。" : "连接已修改，请获取当前地址的候选模型后再保存。"}</p>
-        </div>
         <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
             <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
@@ -649,106 +604,47 @@ export function ModelAdminControl({
           <Button size="small" disabled={busy !== null} onClick={() => { setBatchOperation(null); setBatchPreview(null); }} htmlType="button">取消</Button>
         </div> : null}
 
-        <p
-          className="shrink-0 border-b border-[var(--theme-border)] px-3 pb-2 text-xs text-[var(--theme-text-secondary)]"
-          id="model-admin-compaction-window-hint"
-        >
-          压缩窗口交给 Claude 自动压缩，实际触发时机由引擎决定，可能早于该值；留空按 100000。
-        </p>
         <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
-          <Table
- size="small" pagination={false} scroll={{ x: 1000 }} tableLayout="fixed" sticky
- dataSource={visibleDraft}
- rowKey={(model) => model.id}
- onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
- columns={[
-{ key: "selected", width: 52, title: "选择",
-render: (_value, model) => <Checkbox aria-label={`选择模型 ${model.label}`} data-model-admin-select={model.id} checked={selectedModelIds.includes(model.id)} disabled={busy !== null} onChange={(checked) => setSelectedModelIds((current) => checked ? [...current, model.id] : current.filter((id) => id !== model.id))} /> },
-{ key: "enabled", width: 70, title: "启用",
-render: (_value, model) => (<>
-<label className="inline-flex cursor-pointer items-center">
-                      <SwitchRoot
-                        aria-label={`启用 ${model.label}`}
-                        checked={model.enabled}
-                        disabled={!model.available || busy !== null}
-                        onCheckedChange={(checked) => updateDraft(model.id, {
-                          enabled: checked,
-                        })}
-                      ><SwitchThumb /></SwitchRoot>
-
-                    </label>
-</>) },
-{ key: "identity", width: 280, title: "平台显示名称 / 上游模型 ID",
-render: (_value, model) => (<>
-<div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--theme-info-soft)] text-[var(--theme-info-text)]" aria-hidden="true">
-                        <DatabaseZap size={16} />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <Input
-                          aria-label={`${model.value} 平台显示名称`}
-                          size="small" variant="borderless"
-                          onChange={(event) => updateDraft(model.id, { label: event.target.value })}
-                          disabled={busy !== null}
-                          value={model.label}
-                        />
-                        <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
-                        <div className="mt-1 flex flex-wrap gap-1" data-model-admin-group-tags>
-                          {(modelGroupIds.get(model.id) ?? []).map((groupId) => {
-                            const group = groupOptions.find((item) => item.id === groupId);
-                            return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null;
-                          })}
-                          {!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}
-                        </div>
-                      </div>
-                    </div>
-</>) },
-{ key: "inputTokens", width: 160, title: "压缩窗口",
-render: (_value, model) => (<>
-<Input
-                      aria-label={`${model.value} 压缩窗口 Token`}
-                      aria-describedby="model-admin-compaction-window-hint"
-                      size="small"
-                      disabled={!model.available || busy !== null}
-                      min={AUTO_COMPACT_WINDOW_MIN}
-                      max={AUTO_COMPACT_WINDOW_MAX}
-                      step={1000}
-                      onChange={(event) => updateDraft(model.id, { auto_compact_window: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder="默认 100000"
-                      type="number"
-                      value={model.auto_compact_window ?? ""}
-                    />
-</>) },
-{ key: "outputTokens", width: 160, title: "最大输出 Token",
-render: (_value, model) => (<>
-<Input
-                      aria-label={`${model.value} 最大输出 Token`}
-                      size="small"
-                      disabled={!model.available || busy !== null}
-                      min={1}
-                      max={10000000}
-                      onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "可同时留空"}
-                      aria-required={model.enabled}
-                      type="number"
-                      value={model.max_output_tokens ?? ""}
-                    />
-</>) },
-{ key: "availability", width: 120, title: "状态",
-render: (_value, model) => (<>
-<Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag>
-</>) },
-]}
- emptyText={draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
-/>
+          <Table size="small" pagination={false} scroll={{ x: "max-content" }} tableLayout="fixed" sticky dataSource={visibleDraft}
+            rowKey={(model) => model.id}
+            onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
+            columns={[
+              { key: "selected", width: 52, title: "选择", render: (_value, model) => <Checkbox aria-label={`选择模型 ${model.label}`} data-model-admin-select={model.id} checked={selectedModelIds.includes(model.id)} disabled={busy !== null} onChange={(checked) => setSelectedModelIds((current) => checked ? [...current, model.id] : current.filter((id) => id !== model.id))} /> },
+              { key: "identity", width: 260, title: "模型", render: (_value, model) => <div className="min-w-0"><Button type="text" className="max-w-full justify-start px-0" aria-label={`编辑模型 ${model.label}`} data-model-admin-edit={model.id} onClick={(event) => { modelTrigger.current = event.currentTarget; setEditingModelId(model.id); }} icon={<DatabaseZap size={16} />}><span className="truncate text-sm font-medium">{model.label}</span></Button><div className="flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]" data-model-admin-group-tags><span className="max-w-full truncate" title={model.value}>{model.value}</span>{(modelGroupIds.get(model.id) ?? []).map((groupId) => { const group = groupOptions.find((item) => item.id === groupId); return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null; })}{!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}</div></div> },
+              { key: "provider", width: 120, title: "提供方", render: (_value, model) => model.provider || "未提供" },
+              { key: "window", width: 140, title: "压缩窗口", render: (_value, model) => model.auto_compact_window?.toLocaleString() ?? "默认 100,000" },
+              { key: "output", width: 140, title: "最大输出 Token", render: (_value, model) => model.max_output_tokens?.toLocaleString() ?? "未设置" },
+              { key: "availability", width: 100, title: "状态", render: (_value, model) => <Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag> },
+              { key: "enabled", width: 80, title: "启用", render: (_value, model) => <SwitchRoot aria-label={`启用 ${model.label}`} checked={model.enabled} disabled={!model.available || busy !== null} onCheckedChange={(checked) => updateDraft(model.id, { enabled: checked })}><SwitchThumb /></SwitchRoot> },
+              { key: "edit", width: 80, title: "操作", render: (_value, model) => <Button type="text" aria-label={`编辑 ${model.label}`} onClick={(event) => { modelTrigger.current = event.currentTarget; setEditingModelId(model.id); }}>编辑</Button> },
+            ]}
+            emptyText={draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"} />
         </div>
       </div>
-      <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
+      {editingModel ? <DrawerRoot open onOpenChange={(open) => { if (!open) setEditingModelId(null); }}>
+        <DrawerPortal><DrawerBackdrop /><DrawerPopup placement="right" width="min(34rem, 100vw)" finalFocus={modelTrigger} data-model-admin-editor aria-label="编辑模型">
+          <DrawerHeader><div><DrawerTitle>编辑模型</DrawerTitle><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{editingModel.value}</p></div><Button type="text" aria-label="关闭模型编辑" onClick={() => setEditingModelId(null)} icon={<X size={18} />} /></DrawerHeader>
+          <DrawerContent><div className="space-y-5 p-5">
+            <section className="space-y-3"><h3 className="text-base font-semibold">基本信息</h3>
+              <label className="flex flex-col gap-1 text-sm">平台显示名称<Input aria-label={`${editingModel.value} 平台显示名称`} disabled={busy !== null} value={editingModel.label} onChange={(event) => updateDraft(editingModel.id, { label: event.target.value })} /></label>
+              <p className="text-sm text-[var(--theme-text-secondary)]">提供方：{editingModel.provider || "未提供"}</p>
+            </section>
+            <section className="space-y-3"><h3 className="text-base font-semibold">默认参数</h3>
+              <label className="flex flex-col gap-1 text-sm">压缩窗口<Input aria-label={`${editingModel.value} 压缩窗口 Token`} aria-describedby="model-admin-compaction-window-hint" disabled={!editingModel.available || busy !== null} min={AUTO_COMPACT_WINDOW_MIN} max={AUTO_COMPACT_WINDOW_MAX} step={1000} onChange={(event) => updateDraft(editingModel.id, { auto_compact_window: event.target.value ? Number(event.target.value) : undefined })} placeholder="默认 100000" type="number" value={editingModel.auto_compact_window ?? ""} /></label>
+              <p id="model-admin-compaction-window-hint" className="text-xs text-[var(--theme-text-secondary)]">压缩窗口交给 Claude 自动压缩，实际触发时机由引擎决定，可能早于该值；留空按 100000。</p>
+              <label className="flex flex-col gap-1 text-sm">最大输出 Token<Input aria-label={`${editingModel.value} 最大输出 Token`} disabled={!editingModel.available || busy !== null} min={1} max={10000000} onChange={(event) => updateDraft(editingModel.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })} placeholder={editingModel.enabled ? "必填" : "可同时留空"} aria-required={editingModel.enabled} type="number" value={editingModel.max_output_tokens ?? ""} /></label>
+            </section>
+            <p className="text-xs text-[var(--theme-text-secondary)]">修改暂存于页面，关闭面板后可统一保存并生效。</p>
+          </div></DrawerContent>
+          <DrawerFooter><Button type="default" onClick={() => setEditingModelId(null)} htmlType="button">完成编辑</Button></DrawerFooter>
+        </DrawerPopup></DrawerPortal>
+      </DrawerRoot> : null}
+      {hasChanges ? <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
         {publishError ? (
           <p className="text-xs text-[var(--theme-danger-text)]" role="alert">{publishError}</p>
         ) : (
           <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
-            已启用 {enabledCount} / {draft.length} · {hasChanges ? "有未保存的修改，保存后生效" : "已生效配置"}
+            待保存 {pendingCount} 项 · 保存后生效
           </p>
         )}
         <div className="flex flex-wrap items-center gap-2">
@@ -757,7 +653,7 @@ render: (_value, model) => (<>
             disabled={!state || connectionLocked || (!hasChanges && busy === null)}
             onClick={cancelDraft}
             htmlType="button"
-          ><RotateCcw size={16} aria-hidden="true" />放弃修改</Button>
+          ><RotateCcw size={16} aria-hidden="true" />取消</Button>
           <Button type="primary"
             loading={busy === "publish"}
             data-model-admin-publish
@@ -766,7 +662,7 @@ render: (_value, model) => (<>
             htmlType="button"
           ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</Button>
         </div>
-      </div>
+      </div> : publishError ? <p role="alert" className="text-sm text-[var(--theme-danger-text)]">{publishError}</p> : null}
       <GroupDrawer group={editingGroup} catalog={draft} initialTab={groupTab} onClose={() => setEditingGroup(null)} onChanged={refreshGroups} finalFocus={groupTrigger} />
     </section>
   );
