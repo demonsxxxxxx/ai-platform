@@ -9,11 +9,6 @@ import {
   DrawerRoot,
   DrawerTitle,
   Input,
-  PopoverRoot,
-  PopoverTriggerElement,
-  PopoverPortal,
-  PopoverPositioner,
-  PopoverPopup,
   ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalHeader, ModalTitle, ModalContent, ModalFooter,
   SwitchRoot,
   SwitchThumb,
@@ -38,12 +33,8 @@ import {
   type AdminModelGroupSummary,
 } from "../../services/api/modelGroups";
 import { modelAdminApi, type AdminModelEntry } from "../../services/api/modelAdmin";
-import { companyEmployeesApi, type CompanyEmployee } from "../../services/api/companyEmployees";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
-import { capabilityDistributionApi, type DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
-import { flattenDepartmentDirectory } from "./departmentDirectorySelection";
-
-const PAGE_SIZE = 100;
+import { ModelGroupMemberPicker } from "./ModelGroupMemberPicker";
 const ERROR_COPY: Record<string, string> = {
   group_has_no_models: "该组暂无可用模型。",
   group_models_unavailable: "该组模型暂时无法连接上游。",
@@ -82,22 +73,6 @@ function boundedInteger(value: string, minimum: number, maximum: number, previou
   return Math.min(maximum, Math.max(minimum, parsed));
 }
 
-interface DirectoryState {
-  query: string;
-  status: "idle" | "loading" | "ready" | "error";
-  employees: CompanyEmployee[];
-  total: number;
-  error: string | null;
-}
-
-const EMPTY_DIRECTORY: DirectoryState = {
-  query: "",
-  status: "idle",
-  employees: [],
-  total: 0,
-  error: null,
-};
-
 function GroupMemberEditor({
   details,
   busy,
@@ -108,77 +83,7 @@ function GroupMemberEditor({
   onSave: (members: AdminModelGroupMember[], revision: number) => Promise<void>;
 }) {
   const [selected, setSelected] = useState<AdminModelGroupMember[]>(details.members);
-  const [query, setQuery] = useState("");
-  const [directory, setDirectory] = useState<DirectoryState>(EMPTY_DIRECTORY);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [departments, setDepartments] = useState<DepartmentDirectoryNode[] | null>(null);
-  const [departmentError, setDepartmentError] = useState(false);
-  const [departmentId, setDepartmentId] = useState("");
-  const pickerTrigger = useRef<HTMLButtonElement>(null);
-  const departmentOptions = useMemo(() => departments ? flattenDepartmentDirectory(departments) : [], [departments]);
-  const controllerRef = useRef<AbortController | null>(null);
-  const versionRef = useRef(0);
-
   useEffect(() => setSelected(details.members), [details.members]);
-  useEffect(() => () => controllerRef.current?.abort(), []);
-  useEffect(() => {
-    if (!pickerOpen || departments) return;
-    const controller = new AbortController();
-    setDepartmentError(false);
-    void capabilityDistributionApi.departmentDirectory({ signal: controller.signal }).then((value) => {
-      if (!controller.signal.aborted) setDepartments(value);
-    }).catch(() => { if (!controller.signal.aborted) setDepartmentError(true); });
-    return () => controller.abort();
-  }, [pickerOpen, departments]);
-
-  const load = useCallback(async (nextQuery: string, append = false, nextDepartment = departmentId) => {
-    controllerRef.current?.abort();
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    const version = ++versionRef.current;
-    const offset = append ? directory.employees.length : 0;
-    setDirectory((current) => ({
-      ...current,
-      query: nextQuery,
-      status: "loading",
-      error: null,
-      ...(append ? {} : { employees: [] }),
-    }));
-    try {
-      const result = await companyEmployeesApi.list({
-        search: nextQuery || undefined,
-        departmentId: nextDepartment || undefined,
-        offset,
-        limit: PAGE_SIZE,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted || version !== versionRef.current) return;
-      setDirectory((current) => ({
-        ...current,
-        status: "ready",
-        employees: append
-          ? [...current.employees, ...result.employees.filter((item) => !current.employees.some((old) => old.work_id === item.work_id))]
-          : result.employees,
-        total: result.total,
-        error: null,
-      }));
-    } catch (error) {
-      if (controller.signal.aborted || version !== versionRef.current) return;
-      setDirectory((current) => ({ ...current, status: "error", error: errorText(error) }));
-    }
-  }, [directory.employees.length, departmentId]);
-
-  const selectedIds = useMemo(() => new Set(selected.map((member) => member.work_id ?? member.user_id)), [selected]);
-  const updateMember = (employee: CompanyEmployee) => {
-    if (selectedIds.has(employee.work_id)) {
-      setSelected((current) => current.filter((member) => (member.work_id ?? member.user_id) !== employee.work_id));
-      return;
-    }
-    setSelected((current) => [
-      ...current,
-      { user_id: "", work_id: employee.work_id, display_name: employee.display_name, is_primary: true },
-    ]);
-  };
 
   return (
     <section data-model-group-members className="space-y-3">
@@ -198,67 +103,7 @@ function GroupMemberEditor({
           </div>;
         }) : <div className="flex flex-col items-center gap-2 px-4 py-8 text-center"><Users size={24} className="text-[var(--theme-text-secondary)]" /><p className="text-sm font-medium">暂无成员</p><p className="text-sm text-[var(--theme-text-secondary)]">从下方公司员工目录选择人员加入。</p></div>}
       </div>
-      <PopoverRoot open={pickerOpen} onOpenChange={(open) => {
-        setPickerOpen(open);
-        if (open) void load(query);
-        else controllerRef.current?.abort();
-      }}>
-        <PopoverTriggerElement disabled={busy}><Button ref={pickerTrigger} type="default" disabled={busy} htmlType="button" aria-label="按组织架构选择人员" icon={<Plus size={15} />}>按组织架构添加人员</Button></PopoverTriggerElement>
-        <PopoverPortal><PopoverPositioner placement="bottomLeft" sideOffset={6} collisionPadding={8}>
-          <PopoverPopup aria-label="公司组织架构选人" finalFocus={pickerTrigger} className="w-[420px] max-w-[calc(100vw-32px)] max-h-[min(70dvh,32rem,var(--available-height))] overflow-y-auto p-3" onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
-      <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">按组织架构选择人员</h3><Button type="text" size="small" aria-label="关闭选人下拉框" onClick={() => { controllerRef.current?.abort(); setPickerOpen(false); }} icon={<X size={15} />} /></div>
-      <LobeSelectField aria-label="筛选人员所属部门" value={departmentId || "__all_departments__"} disabled={busy || departments === null} onChange={(value) => {
-        const id = value === "__all_departments__" ? "" : value;
-        setDepartmentId(id); void load(query, false, id);
-      }} options={[{ value: "__all_departments__", label: "全部部门" }, ...departmentOptions.map((node) => ({ value: node.directoryId, label: node.path, disabled: !node.selectable }))]} />
-      {departments === null ? <p className="text-xs text-[var(--theme-text-secondary)]" role={departmentError ? "alert" : "status"}>{departmentError ? "组织架构加载失败，请关闭后重试；仍可按姓名或工号选人。" : "正在加载组织架构…"}</p> : null}
-      <p className="text-xs text-[var(--theme-text-secondary)]">按部门路径选择直属人员；勾选只添加具体人员，不授予整个部门权限。</p>
-      <Input
-        aria-label="搜索公司员工"
-        prefix={<Search size={14} />}
-        placeholder="搜索姓名或工号"
-        value={query}
-        disabled={busy}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          void load(event.target.value);
-        }}
-      />
-      <div className="max-h-56 overflow-auto rounded-md border border-[var(--theme-border)]" data-model-group-member-directory>
-        {directory.status === "idle" ? <p className="p-3 text-xs text-[var(--theme-text-secondary)]">输入姓名或工号加载成员。</p> : null}
-        {directory.status === "loading" ? <p className="p-3 text-xs text-[var(--theme-text-secondary)]">正在加载成员目录…</p> : null}
-        {directory.status === "error" ? (
-          <div className="flex items-center justify-between gap-2 p-3 text-xs text-[var(--theme-danger-text)]" role="alert">
-            <span>{directory.error}</span>
-            <Button size="small" onClick={() => void load(directory.query)} htmlType="button">重试</Button>
-          </div>
-        ) : null}
-        {directory.employees.map((employee) => {
-          const member = selected.find((item) => (item.work_id || item.user_id) === employee.work_id);
-          return (
-            <div key={employee.work_id} className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 last:border-b-0">
-              <Checkbox
-                aria-label={`选择成员 ${employee.display_name}`}
-                checked={Boolean(member)}
-                disabled={busy}
-                onChange={() => updateMember(employee)}
-              >
-                <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm">{employee.display_name}</span>
-                  <span className="text-xs text-[var(--theme-text-secondary)]">工号：{employee.work_id}</span>
-                </span>
-              </Checkbox>
-            </div>
-          );
-        })}
-        {directory.status === "ready" && directory.employees.length < directory.total ? (
-          <Button size="small" className="m-2" disabled={busy} htmlType="button" onClick={() => void load(directory.query, true)}>加载更多</Button>
-        ) : null}
-      </div>
-      {directory.status === "ready" && directory.employees.length === 0 ? <p className="text-sm text-[var(--theme-text-secondary)]">没有匹配的公司员工，请调整姓名或工号。</p> : null}
-      </div>
-      </PopoverPopup></PopoverPositioner></PopoverPortal></PopoverRoot>
+      <ModelGroupMemberPicker members={selected} disabled={busy} onConfirm={setSelected} />
     </section>
   );
 }

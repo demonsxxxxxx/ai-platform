@@ -16,6 +16,7 @@ class CompanyEmployeeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_id: str
     display_name: str
+    department_ids: list[str]
 
 
 class CompanyEmployeeListResponse(BaseModel):
@@ -24,6 +25,7 @@ class CompanyEmployeeListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+    snapshot_id: str
 
 
 def build_company_employees_router(

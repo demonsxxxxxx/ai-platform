@@ -8,6 +8,8 @@ import { checkChatIntegration } from "./chat-integration-browser-checks.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
 const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
+const directorySize = Number(process.env.AI_PLATFORM_ROUTE_LAYOUT_DIRECTORY_SIZE || 205);
+if (!Number.isInteger(directorySize) || directorySize < 205 || directorySize > 50000) throw new Error("route_layout_directory_size_invalid");
 if (!["light", "dark"].includes(theme)) throw new Error("route_layout_smoke_theme_invalid");
 const evidenceDir = resolve(
   process.env.AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR || "../../.codex-tmp/route-layout-browser-smoke",
@@ -223,8 +225,11 @@ function bootstrapSource(loading = false, chatFiles = false) {
       });
       if (url.pathname === '/api/ai/admin/company-employees') {
         const offset = Number(url.searchParams.get('offset') || 0);
-        const total = url.searchParams.get('department_id') === '456' ? 103 : 205;
-        return json({ employees: Array.from({ length: Math.min(100, total - offset) }, (_, i) => ({ work_id: 'synthetic-' + (offset + i), display_name: '合成员工 ' + (offset + i + 1) })), total, offset, limit: 100 });
+        const department = url.searchParams.get('department_id');
+        const search = (url.searchParams.get('search') || '').toLowerCase();
+        const employees = Array.from({ length: ${directorySize} }, (_, index) => ({ work_id: 'synthetic-' + index, display_name: '合成员工 ' + (index + 1), department_ids: [index < 103 ? '456' : '123'] }))
+          .filter(employee => (!department || employee.department_ids.includes(department)) && (!search || (employee.work_id + ' ' + employee.display_name).toLowerCase().includes(search)));
+        return json({ employees: employees.slice(offset, offset + 100), total: employees.length, offset, limit: 100, snapshot_id: 'synthetic-directory-v1' });
       }
       if (url.pathname === '/api/ai/admin/users') return json({
         schema_version: 'ai-platform.admin-user-diagnostics.v1', users: [{ user_id: 'layout-user', display_name: 'Layout Admin', status: 'active', session_count: 0, run_count: 0, queued_run_count: 0, running_run_count: 0, succeeded_run_count: 0, failed_run_count: 0, cancelled_run_count: 0 }], total: 1, offset: 0, limit: 50
@@ -587,6 +592,12 @@ async function runCase(viewport, scenario) {
       const drawerTabs = groupCase === "default" ? ["基本信息", "模型"] : ["基本信息", "模型", "成员"];
       for (const tab of drawerTabs) {
         await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === ${JSON.stringify(tab)})).click()`);
+        await browser.client.waitFor(`(() => {
+          const drawer = document.querySelector('[data-model-group-drawer]');
+          const panel = [...drawer.querySelectorAll('[role=tabpanel]')].find(node => node.checkVisibility());
+          const rect = panel.getBoundingClientRect(); const frame = drawer.getBoundingClientRect();
+          return Math.abs((rect.left - frame.left) - (frame.right - rect.right)) <= 2;
+        })()`, `${viewport.name}:models:tab-position-settled:${tab}`);
         const geometry = await browser.client.evaluate(`(() => {
           const drawer = document.querySelector('[data-model-group-drawer]');
           const panel = [...drawer.querySelectorAll('[role=tabpanel]')].find(node => node.checkVisibility());
@@ -607,22 +618,35 @@ async function runCase(viewport, scenario) {
       if (groupCase === "members") {
         await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
         await browser.client.evaluate(`document.querySelector('[aria-label="按组织架构选择人员"]').click()`);
-        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length === 100 && !document.querySelector('[aria-label="公司组织架构选人"] [role=combobox]').disabled`, "members:full-page");
-        await browser.client.evaluate(`document.querySelector('[aria-label="公司组织架构选人"] [role=combobox]').focus()`);
-        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowDown", windowsVirtualKeyCode: 40 });
-        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowDown", windowsVirtualKeyCode: 40 });
-        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].find(node => node.checkVisibility()))`, "members:department-options");
-        await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find(node => node.textContent.includes('总公司 / 销售与客户支持事业部'))).click()`);
-        await browser.client.waitFor(`window.__routeLayoutSmoke.requests.some(request => request.path === '/api/ai/admin/company-employees') && document.querySelector('[aria-label="公司组织架构选人"]').innerText.includes('销售与客户支持事业部')`, "members:department-selected");
-        await browser.client.evaluate(`([...document.querySelectorAll('[aria-label="公司组织架构选人"] button')].find(node => node.textContent === '加载更多')).click()`);
-        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length === 103`, "members:last-page");
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '${directorySize}' && Boolean(document.querySelector('[aria-label="总公司 / 销售与客户支持事业部"]'))`, "members:all-pages");
+        if (directorySize > 10000) {
+          await browser.client.evaluate(`document.querySelector('[aria-label="全选全部人员"]').click()`);
+          await browser.client.waitFor(`document.querySelector('.model-member-picker-selected').innerText.includes('已选 ${directorySize + 1} 人') && Boolean(document.querySelector('.model-member-picker-limit'))`, 'members:large-roster-selected');
+          const rendered = await browser.client.evaluate(`({ employees:document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length, chips:document.querySelectorAll('.model-member-picker-chips button').length })`);
+          if (rendered.employees > 30 || rendered.chips > 30) throw new Error('members:large-roster-unbounded-dom:' + JSON.stringify(rendered));
+          await browser.client.evaluate(`([...document.querySelectorAll('.model-member-picker-selected button')].find(node => node.textContent === '清空')).click()`);
+        }
+        await browser.client.evaluate(`document.querySelector('[aria-label="总公司 / 销售与客户支持事业部"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '103'`, "members:department-selected");
+        await browser.client.evaluate(`document.querySelector('[aria-label="全选本部门"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'true'`, "members:select-all-pages");
         await browser.client.evaluate(`document.querySelector('[data-model-group-member-directory] [role=checkbox]').click()`);
-        memberPicker = await browser.client.evaluate(`(() => { const popup = document.querySelector('[aria-label="公司组织架构选人"]'); const rect = popup.getBoundingClientRect(); const directory = popup.querySelector('[data-model-group-member-directory]'); directory.scrollTop = directory.scrollHeight; return { contained: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1, rows: directory.querySelectorAll('[role=checkbox]').length, scrollReachable: directory.scrollTop + directory.clientHeight >= directory.scrollHeight - 2 }; })()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'mixed'`, "members:indeterminate");
+        memberPicker = await browser.client.evaluate(`(() => { const popup = document.querySelector('.model-member-picker-panel'); const rect = popup.getBoundingClientRect(); const directory = popup.querySelector('[data-virtuoso-scroller]'); const footer = popup.querySelector('.model-member-picker-footer').getBoundingClientRect(); directory.scrollTop = directory.scrollHeight; return { contained: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && popup.scrollWidth <= popup.clientWidth + 1 && footer.bottom <= innerHeight, rows: Number(popup.querySelector('[data-model-group-member-directory]').dataset.employeeTotal), renderedRows: directory.querySelectorAll('[role=checkbox]').length, scrollReachable: directory.scrollTop + directory.clientHeight >= directory.scrollHeight - 2 }; })()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-member-directory]').innerText.includes('synthetic-102'))`, "members:virtual-last-row");
+        if (memberPicker.renderedRows >= memberPicker.rows) throw new Error('members:unbounded-render');
         memberPicker.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-organization-picker`);
         if (!memberPicker.contained || !memberPicker.scrollReachable) throw new Error(`member_picker_geometry:${JSON.stringify(memberPicker)}`);
+        await browser.client.evaluate(`(() => { const input = document.querySelector('[aria-label="搜索公司员工"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'synthetic-${directorySize - 1}'); input.dispatchEvent(new Event('input', { bubbles:true })); })()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length === 1 && document.querySelector('[data-model-group-member-directory]').innerText.includes('synthetic-${directorySize - 1}')`, "members:company-search");
+        await browser.client.evaluate(`document.querySelector('[aria-label="全选搜索结果"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选搜索结果"]').getAttribute('aria-checked') === 'true'`, "members:select-search-results");
+        memberPicker.searchScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-organization-search`);
+        await browser.client.evaluate(`(() => { const input = document.querySelector('[aria-label="搜索公司员工"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ''); input.dispatchEvent(new Event('input', { bubbles:true })); })()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '103' && document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'mixed'`, "members:restore-department");
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-        await browser.client.waitFor(`!document.querySelector('[aria-label="公司组织架构选人"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.getAttribute('aria-label') === '按组织架构选择人员' && document.querySelectorAll('[data-model-group-selected-member]').length === 2`, "members:escape-draft-focus");
+        await browser.client.waitFor(`!document.querySelector('[aria-label="公司组织架构选人"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.getAttribute('aria-label') === '按组织架构选择人员' && document.querySelectorAll('[data-model-group-selected-member]').length === 1`, "members:escape-draft-focus");
       }
       modelGroupDrawer = { tabs, screenshot, memberPicker };
       if (groupCase === "delete") {
