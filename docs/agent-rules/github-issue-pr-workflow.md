@@ -16,6 +16,12 @@ and any remaining limits. A docs-only change reports document verification.
 A separate issue, copied SHA inventory, review JSON, or deployment placeholder
 is unnecessary. GitHub and CI record the source identity.
 
+Scope each PR to one complete, verifiable responsibility slice, including its
+callers, tests and documentation; do not split by module count. Keep unrelated
+changes separate. A related behavior fix needed for the same outcome may share
+the PR when its impact and regression evidence are explicit; high-risk changes
+still follow the requirements below.
+
 For retirement, complete every field in the template's `Retirement /
 Compatibility Disposition`: superseded production paths, tests/selectors,
 documentation/configuration, retained compatibility surfaces and removal proof,

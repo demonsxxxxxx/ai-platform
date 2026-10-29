@@ -20,9 +20,10 @@ Status: accepted source contract. Runtime publication is a separate release gate
   malformed successful count response, never enables local fallback.
 - **Acceptance:** API discovery/publication succeeds with an allowed compatible
   endpoint; Worker can decrypt the same pinned revision; selected model and
-  capacities reach the executor; both explicit count requests and message
-  preflight work when that endpoint lacks `/v1/messages/count_tokens`; an actual
-  Run completes through the platform proxy without provider credentials in the
+  capacities reach the executor; explicit `/v1/messages/count_tokens` requests
+  validate successful upstream responses and use local fallback only on `404`;
+  ordinary `/v1/messages` requests have no token-count preflight; an actual Run
+  completes through the platform proxy without provider credentials in the
   sandbox environment.
 - **Evidence limits and stop conditions:** source and focused tests do not prove
   host firewall, OpenSandbox network attachment, upstream correctness or model
