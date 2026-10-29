@@ -295,7 +295,7 @@ function GroupModelEditor({
       return [...current, {
         model_id: model.id,
         model_value: model.value,
-        label: model.label,
+        label: model.provider_name ? `${model.label} · ${model.provider_name}` : model.label,
         enabled: true,
         display_order: current.length,
         priority: 0,
@@ -363,7 +363,7 @@ function GroupModelEditor({
           <div className="hidden grid-cols-[minmax(0,1fr)_6rem_8rem_5rem] gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs text-[var(--theme-text-secondary)] sm:grid"><span>已加入模型</span><span>展示顺序</span><span>默认模型</span><span>启用</span></div>
           <div className="px-3">{orderedModels.map(renderAssigned)}</div>
         </> : <div className="flex min-h-64 flex-col items-center justify-center gap-3 px-6 py-10 text-center"><div className="flex size-12 items-center justify-center rounded-full bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"><Boxes size={24} /></div><div><p className="text-sm font-semibold">暂无已加入模型</p><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">展开下方“添加模型”选择模型，保存后生效。</p></div></div>}
-        {unassigned.length ? <details className="border-t border-[var(--theme-border)] px-3 py-3" data-model-group-add-models><summary className="cursor-pointer text-sm font-medium">添加模型 · {unassigned.length} 个可选</summary><div className="mt-3 max-h-56 space-y-1 overflow-auto">{unassigned.map((model) => <div key={model.id} className="flex items-center gap-2 border-b border-[var(--theme-border)] py-2 last:border-b-0"><Checkbox checked={false} disabled={busy} onChange={() => toggle(model)}><span className="min-w-0"><span className="block truncate text-sm">{model.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</span></span></Checkbox></div>)}</div></details> : null}
+        {unassigned.length ? <details className="border-t border-[var(--theme-border)] px-3 py-3" data-model-group-add-models><summary className="cursor-pointer text-sm font-medium">添加模型 · {unassigned.length} 个可选</summary><div className="mt-3 max-h-56 space-y-1 overflow-auto">{unassigned.map((model) => <div key={model.id} className="flex items-center gap-2 border-b border-[var(--theme-border)] py-2 last:border-b-0"><Checkbox checked={false} disabled={busy} onChange={() => toggle(model)}><span className="min-w-0"><span className="block truncate text-sm">{model.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{model.provider_name ? `${model.value} · ${model.provider_name}` : model.value}</span></span></Checkbox></div>)}</div></details> : null}
       </div>
     </section>
   );

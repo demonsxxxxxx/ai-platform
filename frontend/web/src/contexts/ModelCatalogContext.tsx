@@ -26,6 +26,7 @@ interface ModelCatalogContextValue {
   isLoading: boolean;
   availableModels: AvailableModel[] | null;
   defaultModel: string;
+  defaultModelId: string;
   modelGroups: PublicModelGroup[];
   selectedGroupId: string;
   selectedGroup: PublicModelGroup | null;
@@ -194,6 +195,7 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const value: ModelCatalogContextValue = {
     availableModels,
     defaultModel,
+    defaultModelId: adminDefaultModelId,
     modelGroups: eligibleGroups,
     selectedGroupId: visibleSubjectModelCatalog ? selectedGroupId : "",
     selectedGroup,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -190,7 +191,13 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
         contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
-      if (url.pathname === '/api/ai/admin/models') return json({
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b') return json({
+        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
+        connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: []
+      });
+      if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0 });
+      if (url.pathname === '/api/ai/admin/models' || url.pathname === '/api/ai/admin/model-providers/legacy') return json({
+        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
         models: Array.from({ length: 29 }, (_, index) => ({
           id: 'mdl-' + index,
@@ -537,7 +544,17 @@ async function runCase(viewport, scenario) {
       }
     }
     let modelGroupDrawer = null;
+    let providerScreenshot = null;
     if (scenario.name === "models") {
+      await browser.client.evaluate(`document.querySelector('[data-model-catalog-shell]').scrollTop = 0`);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商')).click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('input[aria-label=供应商名称]'))", "models:provider-create-form");
+      providerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-create`);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '取消新增')).click()`);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '删除供应商')).click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-provider-delete-blocked]'))", "models:provider-reference-block");
+      assert.match(await browser.client.evaluate("document.querySelector('[data-provider-delete-blocked]').textContent"), /关联 1 个分组、1 个默认模型/);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '关闭检查结果')).click()`);
       const tabs = [];
       if (groupCase !== "default") await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
@@ -966,7 +983,7 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, modelGroupDrawer, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, modelGroupDrawer, providerScreenshot, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));

@@ -81,7 +81,7 @@ def _mapping(value: object) -> dict[str, Any]:
 async def inventory() -> dict[str, Any]:
     async with transaction() as conn:
         tenants = await (await conn.execute("select id from tenants order by id")).fetchall()
-        catalog = await (await conn.execute("select model_id, upstream_model_id, enabled, access_mode, allowed_user_ids, is_default from model_catalog_entries order by model_id")).fetchall()
+        catalog = await (await conn.execute("select model_id, upstream_model_id, enabled, access_mode, allowed_user_ids, is_default from model_catalog_entries where archived_at is null order by model_id")).fetchall()
         users = await (await conn.execute("select tenant_id, id as user_id, auth_source, external_id from users where status = 'active' order by tenant_id, id")).fetchall()
         groups = await (await conn.execute("select id, tenant_id, code, name, enabled, revision from model_groups order by tenant_id, code")).fetchall()
         members = await (await conn.execute("select tenant_id, group_id, user_id, is_primary from model_group_members order by tenant_id, group_id, user_id")).fetchall()
@@ -101,7 +101,7 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
     active = await (await conn.execute("select 1 from runs where tenant_id = any(%s) and status not in ('succeeded','failed','cancelled','canceled','dead-letter') limit 1", (tenants,))).fetchone()
     if active:
         raise ValueError("model_group_migration_active_runs")
-    catalog = await (await conn.execute("select model_id, enabled, access_mode, allowed_user_ids, is_default, last_seen_revision from model_catalog_entries order by model_id")).fetchall()
+    catalog = await (await conn.execute("select model_id, enabled, access_mode, allowed_user_ids, is_default, last_seen_revision from model_catalog_entries where archived_at is null order by model_id")).fetchall()
     catalog_ids = {r["model_id"] for r in catalog}
     current_groups = await (await conn.execute("select * from model_groups where tenant_id = any(%s) order by tenant_id, code", (tenants,))).fetchall()
     group_by_key = {(g["tenant_id"], g["code"]): dict(g) for g in current_groups}
