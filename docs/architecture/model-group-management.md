@@ -43,8 +43,12 @@ selected group association is disabled: select the first enabled association or
 clear the default when none exists, and advance that group's revision. Reapplying
 the schema leaves repaired and valid defaults unchanged. Enabled associations
 whose catalog or gateway is unavailable retain their configured default. Existing
-Run snapshots remain frozen. Apply the schema before the compatible application;
-the schema readiness fence prevents an older binary from silently serving it.
+Run snapshots remain frozen. Pause new admission and stop all older API/Worker
+instances before applying this schema, then deploy only the compatible application
+and frontend before resuming traffic. This additive migration preserves the `.1`
+ledger and structure: an older binary can still report schema readiness. Deployment
+must enforce the version boundary; mixed-version serving and rollback to an older
+writer would re-enable the retired request mode and are unsupported.
 
 Only ordinary chat rejects execution through the ordinary-default group; authorized expert entry points permit it.
 a model shared with a business group remains usable through that business group. Direct independent

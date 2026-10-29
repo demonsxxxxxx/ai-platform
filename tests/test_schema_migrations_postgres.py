@@ -589,6 +589,9 @@ async def test_real_postgres_enabled_default_step_follows_provider_version_and_r
         ]
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
+            # Additive schema readiness is not a binary-version fence. The rollout
+            # contract must stop old writers before admitting explicit-only traffic.
+            assert (await previous.schema_status(conn))["ready"] is True
     finally:
         sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
