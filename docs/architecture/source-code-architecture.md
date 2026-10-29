@@ -459,7 +459,7 @@ inventory proving consumer migration and no remaining use may establish exit
 without a separate observation window. When consumers cannot be exhaustively
 inventoried, retain migration arrangements and a predeclared no-use observation
 window covering at least one normal rollout/use cycle. Evidence records the
-exact source/image/config subject, inventory or telemetry source and reproducible
+exact source/image/config subject, telemetry or inventory source and reproducible
 query, consumer scope, owner attestation and known blind spots; observation-based
 proof also records its start/end and covered cycle. Material blind spots block
 deletion. Elapsed time alone is not exit evidence, and a sunset date MUST NOT
