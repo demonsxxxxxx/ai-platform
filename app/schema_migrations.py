@@ -56,7 +56,8 @@ PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION = "2026.10.27.1"
 MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION = "2026.10.27.2"
 MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION = "2026.10.28.1"
 MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION = "2026.10.28.2"
-TARGET_SCHEMA_VERSION = MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION
+MODEL_PROVIDERS_SCHEMA_VERSION = "2026.10.29.1"
+TARGET_SCHEMA_VERSION = MODEL_PROVIDERS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -74,6 +75,7 @@ CRITICAL_RELATIONS = (
     "model_token_usage_coverage",
     "model_token_usage_deltas",
     "model_gateway_revisions",
+    "model_providers",
     "model_catalog_entries",
     "model_groups",
     "model_group_members",
@@ -165,6 +167,12 @@ CRITICAL_COLUMNS = (
     ("model_token_usage_deltas", "cache_creation_input_tokens", "int8", True),
     ("model_token_usage_deltas", "output_tokens", "int8", True),
     ("model_token_usage_deltas", "recorded_at", "timestamptz", True),
+    ("model_providers", "id", "text", True),
+    ("model_providers", "name", "text", True),
+    ("model_providers", "archived_at", "timestamptz", False),
+    ("model_gateway_revisions", "provider_id", "text", True),
+    ("model_catalog_entries", "provider_id", "text", True),
+    ("model_catalog_entries", "archived_at", "timestamptz", False),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -383,6 +391,8 @@ CRITICAL_CONSTRAINTS = (
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
     ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
+    ("model_catalog_entries", "model_catalog_entries_provider_id_fkey"),
+    ("model_gateway_revisions", "model_gateway_revisions_provider_id_fkey"),
     ("model_catalog_entries", "model_catalog_entries_first_seen_revision_fkey"),
     ("model_catalog_entries", "model_catalog_entries_last_seen_revision_fkey"),
     ("model_catalog_entries", "chk_model_catalog_id"),
@@ -1171,12 +1181,14 @@ STATIC_INDEX_DEFINITIONS = (
     ),
 )
 RETIRED_CONSTRAINTS = (
+    ("model_catalog_entries", "model_catalog_entries_upstream_model_id_key"),
     ("model_catalog_entries", "chk_model_catalog_default_enabled"),
 )
-RETIRED_INDEXES = ("uq_model_catalog_default", "uq_model_group_user_primary")
+RETIRED_INDEXES = ("uq_model_catalog_default", "uq_model_group_user_primary", "uq_model_gateway_active")
 
 CRITICAL_INDEXES = (
-    ("uq_model_gateway_active", True),
+    ("uq_model_gateway_provider_active", True),
+    ("uq_model_catalog_provider_upstream", True),
     *((migration.name, migration.unique) for migration in CONCURRENT_INDEX_MIGRATIONS),
     *((definition.name, definition.unique) for definition in STATIC_INDEX_DEFINITIONS),
 )
@@ -1184,12 +1196,13 @@ CRITICAL_INDEXES = (
 
 CRITICAL_INDEX_DEFINITIONS = (
     (
-        "uq_model_gateway_active",
+        "uq_model_gateway_provider_active",
         "model_gateway_revisions",
-        ("active",),
+        ("provider_id",),
         "active = true",
         True,
     ),
+    ("uq_model_catalog_provider_upstream", "model_catalog_entries", ("provider_id", "upstream_model_id"), None, True),
 )
 
 

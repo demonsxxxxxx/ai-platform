@@ -86,7 +86,9 @@ def test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog():
     assert "create table if not exists model_gateway_revisions" in schema
     assert "api_key_ciphertext bytea not null" in schema
     assert "api_key text" not in schema
-    assert "create unique index if not exists uq_model_gateway_active" in schema
+    assert "create unique index if not exists uq_model_gateway_provider_active" in schema
+    assert "create table if not exists model_providers" in schema
+    assert "uq_model_catalog_provider_upstream" in schema
     assert "create table if not exists model_catalog_entries" in schema
     assert "model_id text" in schema
     assert "model_value text" in schema

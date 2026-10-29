@@ -83,7 +83,10 @@ def validate_upstream_model_id(value: str) -> str:
     return value
 
 
-def platform_model_id(upstream_model_id: str) -> str:
+def platform_model_id(upstream_model_id: str, provider_id: str = "legacy") -> str:
+    if provider_id != "legacy":
+        digest = hashlib.sha256(f"{provider_id}\0{upstream_model_id}".encode("utf-8")).hexdigest()[:32]
+        return f"mdl_{digest}"
     if (
         _SAFE_PLATFORM_ID.fullmatch(upstream_model_id)
         and not upstream_model_id.startswith(_GENERATED_PLATFORM_ID_PREFIX)
@@ -93,10 +96,10 @@ def platform_model_id(upstream_model_id: str) -> str:
     return f"mdl_{digest}"
 
 
-def discovered_model_mapping(upstream_model_ids: Sequence[str]) -> dict[str, str]:
+def discovered_model_mapping(upstream_model_ids: Sequence[str], provider_id: str = "legacy") -> dict[str, str]:
     discovered: dict[str, str] = {}
     for upstream_model_id in upstream_model_ids:
-        model_id = platform_model_id(upstream_model_id)
+        model_id = platform_model_id(upstream_model_id, provider_id)
         previous = discovered.setdefault(model_id, upstream_model_id)
         if previous != upstream_model_id:
             raise ValueError("model_catalog_identity_collision")
@@ -160,6 +163,8 @@ def admin_model_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "value": str(row["upstream_model_id"]),
         "label": str(row["display_name"]),
         "provider": str(row["provider"]),
+        "provider_id": str(row.get("provider_id") or "legacy"),
+        "provider_name": str(row.get("provider_name") or "默认供应商"),
         "enabled": bool(row["enabled"]),
         "available": bool(row["upstream_available"]),
         "order": int(row["display_order"]),

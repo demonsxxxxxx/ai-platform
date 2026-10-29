@@ -64,6 +64,7 @@ AdminPredicate = Callable[[Any], bool]
 class ModelConnectionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider_id: str = Field(default="legacy", min_length=1, max_length=128)
     base_url: Any = None
     credential: Any = None
     deprecated_api_key: Any = Field(default=None, alias="api_key", exclude=True)
@@ -84,10 +85,23 @@ class ModelPublicationEntry(BaseModel):
 class ModelPublicationRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider_id: str = Field(default="legacy", min_length=1, max_length=128)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: Any = None
     expected_revision: StrictInt | None = Field(default=None, ge=1)
     models: list[ModelPublicationEntry] = Field(min_length=1)
+
+
+class ModelProviderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=160)
+
+
+class ModelProviderRetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: StrictInt | None = Field(ge=1)
+    confirm: StrictBool = False
+    missing_only: StrictBool = False
 
 
 class ModelGroupCreateRequest(BaseModel):
@@ -170,6 +184,12 @@ def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
 
 def _translate_control_plane_error(exc: Exception) -> HTTPException:
     code = str(exc)
+    if code == "model_provider_not_found":
+        return HTTPException(status_code=404, detail=code)
+    if code == "model_provider_in_use":
+        return HTTPException(status_code=409, detail=code)
+    if code in {"model_provider_name_invalid", "model_provider_confirmation_required"}:
+        return HTTPException(status_code=422, detail=code)
     if code == "model_group_active_runs":
         count = getattr(exc, "details", {}).get("active_run_count")
         return HTTPException(status_code=409, detail={"code": code, "active_run_count": count} if type(count) is int and count >= 0 else code)
@@ -271,7 +291,7 @@ async def discover_model_catalog(
         raise HTTPException(status_code=422, detail="model_connection_request_invalid")
     try:
         return await configured_model_control_plane().discover(
-            base_url=payload.base_url, api_key=payload.credential
+            base_url=payload.base_url, api_key=payload.credential, provider_id=payload.provider_id
         )
     except (RuntimeError, ValueError) as exc:
         raise _translate_control_plane_error(exc) from exc
@@ -298,6 +318,7 @@ async def publish_model_catalog(
             models=[model.model_dump() for model in payload.models],
             actor_user_id=principal.user_id,
             tenant_id=principal.tenant_id,
+            provider_id=payload.provider_id,
         )
     except (RuntimeError, ValueError, PermissionError) as exc:
         raise _translate_control_plane_error(exc) from exc
@@ -569,6 +590,38 @@ def build_model_management_router(
             return await configured_model_control_plane().set_model_group_members(
                 tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
             )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.get("/admin/model-providers/{provider_id}")
+    async def model_provider_endpoint(provider_id: str, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().admin_projection(provider_id=provider_id)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-providers")
+    async def create_model_provider_endpoint(payload: ModelProviderCreateRequest, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().create_provider(name=payload.name)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.get("/admin/model-providers/{provider_id}/impact")
+    async def model_provider_impact_endpoint(provider_id: str, missing_only: bool = False, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().provider_impact(provider_id=provider_id, missing_only=missing_only)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-providers/{provider_id}/retire")
+    async def retire_model_provider_endpoint(provider_id: str, payload: ModelProviderRetireRequest, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().retire_provider(provider_id=provider_id, **payload.model_dump())
         except (ValueError, RuntimeError) as exc:
             raise _translate_control_plane_error(exc) from exc
 

@@ -49,9 +49,8 @@ export function resolveDefaultModelSelection({
   }
 
   if (storedDefaultValue) {
-    const byValue = availableModels.find(
-      (model) => model.value === storedDefaultValue,
-    );
+    const matches = availableModels.filter((model) => model.value === storedDefaultValue);
+    const byValue = matches.length === 1 ? matches[0] : undefined;
     if (byValue) {
       return { modelId: byValue.id, modelValue: byValue.value };
     }
@@ -89,9 +88,8 @@ export function reconcileCurrentModelSelection({
   }
 
   if (currentModelValue) {
-    const currentByValue = availableModels.find(
-      (model) => model.value === currentModelValue,
-    );
+    const matches = availableModels.filter((model) => model.value === currentModelValue);
+    const currentByValue = matches.length === 1 ? matches[0] : undefined;
     if (currentByValue) {
       return {
         modelId: currentByValue.id,

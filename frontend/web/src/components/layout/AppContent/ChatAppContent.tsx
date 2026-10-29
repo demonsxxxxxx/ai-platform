@@ -412,6 +412,7 @@ export function ChatAppContent({
   const {
     availableModels,
     defaultModel,
+    defaultModelId,
     refreshModels,
     selectedGroupId,
     selectedGroup,
@@ -731,7 +732,7 @@ export function ChatAppContent({
     const priorGroupId = modelGroupRef.current;
     if (selectedGroupId) modelGroupRef.current = selectedGroupId;
     if (priorGroupId && selectedGroupId && priorGroupId !== selectedGroupId) {
-      const groupDefault = availableModels?.find((model) => model.value === defaultModel);
+      const groupDefault = availableModels?.find((model) => model.id === defaultModelId);
       setCurrentModelId(groupDefault?.id ?? "");
       setCurrentModelValue(groupDefault?.value ?? "");
       setModelSelectionMode("explicit");
@@ -743,9 +744,9 @@ export function ChatAppContent({
       setModelSelectionMode("explicit");
     }
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
-    const stillAvailable = availableModels.some((model) =>
+    const stillAvailable = availableModels.filter((model) =>
       (currentModelId && model.id === currentModelId)
-      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+      || (!currentModelId && currentModelValue && model.value === currentModelValue)).length === 1;
     if (hasPriorSelection && !stillAvailable) {
       setCurrentModelId("");
       setCurrentModelValue("");
@@ -765,6 +766,7 @@ export function ChatAppContent({
       availableModels,
       currentModelId,
       currentModelValue,
+      storedDefaultId: defaultModelId,
       storedDefaultValue: defaultModel,
     });
 
@@ -774,7 +776,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode, selectedGroupId]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, defaultModelId, modelSelectionError, modelSelectionMode, selectedGroupId]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);

@@ -547,12 +547,13 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
     assert status["model_index_definitions_current"] is True
     assert schema_migrations.CRITICAL_INDEX_DEFINITIONS == (
         (
-            "uq_model_gateway_active",
+            "uq_model_gateway_provider_active",
             "model_gateway_revisions",
-            ("active",),
+            ("provider_id",),
             "active = true",
             True,
         ),
+        ("uq_model_catalog_provider_upstream", "model_catalog_entries", ("provider_id", "upstream_model_id"), None, True),
     )
 
 
@@ -704,7 +705,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION == "2026.10.27.2"
     assert schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION == "2026.10.28.1"
     assert schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION == "2026.10.28.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION
+    assert schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION == "2026.10.29.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -728,6 +730,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_token_usage_coverage",
         "model_token_usage_deltas",
         "model_gateway_revisions",
+        "model_providers",
         "model_catalog_entries",
         "model_groups",
         "model_group_members",
@@ -946,7 +949,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("model_catalog_entries", "chk_model_catalog_selected_users_present"),
     ):
         assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
-    assert ("uq_model_gateway_active", True) in schema_migrations.CRITICAL_INDEXES
+    assert ("uq_model_gateway_provider_active", True) in schema_migrations.CRITICAL_INDEXES
     assert (
         "sessions",
         "chk_sessions_title_source",
