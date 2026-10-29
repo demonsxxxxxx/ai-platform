@@ -49,14 +49,49 @@ async def read_employees():
 async def test_directory_fetch_exact_contract_and_minimal_projection(monkeypatch):
     install_http(monkeypatch, httpx.Response(200, json=[employee(workid=" E001 ")]))
     service = CompanyEmployeeDirectoryService(read_employees, tenant_id="default")
-    assert await service.list_employees(tenant_id="default") == {
-        "employees": [{"work_id": "E001", "display_name": "Employee E001"}],
+    result = await service.list_employees(tenant_id="default")
+    assert len(result.pop("snapshot_id")) == 64
+    assert result == {
+        "employees": [{"work_id": "E001", "display_name": "Employee E001", "department_ids": ["123"]}],
         "total": 1, "offset": 0, "limit": 50,
     }
     await service.validate_grants(tenant_id="default", work_ids={"E001"})
     for invalid in ("ding-E001", "123", "missing"):
         with pytest.raises(ValueError, match="model_user_access_unknown_user"):
             await service.validate_grants(tenant_id="default", work_ids={invalid})
+
+
+@pytest.mark.asyncio
+async def test_listing_snapshot_reuses_upstream_across_pages_but_grants_stay_fresh(monkeypatch):
+    import asyncio
+    import app.identity.application.company_employees as directory
+
+    now = [100.0]
+    monkeypatch.setattr(directory, "monotonic", lambda: now[0])
+    rows = [employee(f"E{i:03}") for i in range(205)]
+    reads = 0
+
+    async def reader():
+        nonlocal reads
+        reads += 1
+        await asyncio.sleep(0)
+        return adapter.parse_dingtalk_employees(rows)
+
+    service = CompanyEmployeeDirectoryService(reader, tenant_id="default")
+    pages = await asyncio.gather(*(service.list_employees(tenant_id="default", offset=offset, limit=100)
+                                   for offset in (0, 100, 200)))
+    assert reads == 1
+    assert len({page["snapshot_id"] for page in pages}) == 1
+    rows[0] = employee("E000", status="离职")
+    with pytest.raises(ValueError, match="model_user_access_unknown_user"):
+        await service.validate_grants(tenant_id="default", work_ids={"E000"})
+    assert reads == 2
+    now[0] = 161.0
+    next_page = await service.list_employees(tenant_id="default")
+    assert reads == 3 and next_page["snapshot_id"] != pages[0]["snapshot_id"]
+    assert next_page["total"] == 204
+    second_process = CompanyEmployeeDirectoryService(reader, tenant_id="default")
+    assert (await second_process.list_employees(tenant_id="default"))["snapshot_id"] == next_page["snapshot_id"]
 
 
 @pytest.mark.parametrize("status", ["离职", "", None, "active", "10", "未知"])
@@ -75,15 +110,19 @@ async def test_department_filter_uses_exact_ids_and_preserves_unfiltered_employe
     service = CompanyEmployeeDirectoryService(reader, tenant_id="default")
     assert (await service.list_employees(tenant_id="default"))["total"] == 4
     assert (await service.list_employees(tenant_id="default", department_id="123"))["employees"] == [
-        {"work_id": "E001", "display_name": "Employee E001"}]
+        {"work_id": "E001", "display_name": "Employee E001", "department_ids": ["123", "456"]}]
     assert (await service.list_employees(tenant_id="default", department_id="456", search="e001"))["total"] == 1
     assert (await service.list_employees(tenant_id="default", department_id="123", search="e002"))["total"] == 0
     for value in ("0", "0123", "123;456", "department-name", "１２３", "1" * 11):
         with pytest.raises(ValueError, match="company_employee_directory_query_invalid"):
             await service.list_employees(tenant_id="default", department_id=value)
     rows.append(employee("E001", departId="789"))
+    service = CompanyEmployeeDirectoryService(reader, tenant_id="default")
     assert (await service.list_employees(tenant_id="default", department_id="123"))["total"] == 0
-    assert (await service.list_employees(tenant_id="default"))["total"] == 4
+    unfiltered = await service.list_employees(tenant_id="default")
+    assert unfiltered["total"] == 4
+    assert unfiltered["employees"][0]["department_ids"] == []
+    assert all(item["department_ids"] == [] for item in unfiltered["employees"] if item["work_id"] in {"E003", "E004"})
 
 
 def test_duplicate_and_ambiguous_identities_fail_closed():
@@ -156,7 +195,9 @@ def test_admin_and_tenant_scope_ignore_client_tenant_and_hide_private_fields():
     with TestClient(app) as client:
         response = client.get("/admin/company-employees?tenant_id=foreign")
         assert response.status_code == 200
-        assert set(response.json()["employees"][0]) == {"work_id", "display_name"}
+        assert set(response.json()["employees"][0]) == {"work_id", "display_name", "department_ids"}
+        assert response.json()["employees"][0]["department_ids"] == ["123"]
+        assert isinstance(response.json()["snapshot_id"], str) and len(response.json()["snapshot_id"]) == 64
         assert "private" not in json.dumps(response.json())
         assert client.get("/admin/company-employees?department_id=123").json()["total"] == 1
         assert client.get("/admin/company-employees?department_id=1234").json()["total"] == 0
@@ -167,7 +208,7 @@ def test_admin_and_tenant_scope_ignore_client_tenant_and_hide_private_fields():
         principal.admin = True
         principal.tenant_id = "foreign"
         assert client.get("/admin/company-employees?tenant_id=default").status_code == 403
-        assert len(calls) == 3
+        assert len(calls) == 1, "cached directory must not skip admin/tenant checks"
 
 
 def test_transport_unavailable_is_retryable_503():
@@ -220,7 +261,7 @@ async def test_bootstrap_reuses_department_directory_origin_for_listing_and_gran
     monkeypatch.setattr(adapter.httpx, "AsyncClient", client)
     service = identity.build_company_employee_directory()
     assert (await service.list_employees(tenant_id="default"))["employees"] == [
-        {"work_id": "E001", "display_name": "Employee E001"},
+        {"work_id": "E001", "display_name": "Employee E001", "department_ids": ["123"]},
     ]
     await service.validate_grants(tenant_id="default", work_ids={"E001"})
     assert (await department_directory.fetch_department_directory(base_url=configured_base)).departments == []
