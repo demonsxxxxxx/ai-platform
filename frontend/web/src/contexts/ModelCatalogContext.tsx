@@ -8,6 +8,7 @@ import {
   useCallback,
   useRef,
 } from "react";
+import { matchPath, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { ApiRequestError } from "../services/api/fetch";
 import { modelPublicApi } from "../services/api/modelPublic";
@@ -28,7 +29,6 @@ interface ModelCatalogContextValue {
   modelGroups: PublicModelGroup[];
   selectedGroupId: string;
   selectedGroup: PublicModelGroup | null;
-  selectGroup: (groupId: string) => void;
   selectionError: string | null;
   refreshModels: (options?: { force?: boolean }) => Promise<boolean>;
 }
@@ -61,17 +61,18 @@ function emptySubjectModelCatalog(subjectKey: string): SubjectModelCatalogSnapsh
 
 export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, user } = useAuth();
+  const { pathname } = useLocation();
+  const expertAgentId = matchPath("/agent-market/:agentId/chat/*", pathname)?.params.agentId;
   const authSubjectKey =
     isAuthenticated && user?.tenant_id
-      ? `${user.tenant_id}\u0000${user.id}`
+      ? `${user.tenant_id}\u0000${user.id}\u0000${expertAgentId || "chat"}`
       : null;
   const authSubjectKeyRef = useRef(authSubjectKey);
   authSubjectKeyRef.current = authSubjectKey;
   const subjectGenerationRef = useRef(0);
   const subjectOwnerRef = useRef<SubjectRequestOwner | null>(null);
   const requestPromiseRef = useRef<Promise<boolean> | null>(null);
-  const requestedGroupIdRef = useRef("");
-  const initializedRef = useRef(false);
+  const membershipIdRef = useRef("");
   const [modelGroups, setModelGroups] = useState<PublicModelGroup[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState("");
   const [selectionError, setSelectionError] = useState<string | null>(null);
@@ -100,28 +101,23 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
         const result = await modelGroupsApi.listPublic({ signal: owner.abortController.signal });
         if (!isCurrentSubjectOwner(owner)) return false;
         const groups = result.groups ?? [];
-        const businessGroups = groups.filter((group) => group.type === "business" && group.enabled);
         setModelGroups(groups);
-        const requestedId = requestedGroupIdRef.current;
-        const primary = groups.find((group) => group.is_primary);
-        const selected = requestedId
-          ? businessGroups.find((group) => group.id === requestedId)
-          : !initializedRef.current ? businessGroups.find((group) => group.id === primary?.id) : undefined;
-        initializedRef.current = true;
+        // Membership is server-owned; only ordinary chat excludes the default group.
+        const selected = groups.length === 1 && (groups[0].type === "business" || Boolean(expertAgentId)) && groups[0].enabled
+          ? groups[0] : null;
         if (!selected) {
-          requestedGroupIdRef.current = "";
           setSelectedGroupId("");
-          setSelectionError(requestedId
-            ? "之前选择的业务组已不可用，请重新选择业务组。"
-            : primary && !primary.enabled ? "主组已不可用，请明确选择其他业务组或联系管理员。"
-            : "请选择可用业务组；如无可用组，请联系管理员。");
+          setSelectionError("所属模型组不可用或归属异常，请联系管理员。");
           setSubjectModelCatalog({ subjectKey: authSubjectKey, dbModels: [], adminDefaultModelId: "", isLoading: false });
           return true;
         }
-        requestedGroupIdRef.current = selected.id;
         setSelectedGroupId(selected.id);
         setSelectionError(null);
-        const data = await modelPublicApi.listAvailable({ groupId: selected.id, signal: owner.abortController.signal });
+        if (membershipIdRef.current !== selected.id) {
+          setSubjectModelCatalog(emptySubjectModelCatalog(authSubjectKey));
+        }
+        membershipIdRef.current = selected.id;
+        const data = await modelPublicApi.listAvailable({ groupId: selected.id, expertAgentId, signal: owner.abortController.signal });
         if (!isCurrentSubjectOwner(owner)) return false;
         setSubjectModelCatalog({ subjectKey: authSubjectKey, dbModels: data.models ?? [],
           adminDefaultModelId: data.default_model_id || "", isLoading: false });
@@ -130,11 +126,10 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
         if (!isCurrentSubjectOwner(owner)) return false;
         const denied = caught instanceof ApiRequestError && (caught.status === 401 || caught.status === 403);
         if (denied) {
-          requestedGroupIdRef.current = "";
-          initializedRef.current = true;
+          membershipIdRef.current = "";
           setModelGroups([]);
           setSelectedGroupId("");
-          setSelectionError("模型或业务组授权已失效，请重新选择或联系管理员。");
+          setSelectionError("模型或业务组授权已失效，请联系管理员。");
         }
         setSubjectModelCatalog((previous) => ({
           ...(previous?.subjectKey === authSubjectKey ? previous : emptySubjectModelCatalog(authSubjectKey)),
@@ -147,7 +142,7 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
     });
     requestPromiseRef.current = request;
     return request;
-  }, [authSubjectKey, isCurrentSubjectOwner]);
+  }, [authSubjectKey, expertAgentId, isCurrentSubjectOwner]);
 
   useEffect(() => {
     authSubjectKeyRef.current = authSubjectKey;
@@ -155,8 +150,7 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
     subjectOwnerRef.current = null;
     requestPromiseRef.current = null;
     subjectGenerationRef.current += 1;
-    requestedGroupIdRef.current = "";
-    initializedRef.current = false;
+    membershipIdRef.current = "";
     setModelGroups([]);
     setSelectedGroupId("");
     setSelectionError(null);
@@ -178,20 +172,6 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
     };
   }, [authSubjectKey, refreshModels]);
 
-  const selectGroup = useCallback((groupId: string) => {
-    if (!authSubjectKey || authSubjectKeyRef.current !== authSubjectKey) return;
-    requestedGroupIdRef.current = groupId;
-    // A group switch invalidates both the group read and its dependent model read.
-    subjectOwnerRef.current?.abortController.abort();
-    subjectGenerationRef.current += 1;
-    requestPromiseRef.current = null;
-    const group = modelGroups.find((item) => item.id === groupId && item.type === "business" && item.enabled);
-    setSelectedGroupId(group?.id ?? "");
-    setSelectionError(group ? null : "所选业务组已不可用，请重新选择业务组。");
-    setSubjectModelCatalog(emptySubjectModelCatalog(authSubjectKey));
-    void refreshModels({ force: true });
-  }, [authSubjectKey, modelGroups, refreshModels]);
-
   const visibleSubjectModelCatalog =
     authSubjectKey && subjectModelCatalog?.subjectKey === authSubjectKey
       ? subjectModelCatalog
@@ -209,15 +189,14 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
     return availableModels.find((model) => model.id === adminDefaultModelId)?.value || "";
   }, [adminDefaultModelId, availableModels]);
 
-  const businessGroups = (visibleSubjectModelCatalog ? modelGroups : []).filter((group) => group.type === "business" && group.enabled);
-  const selectedGroup = businessGroups.find((group) => group.id === selectedGroupId) ?? null;
+  const eligibleGroups = (visibleSubjectModelCatalog ? modelGroups : []).filter((group) => (group.type === "business" || Boolean(expertAgentId)) && group.enabled);
+  const selectedGroup = eligibleGroups.find((group) => group.id === selectedGroupId) ?? null;
   const value: ModelCatalogContextValue = {
     availableModels,
     defaultModel,
-    modelGroups: businessGroups,
+    modelGroups: eligibleGroups,
     selectedGroupId: visibleSubjectModelCatalog ? selectedGroupId : "",
     selectedGroup,
-    selectGroup,
     selectionError: visibleSubjectModelCatalog ? selectionError : null,
     refreshModels,
     isLoading: visibleSubjectModelCatalog?.isLoading ?? Boolean(authSubjectKey && selectedGroupId),

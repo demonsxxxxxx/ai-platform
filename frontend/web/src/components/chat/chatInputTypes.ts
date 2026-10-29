@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
-import type { PublicModelGroup } from "../../services/api/modelGroups";
 import type {
   ToolState,
   ToolCategory,
@@ -88,9 +87,6 @@ export interface ChatInputProps {
   availableModels?: ModelOption[];
   currentModelId?: string;
   modelSelectionMode?: "auto" | "explicit";
-  modelGroups?: PublicModelGroup[];
-  selectedGroupId?: string;
-  onSelectGroup?: (groupId: string) => void;
   onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
   onModelSelectorOpen?: () => void | Promise<unknown>;
   attachments?: MessageAttachment[];

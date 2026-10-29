@@ -117,7 +117,6 @@ import {
 } from "../../workbench/profileDriveDrag";
 import { buildFileLinkPreviewRequest } from "../../chat/ChatMessage/items/fileLinkPreview";
 import type { ModelOption } from "../../../services/api/modelPublic";
-import type { PublicModelGroup } from "../../../services/api/modelGroups";
 import { openAttachmentPreview } from "../../chat/attachmentPreviewStore";
 import { downloadPreviewUrl } from "../../documents/documentPreviewSources";
 import {
@@ -199,9 +198,6 @@ interface ChatViewProps {
   availableModels: ModelOption[];
   currentModelId: string;
   modelSelectionMode?: "auto" | "explicit";
-  modelGroups?: PublicModelGroup[];
-  selectedGroupId?: string;
-  onSelectGroup?: (groupId: string) => void;
   onSelectModel: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
   onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
@@ -275,9 +271,6 @@ export function ChatView({
   availableModels,
   currentModelId,
   modelSelectionMode = "explicit",
-  modelGroups = [],
-  selectedGroupId,
-  onSelectGroup,
   onSelectModel,
   onModelSelectorOpen,
   onSendMessage,
@@ -982,9 +975,6 @@ export function ChatView({
     availableModels,
     currentModelId,
     modelSelectionMode,
-    modelGroups,
-    selectedGroupId,
-    onSelectGroup,
     onSelectModel,
     onModelSelectorOpen,
     attachments,

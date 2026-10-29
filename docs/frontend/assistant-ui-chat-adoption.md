@@ -104,6 +104,8 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 ## 退役与具名保留
 
 - LibreChat Composer/CommandMenu/Chips、ComposerModelPanel、MessageFrame 旧入口和 exports/对应 selectors 已替换，旧专用 CSS 清退。业务控制器继续在 ChatInput，不增加第二 form、上传器或提交路径。
+- 普通 chat 与 expert 的模型组选择入口及其 props/callback 已移除，无兼容消费者。ModelCatalogProvider 每次刷新只接受服务器返回的唯一启用归属组；默认组仅在可信专家入口可用，普通 chat 仍拒绝；多组、禁用或未授权均拒绝猜测/回退，归属仅由管理员修改。focus/visibility 与模型菜单刷新重新加载当前归属；历史 Session 的 group_id 不再重定向当前归属，Run 的冻结快照不变。保留同组模型选择和显式 group_id/model_id/model 提交；默认模型按服务器指定 ID 解析，缺失时不选第一项。
+- Composer 附件使用中性主题卡片、完整文件名提示及常显移除/取消按钮，长名省略、多文件横向滚动。消息附件、授权、上传状态及唯一上传控制器不变。
 - Composer 上传附件只由 `ChatInputAttachments` 展示；逐附件镜像 `file` chip 及其专用删除分支、文案已退役，无兼容消费者。已发送文件和正文归入同一用户消息容器，继续沿用原文件预览和授权入口。
 - 旧 token 明细手写点击外部监听及 guard 退役，由 MessageTiming + Lobe Popover 承担。
 - 活动旧展示壳由 Elements 接管；公开分类、顺序、折叠、面板导航、下载与预览 controller 保留。

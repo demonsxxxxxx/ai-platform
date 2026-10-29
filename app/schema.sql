@@ -1244,10 +1244,9 @@ begin
   end if;
 end
 $$;
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_group_policy') then
-    alter table runs add constraint chk_runs_model_group_policy check (
+-- Replace the old chat+expert ban; preserve every frozen Run field.
+alter table runs drop constraint if exists chk_runs_model_group_policy;
+alter table runs add constraint chk_runs_model_group_policy check (
       model_group_id is null or (
         model_group_id ~ '^[A-Za-z0-9_.:-]{1,128}$'
         and model_group_code ~ '^[a-z0-9_-]{1,64}$'
@@ -1257,12 +1256,9 @@ begin
         and model_policy_version = 'model-groups.v1'
         and ((model_group_type = 'business' and model_group_code <> 'default')
           or (model_group_type = 'ordinary_default' and model_group_code = 'default'
-              and usage_scene in ('skill', 'independent')))
+              and usage_scene in ('expert', 'skill', 'independent')))
       )
     );
-  end if;
-end
-$$;
 -- Model groups were introduced after the original catalog/Run tables. Keep this
 -- additive block idempotent for existing installations; fresh installs use the
 -- canonical definitions above.

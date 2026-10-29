@@ -222,7 +222,7 @@ test("drawer keeps drafts across tabs, reorders models and saves single-group me
     await click("移除成员 甲");
     await click("保存成员");
     assert.equal(view.calls.filter((call) => call.kind === "members").length, 1);
-    assert.match(document.body.textContent ?? "", /失去对话资格/);
+    assert.match(document.body.textContent ?? "", /失去普通聊天资格/);
     await click("确认移除");
     const removal = view.calls.filter((call) => call.kind === "members")[1].body as { confirm_default_fallback: boolean };
     assert.equal(removal.confirm_default_fallback, true);
@@ -281,7 +281,7 @@ test("delete group requires an explicit member destination and displays active r
     await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
     await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    assert.match(modal.textContent ?? "", /失去对话资格/);
+    assert.match(modal.textContent ?? "", /失去普通聊天资格/);
     await click("确认删除");
     assert.deepEqual(view.calls.find((call) => call.kind === "delete")?.body, { revision: 4, confirm_impact: true, delete: true, confirm_default_fallback: true });
     // Reopen against a changed server projection: active runs block submit, even with a migration choice.

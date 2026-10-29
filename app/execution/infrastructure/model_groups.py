@@ -80,7 +80,7 @@ async def _effective_group(conn: Any, *, tenant_id: str, user_id: str, group_id:
         group = dict(await (await conn.execute("select * from model_groups where tenant_id = %s and id = %s", (tenant_id, default_id))).fetchone())
     if not group["enabled"] or group.get("archived_at") is not None:
         raise ModelGroupPolicyError("group_disabled")
-    if group["type"] == DEFAULT_GROUP_TYPE and usage_scene in {USAGE_SCENE_CHAT, USAGE_SCENE_EXPERT}:
+    if group["type"] == DEFAULT_GROUP_TYPE and usage_scene == USAGE_SCENE_CHAT:
         raise ModelGroupPolicyError("group_not_available")
     return group
 
