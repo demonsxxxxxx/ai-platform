@@ -1,10 +1,9 @@
-import { Button, Input } from "@lobehub/ui/base-ui";
+import { Button, Checkbox, Input } from "@lobehub/ui/base-ui";
 import {
   Building2,
   ChevronDown,
   ChevronRight,
-  Download,
-  Eye,
+  Focus,
   FileText,
   FolderClosed,
   FolderOpen,
@@ -13,10 +12,13 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { toast } from "@lobehub/ui/base-ui";
 
 import type { SessionInputFile } from "../../services/api";
+import type { MessageAttachment } from "../../types";
+import { buildProfileDriveTree, type LoadedProfileDriveDirectory } from "./profileDriveTree";
+import styles from "./ProfileDriveWorkspaceBrowser.module.css";
 import {
   PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
   profileDriveApi,
@@ -81,6 +83,8 @@ function previewableEntry(entry: ProfileDriveFileEntry): boolean {
 
 interface ProfileDriveWorkspaceBrowserProps {
   sessionId: string | null;
+  attachments?: readonly MessageAttachment[];
+  onRemoveAttachment?: (attachment: MessageAttachment) => void;
   onImported: (file: SessionInputFile) => void;
   onAddToConversation: (
     reference: ProfileDriveFileReference,
@@ -103,39 +107,6 @@ interface ProfileDriveSourceControls {
   visibleEntryCount: number;
   refresh: () => Promise<void>;
 }
-
-interface LoadedDirectory {
-  entries: ProfileDriveFileEntry[];
-  truncated: boolean;
-}
-
-interface ProfileDriveTreeEntryRow {
-  kind: "entry";
-  entry: ProfileDriveFileEntry;
-  depth: number;
-  parentPath: string;
-}
-
-interface ProfileDriveTreeStatusRow {
-  kind: "status";
-  key: string;
-  depth: number;
-  text: string;
-}
-
-interface ProfileDriveTreeErrorRow {
-  kind: "error";
-  key: string;
-  depth: number;
-  path: string;
-  label: string;
-  text: string;
-}
-
-type ProfileDriveTreeRow =
-  | ProfileDriveTreeEntryRow
-  | ProfileDriveTreeStatusRow
-  | ProfileDriveTreeErrorRow;
 
 function profileDirectoryLabel(name: string): string {
   return PROFILE_DIRECTORY_LABELS[name.toLowerCase()] ?? name;
@@ -181,12 +152,14 @@ function ProfileDriveSourceBrowser({
   title,
   onImported,
   onAddToConversation,
+  attachments,
+  onRemoveAttachment,
   onControlsChange,
 }: ProfileDriveSourceBrowserProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [entries, setEntries] = useState<ProfileDriveFileEntry[]>([]);
   const [childrenByPath, setChildrenByPath] = useState(
-    () => new Map<string, LoadedDirectory>(),
+    () => new Map<string, LoadedProfileDriveDirectory>(),
   );
   const [expandedPaths, setExpandedPaths] = useState(() => new Set<string>());
   const [loadingPaths, setLoadingPaths] = useState(() => new Set<string>());
@@ -194,6 +167,8 @@ function ProfileDriveSourceBrowser({
     () => new Map<string, string>(),
   );
   const [filter, setFilter] = useState("");
+  const [compact, setCompact] = useState(true);
+  const [focusTrail, setFocusTrail] = useState<ProfileDriveFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -201,6 +176,18 @@ function ProfileDriveSourceBrowser({
   const treeGenerationRef = useRef(0);
   const pendingPathsRef = useRef(new Set<string>());
   const directoryButtonRefs = useRef(new Map<string, HTMLElement>());
+  const pathRef = useRef<HTMLElement>(null);
+  const focusPathRef = useRef(false);
+  const changeFocusTrail = useCallback((trail: ProfileDriveFileEntry[]) => {
+    focusPathRef.current = true;
+    setFocusTrail(trail);
+    setFilter("");
+  }, []);
+  useLayoutEffect(() => {
+    if (!focusPathRef.current) return;
+    focusPathRef.current = false;
+    pathRef.current?.querySelector<HTMLButtonElement>("button:last-child")?.focus();
+  }, [focusTrail]);
   const mountedRef = useRef(false);
 
   const loadRoot = useCallback(async () => {
@@ -208,6 +195,7 @@ function ProfileDriveSourceBrowser({
     pendingPathsRef.current.clear();
     setLoading(true);
     setError(null);
+    setFocusTrail([]);
     setExpandedPaths(new Set());
     setChildrenByPath(new Map());
     setLoadingPaths(new Set());
@@ -245,9 +233,10 @@ function ProfileDriveSourceBrowser({
   const returnFromDirectory = useCallback(
     (path: string) => {
       directoryButtonRefs.current.get(path)?.focus();
+      if (focusTrail.at(-1)?.path === path) changeFocusTrail(focusTrail.slice(0, -1));
       closeDirectory(path);
     },
-    [closeDirectory],
+    [closeDirectory, focusTrail, changeFocusTrail],
   );
 
   const toggleDirectory = useCallback(
@@ -389,6 +378,8 @@ function ProfileDriveSourceBrowser({
           source_id: sourceId,
           path: entry.path,
         });
+      } catch {
+        if (mountedRef.current) toast.error("文件添加到会话失败。");
       } finally {
         if (mountedRef.current) setImportingPath(null);
       }
@@ -396,66 +387,20 @@ function ProfileDriveSourceBrowser({
     [importingPath, onAddToConversation, sourceId],
   );
 
-  const treeRows: ProfileDriveTreeRow[] = [];
-  const appendRows = (
-    directoryEntries: ProfileDriveFileEntry[],
-    depth: number,
-    parentPath: string,
-  ): void => {
-    for (const entry of directoryEntries) {
-      treeRows.push({ kind: "entry", entry, depth, parentPath });
-      if (entry.type !== "directory" || !expandedPaths.has(entry.path)) continue;
-      if (loadingPaths.has(entry.path)) {
-        treeRows.push({
-          kind: "status",
-          key: `${entry.path}:loading`,
-          depth: depth + 1,
-          text: "正在加载…",
-        });
-        continue;
-      }
-      const directoryFailure = directoryErrors.get(entry.path);
-      if (directoryFailure) {
-        treeRows.push({
-          kind: "error",
-          key: `${entry.path}:error`,
-          depth: depth + 1,
-          path: entry.path,
-          label: entryLabel(entry, parentPath, sourceId),
-          text: directoryFailure,
-        });
-        continue;
-      }
-      const loaded = childrenByPath.get(entry.path);
-      if (!loaded) continue;
-      if (loaded.entries.length === 0) {
-        treeRows.push({
-          kind: "status",
-          key: `${entry.path}:empty`,
-          depth: depth + 1,
-          text: "目录为空",
-        });
-      } else {
-        appendRows(loaded.entries, depth + 1, entry.path);
-      }
-      if (loaded.truncated) {
-        treeRows.push({
-          kind: "status",
-          key: `${entry.path}:truncated`,
-          depth: depth + 1,
-          text: "目录内容已截断",
-        });
-      }
-    }
-  };
-  appendRows(entries, 0, "");
+  const treeRows = buildProfileDriveTree({
+    entries, directories: childrenByPath, expanded: expandedPaths, loading: loadingPaths,
+    errors: directoryErrors, compact, focusTrail, filter,
+  });
+  const rowLabel = (chain: ProfileDriveFileEntry[]) => chain.map((entry) =>
+    entryLabel(entry, entry.path.includes("/") ? "nested" : "", sourceId),
+  ).join(" / ");
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const matchingPaths = normalizedFilter
     ? new Set(
         treeRows.flatMap((row) =>
           row.kind === "entry" &&
-          entryLabel(row.entry, row.parentPath, sourceId)
+          rowLabel(row.chain)
             .toLocaleLowerCase()
             .includes(normalizedFilter)
             ? [row.entry.path]
@@ -467,7 +412,7 @@ function ProfileDriveSourceBrowser({
     ? treeRows.filter((row) =>
         row.kind === "entry"
           ? matchingPaths.has(row.entry.path)
-          : row.kind === "error" && matchingPaths.has(row.path),
+          : row.kind === "error" && (matchingPaths.has(row.entry.path) || row.entry.path === focusTrail.at(-1)?.path),
       )
     : treeRows;
   const visibleEntryCount = filteredRows.filter(
@@ -493,7 +438,7 @@ function ProfileDriveSourceBrowser({
   ]);
 
   return (
-    <div data-profile-drive-source={sourceId}>
+    <div data-profile-drive-source={sourceId} className={styles.source}>
       {connected !== false && !error && !loading && entries.length > 0 && (
         <label className="mt-2 flex h-8 items-center gap-2 rounded-md bg-[var(--theme-bg-sidebar)] px-2 ring-1 ring-[var(--theme-border)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]">
           <Search
@@ -512,7 +457,28 @@ function ProfileDriveSourceBrowser({
         </label>
       )}
 
-      <div className="mt-2">
+      {connected && !error && !loading && entries.length > 0 && (
+        <>
+          <div className={styles.options}>
+            <Checkbox checked={compact} onChange={setCompact} aria-label="合并单子目录">合并单子目录</Checkbox>
+          </div>
+          <nav ref={pathRef} className={styles.breadcrumbs} aria-label={`${title}路径`}>
+            <Button type="text" htmlType="button" onClick={() => changeFocusTrail([])}>{title}</Button>
+            {focusTrail.length > 2 && (
+              <Button type="text" htmlType="button" aria-label="返回上一级目录"
+                title={focusTrail.map((entry) => rowLabel([entry])).join(" / ")}
+                onClick={() => changeFocusTrail(focusTrail.slice(0, -1))}>…</Button>
+            )}
+            {focusTrail.slice(-2).map((entry) => (
+              <Button type="text" htmlType="button" key={entry.path} title={entry.path}
+                onClick={() => changeFocusTrail(focusTrail.slice(0, focusTrail.indexOf(entry) + 1))}>
+                / {rowLabel([entry])}
+              </Button>
+            ))}
+          </nav>
+        </>
+      )}
+      <div className={styles.treeViewport} data-profile-drive-tree-scroll>
         {error ? (
           <p role="status" className="text-xs leading-5 text-[var(--theme-danger-text)]">
             {error}
@@ -529,7 +495,7 @@ function ProfileDriveSourceBrowser({
           <div
             role="tree"
             aria-label={`${title}目录`}
-            className="min-w-0 max-w-full space-y-0.5 overflow-hidden"
+            className={styles.tree}
           >
             {filteredRows.map((row) => {
               if (row.kind === "error") {
@@ -538,16 +504,16 @@ function ProfileDriveSourceBrowser({
                     key={row.key}
                     role="alert"
                     className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-[11px]"
-                    style={{ paddingInlineStart: `${22 + row.depth * 16}px` }}
+                    style={{ paddingInlineStart: `${22 + row.depth * 8}px` }}
                   >
                     <span className="min-w-0 flex-1 text-[var(--theme-danger-text)]">
                       {row.text}
                     </span>
                     <Button type="text"
                       htmlType="button"
-                      aria-label={`返回 ${row.label}`}
+                      aria-label={`返回 ${rowLabel([row.entry])}`}
                       className="shrink-0 rounded px-1.5 py-1 font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-workbench-panel)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-                      onClick={() => returnFromDirectory(row.path)}
+                      onClick={() => returnFromDirectory(row.entry.path)}
                     >
                       返回
                     </Button>
@@ -560,36 +526,35 @@ function ProfileDriveSourceBrowser({
                   <p
                     key={row.key}
                     role="status"
-                    className="flex h-7 items-center truncate text-[11px] text-[var(--theme-text-tertiary)]"
-                    style={{ paddingInlineStart: `${22 + row.depth * 16}px` }}
+                    className="flex h-7 items-center text-[11px] text-[var(--theme-text-tertiary)]"
+                    style={{ paddingInlineStart: `${22 + row.depth * 8}px` }}
                   >
                     {row.text}
                   </p>
                 );
               }
 
-              const { entry, depth, parentPath } = row;
+              const { entry, depth, chain, ancestors } = row;
               const directory = entry.type === "directory";
               const expanded = directory && expandedPaths.has(entry.path);
               const folderLoading = directory && loadingPaths.has(entry.path);
               const previewable = !directory && previewableEntry(entry);
               const importing = importingPath === entry.path;
-              const disabled = !directory && Boolean(importingPath);
-              const name = entryLabel(entry, parentPath, sourceId);
+              const attached = attachments?.find((file) => file.profileDriveReference?.source_id === sourceId && file.profileDriveReference.path === entry.path);
+              const disabled = !directory && (Boolean(importingPath) || Boolean(attached?.isUploading));
+              const name = rowLabel(chain);
               const actionLabel = directory
                 ? `${expanded ? "收起" : "展开"}文件夹 ${name}`
                 : `${previewable ? "预览" : "下载"} ${name}`;
-              const ActionIcon = previewable ? Eye : Download;
               const ExpandIcon = expanded ? ChevronDown : ChevronRight;
               return (
                 <div
-                  key={`${entry.type}:${entry.path}`}
+                  key={`${entry.type}:${chain[0].path}`}
                   role="treeitem"
                   aria-level={depth + 1}
                   aria-expanded={directory ? expanded : undefined}
-                  className={`group flex h-8 w-full min-w-0 max-w-full items-center overflow-hidden rounded hover:bg-[var(--theme-workbench-panel)] ${
-                    !directory && !importingPath ? "cursor-grab active:cursor-grabbing" : ""
-                  }`}
+                  className={styles.row}
+                  style={{ "--profile-drive-depth": depth } as CSSProperties}
                   draggable={!directory && !importingPath}
                   onDragStart={(event) => {
                     if (directory || importingPath) return;
@@ -603,21 +568,25 @@ function ProfileDriveSourceBrowser({
                     );
                   }}
                 >
+                  <span className={styles.guides} aria-hidden="true">
+                    {Array.from({ length: depth }, (_, level) => <span key={level} style={{ insetInlineStart: `${12 + level * 8}px` }} />)}
+                  </span>
                   <Button type="text"
                     ref={
                       directory
                         ? (node) => {
-                            if (node) directoryButtonRefs.current.set(entry.path, node);
-                            else directoryButtonRefs.current.delete(entry.path);
+                            for (const part of chain) {
+                              if (node) directoryButtonRefs.current.set(part.path, node);
+                              else directoryButtonRefs.current.delete(part.path);
+                            }
                           }
                         : undefined
                     }
                     htmlType="button"
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
-                    style={{ paddingInlineStart: `${6 + depth * 16}px` }}
+                    className={styles.nameButton}
                     aria-label={actionLabel}
                     aria-expanded={directory ? expanded : undefined}
-                    title={actionLabel}
+                    title={`${entry.path}${entry.size !== null ? ` · ${formatFileSize(entry.size)}` : ""}`}
                     disabled={disabled}
                     onClick={() =>
                       directory ? void toggleDirectory(entry) : void preview(entry)
@@ -653,7 +622,7 @@ function ProfileDriveSourceBrowser({
                         aria-hidden="true"
                       />
                     )}
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text)]">
+                    <span className={styles.name}>
                       {name}
                     </span>
                     {folderLoading && (
@@ -663,34 +632,22 @@ function ProfileDriveSourceBrowser({
                         aria-hidden="true"
                       />
                     )}
-                    {!directory && entry.size !== null && (
-                      <span className="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">
-                        {formatFileSize(entry.size)}
-                      </span>
-                    )}
-                    {!directory && (
-                      <ActionIcon
-                        size={13}
-                        aria-hidden="true"
-                        className={`shrink-0 text-[var(--theme-text-tertiary)] ${
-                          importing ? "animate-pulse" : ""
-                        }`}
-                      />
-                    )}
                   </Button>
-                  {!directory && (
-                    <Button type="text"
-                      htmlType="button"
-                      size="small"
-                      icon={<Paperclip size={13} aria-hidden="true" />}
-                      style={{ width: 28, height: 28, padding: 0 }}
-                      aria-label={`添加 ${name} 到会话`}
-                      title="添加到会话"
-                      disabled={disabled}
-                      onClick={() => void addToConversation(entry)}
-                      className="mr-0.5 shrink-0 rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
-                    />
-                  )}
+                  <Button type="text" htmlType="button" size="small"
+                    icon={directory ? <Focus size={14} aria-hidden="true" /> : <Paperclip size={14} aria-hidden="true" />}
+                    aria-label={directory ? `聚焦目录 ${name}` : attached ? `移除 ${name} 附件` : `添加 ${name} 到会话`}
+                    aria-pressed={directory ? undefined : Boolean(attached)}
+                    title={directory ? "聚焦此目录" : attached ? "已添加，点击移除" : "添加到会话"}
+                    disabled={disabled} loading={importing}
+                    className={`${styles.action} ${directory ? styles.focusAction : ""}`}
+                    onClick={() => {
+                      if (directory) {
+                        changeFocusTrail([...ancestors, ...chain]);
+                        if (!expandedPaths.has(entry.path)) void toggleDirectory(entry);
+                      } else if (attached && onRemoveAttachment) onRemoveAttachment(attached);
+                      else void addToConversation(entry);
+                    }}
+                  />
                 </div>
               );
             })}
@@ -715,6 +672,8 @@ export function ProfileDriveWorkspaceBrowser({
   sessionId,
   onImported,
   onAddToConversation,
+  attachments,
+  onRemoveAttachment,
 }: ProfileDriveWorkspaceBrowserProps) {
   const [activeSource, setActiveSource] =
     useState<ProfileDriveSourceId>("profile");
@@ -764,7 +723,7 @@ export function ProfileDriveWorkspaceBrowser({
     <section
       data-librechat-context-section="files"
       aria-labelledby="librechat-drive-files-label"
-      className={`${workbenchSurface.compactPanel} mt-3 overflow-hidden`}
+      className={`${workbenchSurface.compactPanel} ${styles.browser}`}
     >
       <div className="p-3 pb-0">
         <div className="flex min-w-0 items-center gap-2">
@@ -849,7 +808,7 @@ export function ProfileDriveWorkspaceBrowser({
           role="tabpanel"
           aria-labelledby={`profile-drive-${id}-tab`}
           hidden={activeSource !== id}
-          className="px-3 pb-3"
+          className={styles.panel}
         >
           <ProfileDriveSourceBrowser
             sessionId={sessionId}
@@ -857,6 +816,8 @@ export function ProfileDriveWorkspaceBrowser({
             title={label}
             onImported={onImported}
             onAddToConversation={onAddToConversation}
+            attachments={attachments}
+            onRemoveAttachment={onRemoveAttachment}
             onControlsChange={handleControlsChange}
           />
         </div>

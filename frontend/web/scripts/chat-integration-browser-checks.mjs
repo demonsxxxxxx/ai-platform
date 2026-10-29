@@ -39,7 +39,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     const context = document.querySelector('[data-workbench-region=context]');
     const popup = context.closest('[role=dialog]');
     const rect = n => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
-    const scroll = context.querySelector('[data-librechat-context-overview]');
+    const scroll = context.querySelector('[role=tabpanel]:not([hidden]) [data-profile-drive-tree-scroll]');
     const before = window.scrollY;
     scroll.scrollTop = scroll.scrollHeight;
     return { thread: rect(column), context: rect(context), popup: popup ? rect(popup) : null,
@@ -55,7 +55,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     assert.equal(geometry.popup, null);
     assert.ok(Math.abs(geometry.thread.y - geometry.context.y) < 2);
     assert.ok(geometry.context.x >= geometry.thread.right - 1);
-    assert.ok(geometry.context.width >= 288 && geometry.context.width <= 321);
+    assert.ok(geometry.context.width >= 280 && geometry.context.width <= 520);
   } else {
     assert.ok(geometry.popup && geometry.popup.x >= 0 && geometry.popup.right <= viewport.width + 1);
     assert.ok(geometry.popup.bottom <= viewport.height + 1 && geometry.focusedInside);
@@ -65,7 +65,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     await key(client, "Tab", "Tab", 9, 8);
     await client.waitFor(`document.querySelector('[role=dialog]').contains(document.activeElement)`, "chat:drawer-shift-tab-trap");
   }
-  await client.evaluate(`(() => { document.querySelector('#profile-drive-profile-tab').focus(); document.querySelector('[data-librechat-context-overview]').scrollTop = 0; })()`);
+  await client.evaluate(`(() => { document.querySelector('#profile-drive-profile-tab').focus(); document.querySelector('[role=tabpanel]:not([hidden]) [data-profile-drive-tree-scroll]').scrollTop = 0; })()`);
   const filesScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-files`);
   await key(client, "Escape", "Escape", 27);
   await client.waitFor(`!document.querySelector('[data-workbench-region=context]') && document.activeElement === document.querySelector('[data-librechat-context-toggle]')`, "chat:files-close-focus");

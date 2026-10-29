@@ -1,0 +1,22 @@
+.browser { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.panel { display: flex; flex: 1; min-height: 0; padding: 0 12px 12px; }
+.panel[hidden] { display: none; }
+.source { display: flex; flex: 1; min-height: 0; min-width: 0; flex-direction: column; }
+.options { margin: 8px 0 4px; font-size: 11px; color: var(--theme-text-secondary); }
+.breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; flex-shrink: 0; border-bottom: 1px solid var(--theme-border); padding: 4px 0; }
+.breadcrumbs > button { max-width: 100%; height: auto; min-height: 24px; padding: 2px 4px; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.treeViewport { min-height: 0; flex: 1; overflow: auto; margin-top: 8px; scrollbar-width: thin; }
+.tree { min-width: 100%; width: max-content; }
+.row { display: flex; position: relative; align-items: center; min-width: 100%; width: max-content; min-height: 32px; padding-inline-start: calc(6px + var(--profile-drive-depth) * 8px); border-radius: 4px; }
+.row:hover { background: var(--theme-workbench-panel); }
+.row[draggable="true"] { cursor: grab; }
+.row .nameButton { display: flex; flex: 1; min-width: max-content; height: 32px; justify-content: flex-start; gap: 6px; padding: 0; border-radius: 4px; }
+.name { white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--theme-text); }
+.row .action { position: sticky; inset-inline-end: 0; z-index: 1; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; margin-inline-start: 6px; background: var(--theme-workbench-canvas); color: var(--theme-text-secondary); }
+.row .action[aria-pressed="true"] { background: var(--theme-sidebar-panel-muted); color: var(--theme-primary); }
+.focusAction { opacity: 0; }
+.row:hover .focusAction, .row:focus-within .focusAction { opacity: 1; }
+.guides { position: absolute; inset: 0 auto 0 0; pointer-events: none; }
+.guides > span { position: absolute; inset-block: 0; border-inline-start: 1px solid var(--theme-border); }
+@media (hover: none) { .focusAction { opacity: 1; } }
+@media (max-width: 639px) { .row, .row .nameButton { min-height: 40px; } .row .action { height: 40px; flex-basis: 40px; width: 40px; } }

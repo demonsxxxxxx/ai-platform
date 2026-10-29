@@ -108,7 +108,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 - 旧 token 明细手写点击外部监听及 guard 退役，由 MessageTiming + Lobe Popover 承担。
 - 活动旧展示壳由 Elements 接管；公开分类、顺序、折叠、面板导航、下载与预览 controller 保留。
 - MarkdownContent 保留显式业务内容/图库适配；独立文档直接走共享 renderer，主消息正文不再使用旧直接 parser。
-- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。历史 release evidence 和来源许可不改写。
+- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；桌面文件栏默认360px，可拖宽或用分隔线方向键调整到280–520px，宽度仅保存在浏览器。ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。单子目录仅合并已展开、已加载且未截断的完整列表，聚焦目录通过路径返回，不新增盘遍历。文件名完整保留，极长名称仅在树区横向滚动；文件行只保留回形针，大小移入完整路径提示，不增加底部已选文件信息区。回形针状态来自当前Composer附件，取消复用原上传控制器的移除入口；客户端来源标记不写入消息、历史或服务端授权。旧行内大小和预览/下载图标、无路径导航断言、固定20rem栏宽及外层目录滚动已退役，无兼容消费者。历史 release evidence 和来源许可不改写。
 - 升级检查真实消费者、旧入口/export、静态断言、脚本、依赖和文档；不得为旧 source regex 恢复被替换代码。
 - Run 问答逐题化替换了旧的独立问答区与“全题同表”卡片：独立区总标题 `当前任务输入`、卡片外框/阴影、内层 `<form>` 及其 submit 按钮不再存在，历史分组标题仍保留在共享滚动区内，生产消费者只剩 `ChatInput` 的 `taskSurface` slot（由 `ChatView` 传入 `RunInputHistory`）。`data-question-mode`、`composer-ordinary-controls`、`data-run-question-card`/`-index`/`-marker`/`-progress`/`-advance`/`-previous`/`-other-toggle`/`-other-clear`/`-batch-note`/`-stop` 是当前模式与问题选择器；旧 `data-run-question-filled` 双重进度、始终展开的其他答案输入、问答与普通输入同时显示的布局已退役，无兼容消费者。`data-run-input-history-disclosure`/`-toggle`/`-panel` 拥有默认折叠和唯一历史滚动，`data-run-input-receipts` 只作内容分组；`data-run-input-history`/`data-run-input-history-run`/`data-run-input-entry` 保留原记录范围与历史含义。`fieldset:last-child textarea`、`button[type="submit"]` 和 `data-run-input-history` 上的 30dvh 上限已无消费者，浏览器脚本与回归已改用上述新选择器。服务器合同、存储、超时默认答案与 provider 交互未变，因此没有旧的兼容分支需要保留。
 

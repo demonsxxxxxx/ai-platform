@@ -211,7 +211,7 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
   assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
-  assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*var\(--context-panel-width,360px\)/);
   assert.match(shell, /data-librechat-context-toggle/);
   assert.match(shell, /aria-controls="librechat-context-panel"/);
   assert.match(shell, /contextOpen && desktop && \([\s\S]*<aside/);
@@ -255,7 +255,10 @@ test("workbench right context exposes one lazy two-drive file tree", () => {
   assert.match(driveBrowser, /aria-expanded/);
   assert.match(driveBrowser, /role="tree"/);
   assert.match(driveBrowser, /role="treeitem"/);
-  assert.doesNotMatch(driveBrowser, /breadcrumbs|navigate\(/);
+  assert.match(driveBrowser, /styles\.breadcrumbs/);
+  assert.match(driveBrowser, /buildProfileDriveTree/);
+  assert.match(driveBrowser, /聚焦目录/);
+  assert.doesNotMatch(driveBrowser, /<ActionIcon|<Eye|<Download|selection-summary/);
   assert.doesNotMatch(sidePanel, /section="run"/);
   assert.doesNotMatch(sidePanel, /section="skills"/);
   assert.doesNotMatch(sidePanel, /section="mcp"/);
