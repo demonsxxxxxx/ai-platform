@@ -18,6 +18,7 @@ export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
   onActivePanelChange: (panel: FeaturePanel) => void;
   canSend: boolean;
+  unavailableReason?: string;
   isLoading: boolean;
   canStop: boolean;
   canSubmit: boolean;
@@ -52,6 +53,7 @@ export function ChatInputToolbar({
   activePanel,
   onActivePanelChange,
   canSend,
+  unavailableReason,
   isLoading,
   canStop,
   canSubmit,
@@ -179,7 +181,8 @@ export function ChatInputToolbar({
         {!canSend ? (
           <Button type="text" shape="circle" size="large" htmlType="button"
             onClick={(event) => { event.preventDefault(); event.stopPropagation(); onNoPermissionClick(); }}
-            aria-label={t("chat.noPermission")} title={t("chat.noPermission")} icon={<Lock size={18} />}
+            aria-label={unavailableReason ?? t("chat.noPermission")} title={unavailableReason ?? t("chat.noPermission")} icon={<Lock size={18} />}
+            disabled={Boolean(unavailableReason)}
           />
         ) : (
           <ComposerSubmit running={isLoading} canStop={canStop} canSubmit={canSubmit} uploading={hasUploadingAttachment} />

@@ -11,9 +11,11 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.platform.tracing import standard_trace_id
 from app.runs.application.cancellation import (
+    RunCancellationDeliveryDeferred,
     RunCancellationPostProcessor,
     RunCancellationUseCase,
 )
+from app.bootstrap.sandbox_cancel_delivery import build_sandbox_cancel_delivery_service
 from app.runs.api import RunAttemptLifecycleService, progress_run_terminalization
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.infrastructure.postgres import (
@@ -34,10 +36,14 @@ from app.streaming.api import V4PublicationTransportUnavailable, admit_v4_stream
 
 def _warn_cancellation_publication(message: str, run_id: str, error: Exception) -> None:
     transport_error = isinstance(error, V4PublicationTransportUnavailable)
+    safe_delivery_error = isinstance(error, RunCancellationDeliveryDeferred)
     logging.getLogger(__name__).warning(
         message,
-        extra={"run_id": run_id, "error": error.error_code if transport_error else type(error).__name__},
-        exc_info=not transport_error,
+        extra={
+            "run_id": run_id,
+            "error": error.error_code if transport_error or safe_delivery_error else type(error).__name__,
+        },
+        exc_info=not (transport_error or safe_delivery_error),
     )
 
 
@@ -69,6 +75,7 @@ def build_run_cancellation_use_case(
         )
 
     sandbox_cleanup = build_sandbox_runtime_cleanup()
+    cancel_delivery = build_sandbox_cancel_delivery_service()
     persistence = PostgresRunCancellationPersistence(
         attempt_lifecycle=attempt_lifecycle,
         append_event=append_event,
@@ -88,6 +95,7 @@ def build_run_cancellation_use_case(
             load_terminal_event_fact=load_current_terminal_event_fact,
         ),
         progress_terminalization=progress_terminalization,
+        stage_cancel_delivery=cancel_delivery.stage_in_transaction,
         post_processor=RunCancellationPostProcessor(
             queue_cleanup=remove_queued_run,
             sandbox_cleanup=sandbox_cleanup,
@@ -97,5 +105,6 @@ def build_run_cancellation_use_case(
             publish_event=publish_run_event,
             warn=_warn_cancellation_publication,
             handoff_cancelled_attempt=handoff_cancelled_attempt,
+            deliver_cancel=cancel_delivery.deliver_once,
         ),
     )

@@ -37,6 +37,9 @@ HUMAN_APPROVAL_RETIREMENT_BASE_COMMIT = (
 ORIGIN_MAIN_MODEL_GROUPS_COMMIT = (
     "5ca18da3ec298ed5d9bd017ca1f284faa8877cce"
 )
+ORIGIN_MAIN_SCHEMA_COMMIT = "def30a87e87dbd721167250902b295f2ee60a353"
+LIFECYCLE_SCHEMA_COMMIT = "af5d4ca026f6c801cab801b30137345554112ba0"
+CONVERSATION_RECOVERY_SCHEMA_COMMIT = "abe2b7a0323425e4b80ad902e6f1160ca68e0da1"
 
 
 def _schema_source_at_commit(commit: str) -> str:
@@ -128,10 +131,34 @@ def _load_schema_migrations_at_commit(tmp_path: Path, commit: str):
         text=True,
     ).stdout
     schema_source = _schema_source_at_commit(commit)
-    module_path = tmp_path / f"schema_migrations_{commit[:12]}.py"
-    schema_path = tmp_path / f"schema_{commit[:12]}.sql"
+    snapshot_root = tmp_path / f"schema_snapshot_{commit[:12]}"
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    module_path = snapshot_root / "schema_migrations.py"
+    schema_path = snapshot_root / "schema.sql"
     module_path.write_text(module_source, encoding="utf-8")
     schema_path.write_text(schema_source, encoding="utf-8")
+    for source_path, relative_path in (
+        (
+            "app/context/infrastructure/conversation_recovery_schema.sql",
+            "context/infrastructure/conversation_recovery_schema.sql",
+        ),
+        (
+            "app/execution/infrastructure/recovery_operations_schema.sql",
+            "execution/infrastructure/recovery_operations_schema.sql",
+        ),
+    ):
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{source_path}"],
+            cwd=root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if result.returncode == 0:
+            fragment_path = snapshot_root / relative_path
+            fragment_path.parent.mkdir(parents=True, exist_ok=True)
+            fragment_path.write_text(result.stdout, encoding="utf-8")
     module_name = f"exact_base_schema_migrations_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     assert spec is not None and spec.loader is not None
@@ -401,7 +428,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
         )
         assert result == {
             "status": "applied",
-            "version": "2026.10.29.1",
+            "version": schema_migrations.TARGET_SCHEMA_VERSION,
             "checksum_sha256": schema_migrations.schema_checksum(),
         }
         async with factory() as conn:
@@ -502,6 +529,464 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
                 "checksum_sha256": schema_migrations.schema_checksum(),
             },
         ]
+    finally:
+        sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_name", "base_commit", "base_version"),
+    (
+        ("main", ORIGIN_MAIN_SCHEMA_COMMIT, "2026.10.29.1"),
+        ("lifecycle", LIFECYCLE_SCHEMA_COMMIT, "2026.10.25.11"),
+        ("conversation", CONVERSATION_RECOVERY_SCHEMA_COMMIT, "2026.10.23.1"),
+    ),
+)
+async def test_real_postgres_main_lifecycle_and_conversation_schemas_converge(
+    tmp_path: Path,
+    base_name: str,
+    base_commit: str,
+    base_version: str,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_converge_{base_name}_{uuid.uuid4().hex}"
+    previous = _load_schema_migrations_at_commit(tmp_path, base_commit)
+    admin = await psycopg.AsyncConnection.connect(
+        dsn, autocommit=True, row_factory=dict_row
+    )
+    provider_session_id = "00000000-0000-4000-8000-000000000190"
+    try:
+        assert previous.TARGET_SCHEMA_VERSION == base_version
+        previous_checksum = previous.schema_checksum()
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+
+        base_result = await previous.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert base_result == {
+            "status": "applied",
+            "version": base_version,
+            "checksum_sha256": previous_checksum,
+        }
+
+        await admin.execute(
+            "insert into tenants(id, name) values ('converge-tenant', 'Convergence')"
+        )
+        await admin.execute(
+            "insert into workspaces(id, tenant_id, name) "
+            "values ('converge-workspace', 'converge-tenant', 'Convergence')"
+        )
+        await admin.execute(
+            "insert into users(id, tenant_id, display_name) "
+            "values ('converge-user', 'converge-tenant', 'Convergence')"
+        )
+        await admin.execute(
+            "insert into agents(id, tenant_id, name, agent_type) "
+            "values ('converge-agent', 'converge-tenant', 'Convergence', 'chat')"
+        )
+        await admin.execute(
+            "insert into sessions(id, tenant_id, workspace_id, user_id, agent_id, title) "
+            "values ('converge-session', 'converge-tenant', 'converge-workspace', "
+            "'converge-user', 'converge-agent', 'Convergence')"
+        )
+        await admin.execute(
+            """
+            insert into provider_session_heads(
+                tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                current_epoch_id, next_epoch_number
+            ) values ('converge-tenant', 'converge-workspace', 'converge-user',
+                'converge-session', 'converge-agent', 'claude', null, 2)
+            """
+        )
+        await admin.execute(
+            """
+            insert into provider_session_epochs(
+                id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                epoch_number, provider_session_id, state
+            ) values ('converge-source-epoch', 'converge-tenant', 'converge-workspace',
+                'converge-user', 'converge-session', 'converge-agent', 'claude', 1,
+                %s::uuid, 'ready')
+            """,
+            (provider_session_id,),
+        )
+        await admin.execute(
+            "update provider_session_heads set current_epoch_id = 'converge-source-epoch' "
+            "where tenant_id = 'converge-tenant' and session_id = 'converge-session'"
+        )
+
+        main_history_before: dict[str, dict[str, object]] = {}
+        if base_name == "main":
+            await admin.execute(
+                "insert into model_providers(id, name) "
+                "values ('converge-provider', 'Convergence provider')"
+            )
+            await admin.execute(
+                """
+                insert into provider_session_entries(
+                    id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                    epoch_id, sequence, sdk_entry_uuid, entry_json, entry_canonical_json
+                ) values (
+                    'converge-canonical-entry', 'converge-tenant', 'converge-workspace',
+                    'converge-user', 'converge-session', 'converge-agent', 'claude',
+                    'converge-source-epoch', 1, 'converge-canonical', null,
+                    '{"uuid":"canonical-only","number":0.0}'::json
+                )
+                """
+            )
+            main_history_before = {
+                "provider": await (
+                    await admin.execute(
+                        "select id, name from model_providers where id = 'converge-provider'"
+                    )
+                ).fetchone(),
+                "canonical_entry": await (
+                    await admin.execute(
+                        "select entry_json is null as entry_json_null, "
+                        "entry_canonical_json::text as canonical_json "
+                        "from provider_session_entries where id = 'converge-canonical-entry'"
+                    )
+                ).fetchone(),
+            }
+
+        retired_columns: tuple[str, ...] = ()
+        lifecycle_rows_before: dict[str, dict[str, object]] = {}
+        if base_name == "lifecycle":
+            await admin.execute(
+                """
+                insert into runs(
+                    id, tenant_id, workspace_id, session_id, user_id, agent_id,
+                    execution_kind, status
+                ) values (
+                    'converge-run', 'converge-tenant', 'converge-workspace',
+                    'converge-session', 'converge-user', 'converge-agent',
+                    'harness_chat', 'queued'
+                )
+                """
+            )
+            spec = {
+                "schema_version": "ai-platform.execution-spec.v2",
+                "tenant_id": "converge-tenant",
+                "run_id": "converge-run",
+                "workspace_id": "converge-workspace",
+                "user_id": "converge-user",
+                "session_id": "converge-session",
+                "agent_id": "converge-agent",
+                "execution_kind": "harness_chat",
+            }
+            canonical_spec = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+            spec_sha256 = hashlib.sha256(canonical_spec.encode("utf-8")).hexdigest()
+            await admin.execute(
+                """
+                insert into run_attempts(
+                    id, tenant_id, run_id, ordinal, status, owner_kind, owner_id,
+                    owner_generation, queue_attempt_id, execution_spec_schema_version,
+                    execution_spec_json, execution_spec_canonical_json,
+                    execution_spec_sha256
+                ) values (
+                    'converge-attempt', 'converge-tenant', 'converge-run', 1,
+                    'created', 'queue_worker', 'converge-worker', 1,
+                    'converge-queue-attempt', 'ai-platform.execution-spec.v2',
+                    %s::jsonb, %s, %s
+                )
+                """,
+                (json.dumps(spec), canonical_spec, spec_sha256),
+            )
+            await admin.execute(
+                """
+                update run_attempts
+                set status = 'queued', owner_generation = 2,
+                    queue_message_id = 'converge-queue-message'
+                where tenant_id = 'converge-tenant' and id = 'converge-attempt'
+                """
+            )
+            await admin.execute(
+                """
+                update run_attempts
+                set status = 'claimed', owner_generation = 3
+                where tenant_id = 'converge-tenant' and id = 'converge-attempt'
+                """
+            )
+            await admin.execute(
+                """
+                update run_attempts
+                set status = 'running', owner_generation = 4,
+                    started_at = clock_timestamp()
+                where tenant_id = 'converge-tenant' and id = 'converge-attempt'
+                """
+            )
+            await admin.execute(
+                """
+                update run_attempts
+                set status = 'succeeded', owner_generation = 5,
+                    finished_at = clock_timestamp()
+                where tenant_id = 'converge-tenant' and id = 'converge-attempt'
+                """
+            )
+            await admin.execute(
+                """
+                insert into run_attempt_settlements(
+                    tenant_id, run_id, attempt_id, mapping_state, dispatch_state,
+                    attempt_status_snapshot, attempt_owner_generation_snapshot,
+                    run_status_snapshot, settlement_phase, result_status, result_json,
+                    result_sha256, settled_at
+                ) values (
+                    'converge-tenant', 'converge-run', 'converge-attempt', 'mapped',
+                    'accepted', 'succeeded', 5, 'succeeded', 'settled', 'succeeded',
+                    '{}'::jsonb, %s, clock_timestamp()
+                )
+                """,
+                (hashlib.sha256(b"{}").hexdigest(),),
+            )
+            await admin.execute(
+                """
+                insert into run_delivery_intents(
+                    tenant_id, run_id, session_id, source, queue_payload_json,
+                    queue_message_id, payload_sha256, state, delivered_at
+                ) values (
+                    'converge-tenant', 'converge-run', 'converge-session', 'chat',
+                    '{"preserve":true}', repeat('a', 64), repeat('b', 64),
+                    'delivered', clock_timestamp()
+                )
+                """
+            )
+            await admin.execute(
+                """
+                insert into artifacts(
+                    id, tenant_id, run_id, artifact_type, label, content_type,
+                    storage_key, size_bytes
+                ) values (
+                    'converge-artifact', 'converge-tenant', 'converge-run',
+                    'text', 'Convergence artifact', 'text/plain', 'converge/artifact', 1
+                )
+                """
+            )
+            await admin.execute(
+                """
+                insert into object_deletion_outbox(
+                    id, tenant_id, artifact_id, storage_key, state
+                ) values (
+                    'converge-outbox', 'converge-tenant', 'converge-artifact',
+                    'converge/artifact', 'pending'
+                )
+                """
+            )
+            lifecycle_rows_before = {
+                "settlement": await (
+                    await admin.execute(
+                        "select mapping_state, settlement_phase, result_json, result_sha256 "
+                        "from run_attempt_settlements where run_id = 'converge-run'"
+                    )
+                ).fetchone(),
+                "delivery": await (
+                    await admin.execute(
+                        "select source, queue_payload_json, queue_message_id, payload_sha256, "
+                        "state from run_delivery_intents where run_id = 'converge-run'"
+                    )
+                ).fetchone(),
+                "outbox": await (
+                    await admin.execute(
+                        "select target_type, artifact_id, storage_key, state "
+                        "from object_deletion_outbox where id = 'converge-outbox'"
+                    )
+                ).fetchone(),
+            }
+            retired_columns = tuple(previous.LEGACY_ATTEMPT_SETTLEMENT_COLUMNS)
+            for index_name in previous.LEGACY_ATTEMPT_SETTLEMENT_INDEXES:
+                await admin.execute(
+                    sql.SQL("drop index if exists {}").format(sql.Identifier(index_name))
+                )
+            await admin.execute(
+                sql.SQL("alter table sandbox_leases drop constraint if exists {}").format(
+                    sql.Identifier(previous.LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT[1])
+                )
+            )
+            for column_name in retired_columns:
+                await admin.execute(
+                    sql.SQL("alter table sandbox_leases drop column {}").format(
+                        sql.Identifier(column_name)
+                    )
+                )
+            await admin.execute(
+                "delete from schema_index_migrations where index_name = any(%s::text[])",
+                (list(previous.LEGACY_ATTEMPT_SETTLEMENT_INDEXES),),
+            )
+            await admin.execute(
+                """
+                update run_attempt_settlement_retirement
+                set state = 'retired', retirement_version = %s,
+                    minimum_compatible_version = 'test-min-compatible',
+                    operator_declaration = '{"fixture":true}'::jsonb,
+                    retired_at = clock_timestamp(), updated_at = clock_timestamp()
+                where singleton = true
+                """,
+                (previous.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,),
+            )
+            lifecycle_rows_before["retirement"] = await (
+                await admin.execute(
+                    "select state, retirement_version, minimum_compatible_version, "
+                    "operator_declaration, retired_at, updated_at "
+                    "from run_attempt_settlement_retirement "
+                    "where singleton = true"
+                )
+            ).fetchone()
+            async with factory() as conn:
+                retired_status = await previous.schema_status(conn)
+                assert retired_status["ready"] is True
+                assert retired_status["retirement_state"] == "retired"
+                assert retired_status["retirement_layout_current"] is True
+
+        upgraded = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert upgraded == {
+            "status": "applied",
+            "version": schema_migrations.TARGET_SCHEMA_VERSION,
+            "checksum_sha256": schema_migrations.schema_checksum(),
+        }
+
+        old_ledger = await (
+            await admin.execute(
+                "select version, checksum_sha256, state from schema_migrations where version = %s",
+                (base_version,),
+            )
+        ).fetchone()
+        assert old_ledger == {
+            "version": base_version,
+            "checksum_sha256": previous_checksum,
+            "state": "applied",
+        }
+        source_epoch = await (
+            await admin.execute(
+                """
+                select provider_session_id::text as provider_session_id,
+                       source_epoch_id, source_final_sequence,
+                       coverage_schema_version, recovery_json
+                from provider_session_epochs where id = 'converge-source-epoch'
+                """
+            )
+        ).fetchone()
+        assert source_epoch == {
+            "provider_session_id": provider_session_id,
+            "source_epoch_id": None,
+            "source_final_sequence": None,
+            "coverage_schema_version": "ai-platform.conversation-authority.v2",
+            "recovery_json": None,
+        }
+        if main_history_before:
+            main_history_after = {
+                "provider": await (
+                    await admin.execute(
+                        "select id, name from model_providers where id = 'converge-provider'"
+                    )
+                ).fetchone(),
+                "canonical_entry": await (
+                    await admin.execute(
+                        "select entry_json is null as entry_json_null, "
+                        "entry_canonical_json::text as canonical_json "
+                        "from provider_session_entries where id = 'converge-canonical-entry'"
+                    )
+                ).fetchone(),
+            }
+            assert main_history_after == main_history_before
+
+        await admin.execute(
+            """
+            insert into provider_session_epochs(
+                id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+                epoch_number, provider_session_id, state, source_epoch_id,
+                source_final_sequence, coverage_schema_version, recovery_json
+            ) values (
+                'converge-target-epoch', 'converge-tenant', 'converge-workspace',
+                'converge-user', 'converge-session', 'converge-agent', 'claude', 2,
+                %s::uuid, 'ready', 'converge-source-epoch', 0,
+                'ai-platform.conversation-authority.v3', '{"covered":true}'::jsonb
+            )
+            """,
+            (provider_session_id,),
+        )
+        await admin.execute(
+            """
+            update provider_session_heads
+            set current_epoch_id = 'converge-target-epoch', recovery_json = '{"recovered":true}'::jsonb
+            where tenant_id = 'converge-tenant' and session_id = 'converge-session'
+            """
+        )
+        duplicate_provider_uuid = await (
+            await admin.execute(
+                """
+                select count(*) as count from provider_session_epochs
+                where provider_session_id = %s::uuid
+                """,
+                (provider_session_id,),
+            )
+        ).fetchone()
+        assert duplicate_provider_uuid == {"count": 2}
+
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+            assert status["ready"] is True
+            assert status["target_version"] == schema_migrations.TARGET_SCHEMA_VERSION
+            if base_name == "lifecycle":
+                assert status["retirement_state"] == "retired"
+                assert status["retirement_layout_current"] is True
+
+        if lifecycle_rows_before:
+            lifecycle_rows_after = {
+                "settlement": await (
+                    await admin.execute(
+                        "select mapping_state, settlement_phase, result_json, result_sha256 "
+                        "from run_attempt_settlements where run_id = 'converge-run'"
+                    )
+                ).fetchone(),
+                "delivery": await (
+                    await admin.execute(
+                        "select source, queue_payload_json, queue_message_id, payload_sha256, "
+                        "state from run_delivery_intents where run_id = 'converge-run'"
+                    )
+                ).fetchone(),
+                "outbox": await (
+                    await admin.execute(
+                        "select target_type, artifact_id, storage_key, state "
+                        "from object_deletion_outbox where id = 'converge-outbox'"
+                    )
+                ).fetchone(),
+                "retirement": await (
+                    await admin.execute(
+                        "select state, retirement_version, minimum_compatible_version, "
+                        "operator_declaration, retired_at, updated_at "
+                        "from run_attempt_settlement_retirement "
+                        "where singleton = true"
+                    )
+                ).fetchone(),
+            }
+            assert lifecycle_rows_after == lifecycle_rows_before
+
+        if retired_columns:
+            remaining_legacy_columns = await (
+                await admin.execute(
+                    """
+                    select column_name from information_schema.columns
+                    where table_schema = %s and table_name = 'sandbox_leases'
+                      and column_name = any(%s::text[])
+                    """,
+                    (schema_name, list(retired_columns)),
+                )
+            ).fetchall()
+            assert remaining_legacy_columns == []
+
+        repeated = await schema_migrations.apply_migrations(
+            transaction_factory=factory,
+            index_connection_factory=index_factory,
+        )
+        assert repeated["status"] == "current"
+        assert repeated["version"] == schema_migrations.TARGET_SCHEMA_VERSION
     finally:
         sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
@@ -1780,6 +2265,11 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
         alter table run_attempts drop constraint chk_run_attempts_spec_sha256;
         alter table run_attempts add constraint chk_run_attempts_spec_sha256
           check (execution_spec_sha256 ~ '^[0-9a-f]{64}$')
+        """,
+        """
+        alter table sandbox_leases drop constraint chk_sandbox_leases_cancel_delivery_claim;
+        alter table sandbox_leases add constraint chk_sandbox_leases_cancel_delivery_claim
+          check (true)
         """,
     ],
 )

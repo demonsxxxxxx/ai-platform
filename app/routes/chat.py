@@ -1289,9 +1289,7 @@ async def chat_stream(
     selected_skill_for_execution = (
         request.selected_skill if skill_selector_allowed else None
     )
-    selected_mcp_tool_ids_for_execution = (
-        request.selected_mcp_tool_ids if allowed else None
-    )
+    selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids
     if (
         selected_skill_for_execution is not None
         and selected_skill_for_execution.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID

@@ -120,6 +120,10 @@ class TrustedCallbackTarget:
     host: str
 
     @property
+    def recovery_operations_url(self) -> str:
+        return self.base_url + "/api/ai/runtime/callbacks/recovery-operation"
+
+    @property
     def mcp_credential_url(self) -> str:
         return f"{self.base_url}{EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH}"
 
@@ -193,6 +197,18 @@ def build_trusted_callback_target(
     )
 
 
+class RecoveryOperationCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    callback_token_id: str = Field(min_length=1, max_length=128)
+    invocation_id: str = Field(min_length=1, max_length=512)
+    tool_identity: str = Field(min_length=1, max_length=512)
+    operation: Literal["query", "started", "completed", "failed", "close"]
+    reason: Literal["cancelled", "timeout", "denied", "query_failed"] | None = None
+
+
 class McpCredentialCallbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -220,6 +236,7 @@ class ProviderSessionCallbackRequest(BaseModel):
     subpath: str | None = Field(default=None, max_length=512)
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
     expected_sequence: int | None = Field(default=None, ge=1)
+    provider_epoch_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("run_id", "attempt_id", "callback_token_id")
     @classmethod
@@ -305,6 +322,9 @@ class SandboxRuntimeRequest(BaseModel):
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
     provider_session_resume_required: bool = False
+    provider_epoch_id: str | None = None
+    workspace_restore_receipt: dict[str, Any] | None = None
+    recovery_tool_gate: dict[str, Any] | None = None
     governed_permission_wait: bool = False
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)
 
@@ -612,6 +632,7 @@ class ExecutorTerminalResult(BaseModel):
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
     provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
+    sdk_settlement: dict[str, Any] | None = None
 
     @field_validator("answer_receipt", mode="before")
     @classmethod
@@ -698,6 +719,7 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "sdk_used",
         "sdk_received_structured_terminal",
         "sdk_terminal_reason",
+        "sdk_settlement",
         "executor_mode",
         "used_skills",
         "used_skills_source",

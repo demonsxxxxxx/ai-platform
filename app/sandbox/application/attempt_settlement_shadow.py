@@ -7,9 +7,10 @@ from typing import Any
 
 from app.sandbox.domain.lease_errors import SandboxExecutorTerminalConflictError
 from app.runs.api import AttemptSettlementProjectionConflict
+from app.sandbox.application.checkpoint_settlement import SandboxCheckpointSettlementMixin
 
 
-class AttemptSettlementShadowLeaseRepository:
+class AttemptSettlementShadowLeaseRepository(SandboxCheckpointSettlementMixin):
     """Wrap Sandbox persistence while preserving the shared source lock order."""
 
     def __init__(

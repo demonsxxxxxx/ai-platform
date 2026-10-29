@@ -52,6 +52,17 @@ async def coverage_db():
                 insert into runs values('prior', 'tenant', 'workspace', 'user', 'session', 'agent', 1, 'cancelled', null);
                 insert into messages values('tenant', 'session', 'prior', 'user');
                 insert into provider_session_heads values('tenant', 'workspace', 'user', 'session', 'agent', 'claude', null, 'current');
+                alter table provider_session_heads add column recovery_json jsonb;
+                alter table provider_session_epochs add column coverage_schema_version text;
+                alter table provider_session_epochs add column recovery_json jsonb;
+                alter table provider_session_epochs add column next_sequence bigint;
+                alter table run_attempts add column id text;
+                alter table run_attempts add column execution_spec_json jsonb;
+                alter table run_attempts add column execution_spec_sha256 text;
+                alter table run_attempts add column owner_generation bigint;
+                alter table messages add column id text;
+                create table provider_turn_receipts(tenant_id text, run_id text, epoch_id text,
+                    attempt_id text, start_sequence bigint, user_message_id text, state text);
             """)
             yield conn
         finally:

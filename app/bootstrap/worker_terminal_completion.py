@@ -17,6 +17,7 @@ from app.runs.api import WorkerResultCommitCommand, WorkerTerminalCompletionServ
 def build_worker_terminal_completion_service(
     prepared: Any, *, transaction_factory: Any, capabilities: Any,
     reconciliation: Any, release_runtime_lease: Any, publish_run_event: Any,
+    outer_terminal_transaction: bool = False,
 ) -> WorkerTerminalCompletionService:
     payload = prepared.payload
     attempt_id = prepared.attempt_authority.attempt_id
@@ -68,6 +69,9 @@ def build_worker_terminal_completion_service(
             publish_run_event, capabilities, command, terminal,
         )
 
+    stage = ((reconciliation.lease_row.get("lease_payload_json") or {}).get("terminal_reconciliation")
+             if reconciliation is not None else None)
+    stopped_checkpoint = isinstance(stage, dict) and stage.get("continuation") is not None
     return WorkerTerminalCompletionService(
         payload=payload, attempt_id=attempt_id,
         attempt_authority=prepared.attempt_authority, capabilities=capabilities,
@@ -77,4 +81,6 @@ def build_worker_terminal_completion_service(
         normalize_result=normalize_result, build_command=build_command,
         exception_failure=executor_exception_failure, cancelled_error=WorkerRunCancelled,
         publish=publish, publish_result=publish_result,
+        outer_terminal_transaction=outer_terminal_transaction,
+        terminal_fallback_allowed=not stopped_checkpoint,
     )

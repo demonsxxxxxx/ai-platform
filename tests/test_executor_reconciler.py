@@ -23,7 +23,8 @@ from app.executor_reconciler import (
     reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
     run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
-from app.executors.base import ExecutorResult
+from app.executors.base import ExecutorResult, RunPayload
+from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
 from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
@@ -203,6 +204,50 @@ def _lease_row() -> dict[str, object]:
 
 
 
+def _generation_bound_lease_row(*, legacy_snapshot=False):
+    row = _lease_row()
+    payload = RunPayload(
+        **{key: row[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        )},
+        agent_id="agent-a", skill_id=None, file_ids=[], input={}, owner_generation=4,
+        execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2",
+    )
+    snapshot = sandbox_reconciliation_payload(payload)
+    if legacy_snapshot:
+        snapshot["execution_payload"].pop("owner_generation", None)
+    row["lease_payload_json"] = {"attempt_id": payload.attempt_id, "owner_generation": 4}
+    row["executor_reconciliation_context_json"] = {
+        "adapter_name": "claude-agent-worker", "adapter_context": {}, "run_payload": snapshot,
+    }
+    return row
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legacy_snapshot):
+    row = _generation_bound_lease_row(legacy_snapshot=legacy_snapshot)
+    if not legacy_snapshot:
+        assert row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
+    _, payload = _context_payload(row)
+    assert payload.owner_generation == 4
+    assert _reconciliation_request(row, payload).owner_generation == 4
+
+
+@pytest.mark.parametrize("defect", ["snapshot_generation", "lease_attempt", "string_generation", "bool_generation", "zero_generation"])
+def test_reconciler_rejects_invalid_or_conflicting_lease_generation(defect):
+    row = _generation_bound_lease_row()
+    if defect == "snapshot_generation":
+        row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
+    elif defect == "lease_attempt":
+        row["lease_payload_json"]["attempt_id"] = "other-attempt"
+    else:
+        row["lease_payload_json"]["owner_generation"] = {
+            "string_generation": "4", "bool_generation": True, "zero_generation": 0,
+        }[defect]
+    with pytest.raises(ReconciliationAuthorityError, match="executor_reconciliation_owner_generation_mismatch"):
+        _context_payload(row)
+
+
 def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
     subject = {
         "identity": "Skill",
@@ -221,6 +266,7 @@ def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
+        owner_generation=1,
         agent_id="agent-a",
         skill_id="qa-file-reviewer",
         model_value="model-a",
@@ -837,6 +883,126 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
     assert "final.txt" not in repr([vars(record) for record in records])
     assert "workspace collection failed" not in repr([vars(record) for record in records])
     assert "private" not in repr([vars(record) for record in records])
+
+
+@pytest.mark.asyncio
+async def test_saved_continuation_transfers_attempt_claim_without_provider_io(monkeypatch):
+    from app import executor_reconciler
+
+    scope = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+    }
+    continuation = {
+        **{key: scope[key] for key in ("tenant_id", "run_id", "attempt_id")},
+        "final_sequence": 2,
+        "workspace_receipt": {"state": "saved"},
+        "stop_evidence": "provider_stopped",
+    }
+    stage = {
+        "schema_version": "ai-platform.terminal-reconciliation.v1",
+        "scope": scope,
+        "owner_generation": 7,
+        "container_id": "container-a",
+        "artifact_workspace": None,
+        "terminal_result": {"run_id": "run-a", "status": "failed"},
+        "continuation": continuation,
+    }
+    payload = SimpleNamespace(
+        **scope,
+        owner_generation=7,
+        model_value="model-a",
+        model_id=None,
+        trace_id="trace-a",
+        agent_id="agent-a",
+        skill_id=None,
+        input={},
+    )
+    request = SimpleNamespace(**scope, owner_generation=7)
+    lease_row = {
+        **scope,
+        "id": "lease-a",
+        "provider": "fake",
+        "settlement_storage_version": "attempt.v1",
+        "runtime_container_id": "container-a",
+        "lease_payload_json": {
+            "attempt_id": "attempt-a",
+            "owner_generation": 7,
+            "terminal_reconciliation": stage,
+        },
+    }
+    calls = []
+
+    class Lease:
+        container_id = "container-a"
+
+        def model_copy(self, *, update):
+            assert update == {"workspace_host_path": "/workspace"}
+            return self
+
+    class Provider:
+        async def collect_workspace(self, *_args, **_kwargs):
+            pytest.fail("a saved checkpoint must not recollect workspace data")
+
+        async def stop(self, *_args, **_kwargs):
+            pytest.fail("a saved checkpoint must not reconnect to its producer")
+
+    class Adapter:
+        def reconcile_sandbox_terminal(self, **_kwargs):
+            raise AssertionError("conversion is dispatched through the storage bridge")
+
+    class Registry:
+        def get(self, name):
+            assert name == "claude-agent-worker"
+            return Adapter()
+
+    async def record(_lease_row, **kwargs):
+        calls.append((kwargs["claim_token"], kwargs["stage"]))
+
+    async def bridge(operation, **kwargs):
+        assert operation.__name__ == "reconcile_sandbox_terminal"
+        assert kwargs["terminal_result"] == stage["terminal_result"]
+        return _result()
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_context_and_payload",
+        lambda _row: (
+            {"adapter_name": "claude-agent-worker", "adapter_context": {}},
+            stage["terminal_result"],
+            payload,
+        ),
+    )
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: request)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "SandboxWorkspaceManager",
+        lambda: SimpleNamespace(
+            prepare=lambda _request: SimpleNamespace(workspace_host_path="/workspace")
+        ),
+    )
+    lease = Lease()
+    provider = Provider()
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_runtime_lease", lambda *_args, **_kwargs: lease)
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: provider)
+    monkeypatch.setattr(executor_reconciler, "_record_reconciliation_stage", record)
+    monkeypatch.setattr(executor_reconciler, "run_storage_io", bridge)
+
+    result, actual_provider, actual_lease = await executor_reconciler._collect_workspace_and_convert_result(
+        lease_row,
+        registry=Registry(),
+        claim_token="claim-b",
+        lease_port=sandbox_lease_repository,
+    )
+
+    assert calls == [("claim-b", stage)]
+    assert result.executor_payload["continuation_settlement"] == continuation
+    assert actual_provider is provider
+    assert actual_lease is lease
 
 
 def test_reconciler_quarantines_invalid_persisted_payload_without_run_authority(monkeypatch):
@@ -1844,6 +2010,80 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
     assert calls[3][2] == 2
     assert calls[4] == ("cleanup_pending", calls[3][1], "lease-a", 3)
     assert all(active is False for active in transaction_active.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_status", ["active", "released"])
+async def test_terminal_run_scanner_transfers_attempt_marker_before_lease_finalize(
+    monkeypatch, lease_status,
+):
+    calls = []
+    row = _lease_row()
+    scope = {key: row[key] for key in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+    )}
+    stage = {
+        "schema_version": "ai-platform.terminal-reconciliation.v1",
+        "scope": scope,
+        "owner_generation": 4,
+        "container_id": "container-a",
+        "terminal_result": {"run_id": "run-a", "status": "failed"},
+        "continuation": {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "stop_evidence": "provider_stopped",
+        },
+    }
+    row.update(
+        settlement_storage_version="attempt.v1",
+        status=lease_status,
+        released_at="2026-10-28T00:00:00Z" if lease_status == "released" else None,
+        runtime_container_id="container-a",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "owner_generation": 4,
+            "terminal_reconciliation": stage,
+        },
+    )
+
+    class LeasePort:
+        async def claim_sandbox_executor_reconciliations(self, _conn, **kwargs):
+            row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+            return [row]
+
+        async def has_sandbox_executor_reconciliation_claim(self, _conn, **kwargs):
+            return kwargs["claim_token"] == row["executor_reconciliation_claim_token"]
+
+        async def record_sandbox_reconciliation_stage(self, _conn, **kwargs):
+            calls.append(("transfer", kwargs["claim_token"], kwargs["stage"]))
+            return True
+
+        async def finalize_stopped_executor_checkpoint(self, _conn, **kwargs):
+            calls.append(("finalize", kwargs["claim_token"], kwargs["expected_stage"]))
+            return True
+
+    port = LeasePort()
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "failed"}
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
+    monkeypatch.setattr(
+        "app.executor_reconciler._collect_workspace_and_convert_result",
+        lambda *_args, **_kwargs: pytest.fail("a terminal Run only needs lease finalization"),
+    )
+
+    assert await reconcile_pending_executor_terminals_once(
+        lease_port=port,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        lifecycle=_TEST_RUN_LIFECYCLE,
+    ) == 1
+
+    assert len(calls) == 2
+    assert calls[0] == ("transfer", row["executor_reconciliation_claim_token"], stage)
+    assert calls[1] == ("finalize", row["executor_reconciliation_claim_token"], stage)
 
 
 @pytest.mark.asyncio
@@ -3181,7 +3421,6 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     )
 
     assert calls == [
-        ("terminalize", "lease-a"),
         (
             "quarantine",
             {

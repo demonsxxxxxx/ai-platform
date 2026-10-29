@@ -45,6 +45,9 @@ async def test_lost_terminal_cas_rolls_back_all_worker_result_facts(target, serv
     async def record_assistant(conn, *args, **kwargs):
         conn.append("assistant")
 
+    async def settle_continuation(conn, *, settlement, **kwargs):
+        conn.append(f"continuation_{settlement['sdk_settlement']['status']}")
+
     async def record_user_event(conn, **kwargs):
         conn.append(kwargs["event_type"])
 
@@ -82,14 +85,18 @@ async def test_lost_terminal_cas_rolls_back_all_worker_result_facts(target, serv
         append_hidden_event=noop, persist_failure_event=noop,
         public_failure_message=lambda result: "safe failure",
         prefers_cancelled=lambda result: True,
+        settle_continuation=settle_continuation if target == "succeeded" else None,
+        release_continuation_lease=noop,
     )
     command = WorkerResultCommitCommand(
         payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
         result=SimpleNamespace(
             status="succeeded" if target == "succeeded" else "failed",
-            artifacts=[], executor_payload={}, result={},
+            artifacts=[{"id": "artifact"}], executor_payload={
+                "continuation_settlement": {"sdk_settlement": {}}
+            } if target == "succeeded" else {}, result={},
         ),
-        result_payload={"message": "safe"}, artifact_records=[],
+        result_payload={"message": "safe"}, artifact_records=[{"id": "artifact"}],
         skill_snapshot={"used_skills": []}, terminal_event_kwargs={},
         attempt_id="attempt", trace_id="trace",
     )
@@ -101,7 +108,7 @@ async def test_lost_terminal_cas_rolls_back_all_worker_result_facts(target, serv
     assert outcome.publish_run_event is True
     expected_writes = ["locked_run", "artifacts", "skills"]
     if target == "succeeded":
-        expected_writes += ["assistant", "assistant_message_created"]
+        expected_writes += ["assistant", "continuation_succeeded", "assistant_message_created"]
     expected_writes += ["cas_failed"]
     assert transactions == [("rollback", expected_writes)] + (
         [("commit", ["classified"])] if target == "succeeded" else []
@@ -152,6 +159,154 @@ async def test_success_preserves_empty_terminal_anchor_without_inventing_respons
     outcome = await service.commit(command, attempt_authority=Attempt(), capabilities=object(), release_runtime_lease=noop)
     assert outcome.status == "succeeded"
     assert writes == ["assistant_anchor"] + (["assistant_message_created"] if ready else []) + ["completed", "run_succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_locked_cancel_settles_late_sdk_success_without_answer_coverage():
+    transactions = []
+    releases = []
+    settlements = []
+    cancellation_results = []
+    materialized_receipts = []
+
+    @asynccontextmanager
+    async def transaction():
+        writes = []
+        try:
+            yield writes
+        except BaseException:
+            transactions.append(("rollback", writes.copy()))
+            raise
+        else:
+            transactions.append(("commit", writes.copy()))
+
+    async def lock_run(conn, **_kwargs):
+        conn.append("locked_run")
+        return {"status": "running"}
+
+    answer_receipt = {"schema_version": "ai-platform.assistant-answer-receipt.v1"}
+
+    async def materialize_answer(_capabilities, _conn, **kwargs):
+        materialized_receipts.append(kwargs["answer_receipt"])
+        return SimpleNamespace(
+            result=kwargs["result"],
+            result_payload={**kwargs["result_payload"], "answer_receipt": answer_receipt},
+            artifact_records=kwargs["artifact_records"],
+            assistant_message_for_persistence="SDK answer must not be persisted",
+            assistant_message_metadata={"answer_receipt": answer_receipt},
+        )
+
+    async def persist_artifacts(conn, *_args, **_kwargs):
+        conn.append("artifacts")
+
+    async def persist_skills(conn, *_args, **_kwargs):
+        conn.append("skills")
+
+    async def persist_assistant(*_args, **_kwargs):
+        pytest.fail("cancelled business result must not persist an assistant coverage anchor")
+
+    async def append_user_event(*_args, **_kwargs):
+        pytest.fail("cancelled business result must not publish an assistant success event")
+
+    async def settle(conn, *, settlement, **_kwargs):
+        settlements.append(settlement)
+        conn.append("context_cancelled")
+
+    async def release_continuation(conn, *, reason, **_kwargs):
+        releases.append(("continuation", reason))
+        conn.append("continuation_lease_released")
+
+    async def release_runtime(conn, *, reason):
+        releases.append(("runtime", reason))
+        conn.append("runtime_lease_released")
+
+    async def claim_current(_conn, **_kwargs):
+        return True
+
+    class Attempt:
+        async def is_cancel_requested(self, _conn):
+            return True
+
+        async def complete(self, *_args, **_kwargs):
+            pytest.fail("a late SDK success must not use the Runs success CAS after cancellation")
+
+        async def cancel(self, conn, *, result_json, **_kwargs):
+            cancellation_results.append(result_json)
+            conn.append("cancel_cas")
+            return True
+
+    original_settlement = {
+        "stop_evidence": "provider_stopped",
+        "workspace_receipt": {"state": "saved", "version_id": "version-a"},
+        "sdk_settlement": {
+            "status": "completed",
+            "terminal_reason": "completed",
+            "input_accepted": True,
+            "mirror_complete": True,
+            "received_result": True,
+            "ack_unknown": False,
+        },
+    }
+    service = WorkerResultCommitService(
+        transaction_factory=transaction,
+        lock_run=lock_run,
+        reconciliation_claim_current=claim_current,
+        materialize_answer=materialize_answer,
+        persist_artifacts=persist_artifacts,
+        persist_skill_snapshots=persist_skills,
+        persist_assistant=persist_assistant,
+        append_user_event=append_user_event,
+        append_hidden_event=append_user_event,
+        persist_failure_event=append_user_event,
+        public_failure_message=lambda _result: "safe failure",
+        prefers_cancelled=lambda _result: False,
+        settle_continuation=settle,
+        release_continuation_lease=release_continuation,
+    )
+    command = WorkerResultCommitCommand(
+        payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+        result=SimpleNamespace(
+            status="succeeded",
+            artifacts=[{"id": "artifact"}],
+            executor_payload={
+                "runtime_terminal_status": "completed",
+                "answer_receipt": answer_receipt,
+                "continuation_settlement": original_settlement,
+            },
+            result={"message": "SDK answer must not become the Run result"},
+        ),
+        result_payload={"message": "SDK answer must not become the Run result"},
+        artifact_records=[{"id": "artifact"}],
+        skill_snapshot={"used_skills": []},
+        terminal_event_kwargs={},
+        attempt_id="attempt",
+        trace_id="trace",
+        reconciliation_lease_id="lease",
+        reconciliation_claim_token="claim",
+    )
+
+    outcome = await service.commit(
+        command,
+        attempt_authority=Attempt(),
+        capabilities=object(),
+        release_runtime_lease=release_runtime,
+    )
+
+    assert outcome.status == "cancelled"
+    assert command.result.status == "succeeded"
+    assert materialized_receipts == [answer_receipt]
+    assert command.result.executor_payload["answer_receipt"] == answer_receipt
+    assert command.result.executor_payload["continuation_settlement"] == original_settlement
+    assert settlements == [{
+        **original_settlement,
+        "sdk_settlement": {**original_settlement["sdk_settlement"], "status": "cancelled"},
+    }]
+    assert cancellation_results == [{"message": "任务已取消"}]
+    assert transactions == [("commit", [
+        "locked_run", "context_cancelled", "artifacts", "skills", "cancel_cas",
+        "continuation_lease_released", "runtime_lease_released",
+    ])]
+    assert releases == [("continuation", "run_cancelled"), ("runtime", "run_cancelled")]
 
 
 @pytest.mark.asyncio
@@ -305,10 +460,110 @@ async def test_cancel_preserves_only_normalized_observations_without_answer_or_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel_requested", [False, True])
+async def test_continuation_settlement_rolls_back_when_cancel_fallback_cas_loses():
+    transactions = []
+
+    @asynccontextmanager
+    async def transaction():
+        writes = []
+        try:
+            yield writes
+        except BaseException:
+            transactions.append(("rollback", writes.copy()))
+            raise
+        else:
+            transactions.append(("commit", writes.copy()))
+
+    async def lock_run(*_args, **_kwargs):
+        return {"status": "running"}
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def persist_artifacts(conn, *_args, **_kwargs):
+        conn.append("artifacts")
+
+    async def persist_skills(conn, *_args, **_kwargs):
+        conn.append("skills")
+
+    async def persist_assistant(conn, *_args, **_kwargs):
+        conn.append("assistant")
+
+    async def append_user_event(conn, **kwargs):
+        conn.append(kwargs["event_type"])
+
+    async def settle(conn, *, settlement, **_kwargs):
+        conn.append(("context", settlement["sdk_settlement"]["status"]))
+
+    class Attempt:
+        async def is_cancel_requested(self, _conn):
+            return False
+
+        async def complete(self, conn, **_kwargs):
+            conn.append("complete_cas")
+            return False
+
+        async def classify_success_commit_block(self, conn):
+            conn.append("classify")
+            return "cancel_requested"
+
+        async def cancel(self, conn, **_kwargs):
+            conn.append("cancel_cas")
+            return False
+
+    service = WorkerResultCommitService(
+        transaction_factory=transaction,
+        lock_run=lock_run,
+        reconciliation_claim_current=noop,
+        materialize_answer=noop,
+        persist_artifacts=persist_artifacts,
+        persist_skill_snapshots=persist_skills,
+        persist_assistant=persist_assistant,
+        append_user_event=append_user_event,
+        append_hidden_event=noop,
+        persist_failure_event=noop,
+        public_failure_message=lambda _result: "safe failure",
+        prefers_cancelled=lambda _result: False,
+        settle_continuation=settle,
+        release_continuation_lease=noop,
+    )
+    command = WorkerResultCommitCommand(
+        payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+        result=SimpleNamespace(
+            status="succeeded",
+            artifacts=[],
+            executor_payload={"continuation_settlement": {"sdk_settlement": {}}},
+            result={},
+        ),
+        result_payload={"message": "safe"},
+        artifact_records=[],
+        skill_snapshot={"used_skills": []},
+        terminal_event_kwargs={},
+        attempt_id="attempt",
+        trace_id="trace",
+    )
+
+    outcome = await service.commit(
+        command,
+        attempt_authority=Attempt(),
+        capabilities=object(),
+        release_runtime_lease=noop,
+    )
+
+    assert outcome.status == "skipped"
+    assert transactions == [
+        ("rollback", [
+            "artifacts", "skills", "assistant", ("context", "succeeded"),
+            "assistant_message_created", "complete_cas",
+        ]),
+        ("rollback", ["classify", ("context", "cancelled"), "cancel_cas"]),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("delta", [-1, 0, 1, 49, 100_000])
 @pytest.mark.parametrize("unit", ["x", "汉\"\\"])
-async def test_receipt_answer_budget_includes_final_cancel_status(cancel_requested, delta, unit):
+async def test_receipt_answer_budget(delta, unit):
     from app.execution.api import materialize_worker_answer, AnswerPersistenceLimits
     from app.executors.base import ExecutorResult
     from app.platform.postgres.limits import (
@@ -323,12 +578,11 @@ async def test_receipt_answer_budget_includes_final_cancel_status(cancel_request
         "latency_ms": 7, "token_counts": {"input": 3, "output": 5, "total": 8},
         "cost": {"estimated_cost_minor": 17},
     }
-    final_fields = {"cancel_status": "cancel_requested_but_completed"} if cancel_requested else {}
-    overhead = json_size_bytes({**payload, **final_fields, "message": "", "answer_receipt": receipt})
+    overhead = json_size_bytes({**payload, "message": "", "answer_receipt": receipt})
     text_budget = RUN_RESULT_MAX_BYTES - overhead + delta
     unit_size = json_size_bytes(unit) - 2
     message = unit * (text_budget // unit_size) + "x" * (text_budget % unit_size)
-    assert json_size_bytes({**payload, **final_fields, "message": message, "answer_receipt": receipt}) == RUN_RESULT_MAX_BYTES + delta
+    assert json_size_bytes({**payload, "message": message, "answer_receipt": receipt}) == RUN_RESULT_MAX_BYTES + delta
     calls = []
     committed = []
     assistant = []
@@ -364,7 +618,7 @@ async def test_receipt_answer_budget_includes_final_cancel_status(cancel_request
 
     class Attempt:
         async def is_cancel_requested(self, conn):
-            return cancel_requested
+            return False
 
         async def complete(self, conn, **kwargs):
             ensure_json_size(kwargs["result_json"], max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
@@ -391,7 +645,6 @@ async def test_receipt_answer_budget_includes_final_cancel_status(cancel_request
     assert outcome.status == "succeeded"
     assert calls == ["verified", "commit"]
     stored = committed[0]
-    assert stored.get("cancel_status") == final_fields.get("cancel_status")
     for key, value in payload.items():
         assert stored[key] == value
     assert stored["answer_receipt"] == receipt
@@ -458,7 +711,7 @@ async def test_receipt_budget_preserves_failure_replay_and_rollback(case):
 
     class Attempt:
         async def is_cancel_requested(self, conn):
-            return True
+            return case != "oversized_metadata"
 
         async def complete(self, conn, **kwargs):
             assert case == "oversized_metadata"
@@ -505,7 +758,6 @@ async def test_receipt_budget_preserves_failure_replay_and_rollback(case):
         if case == "invalid":
             assert outcome.status == "failed"
             assert captured[0]["error_code"] == "assistant_answer_receipt_invalid"
-            assert "cancel_status" not in captured[0]["result_json"]
             assert "answer_receipt" not in captured[0]["result_json"]
             assert writes == ["persist", "persist", "failed"]
         else:

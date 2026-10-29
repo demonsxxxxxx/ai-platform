@@ -120,7 +120,7 @@ def _authority(
 async def test_cancel_request_commits_authoritative_order_and_source(role, expected_source):
     order: list[str] = []
     transaction_factory = _TransactionFactory(order)
-    persistence = _Persistence(order, _authority(role=role))
+    persistence = _Persistence(order, _authority(role=role, attempt_id=None))
     event_writer = _EventWriter(order)
     progressor = _Progressor(order)
     use_case = RunCancellationUseCase(
@@ -144,7 +144,6 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
-        "v4.admission_pending",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
         "v4.run.terminal",
@@ -191,7 +190,7 @@ async def test_cancel_composition_uses_its_independent_terminal_append_once(monk
 
     use_case = RunCancellationUseCase(
         transaction_factory=_TransactionFactory(order),
-        persistence=_Persistence(order, _authority()),
+        persistence=_Persistence(order, _authority(attempt_id=None)),
         event_writer=_EventWriter(order),
         progress_terminalization=progress_terminalization,
     )
@@ -201,11 +200,11 @@ async def test_cancel_composition_uses_its_independent_terminal_append_once(monk
     )
 
     assert result is not None and result.status == "cancelled"
+    assert result.attempt_id is None
     assert order.count("v4.run.terminal") == 1
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
-        "v4.admission_pending",
         "v4.run.cancel_requested",
         "run.progress",
         "provider.release",
@@ -216,7 +215,7 @@ async def test_cancel_composition_uses_its_independent_terminal_append_once(monk
 
 
 @pytest.mark.asyncio
-async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminalization():
+async def test_repeat_active_request_preserves_attempt_settlement_owner():
     order: list[str] = []
     progressor = _Progressor(order)
     use_case = RunCancellationUseCase(
@@ -230,17 +229,159 @@ async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminal
         tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a"
     )
 
-    assert result is not None and result.status == "cancelled"
-    assert progressor.calls == 1
+    assert result is not None and result.status == "cancel_requested"
+    assert progressor.calls == 0
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
         "v4.admission_pending",
-        "v4.run.cancelled",
-        "v4.run.terminal",
         "audit",
         "transaction.commit",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+async def test_cancel_delivery_is_staged_in_the_authorized_transaction_then_delivered_first(role):
+    order: list[str] = []
+    transaction_factory = _TransactionFactory(order)
+    staged = []
+
+    async def stage(conn, **kwargs):
+        assert conn is transaction_factory.conn
+        order.append("cancel_delivery.stage")
+        staged.append(kwargs)
+        return 1
+
+    captured = {}
+    async def deliver_cancel(**kwargs):
+        assert order[-1] == "transaction.commit"
+        order.append("cancel_delivery.deliver")
+        captured["deliver"] = kwargs
+        return 1
+
+    processor, _ = _post_processor(order, deliver_cancel=deliver_cancel)
+    use_case = RunCancellationUseCase(
+        transaction_factory=transaction_factory,
+        persistence=_Persistence(order, _authority(role=role, prior_status="running")),
+        event_writer=_EventWriter(order),
+        progress_terminalization=_Progressor(order),
+        post_processor=processor,
+        stage_cancel_delivery=stage,
+    )
+
+    if role == "owner":
+        cancellation = await use_case.request_owner_cancel(
+            tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+        )
+        user_id = "owner-a"
+    else:
+        cancellation = await use_case.request_admin_cancel(
+            tenant_id="tenant-a", run_id="run-a", admin_user_id="admin-a",
+        )
+        user_id = "admin-a"
+
+    assert cancellation is not None and cancellation.status == "cancel_requested"
+    assert staged == [{
+        "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "attempt-a",
+    }]
+    assert order[-2:] == ["cancel_delivery.stage", "transaction.commit"]
+
+    await use_case.post_cancel(
+        cancellation,
+        tenant_id="tenant-a",
+        user_id=user_id,
+        requested_by_role=role,
+        reason="cancel_requested" if role == "owner" else "admin_cancel_requested",
+        worker_capabilities=object(),
+    )
+
+    assert captured["deliver"] == {"tenant_id": "tenant-a", "run_id": "run-a"}
+    assert order[-4:] == [
+        "transaction.commit", "cancel_delivery.deliver", "admit", "publish",
+    ]
+    assert "queue" not in order and "sandbox" not in order
+
+
+@pytest.mark.asyncio
+async def test_cancel_delivery_stage_failure_rolls_back_without_http_delivery():
+    order: list[str] = []
+    http_calls = []
+
+    async def stage(_conn, **_kwargs):
+        order.append("cancel_delivery.stage")
+        raise RuntimeError("cancel_delivery_stage_failed")
+
+    async def deliver_cancel(**kwargs):
+        http_calls.append(kwargs)
+        return 1
+
+    processor, _captured = _post_processor(order, deliver_cancel=deliver_cancel)
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(prior_status="running")),
+        event_writer=_EventWriter(order),
+        progress_terminalization=_Progressor(order),
+        post_processor=processor,
+        stage_cancel_delivery=stage,
+    )
+
+    with pytest.raises(RuntimeError, match="cancel_delivery_stage_failed"):
+        await use_case.request_owner_cancel(
+            tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+        )
+
+    assert http_calls == []
+    assert order[-2:] == ["cancel_delivery.stage", "transaction.rollback"]
+
+
+@pytest.mark.asyncio
+async def test_immediate_delivery_failure_warns_safely_and_keeps_active_run_pending():
+    order: list[str] = []
+    staged = []
+
+    async def stage(_conn, **kwargs):
+        order.append("cancel_delivery.stage")
+        staged.append(kwargs)
+        return 1
+
+    processor, captured = _post_processor(
+        order,
+        failures={"deliver": RuntimeError("https://private-token.example/secret")},
+    )
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(prior_status="running")),
+        event_writer=_EventWriter(order),
+        progress_terminalization=_Progressor(order),
+        post_processor=processor,
+        stage_cancel_delivery=stage,
+    )
+
+    cancellation = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+    )
+    result = await use_case.post_cancel(
+        cancellation,
+        tenant_id="tenant-a",
+        user_id="owner-a",
+        requested_by_role="owner",
+        reason="cancel_requested",
+        worker_capabilities=object(),
+    )
+
+    assert result == {"run_id": "run-a", "status": "cancel_requested"}
+    assert staged == [{
+        "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "attempt-a",
+    }]
+    assert order[-4:] == [
+        "transaction.commit", "deliver", "admit", "publish",
+    ]
+    warning = captured["warnings"][0]
+    assert warning[0] == "Sandbox cancellation delivery deferred"
+    assert warning[2].error_code == "sandbox_cancel_delivery_failed"
+    assert "private-token" not in str(warning[2])
+    assert "queue" not in order and "sandbox" not in order
 
 
 @pytest.mark.asyncio
@@ -319,7 +460,53 @@ async def test_queued_legacy_cancel_without_attempt_skips_attempt_stream_admissi
     ]
 
 
-def _post_processor(order, *, failures=None):
+@pytest.mark.asyncio
+async def test_never_started_cancel_does_not_stage_immediate_executor_delivery():
+    order: list[str] = []
+    staged = []
+
+    async def stage(_conn, **kwargs):
+        staged.append(kwargs)
+        return 1
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(prior_status="queued", attempt_id=None)),
+        event_writer=_EventWriter(order),
+        progress_terminalization=_Progressor(order),
+        stage_cancel_delivery=stage,
+    )
+
+    result = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+    )
+
+    assert result is not None and result.status == "cancelled"
+    assert staged == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("prior_status", ["running", "queued"])
+async def test_new_cancel_with_admitted_attempt_only_records_intent(role, prior_status):
+    order = []
+    progressor = _Progressor(order)
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(role=role, prior_status=prior_status)),
+        event_writer=_EventWriter(order), progress_terminalization=progressor,
+    )
+    if role == "owner":
+        result = await use_case.request_owner_cancel(tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a")
+    else:
+        result = await use_case.request_admin_cancel(tenant_id="tenant-a", run_id="run-a", admin_user_id="admin-a")
+    assert result.status == "cancel_requested"
+    assert progressor.calls == 0
+    assert "v4.run.cancel_requested" in order and "v4.admission_pending" in order
+    assert "v4.run.terminal" not in order
+
+
+def _post_processor(order, *, failures=None, deliver_cancel=None):
     failures = failures or {}
     captured = {}
 
@@ -339,6 +526,7 @@ def _post_processor(order, *, failures=None):
         sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=operation("sandbox")),
         provider_factory=object(), transaction_factory=object(),
         admit_stream=operation("admit"), publish_event=operation("publish"), warn=warn,
+        deliver_cancel=deliver_cancel or operation("deliver"),
     ), captured
 
 
@@ -364,6 +552,11 @@ async def test_post_cancel_is_after_commit_and_preserves_actor_scope(role):
             tenant_id="tenant-a", run_id="run-a", admin_user_id=actor,
         )
     assert order[-1] == "transaction.commit"
+    cancellation = CancelRequestResult(
+        cancellation.run_id, "cancelled", cancellation.trace_ref,
+        cancellation.active_sandbox_leases, cancellation.initial_terminalization_progress,
+        cancellation.attempt_id,
+    )
     result = await use_case.post_cancel(
         cancellation, tenant_id="tenant-a", user_id=actor,
         requested_by_role=role, reason=reason, worker_capabilities=object(),
@@ -388,7 +581,7 @@ async def test_missing_attempt_skips_publication_and_only_cancelled_status_remov
     assert order == []
     receipt = CancelRequestResult("run-a", status, None, (), None)
     assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
-    assert order == (["queue", "sandbox"] if status == "cancelled" else ["sandbox"])
+    assert order == (["queue", "sandbox"] if status == "cancelled" else [])
 
 
 @pytest.mark.asyncio
@@ -414,8 +607,19 @@ async def test_cancel_handoff_runs_after_successful_resource_release_and_not_aft
         warn=lambda *_args: None,
         handoff_cancelled_attempt=handoff,
     )
-    receipt = CancelRequestResult(
+    active_receipt = CancelRequestResult(
         "run-a", "cancel_requested", None, ({"id": "lease-a"},), None,
+        "attempt-a", 5,
+    )
+    await processor.post_cancel(
+        active_receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == []
+    assert handoffs == []
+
+    receipt = CancelRequestResult(
+        "run-a", "cancelled", None, ({"id": "lease-a"},), None,
         "attempt-a", 5,
     )
     await processor.post_cancel(

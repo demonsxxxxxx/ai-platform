@@ -477,6 +477,8 @@ export function ChatAppContent({
     sessionId,
     currentRunId,
     runInputs,
+    continuation,
+    continuationPending,
     canStopGeneration,
     isLoading,
     isLoadingHistory,
@@ -1394,6 +1396,8 @@ export function ChatAppContent({
               ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
                 ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError
               : !currentModelId ? "暂时无法读取可用模型，请重试。" : undefined}
+            continuation={agentWorkspaceTranscriptReady ? continuation : undefined}
+            continuationPending={agentWorkspaceTranscriptReady && continuationPending}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={

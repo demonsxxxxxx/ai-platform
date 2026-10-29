@@ -3,6 +3,7 @@
 import asyncio
 from typing import Any
 
+from app.bootstrap.sandbox_cancel_delivery import build_sandbox_cancel_delivery_service
 from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.executor_reconciler import run_executor_terminal_reconciler as _run_executor_terminal_reconciler
 from app.sandbox.api import SandboxDispatchIntentService
@@ -13,6 +14,7 @@ async def run_executor_terminal_reconciler(
     stop_event: asyncio.Event,
     **kwargs: Any,
 ) -> None:
+    kwargs.setdefault("cancel_delivery", build_sandbox_cancel_delivery_service())
     kwargs.setdefault("dispatch_intents", SandboxDispatchIntentService(dispatch_postgres))
     await _run_executor_terminal_reconciler(
         stop_event,

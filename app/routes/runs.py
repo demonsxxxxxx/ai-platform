@@ -1951,7 +1951,7 @@ async def submit_run_input(
 ) -> dict[str, str]:
     service = _require_run_inputs_service(request)
     try:
-        async with transaction() as conn:
+        async with service.submission_transaction(transaction, tenant_id=principal.tenant_id, user_id=principal.user_id, run_id=run_id) as conn:
             result = await service.submit(
                 conn,
                 tenant_id=principal.tenant_id,

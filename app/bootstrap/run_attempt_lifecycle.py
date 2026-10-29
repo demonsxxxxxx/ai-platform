@@ -1,5 +1,6 @@
 """Composition root for the Runs attempt lifecycle."""
 
+from app.context.api import advance_unclaimed_terminal_generation
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.bootstrap.attempt_settlement_projection import (
@@ -18,4 +19,5 @@ def build_run_attempt_lifecycle_service() -> RunAttemptLifecycleService:
         settlement_shadow_enabled=lambda: bool(
             get_settings().run_attempt_settlement_shadow_enabled
         ),
+        finalize_terminal_transition=advance_unclaimed_terminal_generation,
     )

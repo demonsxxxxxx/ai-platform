@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 from uuid import uuid4
 
 from app.runs.domain.inputs import (
@@ -144,6 +145,42 @@ class RunInputsPersistence(Protocol):
 class RunInputsService:
     persistence: RunInputsPersistence
     sanitize_text: Callable[[object], str]
+    on_manual_answer: Callable[..., Awaitable[None]] | None = None
+    prepare_verification: Callable[..., Any] | None = None
+
+    @asynccontextmanager
+    async def submission_transaction(self, transaction_factory, *, tenant_id: str, user_id: str, run_id: str):
+        verification = (self.prepare_verification(transaction_factory, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
+                        if self.prepare_verification is not None else nullcontext())
+        async with verification:
+            async with transaction_factory() as conn:
+                yield conn
+
+    async def publish_platform_question(
+        self, conn: Any, *, tenant_id: str, user_id: str, run_id: str,
+        attempt_id: str, question_id: str, questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Host producer only; ordinary SDK question callbacks grant no authority."""
+        run = await self.persistence.get_owner_run(
+            conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True,
+        )
+        if run is None or await self._active_attempt_id(
+            conn, run=run, tenant_id=tenant_id, run_id=run_id,
+        ) != attempt_id:
+            raise RunInputClosed()
+        session = await self.persistence.get_session(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        )
+        if session is None or session.get("state") != "open":
+            raise RunInputClosed()
+        canonical = canonicalize_questions(questions, sanitize_text=self.sanitize_text)
+        row = await self.persistence.publish_question(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+            question_id=normalize_question_id(question_id), questions=canonical,
+        )
+        if self._canonical_stored_questions(row.get("questions")) != canonical:
+            raise RunInputConflict("run_input_question_id_conflict")
+        return self._public_question_row(row)
 
     async def get_projection(
         self,
@@ -352,6 +389,15 @@ class RunInputsService:
             )
             if not changed:
                 raise RunInputConflict("run_input_question_already_answered")
+            if source == "manual" and self.on_manual_answer is not None:
+                try:
+                    await self.on_manual_answer(
+                        conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id,
+                        attempt_id=attempt_id, input_id=input_id, question_id=stored_question_id,
+                        answers=stored_answers, source=source,
+                    )
+                except ValueError as exc:
+                    raise RunInputConflict("run_input_recovery_answer_invalid") from exc
         return {"input_id": input_id, "status": str(row["status"])}
 
     async def callback(

@@ -14,6 +14,20 @@ class SandboxRuntimeLeasePort(Protocol):
 
     async def record_sandbox_executor_accepted(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
+    async def get_sandbox_executor_terminal_handoff(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        attempt_id: str,
+        lease_id: str,
+        owner_generation: int,
+    ) -> dict[str, Any] | None: ...
+
 
 class SandboxExecutorCallbackLeasePort(Protocol):
     """Record a callback against its exact current runtime lease."""
@@ -71,6 +85,38 @@ class SandboxExecutorReconciliationPort(Protocol):
     async def claim_sandbox_executor_reconciliations(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
 
     async def next_sandbox_executor_reconciliation_retry_delay(self, conn: Any) -> float | None: ...
+
+    async def record_sandbox_reconciliation_stage(
+        self, conn: Any, *, lease_id: str, claim_token: str, stage: dict[str, Any]
+    ) -> bool: ...
+
+    async def finalize_stopped_executor_checkpoint(
+        self,
+        conn: Any,
+        *,
+        scope: dict[str, str],
+        lease_id: str,
+        claim_token: str,
+        expected_stage: dict[str, Any],
+    ) -> bool: ...
+
+    async def get_quarantined_checkpoint_for_repair(
+        self, conn: Any, *, scope: dict[str, str], lease_id: str
+    ) -> dict[str, Any] | None: ...
+
+    async def claim_quarantined_checkpoint_for_repair(
+        self,
+        conn: Any,
+        *,
+        scope: dict[str, str],
+        lease_id: str,
+        invocation_id: str,
+        claim_token: str,
+        expected_updated_at: Any,
+        expected_stage: dict[str, Any],
+        writer_generation: int,
+        cancellation_generation: int,
+    ) -> dict[str, Any] | None: ...
 
 
 class SandboxRunLeaseReader(Protocol):

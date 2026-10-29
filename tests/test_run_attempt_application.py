@@ -334,3 +334,87 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
         "writer_fence", "source_locks", ("marker", False), ("get_latest", True),
         "writer_fence", "source_locks", ("marker", False), "terminal_write", "refresh",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["transition", "cas_lost", "idempotent"])
+async def test_terminalization_keeps_settlement_projection_and_context_finalizer_atomic(case):
+    calls = []
+    previous = {
+        "tenant_id": "tenant-a", "run_id": "run-a", "id": "rat-a",
+        "status": "failed" if case == "idempotent" else "running",
+        "owner_generation": 5 if case == "idempotent" else 4,
+        "execution_spec_sha256": "frozen-spec",
+    }
+    terminal = (
+        None if case == "cas_lost" else
+        previous if case == "idempotent" else
+        {**previous, "status": "failed", "owner_generation": 5}
+    )
+
+    class Projection:
+        async def lock_writer_fence(self, _conn):
+            calls.append("writer_fence")
+
+        async def lock_sources_in_transaction(self, _conn, **_kwargs):
+            calls.append("source_locks")
+
+        async def writes_enabled(self, _conn, *, shadow_enabled):
+            calls.append(("marker", shadow_enabled))
+            return True
+
+        async def attempt_writer_active(self, _conn):
+            calls.append("writer_active")
+            return False
+
+        async def refresh_in_transaction(self, _conn, **_kwargs):
+            calls.append("settlement_refresh")
+
+    class Persistence:
+        async def get_run_attempt(self, _conn, **kwargs):
+            assert kwargs == {
+                "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "rat-a",
+                "for_update": True,
+            }
+            calls.append("previous_attempt")
+            return previous
+
+        async def terminalize_run_attempt(self, _conn, **kwargs):
+            assert kwargs == {
+                "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "rat-a",
+                "status": "failed", "terminal_reason": "run_failed",
+            }
+            calls.append("terminal_cas")
+            return terminal
+
+    async def finalize(conn, *, previous, terminal):
+        assert conn is connection
+        calls.append(("context_finalizer", previous, terminal))
+
+    connection = object()
+    service = RunAttemptLifecycleService(
+        persistence=Persistence(),
+        settlement_projection=Projection(),
+        settlement_shadow_enabled=lambda: False,
+        finalize_terminal_transition=finalize,
+    )
+
+    result = await service.terminalize(
+        connection,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="rat-a",
+        status="failed",
+        terminal_reason="run_failed",
+    )
+
+    assert result == terminal
+    expected = [
+        "writer_fence", "source_locks", ("marker", False),
+        "previous_attempt", "terminal_cas",
+    ]
+    if terminal is not None:
+        expected += ["writer_active", "settlement_refresh"]
+    if case == "transition":
+        expected.append(("context_finalizer", previous, terminal))
+    assert calls == expected

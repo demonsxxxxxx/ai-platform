@@ -75,11 +75,13 @@ RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
 N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
 RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION = "2026.10.25.10"
-# Main and lifecycle branches each published a whole-core schema marker. Keep
-# both historical versions intact and apply the merged schema through a new
-# marker so databases at either branch's target execute the combined schema.
+# Main, lifecycle, and conversation branches published distinct schema markers.
+# Keep every historical version intact and apply the combined schema through a
+# new marker so databases at any branch target execute the converged schema.
 MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION = "2026.10.29.2"
 TARGET_SCHEMA_VERSION = MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION
+CONVERSATION_RECOVERY_SCHEMA_VERSION = "2026.10.22.2"
+RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION = "2026.10.23.1"
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
@@ -104,6 +106,8 @@ INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "execution_recovery_operations",
+    "execution_recovery_invocations",
     "users",
     "runs",
     "run_diagnostics",
@@ -430,6 +434,14 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_cleanup_claim_token", "text", False),
     ("sandbox_leases", "executor_cleanup_claimed_at", "timestamptz", False),
     ("sandbox_leases", "executor_cleanup_retry_not_before", "timestamptz", False),
+    ("sandbox_leases", "cancel_delivery_status", "text", True),
+    ("sandbox_leases", "cancel_delivery_owner_generation", "int8", False),
+    ("sandbox_leases", "cancel_delivery_claim_token", "text", False),
+    ("sandbox_leases", "cancel_delivery_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "cancel_delivery_retry_not_before", "timestamptz", False),
+    ("sandbox_leases", "cancel_delivery_accepted_at", "timestamptz", False),
+    ("sandbox_leases", "cancel_delivery_attempt_count", "int4", True),
+    ("sandbox_leases", "cancel_delivery_last_error_code", "text", True),
     ("sandbox_execution_dispatches", "dispatch_id", "text", True),
     ("sandbox_execution_dispatches", "tenant_id", "text", True),
     ("sandbox_execution_dispatches", "run_id", "text", True),
@@ -461,6 +473,13 @@ CRITICAL_COLUMNS = (
     ("provider_session_heads", "next_epoch_number", "int8", True),
     ("provider_session_heads", "active_run_id", "text", False),
     ("provider_session_heads", "active_attempt_id", "text", False),
+    ("execution_recovery_operations", "operation_key", "text", True),
+    ("execution_recovery_operations", "verified_outcome", "text", True),
+    ("execution_recovery_invocations", "invocation_id", "text", True),
+    ("execution_recovery_invocations", "binding_kind", "text", True),
+    ("execution_recovery_invocations", "owner_generation", "int8", True),
+    ("execution_recovery_invocations", "authorization", "text", True),
+    ("provider_session_heads", "recovery_json", "jsonb", False),
     ("provider_session_epochs", "id", "text", True),
     ("provider_session_epochs", "tenant_id", "text", True),
     ("provider_session_epochs", "session_id", "text", True),
@@ -470,6 +489,10 @@ CRITICAL_COLUMNS = (
     ("provider_session_epochs", "state", "text", True),
     ("provider_session_epochs", "coverage_source_sha256", "text", False),
     ("provider_session_epochs", "writer_owner_generation", "int8", False),
+    ("provider_session_epochs", "source_epoch_id", "text", False),
+    ("provider_session_epochs", "source_final_sequence", "int8", False),
+    ("provider_session_epochs", "coverage_schema_version", "text", True),
+    ("provider_session_epochs", "recovery_json", "jsonb", False),
     ("provider_session_entries", "id", "text", True),
     ("provider_session_entries", "tenant_id", "text", True),
     ("provider_session_entries", "workspace_id", "text", True),
@@ -653,6 +676,9 @@ CRITICAL_CONSTRAINTS = (
     ("sandbox_leases", "chk_sandbox_leases_executor_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_reconciliation_status"),
     ("sandbox_leases", "chk_sandbox_leases_executor_cleanup_status"),
+    ("sandbox_leases", "chk_sandbox_leases_cancel_delivery_status"),
+    ("sandbox_leases", "chk_sandbox_leases_cancel_delivery_attempt_count"),
+    ("sandbox_leases", "chk_sandbox_leases_cancel_delivery_claim"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_pkey"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_attempt_id_fkey"),
     ("sandbox_execution_dispatches", "sandbox_execution_dispatches_lease_id_fkey"),
@@ -674,7 +700,9 @@ CRITICAL_CONSTRAINTS = (
     ("provider_session_epochs", "fk_provider_epoch_head"),
     ("provider_session_epochs", "uq_provider_epoch_scope"),
     ("provider_session_epochs", "uq_provider_epoch_number"),
-    ("provider_session_epochs", "uq_provider_epoch_provider_id"),
+    ("provider_session_epochs", "fk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_coverage_version"),
     ("provider_session_entries", "provider_session_entries_pkey"),
     ("provider_session_entries", "fk_provider_entry_epoch"),
     ("provider_session_entries", "uq_provider_entry_global_sequence"),
@@ -687,6 +715,18 @@ CRITICAL_TRIGGERS = (
         "trg_reject_legacy_attempt_settlement_write",
         "reject_legacy_attempt_settlement_write",
         19,
+    ),
+    (
+        "sandbox_leases",
+        "trg_sandbox_leases_clear_cancel_delivery_terminal",
+        "ai_platform_clear_cancel_delivery_on_executor_terminal",
+        19,
+    ),
+    (
+        "run_attempt_settlements",
+        "trg_run_attempt_settlements_clear_cancel_delivery",
+        "ai_platform_clear_sandbox_cancel_delivery_on_receipt",
+        21,
     ),
     (
         "run_attempts",
@@ -1329,6 +1369,59 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
     ),
     (
         "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_status",
+        "c",
+        "CHECK (cancel_delivery_status = ANY (ARRAY["
+        "'none'::text, 'pending'::text, 'claimed'::text, 'retry'::text, 'accepted'::text]))",
+    ),
+    (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_attempt_count",
+        "c",
+        "CHECK (cancel_delivery_attempt_count >= 0)",
+    ),
+    (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_claim",
+        "c",
+        "CHECK (cancel_delivery_status = 'none'::text "
+        "AND cancel_delivery_owner_generation IS NULL "
+        "AND cancel_delivery_claim_token IS NULL "
+        "AND cancel_delivery_claimed_at IS NULL "
+        "AND cancel_delivery_retry_not_before IS NULL "
+        "AND cancel_delivery_accepted_at IS NULL "
+        "OR cancel_delivery_status = 'pending'::text "
+        "AND cancel_delivery_owner_generation IS NOT NULL "
+        "AND cancel_delivery_owner_generation > 0 "
+        "AND cancel_delivery_claim_token IS NULL "
+        "AND cancel_delivery_claimed_at IS NULL "
+        "AND cancel_delivery_retry_not_before IS NULL "
+        "AND cancel_delivery_accepted_at IS NULL "
+        "OR cancel_delivery_status = 'claimed'::text "
+        "AND cancel_delivery_owner_generation IS NOT NULL "
+        "AND cancel_delivery_owner_generation > 0 "
+        "AND cancel_delivery_claim_token IS NOT NULL "
+        "AND cancel_delivery_claim_token <> ''::text "
+        "AND cancel_delivery_claimed_at IS NOT NULL "
+        "AND cancel_delivery_retry_not_before IS NULL "
+        "AND cancel_delivery_accepted_at IS NULL "
+        "OR cancel_delivery_status = 'retry'::text "
+        "AND cancel_delivery_owner_generation IS NOT NULL "
+        "AND cancel_delivery_owner_generation > 0 "
+        "AND cancel_delivery_claim_token IS NULL "
+        "AND cancel_delivery_claimed_at IS NULL "
+        "AND cancel_delivery_retry_not_before IS NOT NULL "
+        "AND cancel_delivery_accepted_at IS NULL "
+        "OR cancel_delivery_status = 'accepted'::text "
+        "AND cancel_delivery_owner_generation IS NOT NULL "
+        "AND cancel_delivery_owner_generation > 0 "
+        "AND cancel_delivery_claim_token IS NULL "
+        "AND cancel_delivery_claimed_at IS NULL "
+        "AND cancel_delivery_retry_not_before IS NULL "
+        "AND cancel_delivery_accepted_at IS NOT NULL)",
+    ),
+    (
+        "sandbox_leases",
         "chk_sandbox_leases_executor_reconciliation_status",
         "c",
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
@@ -1695,6 +1788,18 @@ STATIC_INDEX_DEFINITIONS = (
         (False, False, False, False),
     ),
     StaticIndexDefinition(
+        "idx_sandbox_leases_cancel_delivery_due",
+        "sandbox_leases",
+        (
+            "cancel_delivery_status",
+            "cancel_delivery_retry_not_before",
+            "cancel_delivery_claimed_at",
+            "id",
+        ),
+        (False, False, False, False),
+        "cancel_delivery_status = any array['pending', 'retry', 'claimed']",
+    ),
+    StaticIndexDefinition(
         "uq_run_attempts_one_open",
         "run_attempts",
         ("tenant_id", "run_id"),
@@ -1727,6 +1832,12 @@ STATIC_INDEX_DEFINITIONS = (
         "provider_session_entries",
         ("epoch_id", "subpath", "sequence"),
         (False, False, False),
+    ),
+    StaticIndexDefinition(
+        "idx_provider_epoch_provider_scope",
+        "provider_session_epochs",
+        ("tenant_id", "session_id", "engine", "provider_session_id"),
+        (False, False, False, False),
     ),
     StaticIndexDefinition(
         "uq_provider_entry_sdk_uuid",
@@ -1799,7 +1910,14 @@ class SchemaMigrationError(RuntimeError):
 
 
 def schema_sql() -> str:
-    return SCHEMA_PATH.read_text(encoding="utf-8")
+    core = SCHEMA_PATH.read_text(encoding="utf-8")
+    fragments = (
+        "context/infrastructure/conversation_recovery_schema.sql",
+        "execution/infrastructure/recovery_operations_schema.sql",
+    )
+    return core + "\n" + "\n".join(
+        (SCHEMA_PATH.parent / fragment).read_text(encoding="utf-8") for fragment in fragments
+    )
 
 
 def schema_checksum(sql: str | None = None) -> str:

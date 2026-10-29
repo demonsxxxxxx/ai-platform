@@ -1,11 +1,13 @@
 import errno
 import json
 import os
+import shutil
 from pathlib import Path
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME, WORKSPACE_RUNTIME_PRIVATE_ROOTS
 from app.settings import get_settings
+from app.path_safety import ensure_creatable_inside
 
 
 PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 文件任务规则
@@ -180,6 +182,34 @@ class SandboxWorkspaceManager:
         ).strip().lower()
         self._requires_secure_creation = provider in {"docker", "opensandbox"}
 
+    def reserve(self, request: SandboxRuntimeRequest) -> WorkspaceLease:
+        """Reserve a fresh Attempt namespace without creating its workspace.
+
+        Recovery restores here first; prepare then stages current configuration.
+        """
+        if os.name != "posix" and self._requires_secure_creation:
+            raise OSError("secure host-bind workspace creation is unavailable")
+        components = (
+            "tenants", request.tenant_id, "workspaces", request.workspace_id,
+            "users", request.user_id, "sessions", request.session_id,
+            "runs", request.run_id, "attempts", request.attempt_id,
+        )
+        run_root = self.root.joinpath(*components)
+        descriptor = _ensure_workspace_root(self.root)
+        try:
+            for suffix in ((), ("logs",), ("runtime",)):
+                _create_workspace_directory_tree(self.root, components + suffix, descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        workspace = run_root / "workspace"
+        return WorkspaceLease(
+            tenant_id=request.tenant_id, workspace_id=request.workspace_id,
+            user_id=request.user_id, session_id=request.session_id, run_id=request.run_id,
+            host_root=str(run_root), workspace_host_path=str(workspace),
+            inputs_host_path=str(workspace / "inputs"), logs_host_path=str(run_root / "logs"),
+        )
+
     def prepare(self, request: SandboxRuntimeRequest) -> WorkspaceLease:
         if os.name != "posix" and self._requires_secure_creation:
             raise OSError("secure host-bind workspace creation is unavailable")
@@ -249,3 +279,21 @@ class SandboxWorkspaceManager:
             inputs_host_path=str(inputs),
             logs_host_path=str(logs),
         )
+
+
+def reset_worker_workspace(workspace_root: str | Path, workspace: Path) -> None:
+    ensure_creatable_inside(
+        workspace_root,
+        workspace,
+        "run workspace must stay inside the configured workspace root",
+    )
+    if workspace.exists():
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError("run workspace must stay inside the configured workspace root")
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=False)
+    ensure_creatable_inside(
+        workspace_root,
+        workspace,
+        "run workspace must stay inside the configured workspace root",
+    )

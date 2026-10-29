@@ -3241,6 +3241,14 @@ create table if not exists sandbox_leases (
   executor_cleanup_claim_token text,
   executor_cleanup_claimed_at timestamptz,
   executor_cleanup_retry_not_before timestamptz,
+  cancel_delivery_status text not null default 'none',
+  cancel_delivery_owner_generation bigint,
+  cancel_delivery_claim_token text,
+  cancel_delivery_claimed_at timestamptz,
+  cancel_delivery_retry_not_before timestamptz,
+  cancel_delivery_accepted_at timestamptz,
+  cancel_delivery_attempt_count integer not null default 0,
+  cancel_delivery_last_error_code text not null default '',
   heartbeat_at timestamptz,
   expires_at timestamptz,
   released_at timestamptz,
@@ -3274,6 +3282,14 @@ alter table sandbox_leases add column if not exists executor_cleanup_status text
 alter table sandbox_leases add column if not exists executor_cleanup_claim_token text;
 alter table sandbox_leases add column if not exists executor_cleanup_claimed_at timestamptz;
 alter table sandbox_leases add column if not exists executor_cleanup_retry_not_before timestamptz;
+alter table sandbox_leases add column if not exists cancel_delivery_status text not null default 'none';
+alter table sandbox_leases add column if not exists cancel_delivery_owner_generation bigint;
+alter table sandbox_leases add column if not exists cancel_delivery_claim_token text;
+alter table sandbox_leases add column if not exists cancel_delivery_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists cancel_delivery_retry_not_before timestamptz;
+alter table sandbox_leases add column if not exists cancel_delivery_accepted_at timestamptz;
+alter table sandbox_leases add column if not exists cancel_delivery_attempt_count integer not null default 0;
+alter table sandbox_leases add column if not exists cancel_delivery_last_error_code text not null default '';
 -- Retain the old writer projection only during the explicit expanded phase.
 -- The marker gate is also applied by future core schema upgrades.
 do $$
@@ -3358,8 +3374,117 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_st
     'not_required', 'waiting_settlement', 'cleanup_pending', 'claimed',
     'retry', 'failed', 'finalized'
   ));
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_cancel_delivery_status;
+alter table sandbox_leases add constraint chk_sandbox_leases_cancel_delivery_status
+  check (cancel_delivery_status in ('none', 'pending', 'claimed', 'retry', 'accepted'));
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_cancel_delivery_attempt_count;
+alter table sandbox_leases add constraint chk_sandbox_leases_cancel_delivery_attempt_count
+  check (cancel_delivery_attempt_count >= 0);
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_cancel_delivery_claim;
+alter table sandbox_leases add constraint chk_sandbox_leases_cancel_delivery_claim
+  check (
+    (cancel_delivery_status = 'none'
+      and cancel_delivery_owner_generation is null
+      and cancel_delivery_claim_token is null
+      and cancel_delivery_claimed_at is null
+      and cancel_delivery_retry_not_before is null
+      and cancel_delivery_accepted_at is null)
+    or (cancel_delivery_status = 'pending'
+      and cancel_delivery_owner_generation is not null
+      and cancel_delivery_owner_generation > 0
+      and cancel_delivery_claim_token is null
+      and cancel_delivery_claimed_at is null
+      and cancel_delivery_retry_not_before is null
+      and cancel_delivery_accepted_at is null)
+    or (cancel_delivery_status = 'claimed'
+      and cancel_delivery_owner_generation is not null
+      and cancel_delivery_owner_generation > 0
+      and cancel_delivery_claim_token is not null
+      and cancel_delivery_claim_token <> ''
+      and cancel_delivery_claimed_at is not null
+      and cancel_delivery_retry_not_before is null
+      and cancel_delivery_accepted_at is null)
+    or (cancel_delivery_status = 'retry'
+      and cancel_delivery_owner_generation is not null
+      and cancel_delivery_owner_generation > 0
+      and cancel_delivery_claim_token is null
+      and cancel_delivery_claimed_at is null
+      and cancel_delivery_retry_not_before is not null
+      and cancel_delivery_accepted_at is null)
+    or (cancel_delivery_status = 'accepted'
+      and cancel_delivery_owner_generation is not null
+      and cancel_delivery_owner_generation > 0
+      and cancel_delivery_claim_token is null
+      and cancel_delivery_claimed_at is null
+      and cancel_delivery_retry_not_before is null
+      and cancel_delivery_accepted_at is not null)
+  );
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
+create index if not exists idx_sandbox_leases_cancel_delivery_due
+  on sandbox_leases(
+    cancel_delivery_status, cancel_delivery_retry_not_before,
+    cancel_delivery_claimed_at, id
+  )
+  where cancel_delivery_status in ('pending', 'retry', 'claimed');
+
+-- A Sandbox terminal observation revokes any outstanding cancel-delivery
+-- claim in the same write. The accepted state records only provider-control
+-- acknowledgement and remains monotonic once it has been recorded.
+create or replace function ai_platform_clear_cancel_delivery_on_executor_terminal()
+returns trigger language plpgsql as $$
+begin
+  if (new.executor_terminal_received_at is not null
+      or new.executor_status in ('completed', 'failed', 'cancelled'))
+     and new.cancel_delivery_status in ('pending', 'claimed', 'retry') then
+    new.cancel_delivery_status := 'none';
+    new.cancel_delivery_owner_generation := null;
+    new.cancel_delivery_claim_token := null;
+    new.cancel_delivery_claimed_at := null;
+    new.cancel_delivery_retry_not_before := null;
+    new.cancel_delivery_accepted_at := null;
+    new.cancel_delivery_last_error_code := '';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_sandbox_leases_clear_cancel_delivery_terminal
+  on sandbox_leases;
+create trigger trg_sandbox_leases_clear_cancel_delivery_terminal
+before update on sandbox_leases
+for each row execute function ai_platform_clear_cancel_delivery_on_executor_terminal();
+
+-- Runs-owned terminal receipts also retire a pending Sandbox cancel claim.
+-- This intentionally uses only stable receipt fields, so it remains valid
+-- across sandbox_lease.v1, attempt.v1 and retired legacy lease layouts.
+create or replace function ai_platform_clear_sandbox_cancel_delivery_on_receipt()
+returns trigger language plpgsql as $$
+begin
+  if new.receipt_identity is null
+     and new.receipt_json is null
+     and new.receipt_recorded_at is null then
+    return new;
+  end if;
+  update sandbox_leases
+  set cancel_delivery_status = 'none',
+      cancel_delivery_owner_generation = null,
+      cancel_delivery_claim_token = null,
+      cancel_delivery_claimed_at = null,
+      cancel_delivery_retry_not_before = null,
+      cancel_delivery_accepted_at = null,
+      cancel_delivery_last_error_code = '',
+      updated_at = clock_timestamp()
+  where tenant_id = new.tenant_id
+    and run_id = new.run_id
+    and attempt_id = new.attempt_id
+    and (new.source_lease_id is null or id = new.source_lease_id)
+    and cancel_delivery_status in ('pending', 'claimed', 'retry');
+  return new;
+end $$;
+drop trigger if exists trg_run_attempt_settlements_clear_cancel_delivery
+  on run_attempt_settlements;
+create trigger trg_run_attempt_settlements_clear_cancel_delivery
+after insert or update on run_attempt_settlements
+for each row execute function ai_platform_clear_sandbox_cancel_delivery_on_receipt();
 
 -- Fence binary writers that still try to mutate the retired settlement
 -- projection after N41 writer activation. The JSON comparison remains valid
@@ -4129,3 +4254,6 @@ where detail.receipt_json is not null
   and lease.run_id = detail.run_id
   and lease.attempt_id = detail.attempt_id
   and lease.id = detail.source_lease_id;
+
+-- The migration loader appends Context and Execution SQL fragments after this core.
+-- Use app.schema_migrations.schema_sql() for the complete installed schema.

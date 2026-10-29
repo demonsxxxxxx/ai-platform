@@ -1,4 +1,21 @@
 from app.execution.domain.supervision import SupervisionDomain as SupervisionDomain
+from app.execution.application.recovery_operations import (
+    AuthoritativeOperationStatus as AuthoritativeOperationStatus,
+    RecoveryInvocationAuthority as RecoveryInvocationAuthority,
+    RecoveryOperationsService as RecoveryOperationsService,
+)
+from app.execution.domain.recovery_operations import (
+    RECOVERY_CONFIRMATION_TIMEOUT_SECONDS as RECOVERY_CONFIRMATION_TIMEOUT_SECONDS,
+    RecoveryInvocation as RecoveryInvocation,
+    RecoverySourceConfirmation as RecoverySourceConfirmation,
+    RecoveryOperationFact as RecoveryOperationFact,
+    validate_recovery_operation_facts as validate_recovery_operation_facts,
+    RecoveryOperationError as RecoveryOperationError,
+    RecoveryOperationScope as RecoveryOperationScope,
+)
+from app.execution.application.continuation_settlement import (
+    ContinuationSettlementPorts as ContinuationSettlementPorts,
+)
 from app.artifacts.api import (
     build_artifact_records as build_artifact_records,
     promote_artifact_reservations as promote_artifact_reservations,
@@ -165,6 +182,16 @@ async def list_public_models(
     )
 
 
+async def model_access_excludes_user(
+    conn: Any, *, model_id: str, user_id: str
+) -> bool:
+    """Return whether the current model user list excludes this user."""
+
+    return await configured_model_control_plane().model_access_excludes_user(
+        conn, model_id=model_id, user_id=user_id
+    )
+
+
 async def resolve_chat_model_selection(
     conn: Any,
     *,
@@ -220,6 +247,17 @@ async def deliver_run_delivery_intent(
 
 __all__ = [
     "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "AuthoritativeOperationStatus",
+    "RECOVERY_CONFIRMATION_TIMEOUT_SECONDS",
+    "ContinuationSettlementPorts",
+    "RecoveryInvocation",
+    "RecoveryInvocationAuthority",
+    "RecoveryOperationError",
+    "RecoveryOperationFact",
+    "RecoveryOperationScope",
+    "RecoveryOperationsService",
+    "RecoverySourceConfirmation",
+    "validate_recovery_operation_facts",
     "DeliveryAttemptResult",
     "DeliveryScanResult",
     "QueueDeliveryError",
@@ -291,6 +329,7 @@ __all__ = [
     "submit_run_until_cancelled",
     "configured_follow_up_suggestions",
     "list_public_models",
+    "model_access_excludes_user",
     "bind_selected_run_model",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",

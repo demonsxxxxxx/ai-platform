@@ -9,6 +9,10 @@ const SAFE_BACKEND_ERROR_COPY: Record<string, string> = {
 
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
+  writer_unverified: "chat.continuation.writer_unverified",
+  workspace_unsaved: "chat.continuation.workspace_unsaved",
+  native_unavailable: "chat.continuation.native_unavailable",
+  capacity_exhausted: "chat.continuation.capacity_exhausted",
   invalid_credentials: "backendErrors.invalidCredentials",
   unauthorized: "backendErrors.unauthenticated",
   api_response_invalid: "backendErrors.apiResponseInvalid",

@@ -246,6 +246,7 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "session_id": payload.session_id,
             "run_id": payload.run_id,
             "attempt_id": payload.attempt_id,
+            "owner_generation": payload.owner_generation,
             "agent_id": payload.agent_id,
             "skill_id": payload.skill_id,
             "file_ids": [],

@@ -17,6 +17,10 @@ from app.runs.infrastructure.attempt_settlement_projection_postgres import (
     read_attempt_settlement,
     refresh_attempt_settlement_projection,
 )
+from app.runs.infrastructure.attempt_settlement_checkpoint_repair_postgres import (
+    claim_attempt_settlement_checkpoint_repair,
+    validate_attempt_settlement_checkpoint_repair_candidate,
+)
 from app.runs.infrastructure.attempt_settlement_writer_postgres import (
     append_attempt_settlement_diagnostics,
     claim_due_attempt_settlements,
@@ -61,5 +65,7 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
             retry_claim=retry_attempt_settlement_claim,
             append_diagnostics=append_attempt_settlement_diagnostics,
             summary=get_attempt_settlement_reconciliation_summary,
+            checkpoint_repair_candidate=validate_attempt_settlement_checkpoint_repair_candidate,
+            claim_checkpoint_repair=claim_attempt_settlement_checkpoint_repair,
         )
     )

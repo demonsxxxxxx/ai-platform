@@ -42,6 +42,8 @@ class AttemptSettlementProjectionPorts:
     retry_claim: Callable[..., Awaitable[bool]]
     append_diagnostics: Callable[..., Awaitable[bool]]
     summary: Callable[..., Awaitable[dict[str, Any]]]
+    checkpoint_repair_candidate: Callable[..., Awaitable[dict[str, Any] | None]] | None = None
+    claim_checkpoint_repair: Callable[..., Awaitable[bool]] | None = None
 
 
 class AttemptSettlementReadError(RuntimeError):
@@ -190,6 +192,43 @@ class AttemptSettlementProjectionService:
         return await self.ports.append_diagnostics(
             conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
             lease_id=lease_id, claim_token=claim_token, diagnostics=diagnostics,
+        )
+
+    async def checkpoint_repair_candidate(
+        self,
+        conn: Any,
+        *,
+        scope: Mapping[str, str],
+        lease_id: str,
+        writer_generation: int,
+    ) -> dict[str, Any] | None:
+        """Validate one explicitly requested quarantined checkpoint in Runs."""
+        if self.ports.checkpoint_repair_candidate is None:
+            raise RuntimeError("attempt_settlement_checkpoint_repair_unconfigured")
+        return await self.ports.checkpoint_repair_candidate(
+            conn, scope=scope, lease_id=lease_id,
+            writer_generation=writer_generation,
+        )
+
+    async def claim_checkpoint_repair_in_transaction(
+        self,
+        conn: Any,
+        *,
+        scope: Mapping[str, str],
+        lease_id: str,
+        expected_claim_token: str,
+        claim_token: str,
+        writer_generation: int,
+        cancellation_generation: int,
+    ) -> bool:
+        """Transfer only the exact repair claim through Runs-owned settlement."""
+        if self.ports.claim_checkpoint_repair is None:
+            raise RuntimeError("attempt_settlement_checkpoint_repair_unconfigured")
+        return await self.ports.claim_checkpoint_repair(
+            conn, scope=scope, lease_id=lease_id,
+            expected_claim_token=expected_claim_token, claim_token=claim_token,
+            writer_generation=writer_generation,
+            cancellation_generation=cancellation_generation,
         )
 
     async def writes_enabled(self, conn: Any, *, shadow_enabled: bool) -> bool:

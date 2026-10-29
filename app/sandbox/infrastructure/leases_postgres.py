@@ -46,6 +46,17 @@ from app.sandbox.infrastructure.lease_runtime_postgres import (
     release_sandbox_lease as release_sandbox_lease,
     release_stopped_sandbox_leases as release_stopped_sandbox_leases,
 )
+from app.sandbox.infrastructure.checkpoints_postgres import (
+    claim_quarantined_checkpoint_for_repair_legacy as claim_quarantined_checkpoint_for_repair_legacy,
+    claim_quarantined_checkpoint_for_repair_resource as claim_quarantined_checkpoint_for_repair_resource,
+    finalize_stopped_executor_checkpoint_legacy as finalize_stopped_executor_checkpoint_legacy,
+    finalize_stopped_executor_checkpoint_resource as finalize_stopped_executor_checkpoint_resource,
+    get_quarantined_checkpoint_for_repair_legacy as get_quarantined_checkpoint_for_repair_legacy,
+    get_quarantined_checkpoint_for_repair_resource as get_quarantined_checkpoint_for_repair_resource,
+    get_scoped_checkpoint_lease as get_scoped_checkpoint_lease,
+    record_sandbox_reconciliation_stage_legacy as record_sandbox_reconciliation_stage_legacy,
+    record_sandbox_reconciliation_stage_resource as record_sandbox_reconciliation_stage_resource,
+)
 
 
 from app.platform.public_payload import sanitize_public_text

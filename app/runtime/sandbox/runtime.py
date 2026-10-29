@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.execution.api import ContinuationSettlementPorts
 from app.db import transaction
 from app.mcp.api import MCP_CREDENTIAL_SUBJECTS_LEASE_KEY, mcp_credential_subjects_for_lease
 from app.execution_boundary import (
@@ -36,6 +37,9 @@ from app.runtime.sandbox.creation_claim import (
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ExecutorTaskRequest,
+    ExecutorTerminalResult,
+    executor_terminal_receipt_payload,
+    normalize_executor_terminal_status,
     SandboxRuntimeRequest,
     StopResult,
     WorkspaceLease,
@@ -51,7 +55,11 @@ from app.runtime.sandbox.executor_signals import (
     ExecutorSignalUnavailable,
     publish_executor_terminal_signal,
 )
-from app.sandbox.api import SandboxRuntimeLeasePort, normalize_executor_reported_failure
+from app.sandbox.api import (
+    SandboxExecutorCallbackLeasePort,
+    SandboxRuntimeLeasePort,
+    normalize_executor_reported_failure,
+)
 from app.sandbox.api import (
     SandboxDispatchIdentity,
     SandboxDispatchIntentService,
@@ -116,10 +124,12 @@ class SandboxRuntime:
         get_executor_status: ExecutorStatusReader | None = None,
         callback_token_resolver: TokenResolver | None = None,
         lease_port: SandboxRuntimeLeasePort,
+        callback_lease_port: SandboxExecutorCallbackLeasePort | None = None,
         dispatch_intents: SandboxDispatchIntentService,
         record_lease: LeaseRecorder | None = None,
         release_lease: LeaseReleaser | None = None,
         creation_claim_factory: CreationClaimFactory = acquire_sandbox_creation_claim,
+        continuation_ports: ContinuationSettlementPorts | None = None,
     ) -> None:
         self.settings = get_settings()
         self.workspace_manager = SandboxWorkspaceManager(root=workspace_root)
@@ -135,10 +145,12 @@ class SandboxRuntime:
             lambda token_id: derive_callback_token(self.settings.sandbox_callback_token, token_id)
         )
         self.lease_port = lease_port
+        self.callback_lease_port = callback_lease_port
         self.record_lease = record_lease or self._record_runtime_lease
         self._uses_default_lease_recorder = record_lease is None
         self.release_lease = release_lease or self._release_runtime_lease
         self.creation_claim_factory = creation_claim_factory
+        self.continuation_ports = continuation_ports
         self._lease_record_connections: dict[str, Any] = {}
 
     async def _emit(self, sink: EventSink | None, event: AgentEvent) -> None:
@@ -235,6 +247,17 @@ class SandboxRuntime:
                 "sandbox_dispatch_unknown_observation_unavailable",
                 extra={"run_id": identity.run_id, "attempt_id": identity.attempt_id},
             )
+
+    async def _record_dispatch_unknown_after_cancellation(
+        self, identity: SandboxDispatchIdentity | None,
+    ) -> None:
+        if identity is None:
+            return
+        try:
+            await asyncio.shield(self._record_dispatch_unknown(identity))
+        except BaseException:
+            # Keep the original cancellation as the caller-visible outcome.
+            pass
 
     @staticmethod
     def _status_proves_dispatch(status: dict[str, Any]) -> bool:
@@ -503,6 +526,27 @@ class SandboxRuntime:
             },
         )
 
+    @staticmethod
+    def _predispatch_settlement(request: SandboxRuntimeRequest, stop_evidence: str,
+                               lease_id: str | None = None) -> dict[str, Any]:
+        settlement = {
+            "tenant_id": request.tenant_id, "run_id": request.run_id,
+            "attempt_id": request.attempt_id, "final_sequence": None,
+            "workspace_receipt": None, "stop_evidence": stop_evidence,
+            "sdk_settlement": {
+                "owner_generation": request.owner_generation, "input_accepted": False,
+                "ack_unknown": False, "mirror_complete": False, "received_result": False,
+                "terminal_reason": "predispatch_failure",
+            },
+            "external_effect_unknown": False,
+        }
+        if lease_id is not None:
+            settlement["runtime_lease"] = {
+                "lease_id": lease_id, "tenant_id": request.tenant_id, "user_id": request.user_id,
+                "run_id": request.run_id, "attempt_id": request.attempt_id,
+            }
+        return settlement
+
     async def submit(
         self,
         request: SandboxRuntimeRequest,
@@ -511,8 +555,16 @@ class SandboxRuntime:
     ) -> SandboxRuntimeResult:
         total_started_at = time.monotonic()
         configured_provider = str(getattr(self.settings, "sandbox_container_provider", "fake") or "fake")
-        trusted_callback_target = self._trusted_callback_target(configured_provider)
-        workspace = self.workspace_manager.prepare(request)
+        try:
+            trusted_callback_target = self._trusted_callback_target(configured_provider)
+            workspace = self.workspace_manager.prepare(request)
+        except Exception as exc:
+            if request.provider_epoch_id is not None:
+                # This boundary precedes every provider call, including creation.
+                exc.predispatch_continuation_settlement = self._predispatch_settlement(
+                    request, "provider_not_created",
+                )
+            raise
         lease_started_at = time.monotonic()
         lease_record_id: str | None = None
         lease: ContainerLease | None = None
@@ -612,7 +664,8 @@ class SandboxRuntime:
                         status="failed",
                         message="sandbox provider stop raised",
                     )
-                if stop_result.status == "failed":
+                if (stop_result.status not in {"stopped", "not_found"}
+                    or stop_result.container_id != lease.container_id):
                     raise SandboxRuntimeCleanupError(reason="lease_record_failed", stop_result=stop_result) from exc
                 if lease_record_id is not None:
                     try:
@@ -630,6 +683,10 @@ class SandboxRuntime:
                                 message="sandbox lease release fence failed",
                             ),
                         ) from release_exc
+                if request.provider_epoch_id is not None and isinstance(exc, Exception):
+                    exc.predispatch_continuation_settlement = self._predispatch_settlement(
+                        request, "provider_stopped" if stop_result.status == "stopped" else "provider_not_found",
+                    )
                 raise
             return lease
 
@@ -743,8 +800,6 @@ class SandboxRuntime:
             if startup_evidence is not None:
                 self._log_opensandbox_startup_evidence(request, startup_evidence.private_payload())
             raise
-        if lease.provider != configured_provider:
-            trusted_callback_target = self._trusted_callback_target(lease.provider)
         lease_acquire_latency_ms = self._elapsed_ms(lease_started_at)
         externally_stopped = False
         terminal_stop_result: StopResult | None = None
@@ -756,6 +811,11 @@ class SandboxRuntime:
         collection_started = False
         collection_succeeded = False
         artifact_workspace_path: str | None = None
+        response: dict[str, Any] = {}
+        predispatch_settlement: dict[str, Any] | None = None
+        dispatch_sent = False
+        observation_handed_off = False
+        sandbox_executor_dispatch_latency_ms = 0
 
         def build_runtime_result(
             response_payload: dict[str, Any],
@@ -812,12 +872,68 @@ class SandboxRuntime:
         async def stop_owned_runtime(reason: str) -> bool:
             """Elect exactly one stop/release owner across runtime cancellation paths."""
 
-            nonlocal externally_stopped, terminal_stop_result
+            nonlocal externally_stopped, terminal_stop_result, observation_handed_off, predispatch_settlement
             async with terminal_stop_lock:
-                if accepted_dispatch:
-                    # Completion has handed this runtime to durable receipt cleanup.
+                if accepted_dispatch or observation_handed_off:
+                    # A durable receipt owns all later settlement and cleanup.
                     return True
                 if externally_stopped:
+                    return True
+                if self.continuation_ports is not None and dispatch_sent and (
+                    not response or response.get("status") == "accepted"
+                ):
+                    # A missing dispatch response is not proof that execution never started.
+                    try:
+                        endpoint, headers = await self.provider.executor_control_endpoint(lease, request)
+                        await self.executor_client.cancel(
+                            endpoint, run_id=request.run_id, attempt_id=request.attempt_id,
+                            executor_headers=headers,
+                        )
+                        observed = await self.executor_client.get_status(
+                            endpoint, run_id=request.run_id, attempt_id=request.attempt_id,
+                            executor_headers=headers,
+                        )
+                        terminal = ExecutorTerminalResult.model_validate(observed.get("terminal_result"))
+                        executor_status = normalize_executor_terminal_status(observed.get("status"), terminal.status)
+                        if (executor_status is None or observed.get("run_id") != request.run_id
+                            or observed.get("attempt_id") != request.attempt_id
+                            or terminal.run_id != request.run_id):
+                            return False
+                        if self.callback_lease_port is None:
+                            raise RuntimeError("sandbox_executor_callback_lease_port_required")
+                        async with transaction() as conn:
+                            await self.callback_lease_port.record_sandbox_executor_terminal(
+                                conn, tenant_id=request.tenant_id, run_id=request.run_id,
+                                attempt_id=request.attempt_id, lease_id=lease_record_id,
+                                executor_status=executor_status,
+                                terminal_result=executor_terminal_receipt_payload(
+                                    terminal.model_dump(mode="json", exclude_none=True),
+                                ),
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # The callback/reconciler may already have stopped and released this lease.
+                        try:
+                            async with transaction() as conn:
+                                persisted = await self.lease_port.get_sandbox_executor_terminal_handoff(
+                                    conn, tenant_id=request.tenant_id, workspace_id=request.workspace_id,
+                                    user_id=request.user_id, session_id=request.session_id,
+                                    run_id=request.run_id, attempt_id=request.attempt_id,
+                                    lease_id=lease_record_id, owner_generation=request.owner_generation,
+                                )
+                            if persisted is None:
+                                return False
+                            terminal = ExecutorTerminalResult.model_validate(persisted["executor_terminal_json"])
+                            if (terminal.run_id != request.run_id or normalize_executor_terminal_status(
+                                persisted["executor_status"], terminal.status,
+                            ) is None):
+                                return False
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            return False
+                    observation_handed_off = True
                     return True
                 try:
                     terminal_stop_result = await self.provider.stop(lease, reason=reason)
@@ -829,9 +945,32 @@ class SandboxRuntime:
                         status="failed",
                         message="sandbox provider stop raised",
                     )
-                if terminal_stop_result.status == "failed":
+                if (
+                    terminal_stop_result.status not in {"stopped", "not_found"}
+                    or terminal_stop_result.container_id != lease.container_id
+                ):
                     return False
-                await self._call_release_lease(lease, reason, lease_record_id)
+                if not dispatch_sent and request.provider_epoch_id is not None:
+                    predispatch_settlement = self._predispatch_settlement(
+                        request,
+                        "provider_stopped" if terminal_stop_result.status == "stopped" else "provider_not_found",
+                        lease_record_id,
+                    )
+                    if self.continuation_ports is None:
+                        await self._call_release_lease(lease, reason, lease_record_id)
+                elif self.continuation_ports is not None and response:
+                    response["continuation_settlement"] = await self.continuation_ports.prepare(
+                        request=request, workspace_lease=workspace,
+                        stop_result=terminal_stop_result, terminal_result=response,
+                    )
+                    if lease_record_id is not None:
+                        response["continuation_settlement"]["runtime_lease"] = {
+                            "lease_id": lease_record_id, "tenant_id": request.tenant_id,
+                            "user_id": request.user_id, "run_id": request.run_id,
+                            "attempt_id": request.attempt_id,
+                        }
+                else:
+                    await self._call_release_lease(lease, reason, lease_record_id)
                 externally_stopped = True
                 return True
 
@@ -876,6 +1015,8 @@ class SandboxRuntime:
                 )
 
         try:
+            if lease.provider != configured_provider:
+                trusted_callback_target = self._trusted_callback_target(lease.provider)
             staging_started = True
             await self.provider.stage_workspace(lease, request, workspace)
             staging_succeeded = True
@@ -893,7 +1034,12 @@ class SandboxRuntime:
                 "input_files": request.file_ids,
                 "materialized_file_names": request.materialized_file_names,
                 "provider_session_resume_required": request.provider_session_resume_required,
+                "provider_epoch_id": request.provider_epoch_id,
+                "operation_receipts_enabled": request.provider_epoch_id is not None,
             }
+            recovery_tool_gate = getattr(request, "recovery_tool_gate", None)
+            if recovery_tool_gate is not None:
+                task_config["recovery_tool_gate"] = recovery_tool_gate
             if request.model_token_limits is not None:
                 task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:
@@ -956,15 +1102,21 @@ class SandboxRuntime:
                 # A persisted intent may have crossed the provider boundary in
                 # a prior process. Read the exact original task; never POST it again.
                 if str(dispatch_record.get("status") or "") == "accepted":
+                    dispatch_sent = True
                     response = {"status": "accepted", "run_id": request.run_id, "attempt_id": request.attempt_id}
                 else:
                     if str(dispatch_record.get("status") or "") == "rejected":
                         raise RuntimeError("sandbox_dispatch_previously_rejected")
                     try:
                         observed_status = await self._probe_dispatch_status(lease, request)
+                    except asyncio.CancelledError:
+                        accepted_dispatch = True
+                        await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
+                        raise
                     except Exception:
                         observed_status = {}
                     if self._status_proves_dispatch(observed_status):
+                        dispatch_sent = True
                         response = {"status": "accepted", "run_id": request.run_id, "attempt_id": request.attempt_id}
                     else:
                         accepted_dispatch = True
@@ -973,6 +1125,9 @@ class SandboxRuntime:
                         raise SandboxDispatchOutcomeUnknown()
             else:
                 dispatch_started_at = time.monotonic()
+                # From this point a provider task may exist. Only a typed HTTP
+                # refusal below is enough evidence to treat it as undispatched.
+                dispatch_sent = True
                 try:
                     response = await self._call_execute_task(
                         lease.executor_url,
@@ -983,22 +1138,26 @@ class SandboxRuntime:
                     if not self._uses_default_lease_recorder:
                         raise
                     if isinstance(dispatch_error, asyncio.CancelledError):
-                        if self._uses_default_lease_recorder and dispatch_identity is not None:
-                            try:
-                                await asyncio.shield(self._record_dispatch_unknown(dispatch_identity))
-                            except BaseException:
-                                pass
                         accepted_dispatch = True
+                        await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
                         raise
                     try:
                         observed_status = await self._probe_dispatch_status(lease, request)
+                    except asyncio.CancelledError:
+                        accepted_dispatch = True
+                        await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
+                        raise
                     except Exception:
                         observed_status = {}
                     if self._status_proves_dispatch(observed_status):
                         response = {"status": "accepted", "run_id": request.run_id, "attempt_id": request.attempt_id}
                     else:
                         refused = self._dispatch_refused(dispatch_error)
-                        if not refused:
+                        if refused:
+                            # Only a definitive refusal proves the provider task was
+                            # not dispatched; all other failures stay unknown.
+                            dispatch_sent = False
+                        else:
                             accepted_dispatch = True
                         if self._uses_default_lease_recorder and dispatch_identity is not None:
                             if refused:
@@ -1012,24 +1171,32 @@ class SandboxRuntime:
                             raise SandboxDispatchOutcomeUnknown() from dispatch_error
                         raise
                 sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
+                if observation_handed_off:
+                    return build_runtime_result({"status": "accepted", "run_id": request.run_id,
+                                                 "attempt_id": request.attempt_id})
             if str(response.get("status") or "").lower() == "accepted":
                 accepted_result = build_runtime_result(response)
                 if self._uses_default_lease_recorder:
                     try:
                         accepted_lease = await persist_dispatch_accepted(accepted_result)
                     except asyncio.CancelledError:
+                        await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
                         raise
                     except BaseException as accepted_commit_error:
                         # Even when the POST ACK arrived, query the exact task
                         # after a failed local commit before attempting recovery.
                         try:
                             observed_status = await self._probe_dispatch_status(lease, request)
+                        except asyncio.CancelledError:
+                            await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
+                            raise
                         except Exception:
                             observed_status = {}
                         if self._status_proves_dispatch(observed_status):
                             try:
                                 accepted_lease = await persist_dispatch_accepted(accepted_result)
                             except asyncio.CancelledError:
+                                await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
                                 raise
                             except BaseException as recovery_error:
                                 if dispatch_identity is not None:
@@ -1101,6 +1268,7 @@ class SandboxRuntime:
                 or validation_rejected
                 or staging_rejected
                 or collection_rejected
+                or (self.continuation_ports is not None and not dispatch_sent)
             ):
                 reason = (
                     "workspace_stage_cancelled"
@@ -1124,9 +1292,14 @@ class SandboxRuntime:
                     await stop_and_release_owned(reason)
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
+                if observation_handed_off:
+                    return build_runtime_result({"status": "accepted", "run_id": request.run_id,
+                                                 "attempt_id": request.attempt_id})
+            if predispatch_settlement is not None and isinstance(exc, Exception):
+                exc.predispatch_continuation_settlement = predispatch_settlement
             raise
         sandbox_cleanup_latency_ms = 0
-        if request.sandbox_mode == "ephemeral" and not externally_stopped:
+        if (request.sandbox_mode == "ephemeral" or self.continuation_ports is not None) and not externally_stopped:
             cleanup_started_at = time.monotonic()
             terminal_status = str(response.get("status") or "")
             release_reason = (

@@ -5655,11 +5655,42 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
 # ruff: noqa: RUF012
 
 
+@pytest.fixture
+def stopped_continuation_ports(monkeypatch):
+    from app import executor_reconciler
+    from app.execution.api import ContinuationSettlementPorts
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def claimed(*args, **kwargs):
+        return True
+
+    async def save(**kwargs):
+        assert kwargs["stop_evidence"] == "provider_stopped"
+        return {"state": "saved", "version_id": "synthetic-workspace-version"}
+
+    async def unexpected_settlement(*args, **kwargs):
+        raise AssertionError("conversion must not publish Context settlement")
+
+    async def checkpoint(row, *, stage, **kwargs):
+        row.setdefault("lease_payload_json", {}).update(
+            owner_generation=stage["owner_generation"], terminal_reconciliation=stage,
+        )
+        row["runtime_container_id"] = stage["container_id"]
+
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction)
+    monkeypatch.setattr(executor_reconciler, "_record_reconciliation_stage", checkpoint)
+    monkeypatch.setattr(sandbox_lease_port, "has_sandbox_executor_reconciliation_claim", claimed)
+    return ContinuationSettlementPorts(save, unexpected_settlement)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_upload", [False, True])
 @pytest.mark.usefixtures("terminal_stage_logs")
 async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_semantics(
-    monkeypatch, tmp_path, caplog, fail_upload,
+    monkeypatch, tmp_path, caplog, fail_upload, stopped_continuation_ports,
 ):
     from app import executor_reconciler
     from app.platform import tracing
@@ -5680,10 +5711,15 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
     class Lease:
+        container_id = "synthetic-container"
+
         def model_copy(self, *, update):
             return self
 
     class Provider:
+        async def stop(self, lease, **kwargs):
+            return types.SimpleNamespace(status="stopped", container_id=lease.container_id)
+
         async def collect_workspace(self, _lease, _request, _workspace, response_files):
             assert response_files == [selected.name]
             return tmp_path
@@ -5702,9 +5738,9 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
         "staged_skill_names": ["general-chat"], "skill_manifests": [],
     }}
     monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
-    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: current)
     monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
-        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path / "workspace"))))
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
     monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
     monkeypatch.setattr(executor_reconciler, "_reserve_reconciliation_artifact_cleanup", reserve_cleanup)
@@ -5713,13 +5749,15 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     if fail_upload:
         with pytest.raises(RuntimeError) as caught:
             await executor_reconciler._collect_workspace_and_convert_result(
-                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
+                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
+                continuation_ports=stopped_continuation_ports,
             )
         assert caught.value is failure
         assert stored == []
     else:
         result, _provider, _lease = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
+            continuation_ports=stopped_continuation_ports,
         )
         assert result.status == "succeeded", result.result
         assert result.result["message"] == "private answer"
@@ -5744,7 +5782,7 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
 @pytest.mark.parametrize("with_primary_diagnostics", [False, True])
 @pytest.mark.parametrize("collection_mode", ["error", "ok", "cancel", "diagnostics_unavailable", "log_only", "transaction_enter_error", "transaction_exit_error", "transaction_enter_cancel", "transaction_exit_cancel"])
 async def test_reconciler_collection_failure_preserves_primary_and_retry_authority(
-    monkeypatch, tmp_path, caplog, status, error_code, with_primary_diagnostics, collection_mode,
+    monkeypatch, tmp_path, caplog, status, error_code, with_primary_diagnostics, collection_mode, stopped_continuation_ports,
 ):
     from copy import deepcopy
     from app import executor_reconciler
@@ -5770,16 +5808,24 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         "staged_skill_names": ["general-chat"], "skill_manifests": [],
     }}
     calls = []
+    diagnostic_transaction_pending = False
 
     class Provider:
+        async def stop(self, lease, **kwargs):
+            return types.SimpleNamespace(status="stopped", container_id=lease.container_id)
+
         async def collect_workspace(self, _lease, _request, _workspace, response_files):
+            nonlocal diagnostic_transaction_pending
             # OpenSandbox resolves its host binding before the empty-file return.
             assert response_files == []
             calls.append("collect")
             if collection_mode == "ok":
-                return tmp_path
+                snapshot = tmp_path / ".ai-platform-artifact-snapshot-v1"
+                snapshot.mkdir(exist_ok=True)
+                return snapshot
             if collection_mode == "cancel":
                 raise asyncio.CancelledError()
+            diagnostic_transaction_pending = status != "succeeded" and collection_mode != "log_only"
             from app.platform.sandbox.errors import ContainerStartFailedError
             try:
                 raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer")
@@ -5787,6 +5833,8 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
                 raise ContainerStartFailedError("workspace unavailable") from cause
 
     class Lease:
+        container_id = "synthetic-container"
+
         def model_copy(self, *, update):
             return self
 
@@ -5809,14 +5857,17 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
 
     @asynccontextmanager
     async def transaction():
-        if collection_mode == "transaction_enter_cancel":
+        nonlocal diagnostic_transaction_pending
+        diagnostic = diagnostic_transaction_pending
+        diagnostic_transaction_pending = False
+        if diagnostic and collection_mode == "transaction_enter_cancel":
             raise asyncio.CancelledError()
-        if collection_mode == "transaction_enter_error":
+        if diagnostic and collection_mode == "transaction_enter_error":
             raise RuntimeError("private diagnostic transaction enter failure")
         yield object()
-        if collection_mode == "transaction_exit_cancel":
+        if diagnostic and collection_mode == "transaction_exit_cancel":
             raise asyncio.CancelledError()
-        if collection_mode == "transaction_exit_error":
+        if diagnostic and collection_mode == "transaction_exit_error":
             raise RuntimeError("private diagnostic transaction commit failure")
 
     persistence = Persistence()
@@ -5834,9 +5885,9 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         )
     monkeypatch.setattr(executor_reconciler, "transaction", transaction)
     monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
-    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: current)
     monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
-        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path / "workspace"))))
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
     monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
     registry = AdapterRegistry({"claude-agent-worker": ClaudeAgentWorkerAdapter()})
@@ -5847,7 +5898,9 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         with pytest.raises(asyncio.CancelledError):
             await executor_reconciler._collect_workspace_and_convert_result(
                 row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
-                run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+                continuation_ports=stopped_continuation_ports,
+                run_diagnostics=None if collection_mode == "log_only" else diagnostics,
+            )
         assert terminal == original
         if collection_mode != "transaction_exit_cancel":
             assert persistence.value is None
@@ -5855,7 +5908,9 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
     for _ in range(2):
         result, _, _ = await executor_reconciler._collect_workspace_and_convert_result(
             row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
-            run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+            continuation_ports=stopped_continuation_ports,
+            run_diagnostics=None if collection_mode == "log_only" else diagnostics,
+        )
         assert result.status == ("succeeded" if status == "succeeded" and collection_mode == "ok" else "failed")
         assert result.artifacts == []
         assert terminal == original
@@ -5875,7 +5930,7 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
             normalized = normalize_sandbox_reported_failure(result)
             assert run_retry_block_reason(normalized.status, normalized.result["error_code"]) == expected_block
             assert sandbox_failure_prefers_cancelled(normalized) is (status == "cancelled")
-    assert calls == ["collect", "collect"]
+    assert calls == ["collect"]  # The durable checkpoint owns retries after provider stop.
     if status != "succeeded" and collection_mode == "error":
         admin = await diagnostics.read_admin(None, tenant_id=current.tenant_id, run_id=current.run_id)
         assert admin["root"]["error_code"] == error_code
@@ -5894,10 +5949,10 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         assert "synthetic-token" not in repr(persistence.value)
         assert "/private/workspace" in repr(persistence.value)  # admin diagnostics keep paths
     logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
-    assert len(logs) == (0 if collection_mode == "ok" else 2)
+    assert len(logs) == (0 if collection_mode == "ok" else 1)
     assert "synthetic-token" not in repr(logs)
     assert "/private/workspace" not in repr(logs)
     if status != "succeeded" and collection_mode.startswith("transaction_"):
         degraded = [vars(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
-        assert len(degraded) == 2
+        assert len(degraded) == 1
         assert "private diagnostic transaction" not in repr(degraded)

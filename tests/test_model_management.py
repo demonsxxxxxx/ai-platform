@@ -130,6 +130,45 @@ def test_catalog_capacity_pair_and_anthropic_proxy_contract():
             _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", invalid)
 
 
+_SDK_MESSAGE_BETAS = [
+    "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
+    "context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
+    "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,structured-outputs-2025-12-15",
+    "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
+    "context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
+    "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,thinking-display-updates-2026-08-18",
+]
+
+
+@pytest.mark.parametrize("betas", _SDK_MESSAGE_BETAS)
+def test_anthropic_proxy_accepts_actual_sdk_message_beta_headers(betas):
+    normalized = _runtime_proxy_headers("anthropic", "v1/messages", {
+        "anthropic-version": "2023-06-01", "anthropic-beta": betas,
+    })
+    assert normalized["anthropic-beta"] == ",".join(sorted(betas.split(",")))
+    assert normalized["anthropic-version"] == "2023-06-01"
+
+
+@pytest.mark.parametrize("path", ["v1/messages", "v1/messages/count_tokens"])
+@pytest.mark.parametrize("betas", ["unknown-beta", "claude-code-20250219,", ",".join(["claude-code-20250219"] * 17)])
+def test_anthropic_proxy_keeps_beta_membership_empty_item_and_count_limits(path, betas):
+    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
+        _runtime_proxy_headers("anthropic", path, {
+            "anthropic-version": "2023-06-01", "anthropic-beta": betas,
+        })
+
+
+@pytest.mark.parametrize("beta", [
+    "mid-conversation-tool-changes-2026-07-01", "structured-outputs-2025-12-15",
+    "thinking-display-updates-2026-08-18",
+])
+def test_anthropic_message_betas_do_not_expand_count_tokens_contract(beta):
+    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
+        _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", {
+            "anthropic-version": "2023-06-01", "anthropic-beta": beta,
+        })
+
+
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
     error = model_routes._translate_control_plane_error(
         ValueError("model_connection_api_key_required")
@@ -1322,7 +1361,8 @@ async def test_model_proxy_transport_rejects_duplicate_anthropic_headers_before_
 
 
 @pytest.mark.asyncio
-async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
+@pytest.mark.parametrize("betas", _SDK_MESSAGE_BETAS)
+async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths(betas):
     captured = {}
 
     @asynccontextmanager
@@ -1369,11 +1409,11 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
     }
     await service.proxy(
         provider="anthropic", upstream_path="v1/messages", query="beta=true",
-        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219"},
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": betas},
         **fields,
     )
     assert captured["query"] == "beta=true"
-    assert captured["headers"]["anthropic-beta"] == "claude-code-20250219"
+    assert captured["headers"]["anthropic-beta"] == ",".join(sorted(betas.split(",")))
     assert captured["path"] == "/v1/messages"
     for invalid_query in ("Beta=true", "beta=true&beta=true", "beta%3Dtrue"):
         captured.clear()

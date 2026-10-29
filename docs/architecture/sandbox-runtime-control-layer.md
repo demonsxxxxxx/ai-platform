@@ -119,9 +119,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    locks Run before the exact Attempt using the caller's connection and
    transaction, derives tenant from persisted Run identity, and preserves
    session, terminal, Attempt and token-generation fences. Only the dedicated
-   `ProviderSessionAppendIdentity` can use the cancelling provider-tail
-   fallback; ordinary executor, input, context and credential callbacks cannot
-   request that lease scope. HTTP token parsing and rejection status/detail
+   `ProviderSessionAppendIdentity` and the dedicated recovery-operation completion
+   identity can use the cancelling provider-tail fallback. Recovery completion
+   still requires the exact durable started-operation receipt; started, query,
+   close, input, context and credential requests cannot request that lease scope. HTTP token parsing and rejection status/detail
    mapping remain in the callback route, as do
    receipt persistence, renewal sequencing and post-commit publication. The MCP
    credential callback uses this same authority and the selected Server's
@@ -251,13 +252,19 @@ generation, timestamps, and reconciliation ownership in one migration.
    entrypoints all consume this Sandbox operation boundary. The former
    `routes/sandbox_runtime_cleanup.py` implementation is retired, with no import
    compatibility alias or external wire contract.
-   Owner and administrator Run cancellation share one stop/release settlement:
-   stop outside the settlement transaction, release successful leases grouped
-   by their own Run, record the actor-scoped outcome in the same transaction,
-   then report a partial stop failure after commit. Routes retain authorization,
-   Run cancellation, queue/publication ordering and the existing 502/503 mapping.
-   The owner release event still omits the administrator role field. Persistence
-   failure takes precedence over the provider failure.
+   Owner and administrator cancellation of an active Attempt records intent and
+   leaves the original executor responsible for bounded SDK drain. Its exact
+   provider must stop before private workspace save and the atomic Context/Run
+   terminal transaction; lease release follows that transaction's terminal facts.
+   A dispatch response still in flight retains the same Attempt's observation
+   responsibility, including a verified durable terminal handoff after endpoint
+   loss. Routes do not immediately kill/release an active cancelled writer.
+   Direct cleanup of an already terminal or never-started Run retains the shared
+   stop/release settlement: stop outside its settlement transaction, release
+   successful leases grouped by their Run, record the actor-scoped outcome, then
+   report any partial stop failure after commit. Authorization, queue/publication
+   ordering, 502/503 mapping and owner/admin event distinctions remain unchanged.
+   Persistence failure takes precedence over provider failure.
    The following concurrency mechanisms are intentionally distinct: single-lease
    release and expiry cleanup retain stop-under-lock; terminal reconciliation
    cleanup keeps its claim, unlocked bounded stop and fenced receipt transactions. Sharing the
@@ -308,6 +315,46 @@ generation, timestamps, and reconciliation ownership in one migration.
 replace a general monotonically increasing fencing generation for provider
 commands. That generation belongs in the target transition-ledger migration.
 
+## Durable cancellation delivery
+
+Runs stages an exact Sandbox cancellation intent in the same transaction as
+owner/admin cancellation. After commit, the shared post-processor attempts
+executor cancellation before stream publication. The independent Worker
+reconciler phase also consumes due intents every two seconds, including after
+the request process exits. Heartbeat staleness and the 30-second suspect probe
+cadence remain unchanged. Redis is not the cancellation delivery queue.
+
+`SandboxCancelDeliveryService` owns delivery; `bootstrap.sandbox_cancel_delivery`
+composes PostgreSQL and the provider's authenticated control endpoint. The lease
+records `none`, `pending`, `claimed`, `retry` or `accepted`, a frozen execution
+generation, claim token and retry/acknowledgement timestamps. These facts are
+control delivery evidence, separate from SDK completion, business settlement and
+resource release. The original queue-worker generation may advance exactly once
+for cancellation while the lease retains its original generation.
+
+Claim and writeback use short Run → lease → Attempt transactions. Provider I/O
+runs outside these locks, with a ten-second cooperative batch budget and a
+five-second HTTP timeout. A new transaction rechecks current scope, Attempt,
+lease validity and claim before recording ACK or retry. Claims stale for thirty
+seconds can be reclaimed. Retry backs off to at most 300 seconds; terminal
+receipts and invalid authority clear unfinished claims. Bounded keyset scans
+skip occupied rows and continue across rounds; their process-local position is
+only a fairness hint. Restarting a scanner does not change durable ownership.
+
+An exact authenticated cancel received before task dispatch is latched by the
+executor. Later dispatch returns an unaccepted-input cancellation receipt without
+entering the SDK. Its receipt deadline begins when dispatch processing starts.
+Duplicate cancel does not interrupt the original writer's bounded mirror drain.
+An ACK alone never terminalizes a Run, releases a resource or creates tool success.
+
+The integration schema `2026.10.29.2` adds these fields and guards while preserving
+main, lifecycle and conversation migration history. Apply it before matching
+API/Worker/executor binaries. Drain incompatible binaries and in-flight tasks
+before a binary rollback; old consumers cannot drain the new cancel intents or
+read the combined canonical/per-Attempt continuation layout. No operator cutover
+marker is activated by this migration. Source and local database tests do not
+establish provider timing or real-environment acceptance.
+
 ## Terminal completion compatibility and retirement
 
 Schema `2026.10.13.1` adds the nullable retry deadline and `cleanup_pending`.
@@ -321,6 +368,12 @@ status/updated-at definition is retired. A separate partial retry-deadline index
 supports the next-due query without scanning finalized history. Both indexes
 have one concurrent migration owner and exact readiness catalog contracts;
 they are not duplicated in the core schema's static index registry.
+
+In Attempt-owned settlement, a new claimant rebinds an existing immutable
+stop/save checkpoint to its current Runs claim under the same source locks.
+It does not reconnect the stopped producer. Finalization still rejects the old
+claim and commits Context, Run/Attempt and lease facts atomically, including
+when a terminal Run only needs its lease finalized.
 
 The inline terminal provider-stop helpers and the claimed-to-finalized release
 writer are retired from `executor_reconciler.py` and `sandbox_leases.py`, together

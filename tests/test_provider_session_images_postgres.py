@@ -15,6 +15,12 @@ from app.persistence import object_deletions
 from app.storage import StoredObject
 from tests.test_provider_session_recovery_postgres import INITIAL, PROVIDER_ID, recovery_db as _recovery_db
 
+from tests.test_conversation_recovery_postgres import (
+    lifecycle_db as provider_lifecycle_db,
+    SCOPE, SCOPE_MAP, workspace as saved_workspace, settlement as sdk_settlement,
+)
+
+lifecycle_db = provider_lifecycle_db
 recovery_db = _recovery_db
 
 
@@ -358,3 +364,192 @@ async def test_real_minio_provider_image_round_trip_and_deletion(media_db, monke
                 storage.delete_object(storage_key=obj["Key"])
             storage.client.delete_bucket(Bucket=storage.bucket)
         storage.client.close()
+
+
+@pytest.fixture
+async def image_lifecycle_db(lifecycle_db, media_db):
+    assert lifecycle_db is media_db
+    return lifecycle_db
+
+
+async def _settle_image_source(connect, service, *, final_sequence):
+    from app.context.infrastructure import provider_epochs
+    from app.context.infrastructure.provider_continuation import settle_provider_continuation
+    from tests.test_provider_session_recovery_postgres import request_cancel
+    async with connect() as conn:
+        await request_cancel(conn)
+    async with service.verification_scope(connect, tenant_id="tenant", run_id="run"):
+        async with connect() as conn:
+            recovery = await settle_provider_continuation(conn, tenant_id="tenant", run_id="run", attempt_id="attempt",
+                final_sequence=final_sequence, workspace_receipt=saved_workspace(), stop_evidence="provider_stopped",
+                sdk_settlement={**sdk_settlement(), "owner_generation": 3, "writer_owner_generation": 2})
+            await conn.execute("update runs set status='cancelled' where id='run'")
+            await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="run")
+    return recovery
+
+
+async def _admit_image_copy(connect):
+    from app.context.infrastructure import provider_epochs
+    from app.context.domain.conversation_recovery import make_provider_coverage_authority_receipt
+    from psycopg.types.json import Jsonb
+    async with connect() as conn:
+        await conn.execute(
+            "insert into runs(tenant_id,id,workspace_id,user_id,session_id,agent_id,status,"
+            "session_generation,context_snapshot_id,started_at) "
+            "values('tenant','copy','workspace','user','session','agent','running',3,'snapshot-copy',now())"
+        )
+        await provider_epochs.claim_provider_lineage(conn, scope=SCOPE, run_id="copy")
+        coverage = await provider_epochs.read_provider_coverage(conn, scope=SCOPE, run_id="copy", session_generation=3)
+        receipt = make_provider_coverage_authority_receipt(coverage=coverage, scope=SCOPE_MAP,
+            through_session_generation=3, current_message_id="copy-user")
+        await conn.execute("insert into run_context_snapshots values('snapshot-copy','tenant','workspace','user','session','copy','executor',%s)", (Jsonb(receipt),))
+        await conn.execute("insert into messages(id,tenant_id,session_id,run_id,role,content) values('copy-user','tenant','session','copy','user','new input')")
+    return dict(source_sha256=coverage["source_sha256"], message_count=coverage["message_count"],
+        authority_schema_version=coverage["authority_schema_version"], current_message_id="copy-user",
+        messages=[], selected_message_count=0, selected_turn_count=0)
+
+
+async def _bind_image_copy(conn, context):
+    from app.context.infrastructure import provider_epochs
+    from psycopg.types.json import Jsonb
+    frozen = await provider_epochs.prepare_provider_epoch(conn, scope=SCOPE, run_id="copy", conversation_context=context)
+    await conn.execute("""insert into run_attempts(tenant_id,id,run_id,status,owner_kind,owner_id,owner_generation,
+        execution_spec_sha256,execution_spec_schema_version,execution_spec_json,ordinal)
+        values('tenant','copy-attempt','copy','running','queue_worker','worker',4,%s,'ai-platform.execution-spec.v3',%s,1)""",
+        ("d" * 64, Jsonb({"context_pack": {"conversation_context": frozen}})))
+    await conn.execute("""insert into sandbox_leases(id,tenant_id,run_id,attempt_id,status,expires_at,lease_payload_json)
+        values('copy-lease','tenant','copy','copy-attempt','active',now()+interval '5 minutes',%s)""", (Jsonb(dict(owner_generation=4)),))
+    return frozen
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_native_image_epoch_copy_preserves_ack_media_children_and_transaction_rollback(image_lifecycle_db, media_service, rollback):
+    from app.context.infrastructure import provider_epochs
+    from app.context.infrastructure.provider_images import queue_provider_images_for_deletion
+    from app.context.infrastructure.provider_continuation import settle_provider_continuation
+    connect = image_lifecycle_db
+    service, storage = media_service
+    main, child = image_entry(), {**image_entry(), "uuid": "child-image"}
+    await execute(connect, service, operation("append", entries=[main], expected_sequence=3))
+    await execute(connect, service, operation("append", entries=[child], subpath="subagents/child", expected_sequence=4))
+    native = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "native-create",
+              "name": "mcp__vendor__create", "input": {"project": {"name": "Synthetic object"}}}]}}
+    await execute(connect, service, operation("append", entries=[native], expected_sequence=5))
+    recovery = await _settle_image_source(connect, service, final_sequence=5)
+    assert recovery["state"] == "resumable"
+    async with connect() as conn:
+        original = await (await conn.execute("select * from provider_session_append_receipts where epoch_id='epoch' order by expected_sequence")).fetchall()
+    context = await _admit_image_copy(connect)
+    async with service.verification_scope(connect, tenant_id="tenant", run_id="copy"):
+        if rollback:
+            with pytest.raises(RuntimeError, match="synthetic rollback"):
+                async with connect() as conn:
+                    await _bind_image_copy(conn, context)
+                    raise RuntimeError("synthetic rollback")
+        else:
+            async with connect() as conn:
+                frozen = await _bind_image_copy(conn, context)
+                # An independent cleanup cannot acquire the shared image's deletion lock.
+                assert await queue_provider_images_for_deletion(conn) == []
+    async with connect() as conn:
+        assert await (await conn.execute("select * from provider_session_append_receipts where epoch_id='epoch' order by expected_sequence")).fetchall() == original
+        assert (await (await conn.execute("select count(*) as n from provider_session_epochs")).fetchone())["n"] == (1 if rollback else 2)
+    if rollback:
+        return
+    assert frozen["provider_session_id"] == PROVIDER_ID and frozen["provider_epoch_id"] != "epoch"
+    load = operation("load", run_id="copy", attempt_id="copy-attempt", provider_epoch_id=frozen["provider_epoch_id"])
+    restored, _ = await execute(connect, service, load)
+    assert list(restored.entries) == INITIAL + [main, native]
+    children, _ = await execute(connect, service, {**load, "action": "list_subkeys", "include_child_entries": True})
+    assert children.child_entries == {"subagents/child": [child]}
+    async with service.verification_scope(connect, tenant_id="tenant", run_id="copy"):
+        async with connect() as conn:
+            native_input = await provider_epochs.read_verified_native_invocation(conn, scope=SCOPE_MAP, epoch_id="epoch",
+                source_run_id="run", source_attempt_id="attempt", final_sequence=5, invocation_id="native-create", native_tool_name="mcp__vendor__create")
+            assert native_input == native["message"]["content"][0]["input"]
+    # A new current append retains the same independent structured and full-byte counters.
+    appended = {"type": "user", "uuid": "copy-user", "message": {"content": "new input"}}
+    request = {**load, "action": "append", "entries": [appended], "expected_sequence": 6}
+    first, _ = await execute(connect, service, request)
+    second, ticket = await execute(connect, service, request)
+    assert second == first and ticket.objects == []
+    async with service.verification_scope(connect, tenant_id="tenant", run_id="copy"):
+        async with connect() as conn:
+            result = await settle_provider_continuation(conn, tenant_id="tenant", run_id="copy", attempt_id="copy-attempt",
+                final_sequence=6, workspace_receipt=saved_workspace(run="copy", attempt="copy-attempt"),
+                stop_evidence="provider_stopped", sdk_settlement={**sdk_settlement(), "owner_generation": 4})
+            assert result["state"] == "resumable"
+    assert len(storage.objects) == 2  # Appends own objects; native copies only read them.
+    async with connect() as conn:
+        await conn.execute("delete from provider_session_entries where epoch_id='epoch'")
+        assert await queue_provider_images_for_deletion(conn) == []
+    async with connect() as conn:
+        await conn.execute("delete from provider_session_entries where epoch_id=%s", (frozen["provider_epoch_id"],))
+        assert len(await queue_provider_images_for_deletion(conn)) == 2
+        claimed = await object_deletions.claim_object_deletions(conn)
+        assert len(claimed) == 2
+
+
+@pytest.mark.parametrize("mutation", ["image_metadata", "image_owner", "ack", "generation", "deleted_session"])
+async def test_epoch_image_preload_rejects_metadata_and_authority_changes_without_settlement(image_lifecycle_db, media_service, mutation):
+    from app.context.infrastructure.provider_epochs import verified_provider_prefix
+    from app.context.domain.provider_sessions import ProviderSessionConflictError
+    service, _ = media_service
+    connect = image_lifecycle_db
+    await execute(connect, service, operation("append", entries=[image_entry()], expected_sequence=3))
+    async with service.verification_scope(connect, tenant_id="tenant", run_id="run"):
+        async with connect() as conn:
+            statements = {
+                "image_metadata": "update provider_session_images set storage_key='private/replaced'",
+                "image_owner": "update provider_session_images set user_id='other-user'",
+                "ack": "update provider_session_append_receipts set batch_sha256=repeat('0',64) where expected_sequence=3",
+                "generation": "update run_attempts set owner_generation=3 where id='attempt'",
+                "deleted_session": "update sessions set status='deleted'",
+            }
+            await conn.execute(statements[mutation])
+        with pytest.raises(ProviderSessionConflictError):
+            async with connect() as conn:
+                epoch = await (await conn.execute("select * from provider_session_epochs where id='epoch'")).fetchone()
+                await verified_provider_prefix(conn, epoch=epoch, final_sequence=3)
+    async with connect() as conn:
+        assert (await (await conn.execute("select recovery_json from provider_session_epochs where id='epoch'")).fetchone())["recovery_json"] is None
+
+
+async def test_source_retirement_and_image_copy_serialize_without_deleting_live_copy(image_lifecycle_db, media_service):
+    import asyncio
+    from app.context.infrastructure.provider_images import queue_provider_images_for_deletion
+    connect = image_lifecycle_db
+    service, _ = media_service
+    image = image_entry()
+    await execute(connect, service, operation("append", entries=[image], expected_sequence=3))
+    await _settle_image_source(connect, service, final_sequence=3)
+    context = await _admit_image_copy(connect)
+    entered = asyncio.Event()
+
+    async def retire_source_entries():
+        async with connect() as conn:
+            entered.set()
+            await conn.execute("delete from provider_session_entries where epoch_id='epoch'")
+
+    retirement = None
+    try:
+        async with service.verification_scope(connect, tenant_id="tenant", run_id="copy"):
+            async with connect() as conn:
+                frozen = await _bind_image_copy(conn, context)
+                retirement = asyncio.create_task(retire_source_entries())
+                await entered.wait()
+                done, _ = await asyncio.wait({retirement}, timeout=0.05)
+                assert not done, "copy holds the original ledger through its atomic commit"
+        await asyncio.wait_for(retirement, timeout=3)
+    finally:
+        if retirement is not None and not retirement.done():
+            retirement.cancel()
+            await asyncio.gather(retirement, return_exceptions=True)
+    async with connect() as conn:
+        assert await queue_provider_images_for_deletion(conn) == []
+    restored, _ = await execute(connect, service, operation("load", run_id="copy", attempt_id="copy-attempt",
+                                                          provider_epoch_id=frozen["provider_epoch_id"]))
+    assert list(restored.entries) == INITIAL + [image]
+    async with connect() as conn:
+        await conn.execute("delete from provider_session_entries where epoch_id=%s", (frozen["provider_epoch_id"],))
+        assert len(await queue_provider_images_for_deletion(conn)) == 1

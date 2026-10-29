@@ -695,6 +695,10 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
         ),
         (
+            schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION,
+            "synthetic-pre-source-confirmation-checksum",
+        ),
+        (
             schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION,
             REMOTE_SANDBOX_PROVIDER_RENEWAL_CHECKSUM,
         ),
@@ -848,7 +852,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION == "2026.10.25.11"
     assert schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION == "2026.10.22.2"
+    assert schema_migrations.RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION == "2026.10.23.1"
     assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.29.2"
     assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
@@ -879,6 +886,16 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("run_stale_reconciliation_claims", "claim_token", "uuid", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_generation") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("idx_run_stale_reconciliation_claims_deadline", False) in schema_migrations.CRITICAL_INDEXES
+    assert ("provider_session_epochs", "source_epoch_id", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("provider_session_epochs", "source_final_sequence", "int8", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("provider_session_epochs", "coverage_schema_version", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("provider_session_epochs", "recovery_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("provider_session_heads", "recovery_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("provider_session_epochs", "fk_provider_epoch_source") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("provider_session_epochs", "chk_provider_epoch_source") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("provider_session_epochs", "chk_provider_epoch_coverage_version") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("provider_session_epochs", "uq_provider_epoch_provider_id") not in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_provider_epoch_provider_scope", False) in schema_migrations.CRITICAL_INDEXES
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_intent_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
@@ -897,6 +914,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "execution_recovery_operations",
+        "execution_recovery_invocations",
         "users",
         "runs",
         "run_diagnostics",
@@ -965,9 +984,24 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     for table, columns in {
         "provider_session_heads": (("tenant_id", "text", True), ("current_epoch_id", "text", False),
-                                   ("active_run_id", "text", False)),
+                                   ("active_run_id", "text", False),
+                                   ("recovery_json", "jsonb", False)),
         "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
-                                    ("coverage_source_sha256", "text", False)),
+                                    ("coverage_source_sha256", "text", False),
+                                    ("source_epoch_id", "text", False),
+                                    ("source_final_sequence", "int8", False),
+                                    ("coverage_schema_version", "text", True),
+                                    ("recovery_json", "jsonb", False)),
+        "execution_recovery_operations": (
+            ("operation_key", "text", True),
+            ("verified_outcome", "text", True),
+        ),
+        "execution_recovery_invocations": (
+            ("invocation_id", "text", True),
+            ("binding_kind", "text", True),
+            ("owner_generation", "int8", True),
+            ("authorization", "text", True),
+        ),
         "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True),
                                      ("entry_json", "jsonb", False),
                                      ("entry_canonical_json", "json", False)),
@@ -1006,6 +1040,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("conversation_context_checkpoints", "fk_context_checkpoint_source_scope"),
         ("provider_session_heads", "fk_provider_head_current_epoch"),
         ("provider_session_epochs", "fk_provider_epoch_head"),
+        ("provider_session_epochs", "fk_provider_epoch_source"),
+        ("provider_session_epochs", "chk_provider_epoch_source"),
+        ("provider_session_epochs", "chk_provider_epoch_coverage_version"),
         ("provider_session_entries", "fk_provider_entry_epoch"),
         ("provider_session_entries", "uq_provider_entry_global_sequence"),
         ("provider_session_entries", "chk_provider_entry_representation"),
@@ -1026,6 +1063,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("idx_sessions_provider_scope", True),
         ("uq_provider_entry_sdk_uuid", True),
         ("idx_provider_entry_view", False),
+        ("idx_provider_epoch_provider_scope", False),
         ("idx_run_inputs_queued", False),
     ):
         assert index in schema_migrations.CRITICAL_INDEXES
@@ -1037,6 +1075,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert "create table if not exists provider_session_bindings" not in schema
     assert "unique (epoch_id, sequence)" in schema
     assert "provider_session_legacy_binding_requires_disposition" in schema
+    assert "alter table provider_session_epochs add column if not exists source_epoch_id text" in schema
+    assert "coverage_schema_version in ('ai-platform.conversation-authority.v2', 'ai-platform.conversation-authority.v3')" in schema
+    assert "create table if not exists execution_recovery_operations" in schema
+    assert "create table if not exists execution_recovery_invocations" in schema
 
     assert (
         "agent_profile_revisions",
@@ -1076,6 +1118,33 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_COLUMNS
     for name in ("provider_renewed_at", "provider_expires_at"):
         assert ("sandbox_leases", name, "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
+    for column in (
+        ("cancel_delivery_status", "text", True),
+        ("cancel_delivery_owner_generation", "int8", False),
+        ("cancel_delivery_claim_token", "text", False),
+        ("cancel_delivery_claimed_at", "timestamptz", False),
+        ("cancel_delivery_retry_not_before", "timestamptz", False),
+        ("cancel_delivery_accepted_at", "timestamptz", False),
+        ("cancel_delivery_attempt_count", "int4", True),
+        ("cancel_delivery_last_error_code", "text", True),
+    ):
+        assert ("sandbox_leases", *column) in schema_migrations.CRITICAL_COLUMNS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_status",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_attempt_count",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_claim",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "idx_sandbox_leases_cancel_delivery_due",
+        False,
+    ) in schema_migrations.CRITICAL_INDEXES
     for column in (
         ("revision", "int8"),
         ("base_url", "text"),
@@ -1226,12 +1295,36 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "sandbox_leases",
         "chk_sandbox_leases_executor_reconciliation_status",
     ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_status",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_attempt_count",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
+    assert (
+        "sandbox_leases",
+        "chk_sandbox_leases_cancel_delivery_claim",
+    ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
             "sandbox_leases",
             "trg_reject_legacy_attempt_settlement_write",
             "reject_legacy_attempt_settlement_write",
             19,
+        ),
+        (
+            "sandbox_leases",
+            "trg_sandbox_leases_clear_cancel_delivery_terminal",
+            "ai_platform_clear_cancel_delivery_on_executor_terminal",
+            19,
+        ),
+        (
+            "run_attempt_settlements",
+            "trg_run_attempt_settlements_clear_cancel_delivery",
+            "ai_platform_clear_sandbox_cancel_delivery_on_receipt",
+            21,
         ),
         (
             "run_attempts",
@@ -1770,6 +1863,60 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ),
         (
             "sandbox_leases",
+            "chk_sandbox_leases_cancel_delivery_status",
+            "c",
+            "CHECK (cancel_delivery_status = ANY (ARRAY["
+            "'none'::text, 'pending'::text, 'claimed'::text, 'retry'::text, "
+            "'accepted'::text]))",
+        ),
+        (
+            "sandbox_leases",
+            "chk_sandbox_leases_cancel_delivery_attempt_count",
+            "c",
+            "CHECK (cancel_delivery_attempt_count >= 0)",
+        ),
+        (
+            "sandbox_leases",
+            "chk_sandbox_leases_cancel_delivery_claim",
+            "c",
+            "CHECK (cancel_delivery_status = 'none'::text "
+            "AND cancel_delivery_owner_generation IS NULL "
+            "AND cancel_delivery_claim_token IS NULL "
+            "AND cancel_delivery_claimed_at IS NULL "
+            "AND cancel_delivery_retry_not_before IS NULL "
+            "AND cancel_delivery_accepted_at IS NULL "
+            "OR cancel_delivery_status = 'pending'::text "
+            "AND cancel_delivery_owner_generation IS NOT NULL "
+            "AND cancel_delivery_owner_generation > 0 "
+            "AND cancel_delivery_claim_token IS NULL "
+            "AND cancel_delivery_claimed_at IS NULL "
+            "AND cancel_delivery_retry_not_before IS NULL "
+            "AND cancel_delivery_accepted_at IS NULL "
+            "OR cancel_delivery_status = 'claimed'::text "
+            "AND cancel_delivery_owner_generation IS NOT NULL "
+            "AND cancel_delivery_owner_generation > 0 "
+            "AND cancel_delivery_claim_token IS NOT NULL "
+            "AND cancel_delivery_claim_token <> ''::text "
+            "AND cancel_delivery_claimed_at IS NOT NULL "
+            "AND cancel_delivery_retry_not_before IS NULL "
+            "AND cancel_delivery_accepted_at IS NULL "
+            "OR cancel_delivery_status = 'retry'::text "
+            "AND cancel_delivery_owner_generation IS NOT NULL "
+            "AND cancel_delivery_owner_generation > 0 "
+            "AND cancel_delivery_claim_token IS NULL "
+            "AND cancel_delivery_claimed_at IS NULL "
+            "AND cancel_delivery_retry_not_before IS NOT NULL "
+            "AND cancel_delivery_accepted_at IS NULL "
+            "OR cancel_delivery_status = 'accepted'::text "
+            "AND cancel_delivery_owner_generation IS NOT NULL "
+            "AND cancel_delivery_owner_generation > 0 "
+            "AND cancel_delivery_claim_token IS NULL "
+            "AND cancel_delivery_claimed_at IS NULL "
+            "AND cancel_delivery_retry_not_before IS NULL "
+            "AND cancel_delivery_accepted_at IS NOT NULL)",
+        ),
+        (
+            "sandbox_leases",
             "chk_sandbox_leases_executor_reconciliation_status",
             "c",
             "CHECK (executor_reconciliation_status = ANY (ARRAY["
@@ -1851,6 +1998,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "idx_sandbox_leases_attempt",
         False,
     ) in schema_migrations.CRITICAL_INDEXES
+    assert (
+        "idx_sandbox_leases_cancel_delivery_due",
+        False,
+    ) in schema_migrations.CRITICAL_INDEXES
     assert ("uq_run_attempts_one_open", True) in schema_migrations.CRITICAL_INDEXES
     static_indexes = {
         definition.name: definition
@@ -1863,6 +2014,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert static_indexes["uq_run_attempts_one_open"].predicate_expression == (
         "status = any array['created', 'queued', 'claimed', 'running', "
         "'cancel_requested', 'expired']"
+    )
+    assert static_indexes["idx_sandbox_leases_cancel_delivery_due"].column_names == (
+        "cancel_delivery_status",
+        "cancel_delivery_retry_not_before",
+        "cancel_delivery_claimed_at",
+        "id",
     )
     assert static_indexes["idx_run_attempts_run_created"].descending == (
         False,
@@ -1964,12 +2121,41 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "executor_terminal_reconciliation_attempt_count integer",
         "executor_reconciliation_error text",
         "executor_reconciled_at timestamptz",
+        "cancel_delivery_status text",
+        "cancel_delivery_owner_generation bigint",
+        "cancel_delivery_claim_token text",
+        "cancel_delivery_claimed_at timestamptz",
+        "cancel_delivery_retry_not_before timestamptz",
+        "cancel_delivery_accepted_at timestamptz",
+        "cancel_delivery_attempt_count integer",
+        "cancel_delivery_last_error_code text",
     ):
         assert f"alter table sandbox_leases add column if not exists {column}" in schema
     assert (
         "check (executor_reconciliation_status in "
         "('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'))"
     ) in schema
+
+    functions = {
+        function_name: body
+        for _relation, _trigger, function_name, _trigger_type, body
+        in schema_migrations._critical_trigger_contract()
+    }
+    receipt_trigger = functions["ai_platform_clear_sandbox_cancel_delivery_on_receipt"]
+    assert "receipt_identity" in receipt_trigger
+    assert "receipt_json" in receipt_trigger
+    assert "receipt_recorded_at" in receipt_trigger
+    for retired_column in (
+        "executor_terminal_json",
+        "executor_reconciliation_context_json",
+        "executor_reconciliation_intent_context_json",
+        "executor_reconciliation_status",
+        "executor_reconciliation_claim_token",
+        "executor_reconciliation_claimed_at",
+        "executor_reconciliation_retry_not_before",
+        "executor_terminal_reconciliation_attempt_count",
+    ):
+        assert retired_column not in receipt_trigger
 
 
 def test_terminal_retry_and_claim_indexes_have_one_catalog_owner():

@@ -7294,7 +7294,8 @@ async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkey
     assert closed.is_set()
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == "" and not result.received_structured_terminal
-    assert result.provider_final_sequence is None
+    assert result.provider_final_sequence == 1
+    assert result.sdk_settlement["mirror_complete"] is False
     assert result.response_files == [] and result.response_file_descriptors == []
     assert len(json.dumps(result.runtime_diagnostics).encode()) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
     public, private = await _persist_sdk_failure_diagnostics(result)

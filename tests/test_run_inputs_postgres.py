@@ -61,11 +61,14 @@ async def inputs_db():
                 insert into runs values ('tenant','run','owner','running',null,
                   'workspace','session','agent','context',now());
                 insert into run_attempts values ('attempt','tenant','run','running',1);
+                alter table run_attempts add column owner_generation bigint not null default 1;
+                alter table run_attempts add column execution_spec_json jsonb not null default '{}';
             """)
             source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
             start = source.index("create table if not exists run_input_sessions")
             end = source.index("create or replace function", start)
             await conn.execute(source[start:end])
+            await conn.execute(Path("app/execution/infrastructure/recovery_operations_schema.sql").read_text())
             await conn.commit()
         yield connect, build_run_inputs_service()
     finally:

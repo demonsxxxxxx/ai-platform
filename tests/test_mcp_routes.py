@@ -602,6 +602,10 @@ def install_mcp_route_fakes(
         }
         payload.pop("server_name", None)
         calls.append(("upsert_distribution", payload))
+        metadata = dict(kwargs["metadata_json"])
+        current_metadata = (distributions.get(capability_id) or {}).get("metadata_json") or {}
+        if "public_operation_summaries" not in metadata and "public_operation_summaries" in current_metadata:
+            metadata["public_operation_summaries"] = current_metadata["public_operation_summaries"]
         row = {
             "capability_kind": capability_kind,
             "capability_id": capability_id,
@@ -610,7 +614,7 @@ def install_mcp_route_fakes(
             "scope_mode": kwargs["scope_mode"],
             "department_ids": list(kwargs["department_ids"]),
             "allowed_roles": list(kwargs["allowed_roles"]),
-            "metadata_json": dict(kwargs["metadata_json"]),
+            "metadata_json": metadata,
         }
         distributions[capability_id] = row
         return dict(row)

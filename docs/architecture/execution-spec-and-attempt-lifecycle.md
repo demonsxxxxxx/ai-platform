@@ -549,6 +549,52 @@ Only the original queue-worker Attempt at that generation, or its explicit
 `cancel_requested` state exactly one generation later with a Run cancellation,
 is eligible. A later owner/generation is never adopted by rereading current rows.
 Cancellation retains the existing terminal policy and native append-tail limits.
+Reconciliation with cancellation intent continues through the frozen binding into
+result commit; the ordinary queued predispatch cancellation shortcut and its
+cancel-intent fence apply only to new execution. The result transaction settles
+Context before its actual terminal CAS, preserving the distinct original writer
+and current cancellation generations. An exact persisted stop/save checkpoint
+also completes lease finalization without reconnecting the destroyed Sandbox.
+Unknown or mismatched checkpoint scope, generation or container identity cannot
+supply stop proof.
+A complete stopped/saved checkpoint is validated against the frozen scope,
+lease generation and persisted container before restoring its handle. For this
+read-only consumption only, immutable historical OpenSandbox identity labels may
+outlive the currently configured executor image; the existing static label/image
+binding checks still apply. This grants no spawn, probe, stop or credential
+capability. Without that checkpoint, current-image live-handle authorization
+remains required. Quarantined receipts are not automatically reactivated.
+
+An explicitly authorized operator may invoke
+`repair_quarantined_executor_checkpoint` for one exact scope, Run, Attempt,
+lease, original owner generation and invocation ID. Eligibility is restricted to
+this stopped/saved failed-receipt case, quarantined solely for
+`executor_reconciliation_runtime_handle_invalid`, with a running Run whose
+cancellation target remains latched and no later Attempt or other writer. The
+operation checks canonical frozen authority, original SDK/checkpoint agreement,
+immutable handle labels, the actual saved workspace manifest and the complete
+native ACK prefix before writing a fresh repair claim. Empty saved workspaces
+are valid. It records one bounded `checkpoint_repair` mark retaining the original
+quarantine reason/time and the new invocation/claim authority; it never rewrites
+the original terminal or checkpoint receipt.
+
+That claim, Context/diagnostics settlement, legal cancellation terminal CAS and
+lease finalization share one outer transaction. Failure rolls back the repair
+mark and leaves quarantine intact. Publication follows the outer commit; no
+producer, model or MCP operation runs. Replay is rejected. This is an internal
+operator invocation, not an automatic scan, UI/HTTP endpoint, generic retry or
+permission to repair any other historical Run.
+
+A failed executor receipt may complete the cancelled lifecycle only when the
+Run's cancellation target is already latched and the current claimed
+reconciliation supplies stopped/not-found evidence with a saved workspace.
+Context validates that receipt before the unchanged terminal CAS. The cancelled
+Run retains the original executor failure in its result and private diagnostics;
+SDK settlement error and external-effect uncertainty remain private facts. An
+unknown external effect still produces `recovery_candidate` and the next native
+Attempt's inspection gate, never an automatic resumable/unlocked state. Ordinary
+failures without cancellation and successful-result arbitration keep their
+existing policies.
 
 The result-commit service still checks the claim before writing result facts,
 then rechecks Attempt authority at terminalization; a failed terminal CAS rolls
@@ -562,6 +608,17 @@ contexts no longer write the redundant `adapter_context.run_payload`; the outer
 `run_payload` remains the actual recovery consumer. Historical inner keys remain
 ignored by finalization, with no data migration. Native transcripts, append/turn
 receipts, old snapshot readers and legacy canonical spec fields are preserved.
+The reconciliation-only early cancellation shortcut and cancel-intent dispatch
+rejection are retired; ordinary queued dispatch keeps both checks. Owning
+regressions include `test_runs_worker_dispatch_admission.py`,
+`test_execution_spec.py` and `test_reconciled_cancel_commit*.py`.
+The old runtime-status-only selection for a latched, stopped failed receipt is
+replaced at the shared result-commit owner. Existing runtime-cancelled receipts
+and ordinary predispatch/failed-result behavior remain compatible; no claim,
+Attempt generation or Context verification path is retired or weakened.
+Checkpoint consumption no longer requires the destroyed producer to match the
+new deployment's executor image. Live-provider and new-dispatch current-image
+checks retain their original owners and are not compatibility bypasses.
 
 Source regressions cover pure frozen restoration, invalid/stale fences, current
 revocation, exact scope/claim/owner, cancellation generation, canonical drift,

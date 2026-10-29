@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.context.api import get_session_continuation
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -254,15 +255,16 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw_agent_id = row.get("agent_id")
     retired_agent = is_retired_agent_for_projection(
-        row.get("agent_id"),
+        raw_agent_id,
         row.get("agent_default_skill_id"),
         row.get("agent_profile_has_retired_skill"),
     )
     agent_id = (
         PUBLIC_RETIRED_AGENT_ID
         if retired_agent
-        else public_agent_id_for_projection(row.get("agent_id"), row.get("agent_default_skill_id"))
+        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
     )
     return {
         "id": row["id"],
@@ -1873,6 +1875,12 @@ async def session_events(
                 "events": [],
                 "next_cursor": None,
                 "terminal_run_statuses": {},
+                "continuation": await get_session_continuation(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                ),
             }
 
         index = cursor_payload["index"]
@@ -2001,6 +2009,9 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
+            "continuation": await get_session_continuation(
+                conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+            ),
         }
 
 
@@ -2075,12 +2086,16 @@ async def chat_status(
             target = next(
                 (row for row in rows if row.get("session_generation") is not None), None
             )
+        continuation = await get_session_continuation(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+        )
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {
         "session_id": session_id,
         "run_id": run_id,
         "status": _lambchat_status(raw_status),
         "raw_status": raw_status,
+        "continuation": continuation,
     }
 
 

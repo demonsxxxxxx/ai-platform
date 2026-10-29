@@ -513,6 +513,19 @@
         "warning": "需要处理"
       }
     },
+    "continuation": {
+      "checking": "正在检查会话恢复状态。草稿已保留，确认前暂不能发送；若一直未确认，请刷新会话检查。",
+      "settling": "任务正在收尾并保存工作文件。草稿已保留，收尾完成后再发送。",
+      "resumable": "会话记录和工作文件已保存。可发送新消息继续，不会自动重发上一条任务。",
+      "recovery_candidate": "已保存可供恢复检查的记录和工作文件。可发送新消息继续；平台将先检查恢复状态，未确认的外部操作不会自动重放。",
+      "blocked": "当前会话暂不能继续。请联系管理员检查恢复状态；已有历史和已保存的文件仍保留。",
+      "writer_unverified": "尚未确认上一次执行已停止。为避免并发操作，暂不能继续；请联系管理员确认执行已停止或隔离。草稿已保留。",
+      "workspace_unsaved": "上一次工作文件尚未完整保存，当前会话不能安全继续。请联系管理员检查文件保存状态；请勿重复执行可能已完成的外部操作。",
+      "native_unavailable": "会话原生记录不可用，无法恢复上下文。已有公开历史和已保存的文件仍保留；可新建会话并按需添加获准使用的附件。",
+      "capacity_exhausted": "当前会话记录容量已用尽，无法在此会话继续。历史和已保存的文件仍保留；请通过现有入口新建会话。",
+      "unavailable": "此记录未提供可确认的恢复状态，无法确认工作文件已保存。",
+      "refresh": "刷新会话检查"
+    },
     "runTerminal": {
       "cancelledWithPartial": "任务已取消。取消前已产生的公开内容仍会保留。",
       "capabilityNotAuthorized": "当前账号不能使用所选能力。请重新选择或联系管理员。",
@@ -1076,6 +1089,15 @@
       "allowedDepartments": "允许的部门",
       "allowedDepartmentsDescription": "从部门目录选择，留空表示不限制部门。",
       "connectionReentry": "编辑时会显示已保存的 URL 和 HTTP 头。",
+      "publicSummaryTitle": "公开操作摘要",
+      "publicSummaryDescription": "仅声明可向用户公开的动作及业务对象名称。字段路径以点分隔，例如 project.name；未选字段不会展示。禁止账号、密钥和内部路径。未登记的工具保持只读恢复检查。",
+      "publicSummaryInvalid": "请填写唯一工具名、动作、业务对象名称和非敏感参数字段路径",
+      "publicSummaryTool": "工具名",
+      "publicSummaryAction": "动作名称",
+      "publicSummaryObject": "业务对象名称",
+      "publicSummaryPath": "参数字段路径",
+      "publicSummaryRemove": "移除公开摘要",
+      "publicSummaryAdd": "添加公开摘要",
       "removeRole": "移除角色 {{role}}",
       "add": "添加",
       "allRoles": "所有角色（无限制）",
