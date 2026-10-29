@@ -198,11 +198,10 @@ interface ChatViewProps {
   onToggleAgentOption: (key: string, value: boolean | string | number) => void;
   availableModels: ModelOption[];
   currentModelId: string;
-  modelSelectionMode?: "auto" | "explicit";
   modelGroups?: PublicModelGroup[];
   selectedGroupId?: string;
   onSelectGroup?: (groupId: string) => void;
-  onSelectModel: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
+  onSelectModel: (modelId: string, modelValue: string) => void;
   onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
     content: string,
@@ -274,7 +273,6 @@ export function ChatView({
   onToggleAgentOption,
   availableModels,
   currentModelId,
-  modelSelectionMode = "explicit",
   modelGroups = [],
   selectedGroupId,
   onSelectGroup,
@@ -981,7 +979,6 @@ export function ChatView({
     onToggleAgentOption,
     availableModels,
     currentModelId,
-    modelSelectionMode,
     modelGroups,
     selectedGroupId,
     onSelectGroup,

@@ -751,7 +751,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
         model: "provider/client-model",
         enable_thinking: "high",
         group_id: "group-support",
-        selection_mode: "auto",
+        selection_mode: "explicit",
       },
       [],
       ["client-disabled-skill"],
@@ -775,7 +775,29 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.model_id, "client-override");
     assert.equal(calls[0]?.body.model, "provider/client-model");
     assert.equal(calls[0]?.body.group_id, "group-support");
-    assert.equal(calls[0]?.body.selection_mode, "auto");
+    assert.equal(calls[0]?.body.selection_mode, "explicit");
+    await assert.rejects(
+      sessionApi.submitChat(
+        "Review this",
+        "session-agent",
+        {
+          model_id: "client-override",
+          model: "provider/client-model",
+          group_id: "group-support",
+          selection_mode: "auto",
+        },
+        [],
+        undefined,
+        undefined,
+        undefined,
+        "synthetic-auto-submission",
+        "general-agent",
+        undefined,
+        { agent_id: "agt_support" },
+      ),
+      (error: unknown) => error instanceof Error && error.message === "unsupported_model_selection_mode",
+    );
+    assert.equal(calls.length, 1, "an external legacy auto selection must fail before sending a request");
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",
@@ -790,6 +812,17 @@ test("pinned Agent conversations submit only through the dedicated selector-free
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("the generic chat request serializer rejects legacy auto model mode and marks concrete models explicit", () => {
+  assert.throws(
+    () => buildSubmitChatBody({ message: "continue", agentOptions: { selection_mode: "auto" } }),
+    (error: unknown) => error instanceof Error && error.message === "unsupported_model_selection_mode",
+  );
+  assert.deepEqual(
+    buildSubmitChatBody({ message: "continue", agentOptions: { model_id: "model-a", model: "provider/model-a" } }).agent_options,
+    { model_id: "model-a", model: "provider/model-a", selection_mode: "explicit" },
+  );
 });
 
 test("detects chat stream confirmation responses without a run id", () => {

@@ -28,6 +28,8 @@
 
 ## 退役库存
 
+聊天选择状态、组件回调和请求序列化统一使用具体模型；旧会话中携带具体模型的 `auto` 标记在恢复时不进入新请求。直接向客户端 API 提交 `auto` 模式会被拒绝，服务端也独立拒绝该模式。历史模型失去资格时仍需用户重新选择。
+
 旧“用户重新加载聊天页面后获取最新列表”提示和仅登录时加载目录的路径已由上述刷新入口替代；无新增逐模型 ACL 兼容路径。
 
 旧 `ModelUserAccess` 逐模型员工 ACL 控件及其 mounted test 已删除。`modelAdminApi.publish` 不再发送 `is_default`、`access_mode` 或 `allowed_user_ids`；这些字段属于后端迁移只读输入，分组授权只通过上述分组接口完成。保留 `agentProfile` 的 `allowed_user_ids` 是专家发布的独立产品契约，不是模型目录 ACL。

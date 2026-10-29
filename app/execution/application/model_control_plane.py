@@ -459,13 +459,15 @@ class ModelControlPlaneService:
         user_id: str,
         tenant_id: str | None = None,
         group_id: str | None = None,
-        selection_mode: str = "auto",
+        selection_mode: str | None = None,
         usage_scene: str = "independent",
     ) -> RunModelSelection:
         effective_group_id = group_id or (selection or {}).get("group_id")
-        effective_mode = (selection or {}).get("selection_mode") or (
-            "explicit" if (selection or {}).get("id") or (selection or {}).get("value") else selection_mode
-        )
+        selected_model = bool((selection or {}).get("id") or (selection or {}).get("value"))
+        if any(mode is not None and mode != "explicit" for mode in (selection_mode, (selection or {}).get("selection_mode"))):
+            raise ValueError("model_selection_conflict")
+        requested_mode = (selection or {}).get("selection_mode") or selection_mode
+        effective_mode = "explicit" if selected_model else requested_mode
         async def resolve_effective(conn: Any, *, model_id: str | None, model_value: str | None, user_id: str) -> RunModelSelection | None:
             return await self._repository.resolve_run_model(
                 conn,

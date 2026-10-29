@@ -29,11 +29,10 @@ export interface ChatInputToolbarProps {
   totalSkillsCount: number;
   availableModels: ModelOption[];
   currentModelId?: string;
-  modelSelectionMode?: "auto" | "explicit";
   modelGroups?: PublicModelGroup[];
   selectedGroupId?: string;
   onSelectGroup?: (groupId: string) => void;
-  onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
+  onSelectModel?: (modelId: string, modelValue: string) => void;
   showModelSelector?: boolean;
   agentOptions?: Record<string, AgentOption>;
   agentOptionValues?: Record<string, boolean | string | number>;

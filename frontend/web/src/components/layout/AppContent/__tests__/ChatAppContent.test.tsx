@@ -85,7 +85,8 @@ test("the configured group default wins over display order and manual selection 
 test("stale model selection is cleared and blocks send until explicit selection", () => {
   const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
   assert.match(source, /hasPriorSelection && !stillAvailable[\s\S]*?setCurrentModelId\(""\)[\s\S]*?请重新选择模型/);
-  assert.match(source, /modelSelectionMode === "explicit" && !availableModels\.some\(\(model\) => model\.id === currentModelId && model\.value === currentModelValue\)[\s\S]*?return \{ status: "failed" \}/);
+  assert.match(source, /if \(!availableModels\.some\(\(model\) => model\.id === currentModelId && model\.value === currentModelValue\)\)[\s\S]*?return \{ status: "failed" \}/);
+  assert.doesNotMatch(source, /modelSelectionMode|selection_mode:\s*"auto"/);
   assert.match(source, /handleSelectModel[\s\S]*?setModelSelectionError\(null\)/);
   assert.doesNotMatch(source, /localStorage\.getItem\("defaultModel/);
   assert.match(source, /if \(!availableModels \|\| catalogSelectionError\) return;/,

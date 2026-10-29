@@ -715,7 +715,6 @@ export function ChatAppContent({
 
   const [currentModelId, setCurrentModelId] = useState("");
   const [currentModelValue, setCurrentModelValue] = useState("");
-  const [modelSelectionMode, setModelSelectionMode] = useState<"auto" | "explicit">("explicit");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -728,9 +727,6 @@ export function ChatAppContent({
 
   useEffect(() => {
     if (!availableModels || catalogSelectionError) return;
-    if (modelSelectionMode === "auto") {
-      setModelSelectionMode("explicit");
-    }
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
     const stillAvailable = availableModels.some((model) =>
       (currentModelId && model.id === currentModelId)
@@ -759,7 +755,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError, modelSelectionMode]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -774,8 +770,7 @@ export function ChatAppContent({
   ]);
 
   const handleSelectModel = useCallback(
-    (modelId: string, modelValue: string, mode: "auto" | "explicit" = "explicit") => {
-      setModelSelectionMode(mode);
+    (modelId: string, modelValue: string) => {
       setCurrentModelId(modelId);
       setCurrentModelValue(modelValue);
       setModelSelectionError(null);
@@ -785,7 +780,6 @@ export function ChatAppContent({
 
   const handleSelectGroup = useCallback((groupId: string) => {
     selectGroup(groupId);
-    setModelSelectionMode("explicit");
     setCurrentModelId("");
     setCurrentModelValue("");
     setModelSelectionError(null);
@@ -809,9 +803,9 @@ export function ChatAppContent({
         agentOptions: {
           ...lockedAgentOptionValues,
           ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
-          selection_mode: modelSelectionMode,
-          ...(modelSelectionMode === "explicit" && currentModelValue ? { model: currentModelValue } : {}),
-          ...(modelSelectionMode === "explicit" && currentModelId ? { model_id: currentModelId } : {}),
+          selection_mode: "explicit",
+          ...(currentModelValue ? { model: currentModelValue } : {}),
+          ...(currentModelId ? { model_id: currentModelId } : {}),
         },
       }
       : {
@@ -820,9 +814,9 @@ export function ChatAppContent({
         agentOptions: {
           ...agentOptionValues,
           ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
-          selection_mode: modelSelectionMode,
-          ...(modelSelectionMode === "explicit" && currentModelValue ? { model: currentModelValue } : {}),
-          ...(modelSelectionMode === "explicit" && currentModelId ? { model_id: currentModelId } : {}),
+          selection_mode: "explicit",
+          ...(currentModelValue ? { model: currentModelValue } : {}),
+          ...(currentModelId ? { model_id: currentModelId } : {}),
         },
       };
 
@@ -1017,14 +1011,17 @@ export function ChatAppContent({
       restoreSessionConfig(config);
 
       if (config.agent_options) {
-        restoreAgentOptions(config.agent_options);
+        const restoredAgentOptions = { ...config.agent_options };
+        delete restoredAgentOptions.model_id;
+        delete restoredAgentOptions.model;
+        delete restoredAgentOptions.group_id;
+        delete restoredAgentOptions.selection_mode;
+        restoreAgentOptions(restoredAgentOptions);
 
         const restoredModelSelection = getRestoredModelSelection(config);
         const restoredOptions = config.agent_options as Record<string, unknown>;
         const restoredGroupId = typeof restoredOptions.group_id === "string" ? restoredOptions.group_id : "";
-        const restoredMode = restoredModelSelection.selectionMode;
         if (restoredGroupId) selectGroup(restoredGroupId);
-        setModelSelectionMode(restoredMode);
         setModelSelectionError(null);
         if (restoredModelSelection.modelId) {
           setCurrentModelId(restoredModelSelection.modelId);
@@ -1068,7 +1065,6 @@ export function ChatAppContent({
 
     resetAgentOptionDefaults();
 
-    setModelSelectionMode("explicit");
     setCurrentModelId("");
     setCurrentModelValue("");
     setModelSelectionError(null);
@@ -1096,7 +1092,7 @@ export function ChatAppContent({
         setModelSelectionError("当前没有可用业务组或模型，请联系管理员配置业务组。");
         return { status: "failed" };
       }
-      if (modelSelectionMode === "explicit" && !availableModels.some((model) => model.id === currentModelId && model.value === currentModelValue)) {
+      if (!availableModels.some((model) => model.id === currentModelId && model.value === currentModelValue)) {
         setModelSelectionError("请先选择当前可用的模型。");
         return { status: "failed" };
       }
@@ -1211,7 +1207,6 @@ export function ChatAppContent({
       availableModels,
       currentModelId,
       currentModelValue,
-      modelSelectionMode,
       selectedGroup,
     ],
   );
@@ -1442,7 +1437,6 @@ export function ChatAppContent({
             onToggleAgentOption={handleToggleAgentOption}
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
-            modelSelectionMode={modelSelectionMode}
             modelGroups={modelGroups}
             selectedGroupId={selectedGroupId}
             onSelectGroup={handleSelectGroup}

@@ -121,10 +121,6 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
                 raise ValueError("model_group_default_change_required")
             if old_default in group["models"] and not bool(group["models"][old_default].get("enabled", True)):
                 raise ValueError("model_group_default_model_invalid")
-        elif group["models"]:
-            first_model = min(group["models"].values(), key=lambda model: (model["display_order"], model["model_id"]))
-            if not bool(first_model.get("enabled", True)):
-                raise ValueError("model_group_default_model_invalid")
         desired_models[key] = group["models"]
     user_rows = await (await conn.execute("select id, tenant_id, auth_source, external_id, status, model_group_membership_revision from users where tenant_id=any(%s) order by tenant_id,id", (tenants,))).fetchall()
     members = await (await conn.execute("select m.*, g.code from model_group_members m join model_groups g on g.id=m.group_id where m.tenant_id=any(%s) order by m.tenant_id,m.user_id,g.code", (tenants,))).fetchall()
@@ -222,8 +218,9 @@ async def apply_mapping(mapping_path: Path) -> dict[str, Any]:
                     await conn.execute("insert into model_group_models(group_id,model_id,enabled,display_order,priority,weight) values (%s,%s,%s,%s,%s,%s)", (groups[key]["id"], m["model_id"], m["enabled"], m["display_order"], m["priority"], m["weight"]))
                 old_default = groups[key].get("default_model_id")
                 new_default = old_default if old_default in item["models"] else None
-                if not current_models.get(key) and item["models"]:
-                    new_default = min(item["models"].values(), key=lambda m: (m["display_order"], m["model_id"]))["model_id"]
+                if old_default is None and not any(m["enabled"] for m in current_models.get(key, {}).values()) and item["models"]:
+                    first_enabled = min((m for m in item["models"].values() if m["enabled"]), key=lambda m: (m["display_order"], m["model_id"]), default=None)
+                    new_default = first_enabled["model_id"] if first_enabled else None
                 await conn.execute("update model_groups set default_model_id=%s where id=%s", (new_default, groups[key]["id"]))
         changed_users = 0
         for key in state["covered_users"]:

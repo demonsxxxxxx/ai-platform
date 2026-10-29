@@ -409,6 +409,20 @@ def test_selected_profile_accepts_user_owned_model_selectors():
         AgentProfileAuthority.reject_profile_selector_conflicts(request, active=True)
 
 
+@pytest.mark.parametrize("selector", [
+    {"selection_mode": "auto"},
+    {"selection_mode": "auto", "group_id": "group-a", "model_id": "catalog-model"},
+])
+def test_agent_run_request_rejects_auto_before_admission(selector):
+    from app.routes.agent_profiles import AgentAppRunRequest
+
+    with pytest.raises(ValueError, match="model_selection_conflict"):
+        AgentAppRunRequest(
+            message="Help me", submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            **selector,
+        )
+
+
 def test_selected_profile_is_identity_only_and_rejects_client_version_locks():
     assert SelectedAgentProfileRequest(agent_id="agt_support").model_dump() == {"agent_id": "agt_support"}
     with pytest.raises(ValueError):

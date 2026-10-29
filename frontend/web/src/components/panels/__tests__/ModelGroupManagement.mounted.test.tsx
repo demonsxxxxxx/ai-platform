@@ -231,6 +231,66 @@ test("drawer keeps drafts across tabs, reorders models and saves single-group me
   }
 });
 
+test("disabling the current default requires selecting an enabled replacement before save", async () => {
+  const view = await mount({ ...summary, members: [], default_model_id: "a", models: ["a", "b"].map((id, index) => ({
+    model_id: id, model_value: id, label: id, enabled: true, display_order: index, priority: 0, weight: 100,
+  })) });
+  const clickButton = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  try {
+    await clickButton("编辑 销售组");
+    await clickButton("模型");
+    const disableDefault = document.querySelector<HTMLElement>('[role="switch"][aria-label="启用 a"]');
+    assert.ok(disableDefault);
+    await view.React.act(async () => disableDefault.click());
+
+    const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "保存模型");
+    const replacement = document.querySelector<HTMLInputElement>('input[aria-label="设为默认模型 b"]');
+    assert.ok(save);
+    assert.ok(replacement);
+    assert.equal(replacement.disabled, false, "an enabled model remains selectable as the new default");
+    assert.equal(save.disabled, true, "a disabled default is cleared and cannot be saved");
+    assert.match(document.querySelector("[data-model-group-models]")?.textContent ?? "", /请先选择一个已启用的默认模型/);
+
+    await view.React.act(async () => replacement.click());
+    assert.equal(save.disabled, false);
+    await view.React.act(async () => save.click());
+    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string; enabled: boolean }[]; default_model_id: string };
+    assert.equal(saved.default_model_id, "b");
+    assert.equal(saved.models.find((model) => model.model_id === "a")?.enabled, false);
+  } finally {
+    await view.React.act(async () => view.root.unmount()); view.restore();
+  }
+});
+
+
+test("all model associations can be disabled and saved with an empty default", async () => {
+  const view = await mount({ ...summary, members: [], default_model_id: "a", models: ["a", "b"].map((id, index) => ({
+    model_id: id, model_value: id, label: id, enabled: true, display_order: index, priority: 0, weight: 100,
+  })) });
+  const click = async (label: string) => view.React.act(async () => {
+    const button = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(button, label); button.click();
+  });
+  try {
+    await click("编辑 销售组");
+    await click("模型");
+    await click("启用 a");
+    await click("启用 b");
+    const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "保存模型");
+    assert.ok(save);
+    assert.equal(save.disabled, false);
+    await view.React.act(async () => save.click());
+    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string; enabled: boolean }[]; default_model_id: string | null };
+    assert.equal(saved.default_model_id, null);
+    assert.deepEqual(saved.models.map(({ model_id, enabled }) => ({ model_id, enabled })), [
+      { model_id: "a", enabled: false }, { model_id: "b", enabled: false },
+    ]);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
 
 test("default group explains computed users and keeps model assignment available", async () => {
   const view = await mount({ ...details, id: "group-default", code: "default", name: "普通默认组",

@@ -703,7 +703,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION == "2026.10.27.1"
     assert schema_migrations.MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION == "2026.10.27.2"
     assert schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION == "2026.10.28.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION
+    assert schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION == "2026.10.29.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS

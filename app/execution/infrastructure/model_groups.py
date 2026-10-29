@@ -10,7 +10,6 @@ from app.execution.domain.model_groups import (
     DEFAULT_GROUP_TYPE,
     ModelGroupPolicyError,
     ModelGroupSelection,
-    SELECTION_AUTO,
     SELECTION_EXPLICIT,
     USAGE_SCENE_CHAT,
     USAGE_SCENE_EXPERT,
@@ -354,11 +353,38 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
     model_ids = [str(item.get("model_id") or "") for item in models]
     if any(not model_id for model_id in model_ids) or len(model_ids) != len(set(model_ids)):
         raise ModelGroupPolicyError("model_group_model_duplicate")
-    first_model = min(models, key=lambda item: (int(item.get("display_order", 0)), str(item.get("model_id") or "")), default=None)
-    chosen_default = default_model_id or (str(group.get("default_model_id")) if group.get("default_model_id") in model_ids else None) or (str(first_model["model_id"]) if first_model else None)
+    enabled_model_ids = {
+        str(item.get("model_id"))
+        for item in models
+        if bool(item.get("enabled", True))
+    }
+    if default_model_id is not None:
+        chosen_default = str(default_model_id)
+    else:
+        configured_default = group.get("default_model_id")
+        chosen_default = (
+            str(configured_default)
+            if configured_default is not None
+            and str(configured_default) in enabled_model_ids
+            else None
+        )
+        if chosen_default is None:
+            first_enabled_model = min(
+                (item for item in models if bool(item.get("enabled", True))),
+                key=lambda item: (
+                    int(item.get("display_order", 0)),
+                    str(item.get("model_id") or ""),
+                ),
+                default=None,
+            )
+            chosen_default = (
+                str(first_enabled_model["model_id"])
+                if first_enabled_model is not None
+                else None
+            )
     if chosen_default is not None and chosen_default not in model_ids:
         raise ModelGroupPolicyError("model_group_default_model_invalid")
-    if chosen_default is not None and not any(str(item.get("model_id")) == chosen_default and bool(item.get("enabled", True)) for item in models):
+    if chosen_default is not None and chosen_default not in enabled_model_ids:
         raise ModelGroupPolicyError("model_group_default_model_invalid")
     current = await (await conn.execute(
         "select model_id, enabled, display_order, priority, weight from model_group_models where group_id = %s",
@@ -517,11 +543,11 @@ async def archive_or_delete_group(
     }
 
 
-async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_id: str | None, model_id: str | None, model_value: str | None, selection_mode: str, usage_scene: str) -> ModelGroupSelection:
-    if selection_mode not in {SELECTION_AUTO, SELECTION_EXPLICIT}:
+async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_id: str | None, model_id: str | None, model_value: str | None, selection_mode: str | None, usage_scene: str) -> ModelGroupSelection:
+    if selection_mode not in {None, SELECTION_EXPLICIT}:
         raise ModelGroupPolicyError("model_selection_conflict")
     explicit = model_id is not None or model_value is not None
-    if (selection_mode == SELECTION_AUTO and explicit) or (selection_mode == SELECTION_EXPLICIT and not explicit):
+    if selection_mode == SELECTION_EXPLICIT and not explicit:
         raise ModelGroupPolicyError("model_selection_conflict")
     group = await _effective_group(conn, tenant_id=tenant_id, user_id=user_id, group_id=group_id, usage_scene=usage_scene)
     if model_id is not None and model_value is not None:
@@ -551,7 +577,7 @@ async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_
         row = rows[0]
     return ModelGroupSelection(
         group_id=str(group["id"]), group_code=str(group["code"]), group_type=str(group["type"]),
-        group_revision=int(group["revision"]), policy_version="model-groups.v1", selection_mode=selection_mode,
+        group_revision=int(group["revision"]), policy_version="model-groups.v1", selection_mode=SELECTION_EXPLICIT,
         model_id=str(row["model_id"]), model_value=str(row["upstream_model_id"]), gateway_revision=int(row["gateway_revision"]),
         auto_compact_window=int(row["auto_compact_window"]), max_output_tokens=int(row["max_output_tokens"]),
         priority=int(row["priority"]), weight=int(row["weight"]),

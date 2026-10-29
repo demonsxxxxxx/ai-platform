@@ -3480,6 +3480,32 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_rejects_retired_auto_selection_before_run_side_effects(monkeypatch):
+    calls = []
+
+    async def fail_side_effect(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("retired auto selection must be rejected before Run persistence")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fail_side_effect)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.create_session", fail_side_effect)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.create_run", fail_side_effect)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.append_message", fail_side_effect)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_side_effect)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", agent_options={"selection_mode": "auto"}),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "model_selection_conflict"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("raw_model_id", [True, 123, 1.5])
 async def test_chat_stream_rejects_non_string_model_id_without_coercion(
     monkeypatch,
@@ -5842,7 +5868,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
             from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
             with pytest.raises(ValueError):
                 validate_model_group_snapshot(group_id="default-group", group_code="default", group_type="ordinary_default",
-                    group_revision=1, selection_mode="auto", usage_scene=usage_scene, policy_version="model-groups.v1")
+                    group_revision=1, selection_mode="explicit", usage_scene=usage_scene, policy_version="model-groups.v1")
             raise ValueError("group_not_available")
         monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", deny_default_model)
 

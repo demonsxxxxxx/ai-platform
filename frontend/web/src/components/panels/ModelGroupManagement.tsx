@@ -326,7 +326,13 @@ function GroupModelEditor({
     });
     setDraggedId(null);
   };
-  const update = (modelId: string, patch: Partial<AdminModelGroupModel>) => setModels((current) => current.map((item) => item.model_id === modelId ? { ...item, ...patch } : item));
+  const update = (modelId: string, patch: Partial<AdminModelGroupModel>) => {
+    if (patch.enabled === false && defaultModelId === modelId) setDefaultModelId("");
+    setModels((current) => current.map((item) => item.model_id === modelId ? { ...item, ...patch } : item));
+  };
+  const hasValidDefaultModel = !orderedModels.some((entry) => entry.enabled) || orderedModels.some(
+    (entry) => entry.model_id === defaultModelId && entry.enabled,
+  );
   const renderAssigned = (entry: AdminModelGroupModel, index: number) => (
     <div
       key={entry.model_id}
@@ -355,8 +361,9 @@ function GroupModelEditor({
     <section data-model-group-models className="flex min-h-0 flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div><h3 className="text-sm font-semibold">模型</h3><p className="text-xs text-[var(--theme-text-secondary)]">选择组内可用模型，并指定一个默认模型；用户仍可在聊天中手动切换。</p></div>
-        <Button type="primary" loading={busy} disabled={busy || (orderedModels.length > 0 && !defaultModelId)} htmlType="button" onClick={() => void onSave(renumber(orderedModels), details.revision, defaultModelId || null)} icon={<Save size={15} />}>保存模型</Button>
+        <Button type="primary" loading={busy} disabled={busy || !hasValidDefaultModel} htmlType="button" onClick={() => void onSave(renumber(orderedModels), details.revision, defaultModelId || null)} icon={<Save size={15} />}>保存模型</Button>
       </div>
+      {!hasValidDefaultModel ? <p className="text-sm text-[var(--theme-danger-text)]" role="alert">请先选择一个已启用的默认模型，然后保存。</p> : null}
       {isDefault ? <div className="flex items-start gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-3 text-sm text-[var(--theme-text-secondary)]"><Info size={16} className="mt-0.5 shrink-0" /><span>普通默认组模型仅供独立业务入口使用，不可用于对话或专家任务。</span></div> : null}
       <div className="min-h-0 overflow-auto rounded-lg border border-[var(--theme-border)]">
         {orderedModels.length ? <>

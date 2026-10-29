@@ -20,7 +20,31 @@ models, global catalog availability, gateway revision, and execution capacity
 before returning one model. Each group has a designated default model; chat selects
 that model initially and submits it explicitly. A user may choose another model in
 the same group. Neither explicit selection nor an unavailable default substitutes
-another model. Legacy `auto` requests resolve only the designated group default.
+another model. New requests accept only `explicit` selection mode; an `auto`
+request is rejected with `model_selection_conflict` before Run admission. An
+existing authorized entry point that omits model selection resolves only the
+designated group default and freezes the resulting concrete model as `explicit`.
+Priority and weight do not participate in model selection.
+
+Schema upgrades and first-time group configuration initialize the default from
+the first enabled association ordered by `display_order`, then model ID. A group
+with no enabled associations has no default. An explicitly supplied disabled
+default is rejected. When batch/mapping writes restore the first enabled
+association to a group with no default and no enabled associations, the same
+initialization rule applies. Legacy single-group configuration requests that omit the
+default preserve an enabled configured default or initialize one by this rule.
+Batch/mapping removal of the configured default while other models remain
+requires an administrator to choose a replacement first; these operations never
+select a replacement implicitly. Catalog or gateway unavailability
+never changes the configured default.
+
+Schema `2026.10.29.1` also repairs defaults created by earlier backfills when the
+selected group association is disabled: select the first enabled association or
+clear the default when none exists, and advance that group's revision. Reapplying
+the schema leaves repaired and valid defaults unchanged. Enabled associations
+whose catalog or gateway is unavailable retain their configured default. Existing
+Run snapshots remain frozen. Apply the schema before the compatible application;
+the schema readiness fence prevents an older binary from silently serving it.
 
 Chat and expert usage scenes reject execution through the ordinary-default group;
 a model shared with a business group remains usable through that business group. Direct independent
@@ -69,8 +93,9 @@ limits on the Run. Worker dispatch compiles grouped executions as
 `ai-platform.execution-spec.v4`; v1-v3 canonical specifications remain unchanged
 for historical reads and recovery of an existing attempt. A new copy/retry/resume
 reauthorizes the original model against current membership, then binds a complete
-v4 child snapshot without rewriting the source. An automatic continuation in the
-same group keeps the prior model; changing group starts a new selection.
+v4 child snapshot without rewriting the source. A continuation that omits a new
+model choice in the same group keeps the prior concrete model; changing group
+starts a new selection.
 Session detail restores only the latest frozen model ID/value and group ID as
 explicit selection metadata. It never exposes arbitrary Run input or grants;
 each subsequent submission reauthorizes that choice.
@@ -217,6 +242,16 @@ record; rollback of permissions is another reviewed mapping, not old ACL activat
   publication rejecting attempts to write them. They are not unioned into grants.
 - Old `model_id`/`model` request clients remain supported: an omitted mode infers
   explicit selection, and an omitted group resolves the user's primary group.
+- The weighted selector, public `auto` execution mode, continuation mode branch,
+  and frontend mode state are retired. Historical Run/ExecutionSpec/queue values
+  may still contain `auto`: their readers and SQL constraints retain that value
+  for decoding and existing-attempt recovery, not model routing. Copy/retry/resume
+  reauthorizes the frozen concrete model and writes a new `explicit` snapshot.
+  Those historical readers can be removed only after their retained records and
+  recoverable attempts have expired under the data lifecycle contract. Priority
+  and weight columns and accepted administration fields remain inert for existing
+  configuration/mapping consumers; removing them requires a separately verified
+  consumer migration and schema rollout.
 - Old Run/ExecutionSpec v1-v3 bytes and values are retained for historical decoding;
   new model binding requires a complete group snapshot. New replay uses v4.
 - The unused `inherit_run_model` API and its stale inheritance assertions are

@@ -73,6 +73,94 @@ async def _prepare_schema(conn: psycopg.AsyncConnection, schema_name: str) -> No
 
 
 @pytest.mark.asyncio
+async def test_model_groups_postgres_repairs_disabled_legacy_defaults_idempotently() -> None:
+    conn = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+    schema_name = f"model_group_default_repair_{uuid.uuid4().hex}"
+    try:
+        await _prepare_schema(conn, schema_name)
+        await conn.execute("""
+            insert into model_groups(id, tenant_id, code, name, type, default_model_id, revision)
+            values ('repair', 'tenant-a', 'repair', 'Repair', 'business', 'model-disabled', 7),
+                   ('empty', 'tenant-a', 'empty', 'Empty', 'business', 'model-a', 7),
+                   ('valid', 'tenant-a', 'valid', 'Valid', 'business', 'model-b', 7),
+                   ('unavailable', 'tenant-a', 'unavailable', 'Unavailable', 'business', 'model-disabled', 7)
+        """)
+        await conn.execute("""
+            insert into model_group_models(group_id, model_id, enabled, display_order)
+            values ('repair', 'model-disabled', false, 0), ('repair', 'model-a', true, 1),
+                   ('empty', 'model-a', false, 0), ('valid', 'model-a', true, 0),
+                   ('valid', 'model-b', true, 1), ('unavailable', 'model-disabled', true, 0),
+                   ('unavailable', 'model-a', true, 1)
+        """)
+        expected = [
+            {'id': 'empty', 'default_model_id': None, 'revision': 8},
+            {'id': 'repair', 'default_model_id': 'model-a', 'revision': 8},
+            {'id': 'unavailable', 'default_model_id': 'model-disabled', 'revision': 7},
+            {'id': 'valid', 'default_model_id': 'model-b', 'revision': 7},
+        ]
+        for _ in range(2):
+            await conn.execute(Path('app/schema.sql').read_text(encoding='utf-8'))
+            rows = await (await conn.execute(
+                "select id, default_model_id, revision from model_groups order by id"
+            )).fetchall()
+            assert rows == expected
+    finally:
+        await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_model_groups_postgres_initializes_default_when_disabled_group_recovers(monkeypatch, tmp_path) -> None:
+    conn = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+    schema_name = f"model_group_default_recovery_{uuid.uuid4().hex}"
+    try:
+        await _prepare_schema(conn, schema_name)
+        await conn.execute("""
+            insert into model_groups(id, tenant_id, code, name, type)
+            values ('group-batch', 'tenant-a', 'batch', 'Batch', 'business'),
+                   ('group-mapping', 'tenant-a', 'mapping', 'Mapping', 'business')
+        """)
+        for group_id in ('group-batch', 'group-mapping'):
+            saved = await set_group_models(
+                conn, tenant_id='tenant-a', group_id=group_id, revision=1,
+                models=[{'model_id': 'model-a', 'enabled': False}],
+            )
+            assert saved['default_model_id'] is None
+        for preview in (True, False):
+            result = await batch_group_models(
+                conn, tenant_id='tenant-a', group_ids=['group-batch'], model_ids=['model-b'],
+                operation='add', expected_group_revisions={'group-batch': 2}, preview=preview,
+            )
+            assert result['groups'][0]['after']['default_model_id'] == 'model-b'
+        import tools.model_group_migration as migration
+
+        @asynccontextmanager
+        async def transaction():
+            async with conn.transaction():
+                yield conn
+
+        monkeypatch.setattr(migration, 'transaction', transaction)
+        mapping = {'version': migration.VERSION, 'users': [], 'groups': [{
+            'tenant_id': 'tenant-a', 'code': 'mapping', 'name': 'Mapping',
+            'models': [{'model_id': 'model-a', 'enabled': True}],
+        }]}
+        mapping['expected_state'] = (await migration.preview_mapping(mapping))['expected_state']
+        path = tmp_path / 'mapping.json'
+        path.write_text(json.dumps(mapping), encoding='utf-8')
+        assert (await migration.apply_mapping(path))['changed_groups'] == 1
+        assert (await migration.apply_mapping(path))['changed_groups'] == 0
+        assert await (await conn.execute(
+            'select id, default_model_id, revision from model_groups order by id'
+        )).fetchall() == [
+            {'id': 'group-batch', 'default_model_id': 'model-b', 'revision': 3},
+            {'id': 'group-mapping', 'default_model_id': 'model-a', 'revision': 3},
+        ]
+    finally:
+        await conn.execute(sql.SQL('drop schema if exists {} cascade').format(sql.Identifier(schema_name)))
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_model_groups_postgres_atomic_primary_and_tenant_scope() -> None:
     dsn = _postgres_dsn()
     schema_name = f"model_groups_{uuid.uuid4().hex}"
@@ -187,18 +275,34 @@ async def test_model_groups_postgres_disabled_model_is_configurable_but_not_admi
         )
         configured = await set_group_models(
             conn, tenant_id="tenant-a", group_id="group-a", revision=2,
-            models=[{"model_id": "model-disabled", "enabled": True, "priority": 10, "weight": 100}],
+            models=[
+                {"model_id": "model-disabled", "enabled": True, "display_order": 0, "priority": 10, "weight": 100},
+                {"model_id": "model-a", "enabled": True, "display_order": 1, "priority": 0, "weight": 100},
+            ],
         )
         assert configured["revision"] == 3
         same = await set_group_models(
             conn, tenant_id="tenant-a", group_id="group-a", revision=3,
-            models=[{"model_id": "model-disabled", "enabled": True, "priority": 10, "weight": 100}],
+            models=[
+                {"model_id": "model-disabled", "enabled": True, "display_order": 0, "priority": 10, "weight": 100},
+                {"model_id": "model-a", "enabled": True, "display_order": 1, "priority": 0, "weight": 100},
+            ],
         )
         assert same["revision"] == 3
         cursor = await conn.execute(
             "select enabled from model_group_models where group_id = 'group-a' and model_id = 'model-disabled'"
         )
         assert (await cursor.fetchone())["enabled"] is True
+        assert await (await conn.execute(
+            "select default_model_id from model_groups where id = 'group-a'"
+        )).fetchone() == {"default_model_id": "model-disabled"}
+
+        with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
+            await resolve_group_model(
+                conn, tenant_id="tenant-a", user_id="user-a", group_id="group-a",
+                model_id=None, model_value=None, selection_mode=None,
+                usage_scene="independent",
+            )
 
         with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
             await resolve_group_model(
@@ -218,6 +322,7 @@ async def test_model_groups_postgres_disabled_model_is_configurable_but_not_admi
         )
         assert selected.model_id == "model-a"
         assert selected.model_value == "provider/model-a"
+        assert selected.selection_mode == "explicit"
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()
@@ -328,7 +433,20 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
         monkeypatch.setattr(migration, "transaction", transaction)
         mapping = {
             "version": migration.VERSION,
-            "groups": [{"tenant_id": "tenant-a", "code": "alpha", "name": "Alpha", "models": [{"model_id": "model-a"}]}],
+            "groups": [
+                {
+                    "tenant_id": "tenant-a", "code": "alpha", "name": "Alpha",
+                    "models": [
+                        {"model_id": "model-disabled", "enabled": False, "display_order": 0},
+                        {"model_id": "model-b", "display_order": 2},
+                        {"model_id": "model-a", "display_order": 2},
+                    ],
+                },
+                {
+                    "tenant_id": "tenant-a", "code": "beta", "name": "Beta",
+                    "models": [{"model_id": "model-disabled", "enabled": False}],
+                },
+            ],
             "users": [{"tenant_id": "tenant-a", "user_id": "user-a", "group_codes": ["alpha"], "primary_group_code": "alpha"}],
         }
         mapping["expected_state"] = (await migration.preview_mapping(mapping))["expected_state"]
@@ -338,6 +456,12 @@ async def test_model_groups_postgres_migration_apply_is_confirmed_and_idempotent
         try:
             first = await migration.apply_mapping(mapping_path)
             assert first["status"] == "applied"
+            assert await (await conn.execute(
+                "select code, default_model_id from model_groups where tenant_id='tenant-a' and code in ('alpha','beta') order by code"
+            )).fetchall() == [
+                {"code": "alpha", "default_model_id": "model-a"},
+                {"code": "beta", "default_model_id": None},
+            ]
             group_row = await (await conn.execute("select id, revision from model_groups where tenant_id = 'tenant-a' and code = 'alpha'")).fetchone()
             user_row = await (await conn.execute("select model_group_membership_revision from users where id = 'user-a'")).fetchone()
             second = await migration.apply_mapping(mapping_path)
@@ -371,19 +495,77 @@ async def test_model_groups_postgres_default_model_is_explicit_and_first_legacy_
     conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
     try:
         await _prepare_schema(conn, schema_name)
-        await conn.execute("insert into model_groups(id, tenant_id, code, name, type) values ('group-a', 'tenant-a', 'alpha', 'Alpha', 'business')")
-        await conn.execute("insert into model_group_models(group_id, model_id, display_order) values ('group-a', 'model-b', 1), ('group-a', 'model-a', 0)")
+        await conn.execute("insert into model_groups(id, tenant_id, code, name, type) values ('group-a', 'tenant-a', 'alpha', 'Alpha', 'business'), ('group-disabled', 'tenant-a', 'disabled', 'Disabled', 'business'), ('group-legacy', 'tenant-a', 'legacy', 'Legacy', 'business'), ('group-empty', 'tenant-a', 'empty', 'Empty', 'business')")
+        await conn.execute("insert into model_group_models(group_id, model_id, enabled, display_order) values ('group-a', 'model-disabled', false, 0), ('group-a', 'model-a', true, 1), ('group-a', 'model-b', true, 2), ('group-disabled', 'model-a', false, 0), ('group-disabled', 'model-b', false, 1)")
         await conn.execute('alter table model_groups drop column default_model_id')
         await conn.execute(Path('app/schema.sql').read_text(encoding='utf-8'))
+        assert await (await conn.execute("select code, default_model_id from model_groups where id in ('group-a','group-disabled') order by code")).fetchall() == [
+            {"code": "alpha", "default_model_id": "model-a"},
+            {"code": "disabled", "default_model_id": None},
+        ]
         await set_user_group_memberships(conn, tenant_id='tenant-a', user_id='user-a', group_ids=['group-a'], primary_group_id='group-a', expected_revision=1)
         from app.execution.infrastructure.model_groups import list_public_group_models
         public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
         assert public['default_model_id'] == 'model-a'
+        with pytest.raises(ModelGroupPolicyError, match="model_group_default_model_invalid"):
+            await set_group_models(
+                conn, tenant_id='tenant-a', group_id='group-a', revision=2,
+                default_model_id='model-disabled',
+                models=[
+                    {'model_id': 'model-disabled', 'display_order': 0, 'enabled': False},
+                    {'model_id': 'model-a', 'display_order': 1, 'enabled': True},
+                ],
+            )
         await set_group_models(conn, tenant_id='tenant-a', group_id='group-a', revision=2, default_model_id='model-b', models=[{'model_id': 'model-a', 'display_order': 0, 'enabled': True}, {'model_id': 'model-b', 'display_order': 1, 'enabled': True}])
+        reordered = await set_group_models(
+            conn, tenant_id='tenant-a', group_id='group-a', revision=3,
+            models=[
+                {'model_id': 'model-b', 'display_order': 0, 'enabled': True},
+                {'model_id': 'model-a', 'display_order': 1, 'enabled': True},
+            ],
+        )
+        assert reordered['default_model_id'] == 'model-b'
         public = await list_public_group_models(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', usage_scene='independent')
         assert public['default_model_id'] == 'model-b'
-        selected = await resolve_group_model(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', model_id=None, model_value=None, selection_mode='auto', usage_scene='independent')
+        selected = await resolve_group_model(conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a', model_id=None, model_value=None, selection_mode=None, usage_scene='independent')
         assert selected.model_id == 'model-b'
+        assert selected.selection_mode == 'explicit'
+        selected_explicit = await resolve_group_model(
+            conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a',
+            model_id='model-a', model_value='provider/model-a', selection_mode=None,
+            usage_scene='independent',
+        )
+        assert selected_explicit.model_id == 'model-a'
+        assert selected_explicit.selection_mode == 'explicit'
+        with pytest.raises(ModelGroupPolicyError, match="model_selection_conflict"):
+            await resolve_group_model(
+                conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a',
+                model_id=None, model_value=None, selection_mode='explicit',
+                usage_scene='independent',
+            )
+        with pytest.raises(ModelGroupPolicyError, match="model_selection_conflict"):
+            await resolve_group_model(
+                conn, tenant_id='tenant-a', user_id='user-a', group_id='group-a',
+                model_id=None, model_value=None, selection_mode='auto',
+                usage_scene='independent',
+            )
+
+        legacy_config = await set_group_models(
+            conn, tenant_id='tenant-a', group_id='group-legacy', revision=1,
+            models=[
+                {'model_id': 'model-b', 'enabled': False, 'display_order': 0},
+                {'model_id': 'model-a', 'enabled': True, 'display_order': 1},
+            ],
+        )
+        assert legacy_config['default_model_id'] == 'model-a'
+        disabled_config = await set_group_models(
+            conn, tenant_id='tenant-a', group_id='group-empty', revision=1,
+            models=[
+                {'model_id': 'model-a', 'enabled': False},
+                {'model_id': 'model-b', 'enabled': False},
+            ],
+        )
+        assert disabled_config['default_model_id'] is None
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()

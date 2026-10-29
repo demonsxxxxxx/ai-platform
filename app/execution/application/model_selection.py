@@ -20,7 +20,7 @@ class RunModelSelection:
     group_code: str | None = None
     group_type: str | None = None
     group_revision: int | None = None
-    selection_mode: str = "auto"
+    selection_mode: str = "explicit"
     usage_scene: str = "independent"
     policy_version: str | None = None
 
@@ -73,7 +73,7 @@ def parse_requested_model_selection(agent_options: object) -> dict[str, str] | N
         or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", raw_group_id)
     ):
         raise ValueError("group_not_available")
-    if raw_selection_mode is not None and raw_selection_mode not in {"auto", "explicit"}:
+    if raw_selection_mode is not None and raw_selection_mode != "explicit":
         raise ValueError("model_selection_conflict")
     if raw_model_id is None and raw_model_value is None and raw_group_id is None and raw_selection_mode is None:
         return None
@@ -90,11 +90,6 @@ def parse_requested_model_selection(agent_options: object) -> dict[str, str] | N
         or any(ord(char) < 32 or ord(char) == 127 for char in raw_model_value)
     ):
         raise ValueError("model_id_not_available")
-    if raw_model_id is None and raw_model_value is None and raw_group_id is None and raw_selection_mode is None:
-        return None
-    inferred_mode = "explicit" if raw_model_id is not None or raw_model_value is not None else "auto"
-    if raw_selection_mode == "auto" and inferred_mode == "explicit":
-        raise ValueError("model_selection_conflict")
     return {
         **({"id": raw_model_id} if raw_model_id is not None else {}),
         **({"value": raw_model_value} if raw_model_value is not None else {}),

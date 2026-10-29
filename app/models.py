@@ -741,7 +741,7 @@ class QueueRunPayload(BaseModel):
     model_group_code: str | None = None
     model_group_type: str | None = None
     model_group_revision: int | None = None
-    model_selection_mode: Literal["auto", "explicit"] = "auto"
+    model_selection_mode: Literal["auto", "explicit"] = "explicit"
     usage_scene: Literal["chat", "expert", "skill", "independent"] = "independent"
     model_policy_version: str | None = None
     agent_profile: dict[str, Any] | None = None
