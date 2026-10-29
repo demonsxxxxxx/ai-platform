@@ -110,9 +110,10 @@ reads. Subject/group switches and unmount abort and fence stale completions.
 Pending/transient refreshes retain same-subject options and valid selections;
 401/403 clears grants. Empty catalogs retain the picker retry entry. Lost groups
 or explicit models require reselection, never an automatic alternative; frozen
-Runs are unchanged. `default_model_id`
-is the public catalog's administrator-selected default; the composer resolves
-its model value, falling back to the first available model when necessary.
+Runs are unchanged. `default_model_id` is the public catalog's
+administrator-selected default; the composer does not substitute the first
+available model when that default is unavailable. Selection and refresh behavior
+follow the [chat UI contract](../frontend/assistant-ui-chat-adoption.md).
 
 The unmounted `components/agent/ModelSelector` and its private click-away guard
 are retired. Catalog hydration has no per-user pin read, toggle, or automatic
@@ -123,7 +124,7 @@ deleted. Shared model icons remain in use by messages and the catalog panel.
 `test:model-admin` keeps mounted catalog subject-isolation, denial/logout,
 and cancellation coverage. It also checks the real public API transport makes
 only the catalog GET, preserves historical metadata, and resolves the public
-default and fallback. Browser-route and Agent Market fixtures no longer stub
+default without silently selecting the first catalog model. Browser-route and Agent Market fixtures no longer stub
 the retired pin client; generic backend metadata compatibility tests remain.
 
 ### Agent Builder
