@@ -120,12 +120,20 @@ class Diagnostics:
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_transitions_before_persisting_v4_terminal_row():
+async def test_enqueue_failure_transitions_before_persisting_v4_terminal_row(monkeypatch):
     calls = []
     conn = object()
     lifecycle = lifecycle_for_enqueue_failure(conn, calls)
 
-    progress = await terminalization.terminalize_enqueue_failure_with_v4(
+    async def release_lineage(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.release_provider_lineage",
+        release_lineage,
+    )
+
+    progress = await terminalization.terminalize_enqueue_failure(
         v4_capabilities(calls),
         conn,
         lifecycle=lifecycle,
@@ -155,12 +163,20 @@ async def test_enqueue_failure_transitions_before_persisting_v4_terminal_row():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_rejects_missing_v4_terminal_row():
+async def test_enqueue_failure_rejects_missing_v4_terminal_row(monkeypatch):
     calls = []
     conn = object()
 
+    async def release_lineage(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.release_provider_lineage",
+        release_lineage,
+    )
+
     with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
-        await terminalization.terminalize_enqueue_failure_with_v4(
+        await terminalization.terminalize_enqueue_failure(
             v4_capabilities(calls, terminal_row=None),
             conn,
             lifecycle=lifecycle_for_enqueue_failure(conn, calls),
@@ -175,12 +191,20 @@ async def test_enqueue_failure_rejects_missing_v4_terminal_row():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_rejects_a_non_winning_transition():
+async def test_enqueue_failure_rejects_a_non_winning_transition(monkeypatch):
     calls = []
     conn = object()
 
+    async def release_lineage(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.release_provider_lineage",
+        release_lineage,
+    )
+
     with pytest.raises(RuntimeError, match="enqueue_failure_terminal_transition_missing"):
-        await terminalization.terminalize_enqueue_failure_with_v4(
+        await terminalization.terminalize_enqueue_failure(
             v4_capabilities(calls),
             conn,
             lifecycle=lifecycle_for_enqueue_failure(

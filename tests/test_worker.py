@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.bootstrap import worker_dispatch_binding
+import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
 
 import app.bootstrap.model_services as model_services
 from app.bootstrap.mcp import worker_payload_with_authorized_mcp_registration
@@ -105,6 +106,31 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = _repo_app_mcp_infrastructure_tool_policies_po
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = _repo_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests
 
 
+class _LegacyAttemptSettlementReader:
+    """Unit port for scenarios that intentionally exercise legacy lease storage."""
+
+    async def storage_version(self, _conn):
+        return "sandbox_lease.v1"
+
+    async def writer_fence(self, _conn):
+        return None
+
+    async def lock_writer_fence(self, _conn):
+        return None
+
+    async def lock_sources_in_transaction(self, _conn, **_scope):
+        return None
+
+    async def writes_enabled(self, _conn, *, shadow_enabled):
+        return False
+
+    async def attempt_writer_active(self, _conn):
+        return False
+
+
+_LEGACY_ATTEMPT_SETTLEMENT_READER = _LegacyAttemptSettlementReader()
+
+
 def _native_snapshot(row):
     from app.context.domain.conversation_authority import initial_source_digest, make_authority_receipt
 
@@ -127,7 +153,7 @@ def _stub_terminal_context_ports(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.terminalization_v4.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release,
     )
 
@@ -1093,6 +1119,25 @@ def default_cancel_not_requested(monkeypatch):
     _CURRENT_QUEUE_PAYLOAD = None
     _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
 
+    # These unit scenarios seed only the legacy sandbox receipt. Inject the
+    # corresponding reader port so composition does not issue marker SQL while
+    # the real RunAttemptLifecycleService and receipt authority remain active.
+    monkeypatch.setattr(
+        "app.bootstrap.worker_attempt_lifecycle.build_attempt_settlement_projection_service",
+        lambda: _LEGACY_ATTEMPT_SETTLEMENT_READER,
+    )
+    monkeypatch.setattr(
+        "app.bootstrap.worker_run_preparation.build_worker_attempt_lifecycle_ports",
+        lambda _attempt_lifecycle, _run_lifecycle: build_worker_attempt_lifecycle_ports(
+            _attempt_lifecycle, _run_lifecycle
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox_lease_ports._shadowed_repository,
+        "_settlement",
+        _LEGACY_ATTEMPT_SETTLEMENT_READER,
+    )
+
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
         parsed = parse_queue_payload(raw)
@@ -1218,6 +1263,8 @@ def default_cancel_not_requested(monkeypatch):
 
     async def start_worker_run_attempt(conn, **kwargs):
         return {
+            "tenant_id": kwargs["tenant_id"],
+            "run_id": kwargs["run_id"],
             "id": worker_attempt_lifecycle_module.run_attempt_id_for_queue_attempt(
                 tenant_id=kwargs["tenant_id"],
                 run_id=kwargs["run_id"],
@@ -2092,7 +2139,53 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_scoped_reconciliation_run", run, raising=False)
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", read)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.lock_scoped_reconciliation_receipt", claim)
+
+    async def exact_legacy_lease_scope(_conn, lease_id):
+        assert lease_id == lease_row["id"]
+        return {
+            "tenant_id": lease_row["tenant_id"],
+            "run_id": lease_row["run_id"],
+            "attempt_id": lease_row["attempt_id"],
+        }
+
+    monkeypatch.setattr(
+        sandbox_lease_ports._shadowed_repository,
+        "_scope_for_lease",
+        exact_legacy_lease_scope,
+    )
     return spec
+
+
+@pytest.mark.asyncio
+async def test_frozen_legacy_receipt_scope_rejects_wrong_lease_id(monkeypatch):
+    persisted = base_payload(
+        _leased=False,
+        agent_id="general-agent",
+        execution_kind="harness_chat",
+        skill_id=None,
+        file_ids=[],
+        input={"message": "scope check"},
+        executor_type="claude-agent-worker",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION_V2,
+        agent_profile=None,
+    )
+    lease_row = {
+        "id": "lease-a",
+        "attempt_id": "attempt-a",
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+    }
+    _install_frozen_receipt(monkeypatch, persisted, lease_row)
+    with pytest.raises(AssertionError, match="lease-a"):
+        await sandbox_lease_ports._shadowed_repository._scope_for_lease(
+            object(), "lease-other"
+        )
 
 
 @pytest.mark.asyncio
@@ -3553,6 +3646,194 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("dispatch_case", ["lost_ack_probe_failed", "accepted_commit_retry"])
+async def test_worker_keeps_attempt_running_across_dispatch_recovery(monkeypatch, tmp_path, dispatch_case):
+    from app.runtime.sandbox import runtime as runtime_module
+    from app.runtime.sandbox.container_provider import FakeContainerProvider
+    from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+    from app.runtime.sandbox.runtime import SandboxRuntime
+    from app.sandbox.api import SandboxDispatchIntentService
+
+    calls = []
+    posts = []
+    status_reads = []
+    dispatch_outcomes = []
+    accepted_commits = 0
+    raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    class UnknownAdapter:
+        name = "fake"
+
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.run_id, payload.attempt_id))
+            request = SandboxRuntimeRequest(
+                tenant_id=payload.tenant_id,
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                session_id=payload.session_id,
+                run_id=payload.run_id,
+                attempt_id=payload.attempt_id,
+                owner_generation=payload.owner_generation,
+                agent_id=payload.agent_id,
+                input_message="synthetic worker dispatch",
+                sandbox_mode="ephemeral",
+                model="synthetic-model",
+                callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
+                callback_token_id="cbt_run-a",
+                reconciliation_context={
+                    "schema_version": "ai-platform.executor-reconciliation.v1",
+                    "adapter_name": "fake",
+                    "run_payload": {"run_id": payload.run_id},
+                    "adapter_context": {},
+                },
+            )
+            runtime = SandboxRuntime(
+                workspace_root=tmp_path / "worker-dispatch-unknown",
+                provider=FakeContainerProvider(executor_url="http://executor.test"),
+                execute_task=execute,
+                get_executor_status=get_status,
+                callback_token_resolver=lambda _token_id: "synthetic-token",
+                lease_port=lease_port,
+                dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
+            )
+
+            async def runtime_event_sink(event):
+                await event_sink(
+                    event_type=event.type,
+                    stage="runtime",
+                    message=event.message,
+                    payload=event.payload,
+                )
+
+            result = await runtime.submit(request, event_sink=runtime_event_sink)
+            return ExecutorDispatchAccepted(
+                run_id=result.run_id,
+                attempt_id=result.attempt_id,
+                lease_id=result.lease_id,
+                provider=result.provider,
+            )
+
+    class Completion:
+        runtime_lease_released = False
+
+        async def fail(self, _error):
+            raise AssertionError("unknown provider dispatch must not fail the Run/Attempt")
+
+        async def complete(self, *_args, **_kwargs):
+            raise AssertionError("unknown provider dispatch has no terminal result")
+
+        async def cancel(self):
+            raise AssertionError("unknown provider dispatch is not a cancellation")
+
+    async def lock_queued_run_for_attempt(_conn, **_kwargs):
+        return locked_run_from_payload(raw)
+
+    async def append_event(_conn, **_kwargs):
+        return "evt-a"
+
+    async def release_lease(*_args, **_kwargs):
+        raise AssertionError("the original persisted provider lease owns recovery")
+
+    async def record_runtime_lease(_self, _lease, _request, _workspace, lease_record_id=None):
+        return lease_record_id
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert identity.attempt_id == calls[1][2]
+        assert reconciliation_context["adapter_name"] == "fake"
+        return {"dispatch_id": "dispatch-a", "status": "intent"}, True
+
+    async def record_dispatch_outcome(_conn, *, identity, outcome):
+        dispatch_outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-a", "status": outcome}
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        if dispatch_case == "lost_ack_probe_failed":
+            raise TimeoutError("POST acknowledgement lost")
+        return {
+            "status": "accepted",
+            "run_id": task_request.run_id,
+            "attempt_id": task_request.attempt_id,
+        }
+
+    async def get_status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id, dict(executor_headers)))
+        if dispatch_case == "lost_ack_probe_failed":
+            raise TimeoutError("first exact-task probe unavailable")
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    async def record_accepted(*_args, **_kwargs):
+        nonlocal accepted_commits
+        accepted_commits += 1
+        if dispatch_case == "lost_ack_probe_failed":
+            raise AssertionError("an unproven dispatch cannot be marked accepted")
+        if accepted_commits == 1:
+            raise RuntimeError("first acceptance transaction failed")
+        return {
+            "id": _kwargs["lease_id"],
+            "executor_reconciliation_status": "waiting_terminal",
+        }
+
+    async def create_runtime_lease(_conn, **kwargs):
+        calls.append(("lease", kwargs["attempt_id"]))
+        return {"id": "worker-runtime-lease"}
+
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "worker-runtime-lease",
+        create_sandbox_lease=create_runtime_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=release_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_dispatch_outcome,
+    )
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    monkeypatch.setattr(SandboxRuntime, "_record_runtime_lease", record_runtime_lease)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
+    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.create_worker_runtime_lease",
+        create_runtime_lease,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "build_worker_terminal_completion_service",
+        lambda *_args, **_kwargs: Completion(),
+    )
+    monkeypatch.setattr(worker_module, "release_worker_runtime_lease", release_lease)
+
+    outcome = await process_run_payload(raw, AdapterRegistry({"fake": UnknownAdapter()}))
+
+    assert outcome == WorkerOutcome("running", "run-a")
+    assert calls[0] == ("lease", "qat-test-attempt")
+    assert calls[1][:2] == ("adapter", "run-a")
+    assert calls[1][2] == calls[0][1]
+    assert posts == [("run-a", calls[1][2])]
+    assert len(status_reads) == 1
+    assert status_reads[0][:2] == posts[0]
+    assert status_reads[0][2]
+    if dispatch_case == "lost_ack_probe_failed":
+        assert len(dispatch_outcomes) == 1
+        assert dispatch_outcomes[0][1] == "unknown"
+        assert accepted_commits == 0
+    else:
+        assert dispatch_outcomes == [
+            (dispatch_outcomes[0][0], "accepted"),
+            (dispatch_outcomes[0][0], "accepted"),
+        ]
+        assert accepted_commits == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
@@ -4007,6 +4288,8 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     async def start_worker_run_attempt(conn, **kwargs):
         calls.append(("start", kwargs))
         return {
+            "tenant_id": kwargs["tenant_id"],
+            "run_id": kwargs["run_id"],
             "id": "rat-run-a",
             "status": "running",
             "owner_kind": "queue_worker",
@@ -4138,7 +4421,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         "request_run_attempt_cancel",
         request_cancel,
     )
-    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_with_v4", cancel_run)
+    monkeypatch.setattr("app.bootstrap.worker_attempt_lifecycle.cancel_run_terminalization", cancel_run)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "terminalize_run_attempt",

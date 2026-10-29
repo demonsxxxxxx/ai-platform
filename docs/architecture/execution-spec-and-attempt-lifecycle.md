@@ -236,9 +236,10 @@ server time. A heartbeat normalizes future-skewed Redis lease and worker activit
 timestamps. Reclaim independently normalizes an abandoned future-dated lease in
 both matching metadata hashes, grants one fresh visibility window, and only
 requeues or dead-letters it on a later expired pass. The reclaim mutation
-atomically rechecks lease identity, reconciliation fence, and visibility expiry
-against that same Redis clock before changing queue state; the caller clock is
-only a scan hint.
+atomically rechecks queue lease identity and visibility expiry against that same
+Redis clock before changing queue state; the caller clock is only a scan hint.
+Business stale-Run adjudication uses the Execution PostgreSQL claim path and is
+not part of Redis queue lease mutation.
 
 Protocol-v2 leases store their owner credential in `owner_token_v2` with
 `lease_protocol_version = 2` and omit the legacy `owner_token` projection. A v1
@@ -270,6 +271,136 @@ Redis reclaim still lacks end-to-end expected `owner_generation` fencing and
 recoverable cross-store effects. The heartbeat path has real PostgreSQL/Redis
 rollback-and-convergence coverage; production Sandbox acceptance and rollback
 evidence remain required before the migration can be called complete.
+
+### 3.2 Attempt settlement detail (N30/N31)
+
+Schema `2026.10.25.5` adds `run_attempt_settlements`, one Runs-owned detail per
+existing `(tenant_id, run_id, attempt_id)`. Its composite foreign key binds the
+detail to that exact `RunAttempt`; it is not a second execution Attempt. The
+detail stores the legacy terminal receipt identity, canonical receipt content
+and digest, accepted reconciliation context, settlement phase/claim/retry
+facts, final Run result mapping, and snapshots of the Run/Attempt status,
+cancellation time and owner generation used for comparison.
+
+| Field group | `run_attempt_settlements` | Authority retained |
+|---|---|---|
+| Receipt identity/content/digest | `receipt_identity`, `receipt_json`, `receipt_sha256`, source lease ID and captured generation | First terminal content remains in `sandbox_leases`; later root diagnostics are excluded from the detail digest |
+| Dispatch intent recovery | `intent_recovery_context_json` | The original Sandbox intent context is retained separately from acceptance |
+| Dispatch acceptance/context | `dispatch_state`, `accepted_context_json` | Dispatch acceptance is observed from its durable dispatch row; accepted context remains Sandbox/Execution-owned |
+| Settlement progress | `settlement_phase`, settlement claim, retry clock/count | Runs detail projection; no execution transition |
+| Business result | Run result status/JSON/digest, error code and settled time | Run remains the committed business result owner |
+| Comparison fence | Run/Attempt status, owner generation and cancellation-time snapshots | Read-only observations of current authority |
+| Stop/release/cleanup | Not copied into the settlement detail | Sandbox lease retains resource and cleanup ownership |
+
+The receipt identity is tied to the original Sandbox lease and Attempt. Because
+the legacy terminal receipt is JSONB, its digest is over canonical JSON; the
+mutable root `diagnostics` field is excluded. The source does not retain the
+original callback bytes or an independent receipt timestamp, so the projection
+does not claim either. The dispatch intent's recovery context is immutable and
+separate from accepted semantics; `dispatch_timings` added at acceptance cannot
+rewrite it. An executor probe claim without a terminal receipt remains a
+Sandbox probe and does not populate the settlement claim token or phase. A
+terminal receipt with `waiting_terminal` and no accepted dispatch remains
+explicitly `receipt_before_acceptance` / `awaiting_context`.
+
+This detail has no Attempt transition trigger. Writing it does not update
+`run_attempts`, `runs.status`, `owner_generation`, lifecycle events, or audit
+facts. It does not change `commit_provider_turn` requirements: Attempt
+`running`, no cancellation, and the exact writer generation remain mandatory.
+The stored status/generation/cancellation values are comparison snapshots, not
+execution authority.
+
+Resource identity, stop/release evidence, cleanup phase, cleanup retry and
+cleanup claim stay Sandbox-owned on `sandbox_leases`. The shared legacy
+reconciliation claim columns are projected as a settlement claim only while
+the legacy phase is `claimed`; in `cleanup_pending` or `failed`, they remain
+cleanup claims and are reported separately by comparison. A released lease can
+therefore remain in the settlement comparison denominator while cleanup owns
+its own outstanding work.
+
+The Runs API exposes bounded keyset backfill and page-scoped read-only
+comparison, with a maximum page of 800 Attempts. Missing rows, unknown
+bindings and conflicts remain in each page's counts. A page result or a stable
+snapshot's row count and maximum key cannot authorize a reader cutover.
+
+Schema `2026.10.25.11` adds the persistent reader, writer and retirement markers.
+Reader and writer cutovers remain separate operator actions. New and upgraded
+databases initialize both markers to `sandbox_lease.v1`; schema reapplication
+preserves their current versions and retirement state. `tools/attempt_settlement_storage.py`
+provides `prepare`/`activate` for the reader and `prepare-writer`/`activate-writer`
+for the writer. Preparation performs bounded backfill and comparison without
+changing either marker. Activation requires operator confirmations for drained
+writers and in-flight operations plus real SDK, Sandbox and fourteen-scenario
+acceptance. The program records those declarations and reports that it did not
+verify them.
+
+Reader activation fences `runs`, `sandbox_leases`, `run_attempts`, and
+`sandbox_execution_dispatches`, compares the full Attempt denominator in a
+`REPEATABLE READ` transaction, and updates only the reader marker when missing,
+unknown, conflict and mismatch counts are all zero and the budget is satisfied.
+While a source writer transaction is active, its N40 path obtains compatible
+locks on those same source tables before reading the marker and maintains the
+detail in the same transaction. Writer activation has its own marker and
+preflight; it fences the same lifecycle sources and changes legacy-column write
+behavior only after the required drain and comparison. Neither marker is
+implicitly switched by schema application.
+
+When the marker is `attempt.v1`, the executor reconciler selects due receipts
+from `run_attempt_settlements` and uses the detail's exact source lease only for
+the Sandbox claim CAS. Callback recovery receives the accepted context and
+receipt from the same detail mapping; Runs finalization checks its claim token
+there while Sandbox still locks the exact resource identity and generation.
+Admin Run lease projections and runtime health/diagnostics use this mapping as
+well. Missing details raise an error. Unknown/conflict mappings remain visible in
+comparison, admin diagnostics and retirement readiness, but are isolated from
+the due-claim batch so one unverifiable receipt cannot block mapped Runs. The
+existing `claim_sandbox_executor_suspects` probe owner also claims the narrow
+unknown-receipt case when its dispatch row, immutable intent context, source
+lease and Attempt generation match. A provider status proving the same
+Run/Attempt/resource/generation permits the existing Sandbox lease port to
+record the frozen context as acceptance and the dispatch CAS in one transaction;
+provider timeout/unavailability releases the probe claim for durable retry, and
+a provider-confirmed absence uses the existing
+`quarantine_sandbox_executor_reconciliation` owner. No reader
+falls back to Sandbox settlement columns. Source fields
+remain dual-written in N40 to preserve the identified legacy
+reader rollback condition while a fresh full comparison remains zero.
+
+Resource stop/release state, cleanup status/claims, executor heartbeat, and
+probe claims remain Sandbox-owned. N41's writer cutover stops compatibility
+writes to the eight legacy settlement fields while retaining them for the
+explicit N43 disposition. `executor_terminal_received_at`, Sandbox cleanup and
+probe fields, heartbeat, and resource lifecycle facts remain in place. Rollback
+to the legacy reader is compatible only while its fields are maintained and a
+fresh fenced comparison confirms equality; after writer cutover, recovery needs
+a validated reconstruction or forward repair.
+
+The Redis stale-run business fence has been retired. PostgreSQL owns the stale
+Run claim path through `app/execution/application/stale_run_reconciliation.py`;
+queue delivery `owner_token`, ACK/requeue and capacity controls remain transport
+ownership, and SSE keeps its independent stream contract. The PostgreSQL stale
+Run owner is marker-aware: its pending-terminal-receipt guard reads either the
+legacy Sandbox settlement columns or the `run_attempt_settlements` detail based
+on the persisted reader marker, so the default `sandbox_lease.v1` and activated
+`attempt.v1` modes both retain stale Run recovery. Schema readiness remains a
+separate fail-closed prerequisite; an unsupported schema/layout or missing
+marker cannot enter the owner. Production always enables the PostgreSQL Run
+delivery-intent outbox. API startup maps historical queued Runs in bounded,
+serialized pages from persisted immutable facts and fails closed when that
+history cannot be proven. A delivered intent retries with its stored queue
+message identity, allowing recovery of the original queued message.
+
+N43's schema retirement is an explicit, one-way operator command. The `.11`
+retirement marker and core schema readiness must be current; preflight accounts
+for incomplete Attempt mapping/history and every unresolved source/resource
+claim even when its TTL has expired. The command records the declared minimum
+compatible application version and requires old-binary stop, Run/resource
+drain, and backup/restore declarations. It removes only the inventoried legacy
+settlement fields, indexes and constraint, without `CASCADE`. Schema readiness
+fails closed on marker/layout mismatch, there is no automatic down migration,
+and post-retirement legacy history mapping is rejected. Production stop/drain,
+backup/restore, real SDK/Sandbox acceptance and the fourteen scenarios remain
+operator verification items.
 
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds

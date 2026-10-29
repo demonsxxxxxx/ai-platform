@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
     sandbox_callback_token: str = Field(default="")
     sandbox_egress_policy_enabled: bool = Field(default=False)
+    run_attempt_settlement_shadow_enabled: bool = Field(default=False)
     sandbox_egress_proof_signing_key: str = Field(default="")
     sandbox_egress_proof_key_id: str = Field(default="current")
     sandbox_egress_proof_previous_keys_json: str = Field(default="")
@@ -96,7 +97,25 @@ class Settings(BaseSettings):
     worker_maintenance_interval_seconds: float = Field(default=30.0)
     stale_run_reconciliation_seconds: int = Field(default=900, ge=60, le=86400)
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
-    stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    stale_run_reconciliation_claim_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    executor_heartbeat_stale_seconds: int = Field(default=45, ge=1, le=3600)
+    executor_reconciliation_claim_stale_seconds: int = Field(default=300, ge=1, le=3600)
+    supervision_claim_ttl_seconds: int = Field(default=3600, ge=300, le=86400)
+    supervision_delivery_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_probe_capacity: int = Field(default=1, ge=1, le=100)
+    supervision_settlement_capacity: int = Field(default=2, ge=1, le=100)
+    supervision_cleanup_capacity: int = Field(default=1, ge=1, le=100)
+    # PostgreSQL domain claims are mandatory in every mode. This switch only
+    # permits this replica to execute work while a domain is unified.
+    execution_supervision_enabled: bool = Field(default=False)
+    execution_supervision_shadow_enabled: bool = Field(default=False)
+    # Development and test keep the existing local default. Production turns
+    # this on unconditionally; API/Worker startup must backfill or fail closed.
+    run_delivery_intents_enabled: bool = Field(default=False)
+    run_delivery_intent_scan_batch_size: int = Field(default=25, ge=1, le=100)
+    run_delivery_intent_claim_ttl_seconds: int = Field(default=120, ge=1, le=3600)
+    run_delivery_intent_retry_base_seconds: int = Field(default=5, ge=1, le=3600)
+    run_delivery_intent_retry_cap_seconds: int = Field(default=600, ge=1, le=86400)
     sandbox_lease_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     worker_role: Literal["integrated", "execution", "finalizer"] = Field(default="integrated")
     worker_concurrency: int = Field(default=10)
@@ -284,8 +303,12 @@ class Settings(BaseSettings):
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
+        if self.deployment_environment == "production":
+            self.run_delivery_intents_enabled = True
         if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
             raise ValueError("object_delete_retry_cap_below_base")
+        if self.run_delivery_intent_retry_cap_seconds < self.run_delivery_intent_retry_base_seconds:
+            raise ValueError("run_delivery_retry_cap_below_base")
         if self.sandbox_security_profile == "internal-test" and not (
             self.deployment_environment == "test"
             and self.sandbox_container_provider == "opensandbox"

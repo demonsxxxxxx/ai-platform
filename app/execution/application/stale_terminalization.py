@@ -1,12 +1,14 @@
-"""Receipt-aware stale-run terminalization application service."""
+"""Execution-owned event and audit composition for stale Run terminalization."""
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from app.runs.api import RunLifecycleService
 
 
 async def stage_stale_run_reconciliation(
+    lifecycle: RunLifecycleService,
     conn: Any,
     *,
     tenant_id: str,
@@ -19,89 +21,37 @@ async def stage_stale_run_reconciliation(
     terminal_status: str,
     error_code: str | None,
     error_message: str | None,
+    claim_token: str | None = None,
+    expected_attempt_id: str | None = None,
+    expected_owner_generation: int = 0,
     append_event: Any,
     append_audit_log: Any,
 ) -> dict[str, Any] | None:
-    """CAS an ownerless stale run only when no executor terminal receipt exists."""
+    """Stage via the Runs port, then compose the Execution-owned facts once."""
 
     if expected_status not in {"queued", "running"}:
         raise ValueError("invalid_stale_run_expected_status")
     if terminal_status not in {"failed", "cancelled"}:
         raise ValueError("invalid_stale_run_terminal_status")
 
-    target_result = (
-        {"message": "任务已取消", "reconciliation_reason": "stale_run_no_owner"}
-        if terminal_status == "cancelled"
-        else {
-            "message": "Run interrupted because no live execution owner remains.",
-            "retryable": True,
-            "reconciliation_reason": "stale_run_no_owner",
-        }
+    staged = await lifecycle.stage_stale_run_reconciliation(
+        conn,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        run_id=run_id,
+        expected_status=expected_status,
+        stale_before=stale_before,
+        cancel_requested_before=cancel_requested_before,
+        terminal_status=terminal_status,
+        error_code=error_code,
+        error_message=error_message,
+        claim_token=claim_token,
+        expected_attempt_id=expected_attempt_id,
+        expected_owner_generation=expected_owner_generation,
     )
-    cursor = await conn.execute(
-        """
-        update runs
-        set terminalization_target = %s,
-            terminalization_reason = 'stale_run_no_owner',
-            terminalization_result_json = %s::jsonb,
-            terminalization_error_code = %s,
-            terminalization_error_message = %s
-        where tenant_id = %s
-          and workspace_id = %s
-          and user_id is not distinct from %s
-          and id = %s
-          and status = %s
-          and terminalization_target is null
-          and (%s <> 'cancelled' or cancel_requested_at is not null)
-          and (%s <> 'failed' or cancel_requested_at is null)
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.status = 'active'
-          )
-          and not exists (
-            select 1 from sandbox_leases
-            where sandbox_leases.tenant_id = runs.tenant_id
-              and sandbox_leases.run_id = runs.id
-              and sandbox_leases.executor_terminal_json is not null
-              and sandbox_leases.executor_reconciliation_status is distinct from 'finalized'
-          )
-          and (
-            (%s = 'cancelled' and cancel_requested_at <= %s::timestamptz)
-            or
-            (%s = 'failed' and greatest(
-                  coalesce((select max(created_at) from run_events
-                            where run_events.tenant_id = runs.tenant_id
-                              and run_events.run_id = runs.id), '-infinity'::timestamptz),
-                  coalesce(started_at, '-infinity'::timestamptz),
-                  coalesce(queued_at, '-infinity'::timestamptz),
-                  created_at
-                ) <= %s::timestamptz)
-          )
-        returning id, trace_id, terminalization_target
-        """,
-        (
-            terminal_status,
-            json.dumps(target_result, ensure_ascii=False, separators=(",", ":")),
-            error_code,
-            error_message,
-            tenant_id,
-            workspace_id,
-            user_id,
-            run_id,
-            expected_status,
-            terminal_status,
-            terminal_status,
-            terminal_status,
-            cancel_requested_before,
-            terminal_status,
-            stale_before,
-        ),
-    )
-    staged = await cursor.fetchone()
-    if staged is None:
-        return None
+    if staged is None or staged.get("already_staged"):
+        return dict(staged) if staged is not None else None
 
     event_payload: dict[str, Any] = {
         "visible_to_user": True,

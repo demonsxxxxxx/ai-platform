@@ -1,6 +1,7 @@
 create table if not exists schema_migrations (
   version text primary key,
   checksum_sha256 text not null,
+  state text not null default 'applied',
   applied_at timestamptz not null default now()
 );
 
@@ -15,6 +16,33 @@ create table if not exists schema_index_migrations (
   completed_at timestamptz,
   updated_at timestamptz not null default now()
 );
+
+-- This durable state separates the additive compatibility schema from the
+-- operator-triggered destructive retirement. Core upgrades consult it before
+-- adding any legacy settlement columns again.
+create table if not exists run_attempt_settlement_retirement (
+  singleton boolean not null default true,
+  state text not null default 'expanded',
+  retirement_version text not null default '2026.10.25.11',
+  minimum_compatible_version text,
+  operator_declaration jsonb,
+  retired_at timestamptz,
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlement_retirement_pkey primary key (singleton),
+  constraint chk_run_attempt_settlement_retirement_singleton check (singleton),
+  constraint chk_run_attempt_settlement_retirement_state check (
+    state in ('expanded', 'retired')
+  ),
+  constraint chk_run_attempt_settlement_retirement_receipt check (
+    (state = 'expanded' and retired_at is null)
+    or (state = 'retired' and retired_at is not null
+        and minimum_compatible_version is not null
+        and operator_declaration is not null)
+  )
+);
+insert into run_attempt_settlement_retirement(singleton, state)
+values (true, 'expanded')
+on conflict (singleton) do nothing;
 
 create table if not exists tenants (
   id text primary key,
@@ -730,6 +758,15 @@ create table if not exists runs (
       and model_group_revision is not null and model_selection_mode is not null
       and usage_scene is not null and model_policy_version is not null)
   ),
+  constraint chk_runs_status check (
+    status is not null
+    and status = any (array[
+      'queued'::text, 'running'::text, 'cancel_requested'::text,
+      'succeeded'::text, 'failed'::text, 'cancelled'::text,
+      'canceled'::text, 'dead-letter'::text, 'dead_letter'::text,
+      'dead-lettered'::text
+    ])
+  ),
   constraint chk_runs_model_token_limits check (
     (auto_compact_window is null and max_output_tokens is null)
     or (auto_compact_window is not null and max_output_tokens is not null
@@ -903,7 +940,8 @@ create table if not exists run_attempts (
     )
   ),
   unique (tenant_id, run_id, ordinal),
-  unique (tenant_id, run_id, queue_attempt_id)
+  unique (tenant_id, run_id, queue_attempt_id),
+  constraint run_attempts_tenant_id_run_id_id_key unique (tenant_id, run_id, id)
 );
 
 create unique index if not exists uq_run_attempts_one_open
@@ -916,6 +954,257 @@ create index if not exists idx_run_attempts_run_created
 create index if not exists idx_run_attempts_lease_reconcile
   on run_attempts(lease_expires_at asc, tenant_id, run_id, id)
   where status in ('claimed', 'running', 'cancel_requested', 'expired');
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'run_attempts'::regclass
+      and conname = 'run_attempts_tenant_id_run_id_id_key'
+  ) then
+    alter table run_attempts
+      add constraint run_attempts_tenant_id_run_id_id_key unique (tenant_id, run_id, id);
+  end if;
+end
+$$;
+
+-- One Runs-owned settlement detail belongs to the original Attempt. Sandbox
+-- resource stop/release claims remain on sandbox_leases and are not projected
+-- into this execution-settlement record.
+create table if not exists run_attempt_settlements (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  schema_version text not null default 'ai-platform.run-attempt-settlement.v1',
+  mapping_state text not null,
+  source_lease_id text,
+  receipt_identity text,
+  receipt_json jsonb,
+  receipt_sha256 text,
+  receipt_owner_generation bigint,
+  receipt_recorded_at timestamptz,
+  dispatch_state text not null,
+  intent_recovery_context_json jsonb,
+  accepted_context_json jsonb,
+  attempt_status_snapshot text not null,
+  attempt_owner_generation_snapshot bigint not null,
+  run_status_snapshot text not null,
+  cancel_requested_at_snapshot timestamptz,
+  settlement_phase text not null,
+  settlement_claim_token text,
+  settlement_claimed_at timestamptz,
+  next_retry_at timestamptz,
+  settlement_attempt_count integer not null default 0,
+  result_status text,
+  result_json jsonb,
+  result_sha256 text,
+  settlement_error_code text,
+  settled_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlements_pkey primary key (tenant_id, run_id, attempt_id),
+  constraint fk_run_attempt_settlements_attempt foreign key (tenant_id, run_id, attempt_id)
+    references run_attempts(tenant_id, run_id, id),
+  constraint chk_run_attempt_settlements_schema_version check (
+    schema_version = 'ai-platform.run-attempt-settlement.v1'
+  ),
+  constraint chk_run_attempt_settlements_mapping_state check (
+    mapping_state in ('mapped', 'unknown', 'conflict')
+  ),
+  constraint chk_run_attempt_settlements_dispatch_state check (
+    dispatch_state in ('unknown', 'accepted', 'receipt_before_acceptance')
+  ),
+  constraint chk_run_attempt_settlements_phase check (
+    settlement_phase in (
+      'awaiting_receipt', 'awaiting_context', 'pending', 'claimed', 'retry',
+      'settled', 'failed', 'unknown'
+    )
+  ),
+  constraint chk_run_attempt_settlements_identity check (
+    tenant_id <> '' and run_id <> '' and attempt_id <> ''
+    and attempt_status_snapshot <> '' and run_status_snapshot <> ''
+    and attempt_owner_generation_snapshot > 0
+    and (source_lease_id is null or source_lease_id <> '')
+  ),
+  constraint chk_run_attempt_settlements_receipt check (
+    (receipt_identity is null and receipt_json is null and receipt_sha256 is null
+      and receipt_owner_generation is null)
+    or (receipt_identity is not null and receipt_identity <> ''
+      and jsonb_typeof(receipt_json) = 'object'
+      and receipt_sha256 ~ '^[0-9a-f]{64}$'
+      and receipt_owner_generation > 0)
+  ),
+  constraint chk_run_attempt_settlements_claim check (
+    (settlement_phase = 'claimed'
+      and settlement_claim_token is not null and settlement_claim_token <> ''
+      and settlement_claimed_at is not null)
+    or (settlement_phase <> 'claimed'
+      and settlement_claim_token is null and settlement_claimed_at is null)
+  ),
+  constraint chk_run_attempt_settlements_retry check (
+    (settlement_phase = 'retry' and next_retry_at is not null)
+    or (settlement_phase <> 'retry' and next_retry_at is null)
+  ),
+  constraint chk_run_attempt_settlements_attempt_count check (
+    settlement_attempt_count >= 0
+  ),
+  constraint chk_run_attempt_settlements_result check (
+    (result_status is null and result_json is null and result_sha256 is null
+      and settled_at is null)
+    or (result_status is not null and result_status <> ''
+      and jsonb_typeof(result_json) = 'object'
+      and result_sha256 ~ '^[0-9a-f]{64}$'
+      and settled_at is not null)
+  )
+);
+
+alter table run_attempt_settlements
+  add column if not exists intent_recovery_context_json jsonb;
+alter table run_attempt_settlements
+  add column if not exists receipt_recorded_at timestamptz;
+
+create index if not exists idx_run_attempt_settlements_mapping
+  on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
+
+-- This singleton is the durable authority for choosing the settlement reader.
+-- Schema application only creates the legacy default; operational cutover is
+-- performed separately by the explicit N40 command.
+create table if not exists run_attempt_settlement_storage (
+  singleton boolean not null default true,
+  storage_version text not null default 'sandbox_lease.v1',
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlement_storage_pkey primary key (singleton),
+  constraint chk_run_attempt_settlement_storage_singleton check (singleton),
+  constraint chk_run_attempt_settlement_storage_version check (
+    storage_version in ('sandbox_lease.v1', 'attempt.v1')
+  )
+);
+
+insert into run_attempt_settlement_storage(singleton, storage_version)
+values (true, 'sandbox_lease.v1')
+on conflict (singleton) do nothing;
+
+-- Writer authority is independent from the reader marker above. N41 activates
+-- this only after legacy writers and in-flight operations are explicitly drained.
+create table if not exists run_attempt_settlement_writer (
+  singleton boolean not null default true,
+  writer_version text not null default 'sandbox_lease.v1',
+  updated_at timestamptz not null default now(),
+  constraint run_attempt_settlement_writer_pkey primary key (singleton),
+  constraint chk_run_attempt_settlement_writer_singleton check (singleton),
+  constraint chk_run_attempt_settlement_writer_version check (
+    writer_version in ('sandbox_lease.v1', 'attempt.v1')
+  )
+);
+
+insert into run_attempt_settlement_writer(singleton, writer_version)
+values (true, 'sandbox_lease.v1')
+on conflict (singleton) do nothing;
+
+-- A per-Run claim fences stale reconciliation in PostgreSQL. It binds the
+-- exact Attempt owner generation observed before takeover; Attempt CAS remains
+-- the authority that rejects late executor writes.
+create table if not exists run_stale_reconciliation_claims (
+  tenant_id text not null,
+  run_id text not null,
+  expected_attempt_id text,
+  expected_owner_generation bigint not null,
+  claim_token uuid not null,
+  claimed_by text not null,
+  claimed_at timestamptz not null default clock_timestamp(),
+  claim_deadline_at timestamptz not null,
+  constraint run_stale_reconciliation_claims_pkey primary key (tenant_id, run_id),
+  constraint run_stale_reconciliation_claims_token_key unique (claim_token),
+  constraint fk_run_stale_reconciliation_claims_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id) on delete cascade,
+  constraint chk_run_stale_reconciliation_claims_identity check (
+    tenant_id <> '' and run_id <> '' and claimed_by <> ''
+  ),
+  constraint chk_run_stale_reconciliation_claims_generation check (
+    (expected_attempt_id is null and expected_owner_generation = 0)
+    or (expected_attempt_id is not null and expected_owner_generation > 0)
+  ),
+  constraint chk_run_stale_reconciliation_claims_deadline check (
+    claim_deadline_at > claimed_at
+  )
+);
+create index if not exists idx_run_stale_reconciliation_claims_deadline
+  on run_stale_reconciliation_claims(claim_deadline_at, tenant_id, run_id);
+
+-- Durable handoff state for the legacy and unified supervisors. Every domain
+-- starts on the current owner; the observation cursor does not authorize work.
+create table if not exists execution_supervision_domains (
+  domain text not null,
+  mode text not null default 'legacy',
+  owner_version bigint not null default 1,
+  scan_cursor text,
+  probe_cancel_scan_cursor text,
+  probe_normal_scan_cursor text,
+  drain_started_at timestamptz,
+  updated_at timestamptz not null default clock_timestamp(),
+  constraint execution_supervision_domains_pkey primary key (domain),
+  constraint chk_execution_supervision_domain check (
+    domain in ('delivery', 'probe', 'settlement', 'cleanup')
+  ),
+  constraint chk_execution_supervision_mode check (
+    mode in ('legacy', 'draining', 'unified')
+  ),
+  constraint chk_execution_supervision_version check (owner_version > 0),
+  constraint chk_execution_supervision_drain check (
+    (mode = 'draining' and drain_started_at is not null)
+    or (mode <> 'draining' and drain_started_at is null)
+  )
+);
+insert into execution_supervision_domains(domain)
+values ('delivery'), ('probe'), ('settlement'), ('cleanup')
+on conflict (domain) do nothing;
+alter table execution_supervision_domains
+  add column if not exists probe_cancel_scan_cursor text;
+alter table execution_supervision_domains
+  add column if not exists probe_normal_scan_cursor text;
+
+create table if not exists execution_supervision_claims (
+  claim_token uuid not null,
+  domain text not null references execution_supervision_domains(domain),
+  owner_mode text not null,
+  worker_id text not null,
+  owner_version bigint not null,
+  expires_at timestamptz not null,
+  started_at timestamptz not null default clock_timestamp(),
+  recovered_at timestamptz,
+  recovered_by text,
+  recovery_evidence text,
+  constraint execution_supervision_claims_pkey primary key (claim_token),
+  constraint chk_execution_supervision_claim_mode check (
+    owner_mode in ('legacy', 'unified')
+  ),
+  constraint chk_execution_supervision_claim_identity check (
+    worker_id <> '' and owner_version > 0 and expires_at > started_at
+  ),
+  constraint chk_execution_supervision_claim_recovery check (
+    (recovered_at is null and recovered_by is null and recovery_evidence is null)
+    or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
+  )
+);
+alter table execution_supervision_claims add column if not exists recovered_at timestamptz;
+alter table execution_supervision_claims add column if not exists recovered_by text;
+alter table execution_supervision_claims add column if not exists recovery_evidence text;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chk_execution_supervision_claim_recovery'
+      and conrelid = 'execution_supervision_claims'::regclass
+  ) then
+    alter table execution_supervision_claims
+      add constraint chk_execution_supervision_claim_recovery check (
+        (recovered_at is null and recovered_by is null and recovery_evidence is null)
+        or (recovered_at is not null and recovered_by <> '' and recovery_evidence <> '')
+      );
+  end if;
+end $$;
+create index if not exists idx_execution_supervision_claims_domain
+  on execution_supervision_claims(domain, expires_at, claim_token);
 
 create table if not exists run_input_sessions (
   tenant_id text not null,
@@ -1697,6 +1986,66 @@ create index if not exists idx_chat_submissions_run
   on chat_submissions(tenant_id, run_id)
   where run_id is not null;
 
+-- Preserve the exact accepted queue message before the API crosses into Redis.
+-- The intent is execution scheduling metadata, not a second Run or submission
+-- state machine; Run and Attempt authority remains in their owning tables.
+create table if not exists run_delivery_intents (
+  tenant_id text not null,
+  run_id text not null,
+  session_id text not null,
+  source text not null,
+  submission_id uuid,
+  user_message_id text,
+  queue_payload_json text not null,
+  queue_message_id text not null,
+  payload_sha256 text not null,
+  state text not null default 'pending',
+  claim_token uuid,
+  claimed_at timestamptz,
+  claim_expires_at timestamptz,
+  attempt_count integer not null default 0,
+  next_retry_at timestamptz not null default now(),
+  last_error_code text,
+  queue_position integer,
+  queue_admission_ordinal bigint,
+  queue_admission_source text,
+  delivered_at timestamptz,
+  suppressed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint run_delivery_intents_pkey primary key (tenant_id, run_id),
+  constraint fk_run_delivery_intents_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  constraint chk_run_delivery_intents_source
+    check (source = any (array['chat'::text, 'create_run'::text, 'copy'::text, 'retry'::text, 'resume'::text])),
+  constraint chk_run_delivery_intents_state
+    check (state = any (array['pending'::text, 'claimed'::text, 'delivered'::text, 'suppressed'::text])),
+  constraint chk_run_delivery_intents_identity
+    check (session_id <> '' and queue_message_id ~ '^[0-9a-f]{64}$' and payload_sha256 ~ '^[0-9a-f]{64}$'),
+  constraint chk_run_delivery_intents_attempt_count
+    check (attempt_count >= 0),
+  constraint chk_run_delivery_intents_claim
+    check (
+      (state = 'claimed' and claim_token is not null and claimed_at is not null
+       and claim_expires_at is not null and claim_expires_at > claimed_at)
+      or (state <> 'claimed' and claim_token is null and claimed_at is null and claim_expires_at is null)
+    ),
+  constraint chk_run_delivery_intents_receipt
+    check (
+      (state = 'delivered' and delivered_at is not null)
+      or (state <> 'delivered' and delivered_at is null)
+    ),
+  constraint chk_run_delivery_intents_suppressed
+    check (
+      (state = 'suppressed' and suppressed_at is not null)
+      or (state <> 'suppressed' and suppressed_at is null)
+    )
+);
+create index if not exists idx_run_delivery_intents_due
+  on run_delivery_intents(state, next_retry_at, created_at, run_id);
+create unique index if not exists uq_run_delivery_intents_queue_identity
+  on run_delivery_intents(queue_message_id);
+
 do $$
 begin
   if exists (
@@ -2401,8 +2750,7 @@ begin
     raise exception 'runs_context_snapshot_ref_mismatch';
   end if;
   return new;
-end;
-$$;
+end $$;
 
 do $$
 begin
@@ -2883,17 +3231,16 @@ create table if not exists sandbox_leases (
   provider_expires_at timestamptz,
   executor_status text not null default 'pending',
   executor_heartbeat_at timestamptz,
-  executor_terminal_json jsonb,
   executor_terminal_received_at timestamptz,
-  executor_reconciliation_context_json jsonb,
-  executor_reconciliation_status text not null default 'waiting_terminal',
-  executor_reconciliation_claim_token text,
-  executor_reconciliation_claimed_at timestamptz,
-  executor_reconciliation_retry_not_before timestamptz,
   executor_reconciliation_attempt_count integer not null default 0,
-  executor_terminal_reconciliation_attempt_count integer not null default 0,
   executor_reconciliation_error text not null default '',
   executor_reconciled_at timestamptz,
+  executor_probe_claim_token text,
+  executor_probe_claimed_at timestamptz,
+  executor_cleanup_status text not null default 'not_required',
+  executor_cleanup_claim_token text,
+  executor_cleanup_claimed_at timestamptz,
+  executor_cleanup_retry_not_before timestamptz,
   heartbeat_at timestamptz,
   expires_at timestamptz,
   released_at timestamptz,
@@ -2917,33 +3264,197 @@ alter table sandbox_leases add column if not exists provider_renewed_at timestam
 alter table sandbox_leases add column if not exists provider_expires_at timestamptz;
 alter table sandbox_leases add column if not exists executor_status text not null default 'pending';
 alter table sandbox_leases add column if not exists executor_heartbeat_at timestamptz;
-alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
 alter table sandbox_leases add column if not exists executor_terminal_received_at timestamptz;
-alter table sandbox_leases add column if not exists executor_reconciliation_context_json jsonb;
-alter table sandbox_leases add column if not exists executor_reconciliation_status text not null default 'waiting_terminal';
-alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
-alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
 alter table sandbox_leases add column if not exists executor_reconciliation_attempt_count integer not null default 0;
-alter table sandbox_leases add column if not exists executor_terminal_reconciliation_attempt_count integer not null default 0;
 alter table sandbox_leases add column if not exists executor_reconciliation_error text not null default '';
 alter table sandbox_leases add column if not exists executor_reconciled_at timestamptz;
-alter table sandbox_leases add column if not exists executor_reconciliation_retry_not_before timestamptz;
--- Preserve the former retry clock for persisted work at cutover.
-update sandbox_leases
-set executor_reconciliation_retry_not_before = updated_at + make_interval(
-  secs => least(30, greatest(1, executor_terminal_reconciliation_attempt_count))
-)
-where executor_terminal_json is not null
-  and executor_reconciliation_status = 'retry'
-  and executor_reconciliation_retry_not_before is null;
+alter table sandbox_leases add column if not exists executor_probe_claim_token text;
+alter table sandbox_leases add column if not exists executor_probe_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists executor_cleanup_status text not null default 'not_required';
+alter table sandbox_leases add column if not exists executor_cleanup_claim_token text;
+alter table sandbox_leases add column if not exists executor_cleanup_claimed_at timestamptz;
+alter table sandbox_leases add column if not exists executor_cleanup_retry_not_before timestamptz;
+-- Retain the old writer projection only during the explicit expanded phase.
+-- The marker gate is also applied by future core schema upgrades.
+do $$
+begin
+  if exists (
+    select 1 from run_attempt_settlement_retirement
+    where singleton = true and state = 'expanded'
+  ) then
+    alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
+    alter table sandbox_leases add column if not exists executor_reconciliation_context_json jsonb;
+    alter table sandbox_leases add column if not exists executor_reconciliation_intent_context_json jsonb;
+    alter table sandbox_leases add column if not exists executor_reconciliation_status text not null default 'waiting_terminal';
+    alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
+    alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
+    alter table sandbox_leases add column if not exists executor_reconciliation_retry_not_before timestamptz;
+    alter table sandbox_leases add column if not exists executor_terminal_reconciliation_attempt_count integer not null default 0;
+
+    update sandbox_leases
+    set executor_reconciliation_retry_not_before = updated_at + make_interval(
+      secs => least(30, greatest(1, executor_terminal_reconciliation_attempt_count))
+    )
+    where executor_terminal_json is not null
+      and executor_reconciliation_status = 'retry'
+      and executor_reconciliation_retry_not_before is null;
+
+    update sandbox_leases
+    set executor_probe_claim_token = case
+          when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
+            then executor_reconciliation_claim_token
+          else executor_probe_claim_token
+        end,
+        executor_probe_claimed_at = case
+          when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
+            then executor_reconciliation_claimed_at
+          else executor_probe_claimed_at
+        end,
+        executor_cleanup_status = case
+          when executor_terminal_json is null then 'not_required'
+          when executor_reconciliation_status = 'finalized' then 'finalized'
+          when executor_reconciliation_status in ('cleanup_pending', 'failed')
+            then executor_reconciliation_status
+          else 'waiting_settlement'
+        end,
+        executor_cleanup_claim_token = case
+          when executor_terminal_json is not null
+           and executor_reconciliation_status in ('cleanup_pending', 'failed')
+            then executor_reconciliation_claim_token
+          else executor_cleanup_claim_token
+        end,
+        executor_cleanup_claimed_at = case
+          when executor_terminal_json is not null
+           and executor_reconciliation_status in ('cleanup_pending', 'failed')
+            then executor_reconciliation_claimed_at
+          else executor_cleanup_claimed_at
+        end,
+        executor_cleanup_retry_not_before = case
+          when executor_terminal_json is not null
+           and executor_reconciliation_status in ('cleanup_pending', 'failed')
+            then executor_reconciliation_retry_not_before
+          else executor_cleanup_retry_not_before
+        end
+    where executor_cleanup_status = 'not_required';
+  end if;
+end $$;
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_status
   check (executor_status in ('pending', 'accepted', 'running', 'completed', 'failed', 'cancelled'));
-alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
-alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
-  check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'));
+do $$
+begin
+  if exists (
+    select 1 from run_attempt_settlement_retirement
+    where singleton = true and state = 'expanded'
+  ) then
+    alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
+    alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
+      check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'));
+  end if;
+end $$;
+alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_cleanup_status;
+alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_status
+  check (executor_cleanup_status in (
+    'not_required', 'waiting_settlement', 'cleanup_pending', 'claimed',
+    'retry', 'failed', 'finalized'
+  ));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
+
+-- Fence binary writers that still try to mutate the retired settlement
+-- projection after N41 writer activation. The JSON comparison remains valid
+-- after N43 drops the named fields.
+create or replace function reject_legacy_attempt_settlement_write()
+returns trigger language plpgsql as $$
+declare
+  writer_mode text;
+  retirement_state text;
+  legacy_name text;
+  old_values jsonb := to_jsonb(old);
+  new_values jsonb := to_jsonb(new);
+begin
+  select writer_version into writer_mode
+  from run_attempt_settlement_writer where singleton = true;
+  select state into retirement_state
+  from run_attempt_settlement_retirement where singleton = true;
+  if writer_mode is null
+     or writer_mode not in ('sandbox_lease.v1', 'attempt.v1')
+     or retirement_state is null
+     or retirement_state not in ('expanded', 'retired') then
+    raise exception 'attempt_settlement_authority_marker_invalid'
+      using errcode = '55000';
+  end if;
+  if writer_mode = 'attempt.v1' or retirement_state = 'retired' then
+    foreach legacy_name in array array[
+      'executor_terminal_json',
+      'executor_reconciliation_context_json',
+      'executor_reconciliation_intent_context_json',
+      'executor_reconciliation_status',
+      'executor_reconciliation_claim_token',
+      'executor_reconciliation_claimed_at',
+      'executor_reconciliation_retry_not_before',
+      'executor_terminal_reconciliation_attempt_count'
+    ] loop
+      if old_values ? legacy_name and
+         old_values -> legacy_name is distinct from new_values -> legacy_name then
+        raise exception 'legacy_attempt_settlement_write_rejected'
+          using errcode = '55000';
+      end if;
+    end loop;
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_reject_legacy_attempt_settlement_write on sandbox_leases;
+create trigger trg_reject_legacy_attempt_settlement_write
+before update on sandbox_leases
+for each row execute function reject_legacy_attempt_settlement_write();
+
+-- Attempt-owned evidence for one exact provider dispatch. This is an
+-- observation ledger, not a second Run/Attempt execution authority.
+create table if not exists sandbox_execution_dispatches (
+  dispatch_id text primary key,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null references run_attempts(id),
+  owner_generation bigint not null,
+  lease_id text not null unique references sandbox_leases(id),
+  provider text not null,
+  provider_task_id text not null,
+  status text not null default 'intent',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fk_sandbox_execution_dispatches_run
+    foreign key (tenant_id, run_id) references runs(tenant_id, id),
+  constraint uq_sandbox_execution_dispatches_attempt
+    unique (tenant_id, run_id, attempt_id),
+  constraint chk_sandbox_execution_dispatches_identity check (
+    dispatch_id <> '' and tenant_id <> '' and run_id <> '' and attempt_id <> ''
+    and owner_generation > 0 and lease_id <> '' and provider <> '' and provider_task_id <> ''
+  ),
+  constraint chk_sandbox_execution_dispatches_status check (
+    status in ('intent', 'accepted', 'rejected', 'unknown')
+  )
+);
+
+-- Preserve the best available historical intent context at this additive
+-- schema boundary; new dispatches persist it independently of acceptance.
+do $$
+begin
+  if exists (
+    select 1 from run_attempt_settlement_retirement
+    where singleton = true and state = 'expanded'
+  ) then
+    update sandbox_leases
+    set executor_reconciliation_intent_context_json = executor_reconciliation_context_json
+    where executor_reconciliation_intent_context_json is null
+      and executor_reconciliation_context_json is not null;
+  end if;
+end $$;
+
+update run_attempt_settlements
+set intent_recovery_context_json = accepted_context_json
+where intent_recovery_context_json is null
+  and accepted_context_json is not null;
 
 -- Rollback for the additive OpenSandbox renewal observations (after callers retire):
 -- alter table sandbox_leases drop column if exists provider_renewed_at;
@@ -3605,3 +4116,16 @@ where id = 'ragflow-knowledge-search';
 update tool_policies
 set status = 'disabled', visible_to_user = false
 where tool_id = 'ragflow-knowledge-search';
+
+-- Preserve historical receipt age when the Runs-owned settlement writer is added.
+update run_attempt_settlements detail
+set receipt_recorded_at = coalesce(
+  lease.executor_terminal_received_at, lease.updated_at, lease.created_at
+)
+from sandbox_leases lease
+where detail.receipt_json is not null
+  and detail.receipt_recorded_at is null
+  and lease.tenant_id = detail.tenant_id
+  and lease.run_id = detail.run_id
+  and lease.attempt_id = detail.attempt_id
+  and lease.id = detail.source_lease_id;

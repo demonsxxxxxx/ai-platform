@@ -189,7 +189,10 @@ class SandboxRuntimeCleanup:
         stopped_leases: list[dict[str, Any]] = []
         failed_leases: list[dict[str, Any]] = []
         for row in sandbox_leases or []:
-            if (
+            cleanup_status = row.get("executor_cleanup_status")
+            if cleanup_status is not None and cleanup_status not in {"not_required", "finalized"}:
+                continue
+            if cleanup_status is None and (
                 row.get("executor_terminal_json") is not None
                 and row.get("executor_reconciliation_status") != "finalized"
             ):
@@ -509,7 +512,7 @@ class SandboxRuntimeCleanup:
         trace_id: str | None,
         provider_factory: ProviderFactory,
         transaction_factory: TransactionFactory | None = None,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         """Settle stopped leases and the cancel cleanup outcome in one transaction.
 
         The Runs cancellation fact has already committed. Provider stop remains
@@ -526,9 +529,10 @@ class SandboxRuntimeCleanup:
             failure = exc
             stopped_leases = exc.stopped_leases
         if failure is None and not stopped_leases:
-            return
+            return []
 
         transaction_factory = transaction_factory or self._transaction_factory
+        released_leases: list[dict[str, Any]] = []
         try:
             async with transaction_factory() as conn:
                 grouped: dict[str, list[str]] = {}
@@ -538,7 +542,7 @@ class SandboxRuntimeCleanup:
                     if lease_run_id and lease_id:
                         grouped.setdefault(lease_run_id, []).append(lease_id)
                 for lease_run_id, lease_ids in grouped.items():
-                    await self.release_stopped_sandbox_leases_for_cancel(
+                    released_leases.extend(await self.release_stopped_sandbox_leases_for_cancel(
                         conn,
                         tenant_id=tenant_id,
                         run_id=lease_run_id,
@@ -546,7 +550,7 @@ class SandboxRuntimeCleanup:
                         lease_ids=lease_ids,
                         trace_id=trace_id,
                         **({"requested_by_role": "admin"} if requested_by_role == "admin" else {}),
-                    )
+                    ))
                 outcome_leases = failure.failed_leases if failure is not None else stopped_leases
                 await self._outcomes.record_sandbox_runtime_cleanup_outcome(
                     conn,
@@ -564,3 +568,4 @@ class SandboxRuntimeCleanup:
             raise SandboxCleanupPersistenceError("sandbox_cleanup_persistence_unavailable") from exc
         if failure is not None:
             raise failure
+        return released_leases

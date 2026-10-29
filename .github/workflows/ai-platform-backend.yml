@@ -4,6 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - feat/n01-lifecycle-control-chain
+      - test/run-lifecycle-control-chain
+      - feat/lifecycle-phase1
+      - feat/lifecycle-phase2
+      - feat/lifecycle-phase3
   push:
     branches:
       - main
@@ -66,10 +71,10 @@ jobs:
         run: python tools/check_sse_runtime_cutover.py
 
   backend-tests:
-    name: backend tests (${{ matrix.shard }})
+    name: backend tests (${{ matrix.stage || matrix.shard }})
     runs-on: ${{ matrix.runner }}
     needs: backend-preflight
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.shard == 'lifecycle-control-chain' && 50 || 15 }}
     defaults:
       run:
         shell: bash
@@ -284,6 +289,47 @@ jobs:
               tests/test_run_performance_postgres.py
               tests/test_streaming_schema_postgres.py
               tests/test_s0a_schema_postgres.py
+              tests/test_run_delivery_intents.py
+              tests/test_run_delivery_intents_postgres.py
+              tests/test_execution_supervision_postgres.py
+              tests/test_stale_reconciliation_claims.py
+              tests/test_n42_redis_fence_retirement.py
+          - shard: lifecycle-control-chain
+            stage: lifecycle-control-chain-core
+            runner: ubuntu-latest
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
+            redis_image: redis:7.4-alpine
+            redis_url: redis://localhost:6379/15
+            test_files: >-
+              tests/test_run_execution_lifecycle_integration.py
+            test_selectors: >-
+              tests/test_run_execution_lifecycle_integration.py::test_docker_proxy_closes_upstream_when_selector_initialization_fails
+              tests/test_run_execution_lifecycle_integration.py::test_lifecycle_fixture_makes_identity_script_readable_by_runtime_user
+              tests/test_run_execution_lifecycle_integration.py::test_lifecycle_fixture_native_tool_socket_path_stays_under_linux_limit
+              tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[terminal_receipt]
+              tests/test_run_execution_lifecycle_integration.py::test_executor_http_callback_persists_answer_to_real_postgres_and_redis[kill_at_barrier]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[answer]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[selected-files]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[worker-restart]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[terminal-ack-loss]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[terminal-callback-loss]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[running-cancel]
+          - shard: lifecycle-control-chain
+            stage: lifecycle-control-chain-recovery
+            runner: ubuntu-latest
+            postgres_image: postgres:16-alpine
+            postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
+            redis_image: redis:7.4-alpine
+            redis_url: redis://localhost:6379/15
+            test_files: ""
+            test_selectors: >-
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[receipt-cancel]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[stop-retry]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[executor-timeout]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[executor-kill]
+              tests/test_run_execution_lifecycle_integration.py::test_admission_worker_settlement_delivery_reclamation[provider-unreachable]
+              tests/test_run_execution_lifecycle_integration.py::test_queued_run_owner_cancel_clears_queue_and_persists_once
           - shard: model-control-plane
             runner: ubuntu-latest
             postgres_image: ""
@@ -322,6 +368,11 @@ jobs:
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
+              tests/test_execution_supervision.py
+              tests/test_attempt_settlement_projection.py
+              tests/test_attempt_settlement_authority.py
+              tests/test_attempt_settlement_retirement.py
+              tests/test_sandbox_attempt_authority.py
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
@@ -394,6 +445,7 @@ jobs:
               tests/test_model_groups_postgres.py
               tests/test_model_group_retirement_postgres.py
               tests/test_model_providers_postgres.py
+              tests/test_run_status_schema_migrations.py
               tests/test_skill_release_lifecycle_postgres.py
               tests/test_run_inputs_postgres.py
               tests/test_provider_session_recovery_postgres.py
@@ -516,24 +568,36 @@ jobs:
       - name: Run backend test shard
         run: |
           mkdir -p .pytest-tmp
+          selected_tests='${{ matrix.test_selectors || matrix.test_files }}'
+          read -r -a test_selectors <<< "$selected_tests"
           zero_skips=()
           if [[ "${{ matrix.shard }}" != "sandbox-runtime" && "${{ matrix.shard }}" != "release-governance-authority" ]]; then
             zero_skips=(--require-zero-skips)
           fi
           uv run --locked --extra test python tools/run_test_stage.py \
-            --stage "${{ matrix.shard }}" --timeout-seconds 600 --coverage \
-            "${zero_skips[@]}" -- ${{ matrix.test_files }}
+            --stage "${{ matrix.stage || matrix.shard }}" --timeout-seconds ${{ matrix.shard == 'lifecycle-control-chain' && 1800 || 600 }} --coverage \
+            "${zero_skips[@]}" -- "${test_selectors[@]}"
 
       - name: Upload exact shard evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: backend-tests-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-tests-${{ matrix.stage || matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           path: |
-            .pytest-tmp/test-runs/**/${{ matrix.shard }}/evidence.json
-            .pytest-tmp/test-runs/**/${{ matrix.shard }}/junit.xml
-            .pytest-tmp/test-runs/**/${{ matrix.shard }}/coverage.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/evidence.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/junit.xml
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/coverage.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/control-chain.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/candidate-source-binding.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/candidate-image-inspect.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/runtime-dependency-versions.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/sandbox-security-profile.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/terminal-ack-fault.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/terminal-callback-loss.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/docker-cleanup.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/failed-state.json
+            .pytest-tmp/test-runs/**/${{ matrix.stage || matrix.shard }}/basetemp/**/*.log
 
   agent-skill-contracts:
     name: Agent and Skill contracts

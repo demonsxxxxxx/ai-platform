@@ -4,6 +4,7 @@ import app.identity.infrastructure.audit_postgres as _repo_owner_app_identity_in
 import app.mcp.infrastructure.tool_policies_postgres as _repo_owner_app_mcp_infrastructure_tool_policies_postgres
 import app.runs.infrastructure.admin_queries_postgres as _repo_owner_app_runs_infrastructure_admin_queries_postgres
 import app.runs.infrastructure.admin_queries_postgres as run_queries_persistence
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.platform.postgres.errors import RepositoryConflictError
 from app.runs.infrastructure.admin_queries_postgres import get_admin_run_detail
@@ -29,7 +30,7 @@ async def test_admin_run_detail_rejects_missing_run_contract(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
 
     with pytest.raises(RepositoryConflictError, match="invalid_run_contract"):
-        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
 
 @pytest.mark.asyncio
@@ -75,7 +76,7 @@ async def test_admin_run_detail_rejects_missing_artifact_manifest_schema(monkeyp
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_artifact_manifest_schema_version"):
-        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
 
 @pytest.mark.asyncio
@@ -132,7 +133,7 @@ async def test_admin_run_detail_rejects_missing_audit_schema(monkeypatch):
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
     with pytest.raises(RepositoryConflictError, match="invalid_audit_event_schema_version"):
-        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
+        await _repo_owner_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
 
 @pytest.mark.asyncio
@@ -536,7 +537,7 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
                 )
             raise AssertionError(compact)
 
-    detail = await get_admin_run_detail(DetailConnection(), tenant_id="tenant-a", run_id="run-a")
+    detail = await get_admin_run_detail(DetailConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
     assert detail["run"]["trace_id"] == "trace_run_a"
     assert detail["run"]["contract_version"] == "ai-platform.run.v1"
@@ -704,7 +705,7 @@ async def test_admin_run_detail_sanitizes_secret_and_runtime_payloads(monkeypatc
     monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_empty_list)
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_empty_list)
 
-    detail = await get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a")
+    detail = await get_admin_run_detail(AuditConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
     assert detail["run"]["input"]["skill_ids"] == ["qa-file-reviewer"]
     assert detail["run"]["result"]["used_skills"] == ["qa-file-reviewer"]
@@ -810,7 +811,7 @@ async def test_admin_run_detail_sanitizes_dirty_skill_snapshot_source_and_usage(
     monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_empty_list)
     monkeypatch.setattr(run_queries_persistence, "list_run_skill_snapshots", fake_list_run_skill_snapshots)
 
-    detail = await get_admin_run_detail(EmptyAuditConnection(), tenant_id="tenant-a", run_id="run-a")
+    detail = await get_admin_run_detail(EmptyAuditConnection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
 
     snapshot = detail["skill_snapshots"][0]
     assert snapshot["skill_id"] == "qa-file-reviewer"
@@ -1255,7 +1256,7 @@ async def test_admin_runtime_health_uses_current_attempt_execution_heartbeat(
     for name in ("list_run_events", "list_run_steps", "list_run_artifacts", "list_run_skill_snapshots"):
         monkeypatch.setattr(run_queries_persistence, name, empty_list)
 
-    detail = await get_admin_run_detail(Connection(), tenant_id="tenant-a", run_id="run-a")
+    detail = await get_admin_run_detail(Connection(), tenant_id="tenant-a", run_id="run-a", sandbox_lease_reader=sandbox_lease_reader)
     health = detail["runtime_health"]
     assert health["state"] == expected
     assert "PRIVATE" not in json.dumps(health, default=str)

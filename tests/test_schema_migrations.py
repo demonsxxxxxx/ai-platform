@@ -52,12 +52,16 @@ class SharedMigrationState:
         self.lock = asyncio.Lock()
         self.index_lock = asyncio.Lock()
         self.ledger = {}
+        self.migration_states = {}
         self.index_ledger = {}
         self.indexes = set()
         self.schema_execute_count = 0
         self.index_execute_count = 0
         self.run_attempt_heartbeat_contract_supported = False
         self.future_open_attempt_heartbeat = False
+        self.run_status_constraint_exists = False
+        self.run_status_constraint_validated = False
+        self.retirement_state = "expanded"
 
 
 class FakeMigrationConnection:
@@ -67,8 +71,15 @@ class FakeMigrationConnection:
 
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": self.state.retirement_state,
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
         if str(statement) == schema_migrations.schema_sql():
             self.state.schema_execute_count += 1
+            self.state.run_status_constraint_exists = True
+            self.state.run_status_constraint_validated = True
             await asyncio.sleep(0)
             return FakeCursor(None)
         if normalized.startswith("select pg_advisory_xact_lock"):
@@ -77,11 +88,30 @@ class FakeMigrationConnection:
             return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_migrations"):
             return FakeCursor(None)
+        if normalized.startswith("alter table schema_migrations add column if not exists state"):
+            return FakeCursor(None)
+        if normalized.startswith("set local ") or normalized.startswith("alter table schema_migrations add column if not exists state"):
+            return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_index_migrations"):
             return FakeCursor(None)
-        if normalized.startswith("select checksum_sha256 from schema_migrations"):
+        if normalized.startswith("select checksum_sha256, state from schema_migrations"):
             checksum = self.state.ledger.get(params[0])
-            return FakeCursor(None if checksum is None else {"checksum_sha256": checksum})
+            return FakeCursor(
+                None
+                if checksum is None
+                else {
+                    "checksum_sha256": checksum,
+                    "state": self.state.migration_states.get(params[0], "applied"),
+                }
+            )
+        if "from pg_constraint" in normalized and "to_regclass('runs')" in normalized:
+            if not self.state.run_status_constraint_exists:
+                return FakeCursor(None)
+            return FakeCursor({
+                "constraint_type": "c",
+                "validated": self.state.run_status_constraint_validated,
+                "definition": schema_migrations.RUN_STATUS_CHECK_DEFINITION,
+            })
         if "to_regclass('run_attempts') is not null" in normalized:
             return FakeCursor(
                 {
@@ -97,6 +127,17 @@ class FakeMigrationConnection:
             )
         if normalized.startswith("insert into schema_migrations"):
             self.state.ledger[params[0]] = params[1]
+            self.state.migration_states[params[0]] = "pending"
+            return FakeCursor(None)
+        if normalized.startswith("update schema_migrations"):
+            self.state.migration_states[params[0]] = "applied"
+            return FakeCursor({"state": "applied"})
+        if normalized.startswith("alter table runs add constraint chk_runs_status"):
+            self.state.run_status_constraint_exists = True
+            self.state.run_status_constraint_validated = False
+            return FakeCursor(None)
+        if normalized.startswith("alter table runs validate constraint chk_runs_status"):
+            self.state.run_status_constraint_validated = True
             return FakeCursor(None)
         raise AssertionError(normalized)
 
@@ -108,6 +149,11 @@ class FakeIndexConnection:
 
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": self.state.retirement_state,
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
         if normalized.startswith("select pg_try_advisory_lock"):
             if self.state.index_lock.locked():
                 return FakeCursor({"acquired": False})
@@ -119,6 +165,8 @@ class FakeIndexConnection:
             self.locked = False
             return FakeCursor({"pg_advisory_unlock": True})
         if normalized.startswith("create table if not exists schema_migrations"):
+            return FakeCursor(None)
+        if normalized.startswith("set local ") or normalized.startswith("alter table schema_migrations add column if not exists state"):
             return FakeCursor(None)
         if normalized.startswith("create table if not exists schema_index_migrations"):
             return FakeCursor(None)
@@ -190,16 +238,29 @@ class FakeSchemaStatusConnection:
         missing_retired_relation: str | None = None,
         constraint_definitions_current: bool = True,
         model_index_definitions_current: bool = True,
+        ledger_current: bool = True,
     ):
         self.missing_relation = missing_relation
         self.missing_retired_relation = missing_retired_relation
         self.constraint_definitions_current = constraint_definitions_current
         self.model_index_definitions_current = model_index_definitions_current
+        self.ledger_current = ledger_current
         self.calls = []
 
     async def execute(self, statement, params=None):
         normalized = " ".join(str(statement).split()).lower()
         self.calls.append((normalized, params))
+        if normalized.startswith("select state, retirement_version from run_attempt_settlement_retirement"):
+            return FakeCursor({
+                "state": "expanded",
+                "retirement_version": schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,
+            })
+        if "legacy_column_count" in normalized:
+            return FakeCursor({
+                "legacy_column_count": 8,
+                "legacy_index_count": 3,
+                "legacy_constraint_count": 1,
+            })
         if "from jsonb_array_elements_text" in normalized:
             if "indexes.oid is null" in normalized:
                 return FakeCursor({"current": True})
@@ -223,7 +284,10 @@ class FakeSchemaStatusConnection:
         if "from jsonb_to_recordset" in normalized and "indexes.indexrelid is not null" in normalized:
             return FakeCursor({"current": True})
         if normalized.startswith("with expected_indexes"):
-            return FakeCursor({"ledger_current": True, "index_ledger_current": True})
+            return FakeCursor({
+                "ledger_current": self.ledger_current,
+                "index_ledger_current": True,
+            })
         if "from pg_index indexes" in normalized:
             migration = next(
                 item
@@ -287,6 +351,7 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
     assert state.schema_execute_count == 1
     assert state.index_execute_count == len(schema_migrations.CONCURRENT_INDEX_MIGRATIONS)
     assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == schema_migrations.schema_checksum()
+    assert state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] == "applied"
     assert {
         row["target_version"] for row in state.index_ledger.values()
     } == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
@@ -501,6 +566,24 @@ async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema
 
 
 @pytest.mark.asyncio
+async def test_pending_target_ledger_resumes_without_reapplying_core_schema():
+    state = SharedMigrationState()
+    state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] = schema_migrations.schema_checksum()
+    state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] = "pending"
+    state.run_status_constraint_exists = True
+    state.run_status_constraint_validated = True
+
+    result = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert result["status"] == "applied"
+    assert state.schema_execute_count == 0
+    assert state.migration_states[schema_migrations.TARGET_SCHEMA_VERSION] == "applied"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("missing_relation", ["model_gateway_revisions", "model_catalog_entries"])
 async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_missing(
     missing_relation: str,
@@ -512,6 +595,16 @@ async def test_schema_status_is_not_ready_when_model_control_plane_relation_is_m
     assert status["ready"] is False
     assert status["relations_current"] is False
     assert status["contracts_current"] is False
+
+
+@pytest.mark.asyncio
+async def test_schema_status_does_not_treat_pending_schema_ledger_as_ready():
+    status = await schema_migrations.schema_status(
+        FakeSchemaStatusConnection(ledger_current=False)
+    )
+
+    assert status["ready"] is False
+    assert status["ledger_current"] is False
 
 
 @pytest.mark.asyncio
@@ -689,6 +782,41 @@ async def test_successor_activation_ledger_advances_to_current_schema():
     )
 
 
+@pytest.mark.asyncio
+async def test_main_and_lifecycle_schema_ledgers_converge_without_rewriting_history():
+    state = SharedMigrationState()
+    main_version = schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+    lifecycle_version = schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+    main_checksum = "a" * 64
+    lifecycle_checksum = "b" * 64
+    state.ledger[main_version] = main_checksum
+    state.migration_states[main_version] = "applied"
+    state.ledger[lifecycle_version] = lifecycle_checksum
+    state.migration_states[lifecycle_version] = "applied"
+
+    first = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+    second = await schema_migrations.apply_migrations(
+        transaction_factory=transaction_factory(state),
+        index_connection_factory=index_connection_factory(state),
+    )
+
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION not in {main_version, lifecycle_version}
+    assert first["status"] == "applied"
+    assert second["status"] == "current"
+    assert state.schema_execute_count == 1
+    assert state.ledger[main_version] == main_checksum
+    assert state.migration_states[main_version] == "applied"
+    assert state.ledger[lifecycle_version] == lifecycle_checksum
+    assert state.migration_states[lifecycle_version] == "applied"
+    assert state.ledger[schema_migrations.TARGET_SCHEMA_VERSION] == (
+        schema_migrations.schema_checksum()
+    )
+
+
 def test_stream_only_schema_change_advances_schema_version():
     assert schema_migrations.STREAM_ONLY_SCHEMA_VERSION == "2026.09.12.1"
     assert schema_migrations.RUN_DIAGNOSTICS_SCHEMA_VERSION == "2026.09.13.1"
@@ -706,9 +834,56 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION == "2026.10.28.1"
     assert schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION == "2026.10.28.2"
     assert schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION == "2026.10.29.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+    assert schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION == "2026.10.22.1"
+    assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
+    assert schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION == "2026.10.25.2"
+    assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_PROJECTION_SCHEMA_VERSION == "2026.10.25.4"
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_SHADOW_CONTEXT_SCHEMA_VERSION == "2026.10.25.5"
+    assert schema_migrations.EXECUTION_SUPERVISION_SCHEMA_VERSION == "2026.10.25.6"
+    assert schema_migrations.EXECUTION_SUPERVISION_RECOVERY_SCHEMA_VERSION == "2026.10.25.7"
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION == "2026.10.25.8"
+    assert schema_migrations.N42_REQUIRED_N40_SCHEMA_VERSION == "2026.10.25.8"
+    assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
+    assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION == "2026.10.25.11"
+    assert schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION
+    assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_delivery_intents", "state", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_delivery_intents", "chk_run_delivery_intents_state") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_run_delivery_intents_due", False) in schema_migrations.CRITICAL_INDEXES
+    assert ("uq_run_delivery_intents_queue_identity", True) in schema_migrations.CRITICAL_INDEXES
+    assert "run_attempt_settlements" in schema_migrations.CRITICAL_RELATIONS
+    assert "run_attempt_settlement_storage" in schema_migrations.CRITICAL_RELATIONS
+    assert "run_stale_reconciliation_claims" in schema_migrations.CRITICAL_RELATIONS
+    assert "run_attempt_settlement_retirement" in schema_migrations.CRITICAL_RELATIONS
+    assert "execution_supervision_domains" in schema_migrations.CRITICAL_RELATIONS
+    assert "execution_supervision_claims" in schema_migrations.CRITICAL_RELATIONS
+    assert ("execution_supervision_domains", "mode", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_domains", "probe_cancel_scan_cursor", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_domains", "probe_normal_scan_cursor", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_claims", "owner_version", "int8", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("execution_supervision_domains", "execution_supervision_domains_pkey") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("execution_supervision_claims", "execution_supervision_claims_domain_fkey") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_execution_supervision_claims_domain", False) in schema_migrations.CRITICAL_INDEXES
+    assert ("run_attempt_settlements", "receipt_sha256", "text", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_attempt_settlements", "intent_recovery_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_attempt_settlements", "chk_run_attempt_settlements_receipt") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("run_attempt_settlement_storage", "storage_version", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_attempt_settlement_storage", "chk_run_attempt_settlement_storage_version") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_run_attempt_settlements_mapping", False) in schema_migrations.CRITICAL_INDEXES
+    assert ("run_stale_reconciliation_claims", "expected_owner_generation", "int8", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_stale_reconciliation_claims", "claim_token", "uuid", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_generation") in schema_migrations.CRITICAL_CONSTRAINTS
+    assert ("idx_run_stale_reconciliation_claims_deadline", False) in schema_migrations.CRITICAL_INDEXES
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("sandbox_leases", "executor_reconciliation_intent_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("sandbox_execution_dispatches", "status", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("sandbox_execution_dispatches", "chk_sandbox_execution_dispatches_status") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "chk_run_inputs_source") in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
@@ -716,7 +891,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
+        == schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -736,6 +911,13 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_group_members",
         "model_group_models",
         "run_attempts",
+        "run_attempt_settlements",
+        "run_attempt_settlement_storage",
+        "run_attempt_settlement_writer",
+        "run_attempt_settlement_retirement",
+        "run_stale_reconciliation_claims",
+        "execution_supervision_domains",
+        "execution_supervision_claims",
         "run_input_sessions",
         "run_input_questions",
         "run_inputs",
@@ -748,8 +930,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "file_upload_sessions",
         "artifacts",
         "object_deletion_outbox",
+        "run_delivery_intents",
         "audit_logs",
         "sandbox_leases",
+        "sandbox_execution_dispatches",
         "mcp_servers",
         "mcp_server_credentials",
         "mcp_tools",
@@ -1044,6 +1228,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     ) in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CRITICAL_TRIGGERS == (
         (
+            "sandbox_leases",
+            "trg_reject_legacy_attempt_settlement_write",
+            "reject_legacy_attempt_settlement_write",
+            19,
+        ),
+        (
             "run_attempts",
             "trg_run_attempt_heartbeat_monotonicity_guard",
             "ai_platform_guard_run_attempt_heartbeat_monotonicity",
@@ -1072,6 +1262,42 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "chk_provider_entry_representation",
             "c",
             "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "run_attempt_settlement_retirement_pkey",
+            "p",
+            "PRIMARY KEY (singleton)",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_singleton",
+            "c",
+            "CHECK (singleton)",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_state",
+            "c",
+            "CHECK (state = ANY (ARRAY['expanded'::text, 'retired'::text]))",
+        ),
+        (
+            "run_attempt_settlement_retirement",
+            "chk_run_attempt_settlement_retirement_receipt",
+            "c",
+            "CHECK (state = 'expanded'::text AND retired_at IS NULL OR "
+            "state = 'retired'::text AND retired_at IS NOT NULL AND "
+            "minimum_compatible_version IS NOT NULL AND operator_declaration IS NOT NULL)",
+        ),
+        (
+            "runs",
+            "chk_runs_status",
+            "c",
+            "CHECK (status IS NOT NULL AND (status = ANY (ARRAY["
+            "'queued'::text, 'running'::text, 'cancel_requested'::text, "
+            "'succeeded'::text, 'failed'::text, 'cancelled'::text, "
+            "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, "
+            "'dead-lettered'::text])))",
         ),
         (
             "users",
@@ -1119,6 +1345,238 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "run_diagnostics_tenant_id_run_id_key",
             "u",
             "UNIQUE (tenant_id, run_id)",
+        ),
+        (
+            "run_attempts",
+            "run_attempts_tenant_id_run_id_id_key",
+            "u",
+            "UNIQUE (tenant_id, run_id, id)",
+        ),
+        (
+            "run_attempt_settlements",
+            "run_attempt_settlements_pkey",
+            "p",
+            "PRIMARY KEY (tenant_id, run_id, attempt_id)",
+        ),
+        (
+            "run_attempt_settlements",
+            "fk_run_attempt_settlements_attempt",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id, attempt_id) "
+            "REFERENCES run_attempts(tenant_id, run_id, id)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "run_stale_reconciliation_claims_pkey",
+            "p",
+            "PRIMARY KEY (tenant_id, run_id)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "run_stale_reconciliation_claims_token_key",
+            "u",
+            "UNIQUE (claim_token)",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "fk_run_stale_reconciliation_claims_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id) ON DELETE CASCADE",
+        ),
+        (
+            "run_stale_reconciliation_claims",
+            "chk_run_stale_reconciliation_claims_deadline",
+            "c",
+            "CHECK (claim_deadline_at > claimed_at)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_schema_version",
+            "c",
+            "CHECK (schema_version = 'ai-platform.run-attempt-settlement.v1'::text)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_mapping_state",
+            "c",
+            "CHECK (mapping_state = ANY (ARRAY['mapped'::text, 'unknown'::text, "
+            "'conflict'::text]))",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_dispatch_state",
+            "c",
+            "CHECK (dispatch_state = ANY (ARRAY['unknown'::text, 'accepted'::text, "
+            "'receipt_before_acceptance'::text]))",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_phase",
+            "c",
+            "CHECK (settlement_phase = ANY (ARRAY['awaiting_receipt'::text, "
+            "'awaiting_context'::text, 'pending'::text, 'claimed'::text, 'retry'::text, "
+            "'settled'::text, 'failed'::text, 'unknown'::text]))",
+        ),
+        (
+            "run_attempt_settlement_writer",
+            "chk_run_attempt_settlement_writer_version",
+            "c",
+            "CHECK (writer_version = ANY (ARRAY['sandbox_lease.v1'::text, 'attempt.v1'::text]))",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_identity",
+            "c",
+            "CHECK (tenant_id <> ''::text AND run_id <> ''::text "
+            "AND attempt_id <> ''::text AND attempt_status_snapshot <> ''::text "
+            "AND run_status_snapshot <> ''::text "
+            "AND attempt_owner_generation_snapshot > 0 "
+            "AND (source_lease_id IS NULL OR source_lease_id <> ''::text))",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_receipt",
+            "c",
+            "CHECK (receipt_identity IS NULL AND receipt_json IS NULL "
+            "AND receipt_sha256 IS NULL AND receipt_owner_generation IS NULL "
+            "OR receipt_identity IS NOT NULL AND receipt_identity <> ''::text "
+            "AND jsonb_typeof(receipt_json) = 'object'::text "
+            "AND receipt_sha256 ~ '^[0-9a-f]{64}$'::text "
+            "AND receipt_owner_generation > 0)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_claim",
+            "c",
+            "CHECK (settlement_phase = 'claimed'::text "
+            "AND settlement_claim_token IS NOT NULL "
+            "AND settlement_claim_token <> ''::text "
+            "AND settlement_claimed_at IS NOT NULL "
+            "OR settlement_phase <> 'claimed'::text "
+            "AND settlement_claim_token IS NULL AND settlement_claimed_at IS NULL)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_retry",
+            "c",
+            "CHECK (settlement_phase = 'retry'::text AND next_retry_at IS NOT NULL "
+            "OR settlement_phase <> 'retry'::text AND next_retry_at IS NULL)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_attempt_count",
+            "c",
+            "CHECK (settlement_attempt_count >= 0)",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_result",
+            "c",
+            "CHECK (result_status IS NULL AND result_json IS NULL "
+            "AND result_sha256 IS NULL AND settled_at IS NULL "
+            "OR result_status IS NOT NULL AND result_status <> ''::text "
+            "AND jsonb_typeof(result_json) = 'object'::text "
+            "AND result_sha256 ~ '^[0-9a-f]{64}$'::text "
+            "AND settled_at IS NOT NULL)",
+        ),
+        (
+            "run_attempt_settlement_storage",
+            "run_attempt_settlement_storage_pkey",
+            "p",
+            "PRIMARY KEY (singleton)",
+        ),
+        (
+            "run_attempt_settlement_storage",
+            "chk_run_attempt_settlement_storage_singleton",
+            "c",
+            "CHECK (singleton)",
+        ),
+        (
+            "run_attempt_settlement_storage",
+            "chk_run_attempt_settlement_storage_version",
+            "c",
+            "CHECK (storage_version = ANY (ARRAY['sandbox_lease.v1'::text, 'attempt.v1'::text]))",
+        ),
+        (
+            "execution_supervision_domains",
+            "execution_supervision_domains_pkey",
+            "p",
+            "PRIMARY KEY (domain)",
+        ),
+        (
+            "execution_supervision_claims",
+            "execution_supervision_claims_pkey",
+            "p",
+            "PRIMARY KEY (claim_token)",
+        ),
+        (
+            "execution_supervision_claims",
+            "execution_supervision_claims_domain_fkey",
+            "f",
+            "FOREIGN KEY (domain) REFERENCES execution_supervision_domains(domain)",
+        ),
+        (
+            "run_delivery_intents",
+            "run_delivery_intents_pkey",
+            "p",
+            "PRIMARY KEY (tenant_id, run_id)",
+        ),
+        (
+            "run_delivery_intents",
+            "fk_run_delivery_intents_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_state",
+            "c",
+            "CHECK (state = ANY (ARRAY['pending'::text, 'claimed'::text, "
+            "'delivered'::text, 'suppressed'::text]))",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_source",
+            "c",
+            "CHECK (source = ANY (ARRAY['chat'::text, 'create_run'::text, "
+            "'copy'::text, 'retry'::text, 'resume'::text]))",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_identity",
+            "c",
+            "CHECK (session_id <> ''::text AND queue_message_id ~ "
+            "'^[0-9a-f]{64}$'::text AND payload_sha256 ~ '^[0-9a-f]{64}$'::text)",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_attempt_count",
+            "c",
+            "CHECK (attempt_count >= 0)",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_claim",
+            "c",
+            "CHECK (state = 'claimed'::text AND claim_token IS NOT NULL "
+            "AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL "
+            "AND claim_expires_at > claimed_at OR state <> 'claimed'::text "
+            "AND claim_token IS NULL AND claimed_at IS NULL "
+            "AND claim_expires_at IS NULL)",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_receipt",
+            "c",
+            "CHECK (state = 'delivered'::text AND delivered_at IS NOT NULL "
+            "OR state <> 'delivered'::text AND delivered_at IS NULL)",
+        ),
+        (
+            "run_delivery_intents",
+            "chk_run_delivery_intents_suppressed",
+            "c",
+            "CHECK (state = 'suppressed'::text AND suppressed_at IS NOT NULL "
+            "OR state <> 'suppressed'::text AND suppressed_at IS NULL)",
         ),
         (
             "mcp_servers",
@@ -1317,6 +1775,58 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "CHECK (executor_reconciliation_status = ANY (ARRAY["
             "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
             "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "sandbox_execution_dispatches_pkey",
+            "p",
+            "PRIMARY KEY (dispatch_id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "sandbox_execution_dispatches_attempt_id_fkey",
+            "f",
+            "FOREIGN KEY (attempt_id) REFERENCES run_attempts(id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "sandbox_execution_dispatches_lease_id_fkey",
+            "f",
+            "FOREIGN KEY (lease_id) REFERENCES sandbox_leases(id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "fk_sandbox_execution_dispatches_run",
+            "f",
+            "FOREIGN KEY (tenant_id, run_id) REFERENCES runs(tenant_id, id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "uq_sandbox_execution_dispatches_attempt",
+            "u",
+            "UNIQUE (tenant_id, run_id, attempt_id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "sandbox_execution_dispatches_lease_id_key",
+            "u",
+            "UNIQUE (lease_id)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "chk_sandbox_execution_dispatches_identity",
+            "c",
+            "CHECK (dispatch_id <> ''::text AND tenant_id <> ''::text "
+            "AND run_id <> ''::text AND attempt_id <> ''::text "
+            "AND owner_generation > 0 AND lease_id <> ''::text "
+            "AND provider <> ''::text AND provider_task_id <> ''::text)",
+        ),
+        (
+            "sandbox_execution_dispatches",
+            "chk_sandbox_execution_dispatches_status",
+            "c",
+            "CHECK (status = ANY (ARRAY['intent'::text, 'accepted'::text, "
+            "'rejected'::text, 'unknown'::text]))",
         ),
     )
     assert (

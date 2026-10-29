@@ -72,7 +72,7 @@ from app.runtime.sandbox.contracts import (
     ModelTokenLimits,
     SandboxRuntimeRequest,
 )
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.bootstrap.sandbox_runtime import SandboxRuntime
 from app.settings import get_settings
 from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
 from app.skills.api import (

@@ -17,7 +17,6 @@ from app import queue
 from app.context.infrastructure import postgres as context_postgres
 from app.identity.infrastructure import audit_postgres as identity_audit_postgres
 from app.runs.infrastructure import postgres as runs_postgres
-from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
 
 from app.files.api import (
     delete_expired_file_upload_session,
@@ -34,6 +33,10 @@ from app.bootstrap.skills import configure_skill_markdown
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_lifecycle import build_run_lifecycle_service
+from app.bootstrap.run_delivery_intents import build_run_delivery_intents
+from app.bootstrap.execution_stale_run_reconciliation import (
+    reconcile_worker_stale_runs_with_postgres_claims,
+)
 from app.bootstrap.streaming import build_worker_v4_runtime
 from app.bootstrap.worker_maintenance import (
     close_runtime_clients as _close_runtime_clients,
@@ -41,7 +44,8 @@ from app.bootstrap.worker_maintenance import (
     run_maintenance_phases,
     worker_maintenance_interval_seconds as _worker_maintenance_interval_seconds,
 )
-from app.execution.api import WorkerQueueLease, stage_stale_run_reconciliation
+from app.execution.api import RunDeliveryIntents, WorkerQueueLease
+from app.execution.api import SupervisionDomain
 from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
     sanitize_public_payload,
@@ -51,7 +55,11 @@ from app.control_plane_contracts import (
 from app.data_retention import run_data_retention_maintenance
 from app.db import transaction
 from app.executors.registry import AdapterRegistry
-from app.executor_reconciler import run_executor_terminal_reconciler
+from app.bootstrap.executor_reconciliation import run_executor_terminal_reconciler
+from app.bootstrap.execution_supervision import (
+    bind_worker_supervision_operation,
+    observe_worker_supervision_candidates,
+)
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.storage import ObjectStorage, run_storage_io
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
@@ -65,10 +73,16 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     exception_chain_from_error,
 )
-from app.schema_migrations import require_schema_current
+from app.schema_migrations import (
+    require_schema_current,
+)
 from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
-from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
+from app.runs.api import (
+    cancel_run_terminalization,
+    fail_run_terminalization,
+    finish_run_terminalization,
+)
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
 from app.streaming.api import (
     WorkerV4Capabilities,
@@ -84,98 +98,6 @@ _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
 _BULK_MAINTENANCE_PHASE_BUDGET_SECONDS = 30.0
 _CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS = 10.0
 _WORKER_RESOURCE_CLOSE_TIMEOUT_SECONDS = 30.0
-
-
-class ReconciliationFenceLost(RuntimeError):
-    """The worker can no longer prove exclusive ownership of one stale run."""
-
-
-class _ReconciliationFenceGuard:
-    """Keep a reconciliation fence live for one bounded terminalization attempt."""
-
-    def __init__(self, fence: queue.RunReconciliationFence, *, ttl_seconds: int) -> None:
-        self._fence = fence
-        self._ttl_seconds = max(int(ttl_seconds), 1)
-        self._renew_interval_seconds = min(max(self._ttl_seconds / 3, 1.0), 10.0)
-        self._stop = asyncio.Event()
-        self._lost = False
-        self._renewal_task: asyncio.Task[None] | None = None
-
-    async def __aenter__(self) -> "_ReconciliationFenceGuard":
-        await self.ensure_live()
-        self._renewal_task = asyncio.create_task(self._renew_until_done())
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> bool:
-        self._stop.set()
-        if self._renewal_task is not None:
-            self._renewal_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._renewal_task
-        return False
-
-    async def _renew_once(self) -> bool:
-        if self._lost:
-            return False
-        try:
-            renewed = await queue.renew_run_reconciliation_fence(
-                self._fence,
-                ttl_seconds=self._ttl_seconds,
-            )
-        except Exception:
-            logger.exception(
-                "Stale run queue fence renewal failed",
-                extra={"run_id": self._fence.run_id},
-            )
-            self._lost = True
-            return False
-        if not renewed:
-            logger.warning(
-                "Stale run queue fence owner token lost",
-                extra={"run_id": self._fence.run_id},
-            )
-            self._lost = True
-        return renewed
-
-    async def _renew_until_done(self) -> None:
-        while True:
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._renew_interval_seconds)
-                return
-            except TimeoutError:
-                if not await self._renew_once():
-                    return
-
-    async def ensure_live(self) -> None:
-        if not await self._renew_once():
-            raise ReconciliationFenceLost(self._fence.run_id)
-
-    async def release_if_live(self) -> bool:
-        if self._lost:
-            return False
-        try:
-            return await queue.release_run_reconciliation_fence(self._fence)
-        except Exception:
-            logger.exception(
-                "Stale run queue fence release failed",
-                extra={"run_id": self._fence.run_id},
-            )
-            return False
-
-
-def _fenced_transaction_factory(fence_guard: _ReconciliationFenceGuard):
-    """Require a current fence token before each durable transaction commits."""
-
-    @contextlib.asynccontextmanager
-    async def fenced_transaction():
-        await fence_guard.ensure_live()
-        async with transaction() as conn:
-            yield conn
-            # Raising here makes the surrounding transaction roll back rather
-            # than commit an intent or terminal transition after token loss.
-            await fence_guard.ensure_live()
-
-    return fenced_transaction
 
 
 def configure_worker_services() -> None:
@@ -401,143 +323,16 @@ async def reconcile_stale_runs_for_worker(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> list[dict[str, object]]:
-    """Recover a bounded batch while one atomic queue fence excludes new owners."""
-
+    """Run stale-Run adjudication under the Execution PostgreSQL claim authority."""
     settings = settings or get_settings()
-    limit = int(settings.stale_run_reconciliation_limit)
-    stale_after_seconds = int(settings.stale_run_reconciliation_seconds)
-    cancel_requested_after_seconds = _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS
-    scan_limit = int(settings.queue_metadata_fallback_scan_limit)
-    fence_ttl_seconds = int(settings.stale_run_reconciliation_fence_ttl_seconds)
-    async with transaction() as conn:
-        candidates = await lifecycle.list_stale_run_reconciliation_candidates(
-            conn,
-            stale_after_seconds=stale_after_seconds,
-            cancel_requested_after_seconds=cancel_requested_after_seconds,
-            limit=limit,
-        )
-
-    results: list[dict[str, object]] = []
-    for candidate in candidates:
-        tenant_id = str(candidate.get("tenant_id") or "")
-        workspace_id = str(candidate.get("workspace_id") or "")
-        user_id = candidate.get("user_id")
-        run_id = str(candidate.get("run_id") or "")
-        expected_status = str(candidate.get("status") or "")
-        if not tenant_id or not workspace_id or not run_id or expected_status not in {"queued", "running"}:
-            continue
-        try:
-            fence = await queue.acquire_run_reconciliation_fence(
-                tenant_id=tenant_id,
-                run_id=run_id,
-                scan_limit=scan_limit,
-                ttl_seconds=fence_ttl_seconds,
-            )
-        except Exception:
-            logger.exception("Stale run queue fence acquisition failed", extra={"run_id": run_id})
-            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owner_unknown", "did_transition": False})
-            continue
-        if fence is None:
-            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "owned", "did_transition": False})
-            continue
-
-        terminal_status = "cancelled" if candidate.get("cancel_requested_at") else "failed"
-        error_code = None if terminal_status == "cancelled" else "stale_run_interrupted"
-        error_message = (
-            None
-            if terminal_status == "cancelled"
-            else "Run interrupted because no live execution owner remains."
-        )
-        attempt_id: str | None = None
-        try:
-            async with _ReconciliationFenceGuard(fence, ttl_seconds=fence_ttl_seconds) as fence_guard:
-                fenced_transaction = _fenced_transaction_factory(fence_guard)
-                try:
-                    async with fenced_transaction() as conn:
-                        staged = await stage_stale_run_reconciliation(
-                            conn,
-                            tenant_id=tenant_id,
-                            workspace_id=workspace_id,
-                            user_id=str(user_id) if user_id is not None else None,
-                            run_id=run_id,
-                            expected_status=expected_status,
-                            stale_before=candidate.get("stale_before"),
-                            cancel_requested_before=candidate.get("cancel_requested_before"),
-                            terminal_status=terminal_status,
-                            error_code=error_code,
-                            error_message=error_message,
-                            append_event=streaming_run_events_postgres.append_event,
-                            append_audit_log=identity_audit_postgres.append_audit_log,
-                        )
-                        if staged is not None:
-                            attempt = await attempt_lifecycle.prepare_stale_reconciliation(
-                                conn,
-                                tenant_id=tenant_id,
-                                run_id=run_id,
-                                terminal_status=terminal_status,
-                                reconciler_id="stale-run-maintenance",
-                            )
-                            attempt_id = (
-                                str(attempt.get("id") or "")
-                                if attempt is not None
-                                else None
-                            )
-                except ReconciliationFenceLost:
-                    results.append(
-                        {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
-                    )
-                    continue
-                except Exception:
-                    logger.exception("Stale run DB reconciliation failed with fence retained", extra={"run_id": run_id})
-                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "db_unknown", "did_transition": False})
-                    continue
-                if staged is None:
-                    await fence_guard.release_if_live()
-                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "cas_lost", "did_transition": False})
-                    continue
-
-                try:
-                    await fence_guard.ensure_live()
-                    outcome = await finish_run_terminalization(
-                        lifecycle=lifecycle,
-                        tenant_id=tenant_id,
-                        run_id=run_id,
-                        transaction_factory=fenced_transaction,
-                        capabilities=v4_capabilities,
-                        attempt_lifecycle=attempt_lifecycle,
-                        attempt_id=attempt_id,
-                        attempt_error_code=error_code,
-                    )
-                    await fence_guard.ensure_live()
-                except ReconciliationFenceLost:
-                    results.append(
-                        {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
-                    )
-                    continue
-                except Exception:
-                    logger.exception("Stale run terminalization failed with fence retained", extra={"run_id": run_id})
-                    results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "terminalization_unknown", "did_transition": False})
-                    continue
-                if outcome is not None and outcome.completed and outcome.is_terminal():
-                    try:
-                        await fence_guard.ensure_live()
-                    except ReconciliationFenceLost:
-                        results.append(
-                            {"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False}
-                        )
-                        continue
-                    await fence_guard.release_if_live()
-                results.append(
-                    {
-                        "tenant_id": tenant_id,
-                        "run_id": run_id,
-                        "status": outcome.status if outcome is not None else terminal_status,
-                        "did_transition": outcome.did_transition if outcome is not None else False,
-                    }
-                )
-        except ReconciliationFenceLost:
-            results.append({"tenant_id": tenant_id, "run_id": run_id, "status": "fence_renewal_failed", "did_transition": False})
-    return results
+    return await reconcile_worker_stale_runs_with_postgres_claims(
+        settings,
+        v4_capabilities=v4_capabilities,
+        attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
+        worker_id=default_worker_id(),
+        cancel_requested_after_seconds=_CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS,
+    )
 
 
 async def cleanup_expired_file_upload_sessions() -> int:
@@ -629,6 +424,28 @@ def _worker_recovery_phases(
     return phases
 
 
+async def _observe_supervision_candidates(settings: object) -> int:
+    candidates = await observe_worker_supervision_candidates(settings)
+    if candidates:
+        logger.info(
+            "Execution supervision shadow candidates",
+            extra={
+                "candidate_count": len(candidates),
+                "candidates": [
+                    {
+                        "domain": candidate.domain.value,
+                        "candidate_id": candidate.candidate_id,
+                        "action": candidate.action,
+                        "deadline_at": candidate.deadline_at.isoformat(),
+                        "priority": candidate.priority,
+                    }
+                    for candidate in candidates
+                ],
+            },
+        )
+    return len(candidates)
+
+
 async def run_worker_recovery_maintenance(
     settings: object,
     *,
@@ -654,8 +471,11 @@ async def _maintenance_until_done(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
     *,
+    run_delivery_intents: RunDeliveryIntents | None = None,
     recovery_already_ran: bool = False,
+    worker_id: str | None = None,
 ) -> None:
+    resolved_worker_id = worker_id or default_worker_id()
     operations = _worker_cleanup_phases(settings)
     operations.update(_worker_recovery_phases(
         settings,
@@ -663,6 +483,28 @@ async def _maintenance_until_done(
         attempt_lifecycle=attempt_lifecycle,
         lifecycle=lifecycle,
     ))
+    if (
+        run_delivery_intents is not None
+        and run_delivery_intents.enabled
+        and _worker_role(settings) in {"integrated", "execution"}
+    ):
+        operations["run_delivery_intents"] = run_delivery_intents.scan_once
+    if "sandbox_cleanup" in operations:
+        operations["sandbox_cleanup"] = bind_worker_supervision_operation(
+            operations["sandbox_cleanup"],
+            domain=SupervisionDomain.CLEANUP,
+            worker_id=resolved_worker_id,
+            settings=settings,
+        )
+    if "run_delivery_intents" in operations:
+        operations["run_delivery_intents"] = bind_worker_supervision_operation(
+            operations["run_delivery_intents"],
+            domain=SupervisionDomain.DELIVERY,
+            worker_id=resolved_worker_id,
+            settings=settings,
+        )
+    if bool(getattr(settings, "execution_supervision_shadow_enabled", False)):
+        operations["supervision_shadow"] = lambda: _observe_supervision_candidates(settings)
     phase_tasks = [
         asyncio.create_task(
             maintenance_phase_until_done(
@@ -670,7 +512,7 @@ async def _maintenance_until_done(
                 operation,
                 interval_seconds,
                 _CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS
-                if name in {"queue_reclaim", "stale_run_reconciliation"}
+                if name in {"queue_reclaim", "stale_run_reconciliation", "run_delivery_intents"}
                 else _BULK_MAINTENANCE_PHASE_BUDGET_SECONDS,
                 logger=logger,
                 run_immediately=(
@@ -824,7 +666,7 @@ async def _terminalize_escaped_process_exception(
                 run_id=run_id,
                 attempt_id=validated_attempt_id,
             )
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn,
                 lifecycle=lifecycle,
                 capabilities=v4_capabilities,
@@ -833,7 +675,7 @@ async def _terminalize_escaped_process_exception(
                 result_json={"message": "任务已取消"},
             )
         else:
-            progress = await fail_run_with_v4(
+            progress = await fail_run_terminalization(
                 conn,
                 lifecycle=lifecycle,
                 capabilities=v4_capabilities,
@@ -896,6 +738,12 @@ async def run_once(
     configure_worker_services()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
+    run_delivery_intents = build_run_delivery_intents(
+        settings,
+        transaction,
+        lifecycle=lifecycle,
+        capabilities=v4_capabilities,
+    )
     if _worker_role(settings) == "finalizer":
         raise ValueError("finalizer workers cannot execute a single queue run")
     if run_initial_maintenance:
@@ -913,7 +761,9 @@ async def run_once(
                 v4_capabilities,
                 attempt_lifecycle,
                 lifecycle,
+                run_delivery_intents=run_delivery_intents,
                 recovery_already_ran=run_initial_maintenance,
+                worker_id=resolved_worker_id,
             ),
             name="ai-platform-worker-maintenance",
         )
@@ -1205,6 +1055,14 @@ async def _run_worker_process(
         attempt_lifecycle = attempt_lifecycle or build_run_attempt_lifecycle_service()
         lifecycle = lifecycle or build_run_lifecycle_service()
         worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
+        run_delivery_intents = build_run_delivery_intents(
+            settings,
+            transaction,
+            lifecycle=lifecycle,
+            capabilities=worker_runtime.capabilities,
+        )
+        if run_delivery_intents.enabled:
+            await run_delivery_intents.prepare_historical_delivery_intents()
         process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
         if role in {"integrated", "finalizer"}:
             background_tasks.append(asyncio.create_task(
@@ -1227,6 +1085,8 @@ async def _run_worker_process(
                 worker_runtime.capabilities,
                 attempt_lifecycle,
                 lifecycle,
+                run_delivery_intents=run_delivery_intents,
+                worker_id=process_worker_id,
             ),
             name="ai-platform-worker-maintenance",
         ))

@@ -577,7 +577,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     from app.bootstrap.run_lifecycle import build_run_lifecycle_service
     from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
-    from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+    from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
     from app.runs.application import attempt_lifecycle
     from app.runs.infrastructure import postgres as run_attempt_persistence
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
@@ -652,12 +652,12 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               sandbox_mode, provider, status, lease_payload_json, executor_status,
               executor_terminal_json, executor_terminal_received_at,
               executor_reconciliation_context_json, executor_reconciliation_status,
-              expires_at
+              executor_cleanup_status, expires_at
             ) values (
               'lease-a', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
               'run-a', 'attempt-a', 'ephemeral', 'fake', 'active', %s::jsonb,
               'completed', %s::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-              'pending', now() - interval '1 minute'
+              'pending', 'waiting_settlement', now() - interval '1 minute'
             )
             """,
             (
@@ -760,13 +760,13 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               sandbox_mode, provider, status, lease_payload_json, executor_status,
               executor_terminal_json, executor_terminal_received_at,
               executor_reconciliation_context_json, executor_reconciliation_status,
-              expires_at
+              executor_cleanup_status, expires_at
             ) values (
               'lease-pending', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
               'run-pending', 'attempt-pending', 'ephemeral', 'fake', 'active',
               '{}'::jsonb, 'completed',
               '{"run_id":"run-pending","status":"succeeded"}'::jsonb,
-              now(), '{}'::jsonb, 'pending', now() + interval '1 minute'
+              now(), '{}'::jsonb, 'pending', 'waiting_settlement', now() + interval '1 minute'
             )
             """
         )
@@ -805,6 +805,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         from tests.test_streaming_v4_postgres_integration import _callback_capabilities
 
         assert await reconcile_pending_executor_terminals_once(
+            lease_port=sandbox_lease_repository,
             worker_id="worker-a", v4_capabilities=_callback_capabilities(dsn, schema_name),
             attempt_lifecycle=lifecycle,
             lifecycle=build_run_lifecycle_service(),
@@ -855,19 +856,19 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               runtime_container_name, runtime_executor_url, runtime_workspace_container_path,
               runtime_handle_verified_at, executor_status, executor_terminal_json,
               executor_terminal_received_at, executor_reconciliation_context_json,
-              executor_reconciliation_status, executor_reconciliation_error, expires_at,
-              released_at
+              executor_reconciliation_status, executor_cleanup_status,
+              executor_reconciliation_error, expires_at, released_at
             ) values
               ('lease-b', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-b',
                'attempt-b', 'ephemeral', 'fake', 'active', '{}'::jsonb, 'container-b',
                'executor-b', 'http://executor-b.test', '/workspace', now(), 'failed',
                '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-               'failed', 'stop_failed', now() - interval '1 minute', null),
+               'failed', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', null),
               ('lease-c', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-c',
                'attempt-c', 'ephemeral', 'fake', 'released', '{}'::jsonb, 'container-c',
                'executor-c', 'http://executor-c.test', '/workspace', now(), 'failed',
                '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-               'failed', 'stop_failed', now() - interval '1 minute', now())
+               'failed', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', now())
             """
         )
         stopped = []
