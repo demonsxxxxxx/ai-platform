@@ -350,7 +350,11 @@ export function buildSubmitChatBody({
     message,
     session_id: sessionId,
     agent_options: agentOptions,
-    attachments,
+    attachments: attachments?.map((attachment) => {
+      const projected = { ...attachment };
+      delete projected.profileDriveReference;
+      return projected;
+    }),
     disabled_skills: selectedSkill ? undefined : disabledSkills,
     enabled_skills: selectedSkill ? undefined : enabledSkills,
     disabled_mcp_tools: disabledMcpTools,

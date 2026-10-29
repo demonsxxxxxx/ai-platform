@@ -748,6 +748,15 @@ export function ChatView({
   const handleProfileDriveFileDrop = useCallback(
     async (reference: ProfileDriveFileReference) => {
       const requestKey = `${sessionId ?? "new"}\u0000${reference.source_id}\u0000${reference.path}`;
+      const existing = attachments.find((item) => item.profileDriveReference?.source_id === reference.source_id && item.profileDriveReference.path === reference.path);
+      if (existing) {
+        if (existing.isUploading) return;
+        return {
+          file_id: existing.key, run_id: null, name: existing.name,
+          mime_type: existing.mimeType, size_bytes: existing.size,
+          preview_url: existing.url ?? null, download_url: existing.downloadUrl ?? existing.url ?? "",
+        } satisfies SessionInputFile;
+      }
       if (profileDriveDropInFlightRef.current.has(requestKey)) return;
       profileDriveDropInFlightRef.current.add(requestKey);
       const pendingId = `profile-drive-${uuid()}`;
@@ -760,6 +769,7 @@ export function ChatView({
         size: 0,
         isUploading: true,
         uploadStatus: "uploading",
+        profileDriveReference: reference,
       };
       onAttachmentsChange((current) => [...current, pendingAttachment]);
       try {
@@ -780,7 +790,7 @@ export function ChatView({
               : current,
           );
         }
-        const attachment = sessionInputFileToAttachment(file);
+        const attachment = { ...sessionInputFileToAttachment(file), profileDriveReference: reference };
         onAttachmentsChange((current) =>
           current.map((item) => (item.id === pendingId ? attachment : item)),
         );
@@ -806,7 +816,7 @@ export function ChatView({
         profileDriveDropInFlightRef.current.delete(requestKey);
       }
     },
-    [onAttachmentsChange, sessionId, t],
+    [attachments, onAttachmentsChange, sessionId, t],
   );
 
   const handleProfileDriveDragOver = useCallback(
@@ -1042,6 +1052,8 @@ export function ChatView({
       sessionId={sessionId}
       onProfileDriveFileImported={handleProfileDriveFileImported}
       onProfileDriveFileDrop={handleProfileDriveFileDrop}
+      attachments={attachments}
+      onRemoveAttachment={uploadControls.removeAttachment}
     />
   );
 

@@ -17,6 +17,7 @@ is the frontend, not the authenticated principal or profile metadata service.
   sidebar geometry. Management defaults to expanded and explicit collapse or
   expansion survives page-owner remounts; the ordinary-user capabilities group
   keeps its existing initially collapsed behavior. Neither choice grants access.
+- `LibreChatShell` owns `ai-platform-context-width` for the desktop file/context panel: default 360px, constrained to 280–520px and the available workspace width. Pointer and keyboard changes persist locally; narrow screens keep the existing Lobe Drawer.
 - Storage failures do not prevent the current tab from changing presentation.
   These preferences are deliberately shared by users of the same browser;
   they are not account-scoped server facts or cross-device synchronization.

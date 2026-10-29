@@ -141,9 +141,10 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.doesNotMatch(surface, /context:[\s\S]*?fixed inset-y-0/);
   assert.match(shell, /<DrawerPopup placement="right" width="min\(22rem, calc\(100vw - 2rem\)\)"/);
   assert.match(shell, /rightPanel && contextOpen && desktop/);
-  assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*?var\(--context-panel-width,360px\)/);
+  assert.match(shell, /role="separator"/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);
+  assert.match(sidePanel, /className="flex min-h-0 flex-1 flex-col overflow-hidden"/);
 });
 
 test("unused legacy shell re-exports have no compatibility entrypoint", () => {
