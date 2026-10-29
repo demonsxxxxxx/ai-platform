@@ -21,10 +21,16 @@ async def require_provider(conn: Any, *, provider_id: str) -> dict[str, Any]:
 async def list_providers(conn: Any) -> list[dict[str, Any]]:
     rows = await (await conn.execute("""
         select p.id, p.name, gw.revision,
-          (select count(*) from model_catalog_entries c where c.provider_id = p.id and c.archived_at is null) as model_count
+          (gw.revision is not null) as configured,
+          count(c.model_id) as model_count,
+          count(c.model_id) filter (where c.enabled) as enabled_model_count,
+          count(c.model_id) filter (where not c.upstream_available) as missing_model_count
         from model_providers p
         left join model_gateway_revisions gw on gw.provider_id = p.id and gw.active
-        where p.archived_at is null order by p.created_at, p.id
+        left join model_catalog_entries c on c.provider_id = p.id and c.archived_at is null
+        where p.archived_at is null
+        group by p.id, p.name, p.created_at, gw.revision
+        order by p.created_at, p.id
     """)).fetchall()
     return [dict(row) for row in rows]
 

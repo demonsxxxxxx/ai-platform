@@ -287,7 +287,7 @@ class ModelControlPlaneService:
         requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
-            await self._repository.require_provider(conn, provider_id=provider_id)
+            provider = await self._repository.require_provider(conn, provider_id=provider_id)
             current = await self._repository.active_connection(
                 conn, encryption_key=encryption_key, provider_id=provider_id
             )
@@ -317,6 +317,8 @@ class ModelControlPlaneService:
                     }),
                     "order": order,
                     "available": True,
+                    "provider_id": provider_id,
+                    "provider_name": provider["name"],
                 }
                 for order, value in enumerate(model_ids, start=1)
             ],

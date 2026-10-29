@@ -3,7 +3,7 @@ import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
 import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummary } from "../../../services/api/modelGroups.ts";
-import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
+import { modelAdminApi, type AdminModelEntry, type AdminModelProvider } from "../../../services/api/modelAdmin.ts";
 import { companyEmployeesApi } from "../../../services/api/companyEmployees.ts";
 import { capabilityDistributionApi } from "../../../services/api/capabilityDistribution.ts";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
@@ -19,7 +19,28 @@ const summary: AdminModelGroupSummary = {
 };
 const details: AdminModelGroupDetails = { ...summary, members: [], models: [], default_model_id: null };
 
-async function mount(initialDetails = details, shell = false, available = true) {
+function catalogModel(
+  id: string,
+  value: string,
+  label: string,
+  providerId: string,
+  providerName: string,
+  overrides: Partial<AdminModelEntry> = {},
+): AdminModelEntry {
+  return {
+    id, value, label, provider: "openai", provider_id: providerId, provider_name: providerName,
+    enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+async function mount(
+  initialDetails = details,
+  shell = false,
+  available = true,
+  catalogEntries?: AdminModelEntry[],
+  providerEntries: AdminModelProvider[] = [{ id: "legacy", name: "默认供应商", revision: 4, model_count: 1 }],
+) {
   const React = await import("react");
   const { ModelGroupManagement } = await import("../ModelGroupManagement.tsx");
   const { ModelCatalogPanel } = await import("../ModelCatalogPanel.tsx");
@@ -36,7 +57,7 @@ async function mount(initialDetails = details, shell = false, available = true) 
   modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
-  modelAdminApi.get = async () => ({ providers: [{ id: "legacy", name: "默认供应商", revision: 4, model_count: 1 }], connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
+  modelAdminApi.get = async () => ({ providers: providerEntries, connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: catalogEntries ?? [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", provider_id: "legacy", provider_name: "默认供应商", enabled: true, available, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
   companyEmployeesApi.list = async (options) => { calls.push({ kind: "employees", body: options }); return { employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100, snapshot_id: "fixture-v1" }; };
   capabilityDistributionApi.departmentDirectory = async () => [{ directoryId: "123", authorityId: "123", name: "总公司", path: "总公司", selectable: true, reason: null, children: [{ directoryId: "456", authorityId: "456", name: "销售部", path: "总公司 / 销售部", children: [], selectable: true, reason: null }] }];
   const container = dom.document.createElement("div");
@@ -46,6 +67,44 @@ async function mount(initialDetails = details, shell = false, available = true) 
     : React.createElement(ModelGroupManagement)));
   for (let index = 0; index < 20 && !container.querySelector("[data-model-group-table]"); index += 1) await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return { React, container, root, calls, restore: () => { catalog?.cleanup(); Object.assign(modelGroupsApi, original); modelAdminApi.get = originalModelGet; companyEmployeesApi.list = originalEmployees; capabilityDistributionApi.departmentDirectory = originalDepartments; } };
+}
+
+async function clickText(view: Awaited<ReturnType<typeof mount>>, label: string) {
+  await view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label);
+    node.click();
+  });
+}
+
+async function openModelEditor(view: Awaited<ReturnType<typeof mount>>) {
+  await clickText(view, "编辑 销售组");
+  await clickText(view, "模型");
+}
+
+async function chooseSelectOption(view: Awaited<ReturnType<typeof mount>>, label: string, optionLabel: string) {
+  const selectLabel = [...document.querySelectorAll<HTMLLabelElement>("label")].find((node) => node.textContent === label);
+  assert.ok(selectLabel, label);
+  const trigger = document.getElementById(selectLabel.htmlFor);
+  assert.ok(trigger instanceof HTMLElement, `${label} trigger`);
+  const press = async (target: HTMLElement, key: string) => view.React.act(async () => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  await press(trigger, "ArrowDown");
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  const targetIndex = options.findIndex((node) => node.textContent?.trim() === optionLabel);
+  assert.ok(targetIndex >= 0, optionLabel);
+  await press(document.activeElement as HTMLElement, "Home");
+  for (let index = 0; index < targetIndex; index += 1) await press(document.activeElement as HTMLElement, "ArrowDown");
+  await press(document.activeElement as HTMLElement, "Enter");
+}
+
+async function setInputText(view: Awaited<ReturnType<typeof mount>>, field: HTMLInputElement, value: string) {
+  await view.React.act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 test("group management loads, creates, opens drawer and saves model/member lists through atomic endpoints", async () => {
@@ -79,6 +138,9 @@ test("group management loads, creates, opens drawer and saves model/member lists
     const modelCheckbox = document.querySelector('[data-model-group-models] [role="checkbox"]') as HTMLElement | null;
     assert.ok(modelCheckbox);
     await view.React.act(async () => modelCheckbox.click());
+    const defaultRadio = document.querySelector<HTMLInputElement>('input[aria-label^="设为默认模型 模型 A"]');
+    assert.ok(defaultRadio);
+    await view.React.act(async () => defaultRadio.click());
     const saveModels = [...document.querySelectorAll("button")].find((button) => button.textContent === "保存模型");
     assert.ok(saveModels);
     await view.React.act(async () => saveModels.click());
@@ -199,9 +261,9 @@ test("drawer keeps drafts across tabs, reorders models and saves single-group me
   try {
     await click("编辑 销售组");
     await click("模型");
-    await click("上移 b");
+    await view.React.act(async () => document.querySelector<HTMLElement>('[data-model-group-model="b"] [aria-label^="上移 b"]')!.click());
     assert.deepEqual([...document.querySelectorAll("[data-model-group-model]")].map((node) => node.getAttribute("data-model-group-model")), ["b", "a"]);
-    const radio = document.querySelector<HTMLInputElement>('input[aria-label="设为默认模型 b"]');
+    const radio = document.querySelector<HTMLInputElement>('input[aria-label^="设为默认模型 b"]');
     assert.ok(radio);
     await view.React.act(async () => radio.click());
     await click("成员");
@@ -255,6 +317,9 @@ test("default group explains computed users and keeps model assignment available
     assert.ok(checkbox);
     await view.React.act(async () => checkbox.click());
     assert.equal(drawer.querySelectorAll("[data-model-group-model]").length, 1);
+    const defaultRadio = drawer.querySelector<HTMLInputElement>('input[aria-label^="设为默认模型 模型 A"]');
+    assert.ok(defaultRadio);
+    await view.React.act(async () => defaultRadio.click());
     await click("保存模型");
     assert.equal(view.calls.some((call) => call.kind === "models"), true);
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
@@ -351,10 +416,154 @@ test("missing upstream model remains visible and can be removed without changing
     await click("编辑 销售组"); await click("模型");
     const missing = document.querySelector<HTMLElement>('[data-model-group-model="model-a"]');
     assert.ok(missing); assert.match(missing.textContent ?? "", /上游缺失.*取消勾选并保存可移除/);
+    assert.match(missing.querySelector("[data-model-group-upstream-id]")?.textContent ?? "", /model-a.*默认供应商/);
+    assert.match(missing.textContent ?? "", /Missing/);
     await view.React.act(async () => missing.querySelector<HTMLElement>('[role=checkbox]')!.click());
     await click("保存模型");
     const saved = view.calls.find((item) => item.kind === "models")?.body as { models: { model_id: string }[]; default_model_id: string };
     assert.deepEqual(saved.models.map((model) => model.model_id), ["kept"]);
     assert.equal(saved.default_model_id, "kept");
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("a disabled default blocks the model request until an enabled group model is chosen manually", async () => {
+  const initial: AdminModelGroupDetails = {
+    ...summary,
+    model_count: 2,
+    default_model_id: "model-default",
+    models: [
+      { model_id: "model-default", model_value: "default-upstream", label: "默认模型", enabled: true, display_order: 0, priority: 0, weight: 100 },
+      { model_id: "model-next", model_value: "next-upstream", label: "备用模型", enabled: true, display_order: 1, priority: 0, weight: 100 },
+    ],
+    members: [],
+  };
+  const catalog = [
+    catalogModel("model-default", "default-upstream", "默认模型", "provider-a", "供应商 A", { enabled: false, available: false }),
+    catalogModel("model-next", "next-upstream", "备用模型", "provider-b", "供应商 B"),
+  ];
+  const providers: AdminModelProvider[] = [
+    { id: "provider-a", name: "供应商 A", revision: 4, model_count: 1 },
+    { id: "provider-b", name: "供应商 B", revision: 4, model_count: 1 },
+  ];
+  const view = await mount(initial, false, true, catalog, providers);
+  try {
+    await openModelEditor(view);
+    const assignedDefault = document.querySelector<HTMLElement>('[data-model-group-model="model-default"]');
+    assert.ok(assignedDefault);
+    assert.match(assignedDefault.querySelector("[data-model-group-upstream-id]")?.textContent ?? "", /供应商 A/);
+    assert.equal(assignedDefault.querySelector("[data-group-model-catalog-disabled]")?.textContent, "目录已停用");
+    assert.match(assignedDefault.querySelector("[data-group-model-upstream-missing]")?.textContent ?? "", /上游缺失/);
+
+    const switchControl = assignedDefault.querySelector<HTMLElement>('[role="switch"]');
+    assert.ok(switchControl);
+    await view.React.act(async () => switchControl.click());
+    assert.equal(assignedDefault.querySelector("[data-group-model-disabled]")?.textContent, "组内已停用");
+    const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "保存模型");
+    assert.ok(save);
+    assert.equal(save.disabled, true);
+    assert.match(document.querySelector("[data-model-group-default-error]")?.textContent ?? "", /手动选择/);
+    await view.React.act(async () => save.click());
+    assert.equal(view.calls.some((call) => call.kind === "models"), false);
+
+    const replacement = [...document.querySelectorAll<HTMLInputElement>('input[aria-label^="设为默认模型 备用模型"]')][0];
+    assert.ok(replacement);
+    await view.React.act(async () => replacement.click());
+    assert.equal(save.disabled, false);
+    await view.React.act(async () => save.click());
+    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string; enabled: boolean }[]; default_model_id: string };
+    assert.deepEqual(saved.models.map((model) => [model.model_id, model.enabled]), [["model-default", false], ["model-next", true]]);
+    assert.equal(saved.default_model_id, "model-next");
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("same-name models keep provider identity through filtering, search, selection and save", async () => {
+  const providers: AdminModelProvider[] = [
+    { id: "provider-one", name: "共享供应商", revision: 4, model_count: 1 },
+    { id: "provider-two", name: "共享供应商", revision: 4, model_count: 1 },
+    { id: "provider-three", name: "其他供应商", revision: 4, model_count: 1 },
+  ];
+  const catalog = [
+    catalogModel("catalog-one", "same-upstream-name", "同名模型", "provider-one", "共享供应商"),
+    catalogModel("catalog-two", "same-upstream-name", "同名模型", "provider-two", "共享供应商"),
+    catalogModel("catalog-three", "needle-upstream-id", "另一模型", "provider-three", "其他供应商"),
+  ];
+  const view = await mount({ ...details, model_count: 0 }, false, true, catalog, providers);
+  try {
+    await openModelEditor(view);
+    const add = document.querySelector<HTMLDetailsElement>("[data-model-group-add-models]");
+    assert.ok(add);
+    await view.React.act(async () => add.querySelector("summary")!.click());
+
+    await chooseSelectOption(view, "筛选供应商", "共享供应商 · provider-one");
+    assert.deepEqual([...document.querySelectorAll<HTMLElement>("[data-model-group-catalog-model]")].map((node) => node.dataset.modelGroupCatalogModel), ["catalog-one"]);
+    assert.equal(document.querySelector('[data-model-group-catalog-model="catalog-two"]'), null);
+    const first = document.querySelector<HTMLElement>('[data-model-group-catalog-model="catalog-one"] [role="checkbox"]');
+    assert.ok(first);
+    await view.React.act(async () => first.click());
+    assert.match(document.querySelector('[data-model-group-model="catalog-one"]')?.textContent ?? "", /共享供应商 · provider-one/);
+
+    await chooseSelectOption(view, "筛选供应商", "共享供应商 · provider-two");
+    assert.ok(document.querySelector('[data-model-group-catalog-model="catalog-two"]'));
+    assert.equal(document.querySelector('[data-model-group-catalog-model="catalog-one"]'), null);
+    const second = document.querySelector<HTMLElement>('[data-model-group-catalog-model="catalog-two"] [role="checkbox"]');
+    assert.ok(second);
+    await view.React.act(async () => second.click());
+    await chooseSelectOption(view, "筛选供应商", "全部供应商");
+
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索可添加模型"]');
+    assert.ok(search);
+    await setInputText(view, search, "needle-upstream-id");
+    assert.deepEqual([...document.querySelectorAll<HTMLElement>("[data-model-group-catalog-model]")].map((node) => node.dataset.modelGroupCatalogModel), ["catalog-three"]);
+    assert.deepEqual([...document.querySelectorAll<HTMLElement>("[data-model-group-model]")].map((node) => node.dataset.modelGroupModel), ["catalog-one", "catalog-two"]);
+    await setInputText(view, search, "");
+    assert.equal(document.querySelectorAll("[data-model-group-model]").length, 2);
+
+    const defaultRadio = [...document.querySelectorAll<HTMLInputElement>('input[aria-label^="设为默认模型 同名模型"]')]
+      .find((input) => input.getAttribute("aria-label")?.includes("provider-two"));
+    assert.ok(defaultRadio);
+    await view.React.act(async () => defaultRadio.click());
+    await clickText(view, "保存模型");
+    const saved = view.calls.find((call) => call.kind === "models")?.body as { models: { model_id: string }[]; default_model_id: string };
+    assert.deepEqual(saved.models.map((model) => model.model_id), ["catalog-one", "catalog-two"]);
+    assert.equal(saved.default_model_id, "catalog-two");
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("model add area explains an empty catalog, an all-selected catalog and no search matches", async () => {
+  const emptyView = await mount({ ...details, model_count: 0 }, false, true, [], []);
+  try {
+    const statusTag = [...emptyView.container.querySelectorAll<HTMLElement>("span")].find((tag) => tag.textContent === "未配置模型");
+    assert.ok(statusTag);
+    assert.doesNotMatch(statusTag.className, /success/i);
+    await openModelEditor(emptyView);
+    const add = document.querySelector<HTMLDetailsElement>("[data-model-group-add-models]");
+    assert.ok(add);
+    await emptyView.React.act(async () => add.querySelector("summary")!.click());
+    assert.equal(add.querySelector("[data-model-group-catalog-empty]")?.textContent, "模型目录为空。");
+  } finally { await emptyView.React.act(async () => emptyView.root.unmount()); emptyView.restore(); }
+
+  const existingModel = { model_id: "catalog-only", model_value: "catalog-only", label: "已加入", enabled: true, display_order: 0, priority: 0, weight: 100 };
+  const allSelectedView = await mount({ ...details, model_count: 1, default_model_id: "catalog-only", models: [existingModel] }, false, true, [catalogModel("catalog-only", "catalog-only", "已加入", "legacy", "默认供应商")]);
+  try {
+    await openModelEditor(allSelectedView);
+    const add = document.querySelector<HTMLDetailsElement>("[data-model-group-add-models]");
+    assert.ok(add);
+    await allSelectedView.React.act(async () => add.querySelector("summary")!.click());
+    assert.equal(add.querySelector("[data-model-group-all-assigned]")?.textContent, "全部目录模型已加入本组。");
+  } finally { await allSelectedView.React.act(async () => allSelectedView.root.unmount()); allSelectedView.restore(); }
+
+  const noMatchView = await mount({ ...details, model_count: 0 }, false, true, [catalogModel("catalog-only", "upstream-available", "可用模型", "legacy", "默认供应商")]);
+  try {
+    await openModelEditor(noMatchView);
+    const add = document.querySelector<HTMLDetailsElement>("[data-model-group-add-models]");
+    assert.ok(add);
+    await noMatchView.React.act(async () => add.querySelector("summary")!.click());
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="搜索可添加模型"]');
+    assert.ok(search);
+    await setInputText(noMatchView, search, "not-in-catalog");
+    assert.equal(add.querySelector("[data-model-group-no-match]")?.textContent, "没有匹配的可添加模型。");
+  } finally { await noMatchView.React.act(async () => noMatchView.root.unmount()); noMatchView.restore(); }
 });

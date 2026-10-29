@@ -137,7 +137,9 @@ test("Model admin discovery is a draft and only publication changes the active c
       models: AdminModelEntry[];
     }>,
   };
-  const candidate = model({ label: "GPT-5" });
+  const candidate = model({ label: "GPT-5", provider_name: "团队模型服务" });
+  const newCandidate = model({ id: "mdl_next", value: "openai/gpt-next", label: "GPT-Next", provider_name: undefined, order: 2 });
+  const missingModel = model({ id: "mdl_legacy", value: "openai/retired", label: "旧模型", provider_name: "团队模型服务", enabled: false, available: false, order: 3 });
   const published = state({
     connection: {
       configured: true,
@@ -146,10 +148,11 @@ test("Model admin discovery is a draft and only publication changes the active c
       key_fingerprint: "0123456789abcdef",
     },
     models: [model({
+      provider_name: "团队模型服务",
       enabled: true,
       auto_compact_window: 200_000, max_output_tokens: 2048,
       last_seen_revision: 4,
-    })],
+    }), missingModel],
   });
 
   modelGroupsApi.listAdmin = async () => ({ groups: [{ id: "group-sales", code: "sales", name: "销售组", type: "business", enabled: true, revision: 1, remark: "", sort_order: 1, model_count: 1, member_count: 1 }], version: "model-groups.v1" });
@@ -168,12 +171,23 @@ test("Model admin discovery is a draft and only publication changes the active c
         key_fingerprint: "fedcba9876543210",
       },
       base_url: baseUrl,
-      models: [candidate],
+      models: [candidate, newCandidate],
     };
   };
   modelAdminApi.publish = async (baseUrl, credential, expectedRevision, models) => {
     calls.publish.push({ baseUrl, credential, expectedRevision, models });
-    return published;
+    return {
+      ...published,
+      models: [
+        ...models.map(({ display_name, ...saved }) => ({
+          ...saved,
+          label: display_name ?? saved.label,
+          available: true,
+          last_seen_revision: 4,
+        })),
+        missingModel,
+      ],
+    };
   };
 
   const container = dom.document.createElement("div");
@@ -214,6 +228,9 @@ test("Model admin discovery is a draft and only publication changes the active c
     );
 
     assert.equal(container.querySelector("[data-model-admin-publish]"), null);
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_gpt'] [data-model-admin-draft-state]")?.textContent, "已保存");
+    assert.match(nodeText(container), /团队模型服务/);
+    assert.doesNotMatch(nodeText(container), /提供方|compatible/);
     await React.act(async () => { inputByLabel(container, "openai/gpt-5 压缩窗口 Token"); });
     // The engine owns the actual compaction point; say so once, not per row.
     assert.match(
@@ -264,6 +281,8 @@ test("Model admin discovery is a draft and only publication changes the active c
       true,
       "changing the connection must require discovery before publication",
     );
+    assert.equal(container.querySelector("[data-model-admin-test-state]")?.textContent, "连接草稿 · 尚未测试");
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_gpt'] [data-model-admin-draft-state]")?.textContent, "待保存修改");
     const discoverButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("data-model-admin-discover") !== null);
     assert.ok(discoverButton);
@@ -282,9 +301,15 @@ test("Model admin discovery is a draft and only publication changes the active c
     ]);
     assert.equal(calls.publish.length, 1);
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
+    assert.equal(calls.publish.length, 1, "getting upstream candidates must not save them");
+    assert.match(nodeText(container.querySelector("[data-model-admin-sync-summary]")), /新增候选 1 个 · 上游缺失 1 个/);
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_next'] [data-model-admin-draft-state]")?.textContent, "待保存候选");
+    assert.match(nodeText(container.querySelector("[data-model-admin-model='mdl_next']")), /未知供应商/);
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_gpt'] [data-model-admin-draft-state]")?.textContent, "待保存修改");
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_legacy'] [data-model-admin-draft-state]")?.textContent, "待保存修改");
 
     // Discovery keeps existing selections and user edits for the same model.
-    assert.equal(inputByLabel(container, "openai/gpt-5 压缩窗口 Token").value, "200000");
+    assert.equal(inputByLabel(container, "openai/gpt-5 压缩窗口 Token").value, "150000");
     await React.act(async () => {
       changeMountedInput(inputByLabel(container, "openai/gpt-5 压缩窗口 Token"), "");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "");
@@ -292,7 +317,8 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
     const statusSelect = selectByLabel(container, "筛选模型状态");
     await changeMountedSelect(React, statusSelect, "状态：上游缺失");
-    assert.match(nodeText(container), /没有匹配的模型/);
+    assert.ok(container.querySelector("[data-model-admin-model='mdl_legacy']"), "the unavailable status filter must retain upstream-missing rows");
+    assert.match(nodeText(container.querySelector("[data-model-admin-model='mdl_legacy']")), /上游缺失/);
     await changeMountedSelect(React, statusSelect, "状态：全部");
 
     const actionBar = container.querySelectorAll("[data-model-admin-action-bar]")[0];
@@ -339,7 +365,10 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal("allowed_user_ids" in calls.publish[1].models[0], false);
     assert.equal(calls.publish[1].models[0].auto_compact_window, 200_000);
     assert.equal(calls.publish[1].models[0].max_output_tokens, 2048);
+    assert.equal(calls.publish[1].models[1].id, "mdl_next");
     assert.equal(container.querySelector("[data-model-admin-action-bar]"), null);
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_gpt'] [data-model-admin-draft-state]")?.textContent, "已保存");
+    assert.equal(container.querySelector("[data-model-admin-model='mdl_next'] [data-model-admin-draft-state]")?.textContent, "已保存");
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
 
     modelAdminApi.discover = async () => {
@@ -391,5 +420,97 @@ test("Model admin discovery is a draft and only publication changes the active c
     modelAdminApi.publish = original.publish;
     modelGroupsApi.listAdmin = original.listAdmin;
     modelGroupsApi.details = original.details;
+  }
+});
+
+test("discovery stages a missing-only change and publication refreshes group choices", async () => {
+  const React = await import("react");
+  const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
+  const originals = { ...modelAdminApi };
+  const originalGroups = modelGroupsApi.listAdmin;
+  const kept = model({ enabled: true, auto_compact_window: 200000, max_output_tokens: 2048 });
+  const gone = model({ id: "mdl_gone", value: "gone", label: "旧模型", order: 2 });
+  const saved = state({ connection: { configured: true, revision: 4, base_url: "https://gateway.example", key_fingerprint: "synthetic" }, models: [kept, gone] });
+  const calls: AdminModelEntry[][] = [];
+  let groupRefreshes = 0;
+  modelGroupsApi.listAdmin = async () => ({ groups: [], version: "model-groups.v1" });
+  modelAdminApi.get = async () => saved;
+  modelAdminApi.discover = async () => ({ connection: saved.connection, base_url: saved.connection.base_url, models: [kept] });
+  modelAdminApi.publish = async (_url, _key, _revision, models) => {
+    calls.push(models);
+    return { ...saved, models: [kept, { ...gone, available: false }] };
+  };
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
+  try {
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, {
+      onGroupsChanged: () => { groupRefreshes += 1; },
+    }))));
+    await React.act(async () => container.querySelector<HTMLElement>("[data-model-admin-discover]")!.click());
+    assert.equal(calls.length, 0);
+    assert.equal(container.querySelector('[data-model-admin-model="mdl_gone"] [data-model-admin-draft-state]')?.textContent, "待保存修改");
+    assert.match(container.querySelector("[data-model-admin-sync-summary]")?.textContent ?? "", /新增候选 0 个 · 上游缺失 1 个/);
+    const save = container.querySelector<HTMLButtonElement>("[data-model-admin-publish]");
+    assert.ok(save);
+    assert.equal(save.disabled, false);
+    await React.act(async () => save.click());
+    assert.deepEqual(calls[0].map((entry) => entry.id), [kept.id]);
+    assert.equal(groupRefreshes, 1);
+    assert.equal(container.querySelector("[data-model-admin-action-bar]"), null);
+  } finally {
+    await React.act(async () => root.unmount());
+    catalog.cleanup();
+    Object.assign(modelAdminApi, originals);
+    modelGroupsApi.listAdmin = originalGroups;
+  }
+});
+
+test("edited model stays disabled through upstream disappearance, rediscovery and publication", async () => {
+  const React = await import("react");
+  const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
+  const originals = { ...modelAdminApi };
+  const originalGroups = modelGroupsApi.listAdmin;
+  const edited = model({ enabled: true, auto_compact_window: 200000, max_output_tokens: 2048 });
+  const other = model({ id: "mdl_other", value: "other", label: "Other", order: 2, enabled: true, max_output_tokens: 2048 });
+  const saved = state({ connection: { configured: true, revision: 4, base_url: "https://gateway.example", key_fingerprint: "synthetic" }, models: [edited, other] });
+  let upstream = [other];
+  let published: AdminModelEntry[] = [];
+  modelGroupsApi.listAdmin = async () => ({ groups: [], version: "model-groups.v1" });
+  modelAdminApi.get = async () => saved;
+  modelAdminApi.discover = async () => ({ connection: saved.connection, base_url: saved.connection.base_url, models: upstream });
+  modelAdminApi.publish = async (_url, _key, _revision, models) => {
+    published = models;
+    return { ...saved, models };
+  };
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
+  try {
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl))));
+    await React.act(async () => container.querySelector<HTMLElement>('[data-model-admin-edit="mdl_gpt"]')!.click());
+    await React.act(async () => {
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 平台显示名称"), "Edited GPT");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "4096");
+    });
+    await React.act(async () => document.querySelector<HTMLElement>('[aria-label="关闭模型编辑"]')!.click());
+    await React.act(async () => container.querySelector<HTMLElement>('[data-model-admin-model="mdl_gpt"] [role=switch]')!.click());
+    const discover = container.querySelector<HTMLElement>("[data-model-admin-discover]")!;
+    await React.act(async () => discover.click());
+    const missing = container.querySelector<HTMLElement>('[data-model-admin-model="mdl_gpt"]')!;
+    assert.match(missing.textContent ?? "", /Edited GPT.*上游缺失/);
+    assert.equal(missing.querySelector('[role=switch]')?.getAttribute('aria-checked'), 'false');
+    upstream = [edited, other];
+    await React.act(async () => discover.click());
+    await React.act(async () => container.querySelector<HTMLElement>('[data-model-admin-publish]')!.click());
+    const result = published.find((entry) => entry.id === edited.id);
+    assert.equal(result?.enabled, false);
+    assert.equal(result?.label, "Edited GPT");
+    assert.equal(result?.max_output_tokens, 4096);
+  } finally {
+    await React.act(async () => root.unmount());
+    catalog.cleanup();
+    Object.assign(modelAdminApi, originals);
+    modelGroupsApi.listAdmin = originalGroups;
   }
 });

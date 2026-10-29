@@ -170,7 +170,7 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
             return None
 
         async def require_provider(self, _conn, **_kwargs):
-            return {"id": provider_id}
+            return {"id": provider_id, "name": "Team provider"}
 
         async def connection_projection(self, _conn, **_kwargs):
             return {"revision": None}
@@ -220,6 +220,15 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
     assert candidate["models"][0]["id"] == platform_model_id("openai/gpt-5", provider_id)
     assert candidate["models"][0]["label"] == "Existing GPT"
     assert candidate["models"][0]["order"] == 1
+    assert candidate["models"][0]["provider_id"] == provider_id
+    assert candidate["models"][0]["provider_name"] == "Team provider"
+    upstream_ids.append("new-model")
+    discovered = await service.discover(
+        base_url="https://gateway.example", api_key="synthetic-secret", provider_id=provider_id
+    )
+    assert discovered["models"][1]["provider_id"] == provider_id
+    assert discovered["models"][1]["provider_name"] == "Team provider"
+    assert publications == []
     entry = {
         "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
         "display_name": "GPT-5", "enabled": True,

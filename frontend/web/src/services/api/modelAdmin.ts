@@ -14,6 +14,9 @@ export interface AdminModelProvider {
   name: string;
   revision: number | null;
   model_count: number;
+  configured?: boolean;
+  enabled_model_count?: number;
+  missing_model_count?: number;
 }
 
 export interface ModelProviderImpact extends AdminModelProvider {

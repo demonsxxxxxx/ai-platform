@@ -27,7 +27,7 @@ function input(label: string, value: string) {
 test("suppliers create/select isolated drafts, confirm discard, block referenced deletion and retire unused supplier", async () => {
   const original = { ...modelAdminApi }; const groups = modelGroupsApi.listAdmin;
   const restoreCatalog = installModelCatalogTestProvider();
-  let providers: AdminModelProvider[] = [{ id: "a", name: "Supplier A", revision: 1, model_count: 1 }, { id: "b", name: "Supplier B", revision: 2, model_count: 1 }];
+  let providers: AdminModelProvider[] = [{ id: "a", name: "Supplier A", revision: 1, model_count: 1, configured: true, enabled_model_count: 1, missing_model_count: 0 }, { id: "b", name: "Supplier B", revision: 2, model_count: 1, configured: true, enabled_model_count: 0, missing_model_count: 1 }];
   const calls: string[] = []; let blocked = true;
   modelGroupsApi.listAdmin = async () => ({ groups: [], version: "model-groups.v1" });
   modelAdminApi.get = async (options = {}) => {
@@ -44,6 +44,9 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     await React.act(async () => root.render(restoreCatalog.wrap(<ModelProviderManagement groupRevision={0} onGroupsChanged={noop} onStateChange={noop} />)));
     assert.ok(!calls.includes("get:a"), "initial supplier rows do not load an editor");
     assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 0);
+    assert.match(container.querySelector('[data-model-provider-row="a"] [data-provider-summary]')?.textContent ?? "", /连接已保存.*1 模型.*启用 1/);
+    assert.match(container.querySelector('[data-model-provider-row="b"] [data-provider-summary]')?.textContent ?? "", /启用 0.*上游缺失 1/);
+    assert.doesNotMatch(container.querySelector('[data-provider-summary]')?.textContent ?? "", /测试通过/);
     await select("Supplier A");
     assert.ok(calls.includes("get:a"));
     await select("Supplier A");
@@ -83,6 +86,7 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     await React.act(async () => input("供应商名称", "Supplier C"));
     await click("创建供应商");
     assert.ok(calls.includes("get:c"));
+    assert.match(container.querySelector('[data-model-provider-row="c"] [data-provider-summary]')?.textContent ?? "", /待配置连接/);
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="模型 API Key"]')?.value, "");
   } finally { await React.act(async () => root.unmount()); container.remove(); Object.assign(modelAdminApi, original); modelGroupsApi.listAdmin = groups; restoreCatalog.cleanup(); }
 });

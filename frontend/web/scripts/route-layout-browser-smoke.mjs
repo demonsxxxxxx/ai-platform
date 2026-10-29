@@ -194,18 +194,18 @@ function bootstrapSource(loading = false, chatFiles = false) {
         contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
       if (url.pathname === '/api/ai/admin/model-providers/supplier-b') return json({
-        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
+        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0, configured: true, enabled_model_count: 0, missing_model_count: 0 }],
         connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: []
       });
       if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0, cleanable_count: 28, blocked_models: [{id:'mdl-0',label:'Model 0',group_count:1,default_group_count:1,active_run_count:0,groups:[{name:'布局测试组'}]}] });
       if (url.pathname === '/api/ai/admin/models' || url.pathname === '/api/ai/admin/model-providers/legacy') return json({
-        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
+        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0, configured: true, enabled_model_count: 0, missing_model_count: 0 }],
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
         models: Array.from({ length: 29 }, (_, index) => ({
           id: 'mdl-' + index,
           value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
           label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
-          provider: 'compatible', enabled: index < 2, available: true,
+          provider: 'compatible', provider_id: 'legacy', provider_name: '默认供应商', enabled: index < 2, available: true,
           order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
           auto_compact_window: index < 2 ? 200000 : undefined,
           max_output_tokens: index < 2 ? 2048 : undefined
@@ -621,6 +621,16 @@ async function runCase(viewport, scenario) {
       }
       await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '模型')).click()`);
       if (groupCase === "default") await browser.client.waitFor("document.body.innerText.includes('普通默认组模型可供专家及独立业务入口') && document.body.innerText.includes('暂无已加入模型')", `${viewport.name}:models:default-empty-state`);
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-group-add-models] summary').click()`);
+        await browser.client.evaluate(`(() => {
+          const input = document.querySelector('[aria-label="搜索可添加模型"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Model 28');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-catalog-model]').length === 1 && Boolean(document.querySelector('[data-model-group-catalog-model="mdl-28"]'))`, 'models:group-model-search');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-model]').length`), 1, 'search preserves assigned models');
+      }
       const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
       let memberPicker = null;
       if (groupCase === "members") {

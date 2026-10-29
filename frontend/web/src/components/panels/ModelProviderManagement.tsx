@@ -105,7 +105,15 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
     {providers.map((provider) => <section key={provider.id} className={`flex shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--theme-border)] ${selectedId === provider.id ? "min-h-[32rem] lg:flex-1" : ""}`} data-model-provider-row={provider.id}>
       <div className="flex shrink-0 items-center gap-2 bg-[var(--theme-bg-sidebar)] px-3 py-2">
         <Button type="text" className="min-w-0 flex-1" aria-label={`供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} aria-controls={selectedId === provider.id ? `provider-editor-${provider.id}` : undefined} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)}>
-          <span className="flex min-w-0 flex-1 items-center gap-3 text-left"><span className="truncate font-medium">{provider.name}</span><span className="shrink-0 rounded-full border border-[var(--theme-border)] px-2 py-0.5 text-xs text-[var(--theme-text-secondary)]">{provider.model_count} 模型</span></span>
+          <span className="flex min-w-0 flex-1 flex-col gap-1 text-left sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+            <span className="truncate font-medium" title={provider.name}>{provider.name}</span>
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--theme-text-secondary)]" data-provider-summary>
+              <span>{(provider.configured ?? provider.revision !== null) ? "连接已保存" : "待配置连接"}</span>
+              <span>{provider.model_count} 模型</span>
+              {provider.enabled_model_count !== undefined ? <span>启用 {provider.enabled_model_count}</span> : null}
+              {provider.missing_model_count ? <span className="text-[var(--theme-warning-text)]">上游缺失 {provider.missing_model_count}</span> : null}
+            </span>
+          </span>
         </Button>
         <Button danger type="text" aria-label={`删除供应商 ${provider.name}`} title="删除供应商" icon={<Trash2 size={16} />} disabled={busy || editorBusy || dirty} onClick={() => void inspectDelete(false, provider.id)} />
         <Button type="text" aria-label={`${selectedId === provider.id ? "收起" : "展开"}供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)} icon={selectedId === provider.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />} />

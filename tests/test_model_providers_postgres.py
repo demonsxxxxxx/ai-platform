@@ -41,8 +41,56 @@ async def test_suppliers_same_url_same_model_keep_separate_credentials_and_group
         await _prepare_schema(conn, schema)
         a = await create_provider(conn, name="Supplier A")
         b = await create_provider(conn, name="Supplier B")
-        ra, _ = await publish(conn, a["id"], secret="synthetic-a", values=("shared-model", "unused"))
+        unconfigured = await create_provider(conn, name="Not configured")
+        initial_summaries = {row["id"]: row for row in await list_providers(conn)}
+        for provider in (a, b, unconfigured):
+            summary = initial_summaries[provider["id"]]
+            assert summary["revision"] is None
+            assert summary["configured"] is False
+            assert summary["model_count"] == 0
+            assert summary["enabled_model_count"] == 0
+            assert summary["missing_model_count"] == 0
+
+        ra, _ = await publish(
+            conn, a["id"], secret="synthetic-a",
+            values=("shared-model", "unused", "archived-model"),
+        )
         rb, _ = await publish(conn, b["id"], secret="synthetic-b")
+        archived_model = platform_model_id("archived-model", a["id"])
+        missing_model = platform_model_id("unused", a["id"])
+        # The missing model remains enabled, so enabled and missing counts overlap.
+        await conn.execute(
+            "update model_catalog_entries set upstream_available = false where model_id = %s",
+            (missing_model,),
+        )
+        missing_state = await (await conn.execute(
+            "select enabled, upstream_available from model_catalog_entries where model_id = %s",
+            (missing_model,),
+        )).fetchone()
+        assert missing_state == {"enabled": True, "upstream_available": False}
+        await conn.execute(
+            "update model_catalog_entries set enabled = true, upstream_available = false, archived_at = now() where model_id = %s",
+            (archived_model,),
+        )
+        summaries = {row["id"]: row for row in await list_providers(conn)}
+        assert set(summaries[a["id"]]) == {
+            "id", "name", "revision", "configured", "model_count",
+            "enabled_model_count", "missing_model_count",
+        }
+        assert summaries[a["id"]]["revision"] == ra
+        assert summaries[a["id"]]["configured"] is True
+        assert summaries[a["id"]]["model_count"] == 2
+        assert summaries[a["id"]]["enabled_model_count"] == 2
+        assert summaries[a["id"]]["missing_model_count"] == 1
+        assert summaries[b["id"]]["revision"] == rb
+        assert summaries[b["id"]]["configured"] is True
+        assert summaries[b["id"]]["model_count"] == 1
+        assert summaries[b["id"]]["enabled_model_count"] == 1
+        assert summaries[b["id"]]["missing_model_count"] == 0
+        assert summaries[unconfigured["id"]]["configured"] is False
+        assert summaries[unconfigured["id"]]["model_count"] == 0
+        assert summaries[unconfigured["id"]]["enabled_model_count"] == 0
+        assert summaries[unconfigured["id"]]["missing_model_count"] == 0
         ma, mb = (platform_model_id("shared-model", p["id"]) for p in (a, b))
         assert ma != mb
         await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('mixed','tenant-a','mixed','Mixed','business')")

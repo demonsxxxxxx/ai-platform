@@ -57,6 +57,14 @@ editable catalog. The old discovery/publication calls without `provider_id` addr
 only the migrated `legacy` supplier, for existing API consumers. No global active
 connection fallback or cross-supplier model substitution is allowed.
 
+The administrator supplier summary adds `configured`, `enabled_model_count` and
+`missing_model_count`. `configured` means an active saved connection revision
+exists, not that an upstream probe succeeded. Counts exclude archived catalog
+entries; enabled and upstream-missing entries may overlap. Discovery returns the
+trusted supplier ID and name for both existing and new candidates, so unsaved
+models retain an explicit source identity. These additive read projections do
+not alter group authorization or connection revision fencing.
+
 Supplier deletion first reads `/model-providers/{id}/impact`, then posts to `retire`
 with the observed connection revision and explicit confirmation. Group associations,
 designated defaults (including disabled groups) and nonterminal Runs block deletion.
