@@ -940,6 +940,13 @@ test("chat group selection is retired across the ordinary and expert composer ch
   assert.match(source, /model: currentModelValue/);
 });
 
+test("only a temporarily missing initial default may recover automatically", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /if \(modelSelectionError\) \{\s*if \(modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"\s*&& !hasPriorSelection && defaultModel\) setModelSelectionError\(null\);\s*return;/);
+  assert.doesNotMatch(source, /onConfigureModels|配置模型组/);
+  assert.doesNotMatch(source, /\{modelSelectionError \? \(\s*<p/);
+});
+
 test("missing designated defaults never fall back to the first catalog model", () => {
   const availableModels = [{ id: "a", value: "provider/a" }];
   for (const storedDefaultValue of ["", "provider/removed"]) {
