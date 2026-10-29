@@ -83,7 +83,6 @@ test("ToolSelector preserves its mounted modal across search and selection updat
                   ));
                 },
                 onToggleCategory: () => {},
-                onToggleAll: () => {},
                 ...(controlled ? { isOpen: open, onOpenChange: setOpen } : {}),
               }),
             ),
@@ -101,6 +100,10 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           const input = modal?.querySelector("input");
           assert.ok(modal);
           assert.ok(input);
+          assert.ok(modal.querySelector('[data-tool-selector-header]')?.contains(input));
+          const actions = [...modal.querySelectorAll('button')].map((button) => button.textContent?.trim());
+          for (const label of ["全选", "取消全选", "添加"]) assert.equal(actions.includes(label), false);
+          assert.equal(modal.querySelectorAll('[data-tool-selector-list]').length, 1);
           input.focus();
           for (const value of ["a", "al", "alp"]) {
             await act(async () => { changeInput(input, value); });
@@ -208,7 +211,6 @@ test("group controls preserve disabled tools, mixed selection, and connection id
               tool.name === name ? { ...tool, enabled: !tool.enabled } : tool,
             )),
             onToggleCategory: () => {},
-            onToggleAll: () => {},
           }),
         ),
       );
