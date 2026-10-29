@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import uuid
@@ -18,7 +19,8 @@ from app.execution.infrastructure.model_management import (
 )
 from app.execution.infrastructure.model_providers import create_provider, list_providers, provider_impact, retire_provider
 from app.execution.infrastructure.model_security import api_key_fingerprint
-from app.execution.infrastructure.model_groups import set_group_models, set_user_group_memberships
+from app.execution.infrastructure.model_group_batches import batch_group_models
+from app.execution.infrastructure.model_groups import ensure_default_group, set_group_models, set_user_group_memberships
 
 KEY = base64.urlsafe_b64encode(b"p" * 32).decode()
 
@@ -31,6 +33,82 @@ async def publish(conn, provider_id, *, revision=None, secret="synthetic-key", v
             models=[{"id": platform_model_id(value, provider_id), "value": value, "display_name": value,
                 "enabled": True, "order": index + 1, "auto_compact_window": 100000, "max_output_tokens": 2048}
                 for index, value in enumerate(values)])
+
+
+@pytest.mark.asyncio
+async def test_supplier_identity_survives_default_batch_and_mapping_paths(monkeypatch, tmp_path):
+    conn = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+    schema = "supplier_group_paths_" + uuid.uuid4().hex
+    try:
+        await _prepare_schema(conn, schema)
+        a = await create_provider(conn, name="Supplier A")
+        b = await create_provider(conn, name="Supplier B")
+        ra, _ = await publish(conn, a["id"])
+        rb, _ = await publish(conn, b["id"])
+        ma, mb = (platform_model_id("shared-model", provider["id"]) for provider in (a, b))
+
+        default_id = await ensure_default_group(conn, tenant_id="tenant-a")
+        configured_default = await set_group_models(
+            conn, tenant_id="tenant-a", group_id=default_id, revision=1,
+            models=[{"model_id": ma, "enabled": False}, {"model_id": mb, "enabled": True}],
+        )
+        assert configured_default["default_model_id"] == mb
+        async with conn.transaction():
+            selected = await resolve_run_model(
+                conn, tenant_id="tenant-a", user_id="user-a", group_id=default_id,
+                model_id=None, model_value=None, selection_mode=None, usage_scene="expert",
+            )
+        assert selected is not None
+        assert (selected.model_id, selected.connection_revision, selected.selection_mode) == (mb, rb, "explicit")
+
+        await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('batch','tenant-a','batch','Batch','business')")
+        await set_group_models(
+            conn, tenant_id="tenant-a", group_id="batch", revision=1,
+            models=[{"model_id": ma}], default_model_id=ma,
+        )
+        preview = await batch_group_models(
+            conn, tenant_id="tenant-a", group_ids=["batch"], model_ids=[mb], operation="add",
+            expected_group_revisions={"batch": 2}, preview=True,
+        )
+        assert preview["groups"][0]["after"]["default_model_id"] == ma
+        await batch_group_models(
+            conn, tenant_id="tenant-a", group_ids=["batch"], model_ids=[mb], operation="add",
+            expected_group_revisions={"batch": 2},
+        )
+        batch_providers = await (await conn.execute(
+            "select c.provider_id from model_group_models gm join model_catalog_entries c on c.model_id = gm.model_id where gm.group_id = 'batch' order by c.provider_id"
+        )).fetchall()
+        assert {row["provider_id"] for row in batch_providers} == {a["id"], b["id"]}
+
+        import tools.model_group_migration as migration
+
+        @asynccontextmanager
+        async def transaction():
+            async with conn.transaction():
+                yield conn
+
+        monkeypatch.setattr(migration, "transaction", transaction)
+        mapping = {
+            "version": migration.VERSION,
+            "groups": [{"tenant_id": "tenant-a", "code": "mapped", "name": "Mapped", "models": [{"model_id": mb}]}],
+            "users": [],
+        }
+        preview = await migration.preview_mapping(mapping)
+        assert {row["provider_id"] for row in preview["expected_state"]["catalog"] if row["model_id"] in {ma, mb}} == {a["id"], b["id"]}
+        mapping["expected_state"] = preview["expected_state"]
+        mapping_path = tmp_path / "provider-model-group-mapping.json"
+        mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+        assert (await migration.apply_mapping(mapping_path))["status"] == "applied"
+        mapped_group = await (await conn.execute(
+            "select g.default_model_id, c.provider_id from model_groups g join model_group_models gm on gm.group_id = g.id join model_catalog_entries c on c.model_id = gm.model_id where g.code = 'mapped'"
+        )).fetchone()
+        assert mapped_group == {"default_model_id": mb, "provider_id": b["id"]}
+        inventory = await migration.inventory()
+        assert {row["model_id"]: row["provider_id"] for row in inventory["catalog"] if row["model_id"] in {ma, mb}} == {ma: a["id"], mb: b["id"]}
+    finally:
+        await conn.execute("set search_path to public")
+        await conn.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema)))
+        await conn.close()
 
 
 @pytest.mark.asyncio

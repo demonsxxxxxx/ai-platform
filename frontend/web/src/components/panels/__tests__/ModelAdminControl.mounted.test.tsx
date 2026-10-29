@@ -116,6 +116,266 @@ async function waitFor(
   assert.ok(predicate(), description);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+test("supplier group editing uses the saved cross-supplier catalog", async () => {
+  const React = await import("react");
+  const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
+  const originals = { ...modelAdminApi };
+  const originalGroups = { ...modelGroupsApi };
+  const allModels = [
+    model({ id: "mdl_a", value: "shared", label: "Model A", provider_id: "supplier-a", provider_name: "Supplier A", enabled: true, max_output_tokens: 2048 }),
+    model({ id: "mdl_b", value: "shared", label: "Model B", provider_id: "supplier-b", provider_name: "Supplier B", enabled: true, max_output_tokens: 2048 }),
+    model({ id: "mdl_b2", value: "other", label: "Model B2", provider_id: "supplier-b", provider_name: "Supplier B", enabled: true, max_output_tokens: 2048 }),
+  ];
+  const group = { id: "group-mixed", code: "mixed", name: "Mixed Group", type: "business" as const, enabled: true, revision: 4, sort_order: 1, model_count: 2, member_count: 0, default_model_id: "mdl_a" };
+  const providers = [
+    { id: "supplier-a", name: "Supplier A", revision: 4, model_count: 1 },
+    { id: "supplier-b", name: "Supplier B", revision: 4, model_count: 2 },
+  ];
+  const catalogCalls: Array<string | undefined> = [];
+  modelAdminApi.get = async (options) => {
+    catalogCalls.push(options?.providerId);
+    const models = options?.providerId
+      ? allModels.filter((entry) => entry.provider_id === options.providerId)
+      : allModels;
+    return state({
+      providers,
+      connection: { configured: true, revision: 4, base_url: "https://gateway.example", key_fingerprint: "synthetic" },
+      models,
+    });
+  };
+  modelGroupsApi.listAdmin = async () => ({ groups: [group], version: "model-groups.v1" });
+  modelGroupsApi.details = async () => ({
+    ...group,
+    members: [],
+    models: allModels.slice(0, 2).map((entry, index) => ({
+      model_id: entry.id,
+      model_value: entry.value,
+      label: entry.label,
+      enabled: true,
+      display_order: index,
+      priority: 0,
+      weight: 100,
+    })),
+  });
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
+  try {
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-a" }))));
+    await waitFor(React, () => Boolean(container.querySelector('[data-model-admin-model="mdl_a"]')), "supplier A catalog should load");
+    assert.deepEqual(catalogCalls, ["supplier-a"], "the page catalog request must remain supplier scoped");
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Mixed Group");
+    const open = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "编辑组内模型");
+    assert.equal(Boolean(open), true, "the saved group editor should be available");
+    await React.act(async () => open!.click());
+    await waitFor(React, () => Boolean(document.querySelector('[data-model-group-model="mdl_b"]')), "the saved B association should render");
+    assert.deepEqual(catalogCalls, ["supplier-a", undefined], "opening a group must fetch the complete catalog without providerId");
+
+    const otherSupplier = document.querySelector<HTMLElement>('[data-model-group-model="mdl_b"]');
+    assert.equal(Boolean(otherSupplier), true);
+    assert.equal(Boolean(otherSupplier!.querySelector("[data-group-model-missing]")), false, "saved supplier B must not be reported unavailable");
+    assert.match(otherSupplier!.textContent ?? "", /Supplier B/);
+    const addModels = document.querySelector<HTMLElement>("[data-model-group-add-models]");
+    assert.equal(Boolean(addModels), true);
+    await React.act(async () => addModels!.querySelector("summary")!.click());
+    const b2 = document.querySelector<HTMLElement>('[data-model-group-catalog-model="mdl_b2"]');
+    assert.equal(Boolean(b2), true, "supplier B2 should remain addable");
+    const addB2 = b2!.querySelector<HTMLElement>("[role=checkbox]");
+    assert.equal(Boolean(addB2), true);
+    await React.act(async () => addB2!.click());
+    assert.equal(Boolean(document.querySelector('[data-model-group-model="mdl_b2"]')), true, "supplier B2 can be added to the group draft");
+
+    const refresh = deferred<Awaited<ReturnType<typeof modelGroupsApi.listAdmin>>>();
+    modelGroupsApi.listAdmin = () => refresh.promise;
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-a", groupRevision: 1 }))));
+    assert.equal(container.querySelector('[data-model-admin-group-settings] button'), open, "refresh must retain the drawer's focus target");
+    await React.act(async () => refresh.resolve({ groups: [group], version: "model-groups.v1" }));
+    assert.equal(container.querySelector('[data-model-admin-group-settings] button'), open);
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-a", canManage: false, groupRevision: 1 }))));
+    assert.equal(container.querySelector('[data-model-admin-group-settings]'), null, "permission loss clears retained groups");
+  } finally {
+    await React.act(async () => root.unmount());
+    catalog.cleanup();
+    Object.assign(modelAdminApi, originals);
+    Object.assign(modelGroupsApi, originalGroups);
+  }
+});
+
+test("failed full group catalog load is explicit and can be retried", async () => {
+  const React = await import("react");
+  const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
+  const originals = { ...modelAdminApi };
+  const originalGroups = { ...modelGroupsApi };
+  const allModels = [
+    model({ id: "mdl_a", value: "a", label: "Model A", provider_id: "supplier-a", provider_name: "Supplier A", enabled: true }),
+    model({ id: "mdl_b", value: "b", label: "Model B", provider_id: "supplier-b", provider_name: "Supplier B", enabled: true }),
+  ];
+  const group = { id: "group-mixed", code: "mixed", name: "Mixed Group", type: "business" as const, enabled: true, revision: 4, sort_order: 1, model_count: 1, member_count: 0, default_model_id: "mdl_a" };
+  const calls: Array<string | undefined> = [];
+  let fullCatalogCalls = 0;
+  modelAdminApi.get = async (options) => {
+    calls.push(options?.providerId);
+    if (options?.providerId) return state({ models: allModels.filter((entry) => entry.provider_id === options.providerId) });
+    fullCatalogCalls += 1;
+    if (fullCatalogCalls === 1) throw new Error("catalog request failed");
+    return state({ models: allModels });
+  };
+  modelGroupsApi.listAdmin = async () => ({ groups: [group], version: "model-groups.v1" });
+  modelGroupsApi.details = async () => ({ ...group, members: [], models: [{ model_id: "mdl_a", model_value: "a", label: "Model A", enabled: true, display_order: 0, priority: 0, weight: 100 }] });
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
+  try {
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-a" }))));
+    await waitFor(React, () => Boolean(container.querySelector('[data-model-admin-model="mdl_a"]')), "supplier A catalog should load");
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Mixed Group");
+    const open = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "编辑组内模型");
+    assert.equal(Boolean(open), true);
+    await React.act(async () => open!.click());
+    await waitFor(React, () => Boolean(container.querySelector("[data-model-admin-group-catalog-error]")), "full catalog failure should be shown");
+    assert.match(container.querySelector("[data-model-admin-group-catalog-error]")?.textContent ?? "", /无法读取已保存的完整模型目录/);
+    assert.equal(Boolean(document.querySelector("[data-model-group-models]")), false, "failed load must not mount an editor with an empty catalog");
+    assert.equal(Boolean(document.querySelector("[data-group-model-missing]")), false, "failed load must not misreport saved associations as missing");
+    assert.deepEqual(calls, ["supplier-a", undefined]);
+
+    const retry = container.querySelector<HTMLElement>("[data-model-admin-group-catalog-retry]");
+    assert.equal(Boolean(retry), true);
+    await React.act(async () => retry!.click());
+    await waitFor(React, () => Boolean(document.querySelector('[data-model-group-model="mdl_a"]')), "retry should open the editor after reading the full catalog");
+    assert.deepEqual(calls, ["supplier-a", undefined, undefined]);
+    assert.equal(Boolean(document.querySelector('[data-model-group-model="mdl_b"]')), false);
+  } finally {
+    await React.act(async () => root.unmount());
+    catalog.cleanup();
+    Object.assign(modelAdminApi, originals);
+    Object.assign(modelGroupsApi, originalGroups);
+  }
+});
+
+test("late full catalog results cannot cross group, provider, draft, close, or unmount boundaries", async () => {
+  const React = await import("react");
+  const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
+  const originals = { ...modelAdminApi };
+  const originalGroups = { ...modelGroupsApi };
+  const allModels = [
+    model({ id: "mdl_a", value: "a", label: "Model A", provider_id: "supplier-a", provider_name: "Supplier A", enabled: true }),
+    model({ id: "mdl_b", value: "b", label: "Model B", provider_id: "supplier-b", provider_name: "Supplier B", enabled: true }),
+    model({ id: "mdl_b2", value: "b2", label: "Model B2", provider_id: "supplier-b", provider_name: "Supplier B", enabled: true }),
+  ];
+  const groupOne = { id: "group-one", code: "one", name: "Group One", type: "business" as const, enabled: true, revision: 1, sort_order: 1, model_count: 1, member_count: 0, default_model_id: "mdl_a" };
+  const groupTwo = { id: "group-two", code: "two", name: "Group Two", type: "business" as const, enabled: true, revision: 1, sort_order: 2, model_count: 1, member_count: 0, default_model_id: "mdl_b" };
+  const fullCatalogRequests: Array<ReturnType<typeof deferred<AdminModelState>>> = [];
+  const fullCatalogSignals: Array<AbortSignal | undefined> = [];
+  const catalogCalls: Array<string | undefined> = [];
+  modelAdminApi.get = (options) => {
+    catalogCalls.push(options?.providerId);
+    if (options?.providerId) {
+      return Promise.resolve(state({ models: allModels.filter((entry) => entry.provider_id === options.providerId) }));
+    }
+    const request = deferred<AdminModelState>();
+    fullCatalogRequests.push(request);
+    fullCatalogSignals.push(options?.signal);
+    return request.promise;
+  };
+  modelGroupsApi.listAdmin = async () => ({ groups: [groupOne, groupTwo], version: "model-groups.v1" });
+  modelGroupsApi.details = async (groupId) => {
+    const group = groupId === groupTwo.id ? groupTwo : groupOne;
+    const entry = groupId === groupTwo.id ? allModels[1] : allModels[0];
+    return {
+      ...group,
+      members: [],
+      models: [{ model_id: entry.id, model_value: entry.value, label: entry.label, enabled: true, display_order: 0, priority: 0, weight: 100 }],
+    };
+  };
+  const container = dom.document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const catalog = installModelCatalogTestProvider();
+  let unmounted = false;
+  const editCurrentGroup = async () => {
+    const edit = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "编辑组内模型");
+    assert.equal(Boolean(edit), true, "the selected group should expose its model editor");
+    await React.act(async () => edit!.click());
+  };
+  try {
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-a" }))));
+    await waitFor(React, () => Boolean(container.querySelector('[data-model-admin-model="mdl_a"]')), "supplier A catalog should load");
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Group One");
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 1, "the first full catalog request should start");
+
+    const closePending = container.querySelector<HTMLElement>("[data-model-admin-group-catalog-close]");
+    assert.equal(Boolean(closePending), true);
+    await React.act(async () => closePending!.click());
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 2, "reopening should start a fresh full catalog request");
+    await React.act(async () => fullCatalogRequests[1].resolve(state({ models: allModels })));
+    await waitFor(React, () => Boolean(document.querySelector('[data-model-group-model="mdl_a"]')), "the reopened group should load its directory");
+    await React.act(async () => fullCatalogRequests[0].resolve(state({ models: allModels.slice(0, 2) })));
+    assert.equal(Boolean(document.querySelector('[data-model-group-catalog-model="mdl_b2"]')), true, "the closed request must not replace the reopened directory");
+
+    const closeDrawer = document.querySelector<HTMLElement>('[aria-label="关闭分组抽屉"]');
+    assert.equal(Boolean(closeDrawer), true);
+    await React.act(async () => closeDrawer!.click());
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Group One");
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 3, "the next group edit should start a fresh request");
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Group Two");
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 4, "switching groups should start a new request");
+    await React.act(async () => fullCatalogRequests[3].resolve(state({ models: allModels })));
+    await waitFor(React, () => Boolean(document.querySelector('[data-model-group-model="mdl_b"]')), "the selected second group should load");
+    await React.act(async () => fullCatalogRequests[2].resolve(state({ models: [allModels[0]] })));
+    assert.equal(Boolean(document.querySelector('[data-model-group-model="mdl_b"] [data-group-model-missing]')), false, "the previous group's late catalog must not replace the selected group directory");
+    assert.match(document.querySelector("[data-model-group-models]")?.textContent ?? "", /Group Two|Model B/);
+
+    const closeSecondDrawer = document.querySelector<HTMLElement>('[aria-label="关闭分组抽屉"]');
+    assert.equal(Boolean(closeSecondDrawer), true);
+    await React.act(async () => closeSecondDrawer!.click());
+    await changeMountedSelect(React, selectByLabel(container, "筛选模型分组"), "分组：Group One");
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 5, "the supplier switch case should start a pending full catalog request");
+    await React.act(async () => root.render(catalog.wrap(React.createElement(ModelAdminControl, { providerId: "supplier-b" }))));
+    await waitFor(React, () => fullCatalogRequests.length === 6, "supplier switch should reload the complete directory for the open group");
+    await React.act(async () => fullCatalogRequests[5].resolve(state({ models: allModels })));
+    await waitFor(React, () => Boolean(document.querySelector('[data-model-group-model="mdl_a"]')), "supplier B page should reopen the selected group with the complete catalog");
+    await React.act(async () => fullCatalogRequests[4].resolve(state({ models: [allModels[0]] })));
+    assert.equal(Boolean(document.querySelector('[data-model-group-catalog-model="mdl_b2"]')), true, "the previous supplier response must not replace the new full catalog");
+    assert.deepEqual(catalogCalls.filter((providerId) => providerId !== undefined), ["supplier-a", "supplier-b"]);
+
+    const closeThirdDrawer = document.querySelector<HTMLElement>('[aria-label="关闭分组抽屉"]');
+    assert.equal(Boolean(closeThirdDrawer), true);
+    await React.act(async () => closeThirdDrawer!.click());
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 7, "the draft edit case should start a pending full catalog request");
+    await React.act(async () => changeMountedInput(inputByLabel(container, "模型 API 地址"), "https://changed.example"));
+    assert.equal(fullCatalogSignals[6]?.aborted, true, "editing supplier configuration invalidates the pending group directory");
+    await React.act(async () => fullCatalogRequests[6].resolve(state({ models: allModels })));
+    assert.equal(Boolean(document.querySelector('[data-model-group-drawer]')), false);
+    await React.act(async () => container.querySelector<HTMLElement>('[data-model-admin-cancel]')!.click());
+    assert.equal(Boolean(document.querySelector('[data-model-group-drawer]')), false, "discarding the supplier draft must not reopen an earlier group directory");
+    await editCurrentGroup();
+    await waitFor(React, () => fullCatalogRequests.length === 8, "the unmount case should start a fresh full catalog request");
+    await React.act(async () => root.unmount());
+    unmounted = true;
+    await React.act(async () => fullCatalogRequests[7].resolve(state({ models: [] })));
+  } finally {
+    if (!unmounted) await React.act(async () => root.unmount());
+    catalog.cleanup();
+    Object.assign(modelAdminApi, originals);
+    Object.assign(modelGroupsApi, originalGroups);
+  }
+});
+
 test("Model admin discovery is a draft and only publication changes the active catalog", async () => {
   const React = await import("react");
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");

@@ -97,8 +97,9 @@ export function ModelGroupModelEditor({
     { value: "all", label: "全部供应商" },
     ...providerOptions(providers, catalog),
   ], [providers, catalog]);
+  const hasEnabledModels = orderedModels.some((model) => model.enabled);
   const hasValidDefault = orderedModels.some((model) => model.model_id === defaultModelId && model.enabled);
-  const defaultProblem = orderedModels.length > 0 && !hasValidDefault;
+  const defaultProblem = hasEnabledModels && !hasValidDefault;
   const defaultMessage = defaultModelId && modelById.has(defaultModelId)
     ? "当前默认模型已停用，请手动选择一个启用的组内模型。"
     : "请选择一个启用的组内模型作为默认模型。";
@@ -147,7 +148,10 @@ export function ModelGroupModelEditor({
     });
     setDraggedId(null);
   };
-  const update = (modelId: string, patch: Partial<AdminModelGroupModel>) => setModels((current) => current.map((item) => item.model_id === modelId ? { ...item, ...patch } : item));
+  const update = (modelId: string, patch: Partial<AdminModelGroupModel>) => {
+    if (patch.enabled === false && defaultModelId === modelId) setDefaultModelId("");
+    setModels((current) => current.map((item) => item.model_id === modelId ? { ...item, ...patch } : item));
+  };
   const renderAssigned = (entry: AdminModelGroupModel, index: number) => {
     const catalogEntry = catalogById.get(entry.model_id);
     const sourceLabel = catalogEntry ? providerLabel(catalogEntry, providersById) : "供应商来源不可用";
@@ -185,7 +189,7 @@ export function ModelGroupModelEditor({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h3 className="text-sm font-semibold">模型</h3><p className="text-xs text-[var(--theme-text-secondary)]">选择组内可用模型，并指定一个默认模型；用户仍可在聊天中手动切换。</p></div>
         <div className="flex flex-col items-end gap-1">
-          <Button type="primary" loading={busy} disabled={busy || defaultProblem} htmlType="button" onClick={() => void onSave(renumber(orderedModels), details.revision, orderedModels.length ? defaultModelId : null)} icon={<Save size={15} />}>保存模型</Button>
+          <Button type="primary" loading={busy} disabled={busy || defaultProblem} htmlType="button" onClick={() => void onSave(renumber(orderedModels), details.revision, hasEnabledModels ? defaultModelId || null : null)} icon={<Save size={15} />}>保存模型</Button>
           {defaultProblem ? <p className="text-xs text-[var(--theme-warning-text)]" role="alert" data-model-group-default-error>{defaultMessage}</p> : null}
         </div>
       </div>

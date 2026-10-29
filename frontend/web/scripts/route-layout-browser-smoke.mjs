@@ -64,6 +64,32 @@ function bootstrapSource(loading = false, chatFiles = false) {
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
     window.addEventListener('unhandledrejection', (event) => state.errors.push(String(event.reason)));
     const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+    const providerAModels = Array.from({ length: 29 }, (_, index) => ({
+      id: 'mdl-' + index,
+      value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
+      label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
+      provider: 'compatible', provider_id: 'legacy', provider_name: '默认供应商', enabled: index < 2, available: true,
+      order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
+      auto_compact_window: index < 2 ? 200000 : undefined,
+      max_output_tokens: index < 2 ? 2048 : undefined
+    }));
+    const providerBModels = [0, 1].map((index) => ({
+      id: 'mdl-b' + index, value: 'b/demo-model-' + index, label: 'B Model ' + index,
+      provider: 'compatible', provider_id: 'supplier-b', provider_name: '供应商 B（合成）', enabled: true, available: true,
+      order: index + 1, last_seen_revision: 8, last_seen_at: '2026-01-01T00:00:00Z'
+    }));
+    const providers = [
+      { id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 },
+      { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 2, configured: true, enabled_model_count: 2, missing_model_count: 0 }
+    ];
+    const groupLayoutModelCount = ${groupCase === "business" ? 2 : 1};
+    const groupLayoutModels = ${JSON.stringify(groupCase === "business" ? [
+      { model_id: "mdl-0", model_value: "demo/model-0", label: "Model 0", enabled: true, display_order: 0, priority: 100, weight: 100 },
+      { model_id: "mdl-b0", model_value: "b/demo-model-0", label: "B Model 0", enabled: true, display_order: 1, priority: 100, weight: 100 }
+    ] : [
+      { model_id: "mdl-0", model_value: "demo/model-0", label: "Model 0", enabled: true, display_order: 0, priority: 100, weight: 100 }
+    ])};
+    const groupLayoutDefaultModelId = ${JSON.stringify(groupCase === "business" ? "mdl-0" : null)};
     const skill = {
       skill_name: 'qa-file-reviewer', expected_version: '0.1.0', input_modes: ['docx'], requires_file: true,
       description: 'Schema-seeded baseline for QA Word Review.', tags: ['review'], files: ['SKILL.md'], enabled: true,
@@ -118,7 +144,11 @@ function bootstrapSource(loading = false, chatFiles = false) {
       const raw = typeof input === 'string' ? input : input.url;
       const url = new URL(raw, location.origin);
       const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
-      if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
+      let payload;
+      if (typeof init.body === 'string') {
+        try { payload = JSON.parse(init.body); } catch { payload = undefined; }
+      }
+      if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method, ...(payload === undefined ? {} : { body: payload }) });
       if (${loading} && url.pathname === '/api/ai/auth/me') return new Promise(() => {});
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
@@ -194,22 +224,19 @@ function bootstrapSource(loading = false, chatFiles = false) {
         contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
       if (url.pathname === '/api/ai/admin/model-providers/supplier-b') return json({
-        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0, configured: true, enabled_model_count: 0, missing_model_count: 0 }],
-        connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: []
+        providers,
+        connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: providerBModels
       });
       if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0, cleanable_count: 28, blocked_models: [{id:'mdl-0',label:'Model 0',group_count:1,default_group_count:1,active_run_count:0,groups:[{name:'布局测试组'}]}] });
-      if (url.pathname === '/api/ai/admin/models' || url.pathname === '/api/ai/admin/model-providers/legacy') return json({
-        providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0, configured: true, enabled_model_count: 0, missing_model_count: 0 }],
+      if (url.pathname === '/api/ai/admin/model-providers/legacy') return json({
+        providers,
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
-        models: Array.from({ length: 29 }, (_, index) => ({
-          id: 'mdl-' + index,
-          value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
-          label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
-          provider: 'compatible', provider_id: 'legacy', provider_name: '默认供应商', enabled: index < 2, available: true,
-          order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
-          auto_compact_window: index < 2 ? 200000 : undefined,
-          max_output_tokens: index < 2 ? 2048 : undefined
-        }))
+        models: providerAModels
+      });
+      if (url.pathname === '/api/ai/admin/models') return json({
+        providers,
+        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
+        models: [...providerAModels, ...providerBModels]
       });
       if (url.pathname === '/api/ai/models/groups') return json({
         groups: [{ id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, is_primary: true, availability: 'available', models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', enabled: true }] }],
@@ -218,9 +245,9 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/model-groups') return json({
         groups: ${groupCase === "default" ? `[
           { id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true },
-          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1 }
         ]` : `[
-          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1 }
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1 }
         ]`}, version: 'model-groups.v1'
       });
       if (url.pathname === '/api/ai/admin/company-employees') {
@@ -239,9 +266,13 @@ function bootstrapSource(loading = false, chatFiles = false) {
         id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true, members: [], models: []
       });
       if (url.pathname === '/api/ai/admin/model-groups/group-layout') return json({
-        id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: 1, member_count: 1,
+        id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1,
+        ...(groupLayoutDefaultModelId ? { default_model_id: groupLayoutDefaultModelId } : {}),
         members: [{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }],
-        models: [{ model_id: 'mdl-0', model_value: 'demo/model-0', label: 'Model 0', enabled: true, display_order: 0, priority: 100, weight: 100 }]
+        models: groupLayoutModels
+      });
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout/models' && method === 'PUT') return json({
+        group_id: 'group-layout', revision: Number(payload?.revision ?? 1) + 1, default_model_id: payload?.default_model_id ?? null
       });
       if (url.pathname === '/api/ai/files/long-name' && method === 'DELETE') return json({ key: 'long-name', deleted: true });
       if (url.pathname === '/api/agent/models/available') return json({
@@ -555,9 +586,9 @@ async function runCase(viewport, scenario) {
       assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-provider-expanded]').length`), 0, "providers start collapsed");
       await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-providers-collapsed`);
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 供应商 B（合成）"]').click()`);
-      await browser.client.waitFor(`document.querySelector('[data-model-provider-row="supplier-b"] [data-provider-expanded]') && document.querySelector('[aria-label="模型 API 地址"]').value.includes('supplier-b')`, "models:provider-b-expanded");
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-model-provider-row="supplier-b"] [data-provider-expanded]') && document.querySelector('[aria-label="模型 API 地址"]').value.includes('supplier-b') && document.querySelectorAll('[data-model-provider-row="supplier-b"] [data-model-admin-model]').length === 2)`, "models:provider-b-expanded");
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').click()`);
-      await browser.client.waitFor(`document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]') && document.querySelectorAll('[data-model-admin-model]').length === 29`, "models:provider-a-expanded");
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]') && document.querySelectorAll('[data-model-admin-model]').length === 29)`, "models:provider-a-expanded");
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').scrollIntoView({block:'start'})`);
       await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-rows`);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商')).click()`);
@@ -569,33 +600,37 @@ async function runCase(viewport, scenario) {
       assert.match(await browser.client.evaluate("document.querySelector('[data-provider-delete-blocked]').textContent"), /关联 1 个分组、1 个默认模型/);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '关闭检查结果')).click()`);
       const tabs = [];
-      if (groupCase !== "default") await browser.client.evaluate(`(() => {
-        const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
-        if (!input) throw new Error('synthetic_deepseek_missing');
-        input.focus();
-        input.click();
-      })()`);
-      if (groupCase !== "default") await browser.client.waitFor(
-        `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
-        `${viewport.name}:models:enabled-toggle`,
-      );
-      if (groupCase !== "default") {
-        await browser.client.evaluate(`document.querySelector('[data-model-admin-edit="mdl-18"]').click()`);
-        await browser.client.waitFor(`document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填'`, `${viewport.name}:models:editor-limits`);
-        await browser.client.evaluate(`document.querySelector('[aria-label="关闭模型编辑"]').click()`);
-        await browser.client.waitFor(`!document.querySelector('[data-model-admin-editor]')`, `${viewport.name}:models:editor-closed`);
-      }
-      await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
-      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
-      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
       const groupName = groupCase === "default" ? "普通默认组" : "布局测试组";
-      await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="编辑 ${groupName}"]'))`, `${viewport.name}:models:group-edit-ready`);
-      await browser.client.evaluate(`document.querySelector('[aria-label="编辑 ${groupName}"]').click()`);
+      if (groupCase === "business") {
+        await browser.client.evaluate(`(() => {
+          const label = [...document.querySelectorAll('label')].find((node) => node.textContent.trim() === '筛选模型分组');
+          const control = label ? document.getElementById(label.htmlFor) : null;
+          const trigger = control?.matches('[role=combobox]') ? control : control?.querySelector('[role=combobox]');
+          if (!trigger) throw new Error('provider_group_filter_missing');
+          trigger.click();
+        })()`);
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].some((node) => node.textContent.includes('布局测试组')))`, `${viewport.name}:models:provider-group-filter-options`);
+        await browser.client.evaluate(`(() => {
+          const option = [...document.querySelectorAll('[role=option]')].find((node) => node.textContent.includes('布局测试组'));
+          if (!option) throw new Error('provider_group_filter_option_missing');
+          option.click();
+        })()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-admin-group-settings] button') && document.querySelector('[data-model-admin-group-settings]').textContent.includes('布局测试组'))`, `${viewport.name}:models:provider-group-entry-ready`);
+        const globalCatalogReadsBeforeDrawer = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models' && request.method === 'GET').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-admin-group-settings] button')].find((node) => node.textContent.trim() === '编辑组内模型')).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-drawer]') && window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models' && request.method === 'GET').length > ${globalCatalogReadsBeforeDrawer})`, `${viewport.name}:models:provider-entry-global-catalog`);
+      } else {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-table]'))", `${viewport.name}:models:groups-loaded`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="编辑 ${groupName}"]'))`, `${viewport.name}:models:group-edit-ready`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="编辑 ${groupName}"]').click()`);
+      }
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-models]'))", `${viewport.name}:models:drawer-loaded`);
       await browser.client.waitFor(`(() => {
         const drawer = document.querySelector('[data-model-group-drawer]');
         const panel = drawer?.querySelector('[data-drawer-placement]');
-        return panel && Math.abs(panel.getBoundingClientRect().left - drawer.getBoundingClientRect().left) < 2;
+        return Boolean(panel && Math.abs(panel.getBoundingClientRect().left - drawer.getBoundingClientRect().left) < 2);
       })()`, `${viewport.name}:models:drawer-settled`);
       const drawerTabs = groupCase === "default" ? ["基本信息", "模型"] : ["基本信息", "模型", "成员"];
       for (const tab of drawerTabs) {
@@ -629,7 +664,33 @@ async function runCase(viewport, scenario) {
           input.dispatchEvent(new Event('input', { bubbles: true }));
         })()`);
         await browser.client.waitFor(`document.querySelectorAll('[data-model-group-catalog-model]').length === 1 && Boolean(document.querySelector('[data-model-group-catalog-model="mdl-28"]'))`, 'models:group-model-search');
-        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-model]').length`), 1, 'search preserves assigned models');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-model]').length`), groupCase === "business" ? 2 : 1, 'search preserves assigned models');
+      }
+      if (groupCase === "business") {
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"]') && !document.querySelector('[data-model-group-model="mdl-b0"] [data-group-model-missing]'))`, `${viewport.name}:models:cross-provider-assigned-ready`);
+        const assignedProviderState = await browser.client.evaluate(`(() => {
+          const assigned = document.querySelector('[data-model-group-model="mdl-b0"]');
+          return { assignedIsNormal: Boolean(assigned && !assigned.querySelector('[data-group-model-missing]')),
+            providerLabel: assigned?.querySelector('[data-model-group-upstream-id]')?.textContent ?? '' };
+        })()`);
+        if (!assignedProviderState.assignedIsNormal || !assignedProviderState.providerLabel.includes('供应商 B（合成）')) {
+          throw new Error(`models:provider-global-catalog-mismatch:${JSON.stringify(assignedProviderState)}`);
+        }
+        await browser.client.evaluate(`(() => {
+          const input = document.querySelector('[aria-label="搜索可添加模型"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'B Model 1');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await browser.client.waitFor(`Boolean(document.querySelectorAll('[data-model-group-catalog-model]').length === 1 && document.querySelector('[data-model-group-catalog-model="mdl-b1"]'))`, `${viewport.name}:models:provider-b-candidate`);
+        const candidateProviderState = await browser.client.evaluate(`(() => {
+          const candidate = document.querySelector('[data-model-group-catalog-model="mdl-b1"]');
+          return { providerLabel: candidate?.textContent ?? '', hasWarnings: Boolean(candidate?.querySelector('[data-group-model-catalog-status]')) };
+        })()`);
+        if (candidateProviderState.hasWarnings || !candidateProviderState.providerLabel.includes('供应商 B（合成）')) {
+          throw new Error(`models:provider-b-candidate_invalid:${JSON.stringify(candidateProviderState)}`);
+        }
+        await browser.client.evaluate(`document.querySelector('[data-model-group-catalog-model="mdl-b1"] [role=checkbox]').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b1"]') && document.querySelectorAll('[data-model-group-model]').length === 3)`, `${viewport.name}:models:provider-b-model-added`);
       }
       const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
       let memberPicker = null;
@@ -685,11 +746,84 @@ async function runCase(viewport, scenario) {
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await browser.client.waitFor(`!document.querySelector('[aria-label="确认删除分组"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.textContent === '删除分组'`, "delete:cancel-preserves-drawer");
       }
+      if (groupCase === "business") {
+        const modelRowSwitch = (modelId) => `[data-model-group-model="${modelId}"] [role="switch"]`;
+        const defaultRadio = (modelId) => `[data-model-group-model="${modelId}"] input[type="radio"]`;
+        const saveEnabled = () => browser.client.evaluate(`Boolean([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型') && ![...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型').disabled)`);
+        const clickAssignedSwitch = async (modelId) => browser.client.evaluate(`(() => {
+          const toggle = document.querySelector(${JSON.stringify(modelRowSwitch(modelId))});
+          if (!toggle) throw new Error('group_model_switch_missing:${modelId}');
+          toggle.click();
+        })()`);
+        const latestModelsPayload = () => browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').at(-1)?.body ?? null`);
+
+        await clickAssignedSwitch('mdl-0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-0"] [role="switch"]')?.getAttribute('aria-checked') === 'false' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:disabled-default-cleared`);
+        assert.equal(await saveEnabled(), false, 'enabled members require a selected default');
+        await browser.client.evaluate(`document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))}).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))})?.checked && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:replacement-default-selected`);
+        const priorWrites = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${priorWrites})`, `${viewport.name}:models:replacement-default-saved`);
+        assert.equal((await latestModelsPayload())?.default_model_id, 'mdl-b0', 'disabling a default clears it until a replacement is selected');
+
+        await clickAssignedSwitch('mdl-b0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"] [role="switch"]')?.getAttribute('aria-checked') === 'false' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:remaining-enabled-needs-default`);
+        assert.equal(await saveEnabled(), false, 'a remaining enabled model requires a default');
+        await clickAssignedSwitch('mdl-b1');
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[data-model-group-model] [role="switch"]')].every((toggle) => toggle.getAttribute('aria-checked') === 'false') && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:all-disabled-valid`);
+        assert.equal(await saveEnabled(), true, 'all disabled models can be saved without a default');
+        const writesBeforeNull = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${writesBeforeNull} && window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').at(-1)?.body?.default_model_id === null)`, `${viewport.name}:models:all-disabled-null-saved`);
+        const nullPayload = await latestModelsPayload();
+        if (nullPayload?.default_model_id !== null || !nullPayload.models.every((model) => model.enabled === false)) {
+          throw new Error(`models:all-disabled-payload_invalid:${JSON.stringify(nullPayload)}`);
+        }
+
+        await clickAssignedSwitch('mdl-b0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"] [role="switch"]')?.getAttribute('aria-checked') === 'true' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:reenabled-needs-default`);
+        assert.equal(await saveEnabled(), false, 're-enabling a model requires choosing a default');
+        await browser.client.evaluate(`document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))}).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))})?.checked && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:reenabled-default-selected`);
+        const writesBeforeReenabled = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${writesBeforeReenabled})`, `${viewport.name}:models:reenabled-default-saved`);
+        assert.equal((await latestModelsPayload())?.default_model_id, 'mdl-b0', 're-enabled model saves only after explicit default selection');
+      }
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor(`!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 ${groupName}'`, `${viewport.name}:models:group-focus-restored`);
+      await browser.client.waitFor(groupCase === "business"
+        ? `Boolean(!document.querySelector('[data-model-group-drawer]') && document.activeElement?.textContent.trim() === '编辑组内模型')`
+        : `Boolean(!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 ${groupName}')`, `${viewport.name}:models:group-focus-restored`);
       await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="catalog"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-model-admin-control]'))", `${viewport.name}:models:catalog-restored`);
+      if (groupCase === "business") {
+        await browser.client.evaluate(`(() => {
+          const label = [...document.querySelectorAll('label')].find((node) => node.textContent.trim() === '筛选模型分组');
+          const control = document.getElementById(label.htmlFor);
+          (control.matches('[role=combobox]') ? control : control.querySelector('[role=combobox]')).click();
+        })()`);
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].some((node) => node.textContent.trim() === '分组：全部'))`, 'models:restore-all-groups-option');
+        await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find((node) => node.textContent.trim() === '分组：全部')).click()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-admin-model]').length === 29`, 'models:all-provider-models-restored');
+      }
+      if (groupCase !== "default") await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
+        if (!input) throw new Error('synthetic_deepseek_missing');
+        input.focus();
+        input.click();
+      })()`);
+      if (groupCase !== "default") await browser.client.waitFor(
+        `Boolean(document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3)`,
+        `${viewport.name}:models:enabled-toggle`,
+      );
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-edit="mdl-18"]').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填')`, `${viewport.name}:models:editor-limits`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="关闭模型编辑"]').click()`);
+        await browser.client.waitFor(`Boolean(!document.querySelector('[data-model-admin-editor]'))`, `${viewport.name}:models:editor-closed`);
+      }
     }
     const responsiveLayout = await browser.client.evaluate(`(() => {
       const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();

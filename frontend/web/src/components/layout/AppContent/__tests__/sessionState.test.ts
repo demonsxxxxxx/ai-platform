@@ -8,18 +8,18 @@ import {
   shouldShowStreamingFooterSkeleton,
 } from "../sessionState.ts";
 
-test("legacy explicit model intent survives restore and the Agent request builder", async () => {
+test("a restored concrete model stays explicit even when legacy history says auto", async () => {
   const { buildAgentAppRunBody } = await import("../../../../services/api/session.ts");
-  const legacy = { agent_options: { model_id: "model-a", model: "provider/model-a" } };
+  const legacy = { agent_options: { model_id: "model-a", model: "provider/model-a", selection_mode: "auto" } };
   const restored = getRestoredModelSelection(legacy);
-  assert.equal(restored.selectionMode, "explicit");
+  assert.deepEqual(restored, { modelId: "model-a", modelValue: "provider/model-a" });
   const body = buildAgentAppRunBody({ message: "continue", submissionId: "synthetic",
-    agentOptions: {model_id: restored.modelId, model: restored.modelValue, selection_mode: restored.selectionMode},
+    agentOptions: {model_id: restored.modelId, model: restored.modelValue},
   });
   assert.equal(body.model_id, "model-a");
   assert.equal(body.model, "provider/model-a");
   assert.equal(body.selection_mode, "explicit");
-  assert.equal(getRestoredModelSelection({agent_options: {...legacy.agent_options, selection_mode: "auto"}}).selectionMode, "auto");
+  assert.deepEqual(getRestoredModelSelection({agent_options: { selection_mode: "auto" }}), { modelId: "", modelValue: "" });
 });
 
 test("treats loading or visible streaming messages as an active session", () => {

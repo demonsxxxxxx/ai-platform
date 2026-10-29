@@ -567,7 +567,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         auto_compact_window=200_000,
         max_output_tokens=2048,
         group_id="group-a", group_code="alpha", group_type="business", group_revision=1,
-        selection_mode="auto", usage_scene="chat", policy_version="model-groups.v1",
+        usage_scene="chat", policy_version="model-groups.v1",
     )
 
     sql, params = conn.calls[0]
@@ -578,7 +578,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
-        "group-a", "alpha", "business", 1, "auto", "chat", "model-groups.v1",
+        "group-a", "alpha", "business", 1, "explicit", "chat", "model-groups.v1",
         200_000,
         2048,
         "tenant-a",

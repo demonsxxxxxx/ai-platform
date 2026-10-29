@@ -10,6 +10,7 @@ import { ApiRequestError } from "../../services/api/fetch";
 import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummary } from "../../services/api/modelGroups";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { GroupDrawer } from "./ModelGroupManagement";
+import { useSavedModelGroupCatalog } from "./useSavedModelGroupCatalog";
 
 import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 
@@ -160,7 +161,7 @@ export function ModelAdminControl({
   const [groupFilter, setGroupFilter] = useState("all");
   const [editingGroup, setEditingGroup] = useState<AdminModelGroupSummary | null>(null);
   const [groupTab, setGroupTab] = useState<"models" | "members">("models");
-  const groupTrigger = useRef<HTMLElement | null>(null);
+  const groupTrigger = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const modelTrigger = useRef<HTMLElement | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -180,6 +181,7 @@ export function ModelAdminControl({
   } | null>(null);
   const groupRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const groupRequestSequence = useRef(0);
+  const { savedGroupCatalog, loadSavedGroupCatalog, clearSavedGroupCatalog } = useSavedModelGroupCatalog(providerId, editingGroup, errorMessage);
   const connectionVersion = useRef(0);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ModelAdminRequestOwner | null>(null);
@@ -211,6 +213,17 @@ export function ModelAdminControl({
     activeRequest.current = null;
     setBusy(null);
   }, [ownsRequest]);
+
+  const closeGroup = useCallback(() => {
+    clearSavedGroupCatalog();
+    setEditingGroup(null);
+  }, [clearSavedGroupCatalog]);
+
+  const openGroup = (group: AdminModelGroupSummary, tab: "models" | "members") => {
+    setGroupTab(tab);
+    setEditingGroup(group);
+    loadSavedGroupCatalog(group);
+  };
 
   const applyState = useCallback((next: AdminModelState) => {
     setState(next);
@@ -264,10 +277,13 @@ export function ModelAdminControl({
   useEffect(() => {
     groupRequestRef.current?.controller.abort();
     groupRequestRef.current = null;
-    setGroupOptions([]);
     setGroupDetails({});
     setGroupDetailsReady(false);
-    if (!canManage) return undefined;
+    if (!canManage) {
+      setGroupOptions([]);
+      return undefined;
+    }
+    // Preserve the drawer's focus target while refreshing group details after a save.
     const controller = new AbortController();
     const sequence = ++groupRequestSequence.current;
     groupRequestRef.current = { controller, sequence };
@@ -310,6 +326,9 @@ export function ModelAdminControl({
   const hasChanges = Boolean(state && (connectionChanged
     || modelDraftSignature(draft) !== modelDraftSignature(state.models)));
   useEffect(() => { onDirtyChange?.(hasChanges); }, [hasChanges, onDirtyChange]);
+  useEffect(() => {
+    if (hasChanges || !canManage) closeGroup();
+  }, [hasChanges, canManage, closeGroup]);
   const canPublish = Boolean(state && hasChanges && catalogReceipt
     && catalogReceipt.connectionVersion === connectionVersion.current);
   const connectionLocked = busy === "load" || busy === "publish";
@@ -450,6 +469,11 @@ export function ModelAdminControl({
   const batchGroups = groupOptions.filter((group) => group.enabled);
   const filteredGroup = groupOptions.find((group) => group.id === groupFilter
     || (groupFilter === "default" && group.type === "ordinary_default"));
+  const editingGroupCatalog = editingGroup
+    && savedGroupCatalog?.groupId === editingGroup.id
+    && savedGroupCatalog.providerId === providerId
+    ? savedGroupCatalog
+    : null;
   const refreshGroups = async (signal?: AbortSignal) => {
     const result = await modelGroupsApi.listAdmin({ signal });
     const details = await Promise.all(result.groups.map((g) => modelGroupsApi.details(g.id, { signal })));
@@ -638,9 +662,22 @@ export function ModelAdminControl({
         {filteredGroup ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] p-3" data-model-admin-group-settings>
           <span className="text-sm font-medium">{filteredGroup.name}</span>
           <span className="text-xs text-[var(--theme-text-secondary)]">模型可加入多个组；各组的启用、展示顺序与默认模型独立配置。</span>
-          <Button size="small" disabled={busy !== null || hasChanges} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("models"); setEditingGroup(filteredGroup); }}>编辑组内模型</Button>
-          {filteredGroup.type === "business" ? <Button size="small" disabled={busy !== null || hasChanges} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("members"); setEditingGroup(filteredGroup); }}>管理成员</Button> : null}
+          <Button ref={groupTab === "models" ? groupTrigger : undefined} size="small" disabled={busy !== null || hasChanges} onClick={() => openGroup(filteredGroup, "models")}>编辑组内模型</Button>
+          {filteredGroup.type === "business" ? <Button ref={groupTab === "members" ? groupTrigger : undefined} size="small" disabled={busy !== null || hasChanges} onClick={() => openGroup(filteredGroup, "members")}>管理成员</Button> : null}
           {hasChanges ? <span className="text-xs text-[var(--theme-warning-text)]">请先保存供应商配置，再调整组分配。</span> : null}
+        </div> : null}
+        {editingGroup && editingGroupCatalog?.status === "error" ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2" role="alert" data-model-admin-group-catalog-error>
+          <span>无法读取已保存的完整模型目录：{editingGroupCatalog.error}</span>
+          <Button size="small" disabled={busy !== null || hasChanges} data-model-admin-group-catalog-retry onClick={() => loadSavedGroupCatalog(editingGroup)} htmlType="button">重试加载目录</Button>
+          <Button size="small" data-model-admin-group-catalog-close onClick={closeGroup} htmlType="button">关闭</Button>
+        </div> : null}
+        {editingGroup && (!editingGroupCatalog || editingGroupCatalog.status === "loading") ? <div className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-text-secondary)]" role="status" data-model-admin-group-catalog-loading>
+          <span>正在读取已保存的完整模型目录…</span>
+          <Button size="small" data-model-admin-group-catalog-close onClick={closeGroup} htmlType="button">取消</Button>
+        </div> : null}
+        {editingGroup && editingGroupCatalog?.status === "ready" && (busy !== null || hasChanges) ? <div className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-warning-text)]" role="status" data-model-admin-group-catalog-gated>
+          <span>{hasChanges ? "请先保存供应商配置，再编辑组模型。" : "供应商配置仍在处理中，完成后即可编辑组模型。"}</span>
+          <Button size="small" disabled={busy !== null} onClick={closeGroup} htmlType="button">关闭</Button>
         </div> : null}
         {selectedModelIds.length ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3" data-model-admin-batch-toolbar>
           <span className="text-xs font-medium">已选 {selectedModelIds.length} 个模型</span>
@@ -719,7 +756,7 @@ export function ModelAdminControl({
           ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</Button>
         </div>
       </div> : publishError ? <p role="alert" className="text-sm text-[var(--theme-danger-text)]">{publishError}</p> : null}
-      <GroupDrawer group={editingGroup} catalog={state?.models ?? []} providers={state?.providers ?? []} initialTab={groupTab} onClose={() => setEditingGroup(null)} onChanged={refreshGroups} finalFocus={groupTrigger} />
+      <GroupDrawer group={editingGroupCatalog?.status === "ready" && !hasChanges && busy === null ? editingGroup : null} catalog={editingGroupCatalog?.status === "ready" ? editingGroupCatalog.models : []} providers={editingGroupCatalog?.status === "ready" ? editingGroupCatalog.providers : []} initialTab={groupTab} onClose={closeGroup} onChanged={refreshGroups} finalFocus={groupTrigger} />
     </section>
   );
 }

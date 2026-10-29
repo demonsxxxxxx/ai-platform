@@ -81,7 +81,14 @@ def _mapping(value: object) -> dict[str, Any]:
 async def inventory() -> dict[str, Any]:
     async with transaction() as conn:
         tenants = await (await conn.execute("select id from tenants order by id")).fetchall()
-        catalog = await (await conn.execute("select model_id, upstream_model_id, enabled, access_mode, allowed_user_ids, is_default from model_catalog_entries where archived_at is null order by model_id")).fetchall()
+        catalog = await (await conn.execute("""
+            select c.model_id, c.provider_id, p.name as provider_name, c.upstream_model_id,
+                   c.enabled, c.access_mode, c.allowed_user_ids, c.is_default
+            from model_catalog_entries c
+            join model_providers p on p.id = c.provider_id and p.archived_at is null
+            where c.archived_at is null
+            order by c.model_id
+        """)).fetchall()
         users = await (await conn.execute("select tenant_id, id as user_id, auth_source, external_id from users where status = 'active' order by tenant_id, id")).fetchall()
         groups = await (await conn.execute("select id, tenant_id, code, name, enabled, revision from model_groups order by tenant_id, code")).fetchall()
         members = await (await conn.execute("select tenant_id, group_id, user_id, is_primary from model_group_members order by tenant_id, group_id, user_id")).fetchall()
@@ -101,7 +108,14 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
     active = await (await conn.execute("select 1 from runs where tenant_id = any(%s) and status not in ('succeeded','failed','cancelled','canceled','dead-letter') limit 1", (tenants,))).fetchone()
     if active:
         raise ValueError("model_group_migration_active_runs")
-    catalog = await (await conn.execute("select model_id, enabled, access_mode, allowed_user_ids, is_default, last_seen_revision from model_catalog_entries where archived_at is null order by model_id")).fetchall()
+    catalog = await (await conn.execute("""
+        select c.model_id, c.provider_id, p.name as provider_name, c.enabled,
+               c.access_mode, c.allowed_user_ids, c.is_default, c.last_seen_revision
+        from model_catalog_entries c
+        join model_providers p on p.id = c.provider_id and p.archived_at is null
+        where c.archived_at is null
+        order by c.model_id
+    """)).fetchall()
     catalog_ids = {r["model_id"] for r in catalog}
     current_groups = await (await conn.execute("select * from model_groups where tenant_id = any(%s) order by tenant_id, code", (tenants,))).fetchall()
     group_by_key = {(g["tenant_id"], g["code"]): dict(g) for g in current_groups}
@@ -120,10 +134,6 @@ async def _prepare(conn: Any, mapping: dict[str, Any]) -> tuple[dict[str, Any], 
             if old_default not in group["models"] and group["models"]:
                 raise ValueError("model_group_default_change_required")
             if old_default in group["models"] and not bool(group["models"][old_default].get("enabled", True)):
-                raise ValueError("model_group_default_model_invalid")
-        elif group["models"]:
-            first_model = min(group["models"].values(), key=lambda model: (model["display_order"], model["model_id"]))
-            if not bool(first_model.get("enabled", True)):
                 raise ValueError("model_group_default_model_invalid")
         desired_models[key] = group["models"]
     user_rows = await (await conn.execute("select id, tenant_id, auth_source, external_id, status, model_group_membership_revision from users where tenant_id=any(%s) order by tenant_id,id", (tenants,))).fetchall()
@@ -222,8 +232,9 @@ async def apply_mapping(mapping_path: Path) -> dict[str, Any]:
                     await conn.execute("insert into model_group_models(group_id,model_id,enabled,display_order,priority,weight) values (%s,%s,%s,%s,%s,%s)", (groups[key]["id"], m["model_id"], m["enabled"], m["display_order"], m["priority"], m["weight"]))
                 old_default = groups[key].get("default_model_id")
                 new_default = old_default if old_default in item["models"] else None
-                if not current_models.get(key) and item["models"]:
-                    new_default = min(item["models"].values(), key=lambda m: (m["display_order"], m["model_id"]))["model_id"]
+                if old_default is None and not any(m["enabled"] for m in current_models.get(key, {}).values()) and item["models"]:
+                    first_enabled = min((m for m in item["models"].values() if m["enabled"]), key=lambda m: (m["display_order"], m["model_id"]), default=None)
+                    new_default = first_enabled["model_id"] if first_enabled else None
                 await conn.execute("update model_groups set default_model_id=%s where id=%s", (new_default, groups[key]["id"]))
         changed_users = 0
         for key in state["covered_users"]:
