@@ -53,7 +53,7 @@ export function WorkbenchMenuHost({
       setMenuPosition(
         (event as CustomEvent<WorkbenchMenuPosition>).detail,
       );
-      setMenuOpen(true);
+      setMenuOpen((open) => !open);
     };
     window.addEventListener("workbench-menu-open", handleOpen);
     return () => window.removeEventListener("workbench-menu-open", handleOpen);
@@ -67,7 +67,15 @@ export function WorkbenchMenuHost({
   }), [menuPosition]);
   const showRunPlaybackButton = activeTab === "chat" && !!currentRunId && !!onOpenRunPlayback;
   return (
-    <DropdownMenuRoot open={menuOpen} modal={false} onOpenChange={setMenuOpen}>
+    <DropdownMenuRoot open={menuOpen} modal={false} onOpenChange={(open, details) => {
+      // Sidebar buttons toggle this remote menu after the pointer event.
+      if (details.reason === "outside-press" && details.event.target instanceof Element
+        && details.event.target.closest("[data-workbench-menu-trigger]")) {
+        details.cancel();
+        return;
+      }
+      setMenuOpen(open);
+    }}>
       <DropdownMenuPortal>
         <DropdownMenuPositioner anchor={anchor} placement={menuPosition.left == null ? "topRight" : "topLeft"}>
           <DropdownMenuPopup className="workbench-menu-popup w-56" aria-label={t("common.menu")}>

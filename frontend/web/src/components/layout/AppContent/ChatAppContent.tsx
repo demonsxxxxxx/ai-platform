@@ -416,6 +416,7 @@ export function ChatAppContent({
     selectedGroupId,
     selectedGroup,
     selectionError: catalogSelectionError,
+    isLoading: modelsLoading,
   } = useModelCatalogContext();
   const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
@@ -751,7 +752,11 @@ export function ChatAppContent({
       setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
       return;
     }
-    if (modelSelectionError) return;
+    if (modelSelectionError) {
+      if (modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"
+        && !hasPriorSelection && defaultModel) setModelSelectionError(null);
+      return;
+    }
     if (!currentModelId && !currentModelValue && !defaultModel) {
       setModelSelectionError("默认模型暂不可用，请手动选择同组模型。");
       return;
@@ -1383,6 +1388,10 @@ export function ChatAppContent({
             onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            modelUnavailableReason={modelsLoading && !currentModelId ? "正在加载模型…" : modelSelectionError
+              ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
+                ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError
+              : !currentModelId ? "暂时无法读取可用模型，请重试。" : undefined}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={
@@ -1466,11 +1475,6 @@ export function ChatAppContent({
             WorkbenchShellComponent={WorkbenchShell}
             />
           </ChatMcpCatalogContext.Provider>
-        {modelSelectionError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
-            {modelSelectionError}
-          </p>
-        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {agentWorkspaceError}
