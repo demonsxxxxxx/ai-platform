@@ -42,7 +42,13 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
   const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => root.render(restoreCatalog.wrap(<ModelProviderManagement groupRevision={0} onGroupsChanged={noop} onStateChange={noop} />)));
+    assert.ok(!calls.includes("get:a"), "initial supplier rows do not load an editor");
+    assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 0);
+    await select("Supplier A");
     assert.ok(calls.includes("get:a"));
+    await select("Supplier A");
+    assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 0);
+    await select("Supplier A");
     await React.act(async () => input("模型 API Key", "synthetic-a-draft"));
     await select("Supplier B");
     assert.match(document.querySelector('[role=dialog]')?.textContent ?? "", /未保存/);
@@ -57,7 +63,7 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     await click("确认清理");
     assert.ok(calls.includes("cleanup:b:2"));
     assert.match(container.textContent ?? "", /已清理 26 个模型，保留 1 个被引用模型/);
-    await click("删除供应商");
+    await click("删除供应商 Supplier B");
     assert.match(container.querySelector('[data-provider-delete-blocked]')?.textContent ?? "", /2 个分组、1 个默认模型，1 个未完成任务/);
     assert.ok(!calls.some((c) => c.startsWith("delete:")));
     await select("Supplier A");
@@ -66,10 +72,13 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     assert.ok(!calls.some((c) => c.startsWith("delete:")));
     await select("Supplier B");
     blocked = false;
-    await click("删除供应商");
+    await click("删除供应商 Supplier B");
     await React.act(async () => document.querySelector<HTMLButtonElement>('[role=dialog] button:last-child')!.click());
     assert.ok(calls.includes("delete:b:2"));
-    assert.ok(calls.filter((c) => c === "get:a").length >= 2);
+    assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 0, "deleting a supplier does not expand another");
+    await click("删除供应商 Supplier A");
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[role=dialog] button:last-child')!.click());
+    assert.ok(calls.includes("delete:a:1"), "collapsed row deletes its own supplier");
     await click("新增供应商");
     await React.act(async () => input("供应商名称", "Supplier C"));
     await click("创建供应商");

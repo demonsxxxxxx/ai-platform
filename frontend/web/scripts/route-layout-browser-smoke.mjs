@@ -392,10 +392,10 @@ const cases = [
   },
   {
     path: "/models",
-    selector: "[data-model-admin-control]",
+    selector: "[data-model-provider-management]",
     name: "models",
     scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
-    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-tab=groups]"],
+    requiredSelectors: ["[data-model-provider-row]", "[data-model-admin-tab=groups]"],
     requiredRequests: ["/api/ai/admin/models", "/api/ai/admin/model-groups"],
   },
 ];
@@ -552,6 +552,8 @@ async function runCase(viewport, scenario) {
     let modelGroupDrawer = null;
     let providerScreenshot = null;
     if (scenario.name === "models") {
+      assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-provider-expanded]').length`), 0, "providers start collapsed");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-providers-collapsed`);
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 供应商 B（合成）"]').click()`);
       await browser.client.waitFor(`document.querySelector('[data-model-provider-row="supplier-b"] [data-provider-expanded]') && document.querySelector('[aria-label="模型 API 地址"]').value.includes('supplier-b')`, "models:provider-b-expanded");
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').click()`);

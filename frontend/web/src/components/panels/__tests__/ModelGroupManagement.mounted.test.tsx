@@ -315,6 +315,7 @@ test("canceling deletion does not advance the edit draft revision", async () => 
 test("model catalog tabs keep unsaved model names mounted", async () => {
   const view = await mount(details, true);
   try {
+    await view.React.act(async () => view.container.querySelector<HTMLElement>('[aria-label="供应商 默认供应商"]')!.click());
     const openEditor = async () => {
       const edit = view.container.querySelector<HTMLElement>('[data-model-admin-edit]');
       assert.ok(edit);
