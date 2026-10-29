@@ -169,6 +169,7 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
+  modelUnavailableReason?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
   composerDraftHandoffKey?: string | null;
@@ -245,6 +246,7 @@ export function ChatView({
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
+  modelUnavailableReason,
   initialComposerDraft,
   initialComposerDraftKey,
   composerDraftHandoffKey,
@@ -951,6 +953,7 @@ export function ChatView({
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
+    modelUnavailableReason,
     acceptedFileTypes: undefined,
     disableSlashCommands: Boolean(agentEmptyProfile),
     tools,

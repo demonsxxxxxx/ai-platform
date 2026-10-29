@@ -62,6 +62,12 @@
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
+## 开场布局与模型就绪状态
+
+普通新对话的欢迎语、快捷任务和输入框沿用同一条 1216px 内容栏，快捷任务与输入框对齐，输入框紧随任务入口，不再靠 `mt-auto` 分离到页面底部。有消息时仍使用原底部 Composer slot，桌面底部留 24px，手机保留安全区；专家开场、历史加载及待答任务表面保持各自原有入口。布局不增加第二个 Composer 或草稿 owner。
+
+模型就绪提示由 ChatAppContent 的当前目录/选择状态派生，随 ChatView → ChatInput 进入工具栏，在模型选择器旁使用 `--theme-danger-text` 显示提示；无可用模型时提示“当前没有可用模型，请联系管理员申请。”，不再在页面底部另放模型错误。未选可用模型时输入和附件草稿仍保留，发送按钮、Enter 与原生 Composer 注册共同阻止发送。聊天输入区不提供模型组配置入口，所有用户都只看到状态提示。加载、读取失败、授权失效和默认模型失效保留各自原因，不自动切组或用第一项回退。服务器模型准入、自动唯一组绑定与冻结 Run 快照未变。
+
 ## 提交、附件与迟到回执
 
 `composerSubmission.ts` 是 native 发送与键盘提交共用的事务：保留文本、模型选项、授权附件和显式 Skill，以及 draft revision、selectedSkillRevision 和首次会话 handoff。仅对应请求 accepted 才清理其内容；后续编辑或清空不被旧回执覆盖。scope revision 隔离账号/会话，旧发送、上传、取消回执不修改新页面。
@@ -123,5 +129,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `route-layout-browser-smoke.mjs` 的 `chat-integration` 场景检查文件抽屉、问答回执、Mermaid、工具/子代理/产物和模型选择器；设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite，分别以 `AI_PLATFORM_ROUTE_LAYOUT_THEME=light`、`dark` 运行，默认覆盖四种宽度。
 
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
+
+`node scripts/composer-trigger-browser-check.mjs` 复用合成聊天 fixture，以真实鼠标按下/抬起事件验证桌面模型按钮、桌面及窄屏设置齿轮的再次点击关闭、重新打开、Escape 和外部点击关闭。独立按钮的开关不再被库的 `outside-press` 抢先处理，其他外部点击仍由库关闭。手机模型选择器保留模态 Drawer 的关闭入口。脚本通过 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite；仅 DOM `.click()` 不覆盖该指针事件时序。
 
 `node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

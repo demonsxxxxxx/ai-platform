@@ -660,6 +660,7 @@ export function SessionListContent({
         <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
           <Button type="text"
             aria-label="设置"
+            data-workbench-menu-trigger
             size="small"
             icon={<Settings aria-hidden="true" size={18} />}
             className="workbench-account-action flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--theme-text-secondary)]"
