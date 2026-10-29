@@ -37,17 +37,62 @@ async def ensure_user(
     tenant_id: str,
     user_id: str | None,
     display_name: str | None = None,
+    auth_source: str = "unknown",
+    external_id: str | None = None,
 ) -> None:
     if not user_id:
         return
     await conn.execute(
         """
-        insert into users(id, tenant_id, display_name)
-        values (%s, %s, %s)
+        insert into users(id, tenant_id, display_name, auth_source, external_id)
+        values (%s, %s, %s, %s, %s)
         on conflict (id) do nothing
         """,
-        (user_id, tenant_id, display_name or user_id),
+        (user_id, tenant_id, display_name or user_id, auth_source, external_id),
     )
+
+
+async def ensure_company_login_user(
+    conn: AsyncConnection, *, tenant_id: str, user_id: str, work_id: str,
+    display_name: str,
+) -> None:
+    """Bind a company identity only within the authenticated tenant."""
+    existing = await conn.execute(
+        "select tenant_id, auth_source, external_id from users where id = %s for update",
+        (user_id,),
+    )
+    row = await existing.fetchone()
+    if row is None:
+        await conn.execute(
+            """
+            insert into users(id, tenant_id, display_name, auth_source, external_id)
+            values (%s, %s, %s, 'company-login', %s)
+            """,
+            (user_id, tenant_id, display_name or user_id, work_id),
+        )
+        return
+    if str(row["tenant_id"]) != tenant_id:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
+    duplicate = await conn.execute(
+        "select 1 from users where tenant_id = %s and auth_source = 'company-login' and external_id = %s and id <> %s",
+        (tenant_id, work_id, user_id),
+    )
+    if await duplicate.fetchone() is not None:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
+    if str(row["auth_source"]) not in {"unknown", "company-login"}:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
+    if row["external_id"] not in {None, work_id}:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
+    updated = await conn.execute(
+        """
+        update users set auth_source = 'company-login', external_id = %s, display_name = %s
+        where id = %s and tenant_id = %s and status = 'active'
+        returning id
+        """,
+        (work_id, display_name, user_id, tenant_id),
+    )
+    if await updated.fetchone() is None:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
 
 
 async def ensure_submission_principal(

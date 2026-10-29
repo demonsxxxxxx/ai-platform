@@ -68,10 +68,14 @@ class Repository:
     async def active_connection(self, _conn, **_kwargs):
         return SimpleNamespace(base_url=self.saved_origin, api_key="synthetic-saved-key")
 
-    async def connection_projection(self, _conn):
+    async def require_provider(self, _conn, *, provider_id):
+        assert provider_id == "legacy"
+        return {"id": provider_id}
+
+    async def connection_projection(self, _conn, *, provider_id="legacy"):
         return {"revision": 1}
 
-    async def admin_models(self, _conn):
+    async def admin_models(self, _conn, *, provider_id="legacy"):
         return []
 
     async def publish_models(self, _conn, **kwargs):
@@ -122,7 +126,7 @@ async def _until_set(event):
 
 def _entry():
     return dict(id="mock-model", value="mock-model", display_name="Mock", enabled=True,
-                is_default=True, order=1, auto_compact_window=200_000, max_output_tokens=2048)
+                order=1, auto_compact_window=200_000, max_output_tokens=2048)
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,12 @@ and any remaining limits. A docs-only change reports document verification.
 A separate issue, copied SHA inventory, review JSON, or deployment placeholder
 is unnecessary. GitHub and CI record the source identity.
 
+Scope each PR to one complete, verifiable responsibility slice, including its
+callers, tests and documentation; do not split by module count. Keep unrelated
+changes separate. A related behavior fix needed for the same outcome may share
+the PR when its impact and regression evidence are explicit; high-risk changes
+still follow the requirements below.
+
 For retirement, complete every field in the template's `Retirement /
 Compatibility Disposition`: superseded production paths, tests/selectors,
 documentation/configuration, retained compatibility surfaces and removal proof,
@@ -69,6 +75,13 @@ Run `git diff --check`, relevant static checks, and affected regression tests.
 Use the [local test runner](local-test-execution.md) for pytest. Choose order
 and breadth by risk; avoid unrelated suites and detached authority checkouts.
 
+Delivery through GitHub APIs or another path that does not execute local Git
+pre-push hooks still requires operator authorization. Before uploading the same
+candidate commit, run the equivalent existing pre-push checks against that exact
+commit (or report the concrete missing dependency/runner failure under the
+existing draft exception); do not call the API path or an unobserved push a
+local hook pass.
+
 When local infrastructure cannot run a required check, record the exact gap
 and available results. An authorized push to a draft PR may obtain CI evidence;
 it does not permit merging or mark the missing local result as passed. Product
@@ -79,9 +92,11 @@ failures remain unresolved until repaired or formally dispositioned.
 Review with the [review skill](../../.agents/skills/ai-platform-review/SKILL.md)
 from a context independent of the change's author; an author's self-review is
 preparation, not review evidence. Keep findings and disposition in the PR.
-Prefer a code fix and regression test to another repository rule. Add a rule
-only for a repeated defect class with an owner and a narrow, reliable detector;
-consolidate overlapping rules.
+For parent acceptance, verify the review's actual consumer scope and any
+unfinished mandatory item before accepting a partial conclusion; a local OK
+cannot stand for whole-PR coverage. Prefer a code fix and regression test to
+another repository rule. Add a rule only for a repeated defect class with an
+owner and a narrow, reliable detector; consolidate overlapping rules.
 Do not publish raw transcripts, private prompts, credentials, or sensitive paths.
 
 ## Evidence

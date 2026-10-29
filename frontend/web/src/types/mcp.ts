@@ -77,6 +77,8 @@ export interface MCPServerToggleResponse {
 // MCP Tool Info (discovered from server)
 export interface MCPToolInfo {
   available?: boolean;
+  /** Optional safe upstream display name; it never identifies or routes a call. */
+  upstream_server?: string | null;
   name: string;
   description: string;
   parameters: MCPToolParamInfo[];

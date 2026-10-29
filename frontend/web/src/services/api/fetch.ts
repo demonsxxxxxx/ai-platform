@@ -4,6 +4,9 @@ import i18n from "../../i18n";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 import { getAccessToken } from "./token";
 import { AuthSessionChangedError, refreshTokens } from "./tokenManager";
+import {
+  hasRecoveredSession, recoverExpiredSession, waitForActiveSessionRecovery,
+} from "./expiredSessionRecovery";
 
 // ============================================
 // 带认证的 fetch 封装
@@ -133,13 +136,67 @@ export function isRefreshableAuthRejection(error: ApiRequestError, forced: boole
   return !forced || REFRESHABLE_AUTH_CODES.has(error.code ?? "");
 }
 
+function isExpiredBrowserSession(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError
+    && error.status === 401
+    && (error.code === "auth_context_missing" || error.code === "auth_context_stale");
+}
+
+async function recoverExpiredSessionAndReplay(
+  input: RequestInfo | URL,
+  requestOptions: RequestInit,
+  replayRequest: Request | undefined,
+  marker: string,
+  signal: AbortSignal | null | undefined,
+  method: string,
+  body: BodyInit | null | undefined,
+  rejectedResponse: Response,
+  requestError: ApiRequestError,
+  fallbackError: unknown,
+): Promise<Response> {
+  const recovery = await recoverExpiredSession(marker, signal ?? undefined);
+  signal?.throwIfAborted();
+  if (recovery.status === "cancelled") {
+    throw new AuthSessionChangedError();
+  }
+  if (recovery.status === "unavailable") {
+    if (getAccessToken() !== marker) throw new AuthSessionChangedError();
+    notifyForcedRelogin();
+    throw fallbackError;
+  }
+  if (getAccessToken() !== recovery.sessionMarker) throw new AuthSessionChangedError();
+  if (!recovery.principalMatchesPrevious) throw new AuthSessionChangedError();
+
+  const rejectedBeforeExecution =
+    rejectedResponse.headers.get("X-Auth-Rejected-Before-Execution") === "true" ||
+    requestError.submissionDisposition === "rejected_before_persist";
+  const streamBody = typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
+  if (streamBody || (method !== "GET" && method !== "HEAD" && !rejectedBeforeExecution)) {
+    // The session recovered, but this request has no proof that replay is safe.
+    throw new AuthSessionChangedError();
+  }
+
+  signal?.throwIfAborted();
+  if (getAccessToken() !== recovery.sessionMarker) throw new AuthSessionChangedError();
+  const retried = await cookieSessionFetch(replayRequest ?? input, requestOptions);
+  if (getAccessToken() !== recovery.sessionMarker) throw new AuthSessionChangedError();
+  const retryForced = retried.headers.get("X-Force-Relogin") === "true";
+  if (retried.status !== 401 && !retryForced) return retried;
+
+  const retryError = await apiRequestErrorFromResponse(retried, retryForced ? 401 : retried.status);
+  signal?.throwIfAborted();
+  if (getAccessToken() !== recovery.sessionMarker) throw new AuthSessionChangedError();
+  notifyForcedRelogin();
+  throw retryError;
+}
+
 /** Refresh only authentication rejections; never replay an ambiguous mutation. */
 export async function cookieSessionRequest(
   input: RequestInfo | URL,
   options: RequestInit = {},
   ordinary401Recovery: "global" | "caller" = "global",
 ): Promise<Response> {
-  const marker = getAccessToken();
+  let marker = getAccessToken();
   const originalRequest = input instanceof Request ? input : null;
   const replayRequest = originalRequest?.clone();
   const signal = options.signal ?? originalRequest?.signal;
@@ -156,21 +213,65 @@ export async function cookieSessionRequest(
   const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const path = new URL(rawUrl, "http://localhost").pathname;
   const authEndpoint = /^\/api\/(?:ai\/)?auth\/(?:login|logout|bootstrap|refresh|ad-login|oauth)(?:\/|$)/.test(path);
+  if (marker && !authEndpoint && ordinary401Recovery === "global") {
+    const recovery = await waitForActiveSessionRecovery(marker, signal ?? undefined);
+    signal?.throwIfAborted();
+    if (recovery) {
+      if (recovery.status !== "recovered" || !recovery.principalMatchesPrevious
+        || recovery.sessionMarker !== getAccessToken()) {
+        throw new AuthSessionChangedError();
+      }
+      marker = recovery.sessionMarker;
+    } else if (marker !== getAccessToken()) {
+      throw new AuthSessionChangedError();
+    }
+  }
   const response = await cookieSessionFetch(input, requestOptions);
   const forced = response.headers.get("X-Force-Relogin") === "true";
   if (response.status === 409 && marker && !authEndpoint && ordinary401Recovery === "global") {
     const conflict = await apiRequestErrorFromResponse(response.clone());
     signal?.throwIfAborted();
-    if (marker === getAccessToken() && conflict.code === "auth_context_stale") {
-      notifyForcedRelogin();
-      throw new ApiRequestError(conflict.message, 401, conflict.code);
+    if ((marker === getAccessToken() || hasRecoveredSession(marker))
+      && conflict.code === "auth_context_stale") {
+      return recoverExpiredSessionAndReplay(
+        input, requestOptions, replayRequest, marker, signal, method, body,
+        response, conflict, new ApiRequestError(conflict.message, 401, conflict.code),
+      );
     }
   }
   if (response.status !== 401 && !forced) return response;
   const error = await apiRequestErrorFromResponse(response, forced ? 401 : response.status);
   signal?.throwIfAborted();
-  if (marker !== getAccessToken()) throw error;
+  if (marker !== getAccessToken()) {
+    if (marker && !authEndpoint && ordinary401Recovery === "global"
+      && hasRecoveredSession(marker) && isRefreshableAuthRejection(error, forced)) {
+      return recoverExpiredSessionAndReplay(
+        input, requestOptions, replayRequest, marker, signal, method, body,
+        response, error, error,
+      );
+    }
+    throw error;
+  }
   if (authEndpoint) throw error;
+  if (
+    ordinary401Recovery === "global" &&
+    response.status === 401 &&
+    isExpiredBrowserSession(error) &&
+    marker
+  ) {
+    return recoverExpiredSessionAndReplay(
+      input,
+      requestOptions,
+      replayRequest,
+      marker,
+      signal,
+      method,
+      body,
+      response,
+      error,
+      error,
+    );
+  }
   const refreshable = isRefreshableAuthRejection(error, forced);
   if (marker && refreshable) {
     try {
@@ -178,6 +279,20 @@ export async function cookieSessionRequest(
     } catch (refreshError) {
       signal?.throwIfAborted();
       if (marker !== getAccessToken()) throw new AuthSessionChangedError();
+      if (ordinary401Recovery === "global" && isExpiredBrowserSession(refreshError)) {
+        return recoverExpiredSessionAndReplay(
+          input,
+          requestOptions,
+          replayRequest,
+          marker,
+          signal,
+          method,
+          body,
+          response,
+          error,
+          refreshError,
+        );
+      }
       if (ordinary401Recovery === "global" && refreshError instanceof ApiRequestError
         && (refreshError.status === 401 || refreshError.status === 403)) {
         notifyForcedRelogin();

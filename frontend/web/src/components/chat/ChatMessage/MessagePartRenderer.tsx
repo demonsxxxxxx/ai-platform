@@ -121,6 +121,7 @@ function MessagePartRendererContent({
         publicDisplayName={publicDisplayName}
         publicOperationId={part.public_operation_id}
         durationMs={part.duration_ms}
+        showDuration={withinWorkDetails}
       />
     );
   }

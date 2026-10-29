@@ -17,7 +17,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.context.infrastructure import provider_epochs
-from app.context.domain.provider_sessions import ProviderSessionConflictError
+from app.context.domain.conversation_authority import make_authority_receipt
+from app.context.domain.provider_sessions import ProviderSessionConflictError, ProviderSessionScope
 from app.routes import runtime_callbacks
 from app.runs.domain.attempt_lifecycle import decide_run_attempt_transition
 
@@ -59,9 +60,19 @@ async def recovery_db():
                 create table sessions(tenant_id text, workspace_id text, user_id text,
                   id text, agent_id text, status text not null default 'active',
                   unique(tenant_id,workspace_id,user_id,id,agent_id));
-                create table runs(tenant_id text, id text, status text,
-                  cancel_requested_at timestamptz, primary key(tenant_id,id));
-                create table run_attempts(tenant_id text, id text, run_id text, status text,
+                create table runs(
+                  tenant_id text, id text, workspace_id text, user_id text, session_id text,
+                  agent_id text, status text, cancel_requested_at timestamptz,
+                  session_generation bigint, context_snapshot_id text, started_at timestamptz,
+                  primary key(tenant_id,id));
+                create table run_context_snapshots(
+                  id text primary key, tenant_id text, workspace_id text, user_id text,
+                  session_id text, run_id text, context_kind text,
+                  conversation_authority_json jsonb);
+                create table messages(
+                  id text primary key, tenant_id text, session_id text, run_id text,
+                  role text, content text, created_at timestamptz);
+                create table run_attempts(tenant_id text, id text, run_id text, ordinal integer, status text,
                   owner_kind text, owner_id text, owner_generation bigint,
                   execution_spec_sha256 text, execution_spec_schema_version text,
                   execution_spec_json jsonb, primary key(tenant_id,id));
@@ -70,7 +81,10 @@ async def recovery_db():
                   expires_at timestamptz, created_at timestamptz default now(), lease_payload_json jsonb);
                 insert into sessions(tenant_id,workspace_id,user_id,id,agent_id)
                   values('tenant','workspace','user','session','agent');
-                insert into runs values('tenant','run','running',null);
+                insert into runs(
+                  tenant_id,id,workspace_id,user_id,session_id,agent_id,status,
+                  cancel_requested_at,session_generation,context_snapshot_id,started_at
+                ) values('tenant','run','workspace','user','session','agent','running',null,2,'snapshot',now());
             """)
             source = (
                 Path(__file__).resolve().parents[1] / "app/schema.sql"
@@ -97,9 +111,22 @@ async def recovery_db():
                 "source_sha256": "a" * 64,
                 "current_message_id": "current-user",
             }
+            authority = make_authority_receipt(
+                scope={"tenant_id": "tenant", "workspace_id": "workspace", "user_id": "user",
+                       "session_id": "session", "agent_id": "agent"},
+                through_session_generation=2, message_count=0,
+                source_sha256="a" * 64, current_message_id="current-user",
+            )
+            await conn.execute(
+                "insert into run_context_snapshots values('snapshot','tenant','workspace','user','session','run','executor',%s)",
+                (Jsonb(authority),),
+            )
+            await conn.execute(
+                "insert into messages values('current-user','tenant','session','run','user','CURRENT',now())"
+            )
             await conn.execute(
                 """
-                insert into run_attempts values('tenant','attempt','run','running','queue_worker',
+                insert into run_attempts values('tenant','attempt','run',1,'running','queue_worker',
                   'worker',2,%s,'ai-platform.execution-spec.v2',%s);
             """,
                 ("d" * 64, Jsonb({"context_pack": {"conversation_context": context}})),
@@ -163,6 +190,126 @@ async def request_cancel(conn):
     )
 
 
+async def test_structured_bytes_are_statistics_and_ready_epoch_resumes_after_commit(recovery_db):
+    payload = "x" * 100_000
+    main_entries = [
+        {"type": "assistant", "uuid": f"main-{index}", "content": payload}
+        for index in range(50)
+    ]
+    child_entries = [
+        {"type": "assistant", "uuid": f"child-{index}", "content": payload}
+        for index in range(90)
+    ]
+    async with recovery_db() as conn:
+        await operation(conn, "append", entries=main_entries, expected_sequence=3)
+        child_request = dict(
+            entries=child_entries, expected_sequence=53, subpath="subagents/large"
+        )
+        await operation(conn, "append", **child_request)
+        retry = await operation(conn, "append", **child_request)
+        assert retry["next_sequence"] == 143
+        with pytest.raises(ProviderSessionConflictError, match="append_conflict"):
+            await operation(
+                conn,
+                "append",
+                entries=[{**child_entries[0], "content": "changed"}] + child_entries[1:],
+                expected_sequence=53,
+                subpath="subagents/large",
+            )
+        loaded = await operation(conn, "load")
+        assert loaded["entries"] == INITIAL + main_entries
+        listed = await operation(conn, "list_subkeys", include_child_entries=True)
+        assert listed["child_entries"] == {"subagents/large": child_entries}
+        assert listed["next_sequence"] == 143
+        stats = await (await conn.execute(
+            "select structured_bytes, transcript_bytes from provider_session_epochs"
+        )).fetchone()
+        assert stats["structured_bytes"] > 8 * 1024 * 1024
+        assert stats["transcript_bytes"] < 64 * 1024 * 1024
+
+        assistant_id = "assistant-large"
+        await conn.execute(
+            "insert into messages values(%s,'tenant','session','run','assistant',%s,"
+            "now()+interval '1 microsecond')",
+            (assistant_id, "DONE"),
+        )
+        await provider_epochs.commit_provider_turn(
+            conn,
+            tenant_id="tenant",
+            run_id="run",
+            attempt_id="attempt",
+            assistant_message_id=assistant_id,
+            final_sequence=142,
+        )
+        await conn.execute("update runs set status='succeeded' where id='run'")
+        await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="run")
+        coverage = await (await conn.execute(
+            "select coverage_source_sha256, coverage_message_count, state "
+            "from provider_session_epochs where id='epoch'"
+        )).fetchone()
+        assert coverage["state"] == "ready" and coverage["coverage_message_count"] == 2
+
+        await conn.execute(
+            "insert into runs(tenant_id,id,workspace_id,user_id,session_id,agent_id,status,"
+            "cancel_requested_at,session_generation,context_snapshot_id,started_at) "
+            "values('tenant','run-next','workspace','user','session','agent','running',null,3,'snapshot-next',now())"
+        )
+        next_scope = ProviderSessionScope("tenant", "workspace", "user", "session", "agent")
+        await provider_epochs.claim_provider_lineage(conn, scope=next_scope, run_id="run-next")
+        next_context = {
+            "source_sha256": coverage["coverage_source_sha256"],
+            "message_count": coverage["coverage_message_count"],
+            "current_message_id": "next-user",
+            "messages": [],
+            "selected_message_count": 0,
+            "selected_turn_count": 0,
+        }
+        resumed = await provider_epochs.prepare_provider_epoch(
+            conn, scope=next_scope, run_id="run-next", conversation_context=next_context
+        )
+        assert resumed["execution_mode"] == "native_resume"
+        assert resumed["provider_epoch_id"] == "epoch"
+        assert resumed["provider_session_id"] == PROVIDER_ID
+        assert resumed["messages"] == []
+        await conn.execute("update runs set status='failed' where id='run-next'")
+        await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="run-next")
+
+
+async def test_native_entries_preserve_nul_literal_unicode_and_uuid_across_views(recovery_db):
+    main = {
+        "type": "assistant", "uuid": "  main-original-uuid  ",
+        "stdout": "out\x00out", "unknown": {"literal": r"\u0000", "unicode": "嵌套🌏"},
+        "nested": ["real\x00nul", r"\u0000", {"科学": -0.0, "large": 10**30}],
+    }
+    child = {
+        "type": "assistant", "uuid": "  child-original-uuid  ",
+        "stdout": ["out\x00out", "out\x00out"],
+        "unknown": {"nested": ["Unicode-子", r"\u0000"]},
+    }
+    async with recovery_db() as conn:
+        await operation(conn, "append", entries=[main], expected_sequence=3)
+        await operation(conn, "append", entries=[child], expected_sequence=4, subpath="subagents/nul")
+        assert (await operation(conn, "append", entries=[main], expected_sequence=3))["next_sequence"] == 5
+        with pytest.raises(ProviderSessionConflictError, match="append_conflict"):
+            await operation(
+                conn, "append", entries=[{**main, "unknown": {"changed": True}}],
+                expected_sequence=3,
+            )
+        rows = await (await conn.execute(
+            "select sequence, entry_json, entry_canonical_json::text as canonical "
+            "from provider_session_entries where sequence in (3,4) order by sequence"
+        )).fetchall()
+        assert all(row["entry_json"] is None for row in rows)
+        assert json.loads(rows[0]["canonical"]) == main
+        assert json.loads(rows[1]["canonical"]) == child
+        assert "\\u0000" in rows[0]["canonical"]
+        assert "\\\\u0000" in rows[0]["canonical"]
+        assert (await operation(conn, "load"))["entries"][-1] == main
+        listed = await operation(conn, "list_subkeys", include_child_entries=True)
+        assert listed["child_entries"] == {"subagents/nul": [child]}
+        assert (await operation(conn, "load", subpath="subagents/nul"))["entries"] == [child]
+
+
 async def test_native_history_and_child_paths_have_complete_receipt_coverage(
     recovery_db,
 ):
@@ -192,7 +339,7 @@ async def test_native_history_and_child_paths_have_complete_receipt_coverage(
 
 
 @pytest.mark.parametrize("value", [-0.0, 0.0, 1.0, 1e-7, 1e16, -1e21, 1e308, 5e-324])
-async def test_original_numeric_representation_survives_jsonb_and_ack_retry(recovery_db, value):
+async def test_original_numeric_representation_survives_canonical_json_and_ack_retry(recovery_db, value):
     entries = [{"type": "assistant", "uuid": "numeric", "message": {
         "role": "assistant", "content": [{"type": "tool_use", "id": "tool", "name": "synthetic",
             "input": {"numbers": [value, 1000000000000000000001], "flag": True}}],
@@ -213,12 +360,12 @@ async def test_original_numeric_representation_survives_jsonb_and_ack_retry(reco
     (0.0, False), (1.0, False), (1e-7, False), (5e-324, False),
     (1000000000000000000001, False),
 ])
-async def test_legacy_numeric_bytes_are_verified_or_explicitly_unavailable(recovery_db, value, unavailable):
+async def test_legacy_jsonb_numeric_bytes_are_verified_or_explicitly_unavailable(recovery_db, value, unavailable):
     entry = {"type": "assistant", "uuid": "legacy-numeric", "value": value}
     async with recovery_db() as conn:
         await operation(conn, "append", entries=[entry], expected_sequence=3)
-        # An old writer stored only JSONB and the original append receipt.
-        await conn.execute("update provider_session_entries set entry_canonical_json=null")
+        # Simulate a legacy JSONB-only writer without violating the representation check.
+        await conn.execute("update provider_session_entries set entry_json=entry_canonical_json::jsonb, entry_canonical_json=null")
         for action in ("load", "list_subkeys"):
             if unavailable:
                 with pytest.raises(ProviderSessionConflictError, match="provider_session_integrity_unavailable"):
@@ -235,9 +382,8 @@ async def test_legacy_numeric_bytes_are_verified_or_explicitly_unavailable(recov
     "update provider_session_entries set entry_canonical_json='[]'::json where sequence=2",
     "update provider_session_entries set entry_canonical_json='null'::json where sequence=2",
     "update provider_session_entries set entry_canonical_json=' {\"type\":\"assistant\"} '::json where sequence=2",
-    "update provider_session_entries set entry_canonical_json=jsonb_set(entry_json,'{message,content}','\"CHANGED\"')::json, entry_json=jsonb_set(entry_json,'{message,content}','\"CHANGED\"') where sequence=2",
 ])
-async def test_canonical_original_must_match_jsonb_shape_and_receipt(recovery_db, change):
+async def test_canonical_original_is_authoritative_and_canonical_tampering_fails(recovery_db, change):
     async with recovery_db() as conn:
         await conn.execute(change)
         for action in ("load", "list_subkeys"):
@@ -245,7 +391,13 @@ async def test_canonical_original_must_match_jsonb_shape_and_receipt(recovery_db
                 await operation(conn, action)
 
 
-async def test_consistently_changed_original_and_jsonb_still_fail_receipt(recovery_db):
+async def test_jsonb_drift_does_not_override_canonical_original(recovery_db):
+    async with recovery_db() as conn:
+        await conn.execute("update provider_session_entries set entry_json=jsonb_set(entry_canonical_json::jsonb,'{message,content}','\"CHANGED\"') where sequence=2")
+        assert (await operation(conn, "load"))["entries"] == INITIAL
+
+
+async def test_consistently_changed_canonical_and_jsonb_still_fail_receipt(recovery_db):
     changed = json.dumps({**INITIAL[1], "message": {"role": "assistant", "content": "CHANGED"}},
                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     async with recovery_db() as conn:
@@ -255,7 +407,7 @@ async def test_consistently_changed_original_and_jsonb_still_fail_receipt(recove
             await operation(conn, "load")
 
 
-async def test_invalid_original_json_is_rejected_without_poisoning_valid_history(recovery_db):
+async def test_invalid_canonical_json_is_rejected_without_poisoning_valid_history(recovery_db):
     async with recovery_db() as conn:
         with pytest.raises(psycopg.errors.InvalidTextRepresentation):
             async with conn.transaction():
@@ -263,27 +415,89 @@ async def test_invalid_original_json_is_rejected_without_poisoning_valid_history
         assert (await operation(conn, "load"))["entries"] == INITIAL
 
 
-async def test_representation_migration_preserves_legacy_rows_without_backfill(recovery_db):
+async def test_representation_migration_preserves_mixed_rows_without_backfill(recovery_db):
+    new_entry = {"type": "assistant", "uuid": "canonical-only", "content": "NEW"}
     async with recovery_db() as conn:
+        canonical_rows = await (await conn.execute(
+            "select sequence, entry_canonical_json::text as canonical "
+            "from provider_session_entries order by sequence"
+        )).fetchall()
+        receipt_before = await (await conn.execute(
+            "select expected_sequence, batch_sha256, entry_count, last_sequence "
+            "from provider_session_append_receipts order by expected_sequence"
+        )).fetchall()
+        stats_before = await (await conn.execute(
+            "select entry_count, next_sequence, transcript_bytes, structured_bytes "
+            "from provider_session_epochs where id='epoch'"
+        )).fetchone()
+        # Recreate the old writer state: row 1 is JSONB-only, row 2 has both
+        # representations, and entry_json is still NOT NULL before cutover.
+        await conn.execute(
+            "update provider_session_entries set entry_json=entry_canonical_json::jsonb "
+            "where entry_canonical_json is not null"
+        )
+        await conn.execute(
+            "update provider_session_entries set entry_canonical_json=null where sequence=1"
+        )
+        await conn.execute("alter table provider_session_entries drop constraint if exists chk_provider_entry_representation")
+        await conn.execute("alter table provider_session_entries alter column entry_json set not null")
         await conn.execute("alter table provider_session_entries drop column entry_canonical_json")
         source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
-        migration = next(line for line in source.splitlines() if line.startswith(
-            "alter table provider_session_entries add column if not exists entry_canonical_json"))
+        start = source.index("alter table provider_session_entries add column if not exists entry_canonical_json")
+        end = source.index("alter table provider_session_entries add column if not exists image_references", start)
+        migration = source[start:end]
         await conn.execute(migration)
         await conn.execute(migration)
-        rows = await (await conn.execute(
-            "select entry_canonical_json from provider_session_entries order by sequence"
+        await conn.execute(
+            "update provider_session_entries set entry_canonical_json=%s::json where sequence=2",
+            (canonical_rows[1]["canonical"],),
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with conn.transaction():
+                await conn.execute(
+                    "update provider_session_entries set entry_json=null, entry_canonical_json=null "
+                    "where sequence=1"
+                )
+        receipt_migrated = await (await conn.execute(
+            "select expected_sequence, batch_sha256, entry_count, last_sequence "
+            "from provider_session_append_receipts order by expected_sequence"
         )).fetchall()
-        assert rows == [{"entry_canonical_json": None}, {"entry_canonical_json": None}]
-        assert (await operation(conn, "load"))["entries"] == INITIAL
-        assert (await operation(conn, "list_subkeys"))["next_sequence"] == 3
+        stats_migrated = await (await conn.execute(
+            "select entry_count, next_sequence, transcript_bytes, structured_bytes "
+            "from provider_session_epochs where id='epoch'"
+        )).fetchone()
+        assert receipt_migrated == receipt_before
+        assert stats_migrated == stats_before
+        await operation(conn, "append", entries=[new_entry], expected_sequence=3)
+        rows = await (await conn.execute(
+            "select sequence, entry_json, entry_canonical_json::text as canonical "
+            "from provider_session_entries order by sequence"
+        )).fetchall()
+        assert rows[0]["entry_json"] is not None and rows[0]["canonical"] is None
+        assert rows[1]["entry_json"] is not None and json.loads(rows[1]["canonical"]) == INITIAL[1]
+        assert rows[2]["entry_json"] is None and json.loads(rows[2]["canonical"]) == new_entry
+        receipt_after = await (await conn.execute(
+            "select expected_sequence, batch_sha256, entry_count, last_sequence "
+            "from provider_session_append_receipts order by expected_sequence"
+        )).fetchall()
+        stats_after = await (await conn.execute(
+            "select entry_count, next_sequence, transcript_bytes, structured_bytes "
+            "from provider_session_epochs where id='epoch'"
+        )).fetchone()
+        assert receipt_after[:len(receipt_before)] == receipt_before
+        assert stats_after["entry_count"] == stats_before["entry_count"] + 1
+        assert stats_after["next_sequence"] == stats_before["next_sequence"] + 1
+        assert stats_after["transcript_bytes"] > stats_before["transcript_bytes"]
+        assert stats_after["structured_bytes"] > stats_before["structured_bytes"]
+        assert (await operation(conn, "load"))["entries"] == INITIAL + [new_entry]
+        assert (await operation(conn, "list_subkeys"))["next_sequence"] == 4
 
 
 @pytest.mark.parametrize(
     "corrupt",
     [
         "delete from provider_session_entries where sequence=2",
-        "update provider_session_entries set entry_json=jsonb_set(entry_json,'{message,content}','\"CHANGED\"') where sequence=2",
+        "update provider_session_entries set entry_canonical_json=jsonb_set(entry_canonical_json::jsonb,'{message,content}','\"CHANGED\"')::json where sequence=2",
         "update provider_session_entries set sequence=3 where sequence=2",
         "update provider_session_epochs set next_sequence=2",
         "update provider_session_epochs set entry_count=1",
@@ -554,7 +768,7 @@ async def test_opted_in_empty_child_read_view_is_complete(recovery_db):
 @pytest.mark.parametrize("corrupt,error", [
     ("delete from provider_session_entries where sequence=3",
      "provider_session_integrity_mismatch"),
-    ("update provider_session_entries set entry_json='{}'::jsonb where sequence=3",
+    ("update provider_session_entries set entry_canonical_json='{}'::json where sequence=3",
      "provider_session_integrity_mismatch"),
     ("update provider_session_entries set subpath='subagents/changed' where sequence=3",
      "provider_session_integrity_mismatch"),
@@ -745,12 +959,12 @@ async def test_real_pg_sequence_change_before_child_view_is_not_adopted(
 
 
 @pytest.mark.parametrize("schema_version", [
-    "ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3",
+    "ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3", "ai-platform.execution-spec.v4",
 ])
-async def test_real_pg_callback_load_binds_both_frozen_spec_versions(
+async def test_real_pg_callback_load_binds_all_model_spec_versions(
     recovery_db, schema_version
 ):
-    """The callback authority accepts a v3 attempt, not only the frozen v2 one."""
+    """Grouped v4 and historical attempts retain callback authority."""
 
     async with recovery_db() as conn:
         await conn.execute(

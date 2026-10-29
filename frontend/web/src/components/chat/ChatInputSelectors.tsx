@@ -33,7 +33,8 @@ export interface ChatInputSelectorsProps {
   // Model selector
   availableModels?: ModelOption[];
   currentModelId?: string;
-  onSelectModel?: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
 }
 
 export function ChatInputSelectors({
@@ -53,6 +54,7 @@ export function ChatInputSelectors({
   enableSkills = true,
   availableModels = [],
   currentModelId,
+  modelSelectionMode = "explicit",
   onSelectModel,
 }: ChatInputSelectorsProps) {
   return (
@@ -63,7 +65,6 @@ export function ChatInputSelectors({
             tools={tools}
             onToggleTool={onToggleTool}
             onToggleCategory={onToggleCategory}
-            onToggleAll={onToggleAll}
             enabledCount={enabledToolsCount}
             totalCount={totalToolsCount}
             isOpen={activePanel === "tools"}
@@ -93,7 +94,7 @@ export function ChatInputSelectors({
             />
           </LibreChatSelectorModal>
         )}
-      {onSelectModel && availableModels.length > 0 && (
+      {onSelectModel && (
         <LibreChatSelectorModal panel="model">
           <ComposerModelPicker
             models={availableModels}
@@ -101,6 +102,7 @@ export function ChatInputSelectors({
             isOpen={activePanel === "model"}
             onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
             onSelectModel={onSelectModel}
+            selectionMode={modelSelectionMode}
             searchSeed={
               commandSearchSeed?.panel === "model"
                 ? commandSearchSeed.query

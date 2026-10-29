@@ -168,14 +168,6 @@ def _stub_terminal_provider_lineage(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def default_run_model_inheritance(monkeypatch):
-    async def inherit_run_model(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(runs_module, "inherit_run_model", inherit_run_model)
-
-
-@pytest.fixture(autouse=True)
 def default_run_model_binding(monkeypatch):
     async def resolve_model(*_args, **_kwargs):
         return SimpleNamespace(
@@ -189,6 +181,10 @@ def default_run_model_binding(monkeypatch):
     async def bind_model(*_args, **_kwargs):
         return None
 
+    async def session_for_action(_conn, *, tenant_id, session_id):
+        return {"id": session_id, "tenant_id": tenant_id, "user_id": "user-a", "workspace_id": "default", "status": "active", "purpose": "conversation"}
+
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.get_session_for_action", session_for_action)
     monkeypatch.setattr(runs_module, "resolve_chat_model_selection", resolve_model)
     monkeypatch.setattr(runs_module, "bind_run_model", bind_model)
 
@@ -4581,7 +4577,13 @@ def test_resolve_run_selector_requires_explicit_skill_for_named_agent():
 
 
 @pytest.mark.asyncio
-async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch):
+@pytest.mark.parametrize(("session_id", "purpose", "group_type", "allowed"), [
+    (None, None, "ordinary_default", True),
+    ("existing", "conversation", "ordinary_default", True),
+    ("existing", "conversation", "business", True),
+    ("existing", "builder_test", "ordinary_default", True),
+])
+async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch, session_id, purpose, group_type, allowed):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -4606,9 +4608,21 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         calls.append(("run_input_model", kwargs["input_json"]["model_id"], kwargs["input_json"]["model_value"]))
         return kwargs["run_id"]
 
-    async def resolve_model(conn, *, selection, user_id):
+    async def session_for_action(_conn, **_kwargs):
+        return {"user_id": "phaseb-smoke", "workspace_id": "default", "status": "active", "purpose": purpose}
+
+    async def resolve_model(conn, *, selection, user_id, usage_scene, **_kwargs):
+        from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
         calls.append(("resolve_model", conn, selection))
+        fields = dict(group_id="group-a", group_code="default" if group_type == "ordinary_default" else "alpha",
+                      group_type=group_type, group_revision=1, selection_mode="auto", usage_scene=usage_scene,
+                      policy_version="model-groups.v1")
+        try:
+            validate_model_group_snapshot(**fields)
+        except ValueError:
+            raise ValueError("group_not_available")
         return SimpleNamespace(
+            **fields,
             model_id="catalog-default",
             model_value="provider/default",
             connection_revision=9,
@@ -4637,6 +4651,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', fake_ensure_user)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
+    monkeypatch.setattr('app.conversations.infrastructure.postgres.get_session_for_action', session_for_action)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
     monkeypatch.setattr(runs_module, "resolve_chat_model_selection", resolve_model)
     monkeypatch.setattr(runs_module, "bind_run_model", bind_model)
@@ -4648,8 +4663,10 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
 
-    response = await create_run(
+    async def submit():
+        return await create_run(
         CreateRunRequest(
+            session_id=session_id,
             tenant_id="forged-tenant",
             workspace_id="default",
             user_id="forged-user",
@@ -4666,6 +4683,13 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         ),
     )
 
+    if not allowed:
+        with pytest.raises(HTTPException) as denied:
+            await submit()
+        assert denied.value.status_code == 403
+        assert [call[0] for call in calls] == ["resolve_model"]
+        return
+    response = await submit()
     assert response.run_id.startswith("run_")
     assert calls[0][0] == "resolve_model"
     assert calls[1:3] == [
@@ -4687,6 +4711,13 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "connection_revision": 9,
         "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
+        "group_id": "group-a",
+        "group_code": "default" if group_type == "ordinary_default" else "alpha",
+        "group_type": group_type,
+        "group_revision": 1,
+        "selection_mode": "auto",
+        "usage_scene": "expert" if purpose == "conversation" else "skill",
+        "policy_version": "model-groups.v1",
     }
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
@@ -6546,7 +6577,8 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
 
 
 @pytest.mark.asyncio
-async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v2(monkeypatch):
+@pytest.mark.parametrize("default_expert", [False, True])
+async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v2(monkeypatch, default_expert):
     calls = {}
     source_release_decision = {
         "schema_version": "ai-platform.skill-release-decision.v1",
@@ -6594,21 +6626,12 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "skill_manifests": _repo_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
+            **({"model_group_id": "group-current", "model_group_code": "default", "model_group_type": "ordinary_default",
+                "model_group_revision": 1, "model_selection_mode": "explicit", "usage_scene": "expert", "model_policy_version": "model-groups.v1"} if default_expert else {}),
         }
 
-    async def fake_inherit_run_model(
-        conn,
-        *,
-        tenant_id,
-        source_run_id,
-        child_run_id,
-    ):
-        calls["model_inheritance"] = {
-            "conn": conn,
-            "tenant_id": tenant_id,
-            "source_run_id": source_run_id,
-            "child_run_id": child_run_id,
-        }
+    async def fake_replace_run_model(conn, **kwargs):
+        calls["model_reauthorization"] = {"conn": conn, **kwargs}
 
     async def fake_update_run_input_execution_snapshot(
         conn,
@@ -6653,14 +6676,17 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     async def fail_skill_manifest_pins(*args, **kwargs):
         raise AssertionError("replay must not rematerialize the current release")
 
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
-    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
-    # Model access is owned by test_run_control_routes; this case pins release replay.
-    async def _model_still_available(_conn, **_kwargs):
-        return False
+    async def resolve_current_model(_conn, *, selection, usage_scene, **_kwargs):
+        from app.execution.application.model_selection import RunModelSelection
+        if default_expert:
+            assert usage_scene == "expert" and selection["group_id"] == "group-current"
+        return RunModelSelection(selection["id"], selection["value"], 9, 200000, 2048,
+                                 "group-current", "default" if default_expert else "current", "ordinary_default" if default_expert else "business", 2, "explicit", "expert", "model-groups.v1")
 
-    monkeypatch.setattr("app.routes.runs.model_access_excludes_user", _model_still_available)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.execution.api.resolve_chat_model_selection", resolve_current_model)
+    monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
+    monkeypatch.setattr("app.routes.runs.replace_run_model_snapshot", fake_replace_run_model)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
@@ -6674,12 +6700,11 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
-    assert calls["model_inheritance"] == {
-        "conn": calls["copy_conn"],
-        "tenant_id": "tenant-a",
-        "source_run_id": "run_source",
-        "child_run_id": "run_copy",
-    }
+    assert calls["model_reauthorization"]["conn"] is calls["copy_conn"]
+    assert calls["model_reauthorization"]["run_id"] == "run_copy"
+    assert calls["model_reauthorization"]["model_id"] == "model-catalog-copy"
+    assert calls["model_reauthorization"]["group_id"] == "group-current"
+    assert calls["queue"]["model_group_id"] == "group-current"
     assert calls["update"]["execution_snapshot"] == _owner_runs_infrastructure_replay_postgres.copied_run_execution_snapshot(calls["queue"])
     assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
     assert calls["update"]["execution_snapshot"]["skill_manifests"] == _owner_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs(

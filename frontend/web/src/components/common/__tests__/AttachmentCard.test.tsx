@@ -75,3 +75,16 @@ test("AttachmentCard exposes queued and capacity-waiting upload states", () => {
   assert.doesNotMatch(queued, /role="progressbar"/);
   assert.doesNotMatch(retrying, /role="progressbar"/);
 });
+
+test("compact composer files expose full long names and visible remove actions without changing upload state", () => {
+  const name = "ECM SDK说明文档v5.17_企业集成开发指南与接口参考_最终修订版.pdf";
+  const markup = renderToStaticMarkup(React.createElement(AttachmentCard, {
+    attachment: createImageAttachment({ name, type: "document", mimeType: "application/pdf", size: 1992294 }),
+    variant: "editable", size: "compact", onRemove: () => {},
+  }));
+  assert.match(markup, /composer-attachment-card/);
+  assert.ok(markup.includes(`title="${name}"`));
+  assert.match(markup, /1.9 MB/);
+  assert.doesNotMatch(markup, /sm:opacity-0|theme-info/);
+  assert.ok(markup.includes(`aria-label="移除附件 ${name}"`));
+});

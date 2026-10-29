@@ -83,7 +83,6 @@ test("ToolSelector preserves its mounted modal across search and selection updat
                   ));
                 },
                 onToggleCategory: () => {},
-                onToggleAll: () => {},
                 ...(controlled ? { isOpen: open, onOpenChange: setOpen } : {}),
               }),
             ),
@@ -101,6 +100,10 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           const input = modal?.querySelector("input");
           assert.ok(modal);
           assert.ok(input);
+          assert.ok(modal.querySelector('[data-tool-selector-header]')?.contains(input));
+          const actions = [...modal.querySelectorAll('button')].map((button) => button.textContent?.trim());
+          for (const label of ["全选", "取消全选", "添加"]) assert.equal(actions.includes(label), false);
+          assert.equal(modal.querySelectorAll('[data-tool-selector-list]').length, 1);
           input.focus();
           for (const value of ["a", "al", "alp"]) {
             await act(async () => { changeInput(input, value); });
@@ -155,6 +158,92 @@ test("ToolSelector preserves its mounted modal across search and selection updat
         }
         assert.equal(document.body.style.overflow, "");
       });
+    }
+  } finally {
+    dom.close();
+  }
+});
+
+test("group controls preserve disabled tools, mixed selection, and connection identity", async () => {
+  const dom = installSelectTestDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  try {
+    const [
+      { act, createElement, useMemo, useState },
+      { createLobeTestRoot },
+      { MemoryRouter },
+      { ToolSelector },
+      { ChatMcpCatalogContext },
+    ] = await Promise.all([
+      import("react"),
+      import("../../common/__tests__/lobeUiTestRoot"),
+      import("react-router-dom"),
+      import("../ToolSelector"),
+      import("../../../hooks/useTools"),
+    ]);
+    const initialTools: ToolState[] = [
+      { name: "a::enabled", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], enabled: true },
+      { name: "a::mixed", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], enabled: false },
+      { name: "a::disabled", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], system_disabled: true, enabled: false },
+      { name: "b::same-label", description: "", category: "mcp", server: "gateway-b", upstream_server: "same-project", parameters: [], enabled: false },
+      { name: "a::unknown", description: "", category: "mcp", server: "gateway-a", upstream_server: null, parameters: [], enabled: false },
+    ];
+    const root = await createLobeTestRoot(container);
+    function Harness() {
+      const [tools, setTools] = useState(initialTools);
+      const contextValue = useMemo(() => ({
+        catalogState: { status: "ready" as const, unavailable: [] },
+      }), []);
+      return createElement(
+        MemoryRouter,
+        null,
+        createElement(
+          ChatMcpCatalogContext.Provider,
+          { value: contextValue },
+          createElement(ToolSelector, {
+            tools,
+            enabledCount: tools.filter((tool) => tool.enabled).length,
+            totalCount: tools.length,
+            isOpen: true,
+            onOpenChange: () => {},
+            onToggleTool: (name: string) => setTools((previous) => previous.map((tool) =>
+              tool.name === name ? { ...tool, enabled: !tool.enabled } : tool,
+            )),
+            onToggleCategory: () => {},
+          }),
+        ),
+      );
+    }
+    try {
+      await act(async () => { root.render(createElement(Harness)); });
+      const groups = Array.from(document.querySelectorAll<HTMLElement>("[data-composer-mcp-group]"));
+      assert.equal(groups.length, 3);
+      assert.equal(new Set(groups.map((group) => group.dataset.composerMcpGroup)).size, 3);
+      const sameProjectGroup = groups.find((group) => group.textContent?.includes("same-project"));
+      assert.ok(sameProjectGroup);
+      const groupToggle = sameProjectGroup.querySelector<HTMLElement>(
+        '[aria-label="切换工具来源 same-project"]',
+      );
+      assert.ok(groupToggle);
+      await act(async () => { groupToggle.click(); });
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::enabled"]')?.getAttribute("data-composer-mcp-state"), "enabled");
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::mixed"]')?.getAttribute("data-composer-mcp-state"), "enabled");
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::disabled"]')?.getAttribute("data-composer-mcp-state"), "denied");
+      assert.equal(document.querySelector('[data-composer-mcp-row="b::same-label"]')?.getAttribute("data-composer-mcp-state"), "disabled");
+
+      const unknownGroup = groups.find((group) => group.textContent?.includes("未提供服务来源"));
+      assert.ok(unknownGroup);
+      const collapseUnknown = unknownGroup.querySelector<HTMLButtonElement>("button[aria-expanded]");
+      assert.ok(collapseUnknown);
+      await act(async () => { collapseUnknown.click(); });
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::unknown"]'), null);
+      const input = document.querySelector<HTMLInputElement>("[data-composer-mcp-selector] input");
+      assert.ok(input);
+      await act(async () => { changeInput(input, "未提供服务来源"); });
+      assert.ok(document.querySelector('[data-composer-mcp-row="a::unknown"]'));
+    } finally {
+      await act(async () => { root.unmount(); });
     }
   } finally {
     dom.close();

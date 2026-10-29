@@ -5,6 +5,7 @@ import {
   Boxes,
   ChevronDown,
   Lock,
+  CircleAlert,
   Paperclip,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -20,6 +21,7 @@ export interface ChatInputToolbarProps {
   isLoading: boolean;
   canStop: boolean;
   canSubmit: boolean;
+  modelUnavailableReason?: string;
   hasUploadingAttachment: boolean;
   enabledToolsCount: number;
   totalToolsCount: number;
@@ -27,7 +29,8 @@ export interface ChatInputToolbarProps {
   totalSkillsCount: number;
   availableModels: ModelOption[];
   currentModelId?: string;
-  onSelectModel?: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  onSelectModel?: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
   showModelSelector?: boolean;
   agentOptions?: Record<string, AgentOption>;
   agentOptionValues?: Record<string, boolean | string | number>;
@@ -52,6 +55,7 @@ export function ChatInputToolbar({
   isLoading,
   canStop,
   canSubmit,
+  modelUnavailableReason,
   hasUploadingAttachment,
   enabledToolsCount,
   totalToolsCount,
@@ -98,9 +102,9 @@ export function ChatInputToolbar({
   );
 
   return (
-    <ComposerToolbar>
-      <div className="min-w-0 flex-1">
-        {showModelSelector && onSelectModel && availableModels.length > 0 ? (
+    <ComposerToolbar className="flex-wrap">
+      <div className="flex min-w-0 basis-full flex-wrap items-center gap-2 sm:basis-auto sm:flex-1">
+        {showModelSelector && onSelectModel ? (
           <Button type={activePanel === "model" ? "primary" : "default"} size="large"
             htmlType="button"
             data-composer-model-trigger
@@ -117,8 +121,7 @@ export function ChatInputToolbar({
             aria-expanded={activePanel === "model"}
           >
             <span className="truncate">
-              {currentModel?.label ??
-                t("composerCommand.modelSelector.title", "选择模型")}
+              {currentModel?.label ?? (modelUnavailableReason ? "暂无可用模型" : t("composerCommand.modelSelector.title", "选择模型"))}
             </span>
             <ChevronDown
               size={15}
@@ -128,9 +131,13 @@ export function ChatInputToolbar({
             />
           </Button>
         ) : null}
+        {modelUnavailableReason ? <div role="status" data-composer-model-status className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-[var(--theme-danger-text)]">
+          <CircleAlert aria-hidden="true" size={14} className="shrink-0" />
+          <span>{modelUnavailableReason}</span>
+        </div> : null}
       </div>
 
-      <ComposerActions>
+      <ComposerActions className="ml-auto">
         <input
           ref={fileInputRef}
           type="file"

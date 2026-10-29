@@ -12,7 +12,7 @@ import {
   Search,
   UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { toast } from "@lobehub/ui/base-ui";
 
 import type { SessionInputFile } from "../../services/api";
@@ -28,6 +28,7 @@ import {
   type ProfileDriveSourceId,
 } from "../../services/api/profileDrive";
 import { sessionApi } from "../../services/api/session";
+import { ProfileDriveAuthenticationDialog } from "../profile-drive/ProfileDriveAuthenticationDialog";
 import { formatFileSize, getFileExtension } from "../documents/utils";
 import {
   PROFILE_DRIVE_DRAG_TYPE,
@@ -94,6 +95,7 @@ interface ProfileDriveWorkspaceBrowserProps {
 interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserProps {
   sourceId: ProfileDriveSourceId;
   title: string;
+  fallbackFocusRef: RefObject<HTMLButtonElement | null>;
   onControlsChange: (
     sourceId: ProfileDriveSourceId,
     controls: ProfileDriveSourceControls,
@@ -155,6 +157,7 @@ function ProfileDriveSourceBrowser({
   attachments,
   onRemoveAttachment,
   onControlsChange,
+  fallbackFocusRef,
 }: ProfileDriveSourceBrowserProps) {
   const [connected, setConnected] = useState<boolean | null>(null);
   const [entries, setEntries] = useState<ProfileDriveFileEntry[]>([]);
@@ -172,6 +175,9 @@ function ProfileDriveSourceBrowser({
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reauthRequired, setReauthRequired] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const authTriggerRef = useRef<HTMLButtonElement>(null);
   const [importingPath, setImportingPath] = useState<string | null>(null);
   const treeGenerationRef = useRef(0);
   const pendingPathsRef = useRef(new Set<string>());
@@ -196,6 +202,7 @@ function ProfileDriveSourceBrowser({
     setLoading(true);
     setError(null);
     setFocusTrail([]);
+    setReauthRequired(false);
     setExpandedPaths(new Set());
     setChildrenByPath(new Map());
     setLoadingPaths(new Set());
@@ -210,6 +217,7 @@ function ProfileDriveSourceBrowser({
       if (generation !== treeGenerationRef.current) return;
       setEntries([]);
       setTruncated(false);
+      setReauthRequired(requiresReauthentication(loadError));
       setError(browserError(loadError, title));
     } finally {
       if (generation === treeGenerationRef.current) setLoading(false);
@@ -275,6 +283,7 @@ function ProfileDriveSourceBrowser({
         if (generation !== treeGenerationRef.current) return;
         if (requiresReauthentication(loadError)) {
           closeDirectory(entry.path);
+          setReauthRequired(true);
           setError(browserError(loadError, title));
         } else {
           setDirectoryErrors((current) =>
@@ -653,12 +662,27 @@ function ProfileDriveSourceBrowser({
             })}
           </div>
         )}
+        {sourceId === "profile" && !loading && (connected === false || reauthRequired) && (
+          <Button type="primary" htmlType="button" ref={authTriggerRef}
+            className="mt-2" onClick={() => setAuthOpen(true)}>
+            认证本地文件服务器
+          </Button>
+        )}
         {truncated && !loading && (
           <p role="status" className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">
             目录内容已截断。
           </p>
         )}
       </div>
+      {sourceId === "profile" && (
+        <ProfileDriveAuthenticationDialog
+          open={authOpen}
+          returnFocusRef={authTriggerRef}
+          fallbackFocusRef={fallbackFocusRef}
+          onClose={() => setAuthOpen(false)}
+          onAuthenticated={() => undefined}
+        />
+      )}
     </div>
   );
 }
@@ -677,6 +701,7 @@ export function ProfileDriveWorkspaceBrowser({
 }: ProfileDriveWorkspaceBrowserProps) {
   const [activeSource, setActiveSource] =
     useState<ProfileDriveSourceId>("profile");
+  const profileTabRef = useRef<HTMLButtonElement>(null);
   const [sourceControls, setSourceControls] = useState<
     Record<ProfileDriveSourceId, ProfileDriveSourceControls>
   >(() => ({
@@ -781,6 +806,7 @@ export function ProfileDriveWorkspaceBrowser({
               <Button type="text"
                 key={id}
                 id={`profile-drive-${id}-tab`}
+                ref={id === "profile" ? profileTabRef : undefined}
                 htmlType="button"
                 role="tab"
                 aria-selected={active}
@@ -814,6 +840,7 @@ export function ProfileDriveWorkspaceBrowser({
             sessionId={sessionId}
             sourceId={id}
             title={label}
+            fallbackFocusRef={profileTabRef}
             onImported={onImported}
             onAddToConversation={onAddToConversation}
             attachments={attachments}

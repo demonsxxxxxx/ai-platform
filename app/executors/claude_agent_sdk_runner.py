@@ -1401,116 +1401,93 @@ def _filtered_workspace_search_output(
 
     changed = False
     filenames = tool_response.get("filenames")
-    filtered_filenames: list[object] = []
+    filtered_filenames = []
     if isinstance(filenames, list):
         for path in filenames[:_WORKSPACE_SEARCH_MAX_OUTPUT_LINES]:
-            encoded_size = len(str(path).encode("utf-8")) + 1
             if not _workspace_search_result_path_authorized(
-                path,
-                search_path=tool_input.get("path") or ".",
+                path, search_path=tool_input.get("path") or ".",
                 workspace_root=workspace_root, native_session_id=native_session_id,
             ):
                 continue
+            encoded_size = len(path.encode("utf-8")) + 1
             if (
                 budget["lines"] >= _WORKSPACE_SEARCH_MAX_OUTPUT_LINES
-                or budget["bytes"] + encoded_size
-                > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
+                or budget["bytes"] + encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
             ):
                 continue
             filtered_filenames.append(path)
             budget["lines"] += 1
             budget["bytes"] += encoded_size
         changed = filtered_filenames != filenames
-    elif tool_name in {"Glob", "Grep"}:
+    elif "filenames" in tool_response:
         changed = True
 
-    filtered_values: dict[str, object] = {}
+    mode = tool_response.get("mode") or tool_input.get("output_mode") or "files_with_matches"
+    if mode not in {"content", "files_with_matches", "count"}:
+        mode = "files_with_matches"
+    filtered_values = {}
     for key in ("content", "text", "data"):
-        if key not in tool_response:
-            continue
-        filtered, item_changed = _filtered_workspace_search_output(
-            tool_response[key],
-            tool_name=tool_name,
-            tool_input=tool_input,
-            workspace_root=workspace_root, native_session_id=native_session_id,
-            _budget=budget,
-        )
-        filtered_values[key] = filtered
-        changed = changed or item_changed
+        if key in tool_response:
+            filtered, item_changed = _filtered_workspace_search_output(
+                tool_response[key], tool_name=tool_name,
+                tool_input={**tool_input, "output_mode": mode},
+                workspace_root=workspace_root, native_session_id=native_session_id,
+                _budget=budget,
+            )
+            filtered_values[key] = filtered
+            changed = changed or item_changed
 
-    if tool_name == "Glob":
-        duration_ms = tool_response.get("durationMs")
-        if not isinstance(duration_ms, (int, float)) or isinstance(duration_ms, bool):
-            duration_ms = 0
-        filtered_response: dict[str, object] = {
-            "durationMs": duration_ms,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-            "truncated": tool_response.get("truncated") is True,
-            # The SDK accepts these fields as optional; recompute them from
-            # the visible result so private paths never survive as counts.
-            "totalMatches": len(filtered_filenames),
-            "countIsComplete": True,
-        }
-    elif tool_name == "Grep":
-        mode = str(
-            tool_response.get("mode")
-            or tool_input.get("output_mode")
-            or "files_with_matches"
+    filtered_response: dict[str, object] = {
+        **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
+    }
+    if tool_name in {"Glob", "Grep"}:
+        # Retain only safe SDK scalars; path-bearing values are filtered above.
+        numeric_fields = (
+            ("durationMs", "numFiles", "totalMatches") if tool_name == "Glob"
+            else ("numFiles", "numLines", "numMatches", "totalLines", "appliedLimit", "appliedOffset")
         )
-        if mode not in {"content", "files_with_matches", "count"}:
-            mode = "files_with_matches"
-        filtered_response = {
-            "mode": mode,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-        }
-        if "content" in filtered_values:
-            filtered_response["content"] = filtered_values["content"]
-        if mode == "count":
-            count_lines = (
-                filtered_values.get("content", "").splitlines()
-                if isinstance(filtered_values.get("content"), str)
-                else []
-            )
-            visible_counts = [
-                int(match.group(1))
-                for line in count_lines
-                if (
-                    match := re.fullmatch(r".+?:(\d+)", line.strip())
-                )
-                is not None
-            ]
-            filtered_response["numFiles"] = len(visible_counts)
-            filtered_response["numMatches"] = sum(visible_counts)
-        elif mode == "content" and isinstance(
-            filtered_values.get("content"), str
-        ):
-            visible_lines = sum(
-                1
-                for line in filtered_values["content"].splitlines()
-                if _workspace_search_line_path(
-                    line,
-                    tool_name="Grep",
-                    output_mode="content",
-                )
-                is not None
-            )
-            filtered_response["numLines"] = visible_lines
-            filtered_response["totalLines"] = visible_lines
-        for pagination_key in ("appliedLimit", "appliedOffset"):
-            pagination_value = tool_response.get(pagination_key)
-            if (
-                isinstance(pagination_value, int)
-                and not isinstance(pagination_value, bool)
-                and pagination_value >= 0
-            ):
-                filtered_response[pagination_key] = pagination_value
+        for key in numeric_fields:
+            value = tool_response.get(key)
+            valid = isinstance(value, int) or key == "durationMs" and isinstance(value, float)
+            if valid and not isinstance(value, bool) and value >= 0:
+                filtered_response[key] = value
+        if tool_name == "Glob":
+            for key in ("truncated", "countIsComplete"):
+                if isinstance(tool_response.get(key), bool):
+                    filtered_response[key] = tool_response[key]
+            # Never claim a complete count after either owner truncated output.
+            if changed or tool_response.get("truncated") is True or tool_response.get("countIsComplete") is False:
+                filtered_response["truncated"] = True
+                filtered_response.pop("totalMatches", None)
+                if "countIsComplete" in tool_response:
+                    filtered_response["countIsComplete"] = False
+            if changed:
+                filtered_response["numFiles"] = len(filtered_filenames)
+        else:
+            if "mode" in tool_response:
+                filtered_response["mode"] = mode
+            if "content" in filtered_values:
+                filtered_response["content"] = filtered_values["content"]
+            paginated = any(key in filtered_response for key in ("appliedLimit", "appliedOffset"))
+            if changed or paginated:
+                filtered_response.pop("totalLines", None)
+            content = filtered_values.get("content")
+            if changed and mode == "files_with_matches":
+                filtered_response["numFiles"] = len(filtered_filenames)
+            elif changed and isinstance(content, str):
+                if mode == "count":
+                    counts = [int(match.group(1)) for line in content.splitlines()
+                              if (match := re.fullmatch(r".+?:(\d+)", line.strip()))]
+                    filtered_response["numFiles"] = len(counts)
+                    if "numMatches" in tool_response:
+                        filtered_response["numMatches"] = sum(counts)
+                else:
+                    filtered_response["numLines"] = sum(
+                        _workspace_search_line_path(line, tool_name="Grep", output_mode="content") is not None
+                        for line in content.splitlines()
+                    )
     else:
-        filtered_response = {
-            **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
-            **filtered_values,
-        }
+        filtered_response.update(filtered_values)
         for key in ("mode", "type", "tool_use_id"):
             value = tool_response.get(key)
             if isinstance(value, str):
@@ -1519,13 +1496,7 @@ def _filtered_workspace_search_output(
     changed = changed or filtered_response != tool_response
     if root_call:
         try:
-            encoded_size = len(
-                json.dumps(
-                    filtered_response,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
+            encoded_size = len(json.dumps(filtered_response, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             return _WORKSPACE_SEARCH_OUTPUT_NOTICE, True
         if encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES:

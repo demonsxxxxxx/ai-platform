@@ -40,6 +40,36 @@ Re-establish the base and rescan after a retarget, rebase, or target-branch merg
 Flag a PR that mixes unrelated concerns or is too large to review as a whole;
 ask for a split instead of approving parts you did not read.
 
+### Migration-triggered consumer checks
+
+Choose these checks only when the changed subject reaches the named surface; do
+not turn them into a full-repository audit:
+
+- deleting or moving `tests/test_*.py`: inspect `.github/workflows/` shards,
+  package scripts, and literal lists in `tools/` or `tests/`; use the existing
+  workflow-owner contract
+  (`test_every_backend_test_file_has_one_complete_ci_owner`) for the affected
+  workflow scope;
+- changing a shared interface or injection point: search unchanged fakes,
+  mocks, fixtures, `monkeypatch` targets, and support adapters, then run or
+  inspect valid candidate-specific evidence for the owning selector reached by
+  `tools/git_hook_checks.py`/the local runner. If execution is unavailable,
+  hand the concrete command to the parent; missing mandatory evidence remains
+  blocked;
+- changing event publication or registration: inspect the existing publication
+  inventory and its owning check, such as
+  `tools/check_sse_runtime_cutover.py` and `tests/test_sse_runtime_cutover.py`;
+- changing a check command: trace its workflow, script, and traceability
+  consumers and run or inspect valid candidate-specific evidence for the
+  existing contract test for that path.
+
+Record the short consumer search and the exact owning checks used. If a named
+mandatory surface is not inspected, mark the review `INCOMPLETE`/`BLOCK` rather
+than treating a local partial review as a whole-PR conclusion. The local hook's
+affected-test selection is feedback, not proof of a GitHub push, CI, or
+end-to-end result. Reuse valid risk-selected evidence and do not rerun unaffected
+suites merely for completeness.
+
 ## Read the requirements before judging the diff
 
 Map changed paths to owners, open each owning page, and only then read the

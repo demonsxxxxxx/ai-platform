@@ -40,6 +40,7 @@ const { authApi } = await import("../../../services/api/auth");
 const { sessionApi } = await import("../../../services/api/session");
 const { agentProfileApi } = await import("../../../services/api/agentProfile");
 const { modelPublicApi } = await import("../../../services/api/modelPublic");
+const { modelGroupsApi } = await import("../../../services/api/modelGroups");
 const { Permission } = await import("../../../types/auth");
 const { toast } = await import("@lobehub/ui/base-ui");
 const { default: i18n } = await import("../../../i18n");
@@ -102,8 +103,9 @@ async function deleteTask(scope: HTMLElement, title: string) {
   await click(button(document.querySelector('[role="dialog"]')!, i18n.t("common.delete")));
 }
 
-async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
-  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi } };
+async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}, loadGroups = modelGroupsApi.listPublic) {
+  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi }, groups: modelGroupsApi.listPublic };
+  modelGroupsApi.listPublic = loadGroups;
   const originalToastError = toast.error;
   const toastErrors: string[] = [];
   toast.error = (message) => { toastErrors.push(String(message)); return { id: "test-toast", close() {}, update() {} }; };
@@ -144,6 +146,7 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     toast.error = originalToastError;
     Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
     Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
+    modelGroupsApi.listPublic = originals.groups;
     throw error;
   }
   // One primary sidebar renders one history projection at a time; the scope
@@ -178,9 +181,24 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
       toast.error = originalToastError;
       Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
       Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
+      modelGroupsApi.listPublic = originals.groups;
     },
   };
 }
+
+test("history model restored before first membership hydration remains selected", async () => {
+  const groups = deferred<Awaited<ReturnType<typeof modelGroupsApi.listPublic>>>();
+  const view = await mountWorkspace({ get: async (id: string) => ({ ...row(id), metadata: { agent_options: { model_id: "model-history", model: "model-history", selection_mode: "explicit", group_id: "same-group" } } }) }, () => groups.promise);
+  try {
+    await expectTranscript(view.container, "session-a");
+    modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }, { id: "model-history", value: "model-history", label: "历史模型" }], count: 2, enabled_count: 2, default_model_id: "model-default" });
+    await React.act(async () => groups.resolve({ groups: [{ id: "same-group", code: "default", name: "普通默认组", type: "ordinary_default", enabled: true, revision: 1, is_primary: false, availability: "default_not_for_chat", models: [] }], count: 1, version: "model-groups.v1" }));
+    await settle();
+    const picker = view.container.querySelector('[data-composer-model-trigger]');
+    assert.match(picker?.textContent ?? "", /历史模型/);
+    assert.doesNotMatch(picker?.textContent ?? "", /Default/);
+  } finally { await view.close(); }
+});
 
 test("Agent rename and delete update both rendered history scopes without reopening the workspace", async () => {
   const view = await mountWorkspace();

@@ -28,13 +28,13 @@
 
 /* ── Content layers ── */
 
-/* General entry: headline + suggestions sit above a bottom-aligned composer. */
+/* General entry: keep the greeting, suggestions and composer together. */
 .welcome-root.chat-entry-root {
   justify-content: flex-start;
 }
 
 .welcome-root.chat-entry-root .chat-start-surface {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .welcome-greeting,

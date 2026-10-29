@@ -435,6 +435,7 @@
       "title": "工作过程",
       "working": "工作中",
       "itemCount": "{{count}} 项",
+      "toolGroup": "已完成 {{count}} 项连续工具操作",
       "collapseAll": "全部收起",
       "expandAll": "全部展开"
     },
@@ -2168,7 +2169,9 @@
     },
     "title": "工具",
     "searchPlaceholder": "搜索工具",
-    "toolsEnabled": "个工具已启用"
+    "toolsEnabled": "个工具已启用",
+    "unknownSource": "未提供服务来源",
+    "toggleGroup": "切换工具来源 {{group}}"
   },
   "users": {
     "user": "个人资料"

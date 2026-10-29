@@ -163,6 +163,65 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);
     });
+    await t.test("opening the model picker refreshes once, keeps drafts, and recovers an empty list", async () => {
+      let refreshCalls = 0;
+      await render({ disableSlashCommands: false, availableModels: [],
+        onSelectModel: () => undefined, onModelSelectorOpen: () => { refreshCalls += 1; } });
+      await type("保留模型刷新草稿");
+      const trigger = () => container.querySelector<HTMLButtonElement>("[data-composer-model-trigger]")!;
+      assert.ok(trigger(), "empty catalogs keep the retry entry visible");
+      await act(async () => trigger().click());
+      assert.equal(refreshCalls, 1);
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await render({ availableModels: [{ id: "model-b", value: "model-b", label: "Model B" }] });
+      assert.equal(refreshCalls, 1, "catalog updates do not reopen the picker");
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await act(async () => {
+        trigger().dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      });
+      await act(async () => trigger().click());
+      assert.equal(document.querySelector('[data-composer-model-panel]'), null, "second pointer click closes the model menu");
+      assert.equal(trigger().getAttribute("aria-expanded"), "false");
+      assert.equal(refreshCalls, 1, "closing the picker does not refresh the catalog");
+      await type("/model");
+      assert.equal(refreshCalls, 2, "slash command opens the same refresh seam");
+      await type("/model B");
+      assert.equal(refreshCalls, 2, "editing search must not request another catalog");
+      await key("Escape");
+      await type("/");
+      for (let i = 0; i < 8 && container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item") !== "model"; i += 1) {
+        await key("ArrowDown");
+      }
+      assert.equal(container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item"), "model");
+      await key("Enter");
+      assert.equal(refreshCalls, 3, "slash menu selection refreshes as well");
+      await key("Escape");
+      await render({ onSelectModel: undefined, onModelSelectorOpen: undefined, availableModels: [] });
+    });
+    await t.test("unavailable model blocks sending but preserves the editable draft and input identity", async () => {
+      const reason = "尚未分配可用模型，请联系管理员。";
+      const before = sends.length;
+      await render({ modelUnavailableReason: reason, onSelectModel: () => undefined });
+      await type("等待模型配置的草稿");
+      const editor = textarea();
+      const send = container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')!;
+      assert.equal(editor.disabled, false);
+      assert.equal(send.disabled, true);
+      assert.match(container.querySelector('[data-composer-model-trigger]')?.textContent ?? "", /暂无可用模型/);
+      assert.equal(container.querySelector('[data-composer-model-status]')?.textContent?.includes(reason), true);
+      assert.equal(container.textContent?.includes("配置模型组"), false);
+      await key("Enter");
+      await act(async () => send.click());
+      assert.equal(sends.length, before);
+      assert.equal(editor.value, "等待模型配置的草稿");
+      await render({ modelUnavailableReason: undefined,
+        onSelectModel: undefined, availableModels: [] });
+      assert.equal(textarea(), editor);
+      assert.equal(editor.value, "等待模型配置的草稿");
+      assert.equal(container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')?.disabled, false);
+    });
     await t.test("native suggestions, send and permission/upload gates use the platform payload", async () => {
       const submitted: Parameters<ChatInputProps["onSend"]>[] = [];
       let accepted = false;

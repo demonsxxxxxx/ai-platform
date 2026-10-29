@@ -124,7 +124,7 @@ async def test_selected_bridge_preserves_unmarked_native_resource_result():
         return CallToolResult(content=[EmbeddedResource(resource=BlobResourceContents(
             uri="memory://synthetic-resource", mime_type="application/octet-stream",
             blob=__import__("base64").b64encode(raw).decode("ascii"),
-        ))])
+        ))], structured_content={"sequence": 7})
 
     registration = ClaudeMcpRegistration(
         {item["identity"]: item}, {}, session_factory=None, list_tools=None,
@@ -136,6 +136,8 @@ async def test_selected_bridge_preserves_unmarked_native_resource_result():
     async with connected_client(bridge) as client:
         result = await client.call_tool(registration._tool_aliases[("gateway", RAW_TOOL)], {"query": "synthetic"})
     assert result.is_error is False
+    assert len(result.content) == 1
+    assert result.structured_content == {"sequence": 7}
     assert result.content[0].resource.blob == __import__("base64").b64encode(raw).decode("ascii")
 
 
@@ -364,13 +366,40 @@ async def test_cancel_during_discovery_closes_owner_without_waiting_for_timeout(
 @pytest.mark.parametrize("remote_error", [False, True])
 @pytest.mark.parametrize("server_name", ["gateway", "server.name"])
 @pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
-async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name, integration_kind, tool_search=False):
+async def test_installed_claude_cli_selected_mcp_end_to_end(
+    monkeypatch, tmp_path, remote_error, server_name, integration_kind,
+    tool_search=False, tool_result_case=None,
+):
     from app.executors import claude_agent_sdk_runner as runner
 
 
     with local_mcp_peers() as peer:
         peer.is_error = remote_error
         peer.search_tools = tool_search
+        if tool_result_case is None:
+            expected_structured_content = {"sequence": 7}
+        else:
+            expected_structured_content = {"sequence": 7, "case": tool_result_case}
+            result_content = {
+                "structured_only": [],
+                "text_structured": [{"type": "text", "text": "Synthetic text result."}],
+                "image_structured": [{
+                    "type": "image",
+                    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lL8AAAAASUVORK5CYII=",
+                    "mimeType": "image/png",
+                }],
+                "resource_structured": [{"type": "resource", "resource": {
+                    "uri": "memory://synthetic-resource",
+                    "mimeType": "text/plain",
+                    "text": "Synthetic resource content.",
+                }}],
+                "is_error_structured": [{"type": "text", "text": "Synthetic remote error."}],
+            }[tool_result_case]
+            peer.tool_result = {
+                "content": result_content,
+                "structuredContent": expected_structured_content,
+                "isError": remote_error,
+            }
         selected_subject = {**subject(server=server_name, url=peer.url + "/mcp"), "write_capable": True}
         if integration_kind == "enterprise_gateway":
             selected_subject["mcp_server_config"].update(
@@ -453,8 +482,8 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
                 == {peer.sdk_tool, "mcp__ai-platform-response__attach_file"}
                 for request in peer.models
             )
-        tool_result_texts = [
-            block.get("content", "")
+        tool_results = [
+            block
             for request in peer.models
             for message in request.get("messages", [])
             for block in message.get("content", [])
@@ -474,12 +503,14 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             if tool["name"] == peer.sdk_tool
         )
         assert selected_tool["input_schema"] == SCHEMA
-        if not remote_error:
-            assert any(
-                isinstance(content, str)
-                and json.JSONDecoder().raw_decode(content)[0] == {"sequence": 7}
-                for content in tool_result_texts
-            ), tool_result_texts
+        assert any(
+            _contains_json_value(tool_result, expected_structured_content)
+            for tool_result in tool_results
+        ), tool_results
+        if remote_error:
+            assert any(tool_result.get("is_error") is True for tool_result in tool_results), tool_results
+        if tool_result_case == "image_structured":
+            assert "image" in str(tool_results)
         assert peer.calls == [{"name": RAW_TOOL, "arguments": {"query": "synthetic"}}], (
             result.turn_diagnostics, result.runtime_diagnostics,
             [block for request in peer.models for message in request.get("messages", [])
@@ -502,6 +533,45 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert peer.sdk_tool not in str([value.payload for value in events])
 
         assert "synthetic.jwt" not in str([value.payload for value in events])
+
+
+def _contains_json_value(value, expected):
+    if isinstance(value, dict):
+        return value == expected or any(_contains_json_value(item, expected) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_json_value(item, expected) for item in value)
+    if isinstance(value, str):
+        try:
+            if json.loads(value) == expected:
+                return True
+        except (TypeError, ValueError):
+            pass
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(value):
+            if character not in "[{":
+                continue
+            try:
+                decoded, _end = decoder.raw_decode(value, index)
+            except ValueError:
+                continue
+            if decoded == expected:
+                return True
+    return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_result_case", [
+    "structured_only", "text_structured", "image_structured", "resource_structured",
+    "is_error_structured",
+])
+async def test_installed_claude_cli_receives_native_structured_result_once(
+    monkeypatch, tmp_path, tool_result_case,
+):
+    remote_error = tool_result_case == "is_error_structured"
+    await test_installed_claude_cli_selected_mcp_end_to_end(
+        monkeypatch, tmp_path, remote_error, "gateway", "mcp",
+        tool_result_case=tool_result_case,
+    )
 
 
 @pytest.mark.asyncio

@@ -789,6 +789,7 @@ async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depen
     return {
         "server_name": safe_name,
         "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
+                   **({"upstream_server": tool.upstream_server} if tool.gateway_source else {}),
                    "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
                    "available": tool.available is not False} for tool in result.tools],
         "count": sum(tool.available is not False for tool in result.tools),

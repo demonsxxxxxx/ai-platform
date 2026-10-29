@@ -1,3 +1,4 @@
+import { ApiRequestError } from "../../services/api/fetch.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -89,6 +90,7 @@ class TestText extends TestNode {
 }
 
 class TestDocument extends TestNode {
+  visibilityState = "visible";
   readonly nodeType = 9;
   readonly nodeName = "#document";
   readonly documentElement: TestElement;
@@ -240,9 +242,12 @@ async function mountModelCatalogHarness(
   configure: (
     authApi: typeof import("../../services/api/auth.ts").authApi,
     modelApi: typeof import("../../services/api/modelPublic.ts").modelPublicApi,
+    groupApi: typeof import("../../services/api/modelGroups.ts").modelGroupsApi,
   ) => void,
+  route = "/chat",
 ) {
   const React = await import("react");
+  const { MemoryRouter } = await import("react-router-dom");
   const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../../hooks/useAuth.tsx");
   const { ModelCatalogProvider, useModelCatalogContext } = await import(
@@ -250,12 +255,14 @@ async function mountModelCatalogHarness(
   );
   const { authApi } = await import("../../services/api/auth.ts");
   const { modelPublicApi } = await import("../../services/api/modelPublic.ts");
+  const { modelGroupsApi } = await import("../../services/api/modelGroups.ts");
   const originals = {
     getCurrentUser: authApi.getCurrentUser,
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     login: authApi.login,
     logout: authApi.logout,
     listAvailable: modelPublicApi.listAvailable,
+    listPublic: modelGroupsApi.listPublic,
   };
   const restoreApis = () => {
     Object.assign(authApi, {
@@ -267,6 +274,9 @@ async function mountModelCatalogHarness(
     Object.assign(modelPublicApi, {
       listAvailable: originals.listAvailable,
     });
+    Object.assign(modelGroupsApi, {
+      listPublic: originals.listPublic,
+    });
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -274,7 +284,8 @@ async function mountModelCatalogHarness(
     generation: request.generation,
   });
   try {
-    configure(authApi, modelPublicApi);
+    modelGroupsApi.listPublic = async () => ({ groups: [{ id: "group-test", code: "test", name: "测试组", type: "business", enabled: true, revision: 1, is_primary: true, availability: "available", models: [] }], count: 1, version: "model-groups.v1" });
+    configure(authApi, modelPublicApi, modelGroupsApi);
   } catch (error) {
     restoreApis();
     throw error;
@@ -299,9 +310,9 @@ async function mountModelCatalogHarness(
           AuthProvider,
           null,
           React.createElement(
-            ModelCatalogProvider,
-            null,
-            React.createElement(Probe),
+            MemoryRouter,
+            { initialEntries: [route] },
+            React.createElement(ModelCatalogProvider, null, React.createElement(Probe)),
           ),
         ),
       );
@@ -354,6 +365,21 @@ async function mountModelCatalogHarness(
     },
   };
 }
+
+test("expert workspace loads its implicit default group through the authorized expert directory", async () => {
+  let expertId: string | undefined;
+  const harness = await mountModelCatalogHarness((auth, models, groups) => {
+    auth.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    groups.listPublic = async () => ({ groups: [{ id: "default-a", code: "default", name: "普通默认组", type: "ordinary_default", enabled: true, revision: 1, is_primary: false, availability: "default_not_for_chat", models: [] }], count: 1, version: "model-groups.v1" });
+    models.listAvailable = async (options) => { expertId = options?.expertAgentId; return modelProjection("designated-default", "默认模型"); };
+  }, "/agent-market/expert-a/chat");
+  try {
+    await harness.flush();
+    assert.equal(expertId, "expert-a");
+    assert.equal(harness.modelCatalog.selectedGroupId, "default-a");
+    assert.equal(harness.modelCatalog.defaultModel, "designated-default");
+  } finally { await harness.cleanup(); }
+});
 
 test("ModelCatalogProvider hides A synchronously and accepts only B GET completions", async () => {
   const bModels = deferred<ReturnType<typeof modelProjection>>();
@@ -489,7 +515,8 @@ test("ModelCatalogProvider aborts pending subject work on unmount", async () => 
 
 for (const [defaultModelId, expectedValue] of [
   ["model-b", "provider/model-b"],
-  ["unavailable-model", "provider/model-a"],
+  ["unavailable-model", ""],
+  ["", ""],
 ] as const) {
   test(`catalog hydration is read-only and resolves public default ${defaultModelId}`, async () => {
     const originalFetch = globalThis.fetch;
@@ -536,3 +563,235 @@ for (const [defaultModelId, expectedValue] of [
     }
   });
 }
+
+test("focus refreshes the current subject once and deduplicates an in-flight request", async () => {
+  const bModels = deferred<ReturnType<typeof modelProjection>>();
+  let modelCalls = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    modelApi.listAvailable = async () => {
+      modelCalls += 1;
+      return modelCalls === 1 ? modelProjection("model-a", "Model A") : bModels.promise;
+    };
+  });
+
+  try {
+    await harness.flush();
+    await harness.React.act(async () => {
+      windowTarget.dispatchEvent({ type: "focus" });
+      windowTarget.dispatchEvent({ type: "focus" });
+    });
+    assert.equal(modelCalls, 2, "focus starts a request and repeated focus shares it");
+    bModels.resolve(modelProjection("model-b", "Model B"));
+    await harness.flush();
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-b"]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+
+
+function groupProjection(ids: string[], primary = ids[0]) {
+  return { groups: ids.map((id) => ({ id, code: id, name: id, type: "business" as const,
+    enabled: true, revision: 1, is_primary: id === primary,
+    availability: "available" as const, models: [] })), count: ids.length, version: "model-groups.v1" };
+}
+
+test("administrator membership changes reload the sole group and ambiguous membership fails closed", async () => {
+  let groups = groupProjection(["a"]);
+  const listed: string[] = [];
+  const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    groupApi.listPublic = async () => groups;
+    modelApi.listAvailable = async (options) => { listed.push(options?.groupId ?? ""); return modelProjection(options?.groupId ?? "", "Model"); };
+  });
+  try {
+    assert.equal(harness.modelCatalog.selectedGroupId, "a");
+    groups = groupProjection(["b"]);
+    await harness.React.act(async () => { windowTarget.dispatchEvent({ type: "focus" }); });
+    assert.equal(harness.modelCatalog.selectedGroupId, "b");
+    assert.deepEqual(listed, ["a", "b"]);
+    for (const invalid of [groupProjection(["a", "b"]), groupProjection([]), {
+      ...groupProjection(["b"]), groups: groupProjection(["b"]).groups.map((group) => ({ ...group, enabled: false })),
+    }]) {
+      groups = invalid;
+      await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+      assert.equal(harness.modelCatalog.selectedGroupId, "");
+      assert.deepEqual(harness.modelCatalog.availableModels, []);
+      assert.ok(harness.modelCatalog.selectionError);
+      assert.deepEqual(listed, ["a", "b"], "invalid membership must not fetch another group's models");
+    }
+  } finally { await harness.cleanup(); }
+});
+
+for (const phase of ["groups", "models"] as const) {
+  test(`${phase} authorization denial clears grants and refresh reloads current membership`, async () => {
+    let error: Error | null = null;
+    const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
+      authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+      groupApi.listPublic = async () => { if (phase === "groups" && error) throw error; return groupProjection(["a"]); };
+      modelApi.listAvailable = async () => { if (phase === "models" && error) throw error; return modelProjection("model-a", "A"); };
+    });
+    try {
+      error = new Error("network");
+      await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+      assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-a");
+      for (const status of [401, 403]) {
+        error = new ApiRequestError("denied", status);
+        await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+        assert.equal(harness.modelCatalog.selectedGroupId, "");
+        assert.deepEqual(harness.modelCatalog.availableModels, []);
+        error = null;
+        await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+        assert.equal(harness.modelCatalog.selectedGroupId, "a");
+        assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-a"]);
+      }
+    } finally { await harness.cleanup(); }
+  });
+}
+
+test("visibility stays quiet while hidden, refreshes when visible, and cleans up listeners", async () => {
+  const visibleModels = deferred<ReturnType<typeof modelProjection>>();
+  let modelCalls = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    modelApi.listAvailable = async () => {
+      modelCalls += 1;
+      return modelCalls === 1 ? modelProjection("model-a", "Model A") : visibleModels.promise;
+    };
+  });
+
+  try {
+    await harness.flush();
+    document.visibilityState = "hidden";
+    document.dispatchEvent({ type: "visibilitychange" });
+    assert.equal(modelCalls, 1);
+    document.visibilityState = "visible";
+    await harness.React.act(async () => {
+      document.dispatchEvent({ type: "visibilitychange" });
+    });
+    assert.equal(modelCalls, 2);
+    visibleModels.resolve(modelProjection("model-b", "Model B"));
+    await harness.flush();
+    await harness.unmount();
+    windowTarget.dispatchEvent({ type: "focus" });
+    document.dispatchEvent({ type: "visibilitychange" });
+    assert.equal(modelCalls, 2, "unmounted listeners must not refresh");
+  } finally {
+    document.visibilityState = "visible";
+    await harness.cleanup();
+  }
+});
+
+test("an authorization refresh failure clears the old catalog, while a transient failure keeps it", async () => {
+  let modelCalls = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    modelApi.listAvailable = async () => {
+      modelCalls += 1;
+      if (modelCalls === 1) return modelProjection("model-a", "Model A");
+      if (modelCalls === 2) throw new Error("temporary network failure");
+      if (modelCalls === 3) throw new ApiRequestError("denied", 403);
+      return modelProjection("model-b", "Model B");
+    };
+  });
+
+  try {
+    await harness.flush();
+    await harness.React.act(async () => {
+      assert.equal(await harness.modelCatalog.refreshModels(), false);
+    });
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-a"]);
+    await harness.React.act(async () => {
+      assert.equal(await harness.modelCatalog.refreshModels(), false);
+    });
+    assert.deepEqual(harness.modelCatalog.availableModels, []);
+    await harness.React.act(async () => {
+      assert.equal(await harness.modelCatalog.refreshModels(), true);
+    });
+    assert.equal(harness.modelCatalog.selectedGroupId, "group-test");
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-b"]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("an empty catalog and initial failure both recover without reauthentication", async () => {
+  let calls = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    modelApi.listAvailable = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("temporary failure");
+      if (calls === 2) return { models: [], count: 0, enabled_count: 0, default_model_id: "" };
+      return modelProjection("model-b", "Model B");
+    };
+  });
+  try {
+    await harness.flush();
+    assert.equal(harness.modelCatalog.availableModels, null);
+    await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+    assert.deepEqual(harness.modelCatalog.availableModels, []);
+    await harness.React.act(async () => { windowTarget.dispatchEvent({ type: "focus" }); });
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-b"]);
+    assert.equal(harness.auth.user?.id, "user-a");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("publication refresh supersedes an in-flight pre-publication read", async () => {
+  const oldRead = deferred<ReturnType<typeof modelProjection>>();
+  const signals: AbortSignal[] = [];
+  let calls = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    modelApi.listAvailable = async (options) => {
+      signals.push(options!.signal!);
+      calls += 1;
+      if (calls === 2) return oldRead.promise;
+      return modelProjection(calls === 1 ? "model-a" : "model-b", "Model");
+    };
+  });
+  try {
+    await harness.flush();
+    await harness.React.act(async () => { void harness.modelCatalog.refreshModels(); });
+    await harness.React.act(async () => { await harness.modelCatalog.refreshModels({ force: true }); });
+    assert.equal(calls, 3);
+    assert.equal(signals[1].aborted, true);
+    oldRead.resolve(modelProjection("model-a", "Old result"));
+    await harness.flush();
+    assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-b"]);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("stale refresh callbacks do not issue reads after subject replacement, logout or unmount", async () => {
+  let calls = 0;
+  let users = 0;
+  const harness = await mountModelCatalogHarness((authApi, modelApi) => {
+    authApi.getCurrentUser = async () => ++users === 1
+      ? authUser("user-a", "tenant-a") : authUser("user-b", "tenant-b");
+    authApi.login = async () => undefined;
+    authApi.logout = async () => undefined;
+    modelApi.listAvailable = async () => { calls += 1; return modelProjection("model", "Model"); };
+  });
+  try {
+    await harness.flush();
+    const refreshA = harness.modelCatalog.refreshModels;
+    await harness.React.act(async () => { await harness.auth.login({ username: "user-b", password: "safe-test" }); });
+    const refreshB = harness.modelCatalog.refreshModels;
+    assert.equal(await refreshA(), false);
+    assert.equal(calls, 2);
+    await harness.React.act(async () => { await harness.auth.logout(); });
+    assert.equal(await refreshB(), false);
+    assert.equal(calls, 2);
+    await harness.unmount();
+    assert.equal(await refreshB(), false);
+    assert.equal(calls, 2);
+  } finally {
+    await harness.cleanup();
+  }
+});

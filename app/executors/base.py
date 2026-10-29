@@ -229,6 +229,13 @@ class RunPayload:
     model_gateway_revision: int | None = None
     model_auto_compact_window: int | None = None
     model_max_output_tokens: int | None = None
+    model_group_id: str | None = None
+    model_group_code: str | None = None
+    model_group_type: str | None = None
+    model_group_revision: int | None = None
+    model_selection_mode: str = "auto"
+    usage_scene: str = "independent"
+    model_policy_version: str | None = None
     agent_profile: dict[str, Any] = field(default_factory=dict)
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 

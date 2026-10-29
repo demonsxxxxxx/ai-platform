@@ -365,7 +365,8 @@ def test_dispatch_projection_preserves_legacy_run_payload_and_keeps_attempt_sepa
     assert run_payload.input == payload["input"]
 
 
-def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
+@pytest.mark.parametrize("grouped", [False, True])
+def test_dispatch_binds_budget_and_group_to_locked_run_not_queue_body(grouped):
     payload = _spec_payload()
     queue = SimpleNamespace(
         **{**payload, "schema_version": payload["run_payload_schema_version"]}
@@ -395,10 +396,27 @@ def test_v2_dispatch_binds_budget_to_locked_run_not_queue_body():
             run_model_snapshot=snapshot,
         )
 
+    if grouped:
+        locked_model.update(model_group_id="group-a", model_group_code="alpha", model_group_type="business",
+                            model_group_revision=3, model_selection_mode="explicit", usage_scene="expert", model_policy_version="model-groups.v1")
     spec = dispatch(locked_model)
+    if grouped:
+        from app.executors.base import RunPayload
+        from app.models import QueueRunPayload
+        from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload, restored_executor_reconciliation_queue_payload
+        runtime = project_execution_spec_to_run_payload(spec, attempt_id="attempt-a")
+        snapshot = sandbox_reconciliation_payload(runtime)
+        restored, attempt = restored_executor_reconciliation_queue_payload(
+            {"adapter_context":{}, "adapter_name":"claude-agent-worker", "run_payload":snapshot}, result={},
+            run_payload_factory=RunPayload, queue_payload_factory=QueueRunPayload,
+        )
+        assert attempt == "attempt-a"
+        for field in ("model_group_id", "model_group_code", "model_group_type", "model_group_revision",
+                      "model_selection_mode", "usage_scene", "model_policy_version"):
+            assert getattr(restored, field) == locked_model[field]
     with pytest.raises(ExecutionSpecError, match="execution_spec_model_snapshot_missing"):
         dispatch(None)
-    assert spec.to_mapping()["schema_version"] == EXECUTION_SPEC_SCHEMA_VERSION_V3
+    assert spec.to_mapping()["schema_version"] == ("ai-platform.execution-spec.v4" if grouped else EXECUTION_SPEC_SCHEMA_VERSION_V3)
     assert spec.to_mapping()["model_auto_compact_window"] == 200_000
     assert spec.to_mapping()["model_max_output_tokens"] == 2048
     assert project_execution_spec_to_run_payload(spec, attempt_id="attempt-a").model_auto_compact_window == 200_000

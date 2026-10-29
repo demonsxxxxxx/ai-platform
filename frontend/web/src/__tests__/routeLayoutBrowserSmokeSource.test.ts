@@ -31,6 +31,10 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /overlay_clipped/);
   assert.match(source, /role=listbox/);
   assert.match(source, /drawer-contained/);
+  assert.match(source, /model_group_drawer_width_failed/);
+  assert.match(source, /geometry\.leftGap - geometry\.rightGap/);
+  assert.match(source, /geometry\.scrollWidth > geometry\.clientWidth/);
+  assert.match(source, /models:group-focus-restored/);
   assert.match(source, /skill-distribution-receipt/);
   assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);

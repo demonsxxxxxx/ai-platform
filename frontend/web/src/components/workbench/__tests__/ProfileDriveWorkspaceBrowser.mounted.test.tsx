@@ -522,6 +522,7 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       await flush();
     });
     assert.match(profileSource.textContent ?? "", /本地文件服务器需要重新认证/);
+    assert.ok(buttonByText(profileSource, "认证本地文件服务器"));
     assert.equal(profileSource.querySelector('[role="tree"]'), null);
   } finally {
     await act(async () => root.unmount());
@@ -936,6 +937,139 @@ test("compacts loaded chains, focuses with breadcrumbs, and uses controlled Comp
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;
+    fixture.close();
+  }
+});
+
+test("authenticates the disconnected local file server from the files area", async () => {
+  const fixture = installSelectTestDom();
+  document.body.innerHTML = '<div id="root"></div>';
+  const [{ act, createElement }, { ProfileDriveWorkspaceBrowser }] = await Promise.all([
+    import("react"), import("../ProfileDriveWorkspaceBrowser"),
+  ]);
+  const originalFetch = globalThis.fetch;
+  let connected = false;
+  let failConnect = true;
+  let releaseConnect: (() => void) | undefined;
+  let connectCalls = 0;
+  let connectionChanges = 0;
+  const onConnectionChange = () => { connectionChanges += 1; };
+  window.addEventListener(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT, onConnectionChange);
+  const listedSources: string[] = [];
+  globalThis.fetch = (async (input, init = {}) => {
+    const url = String(input);
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+    if (url.endsWith("/api/ai/auth/company-credential-handoff")) return json({ credential: "handoff-jwt" });
+    if (url.endsWith("/api/profile-drive/status")) return json({ connected, reauthRequired: false });
+    if (url.endsWith("/api/profile-drive/connect")) {
+      connectCalls += 1;
+      if (failConnect) return json({ status: "credential_rejected" }, 403);
+      await new Promise<void>((resolve) => { releaseConnect = resolve; });
+      connected = true;
+      return json({ connected: true });
+    }
+    if (url.endsWith("/api/profile-drive/files/list")) {
+      const body = JSON.parse(String(init.body)) as { source: string; path: string };
+      listedSources.push(body.source);
+      return json({ status: "success", path: body.path, truncated: false, entries: [{
+        path: `${body.source}.txt`, name: `${body.source}.txt`, type: "file", size: 1,
+        lastModifiedUtc: "2026-09-21T00:00:00Z",
+      }] });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+  const container = document.getElementById("root")!;
+  const root = await createLobeTestRoot(container);
+  try {
+    await act(async () => {
+      root.render(createElement(ProfileDriveWorkspaceBrowser, {
+        sessionId: null, onImported: () => undefined, onAddToConversation: () => undefined,
+      }));
+      await flush(); await flush();
+    });
+    const local = container.querySelector('[data-profile-drive-source="profile"]')!;
+    const publicSource = container.querySelector('[data-profile-drive-source="public"]')!;
+    assert.match(local.textContent ?? "", /服务器未连接/);
+    assert.doesNotMatch(publicSource.textContent ?? "", /认证本地文件服务器/);
+    const trigger = buttonByText(local, "认证本地文件服务器");
+    await act(async () => { trigger.click(); });
+    let dialog = document.querySelector('[role="dialog"]')!;
+    assert.match(dialog.textContent ?? "", /认证本地文件服务器/);
+    let password = dialog.querySelector<HTMLInputElement>("#file-server-password")!;
+    assert.equal(password.type, "password");
+    await act(async () => { changeInput(password, "synthetic-password"); });
+    await act(async () => {
+      dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+    assert.match(dialog.textContent ?? "", /企业账号或密码不正确/);
+    assert.match(local.textContent ?? "", /服务器未连接/);
+    assert.deepEqual(listedSources, []);
+    await act(async () => { buttonByText(dialog, "取消").click(); await new Promise((resolve) => setTimeout(resolve, 300)); });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(document.activeElement, trigger);
+    assert.match(local.textContent ?? "", /服务器未连接/);
+    await act(async () => { trigger.click(); });
+    dialog = document.querySelector('[role="dialog"]')!;
+    await act(async () => {
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    await act(async () => { trigger.click(); });
+    const idleBackdrop = document.querySelector<HTMLElement>('[role="presentation"][data-open]')!;
+    assert.ok(idleBackdrop);
+    await act(async () => {
+      idleBackdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      idleBackdrop.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      idleBackdrop.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    await act(async () => { trigger.click(); });
+    dialog = document.querySelector('[role="dialog"]')!;
+    password = dialog.querySelector<HTMLInputElement>("#file-server-password")!;
+    assert.equal(password.value, "");
+    failConnect = false;
+    await act(async () => { changeInput(password, "synthetic-password"); });
+    await act(async () => {
+      const form = dialog.querySelector("form")!;
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await flush();
+    });
+    assert.ok(releaseConnect);
+    const close = dialog.querySelector<HTMLButtonElement>('button[aria-label="关闭本地文件服务器认证"]')!;
+    assert.equal(close.disabled, true);
+    assert.equal(buttonByText(dialog, "取消").disabled, true);
+    const backdrop = document.querySelector<HTMLElement>('[role="presentation"][data-open]')!;
+    assert.ok(backdrop);
+    await act(async () => {
+      close.click();
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      backdrop.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+      backdrop.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      backdrop.click();
+      await flush();
+    });
+    assert.ok(document.querySelector('[role="dialog"]'));
+    assert.equal(connectionChanges, 0);
+    assert.equal(connectCalls, 2);
+    await act(async () => { releaseConnect!(); await flush(); await flush(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(document.activeElement, container.querySelector("#profile-drive-profile-tab"));
+    assert.equal(connectionChanges, 1);
+    assert.match(local.textContent ?? "", /profile\.txt/);
+    assert.match(publicSource.textContent ?? "", /public\.txt/);
+    assert.deepEqual(listedSources.sort(), ["profile", "public"]);
+    assert.doesNotMatch(local.textContent ?? "", /服务器未连接/);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
+    window.removeEventListener(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT, onConnectionChange);
     fixture.close();
   }
 });

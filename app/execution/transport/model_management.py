@@ -64,22 +64,20 @@ AdminPredicate = Callable[[Any], bool]
 class ModelConnectionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider_id: str = Field(default="legacy", min_length=1, max_length=128)
     base_url: Any = None
     credential: Any = None
     deprecated_api_key: Any = Field(default=None, alias="api_key", exclude=True)
 
 
 class ModelPublicationEntry(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     value: str
     display_name: str | None = Field(default=None, max_length=160)
     enabled: StrictBool
-    is_default: StrictBool
     order: StrictInt = Field(ge=1)
-    access_mode: Literal["all", "selected"] | None = None
-    allowed_user_ids: list[str] | None = Field(default=None, max_length=10_000)
     auto_compact_window: StrictInt | None = Field(default=None, ge=100_000, le=1_000_000)
     max_output_tokens: StrictInt | None = Field(default=None, ge=1, le=10_000_000)
 
@@ -87,10 +85,96 @@ class ModelPublicationEntry(BaseModel):
 class ModelPublicationRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    provider_id: str = Field(default="legacy", min_length=1, max_length=128)
     base_url: str = Field(min_length=1, max_length=2048)
     credential: Any = None
     expected_revision: StrictInt | None = Field(default=None, ge=1)
     models: list[ModelPublicationEntry] = Field(min_length=1)
+
+
+class ModelProviderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=160)
+
+
+class ModelProviderRetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: StrictInt | None = Field(ge=1)
+    confirm: StrictBool = False
+    missing_only: StrictBool = False
+
+
+class ModelGroupCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=160)
+    remark: str = Field(default="", max_length=2000)
+    sort_order: StrictInt = Field(default=0, ge=0)
+
+
+class ModelGroupUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    enabled: StrictBool | None = None
+    remark: str | None = Field(default=None, max_length=2000)
+    sort_order: StrictInt | None = Field(default=None, ge=0)
+    revision: StrictInt = Field(ge=1)
+    confirm_impact: StrictBool = False
+
+
+class ModelGroupRetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt = Field(ge=1)
+    confirm_impact: StrictBool = False
+    delete: StrictBool = False
+    target_group_id: str | None = Field(default=None, min_length=1, max_length=128)
+    target_group_revision: StrictInt | None = Field(default=None, ge=1)
+    confirm_default_fallback: StrictBool = False
+
+
+class ModelGroupModelsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt = Field(ge=1)
+    default_model_id: str | None = None
+    models: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
+
+
+class ModelGroupBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_ids: list[str] = Field(min_length=1, max_length=100)
+    model_ids: list[str] = Field(min_length=1, max_length=1000)
+    operation: Literal["add", "replace", "remove"]
+    expected_group_revisions: dict[str, StrictInt]
+    preview: StrictBool = False
+
+
+class ModelGroupMembersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt = Field(ge=1)
+    members: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
+    confirm_default_fallback: StrictBool = False
+
+
+class UserModelGroupsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_ids: list[str] = Field(default_factory=list, max_length=1000)
+    primary_group_id: str | None = None
+    expected_revision: StrictInt = Field(ge=1)
+    confirm_default_fallback: StrictBool = False
+
+
+class UserModelGroupsBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(min_length=1, max_length=128)
+    group_ids: list[str] = Field(default_factory=list, max_length=1000)
+    primary_group_id: str | None = None
+    expected_revision: StrictInt = Field(ge=1)
+
+
+class UserModelGroupsBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    updates: list[UserModelGroupsBatchItem] = Field(min_length=1, max_length=1000)
+    confirm_default_fallback: StrictBool = False
 
 
 def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
@@ -100,8 +184,54 @@ def _require_admin(principal: Any, *, is_admin: AdminPredicate) -> None:
 
 def _translate_control_plane_error(exc: Exception) -> HTTPException:
     code = str(exc)
+    if code == "model_provider_not_found":
+        return HTTPException(status_code=404, detail=code)
+    if code == "model_provider_in_use":
+        return HTTPException(status_code=409, detail=code)
+    if code in {"model_provider_name_invalid", "model_provider_confirmation_required"}:
+        return HTTPException(status_code=422, detail=code)
+    if code == "model_group_active_runs":
+        count = getattr(exc, "details", {}).get("active_run_count")
+        return HTTPException(status_code=409, detail={"code": code, "active_run_count": count} if type(count) is int and count >= 0 else code)
+    if code in {"model_group_target_revision_conflict"}:
+        return HTTPException(status_code=409, detail=code)
+    if code in {"model_group_migration_required", "model_group_migration_choice_conflict", "model_group_migration_target_invalid", "model_group_target_revision_required"}:
+        return HTTPException(status_code=422, detail=code)
     if code in {
+        "group_not_available",
+        "group_disabled",
+        "group_has_no_models",
+        "model_not_available",
+        "model_group_code_reserved",
+        "model_group_name_invalid",
+        "model_group_name_duplicate",
+        "model_group_code_invalid",
+        "model_group_type_invalid",
+        "model_group_create_failed",
+        "model_group_update_empty",
+        "model_group_primary_required",
+        "model_group_fallback_confirmation_required",
+        "model_group_batch_invalid",
+        "model_group_batch_revision_required",
+        "model_group_model_parameters_invalid",
+        "model_group_default_model_invalid",
+        "model_group_default_change_required",
+        "model_group_single_membership_required",
+        "model_group_model_duplicate",
+        "model_group_member_duplicate",
+        "model_group_member_unknown_user",
+        "model_group_duplicate",
+        "model_group_primary_required",
+        "model_group_member_identity_conflict",
+        "model_group_member_identity_required",
+        "company_identity_not_mapped",
+        "company_identity_ambiguous",
+        "model_group_impact_confirmation_required",
+        "model_group_references_exist",
+        "model_group_active_runs",
+        "model_default_group_immutable",
         "model_connection_endpoint_invalid",
+
         "model_connection_endpoint_must_be_origin",
         "model_connection_endpoint_forbidden",
         "model_connection_https_required",
@@ -113,6 +243,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_user_access_unknown_user",
         "model_default_must_be_available",
         "model_catalog_default_required",
+        "model_user_access_retired",
         "model_catalog_order_invalid",
         "model_capacity_pair_required",
         "model_catalog_identity_collision",
@@ -120,7 +251,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "max_output_tokens_invalid",
     }:
         return HTTPException(status_code=422, detail=code)
-    if code in {"model_catalog_revision_conflict", "model_catalog_discovery_changed"}:
+    if code in {"model_catalog_revision_conflict", "model_catalog_discovery_changed", "model_group_revision_conflict", "model_policy_changed", "model_selection_conflict"}:
         return HTTPException(status_code=409, detail=code)
     if code in {"model_connection_authentication_failed"}:
         return HTTPException(status_code=400, detail=code)
@@ -128,6 +259,8 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=429, detail=code)
     if code in {"company_employee_directory_forbidden"}:
         return HTTPException(status_code=403, detail=code)
+    if code in {"model_group_member_unknown_user", "company_identity_not_mapped", "company_identity_ambiguous"}:
+        return HTTPException(status_code=422, detail=code)
     if code in {"model_connection_encryption_key_invalid", "company_employee_directory_unavailable"}:
         return HTTPException(status_code=503, detail=code)
     return HTTPException(status_code=502, detail=code or "model_connection_unavailable")
@@ -158,7 +291,7 @@ async def discover_model_catalog(
         raise HTTPException(status_code=422, detail="model_connection_request_invalid")
     try:
         return await configured_model_control_plane().discover(
-            base_url=payload.base_url, api_key=payload.credential
+            base_url=payload.base_url, api_key=payload.credential, provider_id=payload.provider_id
         )
     except (RuntimeError, ValueError) as exc:
         raise _translate_control_plane_error(exc) from exc
@@ -185,6 +318,7 @@ async def publish_model_catalog(
             models=[model.model_dump() for model in payload.models],
             actor_user_id=principal.user_id,
             tenant_id=principal.tenant_id,
+            provider_id=payload.provider_id,
         )
     except (RuntimeError, ValueError, PermissionError) as exc:
         raise _translate_control_plane_error(exc) from exc
@@ -304,6 +438,192 @@ def build_model_management_router(
         principal: Any = Depends(principal_dependency),
     ) -> dict[str, Any]:
         return await admin_models(principal, is_admin=is_admin)
+
+    @router.get("/models/groups")
+    async def model_groups_endpoint(
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        groups = await configured_model_control_plane().groups_for_user(
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+        )
+        return {"groups": groups, "count": len(groups), "version": "model-groups.v1"}
+
+    @router.get("/admin/model-groups")
+    async def admin_model_groups_endpoint(
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        groups = await configured_model_control_plane().admin_groups(
+            tenant_id=principal.tenant_id,
+        )
+        return {"groups": groups, "version": "model-groups.v1"}
+
+    @router.get("/admin/model-groups/{group_id}")
+    async def admin_model_group_details_endpoint(
+        group_id: str,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        details = await configured_model_control_plane().admin_group_details(
+            tenant_id=principal.tenant_id, group_id=group_id,
+        )
+        if details is None:
+            raise HTTPException(status_code=404, detail="group_not_available")
+        return details
+
+    @router.post("/admin/model-groups")
+    async def create_model_group_endpoint(
+        payload: ModelGroupCreateRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().create_model_group(
+                tenant_id=principal.tenant_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.patch("/admin/model-groups/{group_id}")
+    async def update_model_group_endpoint(
+        group_id: str,
+        payload: ModelGroupUpdateRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().update_model_group(
+                tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-groups/{group_id}/retire")
+    async def retire_model_group_endpoint(
+        group_id: str,
+        payload: ModelGroupRetireRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().archive_or_delete_model_group(
+                tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-groups/models/batch")
+    async def batch_model_group_models_endpoint(
+        payload: ModelGroupBatchRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().batch_group_models(
+                tenant_id=principal.tenant_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.put("/admin/model-groups/{group_id}/models")
+    async def set_model_group_models_endpoint(
+        group_id: str,
+        payload: ModelGroupModelsRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().set_model_group_models(
+                tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.get("/admin/users/{user_id}/model-groups")
+    async def get_user_model_groups_endpoint(
+        user_id: str,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        result = await configured_model_control_plane().user_group_memberships(
+            tenant_id=principal.tenant_id, user_id=user_id,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="user_not_available")
+        return result
+
+    @router.put("/admin/users/model-groups/batch")
+    async def set_users_model_groups_batch_endpoint(
+        payload: UserModelGroupsBatchRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().set_users_group_memberships_batch(
+                tenant_id=principal.tenant_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.put("/admin/users/{user_id}/model-groups")
+    async def set_user_model_groups_endpoint(
+        user_id: str,
+        payload: UserModelGroupsRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().set_user_group_memberships(
+                tenant_id=principal.tenant_id, user_id=user_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.put("/admin/model-groups/{group_id}/members")
+    async def set_model_group_members_endpoint(
+        group_id: str,
+        payload: ModelGroupMembersRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().set_model_group_members(
+                tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.get("/admin/model-providers/{provider_id}")
+    async def model_provider_endpoint(provider_id: str, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().admin_projection(provider_id=provider_id)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-providers")
+    async def create_model_provider_endpoint(payload: ModelProviderCreateRequest, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().create_provider(name=payload.name)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.get("/admin/model-providers/{provider_id}/impact")
+    async def model_provider_impact_endpoint(provider_id: str, missing_only: bool = False, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().provider_impact(provider_id=provider_id, missing_only=missing_only)
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
+
+    @router.post("/admin/model-providers/{provider_id}/retire")
+    async def retire_model_provider_endpoint(provider_id: str, payload: ModelProviderRetireRequest, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
+        _require_admin(principal, is_admin=is_admin)
+        try:
+            return await configured_model_control_plane().retire_provider(provider_id=provider_id, **payload.model_dump())
+        except (ValueError, RuntimeError) as exc:
+            raise _translate_control_plane_error(exc) from exc
 
     @router.post("/admin/models/discover")
     async def discover_model_catalog_endpoint(

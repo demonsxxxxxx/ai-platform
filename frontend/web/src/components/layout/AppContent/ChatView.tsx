@@ -169,6 +169,7 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
+  modelUnavailableReason?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
   composerDraftHandoffKey?: string | null;
@@ -197,7 +198,9 @@ interface ChatViewProps {
   onToggleAgentOption: (key: string, value: boolean | string | number) => void;
   availableModels: ModelOption[];
   currentModelId: string;
-  onSelectModel: (modelId: string, modelValue: string) => void;
+  modelSelectionMode?: "auto" | "explicit";
+  onSelectModel: (modelId: string, modelValue: string, mode?: "auto" | "explicit") => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -243,6 +246,7 @@ export function ChatView({
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
+  modelUnavailableReason,
   initialComposerDraft,
   initialComposerDraftKey,
   composerDraftHandoffKey,
@@ -268,7 +272,9 @@ export function ChatView({
   onToggleAgentOption,
   availableModels,
   currentModelId,
+  modelSelectionMode = "explicit",
   onSelectModel,
+  onModelSelectorOpen,
   onSendMessage,
   canRetryPendingSubmission,
   onRetryPendingSubmission,
@@ -957,6 +963,7 @@ export function ChatView({
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
     placeholder: composerPlaceholder,
+    modelUnavailableReason,
     acceptedFileTypes: undefined,
     disableSlashCommands: Boolean(agentEmptyProfile),
     tools,
@@ -980,7 +987,9 @@ export function ChatView({
     onToggleAgentOption,
     availableModels,
     currentModelId,
+    modelSelectionMode,
     onSelectModel,
+    onModelSelectorOpen,
     attachments,
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,

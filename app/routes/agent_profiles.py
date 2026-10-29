@@ -4,12 +4,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request as HttpRequest
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from app.agent_apps.api import AgentProfileAuthority
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
+from app.execution.api import parse_requested_model_selection, list_public_models, model_selection_error_status
 from app.department_directory import validate_profile_department_authorities
 from app.models import (
     AgentProfileDraftRequest,
@@ -54,8 +55,15 @@ class AgentAppRunRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
     thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
-    model_id: str | None = Field(default=None, min_length=1, max_length=128)
-    model: str | None = Field(default=None, min_length=1, max_length=512)
+    model_id: str | None = None
+    model: str | None = None
+    group_id: str | None = None
+    selection_mode: str | None = None
+
+    @model_validator(mode="after")
+    def validate_model_selection(self):
+        parse_requested_model_selection(self.model_dump(include={"model_id", "model", "group_id", "selection_mode"}))
+        return self
 
     @field_validator("file_ids")
     @classmethod
@@ -126,6 +134,10 @@ async def _submit_dedicated_agent_run(
         agent_options["model_id"] = request.model_id
     if request.model is not None:
         agent_options["model"] = request.model
+    if request.group_id is not None:
+        agent_options["group_id"] = request.group_id
+    if "selection_mode" in request.model_fields_set:
+        agent_options["selection_mode"] = request.selection_mode
     canonical_request = ChatStreamRequest(
         workspace_id=str(session["workspace_id"]),
         session_id=session_id,
@@ -177,6 +189,25 @@ async def get_agent_profile(
         raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
     async with transaction() as conn:
         return await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+
+
+@router.get("/agent-profiles/{agent_id}/models")
+async def get_agent_profile_models(
+    agent_id: str,
+    group_id: str | None = Query(default=None, max_length=128),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Resolve models only through an authorized, published expert entry."""
+    try:
+        safe_agent_id = assert_safe_id(agent_id, "agent_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="agent_profile_not_found") from exc
+    async with transaction() as conn:
+        await _authority.get_public(conn, principal=principal, agent_id=safe_agent_id)
+        try:
+            return await list_public_models(conn, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="expert", group_id=group_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
 
 
 @router.put("/agent-profiles/{agent_id}/favorite")

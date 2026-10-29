@@ -29,6 +29,7 @@ from app.skills.release_policy import (
 )
 from app.mcp.api import assert_mcp_tool_reference
 from app.execution.api import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS, assert_upstream_model_id
+from app.execution.api import parse_requested_model_selection
 from app.identity.api import assert_safe_department_authority_id
 from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
@@ -433,28 +434,32 @@ class CreateRunRequest(BaseModel):
     title: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
     file_ids: list[str] = Field(default_factory=list, max_length=32)
+    model_id: str | None = None
+    model: str | None = None
+    group_id: str | None = None
+    selection_mode: Literal["auto", "explicit"] | None = None
+
+    @model_validator(mode="after")
+    def validate_model_selection(self):
+        parse_requested_model_selection(self.model_dump(include={"model_id", "model", "group_id", "selection_mode"}))
+        return self
 
     @field_validator("tenant_id", "workspace_id", "agent_id")
     @classmethod
     def validate_required_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
 
-    @field_validator("capability_id", "skill_id")
+    @field_validator("capability_id", "skill_id", "session_id")
     @classmethod
     def validate_optional_selector_ids(cls, value: str | None, info):
+        if info.field_name == "session_id" and value is not None:
+            return assert_safe_id(value, info.field_name)
         return assert_safe_id(value, info.field_name) if value else value
 
     @field_validator("user_id")
     @classmethod
     def validate_optional_user_id(cls, value: str | None):
         return assert_safe_principal_user_id(value) if value else value
-
-    @field_validator("session_id")
-    @classmethod
-    def validate_optional_session_id(cls, value: str | None):
-        if value is None:
-            return value
-        return assert_safe_id(value, "session_id")
 
     @field_validator("file_ids")
     @classmethod
@@ -463,7 +468,6 @@ class CreateRunRequest(BaseModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("file_ids contains duplicates")
         return normalized
-
 
 class CreateRunResponse(BaseModel):
     run_id: str
@@ -733,35 +737,31 @@ class QueueRunPayload(BaseModel):
     context_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_id: str | None = None
     model_value: str | None = None
+    model_group_id: str | None = None
+    model_group_code: str | None = None
+    model_group_type: str | None = None
+    model_group_revision: int | None = None
+    model_selection_mode: Literal["auto", "explicit"] = "auto"
+    usage_scene: Literal["chat", "expert", "skill", "independent"] = "independent"
+    model_policy_version: str | None = None
     agent_profile: dict[str, Any] | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
     @field_validator(
-        "tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "executor_type"
+        "tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "executor_type", "user_id"
     )
     @classmethod
     def validate_ids(cls, value: str, info):
+        if info.field_name == "user_id":
+            return assert_safe_principal_user_id(value)
         return assert_safe_id(value, info.field_name)
 
-    @field_validator("skill_id")
+    @field_validator("skill_id", "context_snapshot_id", "model_id")
     @classmethod
-    def validate_optional_skill_id(cls, value: str | None):
-        return assert_safe_id(value, "skill_id") if value is not None else None
-
-    @field_validator("user_id")
-    @classmethod
-    def validate_user_id(cls, value: str):
-        return assert_safe_principal_user_id(value)
-
-    @field_validator("context_snapshot_id")
-    @classmethod
-    def validate_optional_context_snapshot_id(cls, value: str | None):
-        return assert_safe_id(value, "context_snapshot_id") if value else value
-
-    @field_validator("model_id")
-    @classmethod
-    def validate_optional_model_id(cls, value: str | None):
-        return assert_safe_id(value, "model_id") if value else value
+    def validate_optional_queue_id(cls, value: str | None, info):
+        if info.field_name == "skill_id":
+            return assert_safe_id(value, info.field_name) if value is not None else None
+        return assert_safe_id(value, info.field_name) if value else value
 
     @field_validator("model_value")
     @classmethod

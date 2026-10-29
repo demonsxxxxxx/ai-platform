@@ -65,7 +65,7 @@ _PROFILE_TRANSPORT_SELECTOR_PATHS = frozenset(
     }
 )
 _PROFILE_TRANSPORT_AGENT_OPTION_KEYS = frozenset(
-    {"enable_thinking", "model", "model_id"}
+    {"enable_thinking", "model", "model_id", "group_id", "selection_mode"}
 )
 
 @dataclass(frozen=True)

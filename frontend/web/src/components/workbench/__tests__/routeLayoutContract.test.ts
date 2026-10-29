@@ -38,7 +38,10 @@ test("model admin keeps actions visible while its table scrolls on wide screens"
   const admin = read("src/components/panels/ModelAdminControl.tsx");
 
   assert.match(catalog, /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto lg:overflow-hidden`\}/);
-  assert.match(admin, /flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink/);
+  const providers = read("src/components/panels/ModelProviderManagement.tsx");
+  assert.match(providers, /flex min-h-0 min-w-0 flex-1 flex-col lg:h-full/);
+  assert.match(admin, /flex min-w-0 shrink-0 flex-col gap-4 p-4 lg:min-h-0 lg:shrink/);
+  assert.match(admin, /providerId \? "lg:flex-1" : "min-h-full lg:h-full"/);
   assert.match(admin, /lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll/);
   assert.match(admin, /<Table[\s\S]*?\bsticky\b/);
   assert.match(admin, /data-model-admin-action-bar/);

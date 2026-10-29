@@ -59,11 +59,13 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+  const { modelGroupsApi } = await import("../../../services/api/modelGroups.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
+    listPublicGroups: modelGroupsApi.listPublic,
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -93,14 +95,20 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     limit: 20,
     has_more: false,
   });
+  modelGroupsApi.listPublic = async () => ({
+    groups: [{ id: "group-enterprise", code: "default", name: "普通默认组", type: "ordinary_default",
+      enabled: true, revision: 1, is_primary: true, availability: "available",
+      models: [{ id: "model-default", value: "model-default", label: "默认模型", enabled: true }] }],
+    count: 1, version: "model-groups.v1",
+  });
   modelPublicApi.listAvailable = async () => ({
-    models: [{
+    models: [{ id: "model-first", value: "model-first", label: "非默认模型" }, {
       id: "model-default",
       value: "model-default",
       label: "默认模型",
     }],
-    count: 1,
-    enabled_count: 1,
+    count: 2,
+    enabled_count: 2,
     default_model_id: "model-default",
   });
 
@@ -124,6 +132,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       authApi.getCurrentUser = originals.getCurrentUser;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
+      modelGroupsApi.listPublic = originals.listPublicGroups;
     },
   };
 }
@@ -698,6 +707,12 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     );
     assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    const options = submissions[expectedCount - 1]?.[2] as Record<string, unknown>;
+    assert.equal(options.group_id, "group-enterprise");
+    assert.equal(options.model_id, "model-default");
+    assert.equal(options.model, "model-default");
+    assert.equal(options.selection_mode, "explicit");
+    assert.equal(container.querySelector('[aria-label="选择模型分组"]'), null);
     assert.deepEqual(submissions[expectedCount - 1]?.[10], {
       agent_id: profile.agent_id,
     });
