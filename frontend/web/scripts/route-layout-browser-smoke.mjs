@@ -197,7 +197,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
         providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
         connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: []
       });
-      if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0 });
+      if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0, cleanable_count: 28, blocked_models: [{id:'mdl-0',label:'Model 0',group_count:1,default_group_count:1,active_run_count:0,groups:[{name:'布局测试组'}]}] });
       if (url.pathname === '/api/ai/admin/models' || url.pathname === '/api/ai/admin/model-providers/legacy') return json({
         providers: [{ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29 }, { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 0 }],
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
@@ -408,6 +408,7 @@ const viewports = [
 const requestedCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_CASE;
 const requestedViewport = process.env.AI_PLATFORM_ROUTE_LAYOUT_VIEWPORT;
 if (requestedViewport === "mobile-short") viewports.push({ name: "mobile-short", width: 390, height: 560, mobile: true });
+if (requestedViewport === "desktop-short") viewports.push({ name: "desktop-short", width: 1440, height: 640, mobile: false });
 const groupCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_GROUP_CASE || "business";
 const selectedCases = requestedCase
   ? cases.filter((scenario) => scenario.name === requestedCase)
@@ -551,12 +552,17 @@ async function runCase(viewport, scenario) {
     let modelGroupDrawer = null;
     let providerScreenshot = null;
     if (scenario.name === "models") {
-      await browser.client.evaluate(`document.querySelector('[data-model-catalog-shell]').scrollTop = 0`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 供应商 B（合成）"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[data-model-provider-row="supplier-b"] [data-provider-expanded]') && document.querySelector('[aria-label="模型 API 地址"]').value.includes('supplier-b')`, "models:provider-b-expanded");
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]') && document.querySelectorAll('[data-model-admin-model]').length === 29`, "models:provider-a-expanded");
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').scrollIntoView({block:'start'})`);
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-rows`);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商')).click()`);
       await browser.client.waitFor("Boolean(document.querySelector('input[aria-label=供应商名称]'))", "models:provider-create-form");
       providerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-create`);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '取消新增')).click()`);
-      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '删除供应商')).click()`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="删除供应商 默认供应商"]').click()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-provider-delete-blocked]'))", "models:provider-reference-block");
       assert.match(await browser.client.evaluate("document.querySelector('[data-provider-delete-blocked]').textContent"), /关联 1 个分组、1 个默认模型/);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '关闭检查结果')).click()`);
@@ -743,6 +749,7 @@ async function runCase(viewport, scenario) {
     }
     let modelLayout = null;
     if (scenario.name === "models" && groupCase !== "default") {
+      if (viewport.width < 1024) await browser.client.evaluate(`document.querySelector('[data-model-admin-action-bar]').scrollIntoView({block:'end'})`);
       modelLayout = await browser.client.evaluate(`(() => {
         const table = document.querySelector('[data-model-admin-table-scroll]');
         const header = table.querySelector('thead').getBoundingClientRect();
@@ -763,7 +770,7 @@ async function runCase(viewport, scenario) {
           enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
-          actionBottomGap: Math.round(innerHeight - bar.bottom),
+          actionBottomGap: Math.round(document.querySelector('[data-provider-expanded]').getBoundingClientRect().bottom - bar.bottom),
           publishErrorVisible: document.querySelector('[data-model-admin-action-bar] [role="alert"]')?.textContent.includes('deepseek-v4-flash-cc') ?? false,
           publishRequestCount: window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models/publish').length,
           tableScrollable: table.scrollHeight > table.clientHeight,

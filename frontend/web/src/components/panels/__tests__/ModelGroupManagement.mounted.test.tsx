@@ -19,7 +19,7 @@ const summary: AdminModelGroupSummary = {
 };
 const details: AdminModelGroupDetails = { ...summary, members: [], models: [], default_model_id: null };
 
-async function mount(initialDetails = details, shell = false) {
+async function mount(initialDetails = details, shell = false, available = true) {
   const React = await import("react");
   const { ModelGroupManagement } = await import("../ModelGroupManagement.tsx");
   const { ModelCatalogPanel } = await import("../ModelCatalogPanel.tsx");
@@ -36,7 +36,7 @@ async function mount(initialDetails = details, shell = false) {
   modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
-  modelAdminApi.get = async () => ({ providers: [{ id: "legacy", name: "默认供应商", revision: 4, model_count: 1 }], connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
+  modelAdminApi.get = async () => ({ providers: [{ id: "legacy", name: "默认供应商", revision: 4, model_count: 1 }], connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
   companyEmployeesApi.list = async (options) => { calls.push({ kind: "employees", body: options }); return { employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100, snapshot_id: "fixture-v1" }; };
   capabilityDistributionApi.departmentDirectory = async () => [{ directoryId: "123", authorityId: "123", name: "总公司", path: "总公司", selectable: true, reason: null, children: [{ directoryId: "456", authorityId: "456", name: "销售部", path: "总公司 / 销售部", children: [], selectable: true, reason: null }] }];
   const container = dom.document.createElement("div");
@@ -333,5 +333,27 @@ test("model catalog tabs keep unsaved model names mounted", async () => {
     }
     await openEditor();
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="model-a 平台显示名称"]')?.value, "未保存名称");
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+
+test("missing upstream model remains visible and can be removed without changing the default", async () => {
+  const view = await mount({ ...details, default_model_id: "kept", models: [
+    { model_id: "kept", model_value: "kept", label: "Kept", enabled: true, display_order: 0, priority: 0, weight: 100 },
+    { model_id: "model-a", model_value: "model-a", label: "Missing", enabled: true, display_order: 1, priority: 0, weight: 100 },
+  ] }, false, false);
+  const click = async (label: string) => view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label); node.click();
+  });
+  try {
+    await click("编辑 销售组"); await click("模型");
+    const missing = document.querySelector<HTMLElement>('[data-model-group-model="model-a"]');
+    assert.ok(missing); assert.match(missing.textContent ?? "", /上游缺失.*取消勾选并保存可移除/);
+    await view.React.act(async () => missing.querySelector<HTMLElement>('[role=checkbox]')!.click());
+    await click("保存模型");
+    const saved = view.calls.find((item) => item.kind === "models")?.body as { models: { model_id: string }[]; default_model_id: string };
+    assert.deepEqual(saved.models.map((model) => model.model_id), ["kept"]);
+    assert.equal(saved.default_model_id, "kept");
   } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });

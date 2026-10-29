@@ -1912,7 +1912,7 @@ def test_model_provider_routes_require_admin_and_keep_provider_scope(monkeypatch
     for method, path, payload in requests:
         assert client.request(method, path, **({"json": payload} if payload else {})).status_code == 200
     assert captured == [{"name": "Supplier A"}, {"provider_id": "mp-a"},
-        {"provider_id": "mp-a", "missing_only": True},
+        {"provider_id": "mp-a", "missing_only": True, "tenant_id": "tenant-a"},
         {"provider_id": "mp-a", "expected_revision": 2, "confirm": True, "missing_only": False}]
     captured.clear()
     authorized = False

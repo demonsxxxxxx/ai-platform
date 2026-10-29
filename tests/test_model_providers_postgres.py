@@ -41,7 +41,7 @@ async def test_suppliers_same_url_same_model_keep_separate_credentials_and_group
         await _prepare_schema(conn, schema)
         a = await create_provider(conn, name="Supplier A")
         b = await create_provider(conn, name="Supplier B")
-        ra, _ = await publish(conn, a["id"], secret="synthetic-a")
+        ra, _ = await publish(conn, a["id"], secret="synthetic-a", values=("shared-model", "unused"))
         rb, _ = await publish(conn, b["id"], secret="synthetic-b")
         ma, mb = (platform_model_id("shared-model", p["id"]) for p in (a, b))
         assert ma != mb
@@ -85,6 +85,10 @@ async def test_suppliers_same_url_same_model_keep_separate_credentials_and_group
             values ('pinned-lease','tenant-a','w','user-a','s','pinned','pinned-attempt','test','{"owner_generation":4}')""")
         frozen = await (await conn.execute("select execution_spec_canonical_json,execution_spec_sha256 from run_attempts where id='pinned-attempt'")).fetchone()
         ra2, _ = await publish(conn, a["id"], revision=ra, secret="synthetic-a-rotated", values=("replacement",))
+        active_impact = await provider_impact(conn, provider_id=a["id"], missing_only=True, tenant_id="tenant-b")
+        assert active_impact["cleanable_count"] == 1
+        assert active_impact["blocked_models"][0]["active_run_count"] == 1
+        assert active_impact["blocked_models"][0]["groups"] == [], "never expose another tenant's group name"
         pinned = await get_run_connection(conn, run_id="pinned", attempt_id="pinned-attempt", model_value="shared-model", encryption_key=KEY)
         assert pinned.revision == ra and pinned.api_key == "synthetic-a"
         assert await (await conn.execute("select execution_spec_canonical_json,execution_spec_sha256 from run_attempts where id='pinned-attempt'")).fetchone() == frozen
@@ -98,6 +102,14 @@ async def test_suppliers_same_url_same_model_keep_separate_credentials_and_group
         old = next(m for m in await list_admin_models(conn, provider_id=a["id"]) if m["id"] == ma)
         assert not old["available"]
         assert (await provider_impact(conn, provider_id=a["id"]))["group_count"] == 1
+        impact = await provider_impact(conn, provider_id=a["id"], missing_only=True, tenant_id="tenant-a")
+        assert impact["model_count"] == 2 and impact["cleanable_count"] == 1
+        assert impact["blocked_models"][0]["id"] == ma
+        assert impact["blocked_models"][0]["groups"][0]["name"] == "Mixed"
+        async with conn.transaction():
+            partial = await retire_provider(conn, provider_id=a["id"], expected_revision=ra2, confirm=True, missing_only=True)
+        assert partial["model_count"] == 1 and partial["retained_count"] == 1
+        assert ma in {m["id"] for m in await list_admin_models(conn, provider_id=a["id"])}
         with pytest.raises(ValueError, match="model_provider_in_use"):
             async with conn.transaction():
                 await retire_provider(conn, provider_id=a["id"], expected_revision=ra2, confirm=True, missing_only=True)

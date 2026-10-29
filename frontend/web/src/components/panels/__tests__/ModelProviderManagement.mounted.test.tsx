@@ -12,16 +12,11 @@ const { ModelProviderManagement } = await import("../ModelProviderManagement");
 const noop = () => {};
 const button = (label: string) => {
   const node = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === label);
-  assert.ok(node, label); return node;
+  const action = node ?? [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label")?.startsWith(label));
+  assert.ok(action, label); return action;
 };
 async function click(label: string) { await React.act(async () => button(label).click()); }
-async function select(label: string) {
-  const field = document.querySelector<HTMLElement>('[role=combobox]')!;
-  await React.act(async () => field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
-  const option = [...document.querySelectorAll<HTMLElement>('[role=option]')].find((o) => o.textContent?.trim() === label);
-  assert.ok(option);
-  await React.act(async () => { option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", button: 0 })); option.dispatchEvent(new PointerEvent("click", { bubbles: true, pointerType: "mouse", detail: 1 })); });
-}
+async function select(label: string) { await click(`供应商 ${label}`); }
 function input(label: string, value: string) {
   const field = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
   assert.ok(field);
@@ -41,8 +36,8 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     return { providers, connection: { configured: p?.revision != null, revision: p?.revision ?? null, base_url: "https://same.example", key_fingerprint: "opaque" }, models: p ? [{ id: `${p.id}-model`, value: "shared-model", label: "Shared", provider: "compatible", provider_id: p.id, enabled: false, available: true, order: 1, last_seen_revision: p.revision ?? 0, last_seen_at: "2026-01-01" }] : [] };
   };
   modelAdminApi.createProvider = async (name) => { providers = [...providers, { id: "c", name, revision: null, model_count: 0 }]; return { id: "c", name }; };
-  modelAdminApi.providerImpact = async (id) => ({ ...providers.find((p) => p.id === id)!, group_count: blocked ? 2 : 0, default_group_count: blocked ? 1 : 0, active_run_count: blocked ? 1 : 0 }) as ModelProviderImpact;
-  modelAdminApi.retireProvider = async (id, revision) => { calls.push(`delete:${id}:${revision}`); providers = providers.filter((p) => p.id !== id); return { id, deleted: true }; };
+  modelAdminApi.providerImpact = async (id, options) => ({ ...providers.find((p) => p.id === id)!, group_count: blocked ? 2 : 0, default_group_count: blocked ? 1 : 0, active_run_count: blocked ? 1 : 0, cleanable_count: options?.missingOnly ? 26 : blocked ? 0 : 1, blocked_models: options?.missingOnly ? [{ id: "missing", label: "Missing model", groups: [{ name: "Test group" }], group_count: 1, default_group_count: 0, active_run_count: 0 }] : [] }) as ModelProviderImpact;
+  modelAdminApi.retireProvider = async (id, revision, options) => { if (options?.missingOnly) { calls.push(`cleanup:${id}:${revision}`); return { id, deleted: true, model_count: 26, retained_count: 1 }; } calls.push(`delete:${id}:${revision}`); providers = providers.filter((p) => p.id !== id); return { id, deleted: true }; };
   const container = document.createElement("div"); document.body.append(container);
   const root = await createLobeTestRoot(container);
   try {
@@ -54,10 +49,19 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     await click("放弃修改并切换");
     assert.ok(calls.includes("get:b"));
     assert.equal(document.querySelector<HTMLInputElement>('input[aria-label="模型 API Key"]')?.value, "");
+    await click("清理上游已移除模型");
+    assert.match(document.querySelector('[role=dialog]')?.textContent ?? "", /26 个无引用.*1 个被引用/);
+    assert.match(document.querySelector('[role=dialog]')?.textContent ?? "", /Missing model：分组 Test group/);
+    await click("取消");
+    await click("清理上游已移除模型");
+    await click("确认清理");
+    assert.ok(calls.includes("cleanup:b:2"));
+    assert.match(container.textContent ?? "", /已清理 26 个模型，保留 1 个被引用模型/);
     await click("删除供应商");
     assert.match(container.querySelector('[data-provider-delete-blocked]')?.textContent ?? "", /2 个分组、1 个默认模型，1 个未完成任务/);
     assert.ok(!calls.some((c) => c.startsWith("delete:")));
     await select("Supplier A");
+    assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 1);
     assert.equal(container.querySelector('[data-provider-delete-blocked]'), null, "switching clears the former supplier's delete impact");
     assert.ok(!calls.some((c) => c.startsWith("delete:")));
     await select("Supplier B");

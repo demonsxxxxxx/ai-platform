@@ -39,7 +39,9 @@ test("model admin keeps actions visible while its table scrolls on wide screens"
 
   assert.match(catalog, /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto lg:overflow-hidden`\}/);
   const providers = read("src/components/panels/ModelProviderManagement.tsx");
-  assert.match(providers, /flex min-h-0 min-w-0 flex-1 flex-col lg:h-full/);
+  assert.match(providers, /flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4 lg:h-full lg:overflow-y-auto/);
+  assert.match(providers, /data-model-provider-row/);
+  assert.doesNotMatch(providers, /LobeSelectField/);
   assert.match(admin, /flex min-w-0 shrink-0 flex-col gap-4 p-4 lg:min-h-0 lg:shrink/);
   assert.match(admin, /providerId \? "lg:flex-1" : "min-h-full lg:h-full"/);
   assert.match(admin, /lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll/);

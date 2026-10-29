@@ -69,8 +69,14 @@ credential erasure. No physical-delete or restore API is exposed.
 For a Key already changed before this migration, `missing_only=true` on the same
 impact/retire flow cleans old unavailable models without deleting the retained
 supplier or currently provided models. The same references and active-Run checks
-apply to the affected models. If later rediscovered, a cleaned model may be explicitly
-published again; cleaning never changes groups or substitutes defaults.
+apply per affected model: preview reports `cleanable_count` and `blocked_models`,
+including reference counts and current-tenant group names only. Retirement under the
+same locks recomputes and archives only unreferenced missing entries; a referenced
+entry does not block unrelated entries. If all candidates are referenced it rejects;
+zero candidates is a no-op. Supplier deletion remains all-or-nothing. This replaces
+the old whole-batch missing-model rejection; no compatibility consumer requires it.
+If later rediscovered, a cleaned model may be explicitly published again; cleaning
+never changes groups or substitutes defaults.
 
 ## Group retirement
 

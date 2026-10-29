@@ -184,7 +184,7 @@ function GroupModelEditor({
     >
       <div className="flex min-w-0 items-center gap-2">
         <Checkbox checked disabled={busy} onChange={() => toggle({ id: entry.model_id, value: entry.model_value, label: entry.label } as AdminModelEntry)}>
-          <span className="min-w-0"><span className="block truncate text-sm">{entry.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{entry.model_value}</span></span>
+          <span className="min-w-0"><span className="block truncate text-sm">{entry.label}</span><span className="block truncate text-xs text-[var(--theme-text-secondary)]">{entry.model_value}</span>{catalog.find((model) => model.id === entry.model_id)?.available === false ? <span className="block text-xs text-[var(--theme-warning-text)]" data-group-model-missing>上游缺失 · 分组关联仍保留，取消勾选并保存可移除</span> : null}</span>
         </Checkbox>
       </div>
       <div className="flex items-center gap-1" aria-label={`调整 ${entry.label} 展示顺序`}>

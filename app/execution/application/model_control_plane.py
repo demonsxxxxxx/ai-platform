@@ -274,9 +274,9 @@ class ModelControlPlaneService:
         async with self._transaction() as conn:
             return await self._repository.create_provider(conn, name=name)
 
-    async def provider_impact(self, *, provider_id: str, missing_only: bool = False) -> dict[str, Any]:
+    async def provider_impact(self, *, provider_id: str, missing_only: bool = False, tenant_id: str | None = None) -> dict[str, Any]:
         async with self._transaction() as conn:
-            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only)
+            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only, tenant_id=tenant_id)
 
     async def retire_provider(self, **kwargs: Any) -> dict[str, Any]:
         async with self._transaction() as conn:

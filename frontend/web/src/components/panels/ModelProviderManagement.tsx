@@ -4,7 +4,7 @@ import { modelAdminApi, type AdminModelProvider, type ModelProviderImpact } from
 import { ApiRequestError } from "../../services/api/fetch";
 import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 import { ConfirmDialog } from "../common/ConfirmDialog";
-import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { ModelAdminControl, type ModelAdminControlState } from "./ModelAdminControl";
 
 export function ModelProviderManagement({ canManage = true, groupRevision, onGroupsChanged, onStateChange }: {
@@ -24,6 +24,7 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
   const [missingOnly, setMissingOnly] = useState(false);
   const [editorVersion, setEditorVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const owner = useRef<AbortController | null>(null);
   const reload = useCallback(async (signal?: AbortSignal) => {
     const state = await modelAdminApi.get({ signal });
@@ -65,39 +66,55 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
     if (!impact || busy) return;
     setBusy(true); setError(null);
     try {
-      await modelAdminApi.retireProvider(impact.id, impact.revision, { signal: owner.current?.signal, missingOnly });
+      const result = await modelAdminApi.retireProvider(impact.id, impact.revision, { signal: owner.current?.signal, missingOnly });
       if (owner.current?.signal.aborted) return;
+      setNotice(missingOnly ? `已清理 ${result.model_count ?? 0} 个模型，保留 ${result.retained_count ?? 0} 个被引用模型。` : `已删除供应商 ${impact.name}。`);
       setImpact(null); setDirty(false); setEditorVersion((version) => version + 1);
       await reload(owner.current?.signal);
       await refreshModels({ force: true });
     } catch (caught) { if (!owner.current?.signal.aborted) { setImpact(null); report(caught); } }
     finally { if (!owner.current?.signal.aborted) setBusy(false); }
   };
-  const blocked = impact && (impact.group_count > 0 || impact.default_group_count > 0 || impact.active_run_count > 0);
+  const blocked = impact && (missingOnly ? impact.cleanable_count === 0 : impact.group_count > 0 || impact.default_group_count > 0 || impact.active_run_count > 0);
+  const switchProvider = (id: string) => {
+    if (dirty) { setSwitchTo(id); return; }
+    setSelectedId(id); setDirty(false); setImpact(null); setMissingOnly(false); setError(null); setNotice(null);
+  };
   const providerChanged = useCallback(() => { void reload(owner.current?.signal).catch(report); }, [reload]);
   if (!canManage) return null;
-  return <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:h-full" data-model-provider-management>
-    <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--theme-border)] p-4">
-      <LobeSelectField aria-label="模型供应商" className="w-full sm:w-64" value={selectedId} disabled={busy || editorBusy} options={providers.map((item) => ({ value: item.id, label: item.name }))}
-        onChange={(id) => { if (dirty) setSwitchTo(id); else { setSelectedId(id); setDirty(false); setImpact(null); setMissingOnly(false); setError(null); } }} />
+  return <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4 lg:h-full lg:overflow-y-auto" data-model-provider-management>
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+      <h2 className="text-base font-semibold">模型供应商</h2>
       <Button onClick={() => setAdding(!adding)} disabled={busy || editorBusy || dirty}>新增供应商</Button>
-      <Button danger onClick={() => void inspectDelete()} disabled={busy || editorBusy || !selectedId}>删除供应商</Button>
-      <Button onClick={() => void inspectDelete(true)} disabled={busy || editorBusy || !selectedId}>清理上游已移除模型</Button>
       {adding ? <div className="flex w-full flex-wrap items-center gap-2">
         <Input aria-label="供应商名称" placeholder="供应商名称" value={name} maxLength={160} onChange={(event) => setName(event.target.value)} disabled={busy} />
         <Button type="primary" disabled={busy || !name.trim()} onClick={() => void add()}>创建供应商</Button>
         <Button disabled={busy} onClick={() => { setAdding(false); setName(""); }}>取消新增</Button>
       </div> : null}
       {error ? <p role="alert" className="w-full text-sm text-[var(--theme-danger-text)]">{error} <Button size="small" onClick={() => void reload(owner.current?.signal).catch(report)}>重新读取</Button></p> : null}
-      {impact && blocked ? <div role="alert" className="w-full text-sm" data-provider-delete-blocked>
-        {impact.name}：{impact.model_count} 个模型，关联 {impact.group_count} 个分组、{impact.default_group_count} 个默认模型，{impact.active_run_count} 个未完成任务。
-        请先在分组管理中移出模型并重新指定默认模型，等待任务结束；不会自动切换供应商。
-        <Button size="small" onClick={() => setImpact(null)}>关闭检查结果</Button>
-      </div> : null}
+      {notice ? <p role="status" className="w-full text-sm">{notice}</p> : null}
     </div>
-    {selectedId ? <ModelAdminControl key={`${selectedId}:${editorVersion}`} providerId={selectedId} onDirtyChange={setDirty} onBusyChange={setEditorBusy} onProviderChanged={providerChanged} groupRevision={groupRevision} onGroupsChanged={onGroupsChanged} onStateChange={onStateChange} />
-      : <p className="p-4 text-sm">暂无供应商，请新增供应商后填写连接并获取模型。</p>}
-    <ConfirmDialog isOpen={Boolean(impact && !blocked)} title={missingOnly ? "清理旧模型配置" : "删除供应商"} message={missingOnly ? `清理 ${impact?.name ?? ""} 中上游已移除的 ${impact?.model_count ?? 0} 个模型？连接与其它模型不变，历史任务保留；再次从该供应商发现时可重新添加。` : `删除 ${impact?.name ?? ""} 及其 ${impact?.model_count ?? 0} 个模型配置？历史任务与用量记录保留；当前页面未保存的修改将放弃。`} confirmText={missingOnly ? "确认清理" : "删除供应商"} loading={busy} onCancel={() => setImpact(null)} onConfirm={() => void remove()} />
-    <ConfirmDialog isOpen={switchTo !== null} title="切换供应商" message="切换会放弃当前供应商未保存的修改，是否继续？" confirmText="放弃修改并切换" onCancel={() => setSwitchTo(null)} onConfirm={() => { setSelectedId(switchTo!); setSwitchTo(null); setDirty(false); setImpact(null); setMissingOnly(false); setError(null); }} />
+    {impact ? <div role={blocked ? "alert" : "status"} className="shrink-0 rounded-lg border border-[var(--theme-border)] p-3 text-sm" data-provider-delete-blocked={blocked ? "" : undefined}>
+      <p>{impact.name}：{impact.model_count} 个模型，关联 {impact.group_count} 个分组、{impact.default_group_count} 个默认模型，{impact.active_run_count} 个未完成任务。</p>
+      {missingOnly ? <p>可清理 {impact.cleanable_count} 个；保留 {impact.blocked_models.length} 个被引用模型。连接与其它模型不变。</p> : null}
+      {impact.blocked_models.map((model) => <p key={model.id} className="mt-2">{model.label}：{model.groups.length ? `分组 ${model.groups.map((group) => group.name).join("、")}` : model.group_count ? "其它租户分组引用" : ""}{model.default_group_count ? ` · ${model.default_group_count} 个默认模型引用` : ""}{model.active_run_count ? ` · ${model.active_run_count} 个未完成任务` : ""}</p>)}
+      {blocked ? <p className="mt-2">{missingOnly && !impact.model_count ? "没有需要清理的模型。" : "请先处理以上引用；不会自动移除分组授权或切换供应商。"}</p> : null}
+      <Button size="small" onClick={() => setImpact(null)}>关闭检查结果</Button>
+    </div> : null}
+    {providers.map((provider) => <section key={provider.id} className={`flex shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--theme-border)] ${selectedId === provider.id ? "min-h-[32rem] lg:flex-1" : ""}`} data-model-provider-row={provider.id}>
+      <div className="flex shrink-0 items-center gap-2 bg-[var(--theme-bg-sidebar)] px-3 py-2">
+        <Button type="text" className="min-w-0 flex-1" aria-label={`供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} aria-controls={`provider-editor-${provider.id}`} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)} icon={selectedId === provider.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}>
+          <span className="min-w-0 flex-1 truncate text-left">{provider.name}</span><span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">{provider.model_count} 个模型</span>
+        </Button>
+        {selectedId === provider.id ? <Button danger type="text" aria-label={`删除供应商 ${provider.name}`} title="删除供应商" icon={<Trash2 size={16} />} disabled={busy || editorBusy || dirty} onClick={() => void inspectDelete()} /> : null}
+      </div>
+      {selectedId === provider.id ? <div id={`provider-editor-${provider.id}`} className="flex min-h-0 flex-1 flex-col" data-provider-expanded>
+        <div className="flex shrink-0 justify-end px-4 pt-3"><Button size="small" onClick={() => void inspectDelete(true)} disabled={busy || editorBusy || dirty}>清理上游已移除模型</Button></div>
+        <ModelAdminControl key={`${selectedId}:${editorVersion}`} providerId={selectedId} onDirtyChange={setDirty} onBusyChange={setEditorBusy} onProviderChanged={providerChanged} groupRevision={groupRevision} onGroupsChanged={onGroupsChanged} onStateChange={onStateChange} />
+      </div> : null}
+    </section>)}
+    {!providers.length ? <p className="text-sm">暂无供应商，请新增供应商后填写连接并获取模型。</p> : null}
+    <ConfirmDialog isOpen={Boolean(impact && !blocked)} title={missingOnly ? "清理旧模型配置" : "删除供应商"} message={missingOnly ? `清理 ${impact?.name ?? ""} 中 ${impact?.cleanable_count ?? 0} 个无引用的缺失模型，保留 ${impact?.blocked_models.length ?? 0} 个被引用模型？${impact?.blocked_models.map((model) => `${model.label}：${model.groups.length ? `分组 ${model.groups.map((group) => group.name).join("、")}` : "其它引用"}${model.active_run_count ? `，${model.active_run_count} 个未完成任务` : ""}`).join("；") ?? ""}。历史任务保留；再次从该供应商发现时可重新添加。` : `删除 ${impact?.name ?? ""} 及其 ${impact?.model_count ?? 0} 个模型配置？历史任务与用量记录保留；当前页面未保存的修改将放弃。`} confirmText={missingOnly ? "确认清理" : "删除供应商"} loading={busy} onCancel={() => setImpact(null)} onConfirm={() => void remove()} />
+    <ConfirmDialog isOpen={switchTo !== null} title="切换供应商" message="切换或收起会放弃当前供应商未保存的修改，是否继续？" confirmText="放弃修改并切换" onCancel={() => setSwitchTo(null)} onConfirm={() => { setSelectedId(switchTo!); setSwitchTo(null); setDirty(false); setImpact(null); setMissingOnly(false); setError(null); }} />
   </div>;
 }
