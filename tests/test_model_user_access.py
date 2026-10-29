@@ -89,10 +89,10 @@ class _PublishRepository:
     async def active_connection(self, _conn, **_kwargs):
         return SimpleNamespace(base_url="https://gateway.example", api_key="synthetic")
 
-    async def connection_projection(self, _conn):
+    async def connection_projection(self, _conn, *, provider_id="legacy"):
         return {"revision": 1}
 
-    async def admin_models(self, _conn):
+    async def admin_models(self, _conn, *, provider_id="legacy"):
         return []
 
     async def catalog_access(self, _conn):
