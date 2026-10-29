@@ -65,7 +65,6 @@ export function ChatInputSelectors({
             tools={tools}
             onToggleTool={onToggleTool}
             onToggleCategory={onToggleCategory}
-            onToggleAll={onToggleAll}
             enabledCount={enabledToolsCount}
             totalCount={totalToolsCount}
             isOpen={activePanel === "tools"}
