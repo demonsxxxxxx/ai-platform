@@ -82,6 +82,13 @@ test("the configured group default wins over display order and manual selection 
   assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelId: "a", storedDefaultValue: "provider/b" }), { modelId: "a", modelValue: "provider/a" });
 });
 
+test("supplier-scoped default selects the exact model ID when upstream names repeat", () => {
+  const availableModels = [{ id: "supplier-a-model", value: "shared" }, { id: "supplier-b-model", value: "shared" }];
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultId: "supplier-b-model", storedDefaultValue: "shared" }), { modelId: "supplier-b-model", modelValue: "shared" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelId: "supplier-a-model", storedDefaultId: "supplier-b-model" }), { modelId: "supplier-a-model", modelValue: "shared" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelValue: "shared" }), { modelId: "", modelValue: "" });
+});
+
 test("stale model selection is cleared and blocks send until explicit selection", () => {
   const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
   assert.match(source, /hasPriorSelection && !stillAvailable[\s\S]*?setCurrentModelId\(""\)[\s\S]*?请重新选择模型/);
@@ -928,4 +935,29 @@ test("legacy generic Agent sessions redirect to the canonical dedicated route", 
   assert.match(source, /if \(!agentWorkspace && identity\)/);
   assert.match(source, /buildAgentMarketWorkspacePath\([\s\S]*identity\.agent_id/);
   assert.match(source, /navigate\([\s\S]*\{ replace: true \}/);
+});
+
+test("chat group selection is retired across the ordinary and expert composer chain", () => {
+  for (const path of ["../ChatAppContent.tsx", "../ChatView.tsx", "../../../chat/ChatInput.tsx", "../../../chat/chatInputTypes.ts", "../../../chat/ChatInputToolbar.tsx"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /onSelectGroup|selectGroup|modelGroups|选择模型分组/);
+  }
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /group_id: selectedGroupId/);
+  assert.match(source, /model_id: currentModelId/);
+  assert.match(source, /model: currentModelValue/);
+});
+
+test("only a temporarily missing initial default may recover automatically", () => {
+  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  assert.match(source, /if \(modelSelectionError\) \{\s*if \(modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"\s*&& !hasPriorSelection && defaultModel\) setModelSelectionError\(null\);\s*return;/);
+  assert.doesNotMatch(source, /onConfigureModels|配置模型组/);
+  assert.doesNotMatch(source, /\{modelSelectionError \? \(\s*<p/);
+});
+
+test("missing designated defaults never fall back to the first catalog model", () => {
+  const availableModels = [{ id: "a", value: "provider/a" }];
+  for (const storedDefaultValue of ["", "provider/removed"]) {
+    assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultValue }), { modelId: "", modelValue: "" });
+  }
 });

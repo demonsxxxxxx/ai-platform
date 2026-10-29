@@ -825,6 +825,30 @@ test("the generic chat request serializer rejects legacy auto model mode and mar
   );
 });
 
+test("the generic chat request omits browser-only ProfileDrive attachment provenance", () => {
+  const body = buildSubmitChatBody({
+    message: "Review this document",
+    attachments: [{
+      id: "attachment-1",
+      key: "file-1",
+      name: "guide.pdf",
+      type: "document",
+      mimeType: "application/pdf",
+      size: 42,
+      profileDriveReference: { source_id: "profile", path: "/Shared/guide.pdf" },
+    }],
+  });
+
+  assert.deepEqual(body.attachments, [{
+    id: "attachment-1",
+    key: "file-1",
+    name: "guide.pdf",
+    type: "document",
+    mimeType: "application/pdf",
+    size: 42,
+  }]);
+});
+
 test("detects chat stream confirmation responses without a run id", () => {
   assert.equal(
     isChatStreamNeedsConfirmation({

@@ -2,7 +2,6 @@ import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, Modal
 import { Table } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   Wrench,
@@ -14,7 +13,7 @@ import {
   Container,
   X,
   Info,
-  Plus,
+  Search,
 } from "lucide-react";
 import { Checkbox } from "@lobehub/ui/base-ui";
 import type { ToolState, ToolCategory } from "../../types";
@@ -30,7 +29,6 @@ interface ToolSelectorProps {
   tools: ToolState[];
   onToggleTool: (toolName: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
-  onToggleAll: (enabled: boolean) => void;
   enabledCount: number;
   totalCount: number;
   isOpen?: boolean;
@@ -84,7 +82,6 @@ export function ToolSelector({
   tools,
   onToggleTool,
   onToggleCategory,
-  onToggleAll,
   enabledCount,
   totalCount,
   isOpen: externalIsOpen,
@@ -92,7 +89,6 @@ export function ToolSelector({
   searchSeed,
 }: ToolSelectorProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { catalogState, retryTools } = useContext(ChatMcpCatalogContext);
   const catalogNotice = getChatMcpCatalogNotice(catalogState);
   const catalogAllowsSelection = canSelectChatMcpTools(catalogState.status);
@@ -224,73 +220,29 @@ export function ToolSelector({
       className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden sm:min-h-0 sm:max-h-[80vh]"
       data-composer-mcp-selector
     >
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b"
-        style={{ borderColor: "var(--theme-border)" }}
-      >
-        {/* Mobile drag handle */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
-        <div className="flex items-center gap-3 mt-2 sm:mt-0">
-          <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
-            <Wrench
-              size={16}
-              className="text-[var(--theme-text-secondary)] sm:w-[18px] sm:h-[18px]"
-            />
-          </div>
-          <div>
+      {/* Header and search stay together above the scrolling catalog. */}
+      <div className="shrink-0 space-y-3 border-b border-[var(--theme-border)] px-4 py-3 sm:px-5 sm:py-4" data-tool-selector-header>
+        <div className="flex items-center justify-between gap-3">
+          {/* Mobile drag handle */}
+          <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
+          <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-2 sm:mt-0">
             <ModalTitle>{t("tools.title")}</ModalTitle>
-            <p className="text-xs sm:text-xs text-[var(--theme-text-secondary)]">
+            <p className="text-xs text-[var(--theme-text-secondary)]">
               {t("tools.selected", {
                 enabled: enabledCount,
                 total: totalCount,
               })}
             </p>
           </div>
+          <Button type="text"
+            aria-label={t("common.close")}
+            onClick={() => setIsOpen(false)}
+            className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
+          >
+            <X size={18} />
+          </Button>
         </div>
-        <Button type="text"
-          aria-label={t("common.close")}
-          onClick={() => setIsOpen(false)}
-          className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
-        >
-          <X size={18} />
-        </Button>
-      </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
-        <Button type="text"
-          htmlType="button"
-          disabled={!catalogAllowsSelection}
-          onClick={() => onToggleAll(true)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t("tools.selectAll")}
-        </Button>
-        <div className="w-px h-4 bg-[var(--theme-border)]" />
-        <Button type="text"
-          htmlType="button"
-          disabled={!catalogAllowsSelection}
-          onClick={() => onToggleAll(false)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t("tools.deselectAll")}
-        </Button>
-        <div className="flex-1" />
-        <Button type="text"
-          htmlType="button"
-          onClick={() => {
-            setIsOpen(false);
-            navigate("/mcp");
-          }}
-          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
-        >
-          <Plus size={14} />
-          <span>{t("tools.add")}</span>
-        </Button>
-      </div>
-
-      <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
         <Input
           type="text"
           value={searchQuery}
@@ -298,12 +250,13 @@ export function ToolSelector({
           autoFocus
           aria-label={t("tools.searchPlaceholder", "Search tools")}
           placeholder={t("tools.searchPlaceholder", "Search tools")}
-          className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+          size="large"
+          prefix={<Search size={16} />}
         />
       </div>
 
       {/* Categories */}
-      <div className="flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5" data-tool-selector-list>
         {catalogNotice && (
           <div
             aria-live="polite"
@@ -591,7 +544,7 @@ render: (_value, param) => (<>
       </div>
 
       {/* Footer */}
-      <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="shrink-0 px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <Button type="primary" block
           onClick={() => setIsOpen(false)}
         >

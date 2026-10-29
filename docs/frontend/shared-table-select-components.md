@@ -17,9 +17,12 @@ administration uses `ModelGroupManagement` and `ModelGroupUserDrawer`, backed by
 revisioned group/model/member and atomic user-membership APIs. A model can belong
 to any groups; a user has one effective group. The user drawer uses LobeSelectField
 to replace that membership; per-member primary controls and multi-group checkboxes
-are retired. Employee search,
-pagination, work-ID display, abortable requests, retryable directory failures,
-permission gates, Escape and focus restoration belong to the group member owner;
+are retired. The group member owner composes the two-column Lobe Modal in
+`ModelGroupMemberPicker`: organization navigation, company-wide search,
+all-page employee bulk selection with mixed state, work-ID/department-path display,
+staged selections, abortable requests, retryable directory failures,
+permission gates, Escape and focus restoration stay with that owner (see
+[model groups](model-groups.md#按组织架构选人));
 model-directory ACL controls are retired. The catalog publication request does
 not send `is_default`, `access_mode`, or `allowed_user_ids`; those historical
 fields are migration-only inputs and cannot silently reset authorization.

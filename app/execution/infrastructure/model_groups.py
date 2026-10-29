@@ -79,7 +79,7 @@ async def _effective_group(conn: Any, *, tenant_id: str, user_id: str, group_id:
         group = dict(await (await conn.execute("select * from model_groups where tenant_id = %s and id = %s", (tenant_id, default_id))).fetchone())
     if not group["enabled"] or group.get("archived_at") is not None:
         raise ModelGroupPolicyError("group_disabled")
-    if group["type"] == DEFAULT_GROUP_TYPE and usage_scene in {USAGE_SCENE_CHAT, USAGE_SCENE_EXPERT}:
+    if group["type"] == DEFAULT_GROUP_TYPE and usage_scene == USAGE_SCENE_CHAT:
         raise ModelGroupPolicyError("group_not_available")
     return group
 
@@ -88,11 +88,13 @@ async def _available_group_models(conn: Any, group_id: str) -> list[dict[str, An
     cursor = await conn.execute(
         """select c.model_id, c.upstream_model_id, c.display_name, c.provider,
              c.auto_compact_window, c.max_output_tokens, gw.revision as gateway_revision,
+             c.provider_id, p.name as provider_name,
              gm.priority, gm.weight, gm.display_order
            from model_group_models gm
            join model_catalog_entries c on c.model_id = gm.model_id
-           join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision
-           where gm.group_id = %s and gm.enabled and c.enabled and c.upstream_available
+           join model_providers p on p.id = c.provider_id and p.archived_at is null
+           join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision and gw.provider_id = c.provider_id
+           where gm.group_id = %s and gm.enabled and c.enabled and c.upstream_available and c.archived_at is null
              and c.auto_compact_window is not null and c.max_output_tokens is not null
            order by gm.display_order, c.model_id""", (group_id,),
     )
@@ -111,7 +113,7 @@ async def list_public_group_models(
         default_model_id = ""
     return {
         "models": [{"id": r["model_id"], "value": r["upstream_model_id"],
-                    "label": r["display_name"], "provider": r["provider"],
+                    "label": r["display_name"] if r.get("provider_id", "legacy") == "legacy" else f"{r['display_name']} · {r['provider_name']}", "provider": r["provider"],
                     "profile": {"auto_compact_window": r["auto_compact_window"],
                                 "max_output_tokens": r["max_output_tokens"]}} for r in rows],
         "count": len(rows), "enabled_count": len(rows),
@@ -149,20 +151,21 @@ async def list_groups_for_user(conn: Any, *, tenant_id: str, user_id: str) -> li
                case when g.type = 'ordinary_default' then '[]'::jsonb else
                  coalesce((select jsonb_agg(jsonb_build_object(
                    'model_id', gm.model_id, 'model_value', c.upstream_model_id,
-                   'display_name', c.display_name, 'enabled', gm.enabled
+                   'display_name', case when c.provider_id = 'legacy' then c.display_name else c.display_name || ' · ' || p.name end, 'enabled', gm.enabled
                  ) order by gm.priority desc, gm.display_order, gm.model_id)
                  from model_group_models gm
                  join model_catalog_entries c on c.model_id = gm.model_id
-                   and c.enabled and c.upstream_available
+                   and c.enabled and c.upstream_available and c.archived_at is null
                    and c.auto_compact_window is not null and c.max_output_tokens is not null
-                 join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision
+                 join model_providers p on p.id = c.provider_id and p.archived_at is null
+                 join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision and gw.provider_id = c.provider_id
                  where gm.group_id = g.id and gm.enabled and g.enabled), '[]'::jsonb) end as models,
                case when not g.enabled then 'group_disabled'
                     when g.type = 'ordinary_default' then 'default_not_for_chat'
                     when not exists (select 1 from model_group_models x where x.group_id = g.id and x.enabled) then 'group_has_no_models'
                     when not exists (select 1 from model_group_models x join model_catalog_entries c on c.model_id = x.model_id
-                       join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision
-                       where x.group_id = g.id and x.enabled and c.enabled and c.upstream_available
+                       join model_gateway_revisions gw on gw.active and gw.revision = c.last_seen_revision and gw.provider_id = c.provider_id
+                       where x.group_id = g.id and x.enabled and c.enabled and c.upstream_available and c.archived_at is null
                          and c.auto_compact_window is not null and c.max_output_tokens is not null) then 'group_models_unavailable'
                     else 'available' end as availability
         from model_groups g
@@ -229,9 +232,10 @@ async def get_admin_group_details(
           ) order by u.id) from model_group_members m join users u on u.id = m.user_id and u.tenant_id = g.tenant_id
              where m.group_id = g.id), '[]'::jsonb) as members,
           coalesce((select jsonb_agg(jsonb_build_object(
-            'model_id', gm.model_id, 'model_value', c.upstream_model_id, 'label', c.display_name,
+            'model_id', gm.model_id, 'model_value', c.upstream_model_id, 'label', case when c.provider_id = 'legacy' then c.display_name else c.display_name || ' · ' || p.name end,
             'enabled', gm.enabled, 'display_order', gm.display_order, 'priority', gm.priority, 'weight', gm.weight
           ) order by gm.display_order, gm.model_id) from model_group_models gm join model_catalog_entries c on c.model_id = gm.model_id
+             join model_providers p on p.id = c.provider_id
              where gm.group_id = g.id), '[]'::jsonb) as models
         from model_groups g where g.tenant_id = %s and g.id = %s
         """,
@@ -415,7 +419,7 @@ async def set_group_models(conn: Any, *, tenant_id: str, group_id: str, revision
             """
             insert into model_group_models(group_id, model_id, enabled, display_order, priority, weight)
             select %s, c.model_id, %s, %s, %s, %s from model_catalog_entries c
-            where c.model_id = %s
+            where c.model_id = %s and c.archived_at is null
             on conflict (group_id, model_id) do update set enabled = excluded.enabled,
               display_order = excluded.display_order, priority = excluded.priority, weight = excluded.weight,
               revision = model_group_models.revision + 1
@@ -574,6 +578,8 @@ async def resolve_group_model(conn: Any, *, tenant_id: str, user_id: str, group_
         if row is None:
             raise ModelGroupPolicyError("model_not_available")
     else:
+        if len(rows) != 1:
+            raise ModelGroupPolicyError("model_selection_conflict")
         row = rows[0]
     return ModelGroupSelection(
         group_id=str(group["id"]), group_code=str(group["code"]), group_type=str(group["type"]),

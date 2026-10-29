@@ -38,7 +38,7 @@ requires an administrator to choose a replacement first; these operations never
 select a replacement implicitly. Catalog or gateway unavailability
 never changes the configured default.
 
-Schema `2026.10.29.1` also repairs defaults created by earlier backfills when the
+Schema `2026.10.29.2` follows the supplier migration and repairs defaults created by earlier backfills when the
 selected group association is disabled: select the first enabled association or
 clear the default when none exists, and advance that group's revision. Reapplying
 the schema leaves repaired and valid defaults unchanged. Enabled associations
@@ -46,11 +46,55 @@ whose catalog or gateway is unavailable retain their configured default. Existin
 Run snapshots remain frozen. Apply the schema before the compatible application;
 the schema readiness fence prevents an older binary from silently serving it.
 
-Chat and expert usage scenes reject execution through the ordinary-default group;
+Only ordinary chat rejects execution through the ordinary-default group; authorized expert entry points permit it.
 a model shared with a business group remains usable through that business group. Direct independent
 business/skill execution may use the ordinary default group only after the normal
 trusted entry-point admission. The server derives this scene from the trusted
 route/profile path; a client `scene` field is not an authorization input.
+
+## Suppliers and model identity
+
+Model suppliers are platform-wide connection configuration, as the previous single
+gateway was; tenant-owned groups remain the authorization boundary. Administrators
+create suppliers under `/api/ai/admin/model-providers`. Each supplier has its own
+address, write-only encrypted Key revisions and model catalog. Selecting a supplier
+in management changes only the editor, not any user's model or group.
+
+Schema `2026.10.29.1` requires matching API/Worker readers and writers. Roll out the
+schema and new writers together before configuring additional suppliers; old writers
+must not run alongside multi-supplier configuration because they globally delist
+models. Once multiple suppliers exist, rollback to the single-gateway schema/writer
+is unsupported: preserve revisions and apply a forward correction instead.
+
+The existing connection and accumulated catalog migrate to supplier `legacy` without
+rewriting model IDs, gateway ciphertext, Run/Attempt snapshots or usage. Earlier Keys
+cannot reliably identify separate historical suppliers, so migration does not guess.
+New suppliers namespace model IDs by supplier and upstream ID, permitting the same
+upstream model name at multiple suppliers. Explicit value-only selection fails on
+ambiguity; default selection and frontend submission use the platform model ID.
+Each model binds its own supplier's active gateway revision at admission. Existing
+Run proxies retain their frozen revision even after a supplier's Key is edited.
+
+`GET /api/ai/admin/models` remains the complete cross-supplier catalog for the group
+editor and supplier inventory; provider-scoped GET/discovery/publication isolate the
+editable catalog. The old discovery/publication calls without `provider_id` address
+only the migrated `legacy` supplier, for existing API consumers. No global active
+connection fallback or cross-supplier model substitution is allowed.
+
+Supplier deletion first reads `/model-providers/{id}/impact`, then posts to `retire`
+with the observed connection revision and explicit confirmation. Group associations,
+designated defaults (including disabled groups) and nonterminal Runs block deletion.
+The transaction takes catalog then group-policy locks, rechecks impact, disables the
+supplier's models and revisions, and archives the supplier/catalog. Normal lists omit
+these entries; immutable connection revisions and historical model rows remain for
+Run/Attempt, usage and audit identity. This is configuration retirement, not historical
+credential erasure. No physical-delete or restore API is exposed.
+
+For a Key already changed before this migration, `missing_only=true` on the same
+impact/retire flow cleans old unavailable models without deleting the retained
+supplier or currently provided models. The same references and active-Run checks
+apply to the affected models. If later rediscovered, a cleaned model may be explicitly
+published again; cleaning never changes groups or substitutes defaults.
 
 ## Group retirement
 
@@ -100,7 +144,7 @@ Session detail restores only the latest frozen model ID/value and group ID as
 explicit selection metadata. It never exposes arbitrary Run input or grants;
 each subsequent submission reauthorizes that choice.
 Gateway and reconciliation compare the v4 group fields to the Run before accepting
-the lease. Auxiliary chat completions require a matching succeeded v4 business-group
+the lease. Auxiliary chat completions require a matching succeeded v4 business-group or authorized default-group expert
 attempt; old ungrouped histories remain readable but do not obtain a new completion.
 
 Actual token usage remains attributed to the frozen Run model and group; no group

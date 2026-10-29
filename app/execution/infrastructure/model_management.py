@@ -16,6 +16,7 @@ from app.execution.domain.model_groups import ModelGroupPolicyError
 from app.execution.infrastructure.model_groups import resolve_group_model
 
 from .model_security import decrypt_api_key, encrypt_api_key
+from .model_providers import require_provider
 
 
 _CONNECTION_LOCK_KEY = 749_120_009
@@ -33,15 +34,15 @@ class ActiveConnection:
     model_value: str | None = None
 
 
-async def get_connection_projection(conn: AsyncConnection) -> dict[str, Any]:
+async def get_connection_projection(conn: AsyncConnection, *, provider_id: str = "legacy") -> dict[str, Any]:
     cursor = await conn.execute(
         """
         select revision, base_url, key_fingerprint, created_at
         from model_gateway_revisions
-        where active = true
+        where active = true and provider_id = %s
         order by revision desc
         limit 1
-        """
+        """, (provider_id,),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -59,15 +60,16 @@ async def get_active_connection(
     conn: AsyncConnection,
     *,
     encryption_key: str,
+    provider_id: str = "legacy",
 ) -> ActiveConnection | None:
     cursor = await conn.execute(
         """
         select revision, base_url, api_key_ciphertext, key_fingerprint
         from model_gateway_revisions
-        where active = true
+        where active = true and provider_id = %s
         order by revision desc
         limit 1
-        """
+        """, (provider_id,),
     )
     row = await cursor.fetchone()
     return _connection_from_row(row, encryption_key=encryption_key) if row else None
@@ -131,7 +133,7 @@ async def get_run_connection(
                    and run_attempts.execution_spec_json->>'model_policy_version' = runs.model_policy_version
                    and not (
                      runs.model_group_type = 'ordinary_default'
-                     and runs.usage_scene in ('chat', 'expert')
+                     and runs.usage_scene = 'chat'
                    )))
           and sandbox_leases.attempt_id = %s
           and sandbox_leases.lease_payload_json ->> 'owner_generation' = run_attempts.owner_generation::text
@@ -188,7 +190,8 @@ async def get_run_model_completion_connection(
           and runs.model_value is not null
           and runs.model_gateway_revision is not null
           and runs.model_group_id is not null and runs.model_group_id <> ''
-          and runs.model_group_type = 'business' and runs.model_group_code <> 'default'
+          and ((runs.model_group_type = 'business' and runs.model_group_code <> 'default')
+            or (runs.model_group_type = 'ordinary_default' and runs.model_group_code = 'default' and runs.usage_scene = 'expert'))
           and runs.model_group_code <> '' and runs.model_group_revision > 0
           and runs.model_selection_mode in ('auto', 'explicit')
           and runs.usage_scene in ('chat', 'expert')
@@ -211,6 +214,7 @@ async def get_run_model_completion_connection(
               and a.execution_spec_json->>'model_max_output_tokens' = runs.max_output_tokens::text
           )
           and catalog.enabled = true
+          and catalog.archived_at is null
           and catalog.upstream_available = true
           and runs.auto_compact_window is not null
           and runs.max_output_tokens is not null
@@ -231,6 +235,7 @@ async def activate_connection_and_sync(
     encryption_key: str,
     actor_user_id: str,
     upstream_model_ids: list[str],
+    provider_id: str = "legacy",
 ) -> tuple[int, list[dict[str, Any]]]:
     await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
@@ -238,8 +243,9 @@ async def activate_connection_and_sync(
     )
     row = await cursor.fetchone()
     revision = int(row["revision"])
+    await require_provider(conn, provider_id=provider_id)
     encrypted = encrypt_api_key(api_key, revision=revision, encoded_key=encryption_key)
-    discovered_by_platform_id = discovered_model_mapping(upstream_model_ids)
+    discovered_by_platform_id = discovered_model_mapping(upstream_model_ids, provider_id)
     cursor = await conn.execute(
         """
         select model_id, upstream_model_id
@@ -259,17 +265,18 @@ async def activate_connection_and_sync(
             and existing_by_platform_id[platform_id] != upstream_value
         ):
             raise ValueError("model_catalog_identity_collision")
-    await conn.execute("update model_gateway_revisions set active = false where active = true")
+    await conn.execute("update model_gateway_revisions set active = false where active = true and provider_id = %s", (provider_id,))
     await conn.execute(
         """
         insert into model_gateway_revisions(
-          revision, base_url, api_key_ciphertext, key_fingerprint, active, created_by
-        ) values (%s, %s, %s, %s, true, %s)
+          revision, base_url, api_key_ciphertext, key_fingerprint, active, created_by, provider_id
+        ) values (%s, %s, %s, %s, true, %s, %s)
         """,
-        (revision, base_url, encrypted, key_fingerprint, actor_user_id),
+        (revision, base_url, encrypted, key_fingerprint, actor_user_id, provider_id),
     )
     await conn.execute(
-        "update model_catalog_entries set upstream_available = false where upstream_available = true"
+        "update model_catalog_entries set upstream_available = false where upstream_available = true and provider_id = %s",
+        (provider_id,),
     )
     for order, (model_id, upstream_value) in enumerate(
         discovered_by_platform_id.items(), start=1
@@ -279,10 +286,12 @@ async def activate_connection_and_sync(
             insert into model_catalog_entries(
               model_id, upstream_model_id, display_name, provider, enabled,
               upstream_available, display_order, first_seen_revision, last_seen_revision,
-              first_seen_at, last_seen_at
-            ) values (%s, %s, %s, %s, false, true, %s, %s, %s, now(), now())
+              first_seen_at, last_seen_at, provider_id
+            ) values (%s, %s, %s, %s, false, true, %s, %s, %s, now(), now(), %s)
             on conflict (model_id) do update
             set upstream_model_id = excluded.upstream_model_id,
+                enabled = case when model_catalog_entries.archived_at is null then model_catalog_entries.enabled else false end,
+                archived_at = null,
                 upstream_available = true,
                 display_order = excluded.display_order,
                 last_seen_revision = excluded.last_seen_revision,
@@ -296,20 +305,21 @@ async def activate_connection_and_sync(
                 order,
                 revision,
                 revision,
+                provider_id,
             ),
         )
-    return revision, await list_admin_models(conn)
+    return revision, await list_admin_models(conn, provider_id=provider_id)
 
 
-async def list_admin_models(conn: AsyncConnection) -> list[dict[str, Any]]:
+async def list_admin_models(conn: AsyncConnection, *, provider_id: str | None = None) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select model_id, upstream_model_id, display_name, provider, enabled,
-               upstream_available, display_order, last_seen_revision,
-               last_seen_at, auto_compact_window, max_output_tokens
-        from model_catalog_entries
-        order by display_order, model_id
-        """
+        select c.*, p.name as provider_name
+        from model_catalog_entries c join model_providers p on p.id = c.provider_id
+        where c.archived_at is null and p.archived_at is null
+          and (%s::text is null or c.provider_id = %s)
+        order by c.display_order, c.model_id
+        """, (provider_id, provider_id),
     )
     return [admin_model_projection(row) for row in await cursor.fetchall()]
 
@@ -330,19 +340,21 @@ async def publish_models(
     *,
     expected_revision: int | None,
     models: list[dict[str, Any]],
+    provider_id: str = "legacy",
     **connection: Any,
 ) -> tuple[int, list[dict[str, Any]]]:
     await conn.execute("select pg_advisory_xact_lock(%s)", (_CONNECTION_LOCK_KEY,))
     cursor = await conn.execute(
-        "select revision from model_gateway_revisions where active = true limit 1"
+        "select revision from model_gateway_revisions where active = true and provider_id = %s limit 1",
+        (provider_id,),
     )
     active = await cursor.fetchone()
     if (int(active["revision"]) if active else None) != expected_revision:
         raise ValueError("model_catalog_revision_conflict")
     revision, _ = await activate_connection_and_sync(
-        conn, upstream_model_ids=connection.pop("upstream_model_ids"), **connection
+        conn, upstream_model_ids=connection.pop("upstream_model_ids"), provider_id=provider_id, **connection
     )
-    await conn.execute("update model_catalog_entries set enabled = false")
+    await conn.execute("update model_catalog_entries set enabled = false where provider_id = %s", (provider_id,))
     for model in models:
         cursor = await conn.execute(
             """
@@ -362,7 +374,7 @@ async def publish_models(
         )
         if await cursor.fetchone() is None:
             raise ValueError("model_catalog_discovery_changed")
-    return revision, await list_admin_models(conn)
+    return revision, await list_admin_models(conn, provider_id=provider_id)
 
 
 async def resolve_run_model(
@@ -403,8 +415,27 @@ async def resolve_run_model(
             policy_version=grouped.policy_version,
         )
 class PostgresModelManagementRepository:
-    async def connection_projection(self, conn: AsyncConnection) -> dict[str, Any]:
-        return await get_connection_projection(conn)
+    async def providers(self, conn: AsyncConnection) -> list[dict[str, Any]]:
+        from .model_providers import list_providers
+        return await list_providers(conn)
+
+    async def require_provider(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        return await require_provider(conn, **kwargs)
+
+    async def create_provider(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from .model_providers import create_provider
+        return await create_provider(conn, **kwargs)
+
+    async def provider_impact(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from .model_providers import provider_impact
+        return await provider_impact(conn, **kwargs)
+
+    async def retire_provider(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from .model_providers import retire_provider
+        return await retire_provider(conn, **kwargs)
+
+    async def connection_projection(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        return await get_connection_projection(conn, **kwargs)
 
     async def active_connection(self, conn: AsyncConnection, **kwargs: Any) -> ActiveConnection | None:
         return await get_active_connection(conn, **kwargs)
@@ -417,8 +448,8 @@ class PostgresModelManagementRepository:
     ) -> ActiveConnection | None:
         return await get_run_model_completion_connection(conn, **kwargs)
 
-    async def admin_models(self, conn: AsyncConnection) -> list[dict[str, Any]]:
-        return await list_admin_models(conn)
+    async def admin_models(self, conn: AsyncConnection, **kwargs: Any) -> list[dict[str, Any]]:
+        return await list_admin_models(conn, **kwargs)
 
     async def public_models(
         self, conn: AsyncConnection, **kwargs: Any

@@ -36,8 +36,8 @@ async function mount(initialDetails = details, shell = false) {
   modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
   modelGroupsApi.setMembers = async (_id, payload) => { calls.push({ kind: "members", body: payload }); return { group_id: summary.id, revision: 5 }; };
-  modelAdminApi.get = async () => ({ connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
-  companyEmployeesApi.list = async (options) => { calls.push({ kind: "employees", body: options }); return { employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100 }; };
+  modelAdminApi.get = async () => ({ providers: [{ id: "legacy", name: "默认供应商", revision: 4, model_count: 1 }], connection: { configured: true, revision: 4, base_url: "", key_fingerprint: "" }, models: [{ id: "model-a", value: "model-a", label: "模型 A", provider: "test", enabled: true, available: true, order: 1, last_seen_revision: 4, last_seen_at: "2026-01-01T00:00:00Z" }] });
+  companyEmployeesApi.list = async (options) => { calls.push({ kind: "employees", body: options }); return { employees: [{ work_id: "work-a", display_name: "员工 A" }], total: 1, offset: 0, limit: 100, snapshot_id: "fixture-v1" }; };
   capabilityDistributionApi.departmentDirectory = async () => [{ directoryId: "123", authorityId: "123", name: "总公司", path: "总公司", selectable: true, reason: null, children: [{ directoryId: "456", authorityId: "456", name: "销售部", path: "总公司 / 销售部", children: [], selectable: true, reason: null }] }];
   const container = dom.document.createElement("div");
   const root = await createLobeTestRoot(container);
@@ -88,13 +88,11 @@ test("group management loads, creates, opens drawer and saves model/member lists
     const picker = document.querySelector<HTMLElement>('[aria-label="按组织架构选择人员"]');
     assert.ok(picker);
     await view.React.act(async () => picker.click());
-    const department = document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [role="combobox"]');
+    const department = document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [aria-label="总公司 / 销售部"]');
     assert.ok(department);
-    await view.React.act(async () => department.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
-    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
-    await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    await view.React.act(async () => department.click());
     assert.equal((view.calls.filter((call) => call.kind === "employees").at(-1)?.body as { departmentId: string }).departmentId, "456");
-    assert.match(document.body.textContent ?? "", /总公司 \/ 销售部/);
+    assert.equal(department.getAttribute("aria-pressed"), "true");
     const employeeSearch = document.querySelector<HTMLInputElement>('input[aria-label="搜索公司员工"]');
     assert.ok(employeeSearch);
     await view.React.act(async () => {
@@ -105,7 +103,7 @@ test("group management loads, creates, opens drawer and saves model/member lists
     const employee = document.querySelector('[data-model-group-member-directory] [role="checkbox"]') as HTMLElement | null;
     assert.ok(employee);
     await view.React.act(async () => employee.click());
-    await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="关闭选人下拉框"]')!.click());
+    await view.React.act(async () => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="公司组织架构选人"] button')].find((button) => button.textContent === "添加 1 人")!.click());
     const saveMembers = [...document.querySelectorAll("button")].find((button) => button.textContent === "保存成员");
     assert.ok(saveMembers);
     await view.React.act(async () => saveMembers.click());
@@ -138,13 +136,13 @@ test("organization picker ignores late employee results and preserves selections
       search.dispatchEvent(new Event("input", { bubbles: true }));
     });
     assert.equal(oldSignal?.aborted, true);
-    await view.React.act(async () => resolveOld!({ employees: [{ work_id: "late", display_name: "旧结果" }], total: 1, offset: 0, limit: 100 }));
+    await view.React.act(async () => resolveOld!({ employees: [{ work_id: "late", display_name: "旧结果" }], total: 1, offset: 0, limit: 100, snapshot_id: "fixture-late" }));
     assert.doesNotMatch(document.querySelector("[data-model-group-member-directory]")?.textContent ?? "", /旧结果/);
     await view.React.act(async () => document.querySelector<HTMLElement>('[aria-label="选择成员 员工 A"]')!.click());
-    await click("关闭选人下拉框");
+    await click("添加 1 人");
     companyEmployeesApi.list = async () => { throw new Error("公司员工目录暂时不可用"); };
     await click("按组织架构选择人员");
-    assert.match(document.body.textContent ?? "", /公司员工目录暂时不可用/);
+    assert.match(document.body.textContent ?? "", /公司员工目录加载失败/);
     assert.equal(document.querySelectorAll("[data-model-group-selected-member]").length, 1);
     companyEmployeesApi.list = initialEmployees;
     await click("重试");
@@ -171,18 +169,17 @@ test("department directory failure retries on reopen and ignores a closed reques
     assert.match(document.querySelector("[data-model-group-member-directory]")?.textContent ?? "", /员工 A/);
     const search = document.querySelector<HTMLInputElement>('[aria-label="搜索公司员工"]'); assert.ok(search);
     assert.equal(search.disabled, false);
-    await click("关闭选人下拉框");
+    await click("关闭选人弹窗");
     capabilityDistributionApi.departmentDirectory = (options) => {
       attempts += 1; oldSignal = options?.signal;
       return new Promise((resolve) => { resolveOld = resolve; });
     };
-    await click("按组织架构选择人员"); await click("关闭选人下拉框");
+    await click("按组织架构选择人员"); await click("关闭选人弹窗");
     assert.equal(oldSignal?.aborted, true);
     capabilityDistributionApi.departmentDirectory = async () => { attempts += 1; return originalDirectory(); };
     await click("按组织架构选择人员");
     await view.React.act(async () => resolveOld!([{ directoryId: "999", authorityId: "999", name: "旧部门", path: "旧部门", children: [], selectable: true, reason: null }]));
-    const select = document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [role=combobox]'); assert.ok(select);
-    await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    assert.ok(document.querySelector<HTMLElement>('[aria-label="公司组织架构选人"] [aria-label="总公司 / 销售部"]'));
     assert.match(document.body.textContent ?? "", /总公司/);
     assert.doesNotMatch(document.body.textContent ?? "", /旧部门/);
     assert.equal(attempts, 3);
@@ -222,7 +219,7 @@ test("drawer keeps drafts across tabs, reorders models and saves single-group me
     await click("移除成员 甲");
     await click("保存成员");
     assert.equal(view.calls.filter((call) => call.kind === "members").length, 1);
-    assert.match(document.body.textContent ?? "", /失去对话资格/);
+    assert.match(document.body.textContent ?? "", /失去普通聊天资格/);
     await click("确认移除");
     const removal = view.calls.filter((call) => call.kind === "members")[1].body as { confirm_default_fallback: boolean };
     assert.equal(removal.confirm_default_fallback, true);
@@ -341,7 +338,7 @@ test("delete group requires an explicit member destination and displays active r
     await view.React.act(async () => select.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
     await view.React.act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    assert.match(modal.textContent ?? "", /失去对话资格/);
+    assert.match(modal.textContent ?? "", /失去普通聊天资格/);
     await click("确认删除");
     assert.deepEqual(view.calls.find((call) => call.kind === "delete")?.body, { revision: 4, confirm_impact: true, delete: true, confirm_default_fallback: true });
     // Reopen against a changed server projection: active runs block submit, even with a migration choice.

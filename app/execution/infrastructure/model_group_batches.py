@@ -69,7 +69,7 @@ async def batch_group_models(
     if any(int(groups[group_id]["revision"]) != int(expected_group_revisions[group_id]) for group_id in group_ids):
         raise ModelGroupPolicyError("model_policy_changed")
     models_cursor = await conn.execute(
-        "select model_id from model_catalog_entries where model_id = any(%s) for update",
+        "select model_id from model_catalog_entries where model_id = any(%s) and archived_at is null for update",
         (model_ids,),
     )
     known_models = {str(row["model_id"]) for row in await models_cursor.fetchall()}

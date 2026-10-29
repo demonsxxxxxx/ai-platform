@@ -412,12 +412,12 @@ export function ChatAppContent({
   const {
     availableModels,
     defaultModel,
+    defaultModelId,
     refreshModels,
-    modelGroups,
     selectedGroupId,
     selectedGroup,
-    selectGroup,
     selectionError: catalogSelectionError,
+    isLoading: modelsLoading,
   } = useModelCatalogContext();
   const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
@@ -717,6 +717,8 @@ export function ChatAppContent({
   const [currentModelValue, setCurrentModelValue] = useState("");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
+  const modelGroupRef = useRef(selectedGroupId || null);
+
   useEffect(() => {
     if (catalogSelectionError) {
       setCurrentModelId("");
@@ -726,18 +728,31 @@ export function ChatAppContent({
   }, [catalogSelectionError]);
 
   useEffect(() => {
+    const priorGroupId = modelGroupRef.current;
+    if (selectedGroupId) modelGroupRef.current = selectedGroupId;
+    if (priorGroupId && selectedGroupId && priorGroupId !== selectedGroupId) {
+      const groupDefault = availableModels?.find((model) => model.id === defaultModelId);
+      setCurrentModelId(groupDefault?.id ?? "");
+      setCurrentModelValue(groupDefault?.value ?? "");
+      setModelSelectionError(catalogSelectionError);
+      return;
+    }
     if (!availableModels || catalogSelectionError) return;
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
-    const stillAvailable = availableModels.some((model) =>
+    const stillAvailable = availableModels.filter((model) =>
       (currentModelId && model.id === currentModelId)
-      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+      || (!currentModelId && currentModelValue && model.value === currentModelValue)).length === 1;
     if (hasPriorSelection && !stillAvailable) {
       setCurrentModelId("");
       setCurrentModelValue("");
       setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
       return;
     }
-    if (modelSelectionError) return;
+    if (modelSelectionError) {
+      if (modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"
+        && !hasPriorSelection && defaultModel) setModelSelectionError(null);
+      return;
+    }
     if (!currentModelId && !currentModelValue && !defaultModel) {
       setModelSelectionError("默认模型暂不可用，请手动选择同组模型。");
       return;
@@ -746,6 +761,7 @@ export function ChatAppContent({
       availableModels,
       currentModelId,
       currentModelValue,
+      storedDefaultId: defaultModelId,
       storedDefaultValue: defaultModel,
     });
 
@@ -755,7 +771,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, defaultModelId, modelSelectionError, selectedGroupId]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -777,13 +793,6 @@ export function ChatAppContent({
     },
     [],
   );
-
-  const handleSelectGroup = useCallback((groupId: string) => {
-    selectGroup(groupId);
-    setCurrentModelId("");
-    setCurrentModelValue("");
-    setModelSelectionError(null);
-  }, [selectGroup]);
 
   const lockedAgentOptions: typeof currentAgentOptions = currentAgentOptions.enable_thinking
     ? { enable_thinking: currentAgentOptions.enable_thinking }
@@ -1019,9 +1028,6 @@ export function ChatAppContent({
         restoreAgentOptions(restoredAgentOptions);
 
         const restoredModelSelection = getRestoredModelSelection(config);
-        const restoredOptions = config.agent_options as Record<string, unknown>;
-        const restoredGroupId = typeof restoredOptions.group_id === "string" ? restoredOptions.group_id : "";
-        if (restoredGroupId) selectGroup(restoredGroupId);
         setModelSelectionError(null);
         if (restoredModelSelection.modelId) {
           setCurrentModelId(restoredModelSelection.modelId);
@@ -1031,7 +1037,7 @@ export function ChatAppContent({
         }
       }
     },
-    [restoreSessionConfig, restoreAgentOptions, selectGroup],
+    [restoreSessionConfig, restoreAgentOptions],
   );
 
   const { handleSelectSession, handleNewSession } = useSessionSync({
@@ -1379,6 +1385,10 @@ export function ChatAppContent({
             onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            modelUnavailableReason={modelsLoading && !currentModelId ? "正在加载模型…" : modelSelectionError
+              ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
+                ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError
+              : !currentModelId ? "暂时无法读取可用模型，请重试。" : undefined}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={
@@ -1437,9 +1447,6 @@ export function ChatAppContent({
             onToggleAgentOption={handleToggleAgentOption}
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
-            modelGroups={modelGroups}
-            selectedGroupId={selectedGroupId}
-            onSelectGroup={handleSelectGroup}
             onSelectModel={handleSelectModel}
             onModelSelectorOpen={refreshModels}
             onSendMessage={handleSendMessage}
@@ -1464,11 +1471,6 @@ export function ChatAppContent({
             WorkbenchShellComponent={WorkbenchShell}
             />
           </ChatMcpCatalogContext.Provider>
-        {modelSelectionError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
-            {modelSelectionError}
-          </p>
-        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {agentWorkspaceError}

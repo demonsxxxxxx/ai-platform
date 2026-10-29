@@ -46,7 +46,15 @@ export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChan
     extra={<Button type="text" aria-label={t("common.close")} onClick={() => onOpenChange(false)} icon={<X size={18} />} />}>
     {content}
   </Drawer>;
-  return <PopoverRoot open={isOpen} onOpenChange={onOpenChange}>
+  return <PopoverRoot open={isOpen} onOpenChange={(open, details) => {
+    // The separate toolbar button owns toggling; don't dismiss before its click.
+    if (details.reason === "outside-press" && details.event.target instanceof Element
+      && details.event.target.closest("[data-composer-model-trigger]")) {
+      details.cancel();
+      return;
+    }
+    onOpenChange(open);
+  }}>
     <PopoverPortal><PopoverPositioner placement="topLeft" anchor={() => document.querySelector<HTMLElement>("[data-composer-model-trigger]")}>
       <PopoverPopup aria-label={title} style={{ width: 320, maxWidth: "calc(100vw - 16px)" }}>{content}</PopoverPopup>
     </PopoverPositioner></PopoverPortal>

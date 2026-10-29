@@ -156,7 +156,8 @@ def test_model_transport_maps_missing_write_only_key_to_validation_error() -> No
 
 
 @pytest.mark.asyncio
-async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_identity() -> None:
+@pytest.mark.parametrize("provider_id", ["legacy", "supplier-a"])
+async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_identity(provider_id) -> None:
     upstream_ids = ["openai/gpt-5"]
     publications = []
 
@@ -168,12 +169,15 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
         async def active_connection(self, _conn, **_kwargs):
             return None
 
-        async def connection_projection(self, _conn):
+        async def require_provider(self, _conn, **_kwargs):
+            return {"id": provider_id}
+
+        async def connection_projection(self, _conn, **_kwargs):
             return {"revision": None}
 
-        async def admin_models(self, _conn):
+        async def admin_models(self, _conn, **_kwargs):
             return [{
-                "id": platform_model_id("openai/gpt-5"), "value": "openai/gpt-5",
+                "id": platform_model_id("openai/gpt-5", provider_id), "value": "openai/gpt-5",
                 "label": "Existing GPT", "provider": "compatible", "enabled": True,
                 "available": False, "is_default": True, "order": 9,
                 "auto_compact_window": 200_000, "max_output_tokens": 2048,
@@ -210,9 +214,10 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
         attempt_capability_verifier=lambda **_kwargs: True,
     )
     candidate = await service.discover(
-        base_url="https://gateway.example", api_key="synthetic-secret"
+        base_url="https://gateway.example", api_key="synthetic-secret", provider_id=provider_id
     )
     assert publications == []
+    assert candidate["models"][0]["id"] == platform_model_id("openai/gpt-5", provider_id)
     assert candidate["models"][0]["label"] == "Existing GPT"
     assert candidate["models"][0]["order"] == 1
     entry = {
@@ -224,15 +229,16 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
     with pytest.raises(ValueError, match="model_catalog_discovery_changed"):
         await service.publish(
             base_url="https://gateway.example", api_key="synthetic-secret",
-            expected_revision=None, models=[entry], actor_user_id="admin-user",
+            expected_revision=None, models=[entry], actor_user_id="admin-user", provider_id=provider_id,
         )
     assert publications == []
     upstream_ids[:] = ["openai/gpt-5"]
     published = await service.publish(
         base_url="https://gateway.example", api_key="synthetic-secret",
-        expected_revision=None, models=[entry], actor_user_id="admin-user",
+        expected_revision=None, models=[entry], actor_user_id="admin-user", provider_id=provider_id,
     )
     assert published["revision"] == 1
+    assert publications[0]["provider_id"] == provider_id
     assert publications[0]["models"] == [entry]
 
 
@@ -379,10 +385,10 @@ def test_model_transport_router_uses_bootstrap_auth_dependencies(monkeypatch) ->
         found, published, invalid, forbidden_field, unknown_key, legacy_field, retired, denied
     ))
     assert calls == [
-        ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret"}),
+        ("discover", {"base_url": "https://gateway.example", "api_key": "synthetic-secret", "provider_id": "legacy"}),
         ("publish", {
             "base_url": "https://gateway.example", "api_key": "synthetic-secret",
-            "expected_revision": 1, "models": [entry],
+            "expected_revision": 1, "models": [entry], "provider_id": "legacy",
             "actor_user_id": "admin-user", "tenant_id": "tenant-a",
         }),
     ]
@@ -694,13 +700,15 @@ class _ActivationConnection:
         normalized = " ".join(sql.split())
         if normalized.startswith("select revision from model_gateway_revisions where active"):
             return _Cursor(row={"revision": self.active_revision} if self.active_revision else None)
+        if "select id, name from model_providers" in normalized:
+            return _Cursor(row={"id": "legacy", "name": "默认供应商"})
         if "coalesce(max(revision), 0) + 1" in normalized:
             return _Cursor(row={"revision": 3})
         if normalized.startswith("select model_id, upstream_model_id from model_catalog_entries"):
             return _Cursor(rows=self.existing_rows)
         if normalized.startswith("update model_catalog_entries set display_name"):
             return _Cursor(row={"model_id": params[6]})
-        if normalized.startswith("select model_id, upstream_model_id, display_name, provider"):
+        if normalized.startswith("select c.*, p.name as provider_name"):
             now = datetime.now(timezone.utc)
             return _Cursor(
                 rows=[
@@ -1873,3 +1881,41 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
 
     assert raised.value.status_code == 413
     assert database_accessed is False
+
+
+def test_model_provider_routes_require_admin_and_keep_provider_scope(monkeypatch):
+    captured = []
+    class Service:
+        async def create_provider(self, **kwargs):
+            captured.append(kwargs)
+            return {"id": "mp-a", "name": kwargs["name"]}
+        async def admin_projection(self, **kwargs):
+            captured.append(kwargs)
+            return {"models": [], "providers": []}
+        async def provider_impact(self, **kwargs):
+            captured.append(kwargs)
+            return {"id": kwargs["provider_id"], "group_count": 0}
+        async def retire_provider(self, **kwargs):
+            captured.append(kwargs)
+            return {"deleted": True}
+    authorized = True
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: Service())
+    app = FastAPI()
+    app.include_router(model_routes.build_model_management_router(
+        principal_dependency=lambda: SimpleNamespace(user_id="admin", tenant_id="tenant-a"),
+        is_admin=lambda _: authorized), prefix="/api/ai")
+    client = TestClient(app)
+    requests = [("POST", "/api/ai/admin/model-providers", {"name": "Supplier A"}),
+                ("GET", "/api/ai/admin/model-providers/mp-a", None),
+                ("GET", "/api/ai/admin/model-providers/mp-a/impact?missing_only=true", None),
+                ("POST", "/api/ai/admin/model-providers/mp-a/retire", {"expected_revision": 2, "confirm": True})]
+    for method, path, payload in requests:
+        assert client.request(method, path, **({"json": payload} if payload else {})).status_code == 200
+    assert captured == [{"name": "Supplier A"}, {"provider_id": "mp-a"},
+        {"provider_id": "mp-a", "missing_only": True},
+        {"provider_id": "mp-a", "expected_revision": 2, "confirm": True, "missing_only": False}]
+    captured.clear()
+    authorized = False
+    for method, path, payload in requests:
+        assert client.request(method, path, **({"json": payload} if payload else {})).status_code == 403
+    assert captured == []

@@ -21,6 +21,7 @@ import {
   type ModelAdminControlState,
 } from "./ModelAdminControl";
 import { ModelGroupManagement } from "./ModelGroupManagement";
+import { ModelProviderManagement } from "./ModelProviderManagement";
 import { TabsIndicator, TabsList, TabsRoot, TabsTab } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../hooks/useAuth";
 import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
@@ -178,7 +179,7 @@ export function ModelCatalogPanel() {
           </TabsRoot>
         </div>
         <div className={adminTab === "catalog" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "catalog"}>
-          <ModelAdminControl onStateChange={setAdminState} groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
+          <ModelProviderManagement onStateChange={setAdminState} groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
         </div>
         <div className={adminTab === "groups" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "groups"}>
           <ModelGroupManagement groupRevision={groupRevision} onGroupsChanged={groupsChanged} />

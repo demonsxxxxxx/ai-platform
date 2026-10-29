@@ -32,6 +32,40 @@ from app.main import create_app
 from app.execution.domain.input_limits import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 
+@pytest.mark.asyncio
+async def test_expert_model_directory_authorizes_profile_before_resolving_default_group(monkeypatch):
+    from app.routes import agent_profiles as routes
+    from types import SimpleNamespace
+    calls = []
+    denied = False
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def get_public(_conn, **kwargs):
+        calls.append(("profile", kwargs))
+        if denied:
+            raise HTTPException(status_code=404, detail="agent_profile_not_found")
+        return {}
+
+    async def list_models(_conn, **kwargs):
+        calls.append(("models", kwargs))
+        return {"models": [{"id": "m"}], "default_model_id": "m"}
+
+    monkeypatch.setattr(routes, "transaction", transaction)
+    monkeypatch.setattr(routes._authority, "get_public", get_public)
+    monkeypatch.setattr(routes, "list_public_models", list_models)
+    principal = SimpleNamespace(user_id="u", tenant_id="tenant-a")
+    result = await routes.get_agent_profile_models("expert-a", group_id="default-a", principal=principal)
+    assert result["default_model_id"] == "m"
+    assert calls[-1] == ("models", {"user_id": "u", "tenant_id": "tenant-a", "usage_scene": "expert", "group_id": "default-a"})
+    denied = True
+    with pytest.raises(HTTPException):
+        await routes.get_agent_profile_models("expert-a", group_id="default-a", principal=principal)
+    assert len([call for call in calls if call[0] == "models"]) == 1
+
+
 def test_agent_profile_draft_accepts_extended_builtin_avatar_style():
     definition = AgentProfileDraftRequest.model_validate(
         {**profile_draft_payload("Private instruction"), "avatar_ref": "builtin:planet"}

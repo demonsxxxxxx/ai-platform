@@ -4612,7 +4612,7 @@ def test_resolve_run_selector_requires_explicit_skill_for_named_agent():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("session_id", "purpose", "group_type", "allowed"), [
     (None, None, "ordinary_default", True),
-    ("existing", "conversation", "ordinary_default", False),
+    ("existing", "conversation", "ordinary_default", True),
     ("existing", "conversation", "business", True),
     ("existing", "builder_test", "ordinary_default", True),
 ])
@@ -6610,7 +6610,8 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
 
 
 @pytest.mark.asyncio
-async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v2(monkeypatch):
+@pytest.mark.parametrize("default_expert", [False, True])
+async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v2(monkeypatch, default_expert):
     calls = {}
     source_release_decision = {
         "schema_version": "ai-platform.skill-release-decision.v1",
@@ -6658,6 +6659,8 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
             "skill_manifests": _repo_app_skills_infrastructure_run_snapshots_postgres.skill_manifest_refs(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
+            **({"model_group_id": "group-current", "model_group_code": "default", "model_group_type": "ordinary_default",
+                "model_group_revision": 1, "model_selection_mode": "explicit", "usage_scene": "expert", "model_policy_version": "model-groups.v1"} if default_expert else {}),
         }
 
     async def fake_replace_run_model(conn, **kwargs):
@@ -6706,10 +6709,12 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
     async def fail_skill_manifest_pins(*args, **kwargs):
         raise AssertionError("replay must not rematerialize the current release")
 
-    async def resolve_current_model(_conn, *, selection, **_kwargs):
+    async def resolve_current_model(_conn, *, selection, usage_scene, **_kwargs):
         from app.execution.application.model_selection import RunModelSelection
+        if default_expert:
+            assert usage_scene == "expert" and selection["group_id"] == "group-current"
         return RunModelSelection(selection["id"], selection["value"], 9, 200000, 2048,
-                                 "group-current", "current", "business", 2, "explicit", "expert", "model-groups.v1")
+                                 "group-current", "default" if default_expert else "current", "ordinary_default" if default_expert else "business", 2, "explicit", "expert", "model-groups.v1")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.execution.api.resolve_chat_model_selection", resolve_current_model)

@@ -62,6 +62,14 @@
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
+## 开场布局与模型就绪状态
+
+普通新对话的欢迎语、快捷任务和输入框沿用同一条 1216px 内容栏，快捷任务与输入框对齐，输入框紧随任务入口，不再靠 `mt-auto` 分离到页面底部。有消息时仍使用原底部 Composer slot，桌面底部留 24px，手机保留安全区；专家开场、历史加载及待答任务表面保持各自原有入口。布局不增加第二个 Composer 或草稿 owner。
+
+模型就绪提示由 ChatAppContent 的当前目录/选择状态派生，随 ChatView → ChatInput 进入工具栏，在模型选择器旁使用 `--theme-danger-text` 显示提示；无可用模型时提示“当前没有可用模型，请联系管理员申请。”，不再在页面底部另放模型错误。未选可用模型时输入和附件草稿仍保留，发送按钮、Enter 与原生 Composer 注册共同阻止发送。聊天输入区不提供模型组配置入口，所有用户都只看到状态提示。加载、读取失败、授权失效和默认模型失效保留各自原因，不自动切组或用第一项回退。服务器模型准入、自动唯一组绑定与冻结 Run 快照未变。
+
+工具选择弹层的标题、已选数量与搜索框共用固定头部；搜索位于标题下方，工具目录单独滚动，底部“完成”保持可见。顶部全选、取消全选、添加操作行及大扳手图标已移除，无兼容入口；分类/上游服务组勾选、名称/描述/服务来源搜索、系统禁用项、目录错误与重试、关闭和焦点恢复保持原业务语义。`ToolSelector` 不再接收顶部批量操作的 `onToggleAll`，聊天控制器其他既有工具状态合同不变。
+
 ## 提交、附件与迟到回执
 
 `composerSubmission.ts` 是 native 发送与键盘提交共用的事务：保留文本、模型选项、授权附件和显式 Skill，以及 draft revision、selectedSkillRevision 和首次会话 handoff。仅对应请求 accepted 才清理其内容；后续编辑或清空不被旧回执覆盖。scope revision 隔离账号/会话，旧发送、上传、取消回执不修改新页面。
@@ -104,11 +112,13 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 ## 退役与具名保留
 
 - LibreChat Composer/CommandMenu/Chips、ComposerModelPanel、MessageFrame 旧入口和 exports/对应 selectors 已替换，旧专用 CSS 清退。业务控制器继续在 ChatInput，不增加第二 form、上传器或提交路径。
+- 普通 chat 与 expert 的模型组选择入口及其 props/callback 已移除，无兼容消费者。ModelCatalogProvider 每次刷新只接受服务器返回的唯一启用归属组；默认组仅在可信专家入口可用，普通 chat 仍拒绝；多组、禁用或未授权均拒绝猜测/回退，归属仅由管理员修改。focus/visibility 与模型菜单刷新重新加载当前归属；历史 Session 的 group_id 不再重定向当前归属，Run 的冻结快照不变。保留同组模型选择和显式 group_id/model_id/model 提交；默认模型按服务器指定 ID 解析，缺失时不选第一项。
+- Composer 附件使用中性主题卡片、完整文件名提示及常显移除/取消按钮，长名省略、多文件横向滚动。消息附件、授权、上传状态及唯一上传控制器不变。
 - Composer 上传附件只由 `ChatInputAttachments` 展示；逐附件镜像 `file` chip 及其专用删除分支、文案已退役，无兼容消费者。已发送文件和正文归入同一用户消息容器，继续沿用原文件预览和授权入口。
 - 旧 token 明细手写点击外部监听及 guard 退役，由 MessageTiming + Lobe Popover 承担。
 - 活动旧展示壳由 Elements 接管；公开分类、顺序、折叠、面板导航、下载与预览 controller 保留。
 - MarkdownContent 保留显式业务内容/图库适配；独立文档直接走共享 renderer，主消息正文不再使用旧直接 parser。
-- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。历史 release evidence 和来源许可不改写。
+- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；桌面文件栏默认360px，可拖宽或用分隔线方向键调整到280–520px，宽度仅保存在浏览器。ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。单子目录仅合并已展开、已加载且未截断的完整列表，聚焦目录通过路径返回，不新增盘遍历。文件名完整保留，极长名称仅在树区横向滚动；文件行只保留回形针，大小移入完整路径提示，不增加底部已选文件信息区。回形针状态来自当前Composer附件，取消复用原上传控制器的移除入口；客户端来源标记不写入消息、历史或服务端授权。旧行内大小和预览/下载图标、无路径导航断言、固定20rem栏宽及外层目录滚动已退役，无兼容消费者。历史 release evidence 和来源许可不改写。
 - 升级检查真实消费者、旧入口/export、静态断言、脚本、依赖和文档；不得为旧 source regex 恢复被替换代码。
 - Run 问答逐题化替换了旧的独立问答区与“全题同表”卡片：独立区总标题 `当前任务输入`、卡片外框/阴影、内层 `<form>` 及其 submit 按钮不再存在，历史分组标题仍保留在共享滚动区内，生产消费者只剩 `ChatInput` 的 `taskSurface` slot（由 `ChatView` 传入 `RunInputHistory`）。`data-question-mode`、`composer-ordinary-controls`、`data-run-question-card`/`-index`/`-marker`/`-progress`/`-advance`/`-previous`/`-other-toggle`/`-other-clear`/`-batch-note`/`-stop` 是当前模式与问题选择器；旧 `data-run-question-filled` 双重进度、始终展开的其他答案输入、问答与普通输入同时显示的布局已退役，无兼容消费者。`data-run-input-history-disclosure`/`-toggle`/`-panel` 拥有默认折叠和唯一历史滚动，`data-run-input-receipts` 只作内容分组；`data-run-input-history`/`data-run-input-history-run`/`data-run-input-entry` 保留原记录范围与历史含义。`fieldset:last-child textarea`、`button[type="submit"]` 和 `data-run-input-history` 上的 30dvh 上限已无消费者，浏览器脚本与回归已改用上述新选择器。服务器合同、存储、超时默认答案与 provider 交互未变，因此没有旧的兼容分支需要保留。
 
@@ -121,5 +131,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `route-layout-browser-smoke.mjs` 的 `chat-integration` 场景检查文件抽屉、问答回执、Mermaid、工具/子代理/产物和模型选择器；设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite，分别以 `AI_PLATFORM_ROUTE_LAYOUT_THEME=light`、`dark` 运行，默认覆盖四种宽度。
 
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
+
+`node scripts/composer-trigger-browser-check.mjs` 复用合成聊天 fixture，以真实鼠标按下/抬起事件验证桌面模型按钮、桌面及窄屏设置齿轮的再次点击关闭、重新打开、Escape 和外部点击关闭。独立按钮的开关不再被库的 `outside-press` 抢先处理，其他外部点击仍由库关闭。手机模型选择器保留模态 Drawer 的关闭入口。脚本通过 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite；仅 DOM `.click()` 不覆盖该指针事件时序。
 
 `node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

@@ -34,7 +34,7 @@ export const libreChatSurface = {
   ),
   workspaceWithContext: clsx(
     "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
-    "xl:grid-cols-[minmax(0,1fr)_minmax(18rem,20rem)]",
+    "xl:grid-cols-[minmax(0,1fr)_var(--context-panel-width,360px)]",
   ),
   thread: clsx(
     "librechat-shell-thread workbench-thread-frame relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]",
@@ -42,7 +42,7 @@ export const libreChatSurface = {
   threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3",
   threadHeader:
     "flex min-h-14 shrink-0 items-center gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-4 py-2.5 sm:px-5",
-  composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-2 py-1.5 sm:px-4",
+  composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-2 pt-1.5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-6",
   context: clsx(
     "flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)]",
   ),

@@ -293,6 +293,9 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       assert.equal(folderButton.getAttribute("aria-expanded"), "false");
     }
 
+    const compactToggle = container.querySelector<HTMLElement>('[role="checkbox"][aria-label="合并单子目录"]');
+    assert.ok(compactToggle);
+    await act(async () => compactToggle.click());
     const documentsButton = buttonByText(container, "文档");
     assert.equal(documentsButton.getAttribute("aria-expanded"), "false");
     await act(async () => {
@@ -454,6 +457,9 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       await flush();
       await flush();
     });
+    const stagedCompactToggle = container.querySelector<HTMLElement>('[role="checkbox"][aria-label="合并单子目录"]');
+    assert.ok(stagedCompactToggle);
+    await act(async () => stagedCompactToggle.click());
     await act(async () => {
       buttonByText(container, "文档").dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
@@ -821,10 +827,116 @@ test("mounts the public drive with source-correct expansion and import", async (
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;
+    fixture.close();
+  }
+});
 
-
-
-
+test("compacts loaded chains, focuses with breadcrumbs, and uses controlled Composer attachments", async () => {
+  const fixture = installSelectTestDom();
+  document.body.innerHTML = '<div id="root"></div>';
+  const [{ act, createElement, useState }, { WorkbenchRightPanel }, { CloseContextPanelContext }] = await Promise.all([
+    import("react"), import("../WorkbenchRightPanel"), import("../../../librechat-ui/ContextPanel"),
+  ]);
+  const previewEvents: string[] = [];
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  const added: string[] = [];
+  const directory = (path: string) => ({ path, name: path.split("/").at(-1)!, type: "directory", size: null, lastModifiedUtc: "2026-10-29T00:00:00Z" });
+  const filePath = "Projects/IB012/版本发布说明与上线公告.docx";
+  const entries: Record<string, object[]> = {
+    "": [directory("Projects"), directory("Other"), directory("Restricted")],
+    Projects: [directory("Projects/IB012")],
+    "Projects/IB012": [{ ...directory(filePath), type: "file", size: 95232 }],
+    Other: [],
+  };
+  globalThis.fetch = (async (input, init = {}) => {
+    const url = String(input);
+    const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+    if (url.endsWith("/api/ai/auth/company-credential-handoff")) return json({ credential: "synthetic" });
+    if (url.endsWith("/api/profile-drive/status")) return json({ connected: true });
+    if (url.endsWith("/api/profile-drive/files/list")) {
+      const body = JSON.parse(String(init.body)) as { path: string };
+      requests.push(body.path);
+      if (body.path === "Restricted") return new Response(JSON.stringify({ status: "access_denied" }), { status: 403 });
+      return json({ status: "success", path: body.path, entries: entries[body.path] ?? [], truncated: false });
+    }
+    if (url.endsWith("/profile-drive-files")) return json({ file_id: "preview-a", run_id: null, name: "版本发布说明与上线公告.docx", mime_type: "application/test", size_bytes: 42, preview_url: "/preview-a", download_url: "/download-a" });
+    throw new Error(`Unexpected request ${url}`);
+  }) as typeof fetch;
+  const container = document.getElementById("root")!;
+  const root = await createLobeTestRoot(container);
+  let removeFromComposer = () => {};
+  function Harness() {
+    const [attachments, setAttachments] = useState<import("../../../types").MessageAttachment[]>([]);
+    removeFromComposer = () => setAttachments([]);
+    return createElement(CloseContextPanelContext.Provider, { value: () => previewEvents.push("close") }, createElement(WorkbenchRightPanel, {
+      sessionId: "session-a", onProfileDriveFileImported: () => { previewEvents.push("preview"); }, attachments,
+      onRemoveAttachment: (attachment) => setAttachments((current) => current.filter((item) => item.id !== attachment.id)),
+      onProfileDriveFileDrop: (reference) => {
+        added.push(reference.path);
+        setAttachments([{ id: "file-a", key: "file-a", name: "版本发布说明与上线公告.docx", type: "document", mimeType: "application/test", size: 95232, profileDriveReference: reference }]);
+      },
+    }));
+  }
+  try {
+    await act(async () => { root.render(createElement(Harness)); await flush(); await flush(); });
+    const panel = container.querySelector('#profile-drive-profile-panel')!;
+    const click = async (button: HTMLElement) => act(async () => { button.click(); await flush(); });
+    assert.equal(requests.filter((path) => path === "Projects").length, 0, "no speculative traversal");
+    await click(buttonByText(panel, "Projects"));
+    const merged = buttonByText(panel, "Projects / IB012");
+    assert.equal(requests.filter((path) => path === "Projects/IB012").length, 0);
+    await click(merged);
+    assert.match(panel.textContent ?? "", /版本发布说明与上线公告/);
+    const focus = panel.querySelector<HTMLElement>('button[aria-label="聚焦目录 Projects / IB012"]')!;
+    const count = requests.length;
+    focus.focus();
+    await click(focus);
+    assert.equal(document.activeElement, panel.querySelector("nav button:last-child"), "focus moves from removed row to current breadcrumb");
+    assert.equal(requests.length, count, "focus reuses loaded listing");
+    assert.equal(panel.querySelector('[role="treeitem"]')?.getAttribute("aria-level"), "1");
+    assert.ok(panel.querySelector('nav[aria-label="本地文件路径"]'));
+    assert.ok(!panel.querySelector(".selection-summary"));
+    assert.doesNotMatch(panel.textContent ?? "", /93 KB|93\.0 KB/);
+    const file = buttonByText(panel, "版本发布说明与上线公告.docx");
+    assert.ok(file.title.includes(filePath));
+    await click(file);
+    assert.deepEqual(previewEvents, ["preview", "close"], "close covering Drawer only after authorized preview succeeds");
+    const add = panel.querySelector<HTMLElement>('button[aria-label="添加 版本发布说明与上线公告.docx 到会话"]')!;
+    await click(add);
+    assert.deepEqual(added, [filePath]);
+    const remove = panel.querySelector<HTMLElement>('button[aria-label="移除 版本发布说明与上线公告.docx 附件"]')!;
+    assert.equal(remove.getAttribute("aria-pressed"), "true");
+    await click(remove);
+    assert.ok(panel.querySelector('button[aria-label="添加 版本发布说明与上线公告.docx 到会话"]'));
+    await click(panel.querySelector<HTMLElement>('button[aria-label="添加 版本发布说明与上线公告.docx 到会话"]')!);
+    await act(async () => removeFromComposer());
+    assert.ok(panel.querySelector('button[aria-pressed="false"]'), "external Composer removal clears tree state");
+    await click(buttonByText(panel.querySelector("nav")!, "本地文件"));
+    assert.match(panel.textContent ?? "", /Other/);
+    assert.equal(requests.length, count, "returning to root does not reload");
+    await click(buttonByText(panel, "Other"));
+    const focusEmpty = panel.querySelector<HTMLElement>('button[aria-label="聚焦目录 Other"]')!;
+    focusEmpty.focus();
+    await click(focusEmpty);
+    assert.match(panel.textContent ?? "", /目录为空/);
+    assert.equal(document.activeElement, panel.querySelector("nav button:last-child"));
+    await click(buttonByText(panel.querySelector("nav")!, "本地文件"));
+    const focusRestricted = panel.querySelector<HTMLElement>('button[aria-label="聚焦目录 Restricted"]')!;
+    focusRestricted.focus();
+    await click(focusRestricted);
+    assert.match(panel.textContent ?? "", /没有权限访问/);
+    assert.equal(document.activeElement, panel.querySelector("nav button:last-child"));
+    await click(panel.querySelector<HTMLElement>('button[aria-label="返回 Restricted"]')!);
+    assert.equal(document.activeElement, panel.querySelector("nav button:last-child"), "error return focuses visible parent breadcrumb");
+    assert.match(panel.textContent ?? "", /Other/);
+    const refresh = container.querySelector<HTMLElement>('button[aria-label="刷新本地文件"]')!;
+    await click(refresh);
+    assert.doesNotMatch(panel.querySelector("nav")?.textContent ?? "", /Projects|IB012/);
+    assert.match(panel.textContent ?? "", /Projects/);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.fetch = originalFetch;
     fixture.close();
   }
 });

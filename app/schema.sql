@@ -528,6 +528,14 @@ alter table sessions add constraint chk_sessions_title_source
 create unique index if not exists idx_sessions_provider_scope
   on sessions(tenant_id, workspace_id, user_id, id, agent_id);
 
+create table if not exists model_providers (
+  id text primary key default gen_random_uuid()::text,
+  name text not null check (length(btrim(name)) between 1 and 160),
+  archived_at timestamptz,
+  created_at timestamptz not null default now()
+);
+insert into model_providers(id, name) values ('legacy', '默认供应商') on conflict (id) do nothing;
+
 create table if not exists model_gateway_revisions (
   revision bigint primary key,
   base_url text not null,
@@ -540,8 +548,10 @@ create table if not exists model_gateway_revisions (
   constraint chk_model_gateway_base_url check (length(base_url) between 1 and 2048),
   constraint chk_model_gateway_key_fingerprint check (key_fingerprint ~ '^[0-9a-f]{16}$')
 );
-create unique index if not exists uq_model_gateway_active
-  on model_gateway_revisions(active) where active = true;
+alter table model_gateway_revisions add column if not exists provider_id text not null default 'legacy' references model_providers(id);
+drop index if exists uq_model_gateway_active;
+create unique index if not exists uq_model_gateway_provider_active
+  on model_gateway_revisions(provider_id) where active = true;
 
 create table if not exists model_catalog_entries (
   model_id text primary key,
@@ -581,6 +591,11 @@ create table if not exists model_catalog_entries (
         and auto_compact_window between 100000 and 1000000 and max_output_tokens between 1 and 10000000)
   )
 );
+
+alter table model_catalog_entries add column if not exists provider_id text not null default 'legacy' references model_providers(id);
+alter table model_catalog_entries add column if not exists archived_at timestamptz;
+alter table model_catalog_entries drop constraint if exists model_catalog_entries_upstream_model_id_key;
+create unique index if not exists uq_model_catalog_provider_upstream on model_catalog_entries(provider_id, upstream_model_id);
 
 -- Model groups are tenant-scoped authorization facts. The ordinary default group
 -- is materialized once per tenant; users without business membership are resolved
@@ -1244,10 +1259,9 @@ begin
   end if;
 end
 $$;
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conrelid = 'runs'::regclass and conname = 'chk_runs_model_group_policy') then
-    alter table runs add constraint chk_runs_model_group_policy check (
+-- Replace the old chat+expert ban; preserve every frozen Run field.
+alter table runs drop constraint if exists chk_runs_model_group_policy;
+alter table runs add constraint chk_runs_model_group_policy check (
       model_group_id is null or (
         model_group_id ~ '^[A-Za-z0-9_.:-]{1,128}$'
         and model_group_code ~ '^[a-z0-9_-]{1,64}$'
@@ -1257,12 +1271,9 @@ begin
         and model_policy_version = 'model-groups.v1'
         and ((model_group_type = 'business' and model_group_code <> 'default')
           or (model_group_type = 'ordinary_default' and model_group_code = 'default'
-              and usage_scene in ('skill', 'independent')))
+              and usage_scene in ('expert', 'skill', 'independent')))
       )
     );
-  end if;
-end
-$$;
 -- Model groups were introduced after the original catalog/Run tables. Keep this
 -- additive block idempotent for existing installations; fresh installs use the
 -- canonical definitions above.

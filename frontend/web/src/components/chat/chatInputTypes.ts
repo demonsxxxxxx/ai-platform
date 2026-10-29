@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
-import type { PublicModelGroup } from "../../services/api/modelGroups";
 import type {
   ToolState,
   ToolCategory,
@@ -60,6 +59,8 @@ export interface ChatInputProps {
   canSend?: boolean;
   /** Optional product-specific prompt for a locked composer surface. */
   placeholder?: string;
+  /** Model readiness blocks sending, not editing or attachment drafts. */
+  modelUnavailableReason?: string;
   /** Undefined preserves ordinary Chat uploads; an array scopes Agent uploads. */
   acceptedFileTypes?: string[];
   /** Agent workspaces use plain task input and do not expose composer commands. */
@@ -87,9 +88,6 @@ export interface ChatInputProps {
   onToggleAgentOption?: (key: string, value: boolean | string | number) => void;
   availableModels?: ModelOption[];
   currentModelId?: string;
-  modelGroups?: PublicModelGroup[];
-  selectedGroupId?: string;
-  onSelectGroup?: (groupId: string) => void;
   onSelectModel?: (modelId: string, modelValue: string) => void;
   onModelSelectorOpen?: () => void | Promise<unknown>;
   attachments?: MessageAttachment[];

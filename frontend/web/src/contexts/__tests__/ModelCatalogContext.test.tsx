@@ -244,8 +244,10 @@ async function mountModelCatalogHarness(
     modelApi: typeof import("../../services/api/modelPublic.ts").modelPublicApi,
     groupApi: typeof import("../../services/api/modelGroups.ts").modelGroupsApi,
   ) => void,
+  route = "/chat",
 ) {
   const React = await import("react");
+  const { MemoryRouter } = await import("react-router-dom");
   const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../../hooks/useAuth.tsx");
   const { ModelCatalogProvider, useModelCatalogContext } = await import(
@@ -308,9 +310,9 @@ async function mountModelCatalogHarness(
           AuthProvider,
           null,
           React.createElement(
-            ModelCatalogProvider,
-            null,
-            React.createElement(Probe),
+            MemoryRouter,
+            { initialEntries: [route] },
+            React.createElement(ModelCatalogProvider, null, React.createElement(Probe)),
           ),
         ),
       );
@@ -363,6 +365,21 @@ async function mountModelCatalogHarness(
     },
   };
 }
+
+test("expert workspace loads its implicit default group through the authorized expert directory", async () => {
+  let expertId: string | undefined;
+  const harness = await mountModelCatalogHarness((auth, models, groups) => {
+    auth.getCurrentUser = async () => authUser("user-a", "tenant-a");
+    groups.listPublic = async () => ({ groups: [{ id: "default-a", code: "default", name: "普通默认组", type: "ordinary_default", enabled: true, revision: 1, is_primary: false, availability: "default_not_for_chat", models: [] }], count: 1, version: "model-groups.v1" });
+    models.listAvailable = async (options) => { expertId = options?.expertAgentId; return modelProjection("designated-default", "默认模型"); };
+  }, "/agent-market/expert-a/chat");
+  try {
+    await harness.flush();
+    assert.equal(expertId, "expert-a");
+    assert.equal(harness.modelCatalog.selectedGroupId, "default-a");
+    assert.equal(harness.modelCatalog.defaultModel, "designated-default");
+  } finally { await harness.cleanup(); }
+});
 
 test("ModelCatalogProvider hides A synchronously and accepts only B GET completions", async () => {
   const bModels = deferred<ReturnType<typeof modelProjection>>();
@@ -496,48 +513,10 @@ test("ModelCatalogProvider aborts pending subject work on unmount", async () => 
   }
 });
 
-for (const restoredId of ["group-second", "removed-group"]) {
-  test(`late group response validates restored intent ${restoredId} without replacing it`, async () => {
-    const groups = deferred<Awaited<ReturnType<typeof import("../../services/api/modelGroups.ts").modelGroupsApi.listPublic>>>();
-    const listed: string[] = [];
-    const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
-      authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
-      groupApi.listPublic = () => groups.promise;
-      modelApi.listAvailable = async (options) => { listed.push(options?.groupId ?? ""); return modelProjection("model-a", "A"); };
-    });
-    try {
-      await harness.React.act(async () => harness.modelCatalog.selectGroup(restoredId));
-      groups.resolve({ groups: ["group-primary", "group-second"].map((id, index) => ({
-        id, code: id, name: id, type: "business", enabled: true, revision: 1,
-        is_primary: index === 0, availability: "available", models: [],
-      })), count: 2, version: "model-groups.v1" });
-      await harness.flush();
-      assert.equal(harness.modelCatalog.selectedGroupId, restoredId === "group-second" ? restoredId : "");
-      assert.deepEqual(listed, restoredId === "group-second" ? [restoredId] : []);
-      assert.equal(Boolean(harness.modelCatalog.selectionError), restoredId === "removed-group");
-    } finally { await harness.cleanup(); }
-  });
-}
-
-test("a disabled primary never silently selects another business group", async () => {
-  const harness = await mountModelCatalogHarness((authApi, _modelApi, groupApi) => {
-    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
-    groupApi.listPublic = async () => ({ groups: [true, false].map((is_primary) => ({
-      id: is_primary ? "primary" : "other", code: is_primary ? "primary" : "other", name: "业务组",
-      type: "business", enabled: !is_primary, revision: 1, is_primary,
-      availability: is_primary ? "group_disabled" : "available", models: [],
-    })), count: 2, version: "model-groups.v1" });
-  });
-  try {
-    await harness.flush();
-    assert.equal(harness.modelCatalog.selectedGroupId, "");
-    assert.match(harness.modelCatalog.selectionError ?? "", /主组已不可用/);
-  } finally { await harness.cleanup(); }
-});
-
 for (const [defaultModelId, expectedValue] of [
   ["model-b", "provider/model-b"],
   ["unavailable-model", ""],
+  ["", ""],
 ] as const) {
   test(`catalog hydration is read-only and does not replace unavailable public default ${defaultModelId}`, async () => {
     const originalFetch = globalThis.fetch;
@@ -619,78 +598,35 @@ function groupProjection(ids: string[], primary = ids[0]) {
     availability: "available" as const, models: [] })), count: ids.length, version: "model-groups.v1" };
 }
 
-test("group refresh preserves valid choices, exposes grants, and never jumps after revocation", async () => {
-  let groups = groupProjection(["a", "b"]);
+test("administrator membership changes reload the sole group and ambiguous membership fails closed", async () => {
+  let groups = groupProjection(["a"]);
   const listed: string[] = [];
   const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
     authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
     groupApi.listPublic = async () => groups;
-    modelApi.listAvailable = async (options) => { listed.push(options?.groupId ?? ""); return modelProjection("model-a", "A"); };
+    modelApi.listAvailable = async (options) => { listed.push(options?.groupId ?? ""); return modelProjection(options?.groupId ?? "", "Model"); };
   });
   try {
-    await harness.React.act(async () => harness.modelCatalog.selectGroup("b"));
-    groups = groupProjection(["a", "b", "c"]);
-    await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
+    assert.equal(harness.modelCatalog.selectedGroupId, "a");
+    groups = groupProjection(["b"]);
+    await harness.React.act(async () => { windowTarget.dispatchEvent({ type: "focus" }); });
     assert.equal(harness.modelCatalog.selectedGroupId, "b");
-    assert.deepEqual(harness.modelCatalog.modelGroups.map((g) => g.id), ["a", "b", "c"]);
-    groups = groupProjection(["a", "c"]);
-    await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
-    assert.equal(harness.modelCatalog.selectedGroupId, "");
-    assert.deepEqual(harness.modelCatalog.availableModels, []);
-    assert.match(harness.modelCatalog.selectionError ?? "", /重新选择/);
-    assert.equal(listed.at(-1), "b");
-  } finally { await harness.cleanup(); }
-});
-
-for (const denial of ["removed", "groups-401", "models-403"] as const) {
-  test(`restoring ${denial} group access still requires explicit reselection`, async () => {
-    let denied = false;
-    const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
-      authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
-      groupApi.listPublic = async () => {
-        if (denied && denial === "groups-401") throw new ApiRequestError("denied", 401);
-        return groupProjection(denied && denial === "removed" ? [] : ["a"]);
-      };
-      modelApi.listAvailable = async () => {
-        if (denied && denial === "models-403") throw new ApiRequestError("denied", 403);
-        return modelProjection("model-a", "A");
-      };
-    });
-    try {
-      assert.equal(harness.modelCatalog.selectedGroupId, "a");
-      denied = true;
+    assert.deepEqual(listed, ["a", "b"]);
+    for (const invalid of [groupProjection(["a", "b"]), groupProjection([]), {
+      ...groupProjection(["b"]), groups: groupProjection(["b"]).groups.map((group) => ({ ...group, enabled: false })),
+    }]) {
+      groups = invalid;
       await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
       assert.equal(harness.modelCatalog.selectedGroupId, "");
-      denied = false;
-      await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
-      assert.equal(harness.modelCatalog.selectedGroupId, "", "restored authorization is not a selection");
       assert.deepEqual(harness.modelCatalog.availableModels, []);
-      await harness.React.act(async () => harness.modelCatalog.selectGroup("a"));
-      assert.equal(harness.modelCatalog.selectedGroupId, "a");
-      assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-a"]);
-    } finally { await harness.cleanup(); }
-  });
-}
-
-test("empty groups recover new grants without automatic selection", async () => {
-  let groups = groupProjection([]);
-  const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
-    authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
-    groupApi.listPublic = async () => groups;
-    modelApi.listAvailable = async () => modelProjection("model-a", "A");
-  });
-  try {
-    groups = groupProjection(["new"]);
-    await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
-    assert.equal(harness.modelCatalog.modelGroups[0]?.id, "new");
-    assert.equal(harness.modelCatalog.selectedGroupId, "");
-    await harness.React.act(async () => harness.modelCatalog.selectGroup("new"));
-    assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-a");
+      assert.ok(harness.modelCatalog.selectionError);
+      assert.deepEqual(listed, ["a", "b"], "invalid membership must not fetch another group's models");
+    }
   } finally { await harness.cleanup(); }
 });
 
 for (const phase of ["groups", "models"] as const) {
-  test(`${phase} refresh errors preserve transient data and clear 401/403 grants`, async () => {
+  test(`${phase} authorization denial clears grants and refresh reloads current membership`, async () => {
     let error: Error | null = null;
     const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
       authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
@@ -699,42 +635,18 @@ for (const phase of ["groups", "models"] as const) {
     });
     try {
       error = new Error("network");
-      await harness.React.act(async () => { assert.equal(await harness.modelCatalog.refreshModels(), false); });
+      await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
       assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-a");
       for (const status of [401, 403]) {
         error = new ApiRequestError("denied", status);
         await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
-        assert.deepEqual(harness.modelCatalog.modelGroups, []);
+        assert.equal(harness.modelCatalog.selectedGroupId, "");
         assert.deepEqual(harness.modelCatalog.availableModels, []);
         error = null;
         await harness.React.act(async () => { await harness.modelCatalog.refreshModels(); });
-        assert.equal(harness.modelCatalog.selectedGroupId, "");
-        await harness.React.act(async () => harness.modelCatalog.selectGroup("a"));
+        assert.equal(harness.modelCatalog.selectedGroupId, "a");
         assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-a"]);
       }
-    } finally { await harness.cleanup(); }
-  });
-}
-
-for (const phase of ["groups", "models"] as const) {
-  test(`group switch fences late ${phase} refresh`, async () => {
-    let pending = false;
-    const groups = deferred<ReturnType<typeof groupProjection>>();
-    const models = deferred<ReturnType<typeof modelProjection>>();
-    const harness = await mountModelCatalogHarness((authApi, modelApi, groupApi) => {
-      authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
-      groupApi.listPublic = async () => pending && phase === "groups" ? groups.promise : groupProjection(["a", "b"]);
-      modelApi.listAvailable = async (options) => pending && phase === "models" ? models.promise : modelProjection(options?.groupId ?? "", "Model");
-    });
-    try {
-      pending = true;
-      await harness.React.act(async () => { void harness.modelCatalog.refreshModels(); });
-      pending = false;
-      await harness.React.act(async () => harness.modelCatalog.selectGroup("b"));
-      groups.resolve(groupProjection(["a"])); models.resolve(modelProjection("stale", "stale"));
-      await harness.flush();
-      assert.equal(harness.modelCatalog.selectedGroupId, "b");
-      assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "b");
     } finally { await harness.cleanup(); }
   });
 }
@@ -798,9 +710,7 @@ test("an authorization refresh failure clears the old catalog, while a transient
     await harness.React.act(async () => {
       assert.equal(await harness.modelCatalog.refreshModels(), true);
     });
-    assert.equal(harness.modelCatalog.selectedGroupId, "");
-    assert.deepEqual(harness.modelCatalog.availableModels, []);
-    await harness.React.act(async () => harness.modelCatalog.selectGroup("group-test"));
+    assert.equal(harness.modelCatalog.selectedGroupId, "group-test");
     assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-b"]);
   } finally {
     await harness.cleanup();

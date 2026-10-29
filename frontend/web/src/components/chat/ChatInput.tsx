@@ -88,6 +88,7 @@ export const ChatInput = memo(function ChatInput({
   disabled,
   canSend = true,
   placeholder,
+  modelUnavailableReason,
   acceptedFileTypes,
   disableSlashCommands = false,
   tools = EMPTY_TOOLS,
@@ -111,9 +112,6 @@ export const ChatInput = memo(function ChatInput({
   onToggleAgentOption,
   availableModels = [],
   currentModelId,
-  modelGroups = [],
-  selectedGroupId,
-  onSelectGroup,
   onSelectModel,
   onModelSelectorOpen,
   attachments: externalAttachments,
@@ -396,7 +394,7 @@ export const ChatInput = memo(function ChatInput({
     content,
     snapshot: draftSnapshot,
     attachments,
-    allowed: !questionMode && canSend && !hasUploadingAttachment && !isLoading && !disabled,
+    allowed: !questionMode && canSend && !modelUnavailableReason && !hasUploadingAttachment && !isLoading && !disabled,
     lock: isSubmittingRef,
     onSend,
     agentOptionValues,
@@ -521,7 +519,7 @@ export const ChatInput = memo(function ChatInput({
     ],
   );
   const canSubmit =
-    hasContent && canSend && !isLoading && !hasUploadingAttachment;
+    hasContent && canSend && !modelUnavailableReason && !isLoading && !hasUploadingAttachment;
 
   // A pending question batch owns the surface: nothing but the question card may
   // reach the server, so the native form, Enter shortcut, drops and paste keep the
@@ -534,7 +532,7 @@ export const ChatInput = memo(function ChatInput({
     getText: () => draftSnapshot.value,
     setText: (text) => setInput(text),
     disabled: Boolean(disabled || !canSend),
-    sendDisabled: !canSend || isLoading || hasUploadingAttachment || questionMode,
+    sendDisabled: !canSend || Boolean(modelUnavailableReason) || isLoading || hasUploadingAttachment || questionMode,
     canCancel: Boolean(canStop && isLoading),
     attachmentAdapter: uploadCategories.length > 0 ? attachmentAdapter : undefined,
   }));
@@ -1071,6 +1069,7 @@ export const ChatInput = memo(function ChatInput({
                 isLoading={isLoading}
                 canStop={canStop}
                 canSubmit={canSubmit}
+                modelUnavailableReason={modelUnavailableReason}
                 hasUploadingAttachment={hasUploadingAttachment}
                 enabledToolsCount={enabledToolsCount}
                 totalToolsCount={totalToolsCount}
@@ -1078,9 +1077,6 @@ export const ChatInput = memo(function ChatInput({
                 totalSkillsCount={totalSkillsCount}
                 availableModels={availableModels}
                 currentModelId={currentModelId}
-                modelGroups={modelGroups}
-                selectedGroupId={selectedGroupId}
-                onSelectGroup={onSelectGroup}
                 onSelectModel={onSelectModel}
                 showModelSelector
                 agentOptions={agentOptions}

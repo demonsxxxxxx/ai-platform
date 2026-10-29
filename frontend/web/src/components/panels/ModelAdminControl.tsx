@@ -110,11 +110,19 @@ export type ModelAdminControlState = "loading" | "ready" | "degraded";
 
 export function ModelAdminControl({
   canManage = true,
+  providerId,
+  onProviderChanged,
+  onDirtyChange,
+  onBusyChange,
   onStateChange,
   groupRevision = 0,
   onGroupsChanged,
 }: {
   canManage?: boolean;
+  providerId?: string;
+  onProviderChanged?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onBusyChange?: (busy: boolean) => void;
   onStateChange?: (state: ModelAdminControlState) => void;
   groupRevision?: number;
   onGroupsChanged?: () => void;
@@ -127,6 +135,7 @@ export function ModelAdminControl({
   const [catalogReceipt, setCatalogReceipt] = useState<ModelCatalogReceipt | null>(null);
   const [testState, setTestState] = useState<"untested" | "testing" | "passed" | "failed">("untested");
   const [busy, setBusy] = useState<ModelAdminOperation | null>(null);
+  useEffect(() => { onBusyChange?.(busy !== null); }, [busy, onBusyChange]);
   const [error, setError] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -210,7 +219,7 @@ export function ModelAdminControl({
     setMessage(null);
     onStateChange?.("loading");
     try {
-      const next = await modelAdminApi.get({ signal: owner.controller.signal });
+      const next = await modelAdminApi.get({ signal: owner.controller.signal, providerId });
       if (!ownsRequest(owner)) return;
       applyState(next);
       onStateChange?.("ready");
@@ -219,7 +228,7 @@ export function ModelAdminControl({
       setError(errorMessage(caught));
       onStateChange?.("degraded");
     } finally { finishRequest(owner); }
-  }, [abandonRequest, startRequest, ownsRequest, applyState, onStateChange, finishRequest]);
+  }, [abandonRequest, startRequest, ownsRequest, applyState, onStateChange, finishRequest, providerId]);
 
   useEffect(() => {
     if (canManage) void load();
@@ -279,6 +288,7 @@ export function ModelAdminControl({
   const hasChanges = Boolean(state && (credential.trim()
     || connectionOrigin(baseUrl) !== connectionOrigin(state.connection.base_url)
     || modelDraftSignature(draft) !== modelDraftSignature(state.models)));
+  useEffect(() => { onDirtyChange?.(hasChanges); }, [hasChanges, onDirtyChange]);
   const canPublish = Boolean(state && hasChanges && catalogReceipt
     && catalogReceipt.connectionVersion === connectionVersion.current);
   const connectionLocked = busy === "load" || busy === "publish";
@@ -293,7 +303,7 @@ export function ModelAdminControl({
     setError(null); setPublishError(null); setMessage(null);
     try {
       const result = await modelAdminApi.discover(requestedUrl, requestedCredential, {
-        signal: owner.controller.signal,
+        signal: owner.controller.signal, providerId,
       });
       if (!ownsRequest(owner)) return;
       setTestState("passed");
@@ -342,7 +352,7 @@ export function ModelAdminControl({
     if (!canPublish || !catalogReceipt) {
       setPublishError("连接已修改，请先获取当前地址的模型，再保存配置。"); return;
     }
-    if (!enabled.length) { setPublishError("请至少启用一个模型。"); return; }
+    if (!enabled.length && !providerId) { setPublishError("请至少启用一个模型。"); return; }
     const invalid = available.find((model) => {
       if (!model.enabled && model.auto_compact_window === undefined
         && model.max_output_tokens === undefined) return false;
@@ -367,10 +377,11 @@ export function ModelAdminControl({
       const next = await modelAdminApi.publish(
         baseUrl.trim(), credential.trim() || undefined, catalogReceipt.revision,
         available.map((model) => ({ ...model, display_name: model.label.trim() })),
-        { signal: owner.controller.signal },
+        { signal: owner.controller.signal, providerId },
       );
       if (!ownsRequest(owner)) return;
       applyState(next);
+      onProviderChanged?.();
       setTestState("passed");
       const refreshed = await refreshModels({ force: true });
       if (!ownsRequest(owner)) return;
@@ -513,7 +524,7 @@ export function ModelAdminControl({
   return (
     <section
       aria-label="模型管理"
-      className="flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink"
+      className={`flex min-w-0 shrink-0 flex-col gap-4 p-4 lg:min-h-0 lg:shrink ${providerId ? "lg:flex-1" : "min-h-full lg:h-full"}`}
       data-model-admin-control
     >
       <div className="shrink-0">
@@ -611,7 +622,7 @@ export function ModelAdminControl({
             columns={[
               { key: "selected", width: 52, title: "选择", render: (_value, model) => <Checkbox aria-label={`选择模型 ${model.label}`} data-model-admin-select={model.id} checked={selectedModelIds.includes(model.id)} disabled={busy !== null} onChange={(checked) => setSelectedModelIds((current) => checked ? [...current, model.id] : current.filter((id) => id !== model.id))} /> },
               { key: "identity", width: 260, title: "模型", render: (_value, model) => <div className="min-w-0"><Button type="text" className="max-w-full justify-start px-0" aria-label={`编辑模型 ${model.label}`} data-model-admin-edit={model.id} onClick={(event) => { modelTrigger.current = event.currentTarget; setEditingModelId(model.id); }} icon={<DatabaseZap size={16} />}><span className="truncate text-sm font-medium">{model.label}</span></Button><div className="flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]" data-model-admin-group-tags><span className="max-w-full truncate" title={model.value}>{model.value}</span>{(modelGroupIds.get(model.id) ?? []).map((groupId) => { const group = groupOptions.find((item) => item.id === groupId); return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null; })}{!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}</div></div> },
-              { key: "provider", width: 120, title: "提供方", render: (_value, model) => model.provider || "未提供" },
+              { key: "provider", width: 120, title: "提供方", render: (_value, model) => model.provider_name || model.provider || "未提供" },
               { key: "window", width: 140, title: "压缩窗口", render: (_value, model) => model.auto_compact_window?.toLocaleString() ?? "默认 100,000" },
               { key: "output", width: 140, title: "最大输出 Token", render: (_value, model) => model.max_output_tokens?.toLocaleString() ?? "未设置" },
               { key: "availability", width: 100, title: "状态", render: (_value, model) => <Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag> },

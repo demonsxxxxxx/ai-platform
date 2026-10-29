@@ -86,13 +86,23 @@ class TransactionFactory(Protocol):
 
 
 class ModelManagementRepository(Protocol):
-    async def connection_projection(self, conn: Any) -> dict[str, Any]: ...
+    async def connection_projection(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
 
-    async def active_connection(self, conn: Any, *, encryption_key: str) -> Any: ...
+    async def providers(self, conn: Any) -> list[dict[str, Any]]: ...
+
+    async def require_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def create_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def provider_impact(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def retire_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def active_connection(self, conn: Any, *, encryption_key: str, provider_id: str = "legacy") -> Any: ...
 
     async def run_connection(self, conn: Any, **kwargs: Any) -> Any: ...
 
-    async def admin_models(self, conn: Any) -> list[dict[str, Any]]: ...
+    async def admin_models(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
 
     async def public_models(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
@@ -250,23 +260,39 @@ class ModelControlPlaneService:
         )
         return self._upstream.parse_model_ids(response)
 
-    async def admin_projection(self) -> dict[str, Any]:
+    async def admin_projection(self, *, provider_id: str | None = None) -> dict[str, Any]:
         async with self._transaction() as conn:
+            if provider_id is not None:
+                await self._repository.require_provider(conn, provider_id=provider_id)
             return {
-                "connection": await self._repository.connection_projection(conn),
-                "models": await self._repository.admin_models(conn),
+                "connection": await self._repository.connection_projection(conn, provider_id=provider_id or "legacy"),
+                "models": await self._repository.admin_models(conn, provider_id=provider_id),
+                "providers": await self._repository.providers(conn),
             }
 
-    async def discover(self, *, base_url: str, api_key: str | None) -> dict[str, Any]:
+    async def create_provider(self, *, name: str) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.create_provider(conn, name=name)
+
+    async def provider_impact(self, *, provider_id: str, missing_only: bool = False) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only)
+
+    async def retire_provider(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.retire_provider(conn, **kwargs)
+
+    async def discover(self, *, base_url: str, api_key: str | None, provider_id: str = "legacy") -> dict[str, Any]:
         encryption_key, _allowed_hosts = self._security_settings()
         requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
+            await self._repository.require_provider(conn, provider_id=provider_id)
             current = await self._repository.active_connection(
-                conn, encryption_key=encryption_key
+                conn, encryption_key=encryption_key, provider_id=provider_id
             )
-            connection = await self._repository.connection_projection(conn)
-            existing = await self._repository.admin_models(conn)
+            connection = await self._repository.connection_projection(conn, provider_id=provider_id)
+            existing = await self._repository.admin_models(conn, provider_id=provider_id)
         if not resolved_key:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
@@ -281,7 +307,7 @@ class ModelControlPlaneService:
             "models": [
                 {
                     **(by_value.get(value) or {
-                        "id": platform_model_id(value),
+                        "id": platform_model_id(value, provider_id),
                         "value": value,
                         "label": value,
                         "provider": "compatible",
@@ -305,6 +331,7 @@ class ModelControlPlaneService:
         models: list[dict[str, Any]],
         actor_user_id: str,
         tenant_id: str = "default",
+        provider_id: str = "legacy",
     ) -> dict[str, Any]:
         encryption_key, _allowed_hosts = self._security_settings()
         requested_url = self._security.normalize(base_url)
@@ -312,7 +339,7 @@ class ModelControlPlaneService:
         if not resolved_key:
             async with self._transaction() as conn:
                 current = await self._repository.active_connection(
-                    conn, encryption_key=encryption_key
+                    conn, encryption_key=encryption_key, provider_id=provider_id
                 )
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
@@ -330,7 +357,7 @@ class ModelControlPlaneService:
         for model in models:
             if any(field in model for field in ("access_mode", "allowed_user_ids", "is_default")):
                 raise ValueError("model_user_access_retired")
-            if model.get("id") != platform_model_id(model["value"]):
+            if model.get("id") != platform_model_id(model["value"], provider_id):
                 raise ValueError("model_catalog_identity_collision")
             window, output_limit = normalize_model_token_limits(
                 model.get("auto_compact_window"), model.get("max_output_tokens")
@@ -369,8 +396,9 @@ class ModelControlPlaneService:
                 upstream_model_ids=model_ids,
                 expected_revision=expected_revision,
                 models=models,
+                provider_id=provider_id,
             )
-            connection = await self._repository.connection_projection(conn)
+            connection = await self._repository.connection_projection(conn, provider_id=provider_id)
         return {"connection": connection, "models": published, "revision": revision}
 
     async def public_models(self, conn: Any, *, user_id: str, tenant_id: str | None = None, usage_scene: str = "independent", group_id: str | None = None) -> dict[str, Any]:

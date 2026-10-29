@@ -3,6 +3,7 @@ import { authFetch } from "./fetch";
 export interface CompanyEmployee {
   work_id: string;
   display_name: string;
+  department_ids?: string[];
 }
 
 export interface CompanyEmployeeList {
@@ -10,6 +11,7 @@ export interface CompanyEmployeeList {
   total: number;
   offset: number;
   limit: number;
+  snapshot_id: string;
 }
 
 export interface CompanyEmployeeQuery {
