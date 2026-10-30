@@ -10,7 +10,7 @@ const a = folder("a"), b = folder("a/b"), c = folder("a/b/c");
 const file: ProfileDriveFileEntry = { ...folder("a/b/c/long-name.pdf"), type: "file", size: 42 };
 const initial = {
   entries: [a], directories: new Map([[a.path, { entries: [b], truncated: false }], [b.path, { entries: [c], truncated: false }], [c.path, { entries: [file], truncated: false }]]),
-  expanded: new Set([a.path, b.path, c.path]), loading: new Set<string>(), errors: new Map<string, string>(), compact: true, focusTrail: [], filter: "",
+  expanded: new Set([a.path, b.path, c.path]), loading: new Set<string>(), errors: new Map<string, string>(), focusTrail: [], filter: "",
 };
 test("drive origin remains Composer-local, not a submission or message field", () => {
   const attachment = { id: "a", key: "file-a", name: "report.pdf", type: "document" as const, mimeType: "application/pdf", size: 42, profileDriveReference: { source_id: "public" as const, path: "Projects/report.pdf" } };
@@ -46,8 +46,7 @@ test("focus resets visual depth without dropping loading, error, empty or trunca
   const empty = buildProfileDriveTree({ ...initial, focusTrail, directories: new Map(initial.directories).set(c.path, { entries: [], truncated: false }) });
   assert.equal(empty[0].kind === "status" && empty[0].text, "目录为空");
 });
-test("compact off and filter retain expanded original directories without scanning unknown children", () => {
-  assert.equal(buildProfileDriveTree({ ...initial, compact: false }).length, 4);
+test("filter retains expanded original directories without scanning unknown children", () => {
   assert.equal(buildProfileDriveTree({ ...initial, filter: "long" }).length, 4);
   const unloaded = buildProfileDriveTree({ ...initial, directories: new Map() });
   assert.equal(unloaded.length, 1);

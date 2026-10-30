@@ -1,4 +1,4 @@
-import { Button, Input } from "@lobehub/ui/base-ui";
+import { Button, Input, toast } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { modelAdminApi, type AdminModelProvider, type ModelProviderImpact } from "../../services/api/modelAdmin";
 import { ApiRequestError } from "../../services/api/fetch";
@@ -24,7 +24,6 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
   const [missingOnly, setMissingOnly] = useState(false);
   const [editorVersion, setEditorVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const owner = useRef<AbortController | null>(null);
   const reload = useCallback(async (signal?: AbortSignal) => {
     const state = await modelAdminApi.get({ signal });
@@ -69,8 +68,10 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
     try {
       const result = await modelAdminApi.retireProvider(impact.id, impact.revision, { signal: owner.current?.signal, missingOnly });
       if (owner.current?.signal.aborted) return;
-      setNotice(missingOnly ? `已清理 ${result.model_count ?? 0} 个模型，保留 ${result.retained_count ?? 0} 个被引用模型。` : `已删除供应商 ${impact.name}。`);
-      setImpact(null); setDirty(false); setEditorVersion((version) => version + 1);
+      toast.success(missingOnly ? `已清理 ${result.model_count ?? 0} 个模型，保留 ${result.retained_count ?? 0} 个被引用模型。` : `已删除供应商 ${impact.name}。`);
+      setImpact(null); setDirty(false);
+      if (missingOnly && selectedId === impact.id) setEditorVersion((version) => version + 1);
+      if (!missingOnly) setSelectedId((current) => current === impact.id ? "" : current);
       await reload(owner.current?.signal);
       await refreshModels({ force: true });
     } catch (caught) { if (!owner.current?.signal.aborted) { setImpact(null); report(caught); } }
@@ -79,7 +80,7 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
   const blocked = impact && (missingOnly ? impact.cleanable_count === 0 : impact.group_count > 0 || impact.default_group_count > 0 || impact.active_run_count > 0);
   const switchProvider = (id: string) => {
     if (dirty) { setSwitchTo(id); return; }
-    setSelectedId(id); setDirty(false); setImpact(null); setMissingOnly(false); setError(null); setNotice(null);
+    setSelectedId(id); setDirty(false); setImpact(null); setMissingOnly(false); setError(null);
   };
   const providerChanged = useCallback(() => { void reload(owner.current?.signal).catch(report); }, [reload]);
   if (!canManage) return null;
@@ -93,7 +94,6 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
         <Button disabled={busy} onClick={() => { setAdding(false); setName(""); }}>取消新增</Button>
       </div> : null}
       {error ? <p role="alert" className="w-full text-sm text-[var(--theme-danger-text)]">{error} <Button size="small" onClick={() => void reload(owner.current?.signal).catch(report)}>重新读取</Button></p> : null}
-      {notice ? <p role="status" className="w-full text-sm">{notice}</p> : null}
     </div>
     {impact ? <div role={blocked ? "alert" : "status"} className="shrink-0 rounded-lg border border-[var(--theme-border)] p-3 text-sm" data-provider-delete-blocked={blocked ? "" : undefined}>
       <p>{impact.name}：{impact.model_count} 个模型，关联 {impact.group_count} 个分组、{impact.default_group_count} 个默认模型，{impact.active_run_count} 个未完成任务。</p>
@@ -103,8 +103,8 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
       <Button size="small" onClick={() => setImpact(null)}>关闭检查结果</Button>
     </div> : null}
     {providers.map((provider) => <section key={provider.id} className={`flex shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--theme-border)] ${selectedId === provider.id ? "min-h-[32rem] lg:flex-1" : ""}`} data-model-provider-row={provider.id}>
-      <div className="flex shrink-0 items-center gap-2 bg-[var(--theme-bg-sidebar)] px-3 py-2">
-        <Button type="text" className="min-w-0 flex-1" aria-label={`供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} aria-controls={selectedId === provider.id ? `provider-editor-${provider.id}` : undefined} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)}>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 bg-[var(--theme-bg-sidebar)] px-3 py-2" data-provider-header>
+        <Button type="text" className="min-w-0 basis-full sm:flex-1 sm:basis-auto" aria-label={`供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} aria-controls={selectedId === provider.id ? `provider-editor-${provider.id}` : undefined} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)}>
           <span className="flex min-w-0 flex-1 flex-col gap-1 text-left sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
             <span className="truncate font-medium" title={provider.name}>{provider.name}</span>
             <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--theme-text-secondary)]" data-provider-summary>
@@ -115,11 +115,13 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
             </span>
           </span>
         </Button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <Button size="small" disabled={busy || editorBusy || dirty} onClick={() => void inspectDelete(true, provider.id)}>清理上游已移除模型</Button>
         <Button danger type="text" aria-label={`删除供应商 ${provider.name}`} title="删除供应商" icon={<Trash2 size={16} />} disabled={busy || editorBusy || dirty} onClick={() => void inspectDelete(false, provider.id)} />
         <Button type="text" aria-label={`${selectedId === provider.id ? "收起" : "展开"}供应商 ${provider.name}`} aria-expanded={selectedId === provider.id} disabled={busy || editorBusy} onClick={() => switchProvider(selectedId === provider.id ? "" : provider.id)} icon={selectedId === provider.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />} />
+        </div>
       </div>
       {selectedId === provider.id ? <div id={`provider-editor-${provider.id}`} className="flex min-h-0 flex-1 flex-col" data-provider-expanded>
-        <div className="flex shrink-0 justify-end px-4 pt-3"><Button size="small" onClick={() => void inspectDelete(true)} disabled={busy || editorBusy || dirty}>清理上游已移除模型</Button></div>
         <ModelAdminControl key={`${selectedId}:${editorVersion}`} providerId={selectedId} onDirtyChange={setDirty} onBusyChange={setEditorBusy} onProviderChanged={providerChanged} groupRevision={groupRevision} onGroupsChanged={onGroupsChanged} onStateChange={onStateChange} />
       </div> : null}
     </section>)}

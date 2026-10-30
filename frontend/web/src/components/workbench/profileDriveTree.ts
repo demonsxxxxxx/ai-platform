@@ -11,13 +11,12 @@ export type ProfileDriveTreeRow =
   | { kind: "error"; key: string; depth: number; entry: ProfileDriveFileEntry; text: string };
 
 /** Project only known listings; never read more directories to compact a chain. */
-export function buildProfileDriveTree({ entries, directories, expanded, loading, errors, compact, focusTrail, filter }: {
+export function buildProfileDriveTree({ entries, directories, expanded, loading, errors, focusTrail, filter }: {
   entries: ProfileDriveFileEntry[];
   directories: ReadonlyMap<string, LoadedProfileDriveDirectory>;
   expanded: ReadonlySet<string>;
   loading: ReadonlySet<string>;
   errors: ReadonlyMap<string, string>;
-  compact: boolean;
   focusTrail: ProfileDriveFileEntry[];
   filter: string;
 }): ProfileDriveTreeRow[] {
@@ -39,7 +38,7 @@ export function buildProfileDriveTree({ entries, directories, expanded, loading,
     for (const first of children) {
       const chain = [first];
       let entry = first;
-      while (compact && !query && entry.type === "directory" && expanded.has(entry.path) && !loading.has(entry.path) && !errors.has(entry.path)) {
+      while (!query && entry.type === "directory" && expanded.has(entry.path) && !loading.has(entry.path) && !errors.has(entry.path)) {
         const loaded = directories.get(entry.path);
         if (!loaded || loaded.truncated || loaded.entries.length !== 1 || loaded.entries[0].type !== "directory") break;
         entry = loaded.entries[0];

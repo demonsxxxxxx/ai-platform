@@ -88,8 +88,8 @@ test("composer and right panel expose LibreChat-style regions without backend au
   assert.doesNotMatch(sidePanel, /activeTab|setActiveTab/);
   assert.doesNotMatch(sidePanel, /filesStatus|SessionFilesList/);
   assert.match(driveBrowser, /data-librechat-context-section="files"/);
-  assert.match(driveBrowser, /role="tablist"/);
-  assert.match(driveBrowser, /role="tab"/);
+  assert.match(driveBrowser, /<TabsList/);
+  assert.match(driveBrowser, /<TabsTab/);
   assert.match(driveBrowser, /activeSource|setActiveSource/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
@@ -137,13 +137,24 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.doesNotMatch(welcomeCss, /\.welcome-root\.welcome-chat-start[\s\S]{0,300}h-screen|\.welcome-root\.welcome-chat-start[\s\S]{0,300}min-height:\s*100vh/);
 
   const shell = read("src/librechat-ui/Shell.tsx");
+  const driveBrowser = read("src/components/workbench/ProfileDriveWorkspaceBrowser.tsx");
+  const driveCss = read("src/components/workbench/ProfileDriveWorkspaceBrowser.module.css");
+  assert.match(surface, /\[--workbench-header-height:3\.5rem\]/);
+  assert.match(surface, /threadHeader:[\s\S]*?h-\[var\(--workbench-header-height\)\]/);
+  assert.match(driveCss, /\.toolbar\s*\{[^}]*height:\s*var\(--workbench-header-height,\s*3\.5rem\)[^}]*border-bottom:\s*1px solid var\(--theme-border\)/);
+  assert.match(driveBrowser, /<TabsRoot[^>]*variant="rounded"/);
+  const toolbarCss = driveCss.split("\n").filter((line) => /\.toolbar|\.tabs/.test(line)).join("\n");
+  assert.doesNotMatch(toolbarCss, /border-inline-end|border-inline-start|\.tab\[aria-selected|inset 0 -2px/);
+  assert.doesNotMatch(driveBrowser, /<nav[\s\S]*?>\{title\}<\/Button>/);
   assert.match(surface, /context:[\s\S]*?min-h-0 min-w-0[\s\S]*?border-l/);
   assert.doesNotMatch(surface, /context:[\s\S]*?fixed inset-y-0/);
   assert.match(shell, /<DrawerPopup placement="right" width="min\(22rem, calc\(100vw - 2rem\)\)"/);
   assert.match(shell, /rightPanel && contextOpen && desktop/);
   assert.match(surface, /workspaceWithContext:[\s\S]*?var\(--context-panel-width,360px\)/);
   assert.match(shell, /role="separator"/);
-  assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
+  assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel|px-4 py-3/);
+  assert.doesNotMatch(driveBrowser, /workbenchSurface\.compactPanel/);
+  assert.doesNotMatch(driveCss.match(/\.browser\s*\{[^}]*\}/)?.[0] ?? "", /border|shadow/);
   assert.match(sidePanel, /className="flex min-h-0 flex-1 flex-col overflow-hidden"/);
 });
 
