@@ -77,6 +77,7 @@ from app.runtime.sandbox.executor_signals import (
 )
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
 from app.sandbox.api import (
+    ExecutorTerminalReceiptIdentity,
     ProviderSessionAppendIdentity,
     SandboxCallbackAuthorityError,
     SandboxCallbackIdentity,
@@ -126,12 +127,27 @@ def _callback_identity(callback: _CallbackIdentityEnvelope) -> SandboxCallbackId
     )
     if isinstance(callback, ProviderSessionCallbackRequest) and callback.action == "append":
         return ProviderSessionAppendIdentity(**values)
+    if isinstance(callback, ExecutorCallbackEvent) and callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
+        return ExecutorTerminalReceiptIdentity(**values)
     if isinstance(callback, RecoveryOperationCallbackRequest) and callback.operation in {
         "completed",
         "failed",
     }:
         return _RecoveryOperationCompletionIdentity(**values)
     return SandboxCallbackIdentity(**values)
+
+
+def _executor_terminal_callback_is_receipt_only(
+    callback: ExecutorCallbackEvent,
+) -> bool:
+    """Exclude ordinary events, messages and heartbeats from cancel-tail receipt writes."""
+    return (
+        callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+        and callback.terminal_result is not None
+        and callback.new_message is None
+        and not callback.state_patch
+        and not callback.events
+    )
 
 
 def _receive_callback_identity(
@@ -347,13 +363,22 @@ async def record_executor_callback(
         lease: dict[str, Any],
         *,
         provider_expires_at=None,
+        cancellation_tail: bool = False,
     ) -> tuple[tuple[Any, ...], Any, bool]:
         tenant_id = str(run_identity["tenant_id"])
         lease_id = str(lease.get("id") or "")
         committed_rows: tuple[Any, ...] = ()
         authority = None
         callback_deduplicated = False
-        if v4_items:
+        if cancellation_tail and (
+            not isinstance(callback_identity, ExecutorTerminalReceiptIdentity)
+            or not _executor_terminal_callback_is_receipt_only(callback)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="executor_terminal_receipt_only_required",
+            )
+        if v4_items and not cancellation_tail:
             if not callback.batch_id:
                 raise HTTPException(
                     status_code=409, detail="callback_batch_id_required"
@@ -376,7 +401,7 @@ async def record_executor_callback(
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
                 batch_id=callback.batch_id,
-                events=event_batch,
+                events=event_batch[:1] if cancellation_tail else event_batch,
             )
             callback_deduplicated = bool(
                 receipt.get("duplicate") if isinstance(receipt, dict) else False
@@ -393,7 +418,7 @@ async def record_executor_callback(
                     receipt_id=str(receipt["id"]),
                     recorded_at=receipt["callback_received_at"],
                 )
-            if v4_items:
+            if v4_items and not cancellation_tail:
                 try:
                     committed_rows = await append_callback_v4_rows(
                         capabilities,
@@ -410,7 +435,7 @@ async def record_executor_callback(
                     raise HTTPException(
                         status_code=409, detail="callback_v4_projection_invalid"
                     ) from exc
-        else:
+        elif not cancellation_tail:
             for event in event_batch:
                 await streaming_run_events.append_event(
                     conn,
@@ -442,6 +467,16 @@ async def record_executor_callback(
                 ) from exc
             terminal_was_new = lease.get("executor_terminal_json") is None
             try:
+                terminal_write_scope = (
+                    {
+                        "cancelling_terminal_identity": callback_identity,
+                        "workspace_id": str(run_identity.get("workspace_id") or ""),
+                        "user_id": str(run_identity.get("user_id") or ""),
+                        "session_id": str(run_identity.get("session_id") or ""),
+                    }
+                    if cancellation_tail
+                    else {}
+                )
                 await lease_port.record_sandbox_executor_terminal(
                     conn,
                     tenant_id=tenant_id,
@@ -450,6 +485,7 @@ async def record_executor_callback(
                     lease_id=lease_id,
                     executor_status=callback.status,
                     terminal_result=terminal_receipt,
+                    **terminal_write_scope,
                 )
             except (
                 SandboxExecutorTerminalConflictError,
@@ -604,12 +640,24 @@ async def record_executor_callback(
             else nullcontext()
         ):
             async with transaction() as conn:
-                run_identity, lease = await _lock_callback_authority(
-                    conn,
-                    identity=callback_identity,
-                )
+                cancellation_tail = False
+                if isinstance(callback_identity, ExecutorTerminalReceiptIdentity):
+                    run_identity, lease, cancellation_tail = (
+                        await _lock_executor_terminal_callback_authority(
+                            conn,
+                            identity=callback_identity,
+                        )
+                    )
+                else:
+                    run_identity, lease = await _lock_callback_authority(
+                        conn,
+                        identity=callback_identity,
+                    )
                 committed_rows, authority, callback_deduplicated = await persist_callback(
-                    conn, run_identity, lease
+                    conn,
+                    run_identity,
+                    lease,
+                    cancellation_tail=cancellation_tail,
                 )
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         try:
@@ -991,12 +1039,34 @@ async def _recheck_callback_authority(
     elif binding:
         raise TypeError("callback identity cannot be combined with legacy binding fields")
     try:
+        if isinstance(identity, ExecutorTerminalReceiptIdentity):
+            return await _sandbox_callback_authority.recheck_executor_terminal_receipt(
+                conn, tenant_id=tenant_id, identity=identity,
+            )
         if isinstance(identity, ProviderSessionAppendIdentity):
             return await _sandbox_callback_authority.recheck_provider_session_append(
                 conn, tenant_id=tenant_id, identity=identity,
             )
         return await _sandbox_callback_authority.recheck_attempt(
             conn, tenant_id=tenant_id, identity=identity,
+        )
+    except SandboxCallbackAuthorityError as exc:
+        raise _callback_authority_http_error(exc) from exc
+
+
+async def _lock_executor_terminal_callback_authority(
+    conn,
+    *,
+    identity: ExecutorTerminalReceiptIdentity,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    if not isinstance(identity, ExecutorTerminalReceiptIdentity):
+        raise HTTPException(
+            status_code=409,
+            detail="executor_terminal_receipt_identity_required",
+        )
+    try:
+        return await _sandbox_callback_authority.lock_executor_terminal_receipt(
+            conn, identity,
         )
     except SandboxCallbackAuthorityError as exc:
         raise _callback_authority_http_error(exc) from exc
@@ -1013,6 +1083,11 @@ async def _lock_callback_authority(
         identity = SandboxCallbackIdentity(**binding)
     elif binding:
         raise TypeError("callback identity cannot be combined with legacy binding fields")
+    if isinstance(identity, ExecutorTerminalReceiptIdentity):
+        raise HTTPException(
+            status_code=409,
+            detail="executor_terminal_receipt_authority_required",
+        )
     if allow_provider_tail and not isinstance(identity, ProviderSessionAppendIdentity):
         raise HTTPException(status_code=409, detail="provider_tail_identity_required")
     try:

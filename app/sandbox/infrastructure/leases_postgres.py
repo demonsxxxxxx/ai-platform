@@ -246,6 +246,52 @@ async def list_cancelling_provider_tail_leases_for_attempt(
     return rows
 
 
+async def list_cancelling_executor_terminal_leases_for_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> list[dict[str, Any]]:
+    """Lock only the original live lease for terminal-receipt cancellation drain."""
+    query = """
+        select lease.* from sandbox_leases lease
+        join run_attempts attempt on attempt.tenant_id = lease.tenant_id
+          and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+        join runs on runs.tenant_id = attempt.tenant_id and runs.id = attempt.run_id
+        where lease.tenant_id = %s and lease.run_id = %s
+          and lease.attempt_id = %s
+          and lease.workspace_id = runs.workspace_id
+          and lease.user_id = runs.user_id
+          and lease.session_id = runs.session_id
+          and lease.lease_payload_json->>'attempt_id' = lease.attempt_id
+          and lease.lease_payload_json->>'owner_generation' = (attempt.owner_generation - 1)::text
+          and attempt.status = 'cancel_requested'
+          and attempt.owner_kind = 'queue_worker'
+          and runs.status = 'running' and runs.cancel_requested_at is not null
+          and lease.status = 'active' and lease.released_at is null
+          and lease.expires_at is not null and lease.expires_at > clock_timestamp()
+        order by lease.id asc
+    """
+    params = (tenant_id, run_id, attempt_id)
+    cursor = await conn.execute(query + " for update of lease", params)
+    rows = list(await cursor.fetchall())
+    if not rows:
+        return []
+    await conn.execute(
+        """
+        select id from run_attempts
+        where tenant_id = %s and run_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    # Recheck after taking the Attempt lock so a takeover that won the race
+    # cannot reuse the row observed by the lease-first query above.
+    cursor = await conn.execute(query, params)
+    return list(await cursor.fetchall())
+
+
 async def list_sandbox_leases_for_run(
     conn: AsyncConnection,
     *,

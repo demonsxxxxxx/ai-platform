@@ -458,8 +458,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     assert epoch["recovery_json"]["final_sequence"] == 2 and epoch["recovery_json"]["workspace_saved"] is True
     assert all(epoch[key] is None for key in ("writer_run_id", "writer_attempt_id", "writer_owner_generation"))
     assert (await (await conn.execute("select count(*) as n from provider_session_append_receipts where epoch_id=%s", (epoch["id"],))).fetchone())["n"] == 1
-    persisted = await (await conn.execute("select status,executor_reconciliation_status from sandbox_leases where id='runtime-lease'")).fetchone()
-    assert persisted == dict(status="released",executor_reconciliation_status="finalized")
+    persisted = await (await conn.execute("select status,executor_reconciliation_status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()
+    assert persisted == dict(status="released",executor_reconciliation_status="finalized",executor_cleanup_status="finalized")
     if operator_fault is None:
         # A completed checkpoint is no longer claimable and cannot revisit its provider.
         assert await reconciler.reconcile_pending_executor_terminals_once(

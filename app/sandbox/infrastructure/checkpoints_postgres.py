@@ -150,6 +150,8 @@ async def finalize_stopped_executor_checkpoint_legacy(
              release_reason='executor_reconciled', executor_reconciliation_status='finalized',
              executor_reconciliation_retry_not_before=null, executor_reconciliation_claim_token=null,
              executor_reconciliation_claimed_at=null, executor_reconciliation_error='',
+             executor_cleanup_status='finalized', executor_cleanup_retry_not_before=null,
+             executor_cleanup_claim_token=null, executor_cleanup_claimed_at=null,
              executor_reconciled_at=now(), updated_at=now()
         where id=%s and tenant_id=%s and workspace_id=%s and user_id=%s and session_id=%s
           and run_id=%s and attempt_id=%s and status in ('active','released')
@@ -157,6 +159,7 @@ async def finalize_stopped_executor_checkpoint_legacy(
           and lease_payload_json->'terminal_reconciliation'=%s::jsonb
           and lease_payload_json->>'owner_generation'=%s and runtime_container_id=%s
           and executor_terminal_json is not null
+          and executor_cleanup_claim_token is null
         returning id
         """,
         (

@@ -1078,3 +1078,362 @@ async def test_cleanup_claim_release_binds_three_parameters_in_both_compatibilit
         assert row["executor_reconciliation_status"] == "claimed"
         assert row["executor_reconciliation_claim_token"] == "legacy-claim"
         assert row["executor_reconciliation_retry_not_before"] is None
+
+
+async def _request_terminal_callback_cancel_tail(connect, attempt_id: str, owner_generation: int):
+    from app.runtime.sandbox.callback_tokens import (
+        CallbackTokenBinding,
+        callback_token_id_for_binding,
+    )
+
+    token_id = callback_token_id_for_binding(
+        CallbackTokenBinding(
+            run_id="run-a",
+            attempt_id=attempt_id,
+            owner_generation=owner_generation,
+        )
+    )
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update runs set cancel_requested_at=clock_timestamp() where id='run-a'"
+        )
+        await conn.execute(
+            "update sandbox_leases set expires_at=clock_timestamp()+interval '10 minutes', "
+            "lease_payload_json=lease_payload_json || %s::jsonb where id='lease-a'",
+            (json.dumps({"callback_token_id": token_id}),),
+        )
+        cancelled = await attempt_postgres.request_run_attempt_cancel(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id=attempt_id,
+        )
+        assert cancelled is not None
+        assert cancelled["owner_generation"] == owner_generation + 1
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version='attempt.v1' "
+            "where singleton=true"
+        )
+    return token_id
+
+
+@pytest.mark.asyncio
+async def test_cancelled_executor_callback_persists_only_immutable_terminal_receipt(
+    sandbox_attempt_authority_db, monkeypatch,
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_callback_lease_port
+    from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent
+    from app.runtime.sandbox.callback_tokens import derive_callback_token
+    from app.runtime.sandbox.contracts import ExecutorCallbackEvent
+    from app.sandbox.api import ExecutorTerminalReceiptIdentity
+
+    from unittest.mock import AsyncMock
+    usage = SimpleNamespace(record=AsyncMock())
+
+    connect, attempt_id, owner_generation = sandbox_attempt_authority_db
+    token_id = await _request_terminal_callback_cancel_tail(
+        connect, attempt_id, owner_generation
+    )
+
+    @asynccontextmanager
+    async def transaction_factory():
+        async with connect() as conn, conn.transaction():
+            yield conn
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", transaction_factory)
+    monkeypatch.setattr(
+        runtime_callbacks,
+        "get_settings",
+        lambda: SimpleNamespace(
+            sandbox_callback_token="callback-secret",
+            sandbox_lease_ttl_seconds=1800,
+        ),
+    )
+
+    async def no_publish(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime_callbacks, "publish_executor_terminal_signal", no_publish)
+    monkeypatch.setattr(runtime_callbacks, "publish_callback_rows", no_publish)
+
+    def callback(status: str, *, events=(), state_patch=None, batch_id=None):
+        terminal = status in {"completed", "failed", "cancelled"}
+        return ExecutorCallbackEvent(
+            session_id="session-a",
+            run_id="run-a",
+            attempt_id=attempt_id,
+            callback_token_id=token_id,
+            batch_id=batch_id,
+            status=status,
+            progress=100 if terminal else 50,
+            state_patch=state_patch or {},
+            events=list(events),
+            terminal_result=(
+                {
+                    "run_id": "run-a",
+                    "status": "cancelled",
+                    "error_code": "executor_cancelled",
+                    "error_message": "cancelled",
+                }
+                if terminal
+                else None
+            ),
+        )
+
+    async def send(value):
+        identity = runtime_callbacks._receive_callback_identity(
+            derive_callback_token("callback-secret", token_id), value
+        )
+        return await runtime_callbacks.record_executor_callback(
+            value,
+            capabilities=object(),
+            callback_identity=identity,
+            lease_port=build_sandbox_executor_callback_lease_port(),
+            model_token_usage=usage,
+        )
+
+    heartbeat = callback(
+        "running", state_patch={"executor_heartbeat": True}, batch_id="heartbeat"
+    )
+    with pytest.raises(HTTPException) as heartbeat_error:
+        await send(heartbeat)
+    assert heartbeat_error.value.detail == "sandbox_runtime_attempt_inactive"
+
+    progress_event = AgentEvent(
+        type="execution_progress",
+        message="late progress",
+        payload={"step": "revoked"},
+    )
+    with pytest.raises(HTTPException) as event_error:
+        await send(callback("running", events=[progress_event], batch_id="late-progress"))
+    assert event_error.value.detail == "sandbox_runtime_attempt_inactive"
+
+    with pytest.raises(HTTPException) as mixed_terminal_error:
+        await send(
+            callback(
+                "cancelled",
+                events=[progress_event],
+                batch_id="terminal-with-progress",
+            )
+        )
+    assert mixed_terminal_error.value.detail == "executor_terminal_receipt_only_required"
+
+    terminal = callback("cancelled", batch_id="terminal-receipt")
+    from app.runtime.sandbox.contracts import ModelUsageSnapshotPayload
+    terminal.model_usage_snapshot = ModelUsageSnapshotPayload(
+        scope_id="cancel-tail", observation_seq=1, baseline="fresh",
+        models={"synthetic": {"input_tokens": 3, "output_tokens": 2,
+                             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}},
+        coverage="partial",
+    )
+    terminal_identity = runtime_callbacks._receive_callback_identity(
+        derive_callback_token("callback-secret", token_id), terminal
+    )
+    assert isinstance(terminal_identity, ExecutorTerminalReceiptIdentity)
+    result = await runtime_callbacks.record_executor_callback(
+        terminal,
+        capabilities=object(),
+        callback_identity=terminal_identity,
+        lease_port=build_sandbox_executor_callback_lease_port(),
+        model_token_usage=usage,
+    )
+    assert result["accepted"] is True
+
+    async with connect() as conn, conn.transaction():
+        detail = await (
+            await conn.execute(
+                "select receipt_json, receipt_owner_generation, settlement_phase "
+                "from run_attempt_settlements where tenant_id='tenant-a' "
+                "and run_id='run-a' and attempt_id=%s",
+                (attempt_id,),
+            )
+        ).fetchone()
+        callback_events = await (
+            await conn.execute(
+                "select count(*) as n from run_events where run_id='run-a' "
+                "and event_type='executor_callback'"
+            )
+        ).fetchone()
+    assert detail == {
+        "receipt_json": {
+            "run_id": "run-a",
+            "status": "cancelled",
+            "error_code": "executor_cancelled",
+            "error_message": "cancelled",
+            "message": "",
+            "response_files": [],
+        },
+        "receipt_owner_generation": owner_generation,
+        "settlement_phase": "pending",
+    }
+    assert callback_events == {"n": 1}
+
+    duplicate = await runtime_callbacks.record_executor_callback(
+        terminal,
+        capabilities=object(),
+        callback_identity=terminal_identity,
+        lease_port=build_sandbox_executor_callback_lease_port(),
+        model_token_usage=usage,
+    )
+    assert duplicate["accepted"] is True
+    usage.record.assert_awaited_once()
+    assert usage.record.await_args.kwargs["snapshot"].models["synthetic"]["input_tokens"] == 3
+    conflict = callback("cancelled", batch_id="terminal-conflict")
+    conflict.terminal_result.error_message = "different terminal result"
+    with pytest.raises(HTTPException) as conflict_error:
+        await send(conflict)
+    assert conflict_error.value.detail == "sandbox_executor_terminal_conflict"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_executor_terminal_authority_and_writer_reject_revoked_scopes(
+    sandbox_attempt_authority_db,
+):
+    from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
+    from app.runtime.sandbox.callback_tokens import (
+        CallbackTokenBinding,
+        callback_token_id_for_binding,
+    )
+    from app.sandbox.api import (
+        ExecutorTerminalReceiptIdentity,
+        SandboxCallbackAuthorityError,
+        SandboxCallbackIdentity,
+        SandboxLeaseReleaseScopeMismatchError,
+    )
+    from app.sandbox.infrastructure import leases_postgres
+
+    connect, attempt_id, owner_generation = sandbox_attempt_authority_db
+    token_id = await _request_terminal_callback_cancel_tail(
+        connect, attempt_id, owner_generation
+    )
+    authority = build_sandbox_callback_authority()
+    identity = ExecutorTerminalReceiptIdentity(
+        run_id="run-a",
+        attempt_id=attempt_id,
+        callback_token_id=token_id,
+        session_id="session-a",
+    )
+    terminal_result = {
+        "run_id": "run-a",
+        "status": "cancelled",
+        "error_code": "executor_cancelled",
+        "error_message": "cancelled",
+    }
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "insert into workspaces(id, tenant_id, name) values ('workspace-b', 'tenant-a', 'Other')"
+        )
+        await conn.execute(
+            "insert into users(id, tenant_id, display_name) values ('user-b', 'tenant-a', 'Other')"
+        )
+        for mutation in (
+            "generation_gap",
+            "workspace_mismatch",
+            "user_mismatch",
+            "released",
+            "expired",
+            "terminal_run",
+            "reconciler_takeover",
+            "different_attempt",
+        ):
+            class RollBackCase(Exception):
+                pass
+
+            candidate = identity
+            try:
+                async with conn.transaction():
+                    if mutation == "generation_gap":
+                        await conn.execute(
+                            "update sandbox_leases set lease_payload_json=jsonb_set(lease_payload_json, "
+                            "'{owner_generation}', %s::jsonb) where id='lease-a'",
+                            (json.dumps(owner_generation - 1),),
+                        )
+                    elif mutation == "workspace_mismatch":
+                        await conn.execute(
+                            "update sandbox_leases set workspace_id='workspace-b' where id='lease-a'"
+                        )
+                    elif mutation == "user_mismatch":
+                        await conn.execute(
+                            "update sandbox_leases set user_id='user-b' where id='lease-a'"
+                        )
+                    elif mutation == "released":
+                        await conn.execute(
+                            "update sandbox_leases set status='released', released_at=clock_timestamp() "
+                            "where id='lease-a'"
+                        )
+                    elif mutation == "expired":
+                        await conn.execute(
+                            "update sandbox_leases set expires_at=clock_timestamp()-interval '1 second' "
+                            "where id='lease-a'"
+                        )
+                    elif mutation == "terminal_run":
+                        await conn.execute(
+                            "update runs set status='cancelled', finished_at=clock_timestamp(), "
+                            "result_json='{}'::jsonb where id='run-a'"
+                        )
+                    elif mutation == "reconciler_takeover":
+                        await conn.execute(
+                            "update run_attempts set owner_kind='reconciler', owner_id='reconciler-a', "
+                            "owner_generation=owner_generation+1 where id=%s",
+                            (attempt_id,),
+                        )
+                    else:
+                        other_attempt = f"{attempt_id}-other"
+                        other_token = callback_token_id_for_binding(
+                            CallbackTokenBinding(
+                                run_id="run-a",
+                                attempt_id=other_attempt,
+                                owner_generation=owner_generation,
+                            )
+                        )
+                        candidate = ExecutorTerminalReceiptIdentity(
+                            run_id="run-a",
+                            attempt_id=other_attempt,
+                            callback_token_id=other_token,
+                            session_id="session-a",
+                        )
+
+                    with pytest.raises(SandboxCallbackAuthorityError):
+                        await authority.lock_executor_terminal_receipt(conn, candidate)
+                    with pytest.raises(SandboxCallbackAuthorityError):
+                        await authority.lock_run_then_attempt(
+                            conn,
+                            SandboxCallbackIdentity(
+                                run_id="run-a",
+                                attempt_id=attempt_id,
+                                callback_token_id=token_id,
+                                session_id="session-a",
+                            ),
+                        )
+                    with pytest.raises(SandboxLeaseReleaseScopeMismatchError):
+                        await leases_postgres.record_sandbox_executor_terminal(
+                            conn,
+                            tenant_id="tenant-a",
+                            workspace_id="workspace-a",
+                            user_id="user-a",
+                            session_id="session-a",
+                            run_id="run-a",
+                            attempt_id=candidate.attempt_id,
+                            lease_id="lease-a",
+                            executor_status="cancelled",
+                            terminal_result=terminal_result,
+                            cancelling_terminal_identity=candidate,
+                        )
+                    raise RollBackCase
+            except RollBackCase:
+                continue
+            raise AssertionError(f"negative case unexpectedly committed: {mutation}")
+
+        row = await (
+            await conn.execute(
+                "select executor_terminal_json from sandbox_leases where id='lease-a'"
+            )
+        ).fetchone()
+        assert row == {"executor_terminal_json": None}

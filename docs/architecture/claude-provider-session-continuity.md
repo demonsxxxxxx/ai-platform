@@ -202,7 +202,10 @@ admission reserves remain; full copies have bounded but repeated storage cost.
 
 Active cancellation records intent and revokes new execution. The original live
 writer may drain append and terminal receipts under its narrowly scoped previous
-generation lease; it cannot load, start tools, accept inputs or survive takeover.
+generation lease, with exactly one cancellation generation step. Terminal receipt
+identity is separate from append identity and admits only terminal evidence,
+private deduplication and usage accounting. It cannot load, start tools, emit
+ordinary events, accept inputs or survive takeover.
 Reconciliation observes the same Attempt before redispatching anything. Stop or
 typed 404 must identify the exact provider instance. Host-bind save follows stop;
 Context settlement, true Run terminal/events and lease release follow in one short

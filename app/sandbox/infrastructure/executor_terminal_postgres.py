@@ -10,6 +10,7 @@ from app.sandbox.domain.lease_errors import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
 )
+from app.sandbox.api import ExecutorTerminalReceiptIdentity
 
 def _validate_terminal_observation(
     *, run_id: str, executor_status: str, terminal_result: dict[str, Any]
@@ -32,6 +33,108 @@ def _validate_terminal_observation(
     if normalized_result_status not in allowed_result_statuses[executor_status]:
         raise ValueError("sandbox_executor_terminal_result_status_invalid")
 
+
+async def _lock_cancelling_executor_terminal_scope(
+    connection: Any,
+    *,
+    tenant_id: str,
+    workspace_id: str | None,
+    user_id: str | None,
+    session_id: str | None,
+    run_id: str,
+    attempt_id: str,
+    lease_id: str,
+    identity: ExecutorTerminalReceiptIdentity,
+) -> None:
+    """Recheck the original live lease under Run -> lease -> Attempt locks."""
+    if (
+        not isinstance(identity, ExecutorTerminalReceiptIdentity)
+        or identity.run_id != run_id
+        or identity.attempt_id != attempt_id
+        or not identity.callback_token_id
+        or identity.session_id != session_id
+        or not all((workspace_id, user_id, session_id))
+    ):
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_terminal_scope_mismatch"
+        )
+    run = await (
+        await connection.execute(
+            """
+            select id from runs
+            where tenant_id = %s and id = %s
+              and workspace_id = %s and user_id = %s and session_id = %s
+              and status = 'running' and cancel_requested_at is not null
+            for update
+            """,
+            (tenant_id, run_id, workspace_id, user_id, session_id),
+        )
+    ).fetchone()
+    if run is None:
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_terminal_scope_mismatch"
+        )
+
+    query = """
+        select lease.* from sandbox_leases lease
+        join run_attempts attempt on attempt.tenant_id = lease.tenant_id
+          and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+        join runs on runs.tenant_id = attempt.tenant_id and runs.id = attempt.run_id
+        where lease.tenant_id = %s and lease.workspace_id = %s and lease.user_id = %s
+          and lease.session_id = %s and lease.run_id = %s and lease.attempt_id = %s
+          and lease.lease_payload_json->>'attempt_id' = lease.attempt_id
+          and lease.lease_payload_json->>'callback_token_id' = %s
+          and lease.lease_payload_json->>'owner_generation' = (attempt.owner_generation - 1)::text
+          and attempt.status = 'cancel_requested' and attempt.owner_kind = 'queue_worker'
+          and runs.workspace_id = lease.workspace_id and runs.user_id = lease.user_id
+          and runs.session_id = lease.session_id
+          and runs.status = 'running' and runs.cancel_requested_at is not null
+          and lease.status = 'active' and lease.released_at is null
+          and lease.expires_at is not null and lease.expires_at > clock_timestamp()
+        order by lease.id asc
+    """
+    params = (
+        tenant_id,
+        workspace_id,
+        user_id,
+        session_id,
+        run_id,
+        attempt_id,
+        identity.callback_token_id,
+    )
+    leases = list(
+        await (
+            await connection.execute(query + " for update of lease", params)
+        ).fetchall()
+    )
+    if len(leases) != 1 or str(leases[0].get("id") or "") != lease_id:
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_terminal_scope_mismatch"
+        )
+
+    attempt = await (
+        await connection.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s
+              and status = 'cancel_requested' and owner_kind = 'queue_worker'
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    ).fetchone()
+    if attempt is None:
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_terminal_scope_mismatch"
+        )
+    current_leases = list(
+        await (await connection.execute(query, params)).fetchall()
+    )
+    if len(current_leases) != 1 or str(current_leases[0].get("id") or "") != lease_id:
+        raise SandboxLeaseReleaseScopeMismatchError(
+            "sandbox_executor_terminal_scope_mismatch"
+        )
+
 async def record_sandbox_executor_terminal(
     connection: Any,
     *,
@@ -42,10 +145,26 @@ async def record_sandbox_executor_terminal(
     executor_status: str,
     terminal_result: dict[str, Any],
     claim_token: str | None = None,
+    cancelling_terminal_identity: ExecutorTerminalReceiptIdentity | None = None,
+    workspace_id: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     _validate_terminal_observation(
         run_id=run_id, executor_status=executor_status, terminal_result=terminal_result
     )
+    if cancelling_terminal_identity is not None:
+        await _lock_cancelling_executor_terminal_scope(
+            connection,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            lease_id=lease_id,
+            identity=cancelling_terminal_identity,
+        )
     cursor = await connection.execute(
         """
         select *
@@ -135,11 +254,27 @@ async def record_sandbox_executor_terminal_observation(
     terminal_result: dict[str, Any],
     claim_token: str | None = None,
     legacy_settlement_compat: bool = False,
+    cancelling_terminal_identity: ExecutorTerminalReceiptIdentity | None = None,
+    workspace_id: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Record Sandbox execution status while Runs owns the terminal receipt."""
     _validate_terminal_observation(
         run_id=run_id, executor_status=executor_status, terminal_result=terminal_result
     )
+    if cancelling_terminal_identity is not None:
+        await _lock_cancelling_executor_terminal_scope(
+            connection,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            lease_id=lease_id,
+            identity=cancelling_terminal_identity,
+        )
     cursor = await connection.execute(
         """
         select id, tenant_id, run_id, attempt_id, status, lease_payload_json,

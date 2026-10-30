@@ -1778,6 +1778,10 @@ async def reconcile_pending_executor_terminals_once(
                         run_diagnostics=run_diagnostics,
                         continuation_ports=continuation_ports,
                     )
+                    # Collection may have created the stop/save checkpoint in
+                    # this pass; its atomic finalizer owns resource release.
+                    stage = (lease_row.get("lease_payload_json") or {}).get("terminal_reconciliation")
+                    stopped_checkpoint = isinstance(stage, dict) and stage.get("continuation") is not None
                     outcome = await reconcile_executor_terminal_result(
                         lease_row=lease_row,
                         result=result,

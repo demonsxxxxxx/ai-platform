@@ -16,4 +16,7 @@ def build_sandbox_callback_authority() -> SandboxCallbackAuthority:
         list_provider_tail_leases=lambda *args, **kwargs: leases_postgres.list_cancelling_provider_tail_leases_for_attempt(
             *args, **kwargs
         ),
+        list_terminal_tail_leases=lambda *args, **kwargs: leases_postgres.list_cancelling_executor_terminal_leases_for_attempt(
+            *args, **kwargs
+        ),
     )

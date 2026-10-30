@@ -69,8 +69,23 @@ async def mark_sandbox_executor_cleanup_pending(
     claim_token: str,
     error: str,
     legacy_settlement_compat: bool = False,
+    expected_scope: dict[str, str] | None = None,
 ) -> bool:
-    """Assign resource cleanup after Runs has committed a terminal outcome."""
+    """Assign cleanup, or confirm its exact Runs-authorized handoff already won."""
+    if expected_scope is not None and (
+        set(expected_scope) != {"tenant_id", "run_id", "attempt_id"}
+        or any(not isinstance(value, str) or not value for value in expected_scope.values())
+    ):
+        return False
+    scope_filter = ""
+    scope_parameters: tuple[str, ...] = ()
+    if expected_scope is not None:
+        scope_filter = "and tenant_id = %s and run_id = %s and attempt_id = %s"
+        scope_parameters = (
+            expected_scope["tenant_id"],
+            expected_scope["run_id"],
+            expected_scope["attempt_id"],
+        )
     compatibility_assignments = ""
     if legacy_settlement_compat:
         compatibility_assignments = """
@@ -84,19 +99,58 @@ async def mark_sandbox_executor_cleanup_pending(
         update sandbox_leases
         set executor_cleanup_status = 'cleanup_pending',
             executor_cleanup_retry_not_before = null,
-            executor_cleanup_claim_token = null,
-            executor_cleanup_claimed_at = null,
             {compatibility_assignments}
             executor_reconciliation_error = %s,
             expires_at = least(coalesce(expires_at, now()), now()),
             updated_at = now()
         where id = %s and status in ('active', 'released')
+          {scope_filter}
           and executor_cleanup_status in ('waiting_settlement', 'cleanup_pending')
+          and executor_cleanup_claim_token is null
+          and executor_cleanup_claimed_at is null
         returning id
         """,
-        (error[:1000], lease_id),
+        (error[:1000], lease_id, *scope_parameters),
     )
-    return await cursor.fetchone() is not None
+    if await cursor.fetchone() is not None:
+        return True
+    if legacy_settlement_compat or expected_scope is None:
+        return False
+
+    # Attempt settlement validates the Runs-owned settled result before it
+    # calls this writer.  If the independent cleanup owner already claimed or
+    # finalized this exact lease, acknowledge that durable handoff without
+    # taking over, clearing its token, or reopening the resource.
+    scope = scope_parameters
+    row = await (
+        await connection.execute(
+            """
+            select id
+            from sandbox_leases
+            where id = %s
+              and tenant_id = %s
+              and run_id = %s
+              and attempt_id = %s
+              and (
+                (status in ('active', 'released')
+                  and executor_cleanup_status = 'claimed'
+                  and executor_cleanup_claim_token is not null
+                  and executor_cleanup_claim_token <> ''
+                  and executor_cleanup_claimed_at is not null
+                  and executor_cleanup_retry_not_before is null)
+                or (status = 'released'
+                  and released_at is not null
+                  and executor_cleanup_status = 'finalized'
+                  and executor_cleanup_claim_token is null
+                  and executor_cleanup_claimed_at is null
+                  and executor_cleanup_retry_not_before is null)
+              )
+            for update
+            """,
+            (lease_id, *scope),
+        )
+    ).fetchone()
+    return row is not None
 
 async def claim_failed_sandbox_executor_reconciliation_cleanups(
     connection: Any,

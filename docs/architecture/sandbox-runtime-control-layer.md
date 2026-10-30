@@ -118,9 +118,14 @@ generation, timestamps, and reconciliation ownership in one migration.
    `bootstrap.sandbox_callbacks` with the existing Run and lease queries. It
    locks Run before the exact Attempt using the caller's connection and
    transaction, derives tenant from persisted Run identity, and preserves
-   session, terminal, Attempt and token-generation fences. Only the dedicated
-   `ProviderSessionAppendIdentity` and the dedicated recovery-operation completion
-   identity can use the cancelling provider-tail fallback. Recovery completion
+   session, terminal, Attempt and token-generation fences. The dedicated
+   `ProviderSessionAppendIdentity`, `ExecutorTerminalReceiptIdentity` and recovery-operation
+   completion identity have separate cancelling-tail paths. Terminal receipts
+   require the original unexpired lease, its persisted token, and exactly one
+   cancellation generation step while the queue-worker Attempt remains current.
+   They retain private batch deduplication and token-usage accounting, but reject
+   messages, state patches and ordinary events; they cannot renew execution.
+   Recovery completion
    still requires the exact durable started-operation receipt; started, query,
    close, input, context and credential requests cannot request that lease scope. HTTP token parsing and rejection status/detail
    mapping remain in the callback route, as do
@@ -373,7 +378,11 @@ In Attempt-owned settlement, a new claimant rebinds an existing immutable
 stop/save checkpoint to its current Runs claim under the same source locks.
 It does not reconnect the stopped producer. Finalization still rejects the old
 claim and commits Context, Run/Attempt and lease facts atomically, including
-when a terminal Run only needs its lease finalized.
+when a terminal Run only needs its lease finalized. Both compatibility modes
+record cleanup as finalized in this transaction. A checkpoint created during
+the current collection pass is not handed to the cleanup queue again.
+An Attempt-owned settled result also acknowledges an exact lease already
+claimed or finalized by cleanup without resetting that owner's token or progress.
 
 The inline terminal provider-stop helpers and the claimed-to-finalized release
 writer are retired from `executor_reconciler.py` and `sandbox_leases.py`, together

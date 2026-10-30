@@ -677,6 +677,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "(select count(*) from run_attempts where tenant_id=%s and run_id=%s) as attempts, "
                         "(select count(*) from provider_turn_receipts where tenant_id=%s and run_id=%s) as turns, "
                         "(select count(*) from provider_turn_receipts where tenant_id=%s and run_id=%s and state='committed') as committed_turns, "
+                        "(select count(*) from provider_turn_receipts where tenant_id=%s and run_id=%s and state='failed') as failed_turns, "
                         "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='message.delta') as answer_deltas, "
                         "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='message.completed') as answer_completions, "
                         "(select count(*) from messages where tenant_id=%s and run_id=%s and role='assistant') as assistant_messages, "
@@ -692,7 +693,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "(select count(*) from sandbox_leases where tenant_id=%s and run_id=%s and cancel_delivery_status='retry') as retry_cancel_deliveries",
                         tuple(
                             value
-                            for _ in range(16)
+                            for _ in range(17)
                             for value in (stack.tenant_id, run_id)
                         ),
                     )).fetchone()
@@ -1157,7 +1158,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert timed_out["attempt_id"] == running["attempt_id"]
                 facts = await outcome_facts()
                 assert facts["attempts"] == 1
-                assert facts["turns"] == facts["committed_turns"] == 0
+                assert facts["turns"] == facts["failed_turns"] == 1
+                assert facts["committed_turns"] == 0
                 assert facts["answer_deltas"] == facts["answer_completions"] == 0
                 assert facts["assistant_messages"] == facts["artifacts"] == 0
                 assert facts["cancel_requests"] == facts["cancelled_events"] == 0
@@ -1210,7 +1212,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert lost["attempt_id"] == running["attempt_id"]
                 facts = await outcome_facts()
                 assert facts["attempts"] == 1
-                assert facts["turns"] == facts["committed_turns"] == 0
+                assert facts["turns"] == facts["failed_turns"] == 1
+                assert facts["committed_turns"] == 0
                 assert facts["answer_deltas"] == facts["answer_completions"] == 0
                 assert facts["assistant_messages"] == facts["artifacts"] == 0
                 assert facts["failed_events"] == 1
@@ -1511,7 +1514,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "answer_deltas": 1,
                     "answer_completions": 1,
                     "session_entries": 2,
-                    "session_append_receipts": 1,
+                    "session_append_receipts": 2,
                 }
 
                 retry_deadline = time.monotonic() + 20

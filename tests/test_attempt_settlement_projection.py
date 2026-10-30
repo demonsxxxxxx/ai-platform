@@ -3060,6 +3060,253 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
 
 
 @pytest.mark.asyncio
+async def test_real_postgres_settled_attempt_cleanup_handoff_preserves_cleanup_claims(
+    attempt_settlement_db,
+):
+    from app.runs.domain.attempt_settlement_projection import (
+        AttemptSettlementProjection,
+        CleanupObservation,
+    )
+    from app.sandbox.application.attempt_settlement_shadow import (
+        AttemptSettlementShadowLeaseRepository,
+    )
+    from app.sandbox.infrastructure import leases_postgres
+
+    connect, *_ = attempt_settlement_db
+    projection = build_attempt_settlement_projection_service()
+    lease_port = AttemptSettlementShadowLeaseRepository(
+        repository=leases_postgres,
+        settlement_projection=projection,
+        enabled=lambda: True,
+    )
+    run_id, lease_id = "run-a", "lease-a"
+    context = {"adapter_name": "test", "snapshot": "settled-cleanup-handoff"}
+    receipt = {"run_id": run_id, "status": "failed", "error_code": "executor_failed"}
+    async with connect() as conn, conn.transaction():
+        attempt_row = await (
+            await conn.execute(
+                "select id, owner_generation from run_attempts "
+                "where tenant_id='tenant-a' and run_id=%s",
+                (run_id,),
+            )
+        ).fetchone()
+        assert attempt_row is not None
+        attempt_id, generation = str(attempt_row["id"]), int(attempt_row["owner_generation"])
+        scope = {"tenant_id": "tenant-a", "run_id": run_id, "attempt_id": attempt_id}
+        await conn.execute(
+            "update run_attempt_settlement_storage set storage_version='attempt.v1' "
+            "where singleton=true"
+        )
+        await conn.execute(
+            "update run_attempt_settlement_writer set writer_version='attempt.v1' "
+            "where singleton=true"
+        )
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status='waiting_settlement', "
+            "executor_cleanup_claim_token=null, executor_cleanup_claimed_at=null, "
+            "executor_cleanup_retry_not_before=null where id=%s",
+            (lease_id,),
+        )
+        await conn.execute(
+            "update runs set status='failed', error_code='executor_failed', "
+            "result_json=%s::jsonb, finished_at=now() where tenant_id='tenant-a' and id=%s",
+            (json.dumps({"error_code": "executor_failed"}), run_id),
+        )
+        terminal_attempt = await attempt_postgres.terminalize_run_attempt(
+            conn,
+            **scope,
+            status="failed",
+            terminal_reason="run_failed",
+            error_code="executor_failed",
+        )
+        assert terminal_attempt is not None
+        assert await projection.initialize_attempt_in_transaction(
+            conn, **scope, source_lease_id=lease_id,
+        )
+        assert await projection.record_intent_in_transaction(
+            conn, **scope, lease_id=lease_id, intent_context=context,
+        )
+        assert await projection.record_accepted_context_in_transaction(
+            conn, **scope, lease_id=lease_id, accepted_context=context,
+        )
+        assert await projection.record_terminal_receipt_in_transaction(
+            conn, **scope, lease_id=lease_id, receipt=receipt,
+            receipt_owner_generation=generation,
+        )
+        assert await projection.claim_due_attempts_in_transaction(
+            conn, claim_token="settlement-claim", limit=1, stale_after_seconds=30,
+        )
+        assert await projection.refresh_snapshot_in_transaction(conn, **scope)
+        settled = await projection.read_attempt(conn, **scope, require_mapped=True)
+        assert settled is not None
+        assert settled["settlement_phase"] == "settled"
+        assert settled["settlement_attempt_count"] == 1
+        assert settled["settlement_claim_token"] is None
+
+    handoff = dict(lease_id=lease_id, claim_token="settlement-claim", error="")
+    async with connect() as conn, conn.transaction():
+        # A settled Runs result and its exact source lease are still required.
+        await conn.execute(
+            "update run_attempt_settlements set settlement_phase='pending' "
+            "where tenant_id='tenant-a' and run_id=%s and attempt_id=%s",
+            (run_id, attempt_id),
+        )
+        assert not await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+            conn, **handoff,
+        )
+        await conn.execute(
+            "update run_attempt_settlements set settlement_phase='settled' "
+            "where tenant_id='tenant-a' and run_id=%s and attempt_id=%s",
+            (run_id, attempt_id),
+        )
+        for wrong_source in ("other-lease", None):
+            await conn.execute(
+                "update run_attempt_settlements set source_lease_id=%s "
+                "where tenant_id='tenant-a' and run_id=%s and attempt_id=%s",
+                (wrong_source, run_id, attempt_id),
+            )
+            assert not await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+                conn, **handoff,
+            )
+            await conn.execute(
+                "update run_attempt_settlements set source_lease_id=%s "
+                "where tenant_id='tenant-a' and run_id=%s and attempt_id=%s",
+                (lease_id, run_id, attempt_id),
+            )
+        saved_detail = await projection.read_attempt(conn, **scope, require_mapped=True)
+        assert saved_detail is not None
+        await conn.execute(
+            "delete from run_attempt_settlements "
+            "where tenant_id='tenant-a' and run_id=%s and attempt_id=%s",
+            (run_id, attempt_id),
+        )
+        with pytest.raises(RuntimeError, match="attempt_settlement_projection_missing"):
+            await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+                conn, **handoff,
+            )
+        assert await projection.persist_in_transaction(
+            conn, AttemptSettlementProjection(saved_detail, CleanupObservation()),
+        )
+        await conn.execute("update sandbox_leases set attempt_id='wrong-attempt' where id=%s", (lease_id,))
+        with pytest.raises(RuntimeError, match="attempt_settlement_projection_missing"):
+            await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+                conn, **handoff,
+            )
+        await conn.execute("update sandbox_leases set attempt_id=%s where id=%s", (attempt_id, lease_id))
+        await conn.execute("update sandbox_leases set attempt_id=null where id=%s", (lease_id,))
+        assert not await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+            conn, **handoff,
+        )
+        await conn.execute("update sandbox_leases set attempt_id=%s where id=%s", (attempt_id, lease_id))
+        assert await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+            conn, **handoff,
+        )
+        normal = await (
+            await conn.execute(
+                "select executor_cleanup_status, executor_cleanup_claim_token "
+                "from sandbox_leases where id=%s",
+                (lease_id,),
+            )
+        ).fetchone()
+        assert normal == {
+            "executor_cleanup_status": "cleanup_pending",
+            "executor_cleanup_claim_token": None,
+        }
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status='waiting_settlement', "
+            "executor_cleanup_claim_token=null, executor_cleanup_claimed_at=null, "
+            "executor_cleanup_retry_not_before=null where id=%s",
+            (lease_id,),
+        )
+        claimed = await lease_port.claim_failed_sandbox_executor_reconciliation_cleanups(
+            conn, claim_token="cleanup-initial-claim", tenant_id="tenant-a",
+            limit=1, stale_after_seconds=300,
+        )
+        assert [row["id"] for row in claimed] == [lease_id]
+        assert await lease_port.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+            conn, lease_id=lease_id, claim_token="cleanup-initial-claim", error="stop_failed",
+        )
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_retry_not_before=now() - interval '1 second' "
+            "where id=%s",
+            (lease_id,),
+        )
+        claimed = await lease_port.claim_failed_sandbox_executor_reconciliation_cleanups(
+            conn, claim_token="cleanup-retry-claim", tenant_id="tenant-a",
+            limit=1, stale_after_seconds=300,
+        )
+        assert [row["id"] for row in claimed] == [lease_id]
+
+    async with connect() as conn, conn.transaction():
+        before = await (
+            await conn.execute(
+                "select executor_cleanup_status, executor_cleanup_claim_token, "
+                "executor_cleanup_claimed_at from sandbox_leases where id=%s",
+                (lease_id,),
+            )
+        ).fetchone()
+        assert before["executor_cleanup_claim_token"] == "cleanup-retry-claim"
+        assert await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+            conn, **handoff,
+        )
+        after = await (
+            await conn.execute(
+                "select executor_cleanup_status, executor_cleanup_claim_token, "
+                "executor_cleanup_claimed_at from sandbox_leases where id=%s",
+                (lease_id,),
+            )
+        ).fetchone()
+        assert after == before
+
+    async with connect() as conn, conn.transaction():
+        await conn.execute(
+            "update sandbox_leases set executor_cleanup_status='waiting_settlement', "
+            "executor_cleanup_claim_token=null, executor_cleanup_claimed_at=null, "
+            "executor_cleanup_retry_not_before=null where id=%s",
+            (lease_id,),
+        )
+        claimed = await lease_port.claim_failed_sandbox_executor_reconciliation_cleanups(
+            conn, claim_token="cleanup-finalize-claim", tenant_id="tenant-a",
+            limit=1, stale_after_seconds=300,
+        )
+        assert [row["id"] for row in claimed] == [lease_id]
+
+    async with connect() as conn, conn.transaction():
+        finalized = await lease_port.finalize_failed_sandbox_executor_reconciliation_cleanup(
+            conn, tenant_id="tenant-a", user_id="user-a", run_id=run_id,
+            lease_id=lease_id, claim_token="cleanup-finalize-claim",
+            reason="executor_reconciliation_cleanup",
+        )
+        assert finalized is not None
+        assert finalized["executor_cleanup_status"] == "finalized"
+
+    async with connect() as conn, conn.transaction():
+        before = await (
+            await conn.execute(
+                "select status, released_at, release_reason, executor_cleanup_status, "
+                "executor_cleanup_claim_token, executor_cleanup_claimed_at, updated_at "
+                "from sandbox_leases where id=%s",
+                (lease_id,),
+            )
+        ).fetchone()
+        assert await lease_port.mark_sandbox_executor_reconciliation_cleanup_pending(
+            conn, **handoff,
+        )
+        after = await (
+            await conn.execute(
+                "select status, released_at, release_reason, executor_cleanup_status, "
+                "executor_cleanup_claim_token, executor_cleanup_claimed_at, updated_at "
+                "from sandbox_leases where id=%s",
+                (lease_id,),
+            )
+        ).fetchone()
+        assert before["executor_cleanup_status"] == "finalized"
+        assert after == before
+
+
+@pytest.mark.asyncio
 async def test_cutover_accounts_for_execution_receipts_without_an_attempt(attempt_settlement_db):
     from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
         activate_attempt_settlement_storage,

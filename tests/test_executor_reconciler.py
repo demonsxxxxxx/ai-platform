@@ -1940,7 +1940,8 @@ def test_opensandbox_probe_error_facts_keep_only_typed_safe_fields():
 
 
 @pytest.mark.asyncio
-async def test_reconciler_exits_claim_transaction_before_terminalization_and_release(monkeypatch):
+@pytest.mark.parametrize("creates_checkpoint", [False, True])
+async def test_reconciler_exits_claim_transaction_before_terminalization_and_release(monkeypatch, creates_checkpoint):
     calls = []
     transaction_active = {}
     transaction_count = 0
@@ -1979,6 +1980,10 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
     async def collect(lease_row, **_kwargs):
         assert all(active is False for active in transaction_active.values())
         calls.append(("collect", lease_row["id"], transaction_count))
+        if creates_checkpoint:
+            lease_row.setdefault("lease_payload_json", {})["terminal_reconciliation"] = {
+                "continuation": {"stop_evidence": "provider_stopped"},
+            }
         return _result(), object(), object()
 
     async def terminalize(**kwargs):
@@ -2017,14 +2022,15 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
         "get_run",
         "collect",
         "terminalize",
-        "cleanup_pending",
+        *([] if creates_checkpoint else ["cleanup_pending"]),
     ]
     assert calls[0] == ("has_claim", 2)
     assert calls[1] == ("get_run", 2)
     assert calls[2] == ("collect", "lease-a", 2)
     assert calls[3][0] == "terminalize"
     assert calls[3][2] == 2
-    assert calls[4] == ("cleanup_pending", calls[3][1], "lease-a", 3)
+    if not creates_checkpoint:
+        assert calls[4] == ("cleanup_pending", calls[3][1], "lease-a", 3)
     assert all(active is False for active in transaction_active.values())
 
 

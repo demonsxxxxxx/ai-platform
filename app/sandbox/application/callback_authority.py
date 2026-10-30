@@ -25,11 +25,17 @@ class ProviderSessionAppendIdentity(SandboxCallbackIdentity):
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutorTerminalReceiptIdentity(SandboxCallbackIdentity):
+    """Identity for one terminal receipt, including its narrow cancellation tail."""
+
+
+@dataclass(frozen=True, slots=True)
 class SandboxCallbackAuthority:
     is_terminal_run_status: Callable[[object], bool]
     get_run_identity: Callable[..., Awaitable[dict[str, Any] | None]]
     list_current_leases: Callable[..., Awaitable[list[dict[str, Any]]]]
     list_provider_tail_leases: Callable[..., Awaitable[list[dict[str, Any]]]]
+    list_terminal_tail_leases: Callable[..., Awaitable[list[dict[str, Any]]]]
 
     async def recheck_attempt(
         self, conn,
@@ -52,6 +58,20 @@ class SandboxCallbackAuthority:
         return await self._recheck_attempt(
             conn, tenant_id=tenant_id, identity=identity, allow_provider_tail=True,
         )
+
+    async def recheck_executor_terminal_receipt(
+        self, conn,
+        *,
+        tenant_id: str,
+        identity: ExecutorTerminalReceiptIdentity,
+    ) -> dict[str, Any]:
+        """Recheck a terminal receipt under current or cancellation-tail authority."""
+        if not isinstance(identity, ExecutorTerminalReceiptIdentity):
+            raise SandboxCallbackAuthorityError("executor_terminal_receipt_identity_required")
+        lease, _cancellation_tail = await self._recheck_executor_terminal_receipt(
+            conn, tenant_id=tenant_id, identity=identity,
+        )
+        return lease
 
     async def _recheck_attempt(
         self, conn,
@@ -85,6 +105,45 @@ class SandboxCallbackAuthority:
             raise SandboxCallbackAuthorityError("sandbox_runtime_owner_generation_stale")
         return lease
 
+    async def _recheck_executor_terminal_receipt(
+        self,
+        conn,
+        *,
+        tenant_id: str,
+        identity: ExecutorTerminalReceiptIdentity,
+    ) -> tuple[dict[str, Any], bool]:
+        leases = await self.list_current_leases(
+            conn,
+            tenant_id=tenant_id,
+            run_id=identity.run_id,
+            attempt_id=identity.attempt_id,
+        )
+        cancellation_tail = False
+        if not leases:
+            leases = await self.list_terminal_tail_leases(
+                conn,
+                tenant_id=tenant_id,
+                run_id=identity.run_id,
+                attempt_id=identity.attempt_id,
+            )
+            cancellation_tail = bool(leases)
+        if len(leases) != 1:
+            raise SandboxCallbackAuthorityError("sandbox_runtime_attempt_inactive")
+        lease = leases[0]
+        payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
+        persisted_attempt_id = str(lease.get("attempt_id") or "") if isinstance(lease, dict) else ""
+        payload_attempt_id = str(payload.get("attempt_id") or "") if isinstance(payload, dict) else ""
+        if (persisted_attempt_id or payload_attempt_id) != identity.attempt_id or (
+            persisted_attempt_id and payload_attempt_id and persisted_attempt_id != payload_attempt_id
+        ):
+            raise SandboxCallbackAuthorityError("sandbox_runtime_attempt_mismatch")
+        persisted_token_id = str(payload.get("callback_token_id") or "") if isinstance(payload, dict) else ""
+        if cancellation_tail and not persisted_token_id:
+            raise SandboxCallbackAuthorityError("sandbox_runtime_owner_generation_stale")
+        if persisted_token_id and persisted_token_id != identity.callback_token_id:
+            raise SandboxCallbackAuthorityError("sandbox_runtime_owner_generation_stale")
+        return lease, cancellation_tail
+
     async def lock_run_then_attempt(
         self, conn,
         identity: SandboxCallbackIdentity,
@@ -103,12 +162,25 @@ class SandboxCallbackAuthority:
             conn, identity=identity, allow_provider_tail=True,
         )
 
+    async def lock_executor_terminal_receipt(
+        self,
+        conn,
+        identity: ExecutorTerminalReceiptIdentity,
+    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        """Lock one current terminal writer or its narrowly scoped cancel tail."""
+        if not isinstance(identity, ExecutorTerminalReceiptIdentity):
+            raise SandboxCallbackAuthorityError("executor_terminal_receipt_identity_required")
+        return await self._lock_run_then_attempt(
+            conn, identity=identity, allow_executor_terminal_tail=True,
+        )
+
     async def _lock_run_then_attempt(
         self, conn,
         *,
         identity: SandboxCallbackIdentity,
         allow_provider_tail: bool = False,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        allow_executor_terminal_tail: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | tuple[dict[str, Any], dict[str, Any], bool]:
         run_hint = await self.get_run_identity(conn, run_id=identity.run_id, for_update=False)
         if run_hint is None:
             raise SandboxCallbackAuthorityError("run_not_found")
@@ -124,6 +196,13 @@ class SandboxCallbackAuthority:
             raise SandboxCallbackAuthorityError("callback_session_mismatch")
         if self.is_terminal_run_status(locked_run.get("status")):
             raise SandboxCallbackAuthorityError("run_already_terminal")
+        if allow_executor_terminal_tail:
+            if not isinstance(identity, ExecutorTerminalReceiptIdentity):
+                raise SandboxCallbackAuthorityError("executor_terminal_receipt_identity_required")
+            lease, cancellation_tail = await self._recheck_executor_terminal_receipt(
+                conn, tenant_id=tenant_id, identity=identity,
+            )
+            return locked_run, lease, cancellation_tail
         lease = await self._recheck_attempt(
             conn,
             tenant_id=tenant_id,

@@ -466,7 +466,10 @@ class AttemptSettlementShadowLeaseRepository(SandboxCheckpointSettlementMixin):
             ):
                 return False
             return await self._repository.mark_sandbox_executor_cleanup_pending(
-                conn, **kwargs, legacy_settlement_compat=False,
+                conn,
+                **kwargs,
+                legacy_settlement_compat=False,
+                expected_scope=scope,
             )
         changed = await self._repository.mark_sandbox_executor_reconciliation_cleanup_pending(
             conn, **kwargs
