@@ -60,6 +60,12 @@ class SandboxCancelDeliveryService:
         self._global_scan_cursor: tuple[str, str, str] | None = None
         self._global_scan_lock = asyncio.Lock()
 
+    @property
+    def maintenance_budget_seconds(self) -> float:
+        # The worker watchdog also covers claim/writeback transactions and the
+        # provider's cooperative cancellation join (up to its SDK timeout).
+        return _SEND_DEADLINE_SECONDS + 35.0
+
     async def stage_in_transaction(
         self,
         conn: Any,

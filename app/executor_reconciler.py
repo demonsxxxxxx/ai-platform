@@ -2039,7 +2039,8 @@ async def run_executor_terminal_reconciler(
     if cancel_delivery is not None:
         owned.insert(0, asyncio.create_task(maintenance_phase_until_done(
             "executor-cancel-delivery", cancel_delivery.deliver_once,
-            _RECONCILIATION_FALLBACK_SECONDS, 20.0, logger=_logger,
+            _RECONCILIATION_FALLBACK_SECONDS,
+            cancel_delivery.maintenance_budget_seconds, logger=_logger,
             repeat_on_progress=True,
         ), name="executor-cancel-delivery"))
     stop_waiter, wake_waiter = owned[-2:]

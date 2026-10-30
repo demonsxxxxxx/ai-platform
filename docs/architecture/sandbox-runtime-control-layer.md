@@ -343,7 +343,9 @@ five-second HTTP timeout. The batch includes fresh provider endpoint identity
 and network inspections; those can exceed ten seconds on Docker Desktop before
 HTTP begins. A new transaction rechecks current scope, Attempt,
 lease validity and claim before recording ACK or retry. Claims stale for sixty
-seconds can be reclaimed. Retry backs off to at most 300 seconds; terminal
+seconds can be reclaimed. The Worker watchdog takes its 60-second cooperative
+budget from the delivery service, leaving room for claim/writeback and provider
+cancellation join; it cannot preempt the shorter send deadline. Retry backs off to at most 300 seconds; terminal
 receipts and invalid authority clear unfinished claims. Bounded keyset scans
 skip occupied rows and continue across rounds; their process-local position is
 only a fairness hint. Restarting a scanner does not change durable ownership.

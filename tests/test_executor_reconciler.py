@@ -3801,3 +3801,58 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
                 else "executor_reconciliation_run_not_terminal"
             ),
         })]
+
+
+@pytest.mark.asyncio
+async def test_cancel_maintenance_watchdog_allows_endpoint_recovery_before_writeback(monkeypatch):
+    from app import executor_reconciler as module
+    from app.bootstrap.worker_maintenance import maintenance_phase_until_done
+    from app.sandbox.api import SandboxCancelDeliveryService
+
+    stop = asyncio.Event()
+    persisted = []
+    row = {"run_id": "run-a", "attempt_id": "attempt-a", "cancel_delivery_claim_token": "claim-a"}
+
+    class Repository:
+        async def claim_due(self, _conn, **_kwargs):
+            return [row], None
+
+        async def record_delivery_result(self, _conn, **kwargs):
+            persisted.append(kwargs)
+            stop.set()
+            return "accepted"
+
+    async def slow_endpoint(_row):
+        # Scale the outer watchdog only: this models 25 seconds of provider
+        # work and distinguishes it from the retired 20-second wrapper budget.
+        await asyncio.sleep(0.25)
+        return {"status": "cancel_requested", "run_id": "run-a", "attempt_id": "attempt-a"}
+
+    delivery = SandboxCancelDeliveryService(Repository(), _transaction, slow_endpoint)
+
+    async def phase(name, operation, interval_seconds, phase_budget_seconds, **kwargs):
+        if name != "executor-cancel-delivery":
+            await asyncio.Event().wait()
+        await maintenance_phase_until_done(
+            name, operation, interval_seconds, phase_budget_seconds / 100, **kwargs,
+        )
+
+    async def wait_forever(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    async def no_domain_work(*_args, **_kwargs):
+        return 0
+
+    async def no_retry(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(module, "maintenance_phase_until_done", phase)
+    monkeypatch.setattr(module, "initialize_executor_reconciliation_signal_cursor", wait_forever)
+    monkeypatch.setattr(module, "run_worker_scheduled_domain_operation", no_domain_work)
+    monkeypatch.setattr(module, "_next_terminal_retry_delay", no_retry)
+    await asyncio.wait_for(run_executor_terminal_reconciler(
+        stop, cancel_delivery=delivery,
+    ), timeout=1)
+    assert len(persisted) == 1
+    assert persisted[0]["accepted"] is True
+    assert persisted[0]["claimed_row"] == row
