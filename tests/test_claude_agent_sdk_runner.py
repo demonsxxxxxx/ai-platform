@@ -3108,6 +3108,36 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_sdk_document_plugin_is_exact_and_records_native_invocation(monkeypatch, tmp_path):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION, DOCUMENT_PLUGIN_SDK_SKILLS
+    from app.execution.infrastructure import document_plugin
+
+    plugin = tmp_path / "image-plugin"
+    plugin.mkdir()
+    (plugin / "upstream-revision").write_text(DOCUMENT_PLUGIN_REVISION)
+    monkeypatch.setattr(document_plugin, "DOCUMENT_PLUGIN_PATH", plugin)
+    captured, evidence = {}, []
+    hook_input = {"tool_name": "Skill", "tool_use_id": "document-call", "tool_input": {"skill": "document-skills:xlsx"}}
+    captured["permission_probes"] = [("Skill", {"skill": "document-skills:xlsx"}), ("Skill", {"skill": "not-authorized"})]
+    steps = [("hook", ("PreToolUse", hook_input, "document-call")), ("hook", ("PostToolUse", hook_input, "document-call")), *_completed_text_steps("done")]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    async def acknowledge(fact):
+        evidence.append(fact)
+        return True
+
+    result = await run_claude_agent_sdk(prompt="make a workbook", cwd=tmp_path, skill_id=None, skills=[], document_plugin_revision=DOCUMENT_PLUGIN_REVISION, execution_policy="sandbox_brokered", tool_policy_subjects=[], on_capability_evidence=acknowledge)
+    assert result.error is None
+    assert captured["skills"] == list(DOCUMENT_PLUGIN_SDK_SKILLS)
+    assert captured["plugins"] == [{"type": "local", "path": str(plugin)}]
+    assert captured["allowed_tools"] == [f"Skill({name})" for name in sorted(DOCUMENT_PLUGIN_SDK_SKILLS)]
+    assert [item.behavior for item in captured["permission_results"]] == ["allow", "deny"]
+    assert [item["lifecycle_phase"] for item in evidence] == ["invocation_requested", "completed"]
+    assert all(item["canonical_identity"] == "document-skills:xlsx" for item in evidence)
+
+
+@pytest.mark.asyncio
 async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
     monkeypatch,
     tmp_path,

@@ -3783,6 +3783,9 @@ async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeyp
     assert queue_payload["release_decision"] == {}
     assert calls["create_run"]["execution_kind"] == "harness_chat"
     assert calls["create_run"]["skill_id"] is None
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    assert queue_payload["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
+    assert calls["create_run"]["input_json"]["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
     assert calls["context"]["workspace_id"] == "frc_test_a_default"
     assert calls["context"]["skill_id"] is None
     assert calls["context"]["source"] == "chat_stream"

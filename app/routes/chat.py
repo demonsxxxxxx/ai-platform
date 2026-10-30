@@ -65,7 +65,7 @@ from app.execution.api import (
     resolve_chat_model_selection,
 )
 from app.execution.api import model_selection_error_status, select_chat_route_model
-from app.execution.api import group_snapshot_fields
+from app.execution.api import group_snapshot_fields, admit_document_plugin
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -1828,6 +1828,7 @@ async def chat_stream(
                 }
             session_id = request.session_id or platform_values.new_id("ses")
             run_id = platform_values.new_id("run")
+            run_input = admit_document_plugin(run_input, execution_kind, agent_profile=admitted_agent_profile)
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
                     "tenant_id": principal.tenant_id,

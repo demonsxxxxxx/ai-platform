@@ -282,6 +282,7 @@ class SandboxRuntimeRequest(BaseModel):
     owner_generation: int = Field(default=1, ge=1)
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
+    document_plugin_revision: str | None = None
     public_skill_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
     mcp_tool_ids: list[str] = Field(default_factory=list)
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
@@ -317,6 +318,13 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
+
+    @field_validator("document_plugin_revision")
+    @classmethod
+    def validate_document_plugin_revision(cls, value: str | None):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value)
+        return value
 
     @field_validator("skill_ids", "file_ids")
     @classmethod
@@ -509,6 +517,10 @@ class ExecutorTaskRequest(BaseModel):
     @field_validator("config")
     @classmethod
     def validate_config(cls, value: dict[str, Any]):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value.get("document_plugin_revision"))
+        if value.get("document_plugin_revision") is not None and value.get("skill_ids"):
+            raise ValueError("document_plugin_scope_invalid")
         if "thinking_effort" in value:
             normalize_thinking_effort(value["thinking_effort"])
         if "model_token_limits" in value:

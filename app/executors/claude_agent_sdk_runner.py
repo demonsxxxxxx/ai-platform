@@ -1555,6 +1555,7 @@ async def run_claude_agent_sdk(
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
+    document_plugin_revision: str | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_sdk_text: Callable[[dict[str, object]], None] | None = None,
@@ -1948,6 +1949,10 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
+    from app.execution.api import document_plugin_skill_names, document_plugin_tool_subject
+    from app.execution.infrastructure.document_plugin import document_plugin_options, document_plugin_read_allowed
+    plugin_skills = document_plugin_skill_names(document_plugin_revision)
+    plugin_options = document_plugin_options(document_plugin_revision)
     configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
         not is_valid_executable_skill_name(name)
@@ -1972,6 +1977,12 @@ async def run_claude_agent_sdk(
     )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    plugin_subjects = document_plugin_tool_subject(document_plugin_revision)
+    if plugin_subjects:
+        if skill_id is not None or configured_skills:
+            raise ValueError("document_plugin_scope_invalid")
+        configured_skills = plugin_skills
+        authorized_subjects.update(_canonical_tool_policy_subjects(plugin_subjects))
     if (
         sandbox_brokered
         and set(SANDBOX_LOCAL_TOOL_IDENTITIES).intersection(authorized_subjects)
@@ -2318,6 +2329,9 @@ async def run_claude_agent_sdk(
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
+    private_replacements.update({plugin["path"]: private_replacement for plugin in plugin_options})
+    if document_plugin_revision is not None:
+        private_replacements[document_plugin_revision] = private_replacement
     workspace_token = str(cwd)
     if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
         private_replacements[workspace_token] = private_replacement
@@ -2381,7 +2395,7 @@ async def run_claude_agent_sdk(
         ClaudeSdkAgentEventAdapter(
             run_id=run_id,
             attempt_id=attempt_id,
-            tool_policy_subjects=tool_policy_subjects,
+            tool_policy_subjects=[*(tool_policy_subjects or []), *plugin_subjects],
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_event_candidate,
@@ -2707,6 +2721,10 @@ async def run_claude_agent_sdk(
                     subject_tool_name,
                     tool_input,
                     workspace_root=cwd, native_session_id=session_id,
+                ) or (
+                    subject_tool_name == "Read"
+                    and isinstance(tool_input, dict)
+                    and document_plugin_read_allowed(tool_input.get("file_path"), document_plugin_revision)
                 )
             if (
                 parameters_authorized
@@ -3410,6 +3428,7 @@ async def run_claude_agent_sdk(
             else {}
         ),
         skills=configured_skills,
+        plugins=plugin_options,
         max_turns=max_turns,
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,

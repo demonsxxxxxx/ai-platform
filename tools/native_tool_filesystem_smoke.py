@@ -17,7 +17,7 @@ def docker(*args: str, environment=None) -> str:
         ["docker", *args],
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=150,
         env={**os.environ, **(environment or {})},
     )
     if result.returncode:
@@ -245,6 +245,40 @@ print('boundaries passed')
         )
         assert response["returncode"] == 0, response
         assert response["stdout"].strip() == "boundaries passed", response
+        document_check = r'''from pathlib import Path
+import json, os, subprocess, sys
+from openpyxl import Workbook, load_workbook
+from pypdf import PdfReader
+root = Path('/opt/ai-platform/document-skills')
+assert (root/'upstream-revision').read_text().strip()
+for name in ('docx','xlsx','pdf','pptx'):
+    assert (root/'skills'/name/'SKILL.md').is_file()
+    try:
+        (root/'skills'/name/'SKILL.md').write_text('tampered')
+    except OSError:
+        pass
+    else:
+        raise AssertionError('image plugin is writable')
+script = "const fs=require('fs'); const {Document,Packer,Paragraph}=require('docx'); const PptxGenJS=require('pptxgenjs'); const {PDFDocument}=require('pdf-lib'); const React=require('react'); const {renderToStaticMarkup}=require('react-dom/server'); const {FaFile}=require('react-icons/fa'); const sharp=require('sharp'); (async()=>{await sharp(Buffer.from(renderToStaticMarkup(React.createElement(FaFile,{size:256})))).png().toFile('outputs/icon.png'); await fs.promises.writeFile('outputs/check.docx',await Packer.toBuffer(new Document({sections:[{children:[new Paragraph('Document skill check')]}]}))); const p=new PptxGenJS(); p.addSlide().addText('Document skill check',{x:1,y:1,w:6,h:1}); await p.writeFile({fileName:'outputs/check.pptx'}); const pdf=await PDFDocument.create(); pdf.addPage(); await fs.promises.writeFile('outputs/check.pdf',await pdf.save());})().catch(e=>{console.error(e);process.exit(1)});"
+subprocess.run(['node','-e',script],check=True,capture_output=True)
+for name in ('docx','pptx'):
+    target=Path('outputs/rendered')/name
+    target.mkdir(parents=True)
+    subprocess.run([sys.executable,str(root/'skills'/name/'scripts/office/soffice.py'),'--headless','--convert-to','pdf','--outdir',str(target),'outputs/check.'+name],check=True,capture_output=True)
+    assert (target/'check.pdf').stat().st_size > 0
+assert len(PdfReader('outputs/check.pdf').pages) == 1
+book=Workbook(); sheet=book.active; sheet['A1']=2; sheet['A2']=3; sheet['A3']='=SUM(A1:A2)'; book.save('outputs/check.xlsx')
+result=subprocess.run([sys.executable,str(root/'skills/xlsx/scripts/recalc.py'),'outputs/check.xlsx','60'],check=True,capture_output=True,text=True)
+assert json.loads(result.stdout)['status']=='success',result.stdout
+assert load_workbook('outputs/check.xlsx',data_only=True).active['A3'].value==5
+assert subprocess.run(['tesseract','--list-langs'],capture_output=True,text=True,check=True).stdout.count('chi_sim')==1
+print('document skills passed')
+'''
+        document_command = "python - <<'PY'\n" + document_check + "\nPY"
+        document_payload = json.dumps({"command": document_command, "timeout_ms": 90000})
+        document_response = json.loads(client(prefix.replace("timeout=20", "timeout=120") + f"r=c.post('/execute',headers=h,json=json.loads({document_payload!r})); r.raise_for_status(); print(r.text)"))
+        assert document_response["returncode"] == 0, document_response
+        assert document_response["stdout"].strip() == "document skills passed", document_response
         # A second call proves the first command could not remove/replace IPC.
         response = json.loads(
             client(

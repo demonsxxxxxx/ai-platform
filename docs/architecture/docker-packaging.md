@@ -13,6 +13,12 @@ uv lock --check
 uv sync --locked --extra test --no-install-project
 ```
 
+The backend/executor also preinstalls the official Anthropic document suite and
+its pinned Node/Python/OS dependencies under the
+[ordinary-chat document plugin contract](ordinary-chat-document-plugin.md).
+Its fixed upstream archive is integrity-checked during image construction; the
+upstream Skill contents and licenses are preserved without source vendoring.
+
 The backend Dockerfile uses the same lock with `uv sync --locked`; it must not
 derive an unlocked requirements file from `pyproject.toml`. Keep index, proxy,
 and credential values out of Git, issue/PR text, and command output. The default

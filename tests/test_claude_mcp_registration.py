@@ -535,6 +535,59 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(
         assert "synthetic.jwt" not in str([value.payload for value in events])
 
 
+@pytest.mark.asyncio
+async def test_installed_cli_document_plugin_invokes_skill_and_reads_image_resource(monkeypatch, tmp_path):
+    from app.executors import claude_agent_sdk_runner as runner
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
+    from app.execution.infrastructure import document_plugin
+    from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
+
+    image_plugin = Path((tmp_path.parent / (tmp_path.name + "-plugin")).as_posix().removeprefix("//?/"))
+    skill = image_plugin / "skills/docx/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: docx\ndescription: Create Word documents\n---\n\nSYNTHETIC_DOCUMENT_INSTRUCTIONS", encoding="utf-8")
+    manifest = image_plugin / ".claude-plugin/plugin.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps({"name": "document-skills"}))
+    (image_plugin / "upstream-revision").write_text(DOCUMENT_PLUGIN_REVISION)
+    monkeypatch.setattr(document_plugin, "DOCUMENT_PLUGIN_PATH", image_plugin)
+    with local_mcp_peers() as peer:
+        def reply(request):
+            if len(peer.models) == 1:
+                return {"type": "tool_use", "id": "toolu_document", "name": "Skill", "input": {"skill": "document-skills:docx"}}
+            if len(peer.models) == 2:
+                return {"type": "tool_use", "id": "toolu_document_read", "name": "Read", "input": {"file_path": str(skill)}}
+            return {"type": "text", "text": f"Loaded document-skills:docx from {skill}; revision {DOCUMENT_PLUGIN_REVISION}."}
+        peer.model_reply = reply
+        settings = SimpleNamespace(claude_agent_sdk_enabled=True, claude_agent_sdk_max_turns=4, claude_agent_sdk_timeout_seconds=40, claude_agent_sdk_skills="", claude_agent_permission_mode="dontAsk", claude_agent_model="claude-sonnet-4-6", anthropic_model="", anthropic_base_url=peer.url, anthropic_auth_token="synthetic-model-token", openai_api_key="")
+        monkeypatch.setattr(runner, "get_settings", lambda: settings)
+        real_env = runner.build_sdk_env
+        def synthetic_env(**kwargs):
+            env = real_env(**kwargs)
+            env.update({"ANTHROPIC_BASE_URL": peer.url, "ANTHROPIC_AUTH_TOKEN": "synthetic-model-token", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "NO_PROXY": "127.0.0.1,localhost", "ENABLE_TOOL_SEARCH": "false"})
+            env.update({key: os.environ[key] for key in ("TEMP", "TMP", "APPDATA", "LOCALAPPDATA") if key in os.environ})
+            return env
+        monkeypatch.setattr(runner, "build_sdk_env", synthetic_env)
+        receipts, events, deltas = [], [], []
+        async def receipt(value):
+            receipts.append(value)
+            return True
+        async def event(values):
+            events.extend(values)
+            return True
+        result = await runner.run_claude_agent_sdk(prompt="Load the Word instructions.", cwd=tmp_path, skill_id=None, skills=[], document_plugin_revision=DOCUMENT_PLUGIN_REVISION, execution_policy="sandbox_brokered", tool_policy_subjects=with_sandbox_local_tool_capability_subjects([], sandbox_provider="opensandbox", authorized_sandbox_tool_identities={"Read"}), on_capability_evidence=receipt, on_tool_lifecycle=receipt, on_agent_event=event, on_text=deltas.append, run_id="run-documents", attempt_id="attempt-documents")
+        assert result.error is None, result.runtime_diagnostics
+        tool_results = [block for request in peer.models for message in request.get("messages", []) for block in message.get("content", []) if isinstance(block, dict) and block.get("type") == "tool_result"]
+        assert tool_results and not any(block.get("is_error") for block in tool_results), (tool_results, result.turn_diagnostics)
+        assert "SYNTHETIC_DOCUMENT_INSTRUCTIONS" in str(tool_results)
+        assert result.used_skills == ["document-skills:docx"]
+        assert {value.event_type for value in events} >= {"policy.allowed", "tool.started", "tool.completed"}
+        assert "document-skills:docx" not in str([value.payload for value in events])
+        public_answer = result.message + "".join(deltas) + str([value.payload for value in events])
+        assert str(image_plugin) not in public_answer
+        assert DOCUMENT_PLUGIN_REVISION not in public_answer
+
+
 def _contains_json_value(value, expected):
     if isinstance(value, dict):
         return value == expected or any(_contains_json_value(item, expected) for item in value.values())

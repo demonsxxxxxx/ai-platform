@@ -37,7 +37,7 @@ def test_every_external_base_is_an_expected_immutable_index_subject():
     frontend_refs = _from_references(FRONTEND_DOCKERFILE)
     references = backend_refs + frontend_refs
 
-    assert len(references) == 5
+    assert len(references) == 6
     assert set(references) == EXPECTED_BASES
     assert (
         backend_refs.count(
@@ -49,6 +49,25 @@ def test_every_external_base_is_an_expected_immutable_index_subject():
         assert re.search(r":[^@\s]+@sha256:[0-9a-f]{64}$", reference)
         assert ":latest" not in reference
         assert "${" not in reference
+
+
+def test_document_plugin_and_dependencies_are_preinstalled_in_executor_image():
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
+
+    backend = BACKEND_DOCKERFILE.read_text(encoding="utf-8")
+    assert "AS document-node" in backend
+    assert "npm ci --omit=dev --ignore-scripts" in backend
+    assert "install_document_plugin(archive, DOCUMENT_PLUGIN_PATH)" in backend
+    assert "DOCUMENT_PLUGIN_REVISION" in backend
+    assert "codeload.github.com/anthropics/skills/zip/" in backend
+    for package in ("libreoffice-calc", "libreoffice-writer", "libreoffice-impress", "poppler-utils", "tesseract-ocr-chi-sim", "qpdf", "unzip", "zip"):
+        assert package in backend
+    package_root = ROOT / "app/platform/sandbox/document_dependencies"
+    package = json.loads((package_root / "package.json").read_text())
+    lock = json.loads((package_root / "package-lock.json").read_text())
+    assert set(package["dependencies"]) == {"docx", "pptxgenjs", "pdf-lib", "react", "react-dom", "react-icons", "sharp"}
+    assert package["dependencies"] == lock["packages"][""]["dependencies"]
+    assert re.fullmatch(r"[a-f0-9]{40}", DOCUMENT_PLUGIN_REVISION)
 
 
 def test_python_lock_is_the_install_authority_for_ci_and_the_backend_image():

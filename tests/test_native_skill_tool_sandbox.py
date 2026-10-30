@@ -422,7 +422,8 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     assert captured["kwargs"]["env"] == {
         "HOME": str(workspace),
         "TMPDIR": str(workspace / ".native-skill-tmp"),
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+        "NODE_PATH": "/opt/ai-platform/document-dependencies/node_modules",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",

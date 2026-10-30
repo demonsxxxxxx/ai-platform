@@ -990,9 +990,11 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_documents", [False, True])
 async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     monkeypatch,
     tmp_path,
+    with_documents,
 ):
     captured = {}
 
@@ -1011,6 +1013,9 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     )
     raw = task_payload()
     raw["config"]["thinking_effort"] = "high"
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
+    if with_documents:
+        raw["config"]["document_plugin_revision"] = DOCUMENT_PLUGIN_REVISION
     request = ExecutorTaskRequest.model_validate(raw)
     events = []
 
@@ -1023,6 +1028,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert result["status"] == "completed"
     assert captured["skill_id"] is None
     assert captured["skills"] == []
+    assert captured["document_plugin_revision"] == (DOCUMENT_PLUGIN_REVISION if with_documents else None)
     assert captured["thinking_effort"] == "high"
     assert captured["model_auto_compact_window"] == 200_000
     assert captured["model_max_output_tokens"] == 2048

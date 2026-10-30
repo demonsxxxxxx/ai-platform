@@ -31,7 +31,7 @@ from app.control_plane_contracts import (
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
 from app.execution.api import resolve_chat_model_selection
-from app.execution.api import group_snapshot_fields
+from app.execution.api import group_snapshot_fields, admit_document_plugin
 from app.execution.api import model_selection_error_status
 from app.runs.api import (
     reauthorize_model, requested_run_model_selection, selected_model_binding_fields,
@@ -966,6 +966,7 @@ async def create_run(
                 raise HTTPException(status_code=503, detail="run_model_unavailable")
             skill_manifest_transport = skills_run_snapshots.skill_manifest_refs(skill_manifests)
             run_id = platform_values.new_id("run")
+            run_input = admit_document_plugin(run_input, execution_kind)
             base_queue_payload = {
                 "tenant_id": tenant_id,
                 "workspace_id": request.workspace_id,

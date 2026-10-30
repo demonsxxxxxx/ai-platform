@@ -802,6 +802,8 @@ class SandboxRuntime:
                 "materialized_file_names": request.materialized_file_names,
                 "provider_session_resume_required": request.provider_session_resume_required,
             }
+            if request.document_plugin_revision is not None:
+                task_config["document_plugin_revision"] = request.document_plugin_revision
             if request.model_token_limits is not None:
                 task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:

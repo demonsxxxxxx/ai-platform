@@ -5,6 +5,7 @@ from typing import Any
 from app.execution.domain.model_catalog import (
     legacy_input_capacity_to_auto_compact_window,
 )
+from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY
 
 
 LOCKED_RUN_SNAPSHOT_FIELDS = (
@@ -250,6 +251,7 @@ def sandbox_reconciliation_payload(payload: Any) -> dict[str, Any]:
             "skill_id": payload.skill_id,
             "file_ids": [],
             "input": {
+                **({DOCUMENT_PLUGIN_INPUT_KEY: source_input[DOCUMENT_PLUGIN_INPUT_KEY]} if DOCUMENT_PLUGIN_INPUT_KEY in source_input else {}),
                 **(
                     {
                         "_runtime_tool_policy_subjects": _non_secret_tool_policy_subjects(

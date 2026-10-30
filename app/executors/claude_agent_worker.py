@@ -112,13 +112,11 @@ async def _emit_public_progress_event(
 
 
 def _capability_execution_error(
-    payload: RunPayload,
-    evidence: object,
-    *,
+    payload: RunPayload, evidence: object, *,
     available_skill_identities: object = (),
 ) -> str | None:
     """Validate only the authorized capability invocations that actually occurred."""
-
+    available_skill_identities = [*available_skill_identities, *execution_api.document_plugin_skill_names(payload.input.get(execution_api.DOCUMENT_PLUGIN_INPUT_KEY))]
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
         available_skill_identities=available_skill_identities,
@@ -783,6 +781,7 @@ class ClaudeAgentWorkerAdapter:
             attempt_id=payload.attempt_id,
             agent_id=payload.agent_id,
             skill_ids=runtime_skill_ids,
+            document_plugin_revision=payload.input.get(execution_api.DOCUMENT_PLUGIN_INPUT_KEY),
             public_skill_metadata={
                 skill_id: dict(prepared.public_skill_metadata[skill_id])
                 for skill_id in runtime_skill_ids
