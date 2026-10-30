@@ -125,7 +125,8 @@ async def test_cancel_during_pre_runner_callback_retains_explicit_undispatched_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("race", ["live", "endpoint_404", "get_404", "write_conflict", "unowned_404", "foreign_terminal"])
-async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal_to_reconciler(monkeypatch, tmp_path, race):
+@pytest.mark.parametrize("dispatch_wait", ["post", "probe", "existing_probe"])
+async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal_to_reconciler(monkeypatch, tmp_path, race, dispatch_wait):
     from app.runtime.sandbox import runtime as module
     from app.runtime.sandbox.container_provider import FakeContainerProvider
     from app.executors.base import RunExecutionOwner, ExecutorDispatchAccepted
@@ -153,8 +154,14 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         async def stop(self, *args, **kwargs): raise AssertionError("reconciler owns stop/save after receipt")
     async def execute(*args, **kwargs):
         assert calls == ["durable-observation"]
+        assert dispatch_wait != "existing_probe", "a persisted intent must never be posted again"
+        if dispatch_wait == "probe":
+            raise OSError("dispatch response lost before status probe")
         sent.set()
         await asyncio.Event().wait()  # Remote accepted, network response never arrives.
+    async def pending_probe(*args):
+        sent.set()
+        await asyncio.Event().wait()
     async def unexpected(*args, **kwargs): raise AssertionError("no early release/save")
     async def cancel(*args, **kwargs):
         assert kwargs["run_id"] == "r"
@@ -175,7 +182,7 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
     async def accepted(*args, **kwargs): calls.append("durable-observation")
     async def persist_intent(*args, **kwargs):
         calls.append("durable-observation")
-        return {"status": "intent"}, True
+        return {"status": "intent"}, dispatch_wait != "existing_probe"
     async def record_outcome(*args, **kwargs):
         return {"status": kwargs["outcome"]}
     async def receipt(*args, **kwargs):
@@ -212,6 +219,8 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         record_lease=lambda *args: "lease",
         release_lease=unexpected, continuation_ports=ContinuationSettlementPorts(unexpected, unexpected))
     runtime.executor_client = SimpleNamespace(cancel=cancel, get_status=status)
+    if dispatch_wait != "post":
+        runtime._probe_dispatch_status = pending_probe
     runtime._uses_default_lease_recorder = True
     runtime._record_runtime_lease = lambda *args, **kwargs: "lease"
     req = request(tenant_id="t", workspace_id="w", user_id="u", session_id="s", run_id="r", attempt_id="a",

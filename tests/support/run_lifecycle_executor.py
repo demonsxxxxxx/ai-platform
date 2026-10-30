@@ -48,32 +48,8 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
     from app.runtime.kernel_contracts import AgentEvent
 
     workspace_root.mkdir(parents=True, exist_ok=True)
-    entered_path = workspace_root / ".n01-entered"
     release_path = workspace_root / ".n01-release"
     release_path.unlink(missing_ok=True)
-    entered_path.write_text(
-        json.dumps(
-            {
-                "run_id": request.run_id,
-                "attempt_id": request.attempt_id,
-                "resource_limits": request.config.get("resource_limits", {}),
-            },
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-
-    deadline = asyncio.get_running_loop().time() + _RELEASE_TIMEOUT_SECONDS
-    while not release_path.is_file():
-        if asyncio.get_running_loop().time() >= deadline:
-            return {
-                "status": "failed",
-                "message": "Synthetic executor release was not signaled",
-                "error_code": "n01_executor_release_timeout",
-                "error_message": "Synthetic executor release was not signaled",
-                "sdk_used": False,
-            }
-        await asyncio.sleep(0.05)
 
     if not request.sdk_session_id:
         return {
@@ -94,13 +70,16 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
     )
     session_key = {"session_id": request.sdk_session_id}
     previous_entries = await session_store.load(session_key)
+    loaded_final_sequence = session_store.accepted_final_sequence
+    if loaded_final_sequence is None:
+        raise RuntimeError("n01_provider_session_load_not_acknowledged")
     parent_uuid = None
     if previous_entries:
         last_uuid = previous_entries[-1].get("uuid")
         if isinstance(last_uuid, str) and last_uuid:
             parent_uuid = last_uuid
 
-    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+    user_timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
     user_entry_uuid = str(
@@ -133,9 +112,44 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
         },
         "parentUuid": parent_uuid,
         "uuid": user_entry_uuid,
-        "timestamp": now,
+        "timestamp": user_timestamp,
         **common_entry_fields,
     }
+    await session_store.append(session_key, [user_entry])
+    user_final_sequence = session_store.accepted_final_sequence
+    if user_final_sequence != loaded_final_sequence + 1:
+        raise RuntimeError("n01_provider_session_append_not_acknowledged")
+
+    # Fault injection starts only after the current native user turn is persisted
+    # and the real provider-session callback has acknowledged its append.
+    entered_path = workspace_root / ".n01-entered"
+    entered_path.write_text(
+        json.dumps(
+            {
+                "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+                "resource_limits": request.config.get("resource_limits", {}),
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    deadline = asyncio.get_running_loop().time() + _RELEASE_TIMEOUT_SECONDS
+    while not release_path.is_file():
+        if asyncio.get_running_loop().time() >= deadline:
+            return {
+                "status": "failed",
+                "message": "Synthetic executor release was not signaled",
+                "error_code": "n01_executor_release_timeout",
+                "error_message": "Synthetic executor release was not signaled",
+                "sdk_used": False,
+            }
+        await asyncio.sleep(0.05)
+
+    assistant_timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
     assistant_entry = {
         "type": "assistant",
         "message": {
@@ -155,12 +169,12 @@ async def deterministic_runner(request, workspace_root: Path, emit_event) -> dic
         },
         "parentUuid": user_entry_uuid,
         "uuid": assistant_entry_uuid,
-        "timestamp": now,
+        "timestamp": assistant_timestamp,
         **common_entry_fields,
     }
-    await session_store.append(session_key, [user_entry, assistant_entry])
+    await session_store.append(session_key, [assistant_entry])
     final_sequence = session_store.accepted_final_sequence
-    if final_sequence is None:
+    if final_sequence != user_final_sequence + 1:
         raise RuntimeError("n01_provider_session_append_not_acknowledged")
 
     response_files: list[str] = []

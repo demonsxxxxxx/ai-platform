@@ -175,6 +175,10 @@ async def test_stopped_retry_reuses_durable_pg_snapshot_and_linux_workspace(uncl
     async with unclaimed_db() as conn:
         await prepare(conn, "target", 1)
         await extend_lease(conn)
+        await conn.execute(
+            "update sandbox_leases set executor_reconciliation_status='claimed', "
+            "executor_reconciliation_claim_token='synthetic-claim'"
+        )
 
     calls = []
     lease = SimpleNamespace(container_id="synthetic-container", provider="opensandbox")
@@ -208,7 +212,7 @@ async def test_stopped_retry_reuses_durable_pg_snapshot_and_linux_workspace(uncl
         return ExecutorResult(status="succeeded", adapter_version="1", executor_type="claude_agent_sdk",
             executor_version="1", capabilities={}, result={"message": "complete"})
 
-    terminal = dict(status="completed", response_files=["report.txt"], sdk_settlement={"mirror_complete": True})
+    terminal = dict(run_id="target", status="completed", response_files=["report.txt"], sdk_settlement={"mirror_complete": True})
     context = dict(adapter_name="claude-agent-worker", adapter_context={})
     monkeypatch.setattr(reconciler, "transaction", unclaimed_db)
     monkeypatch.setattr(reconciler, "_context_and_payload", lambda _: (context, terminal, SimpleNamespace(attempt_id=req.attempt_id)))
@@ -269,6 +273,11 @@ async def test_stopped_retry_reuses_durable_pg_snapshot_and_linux_workspace(uncl
 @pytest.mark.asyncio
 @pytest.mark.parametrize("defect", [None, "generation", "expired", "released", "takeover", "terminal", "native"])
 async def test_authenticated_completion_tail_uses_real_pg_started_operation_and_lease(unclaimed_db, monkeypatch, defect):
+    from app.bootstrap.context import configure_context_services
+    from app.context.application import provider_sessions
+
+    monkeypatch.setattr(provider_sessions, "_use_cases", provider_sessions._use_cases)
+    configure_context_services()
     secret = "synthetic-completion-tail-secret"
     identity = "mcp__synthetic__write"
     monkeypatch.setattr(runtime_callbacks, "transaction", unclaimed_db)

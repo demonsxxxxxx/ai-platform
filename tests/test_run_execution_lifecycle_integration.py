@@ -562,10 +562,15 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "(select jsonb_agg(payload_json) from run_events where run_id=r.id "
                         "and event_type='capability_not_authorized') as denials, "
                         "a.id as attempt_id, a.status as attempt_status, a.owner_generation, "
+                        "a.owner_kind as attempt_owner_kind, a.owner_id as attempt_owner_id, "
                         "l.status as lease_status, l.executor_status, "
                         "l.executor_reconciliation_status, l.executor_terminal_json, "
+                        "l.executor_terminal_received_at, l.executor_cleanup_status, "
                         "l.executor_reconciliation_attempt_count, "
                         "l.executor_reconciliation_error, "
+                        "l.cancel_delivery_status, l.cancel_delivery_owner_generation, "
+                        "l.cancel_delivery_attempt_count, l.cancel_delivery_last_error_code, "
+                        "l.cancel_delivery_retry_not_before, l.cancel_delivery_accepted_at, "
                         "l.executor_reconciliation_context_json is not null "
                         "as has_reconciliation_context "
                         "from runs r left join run_attempts a on a.run_id = r.id "
@@ -681,13 +686,28 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='run_succeeded') as succeeded_events, "
                         "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='run_failed') as failed_events, "
                         "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='sandbox_runtime_cleanup_failed') as cleanup_failures, "
-                        "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='sandbox_runtime_cleanup_succeeded') as cleanup_successes",
+                        "(select count(*) from run_events where tenant_id=%s and run_id=%s and event_type='sandbox_runtime_cleanup_succeeded') as cleanup_successes, "
+                        "(select count(*) from sandbox_leases where tenant_id=%s and run_id=%s and cancel_delivery_attempt_count > 0) as cancel_delivery_leases, "
+                        "(select count(*) from sandbox_leases where tenant_id=%s and run_id=%s and cancel_delivery_status='accepted') as accepted_cancel_deliveries, "
+                        "(select count(*) from sandbox_leases where tenant_id=%s and run_id=%s and cancel_delivery_status='retry') as retry_cancel_deliveries",
                         tuple(
                             value
-                            for _ in range(13)
+                            for _ in range(16)
                             for value in (stack.tenant_id, run_id)
                         ),
                     )).fetchone()
+
+            async def redis_queue_key_presence():
+                prefix = stack.environment["QUEUE_KEY_PREFIX"]
+                suffixes = (
+                    "queued", "processing", "processing-meta", "retry-meta",
+                    "dead-letter", "queued-meta", "queued-run-index", "queued-order",
+                )
+                async with Redis.from_url(stack.redis_url) as redis:
+                    return {
+                        suffix: bool(await redis.exists(f"{prefix}:{suffix}"))
+                        for suffix in suffixes
+                    }
 
             async def wait_for_probe_failure():
                 deadline = time.monotonic() + 120
@@ -712,20 +732,60 @@ def test_admission_worker_settlement_delivery_reclamation(
                     f"provider probe failure was not persisted: {await state()}"
                 )
 
-            async def cancelled_and_released(snapshot):
-                if (
-                    snapshot["run_status"],
-                    snapshot["attempt_status"],
-                    snapshot["lease_status"],
-                ) != ("cancelled", "cancelled", "released"):
-                    return False
-                await asyncio.to_thread(stack.assert_no_run_resources, run_id)
-                return snapshot
-
             async def complete_cancellation_case(
                 *, fault_evidence, expected_answer_events: int,
-                expected_cleanup_successes: int = 1,
+                expected_cleanup_successes: int = 0,
             ):
+                expected_executor_status = (
+                    "completed" if fault == "receipt_cancel" else "cancelled"
+                )
+                expected_delivery_statuses = (
+                    ("none",) if fault == "receipt_cancel" else ("accepted", "none")
+                )
+                failed_delivery_attempts = (
+                    int(fault_evidence["first_cancel_state"]["cancel_delivery_attempt_count"])
+                    if fault == "stop_retry" else 0
+                )
+
+                async def cancelled_and_released(snapshot):
+                    # Keep all six durable state dimensions visible at the
+                    # business terminal barrier; Sandbox cleanup is separate.
+                    six_dimensions = (
+                        snapshot["run_status"], snapshot["attempt_status"],
+                        snapshot["lease_status"], snapshot["executor_status"],
+                        snapshot["executor_reconciliation_status"],
+                        snapshot["cancel_delivery_status"],
+                    )
+                    if six_dimensions[:5] != (
+                        "cancelled", "cancelled", "released", expected_executor_status,
+                        "finalized",
+                    ) or six_dimensions[5] not in expected_delivery_statuses:
+                        return False
+                    if snapshot["executor_cleanup_status"] != "finalized":
+                        return False
+                    if fault == "receipt_cancel":
+                        if snapshot["cancel_delivery_attempt_count"] != 0:
+                            return False
+                    elif snapshot["cancel_delivery_attempt_count"] < 1:
+                        return False
+                    if fault == "stop_retry" and (
+                        snapshot["cancel_delivery_attempt_count"] <= failed_delivery_attempts
+                    ):
+                        return False
+                    if (
+                        snapshot["cancel_delivery_status"] == "accepted"
+                        and snapshot["cancel_delivery_accepted_at"] is None
+                    ):
+                        return False
+                    if snapshot["cancel_delivery_status"] == "none" and (
+                        snapshot["executor_terminal_received_at"] is None
+                    ):
+                        return False
+                    if any((await redis_queue_key_presence()).values()):
+                        return False
+                    await asyncio.to_thread(stack.assert_no_run_resources, run_id)
+                    return snapshot
+
                 final = await poll(
                     cancelled_and_released,
                     timeout=180,
@@ -743,8 +803,26 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert facts["assistant_messages"] == 0
                 assert facts["committed_turns"] == 0
                 assert facts["artifacts"] == 0
-                assert facts["cleanup_failures"] == (1 if fault == "stop_retry" else 0)
+                assert facts["cleanup_failures"] == 0
                 assert facts["cleanup_successes"] == expected_cleanup_successes
+                assert facts["cancel_delivery_leases"] == (
+                    0 if fault == "receipt_cancel" else 1
+                )
+                assert facts["accepted_cancel_deliveries"] == (
+                    1 if final["cancel_delivery_status"] == "accepted" else 0
+                )
+                assert facts["retry_cancel_deliveries"] == 0
+                assert final["executor_terminal_json"]["status"] == expected_executor_status
+                if fault == "stop_retry":
+                    assert final["cancel_delivery_attempt_count"] > failed_delivery_attempts
+                if final["cancel_delivery_status"] == "accepted":
+                    assert final["cancel_delivery_owner_generation"] == running["owner_generation"]
+                    assert final["cancel_delivery_last_error_code"] == ""
+                else:
+                    assert final["cancel_delivery_owner_generation"] is None
+                assert final["cancel_delivery_last_error_code"] == ""
+                queue_key_presence = await redis_queue_key_presence()
+                assert not any(queue_key_presence.values()), queue_key_presence
 
                 repeated = await http.post(f"/api/ai/runs/{run_id}/cancel")
                 assert repeated.status_code == 404, repeated.text
@@ -764,6 +842,11 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "intermediate": fault_evidence,
                         "final_state": final,
                         "counts": facts,
+                        "cancel_delivery_status": final["cancel_delivery_status"],
+                        "cancel_delivery_attempt_count": final[
+                            "cancel_delivery_attempt_count"
+                        ],
+                        "redis_queue_key_presence": queue_key_presence,
                         "repeated_cancel_http_status": repeated.status_code,
                         "production_resources_absent_before_teardown": True,
                     },
@@ -824,6 +907,13 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert await state() == before_foreign_cancel
                 assert (await outcome_facts())["answer_deltas"] == 0
 
+                stopped_worker_id = await asyncio.to_thread(
+                    stack.stop_worker, timeout_seconds=5,
+                )
+                worker.reload()
+                assert stopped_worker_id == worker.id
+                assert worker.status != "running"
+
                 owner_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
                 assert owner_cancel.status_code == 200, owner_cancel.text
                 assert owner_cancel.json() == {
@@ -831,17 +921,47 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "session_id": None,
                     "status": "cancel_requested",
                 }
-                after_owner_cancel = await state()
+
+                async def cancellation_receipt_pending(snapshot):
+                    return (
+                        snapshot
+                        if snapshot["executor_terminal_json"] is not None
+                        and snapshot["executor_reconciliation_status"] == "pending"
+                        else False
+                    )
+
+                after_owner_cancel = await poll(
+                    cancellation_receipt_pending, timeout=60,
+                )
                 assert after_owner_cancel["attempt_id"] == running["attempt_id"]
                 assert after_owner_cancel["cancel_requested_at"] is not None
                 assert after_owner_cancel["cancel_requested_by"] == stack.user_id
-                assert after_owner_cancel["lease_status"] == "released"
+                assert after_owner_cancel["run_status"] == "running"
+                assert after_owner_cancel["attempt_status"] == "cancel_requested"
+                assert after_owner_cancel["attempt_owner_kind"] == running["attempt_owner_kind"]
+                assert after_owner_cancel["attempt_owner_id"] == running["attempt_owner_id"]
+                assert after_owner_cancel["owner_generation"] == running["owner_generation"] + 1
+                assert after_owner_cancel["lease_status"] == "active"
+                assert after_owner_cancel["executor_status"] == "cancelled"
+                assert after_owner_cancel["executor_reconciliation_status"] == "pending"
+                assert after_owner_cancel["executor_terminal_json"]["status"] == "cancelled"
+                assert after_owner_cancel["cancel_delivery_attempt_count"] >= 1
+                assert after_owner_cancel["cancel_delivery_status"] in {"accepted", "none"}
+                if after_owner_cancel["cancel_delivery_status"] == "accepted":
+                    assert after_owner_cancel["cancel_delivery_owner_generation"] == running[
+                        "owner_generation"
+                    ]
+                else:
+                    assert after_owner_cancel["executor_terminal_received_at"] is not None
+                restarted_worker_id = await asyncio.to_thread(stack.start_worker)
+                assert restarted_worker_id == stopped_worker_id
                 await complete_cancellation_case(
                     fault_evidence={
                         "foreign_cancel_http_status": foreign_cancel.status_code,
                         "state_unchanged_after_foreign_cancel": True,
                         "owner_cancel_http_status": owner_cancel.status_code,
                         "owner_cancel_state": after_owner_cancel,
+                        "worker_restarted_for_reconciliation": True,
                     },
                     expected_answer_events=0,
                 )
@@ -851,9 +971,11 @@ def test_admission_worker_settlement_delivery_reclamation(
                 stopped_proxy_id = await asyncio.to_thread(stack.stop_docker_proxy)
                 try:
                     first_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
-                    assert first_cancel.status_code == 502, first_cancel.text
+                    assert first_cancel.status_code == 200, first_cancel.text
                     assert first_cancel.json() == {
-                        "detail": "sandbox_runtime_cleanup_failed",
+                        "run_id": run_id,
+                        "session_id": None,
+                        "status": "cancel_requested",
                     }
                     after_failed_stop = await state()
                     assert after_failed_stop["run_status"] == "running"
@@ -864,9 +986,28 @@ def test_admission_worker_settlement_delivery_reclamation(
                     assert after_failed_stop["lease_status"] == "active"
                     assert after_failed_stop["executor_terminal_json"] is None
                     assert after_failed_stop["executor_status"] == "running"
+                    assert after_failed_stop["attempt_owner_kind"] == running["attempt_owner_kind"]
+                    assert after_failed_stop["attempt_owner_id"] == running["attempt_owner_id"]
+                    assert after_failed_stop["owner_generation"] == running["owner_generation"] + 1
+                    assert after_failed_stop["cancel_delivery_status"] == "retry"
+                    assert after_failed_stop["cancel_delivery_owner_generation"] == running[
+                        "owner_generation"
+                    ]
+                    assert after_failed_stop["cancel_delivery_attempt_count"] >= 1
+                    assert after_failed_stop["cancel_delivery_retry_not_before"] is not None
+                    assert after_failed_stop["cancel_delivery_accepted_at"] is None
+                    assert after_failed_stop["cancel_delivery_last_error_code"] in {
+                        "provider_error", "timeout", "invalid_response",
+                    }
                     failed_stop_counts = await outcome_facts()
                     assert failed_stop_counts["cancel_requests"] == 1
-                    assert failed_stop_counts["cleanup_failures"] == 1
+                    assert failed_stop_counts["cancelled_events"] == 0
+                    assert failed_stop_counts["succeeded_events"] == 0
+                    assert failed_stop_counts["failed_events"] == 0
+                    assert failed_stop_counts["cleanup_failures"] == 0
+                    assert failed_stop_counts["cancel_delivery_leases"] == 1
+                    assert failed_stop_counts["accepted_cancel_deliveries"] == 0
+                    assert failed_stop_counts["retry_cancel_deliveries"] == 1
                     assert failed_stop_counts["answer_deltas"] == 0
                     executor.reload()
                     assert executor.status == "running"
@@ -875,14 +1016,6 @@ def test_admission_worker_settlement_delivery_reclamation(
                         stack.start_docker_proxy,
                     )
                 assert restored_proxy_id == stopped_proxy_id
-
-                retry_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
-                assert retry_cancel.status_code == 200, retry_cancel.text
-                assert retry_cancel.json()["status"] == "cancel_requested"
-                after_retry = await state()
-                assert after_retry["attempt_id"] == running["attempt_id"]
-                assert after_retry["lease_status"] == "released"
-                assert after_retry["cancel_requested_by"] == stack.user_id
                 await complete_cancellation_case(
                     fault_evidence={
                         "docker_proxy_container_id": stopped_proxy_id,
@@ -890,8 +1023,6 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "first_cancel_state": after_failed_stop,
                         "counts_after_failed_stop": failed_stop_counts,
                         "provider_restored": True,
-                        "retry_cancel_http_status": retry_cancel.status_code,
-                        "state_after_retry": after_retry,
                     },
                     expected_answer_events=0,
                 )

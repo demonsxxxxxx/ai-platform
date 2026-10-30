@@ -866,6 +866,12 @@ class SandboxRuntime:
                 artifact_workspace_path=artifact_workspace_path,
             )
 
+        def handed_off_result() -> SandboxRuntimeResult:
+            return build_runtime_result({
+                "status": "accepted", "run_id": request.run_id,
+                "attempt_id": request.attempt_id,
+            })
+
         accepted_dispatch = False
         dispatch_identity: SandboxDispatchIdentity | None = None
 
@@ -1107,9 +1113,12 @@ class SandboxRuntime:
                 else:
                     if str(dispatch_record.get("status") or "") == "rejected":
                         raise RuntimeError("sandbox_dispatch_previously_rejected")
+                    dispatch_sent = True
                     try:
                         observed_status = await self._probe_dispatch_status(lease, request)
                     except asyncio.CancelledError:
+                        if observation_handed_off:
+                            return handed_off_result()
                         accepted_dispatch = True
                         await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
                         raise
@@ -1140,10 +1149,7 @@ class SandboxRuntime:
                         # receipt before cancelling the outstanding dispatch await.
                         # Keep reconciliation as the settlement owner.
                         sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
-                        return build_runtime_result({
-                            "status": "accepted", "run_id": request.run_id,
-                            "attempt_id": request.attempt_id,
-                        })
+                        return handed_off_result()
                     if not self._uses_default_lease_recorder:
                         raise
                     if isinstance(dispatch_error, asyncio.CancelledError):
@@ -1153,6 +1159,8 @@ class SandboxRuntime:
                     try:
                         observed_status = await self._probe_dispatch_status(lease, request)
                     except asyncio.CancelledError:
+                        if observation_handed_off:
+                            return handed_off_result()
                         accepted_dispatch = True
                         await self._record_dispatch_unknown_after_cancellation(dispatch_identity)
                         raise
@@ -1181,8 +1189,7 @@ class SandboxRuntime:
                         raise
                 sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
                 if observation_handed_off:
-                    return build_runtime_result({"status": "accepted", "run_id": request.run_id,
-                                                 "attempt_id": request.attempt_id})
+                    return handed_off_result()
             if str(response.get("status") or "").lower() == "accepted":
                 accepted_result = build_runtime_result(response)
                 if self._uses_default_lease_recorder:
@@ -1302,8 +1309,7 @@ class SandboxRuntime:
                 except SandboxRuntimeCleanupError as cleanup_exc:
                     raise cleanup_exc from exc
                 if observation_handed_off:
-                    return build_runtime_result({"status": "accepted", "run_id": request.run_id,
-                                                 "attempt_id": request.attempt_id})
+                    return handed_off_result()
             if predispatch_settlement is not None and isinstance(exc, Exception):
                 exc.predispatch_continuation_settlement = predispatch_settlement
             raise
