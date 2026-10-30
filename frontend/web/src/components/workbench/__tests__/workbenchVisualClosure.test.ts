@@ -19,7 +19,7 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
   assert.match(shell, /data-workbench-region="header"[\s\S]*className=\{libreChatSurface\.threadHeader\}[\s\S]*\{header\}[\s\S]*data-librechat-context-toggle/);
-  assert.match(surface, /threadHeader:[\s\S]*flex min-h-14 shrink-0 items-center/);
+  assert.match(surface, /threadHeader:[\s\S]*flex h-\[var\(--workbench-header-height\)\] shrink-0 items-center/);
   assert.doesNotMatch(shell, /flex shrink-0 justify-end px-3 pt-2|absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
@@ -226,7 +226,8 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(driveBrowser, /workbenchSurface\.compactPanel/);
+  assert.match(driveBrowser, /className=\{styles\.browser\}/);
+  assert.doesNotMatch(driveBrowser, /workbenchSurface\.compactPanel/);
   assert.match(chatInput, /<ComposerBar/);
   assert.doesNotMatch(chatInput, /ChatInputHelpMenu/);
   assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
@@ -246,8 +247,10 @@ test("workbench right context exposes one lazy two-drive file tree", () => {
   assert.match(rightPanel, /<ProfileDriveWorkspaceBrowser/);
   assert.equal((rightPanel.match(/<ProfileDriveWorkspaceBrowser/g) ?? []).length, 1);
   assert.match(driveBrowser, /data-librechat-context-section="files"/);
-  assert.match(driveBrowser, /role="tablist"/);
-  assert.match(driveBrowser, /role="tab"/);
+  assert.match(driveBrowser, /<TabsList/);
+  assert.match(driveBrowser, /<TabsTab/);
+  assert.match(driveBrowser, /variant="rounded"/);
+  assert.match(driveBrowser, /role="tabpanel"[\s\S]*hidden=\{activeSource !== id\}/);
   assert.match(driveBrowser, /"profile"/);
   assert.match(driveBrowser, /"public"/);
   assert.match(driveBrowser, /toggleDirectory/);
