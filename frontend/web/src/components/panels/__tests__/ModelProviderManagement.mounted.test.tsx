@@ -90,6 +90,8 @@ test("suppliers create/select isolated drafts, confirm discard, block referenced
     await click("删除供应商 Supplier B");
     await React.act(async () => document.querySelector<HTMLButtonElement>('[role=dialog] button:last-child')!.click());
     assert.ok(resolveInventory);
+    assert.equal(container.querySelectorAll('[data-provider-expanded]').length, 0, "deleted editor closes before slow inventory resolves");
+    assert.equal(container.querySelector('[aria-label="模型 API 地址"]'), null, "deleted connection cannot start another request");
     assert.equal(staleEditorSignal, undefined, "deleting must not remount an editor before inventory reload");
     deferInventory = false;
     await React.act(async () => resolveInventory!());

@@ -71,6 +71,7 @@ export function ModelProviderManagement({ canManage = true, groupRevision, onGro
       toast.success(missingOnly ? `已清理 ${result.model_count ?? 0} 个模型，保留 ${result.retained_count ?? 0} 个被引用模型。` : `已删除供应商 ${impact.name}。`);
       setImpact(null); setDirty(false);
       if (missingOnly && selectedId === impact.id) setEditorVersion((version) => version + 1);
+      if (!missingOnly) setSelectedId((current) => current === impact.id ? "" : current);
       await reload(owner.current?.signal);
       await refreshModels({ force: true });
     } catch (caught) { if (!owner.current?.signal.aborted) { setImpact(null); report(caught); } }
