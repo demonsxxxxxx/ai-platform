@@ -1,8 +1,11 @@
 .browser { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
-.panel { display: flex; flex: 1; min-height: 0; padding: 0 12px 12px; }
+.toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; height: var(--workbench-header-height, 3.5rem); gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--theme-border); }
+.toolbar .tabs { align-self: center; }
+.toolbar .refresh { flex-shrink: 0; }
+.browser .panel { display: flex; flex: 1; min-height: 0; padding: 0 12px 12px; }
 .panel[hidden] { display: none; }
 .source { display: flex; flex: 1; min-height: 0; min-width: 0; flex-direction: column; }
-.options { margin: 8px 0 4px; font-size: 11px; color: var(--theme-text-secondary); }
+.source .search { flex-shrink: 0; margin-top: 8px; }
 .breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; flex-shrink: 0; border-bottom: 1px solid var(--theme-border); padding: 4px 0; }
 .breadcrumbs > button { max-width: 100%; height: auto; min-height: 24px; padding: 2px 4px; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
 .treeViewport { min-height: 0; flex: 1; overflow: auto; margin-top: 8px; scrollbar-width: thin; }
@@ -19,4 +22,4 @@
 .guides { position: absolute; inset: 0 auto 0 0; pointer-events: none; }
 .guides > span { position: absolute; inset-block: 0; border-inline-start: 1px solid var(--theme-border); }
 @media (hover: none) { .focusAction { opacity: 1; } }
-@media (max-width: 639px) { .row, .row .nameButton { min-height: 40px; } .row .action { height: 40px; flex-basis: 40px; width: 40px; } }
+@media (max-width: 639px) { .tabs .tab, .toolbar .refresh { min-width: 40px; height: 40px; } .row, .row .nameButton { min-height: 40px; } .row .action { height: 40px; flex-basis: 40px; width: 40px; } }

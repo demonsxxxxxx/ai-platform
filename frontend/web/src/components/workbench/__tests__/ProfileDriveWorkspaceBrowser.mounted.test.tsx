@@ -236,9 +236,19 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       'input[aria-label="筛选文件树"]',
     );
     assert.ok(rootFilter);
+    assert.equal(container.querySelector("h3, [role=checkbox], [data-profile-drive-count], nav"), null, "root only shows drive switch, refresh, search and tree");
+    assert.notEqual(rootFilter.parentElement?.parentElement?.tagName, "LABEL", "Lobe Input owns the only search frame");
+    assert.ok(rootFilter.parentElement?.querySelector("svg"), "search icon is in the Input prefix");
     await act(async () => changeInput(rootFilter, "文档"));
     assert.doesNotMatch(container.textContent ?? "", /桌面/);
     assert.match(container.textContent ?? "", /文档/);
+    const clearSearch = rootFilter.parentElement?.querySelector<HTMLButtonElement>("[data-lobe-input-clear]");
+    assert.ok(clearSearch);
+    const beforeClear = requests.length;
+    await act(async () => clearSearch.click());
+    assert.equal(rootFilter.value, "");
+    assert.match(container.textContent ?? "", /桌面/);
+    assert.equal(requests.length, beforeClear, "clearing search does not read the drive");
     await act(async () => changeInput(rootFilter, "Restricted"));
 
     const restrictedButton = buttonByText(container, "Restricted");
@@ -293,9 +303,6 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       assert.equal(folderButton.getAttribute("aria-expanded"), "false");
     }
 
-    const compactToggle = container.querySelector<HTMLElement>('[role="checkbox"][aria-label="合并单子目录"]');
-    assert.ok(compactToggle);
-    await act(async () => compactToggle.click());
     const documentsButton = buttonByText(container, "文档");
     assert.equal(documentsButton.getAttribute("aria-expanded"), "false");
     await act(async () => {
@@ -304,7 +311,7 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       );
       await flush();
     });
-    assert.equal(documentsButton.getAttribute("aria-expanded"), "true");
+    assert.equal(buttonByText(container, "文档 / reports").getAttribute("aria-expanded"), "false", "loaded single-child directory is compacted automatically");
     assert.match(container.textContent ?? "", /reports/);
 
     const reportsButton = buttonByText(container, "reports");
@@ -457,9 +464,6 @@ test("expands ProfileDrive folders and imports a file into the current workspace
       await flush();
       await flush();
     });
-    const stagedCompactToggle = container.querySelector<HTMLElement>('[role="checkbox"][aria-label="合并单子目录"]');
-    assert.ok(stagedCompactToggle);
-    await act(async () => stagedCompactToggle.click());
     await act(async () => {
       buttonByText(container, "文档").dispatchEvent(
         new dom.window.MouseEvent("click", { bubbles: true }),
@@ -673,6 +677,8 @@ test("mounts the public drive with source-correct expansion and import", async (
     const publicTab = buttonByText(container, "公盘文件");
     assert.equal(profileTab.getAttribute("aria-selected"), "true");
     assert.equal(publicTab.getAttribute("aria-selected"), "false");
+    assert.equal(profileTab.getAttribute("aria-controls"), "profile-drive-profile-panel");
+    assert.equal(publicTab.getAttribute("aria-controls"), "profile-drive-public-panel");
     assert.equal(
       container.querySelectorAll('[data-librechat-context-section="files"]').length,
       1,
@@ -696,16 +702,7 @@ test("mounts the public drive with source-correct expansion and import", async (
     );
     assert.ok(refreshPublicButton);
     assert.equal(refreshPublicButton.disabled, true);
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.getAttribute("aria-label"),
-      "公盘文件可见条目数：加载中",
-    );
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.textContent,
-      "…",
-    );
+    assert.match(publicPanel.textContent ?? "", /正在加载公盘文件/);
     await act(async () => {
       dom.window.dispatchEvent(
         new dom.window.Event(PROFILE_DRIVE_CONNECTION_CHANGED_EVENT),
@@ -720,11 +717,7 @@ test("mounts the public drive with source-correct expansion and import", async (
     });
     let publicFolder = buttonByText(publicPanel, "01-研发部");
     assert.equal(refreshPublicButton.disabled, false);
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.textContent,
-      "1",
-    );
+    assert.equal(publicPanel.querySelectorAll('[role="treeitem"]').length, 1);
     const publicRootRequestCount = () =>
       bodies.filter((body) => body.source === "public" && body.path === "").length;
     const rootRequestsBeforeRefresh = publicRootRequestCount();
@@ -736,16 +729,8 @@ test("mounts the public drive with source-correct expansion and import", async (
       await flush();
     });
     assert.equal(publicRootRequestCount(), rootRequestsBeforeRefresh + 1);
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.textContent,
-      "2",
-    );
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.getAttribute("aria-label"),
-      "公盘文件可见条目数：2",
-    );
+    assert.equal(publicPanel.querySelectorAll('[role="treeitem"]').length, 2);
+    assert.ok(buttonByText(publicPanel, "公告.txt"));
     publicFolder = buttonByText(publicPanel, "01-研发部");
     await act(async () => {
       publicFolder.dispatchEvent(
@@ -755,6 +740,9 @@ test("mounts the public drive with source-correct expansion and import", async (
     });
     assert.equal(publicFolder.getAttribute("aria-expanded"), "true");
     assert.match(publicPanel.textContent ?? "", /report\.pdf/);
+    const publicSearch = publicPanel.querySelector<HTMLInputElement>('input[aria-label="筛选文件树"]');
+    assert.ok(publicSearch);
+    await act(async () => changeInput(publicSearch, "report"));
     await act(async () => {
       profileTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       await flush();
@@ -764,16 +752,13 @@ test("mounts the public drive with source-correct expansion and import", async (
     );
     assert.ok(refreshProfileButton);
     assert.equal(refreshProfileButton.disabled, false);
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="profile"]')
-        ?.getAttribute("aria-label"),
-      "本地文件可见条目数：1",
-    );
+    assert.equal(profilePanel.querySelectorAll('[role="treeitem"]').length, 1);
     await act(async () => {
       publicTab.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       await flush();
     });
     assert.equal(publicFolder.getAttribute("aria-expanded"), "true");
+    assert.equal(publicSearch.value, "report", "tab changes preserve each drive's search");
     assert.match(publicPanel.textContent ?? "", /report\.pdf/);
     await act(async () => {
       buttonByText(publicPanel, "report.pdf").dispatchEvent(
@@ -790,16 +775,7 @@ test("mounts the public drive with source-correct expansion and import", async (
       await flush();
     });
     assert.equal(refreshPublicButton.disabled, false);
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.textContent,
-      "!",
-    );
-    assert.equal(
-      container.querySelector<HTMLElement>('[data-profile-drive-count="public"]')
-        ?.getAttribute("aria-label"),
-      "公盘文件可见条目数：不可用",
-    );
+    assert.equal(publicPanel.querySelectorAll('[role="treeitem"]').length, 0);
     assert.match(publicPanel.textContent ?? "", /公盘文件暂时不可用/);
 
     const publicLists = bodies.filter((body) => body.source === "public");
@@ -896,6 +872,7 @@ test("compacts loaded chains, focuses with breadcrumbs, and uses controlled Comp
     assert.equal(requests.length, count, "focus reuses loaded listing");
     assert.equal(panel.querySelector('[role="treeitem"]')?.getAttribute("aria-level"), "1");
     assert.ok(panel.querySelector('nav[aria-label="本地文件路径"]'));
+    assert.doesNotMatch(panel.textContent ?? "", /本地文件/, "drive label appears only in the tab");
     assert.ok(!panel.querySelector(".selection-summary"));
     assert.doesNotMatch(panel.textContent ?? "", /93 KB|93\.0 KB/);
     const file = buttonByText(panel, "版本发布说明与上线公告.docx");
@@ -912,7 +889,7 @@ test("compacts loaded chains, focuses with breadcrumbs, and uses controlled Comp
     await click(panel.querySelector<HTMLElement>('button[aria-label="添加 版本发布说明与上线公告.docx 到会话"]')!);
     await act(async () => removeFromComposer());
     assert.ok(panel.querySelector('button[aria-pressed="false"]'), "external Composer removal clears tree state");
-    await click(buttonByText(panel.querySelector("nav")!, "本地文件"));
+    await click(panel.querySelector<HTMLElement>('button[aria-label="返回根目录"]')!);
     assert.match(panel.textContent ?? "", /Other/);
     assert.equal(requests.length, count, "returning to root does not reload");
     await click(buttonByText(panel, "Other"));
@@ -921,14 +898,15 @@ test("compacts loaded chains, focuses with breadcrumbs, and uses controlled Comp
     await click(focusEmpty);
     assert.match(panel.textContent ?? "", /目录为空/);
     assert.equal(document.activeElement, panel.querySelector("nav button:last-child"));
-    await click(buttonByText(panel.querySelector("nav")!, "本地文件"));
+    await click(panel.querySelector<HTMLElement>('button[aria-label="返回根目录"]')!);
     const focusRestricted = panel.querySelector<HTMLElement>('button[aria-label="聚焦目录 Restricted"]')!;
     focusRestricted.focus();
     await click(focusRestricted);
     assert.match(panel.textContent ?? "", /没有权限访问/);
     assert.equal(document.activeElement, panel.querySelector("nav button:last-child"));
     await click(panel.querySelector<HTMLElement>('button[aria-label="返回 Restricted"]')!);
-    assert.equal(document.activeElement, panel.querySelector("nav button:last-child"), "error return focuses visible parent breadcrumb");
+    assert.equal(panel.querySelector("nav"), null, "root does not repeat the active drive path");
+    assert.equal(document.activeElement, panel.querySelector("input"), "return to root focuses the visible search instead of a removed breadcrumb");
     assert.match(panel.textContent ?? "", /Other/);
     const refresh = container.querySelector<HTMLElement>('button[aria-label="刷新本地文件"]')!;
     await click(refresh);

@@ -1,6 +1,6 @@
-import { Button, Checkbox, Input } from "@lobehub/ui/base-ui";
+import { Button, Input, TabsRoot, TabsList, TabsTab, TabsIndicator } from "@lobehub/ui/base-ui";
 import {
-  Building2,
+  ArrowLeftToLine,
   ChevronDown,
   ChevronRight,
   Focus,
@@ -10,7 +10,6 @@ import {
   Paperclip,
   RefreshCw,
   Search,
-  UserRound,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { toast } from "@lobehub/ui/base-ui";
@@ -105,8 +104,6 @@ interface ProfileDriveSourceBrowserProps extends ProfileDriveWorkspaceBrowserPro
 interface ProfileDriveSourceControls {
   loading: boolean;
   connected: boolean | null;
-  error: string | null;
-  visibleEntryCount: number;
   refresh: () => Promise<void>;
 }
 
@@ -170,7 +167,6 @@ function ProfileDriveSourceBrowser({
     () => new Map<string, string>(),
   );
   const [filter, setFilter] = useState("");
-  const [compact, setCompact] = useState(true);
   const [focusTrail, setFocusTrail] = useState<ProfileDriveFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -182,6 +178,7 @@ function ProfileDriveSourceBrowser({
   const treeGenerationRef = useRef(0);
   const pendingPathsRef = useRef(new Set<string>());
   const directoryButtonRefs = useRef(new Map<string, HTMLElement>());
+  const searchRef = useRef<HTMLInputElement>(null);
   const pathRef = useRef<HTMLElement>(null);
   const focusPathRef = useRef(false);
   const changeFocusTrail = useCallback((trail: ProfileDriveFileEntry[]) => {
@@ -192,8 +189,9 @@ function ProfileDriveSourceBrowser({
   useLayoutEffect(() => {
     if (!focusPathRef.current) return;
     focusPathRef.current = false;
-    pathRef.current?.querySelector<HTMLButtonElement>("button:last-child")?.focus();
-  }, [focusTrail]);
+    const target = pathRef.current?.querySelector<HTMLButtonElement>("button:last-child");
+    (target ?? searchRef.current ?? fallbackFocusRef.current)?.focus();
+  }, [fallbackFocusRef, focusTrail]);
   const mountedRef = useRef(false);
 
   const loadRoot = useCallback(async () => {
@@ -398,7 +396,7 @@ function ProfileDriveSourceBrowser({
 
   const treeRows = buildProfileDriveTree({
     entries, directories: childrenByPath, expanded: expandedPaths, loading: loadingPaths,
-    errors: directoryErrors, compact, focusTrail, filter,
+    errors: directoryErrors, focusTrail, filter,
   });
   const rowLabel = (chain: ProfileDriveFileEntry[]) => chain.map((entry) =>
     entryLabel(entry, entry.path.includes("/") ? "nested" : "", sourceId),
@@ -424,68 +422,47 @@ function ProfileDriveSourceBrowser({
           : row.kind === "error" && (matchingPaths.has(row.entry.path) || row.entry.path === focusTrail.at(-1)?.path),
       )
     : treeRows;
-  const visibleEntryCount = filteredRows.filter(
-    (row) => row.kind === "entry",
-  ).length;
-
   useEffect(() => {
     onControlsChange(sourceId, {
       loading,
       connected,
-      error,
-      visibleEntryCount,
       refresh: loadRoot,
     });
-  }, [
-    connected,
-    error,
-    loadRoot,
-    loading,
-    onControlsChange,
-    sourceId,
-    visibleEntryCount,
-  ]);
+  }, [connected, loadRoot, loading, onControlsChange, sourceId]);
 
   return (
     <div data-profile-drive-source={sourceId} className={styles.source}>
       {connected !== false && !error && !loading && entries.length > 0 && (
-        <label className="mt-2 flex h-8 items-center gap-2 rounded-md bg-[var(--theme-bg-sidebar)] px-2 ring-1 ring-[var(--theme-border)] focus-within:ring-2 focus-within:ring-[var(--theme-primary)]">
-          <Search
-            size={13}
-            className="shrink-0 text-[var(--theme-text-tertiary)]"
-            aria-hidden="true"
-          />
-          <Input
-            type="search"
-            aria-label="筛选文件树"
-            className="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-tertiary)]"
-            placeholder="筛选文件树"
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-          />
-        </label>
+        <Input
+          ref={searchRef}
+          type="text"
+          aria-label="筛选文件树"
+          className={styles.search}
+          size="middle"
+          prefix={<Search size={14} aria-hidden="true" />}
+          allowClear
+          placeholder="搜索文件…"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
       )}
 
-      {connected && !error && !loading && entries.length > 0 && (
-        <>
-          <div className={styles.options}>
-            <Checkbox checked={compact} onChange={setCompact} aria-label="合并单子目录">合并单子目录</Checkbox>
-          </div>
-          <nav ref={pathRef} className={styles.breadcrumbs} aria-label={`${title}路径`}>
-            <Button type="text" htmlType="button" onClick={() => changeFocusTrail([])}>{title}</Button>
-            {focusTrail.length > 2 && (
-              <Button type="text" htmlType="button" aria-label="返回上一级目录"
-                title={focusTrail.map((entry) => rowLabel([entry])).join(" / ")}
-                onClick={() => changeFocusTrail(focusTrail.slice(0, -1))}>…</Button>
-            )}
-            {focusTrail.slice(-2).map((entry) => (
-              <Button type="text" htmlType="button" key={entry.path} title={entry.path}
-                onClick={() => changeFocusTrail(focusTrail.slice(0, focusTrail.indexOf(entry) + 1))}>
-                / {rowLabel([entry])}
-              </Button>
-            ))}
-          </nav>
-        </>
+      {connected && !error && !loading && focusTrail.length > 0 && (
+        <nav ref={pathRef} className={styles.breadcrumbs} aria-label={`${title}路径`}>
+          <Button type="text" htmlType="button" aria-label="返回根目录" title="返回根目录"
+            icon={<ArrowLeftToLine size={14} aria-hidden="true" />} onClick={() => changeFocusTrail([])} />
+          {focusTrail.length > 2 && (
+            <Button type="text" htmlType="button" aria-label="返回上一级目录"
+              title={focusTrail.map((entry) => rowLabel([entry])).join(" / ")}
+              onClick={() => changeFocusTrail(focusTrail.slice(0, -1))}>…</Button>
+          )}
+          {focusTrail.slice(-2).map((entry) => (
+            <Button type="text" htmlType="button" key={entry.path} title={entry.path}
+              onClick={() => changeFocusTrail(focusTrail.slice(0, focusTrail.indexOf(entry) + 1))}>
+              / {rowLabel([entry])}
+            </Button>
+          ))}
+        </nav>
       )}
       <div className={styles.treeViewport} data-profile-drive-tree-scroll>
         {error ? (
@@ -688,8 +665,8 @@ function ProfileDriveSourceBrowser({
 }
 
 const DRIVE_TABS = [
-  { id: "profile", label: "本地文件", Icon: UserRound },
-  { id: "public", label: "公盘文件", Icon: Building2 },
+  { id: "profile", label: "本地文件" },
+  { id: "public", label: "公盘文件" },
 ] as const;
 
 export function ProfileDriveWorkspaceBrowser({
@@ -705,20 +682,8 @@ export function ProfileDriveWorkspaceBrowser({
   const [sourceControls, setSourceControls] = useState<
     Record<ProfileDriveSourceId, ProfileDriveSourceControls>
   >(() => ({
-    profile: {
-      loading: true,
-      connected: null,
-      error: null,
-      visibleEntryCount: 0,
-      refresh: noopRefresh,
-    },
-    public: {
-      loading: true,
-      connected: null,
-      error: null,
-      visibleEntryCount: 0,
-      refresh: noopRefresh,
-    },
+    profile: { loading: true, connected: null, refresh: noopRefresh },
+    public: { loading: true, connected: null, refresh: noopRefresh },
   }));
   const handleControlsChange = useCallback(
     (
@@ -730,8 +695,6 @@ export function ProfileDriveWorkspaceBrowser({
         if (
           previous.loading === controls.loading &&
           previous.connected === controls.connected &&
-          previous.error === controls.error &&
-          previous.visibleEntryCount === controls.visibleEntryCount &&
           previous.refresh === controls.refresh
         ) {
           return current;
@@ -747,108 +710,65 @@ export function ProfileDriveWorkspaceBrowser({
   return (
     <section
       data-librechat-context-section="files"
-      aria-labelledby="librechat-drive-files-label"
-      className={`${workbenchSurface.compactPanel} ${styles.browser}`}
+      aria-label="文件"
+      className={styles.browser}
     >
-      <div className="p-3 pb-0">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className={workbenchSurface.catalog.compactIconBox}>
-              <FolderOpen size={15} aria-hidden="true" />
-            </span>
-            <h3
-              id="librechat-drive-files-label"
-              className="truncate text-xs font-semibold text-[var(--theme-text)]"
-            >
-              文件
-            </h3>
-          </div>
+      <TabsRoot className={styles.browser} variant="rounded" value={activeSource}
+        onValueChange={(value) => {
+          if (value === "profile" || value === "public") setActiveSource(value);
+        }}>
+        <div className={styles.toolbar}>
+          <TabsList aria-label="文件盘" className={styles.tabs}>
+            <TabsIndicator />
+            {DRIVE_TABS.map(({ id, label }) => (
+              <TabsTab
+                key={id}
+                id={`profile-drive-${id}-tab`}
+                ref={id === "profile" ? profileTabRef : undefined}
+                value={id}
+                aria-controls={`profile-drive-${id}-panel`}
+                className={styles.tab}
+              >
+                {label}
+              </TabsTab>
+            ))}
+          </TabsList>
           <Button type="text"
             htmlType="button"
-            className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
+            size="small"
+            className={styles.refresh}
+            icon={RefreshCw}
+            loading={activeControls.loading}
             aria-label={`刷新${activeTab.label}`}
             title={`刷新${activeTab.label}`}
             disabled={activeControls.loading || activeControls.connected === false}
             onClick={() => void activeControls.refresh()}
-          >
-            <RefreshCw
-              size={13}
-              className={activeControls.loading ? "animate-spin" : ""}
-            />
-          </Button>
-          <span
-            className={workbenchSurface.catalog.chip}
-            data-profile-drive-count={activeSource}
-            aria-label={`${activeTab.label}可见条目数：${
-              activeControls.loading
-                ? "加载中"
-                : activeControls.error || activeControls.connected !== true
-                  ? "不可用"
-                  : activeControls.visibleEntryCount
-            }`}
-            aria-live="polite"
-          >
-            {activeControls.loading
-              ? "…"
-              : activeControls.error || !activeControls.connected
-                ? "!"
-                : activeControls.visibleEntryCount}
-          </span>
-        </div>
-        <div
-          role="tablist"
-          aria-label="文件盘"
-          className="mt-3 grid h-9 grid-cols-2 gap-0.5 rounded-md bg-[var(--theme-bg-sidebar)] p-0.5 ring-1 ring-[var(--theme-border)]"
-        >
-          {DRIVE_TABS.map(({ id, label, Icon }) => {
-            const active = activeSource === id;
-            return (
-              <Button type="text"
-                key={id}
-                id={`profile-drive-${id}-tab`}
-                ref={id === "profile" ? profileTabRef : undefined}
-                htmlType="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls={`profile-drive-${id}-panel`}
-                data-active={active ? "true" : "false"}
-                className={`flex h-8 min-w-0 items-center justify-center gap-1.5 rounded px-2 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
-                  active
-                    ? "bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)] ring-1 ring-[var(--theme-border)]"
-                    : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
-                }`}
-                onClick={() => setActiveSource(id)}
-              >
-                <Icon size={14} className="shrink-0" aria-hidden="true" />
-                <span className="truncate">{label}</span>
-              </Button>
-            );
-          })}
-        </div>
-      </div>
-
-      {DRIVE_TABS.map(({ id, label }) => (
-        <div
-          key={id}
-          id={`profile-drive-${id}-panel`}
-          role="tabpanel"
-          aria-labelledby={`profile-drive-${id}-tab`}
-          hidden={activeSource !== id}
-          className={styles.panel}
-        >
-          <ProfileDriveSourceBrowser
-            sessionId={sessionId}
-            sourceId={id}
-            title={label}
-            fallbackFocusRef={profileTabRef}
-            onImported={onImported}
-            onAddToConversation={onAddToConversation}
-            attachments={attachments}
-            onRemoveAttachment={onRemoveAttachment}
-            onControlsChange={handleControlsChange}
           />
         </div>
-      ))}
+
+        {DRIVE_TABS.map(({ id, label }) => (
+          <div
+            key={id}
+            id={`profile-drive-${id}-panel`}
+            role="tabpanel"
+            aria-labelledby={`profile-drive-${id}-tab`}
+            hidden={activeSource !== id}
+            className={styles.panel}
+          >
+            <ProfileDriveSourceBrowser
+              sessionId={sessionId}
+              sourceId={id}
+              title={label}
+              fallbackFocusRef={profileTabRef}
+              onImported={onImported}
+              onAddToConversation={onAddToConversation}
+              attachments={attachments}
+              onRemoveAttachment={onRemoveAttachment}
+              onControlsChange={handleControlsChange}
+            />
+          </div>
+        ))}
+      </TabsRoot>
     </section>
   );
 }
