@@ -100,6 +100,8 @@ def capture_candidate_source_binding(repo_root: Path) -> dict[str, object]:
             tree_digest.update(b"deleted\0")
 
     lock_path = root / "uv.lock"
+    if not lock_path.resolve().is_relative_to(root):
+        raise EvidenceValidationError("candidate uv.lock resolves outside the worktree")
     if not lock_path.is_file():
         raise EvidenceValidationError("candidate uv.lock is missing")
 

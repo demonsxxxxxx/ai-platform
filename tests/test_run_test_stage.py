@@ -543,6 +543,25 @@ def test_candidate_source_binding_hashes_external_symlink_text_without_reading_t
     assert changed_link["dirty_source_sha256"] != first["dirty_source_sha256"]
 
 
+def test_candidate_source_binding_rejects_external_lockfile_without_reading_it(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    external = tmp_path / "external.lock"
+    external.write_text("EXTERNAL_LOCK_CONTENT", encoding="utf-8")
+    (repo / "uv.lock").symlink_to(external)
+    original_read = Path.read_bytes
+
+    def read_candidate_only(path):
+        assert path.resolve().is_relative_to(repo.resolve())
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_candidate_only)
+    with pytest.raises(
+        lifecycle_candidate_evidence.EvidenceValidationError,
+        match="candidate uv.lock resolves outside the worktree",
+    ):
+        lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+
 def test_candidate_source_binding_rejects_ordinary_file_below_external_symlink(
     tmp_path, monkeypatch
 ):

@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from app.routes import session_continuation_projection
+from app.bootstrap import session_continuation_projection
 from app.context.api import get_session_continuation
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records

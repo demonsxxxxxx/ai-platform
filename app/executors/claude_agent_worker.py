@@ -71,7 +71,7 @@ from app.runtime.sandbox.contracts import (
     SandboxRuntimeRequest,
 )
 from app.bootstrap.sandbox_runtime import SandboxRuntime
-from app.executors.claude import continuation as claude_continuation
+from app.bootstrap import claude_continuation
 from app.settings import get_settings
 from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
 from app.skills.api import (
