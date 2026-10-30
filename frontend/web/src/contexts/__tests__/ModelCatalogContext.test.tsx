@@ -518,7 +518,7 @@ for (const [defaultModelId, expectedValue] of [
   ["unavailable-model", ""],
   ["", ""],
 ] as const) {
-  test(`catalog hydration is read-only and resolves public default ${defaultModelId}`, async () => {
+  test(`catalog hydration is read-only and does not replace unavailable public default ${defaultModelId}`, async () => {
     const originalFetch = globalThis.fetch;
     const requests: { path: string; method: string; cache?: RequestCache }[] = [];
     const user = {

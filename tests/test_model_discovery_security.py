@@ -70,7 +70,7 @@ class Repository:
 
     async def require_provider(self, _conn, *, provider_id):
         assert provider_id == "legacy"
-        return {"id": provider_id}
+        return {"id": provider_id, "name": "Synthetic gateway"}
 
     async def connection_projection(self, _conn, *, provider_id="legacy"):
         return {"revision": 1}
@@ -171,6 +171,8 @@ async def test_dns_runs_once_in_request_worker_without_holding_transaction(monke
             assert repository.publications[0]["base_url"] == "https://gateway.example"
         else:
             assert result["base_url"] == "https://gateway.example"
+            assert result["models"][0]["provider_id"] == "legacy"
+            assert result["models"][0]["provider_name"] == "Synthetic gateway"
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)

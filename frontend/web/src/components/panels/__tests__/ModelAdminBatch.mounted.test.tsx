@@ -45,6 +45,17 @@ test("mounted batch toolbar previews then atomically applies selected models", a
     const groupCheckbox = container.querySelector<HTMLElement>('[aria-label="批量目标 销售组"]');
     assert.ok(groupCheckbox);
     await React.act(async () => groupCheckbox.click());
+    await React.act(async () => {
+      const key = container.querySelector<HTMLInputElement>('[aria-label="模型 API Key"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(key, "synthetic-new-key");
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const add = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "批量添加")!;
+    assert.equal(add.disabled, true, "unsaved connection cannot be used to assign models");
+    await React.act(async () => add.click());
+    assert.equal(calls.length, 0);
+    await React.act(async () => container.querySelector<HTMLElement>('[data-model-admin-cancel]')!.click());
+    assert.equal(add.disabled, false, "restoring the saved configuration retains the batch selection");
     await React.act(async () => { [...container.querySelectorAll("button")].find((button) => button.textContent === "批量添加")?.click(); });
     await React.act(async () => { [...container.querySelectorAll("button")].find((button) => button.textContent === "预览影响")?.click(); });
     await flush(React, () => calls.length === 1 && calls[0].preview === true);

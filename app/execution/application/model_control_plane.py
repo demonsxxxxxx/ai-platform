@@ -274,9 +274,9 @@ class ModelControlPlaneService:
         async with self._transaction() as conn:
             return await self._repository.create_provider(conn, name=name)
 
-    async def provider_impact(self, *, provider_id: str, missing_only: bool = False) -> dict[str, Any]:
+    async def provider_impact(self, *, provider_id: str, missing_only: bool = False, tenant_id: str | None = None) -> dict[str, Any]:
         async with self._transaction() as conn:
-            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only)
+            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only, tenant_id=tenant_id)
 
     async def retire_provider(self, **kwargs: Any) -> dict[str, Any]:
         async with self._transaction() as conn:
@@ -287,7 +287,7 @@ class ModelControlPlaneService:
         requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
-            await self._repository.require_provider(conn, provider_id=provider_id)
+            provider = await self._repository.require_provider(conn, provider_id=provider_id)
             current = await self._repository.active_connection(
                 conn, encryption_key=encryption_key, provider_id=provider_id
             )
@@ -317,6 +317,8 @@ class ModelControlPlaneService:
                     }),
                     "order": order,
                     "available": True,
+                    "provider_id": provider_id,
+                    "provider_name": provider["name"],
                 }
                 for order, value in enumerate(model_ids, start=1)
             ],
@@ -487,13 +489,15 @@ class ModelControlPlaneService:
         user_id: str,
         tenant_id: str | None = None,
         group_id: str | None = None,
-        selection_mode: str = "auto",
+        selection_mode: str | None = None,
         usage_scene: str = "independent",
     ) -> RunModelSelection:
         effective_group_id = group_id or (selection or {}).get("group_id")
-        effective_mode = (selection or {}).get("selection_mode") or (
-            "explicit" if (selection or {}).get("id") or (selection or {}).get("value") else selection_mode
-        )
+        selected_model = bool((selection or {}).get("id") or (selection or {}).get("value"))
+        if any(mode is not None and mode != "explicit" for mode in (selection_mode, (selection or {}).get("selection_mode"))):
+            raise ValueError("model_selection_conflict")
+        requested_mode = (selection or {}).get("selection_mode") or selection_mode
+        effective_mode = "explicit" if selected_model else requested_mode
         async def resolve_effective(conn: Any, *, model_id: str | None, model_value: str | None, user_id: str) -> RunModelSelection | None:
             return await self._repository.resolve_run_model(
                 conn,

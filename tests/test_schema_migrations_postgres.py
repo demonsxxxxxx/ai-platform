@@ -37,6 +37,9 @@ HUMAN_APPROVAL_RETIREMENT_BASE_COMMIT = (
 ORIGIN_MAIN_MODEL_GROUPS_COMMIT = (
     "5ca18da3ec298ed5d9bd017ca1f284faa8877cce"
 )
+ORIGIN_MAIN_MODEL_PROVIDERS_COMMIT = (
+    "def30a87e87dbd721167250902b295f2ee60a353"
+)
 
 
 def _schema_source_at_commit(commit: str) -> str:
@@ -401,7 +404,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
         )
         assert result == {
             "status": "applied",
-            "version": "2026.10.29.1",
+            "version": "2026.10.29.2",
             "checksum_sha256": schema_migrations.schema_checksum(),
         }
         async with factory() as conn:
@@ -502,6 +505,93 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
                 "checksum_sha256": schema_migrations.schema_checksum(),
             },
         ]
+    finally:
+        sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_enabled_default_step_follows_provider_version_and_repairs_rows(tmp_path: Path):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_provider_to_enabled_default_{uuid.uuid4().hex}"
+    previous = _load_schema_migrations_at_commit(
+        tmp_path, ORIGIN_MAIN_MODEL_PROVIDERS_COMMIT
+    )
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    factory = _transaction_factory(dsn, schema_name)
+    index_factory = _index_connection_factory(dsn, schema_name)
+    try:
+        assert previous.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        provider_result = await previous.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert provider_result["version"] == "2026.10.29.1"
+        await admin.execute("insert into tenants(id, name) values ('repair-tenant', 'Repair Tenant')")
+        await admin.execute(
+            """
+            insert into model_gateway_revisions(
+              revision, base_url, api_key_ciphertext, key_fingerprint, active, created_by
+            ) values (1, 'https://synthetic.example', decode('00', 'hex'),
+                     '0123456789abcdef', true, 'repair-user')
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_catalog_entries(
+              model_id, upstream_model_id, display_name, provider, enabled,
+              upstream_available, first_seen_revision, last_seen_revision
+            ) values
+              ('disabled-model', 'provider/disabled', 'Disabled', 'compatible', true, true, 1, 1),
+              ('enabled-model', 'provider/enabled', 'Enabled', 'compatible', true, true, 1, 1)
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_groups(id, tenant_id, code, name, type, default_model_id, revision)
+            values ('repair-group', 'repair-tenant', 'repair', 'Repair', 'business', 'disabled-model', 7),
+                   ('empty-group', 'repair-tenant', 'empty', 'Empty', 'business', 'disabled-model', 9),
+                   ('valid-group', 'repair-tenant', 'valid', 'Valid', 'business', 'enabled-model', 11)
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_group_models(group_id, model_id, enabled, display_order)
+            values ('repair-group', 'disabled-model', false, 0),
+                   ('repair-group', 'enabled-model', true, 1),
+                   ('empty-group', 'disabled-model', false, 0),
+                   ('valid-group', 'enabled-model', true, 0)
+            """
+        )
+
+        enabled_default_result = await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert enabled_default_result["version"] == schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
+        rows = await (await admin.execute(
+            "select id, default_model_id, revision from model_groups order by id"
+        )).fetchall()
+        assert rows == [
+            {"id": "empty-group", "default_model_id": None, "revision": 10},
+            {"id": "repair-group", "default_model_id": "enabled-model", "revision": 8},
+            {"id": "valid-group", "default_model_id": "enabled-model", "revision": 11},
+        ]
+        ledger_rows = await (await admin.execute(
+            "select version, checksum_sha256 from schema_migrations order by version"
+        )).fetchall()
+        assert ledger_rows == [
+            {"version": schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION,
+             "checksum_sha256": previous.schema_checksum()},
+            {"version": schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION,
+             "checksum_sha256": schema_migrations.schema_checksum()},
+        ]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            # Additive schema readiness is not a binary-version fence. The rollout
+            # contract must stop old writers before admitting explicit-only traffic.
+            assert (await previous.schema_status(conn))["ready"] is True
     finally:
         sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))

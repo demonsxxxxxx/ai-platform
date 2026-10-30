@@ -108,7 +108,7 @@ def selected_model_binding_fields(selected_model: Any) -> dict[str, Any]:
         "group_code": getattr(selected_model, "group_code", None),
         "group_type": getattr(selected_model, "group_type", None),
         "group_revision": getattr(selected_model, "group_revision", None),
-        "selection_mode": getattr(selected_model, "selection_mode", "auto"),
+        "selection_mode": getattr(selected_model, "selection_mode", "explicit"),
         "usage_scene": getattr(selected_model, "usage_scene", "independent"),
         "policy_version": getattr(selected_model, "policy_version", None),
     }

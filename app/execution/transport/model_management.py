@@ -613,7 +613,7 @@ def build_model_management_router(
     async def model_provider_impact_endpoint(provider_id: str, missing_only: bool = False, principal: Any = Depends(principal_dependency)) -> dict[str, Any]:
         _require_admin(principal, is_admin=is_admin)
         try:
-            return await configured_model_control_plane().provider_impact(provider_id=provider_id, missing_only=missing_only)
+            return await configured_model_control_plane().provider_impact(provider_id=provider_id, missing_only=missing_only, tenant_id=principal.tenant_id)
         except (ValueError, RuntimeError) as exc:
             raise _translate_control_plane_error(exc) from exc
 

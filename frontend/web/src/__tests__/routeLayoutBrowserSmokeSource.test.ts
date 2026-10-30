@@ -64,4 +64,18 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /runs:observation-identities-not-collapsed/);
   assert.match(source, /runs:receipt-parent-missing/);
   assert.match(source, /runs:focus-restored/);
+  assert.ok(source.includes("const providerAModels = Array.from({ length: 29 }"));
+  assert.ok(source.includes("const providerBModels = [0, 1].map"));
+  assert.ok(source.includes("provider: 'compatible', provider_id: 'supplier-b'"));
+  assert.ok(source.includes("url.pathname === '/api/ai/admin/model-providers/legacy'"));
+  assert.ok(source.includes("url.pathname === '/api/ai/admin/models'"));
+  assert.ok(source.includes("models: [...providerAModels, ...providerBModels]"));
+  assert.ok(source.includes("models:provider-entry-global-catalog"));
+  assert.ok(source.includes("assignedIsNormal: Boolean(assigned && !assigned.querySelector('[data-group-model-missing]'))"));
+  assert.ok(source.includes('[data-model-group-catalog-model="mdl-b1"]'));
+  assert.ok(source.includes("request.method === 'PUT').at(-1)?.body"));
+  assert.ok(source.includes("body?.default_model_id === null"));
+  assert.ok(source.includes("nullPayload.models.every((model) => model.enabled === false)"));
+  assert.ok(source.includes("models:reenabled-needs-default"));
+  assert.ok(source.includes('const modelRowSwitch = (modelId) =>'));
 });

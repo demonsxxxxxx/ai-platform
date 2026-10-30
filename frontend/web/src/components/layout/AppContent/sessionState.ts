@@ -66,7 +66,6 @@ export function getRestoredModelSelection(
 ): {
   modelId: string;
   modelValue: string;
-  selectionMode: "auto" | "explicit";
 } {
   const modelId =
     typeof config.agent_options?.model_id === "string"
@@ -77,10 +76,5 @@ export function getRestoredModelSelection(
       ? config.agent_options.model
       : "";
 
-  return {
-    modelId,
-    modelValue,
-    selectionMode: config.agent_options?.selection_mode === "auto" ? "auto"
-      : config.agent_options?.selection_mode === "explicit" || modelId || modelValue ? "explicit" : "auto",
-  };
+  return { modelId, modelValue };
 }

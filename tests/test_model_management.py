@@ -170,7 +170,7 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
             return None
 
         async def require_provider(self, _conn, **_kwargs):
-            return {"id": provider_id}
+            return {"id": provider_id, "name": "Team provider"}
 
         async def connection_projection(self, _conn, **_kwargs):
             return {"revision": None}
@@ -220,6 +220,15 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
     assert candidate["models"][0]["id"] == platform_model_id("openai/gpt-5", provider_id)
     assert candidate["models"][0]["label"] == "Existing GPT"
     assert candidate["models"][0]["order"] == 1
+    assert candidate["models"][0]["provider_id"] == provider_id
+    assert candidate["models"][0]["provider_name"] == "Team provider"
+    upstream_ids.append("new-model")
+    discovered = await service.discover(
+        base_url="https://gateway.example", api_key="synthetic-secret", provider_id=provider_id
+    )
+    assert discovered["models"][1]["provider_id"] == provider_id
+    assert discovered["models"][1]["provider_name"] == "Team provider"
+    assert publications == []
     entry = {
         "id": candidate["models"][0]["id"], "value": "openai/gpt-5",
         "display_name": "GPT-5", "enabled": True,
@@ -558,7 +567,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         auto_compact_window=200_000,
         max_output_tokens=2048,
         group_id="group-a", group_code="alpha", group_type="business", group_revision=1,
-        selection_mode="auto", usage_scene="chat", policy_version="model-groups.v1",
+        usage_scene="chat", policy_version="model-groups.v1",
     )
 
     sql, params = conn.calls[0]
@@ -569,7 +578,7 @@ async def test_bind_run_model_persists_execution_admitted_snapshot_on_exact_run(
         "model-public",
         "openai/gpt-5",
         7,
-        "group-a", "alpha", "business", 1, "auto", "chat", "model-groups.v1",
+        "group-a", "alpha", "business", 1, "explicit", "chat", "model-groups.v1",
         200_000,
         2048,
         "tenant-a",
@@ -1912,7 +1921,7 @@ def test_model_provider_routes_require_admin_and_keep_provider_scope(monkeypatch
     for method, path, payload in requests:
         assert client.request(method, path, **({"json": payload} if payload else {})).status_code == 200
     assert captured == [{"name": "Supplier A"}, {"provider_id": "mp-a"},
-        {"provider_id": "mp-a", "missing_only": True},
+        {"provider_id": "mp-a", "missing_only": True, "tenant_id": "tenant-a"},
         {"provider_id": "mp-a", "expected_revision": 2, "confirm": True, "missing_only": False}]
     captured.clear()
     authorized = False
