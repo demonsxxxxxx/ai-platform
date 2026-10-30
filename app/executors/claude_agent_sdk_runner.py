@@ -1950,9 +1950,9 @@ async def run_claude_agent_sdk(
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     from app.execution.api import document_plugin_skill_names, document_plugin_tool_subject
-    from app.execution.infrastructure.document_plugin import document_plugin_options, document_plugin_read_allowed
+    from app.bootstrap.claude_document_plugin import prepare_claude_document_plugin
     plugin_skills = document_plugin_skill_names(document_plugin_revision)
-    plugin_options = document_plugin_options(document_plugin_revision)
+    plugin_options, document_plugin_read_allowed = prepare_claude_document_plugin(document_plugin_revision)
     configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
         not is_valid_executable_skill_name(name)
@@ -2724,7 +2724,7 @@ async def run_claude_agent_sdk(
                 ) or (
                     subject_tool_name == "Read"
                     and isinstance(tool_input, dict)
-                    and document_plugin_read_allowed(tool_input.get("file_path"), document_plugin_revision)
+                    and document_plugin_read_allowed(tool_input.get("file_path"))
                 )
             if (
                 parameters_authorized

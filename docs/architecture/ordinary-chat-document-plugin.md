@@ -47,8 +47,10 @@ Skill evidence against the same frozen grant. The snapshot never infers a grant
 from executor results. Runtime validation accepts only the compiled revision and
 the image-installed revision marker.
 
-The SDK receives one fixed local plugin path and exactly
-`document-skills:docx`, `document-skills:xlsx`, `document-skills:pptx` and
+Bootstrap binds image plugin options and the revision-scoped resource-read
+callback for the Claude adapter; the adapter does not import Execution's concrete
+filesystem implementation. The SDK receives one fixed local plugin path and
+exactly `document-skills:docx`, `document-skills:xlsx`, `document-skills:pptx` and
 `document-skills:pdf`. Unknown Skill names, plugin paths and source revisions
 cannot be selected by the browser. Tenant Skills and Expert Profile Skill sets
 retain their own catalog authorization and snapshots; ordinary identity remains
