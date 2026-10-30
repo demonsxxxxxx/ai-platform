@@ -90,6 +90,36 @@ def _attempt_capability_verifier(secret: str):
     return verify
 
 
+def test_model_group_create_endpoint_generates_omitted_fields_without_relaxing_explicit_inputs(monkeypatch):
+    calls = []
+    authorized = True
+
+    class Service:
+        async def create_model_group(self, **kwargs):
+            calls.append(kwargs)
+            return {"id": "group-a", "code": kwargs.get("code", "group_generated"), "name": kwargs["name"]}
+
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: Service())
+    app = FastAPI()
+    app.include_router(model_routes.build_model_management_router(
+        principal_dependency=lambda: SimpleNamespace(user_id="admin", tenant_id="tenant-a"),
+        is_admin=lambda _: authorized,
+    ))
+    with TestClient(app) as client:
+        response = client.post("/admin/model-groups", json={"name": "IT组", "remark": "备注"})
+        assert response.status_code == 200
+        assert calls[-1] == {"tenant_id": "tenant-a", "name": "IT组", "remark": "备注"}
+        legacy = client.post("/admin/model-groups", json={"name": "旧客户端", "code": "legacy-code", "sort_order": 0})
+        assert legacy.status_code == 200
+        assert calls[-1] == {"tenant_id": "tenant-a", "name": "旧客户端", "code": "legacy-code", "sort_order": 0}
+        for fields in ({"code": None}, {"code": ""}, {"sort_order": None}, {"sort_order": -1}, {"sort_order": True}, {"sort_order": "0"}, {"extra": True}):
+            assert client.post("/admin/model-groups", json={"name": "IT组", **fields}).status_code == 422
+        assert len(calls) == 2
+        authorized = False
+        assert client.post("/admin/model-groups", json={"name": "Unauthorized"}).status_code == 403
+        assert len(calls) == 2
+
+
 def test_catalog_capacity_pair_and_anthropic_proxy_contract():
     assert normalize_model_token_limits(200_000, 2048) == (200_000, 2048)
     # An omitted window takes the platform default; the output cap stays optional.

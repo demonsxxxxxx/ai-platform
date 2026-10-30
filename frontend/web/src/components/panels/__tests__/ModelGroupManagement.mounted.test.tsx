@@ -52,7 +52,7 @@ async function mount(
   const calls: Array<{ kind: string; body?: unknown }> = [];
   modelGroupsApi.listAdmin = async () => ({ groups: [initialDetails], version: "model-groups.v1" });
   modelGroupsApi.details = async () => initialDetails;
-  modelGroupsApi.create = async (payload) => { calls.push({ kind: "create", body: payload }); return summary; };
+  modelGroupsApi.create = async (payload) => { calls.push({ kind: "create", body: payload }); return { ...summary, id: "group-created", code: "group_server_generated", name: payload.name, remark: payload.remark, revision: 1, model_count: 0, member_count: 0 }; };
   modelGroupsApi.update = async (_id, payload) => { calls.push({ kind: "update", body: payload }); return summary; };
   modelGroupsApi.retire = async (_id, payload) => { calls.push({ kind: "delete", body: payload }); return { group_id: summary.id, deleted: true, archived: true, revision: 5 }; };
   modelGroupsApi.setModels = async (_id, payload) => { calls.push({ kind: "models", body: payload }); return { group_id: summary.id, revision: 5 }; };
@@ -111,28 +111,34 @@ test("group management loads, creates, opens drawer and saves model/member lists
   const view = await mount();
   try {
     assert.match(view.container.textContent ?? "", /销售组/);
+    const card = view.container.querySelector('[aria-label="模型分组列表"]');
+    const toolbar = card?.querySelector('[role="group"][aria-label="模型分组操作"]');
+    assert.ok(card);
+    assert.ok(toolbar);
+    assert.equal(view.container.querySelector("h2"), null);
+    assert.doesNotMatch(view.container.textContent ?? "", /模型和用户成员通过分组统一授权/);
+    assert.ok(toolbar.querySelector('input[aria-label="搜索模型分组"]'));
+    assert.ok([...toolbar.querySelectorAll("button")].find((button) => button.textContent === "新建业务组"));
+    assert.ok(card.contains(view.container.querySelector("[data-model-group-table]")));
     await view.React.act(async () => {
       const createButton = [...view.container.querySelectorAll("button")].find((button) => button.textContent?.includes("新建业务组"));
       assert.ok(createButton); createButton.click();
     });
-    const code = view.container.querySelector<HTMLInputElement>('input[aria-label="新分组 code"]');
-    assert.ok(code);
-    await view.React.act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(code, "support");
-      code.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    const name = view.container.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
+    const drawer = document.querySelector('[data-model-group-drawer]');
+    assert.ok(drawer);
+    assert.equal(document.querySelector('input[aria-label="新分组 code"]'), null);
+    assert.doesNotMatch(document.body.textContent ?? "", /展示排序|group_server_generated/);
+    const name = document.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
     assert.ok(name);
     await view.React.act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "支持组");
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await view.React.act(async () => { [...view.container.querySelectorAll("button")].find((button) => button.textContent === "创建")?.click(); });
-    assert.equal(view.calls[0]?.kind, "create");
-    await view.React.act(async () => { [...view.container.querySelectorAll("button")].find((button) => button.textContent?.includes("销售组"))?.click(); });
-    for (let index = 0; index < 20 && !document.querySelector("[data-model-group-drawer]"); index += 1) await view.React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await view.React.act(async () => { (document.querySelector('[role="tab"][data-value="models"]') as HTMLElement | null
-      ?? [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((tab) => tab.textContent === "模型"))?.click(); });
+    await view.React.act(async () => document.querySelector('form[data-model-group-create]')!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    assert.deepEqual(view.calls[0], { kind: "create", body: { name: "支持组", remark: "" } });
+    assert.equal(document.querySelector('[data-model-group-drawer]'), drawer, "creation continues in the same drawer");
+    assert.match(drawer.textContent ?? "", /支持组/);
+    assert.equal(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent, "模型");
     assert.ok(document.querySelector("[data-model-group-models]"));
     await view.React.act(async () => document.querySelector<HTMLElement>('[data-model-group-add-models] summary')?.click());
     const modelCheckbox = document.querySelector('[data-model-group-models] [role="checkbox"]') as HTMLElement | null;
@@ -176,6 +182,65 @@ test("group management loads, creates, opens drawer and saves model/member lists
   }
 });
 
+
+test("group creation preserves failed drafts, submits once and ignores results after unmount", async () => {
+  const view = await mount();
+  const originalCreate = modelGroupsApi.create;
+  let attempts = 0;
+  let resolveCreate: ((value: AdminModelGroupSummary) => void) | undefined;
+  let signal: AbortSignal | undefined;
+  try {
+    await clickText(view, "新建业务组");
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="新分组名称"]');
+    assert.ok(input);
+    await setInputText(view, input, "IT组");
+    modelGroupsApi.create = async () => { attempts += 1; throw new Error("创建暂不可用"); };
+    const form = document.querySelector<HTMLFormElement>('form[data-model-group-create]');
+    assert.ok(form);
+    const submit = () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await view.React.act(async () => { submit(); });
+    assert.equal(input.value, "IT组");
+    assert.match(document.body.textContent ?? "", /创建暂不可用/);
+    modelGroupsApi.create = (_payload, options) => {
+      attempts += 1;
+      signal = options?.signal;
+      return new Promise((resolve) => { resolveCreate = resolve; });
+    };
+    await view.React.act(async () => { submit(); submit(); });
+    assert.equal(attempts, 2, "repeated submit cannot create duplicate groups");
+    assert.equal(input.disabled, true);
+    await view.React.act(async () => view.root.unmount());
+    assert.equal(signal?.aborted, true);
+    await view.React.act(async () => resolveCreate!({ ...summary, name: "IT组" }));
+    assert.equal(document.querySelector('[data-model-group-drawer]'), null);
+  } finally { modelGroupsApi.create = originalCreate; await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
+
+test("renaming changes only the visible name and does not write hidden identity or ordering", async () => {
+  const view = await mount();
+  try {
+    assert.doesNotMatch(view.container.textContent ?? "", /sales|展示排序/);
+    const search = view.container.querySelector<HTMLInputElement>('input[aria-label="搜索模型分组"]');
+    assert.ok(search);
+    await setInputText(view, search, "sales");
+    assert.match(view.container.textContent ?? "", /暂无模型分组/);
+    await setInputText(view, search, "销售组");
+    await clickText(view, "编辑 销售组");
+    const drawer = document.querySelector('[data-model-group-drawer]');
+    assert.ok(drawer);
+    assert.doesNotMatch(drawer.textContent ?? "", /sales|展示排序/);
+    const name = drawer.querySelector<HTMLInputElement>('input');
+    assert.ok(name);
+    await setInputText(view, name, "IT组");
+    modelGroupsApi.update = async (_id, payload) => { view.calls.push({ kind: "update", body: payload }); return { ...summary, name: payload.name || summary.name, revision: 5 }; };
+    await clickText(view, "保存基本信息");
+    const payload = view.calls.find((call) => call.kind === "update")?.body as Record<string, unknown>;
+    assert.equal(payload.name, "IT组");
+    assert.equal("code" in payload, false);
+    assert.equal("sort_order" in payload, false);
+    assert.equal(drawer.querySelector('[data-slot="drawer-title"]')?.textContent ?? drawer.querySelector('h2')?.textContent, "IT组");
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
+});
 
 test("organization picker ignores late employee results and preserves selections on directory failure", async () => {
   const view = await mount();
