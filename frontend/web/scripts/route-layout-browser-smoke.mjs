@@ -78,7 +78,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
       provider: 'compatible', provider_id: 'supplier-b', provider_name: '供应商 B（合成）', enabled: true, available: true,
       order: index + 1, last_seen_revision: 8, last_seen_at: '2026-01-01T00:00:00Z'
     }));
-    const providers = [
+    let providers = [
       { id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 },
       { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 2, configured: true, enabled_model_count: 2, missing_model_count: 0 }
     ];
@@ -223,6 +223,8 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
         contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b/impact') return json({ ...providers.find(p => p.id === 'supplier-b'), group_count: 0, default_group_count: 0, active_run_count: 0, cleanable_count: 2, blocked_models: [] });
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b/retire') { providers = providers.filter(p => p.id !== 'supplier-b'); return json({ id: 'supplier-b', deleted: true }); }
       if (url.pathname === '/api/ai/admin/model-providers/supplier-b') return json({
         providers,
         connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: providerBModels
@@ -590,6 +592,9 @@ async function runCase(viewport, scenario) {
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').click()`);
       await browser.client.waitFor(`Boolean(document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]') && document.querySelectorAll('[data-model-admin-model]').length === 29)`, "models:provider-a-expanded");
       await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').scrollIntoView({block:'start'})`);
+      const cleanupLayout = await browser.client.evaluate(`(() => { const row = document.querySelector('[data-model-provider-row="legacy"]'); const header = row.querySelector('[data-provider-header]'); const button = [...header.querySelectorAll('button')].find(b => b.textContent.trim() === '清理上游已移除模型'); const box = button?.getBoundingClientRect(); const frame = header.getBoundingClientRect(); return { inHeader: Boolean(button), contained: Boolean(box && box.top >= frame.top && box.bottom <= frame.bottom && box.right <= frame.right), singleLine: frame.height < 64, editorHasCleanup: [...row.querySelector('[data-provider-expanded]').querySelectorAll('button')].some(b => b.textContent.trim() === '清理上游已移除模型') }; })()`);
+      assert.ok(cleanupLayout.inHeader && cleanupLayout.contained && !cleanupLayout.editorHasCleanup, 'cleanup belongs to its provider header');
+      if (viewport.width >= 1024) assert.ok(cleanupLayout.singleLine, 'desktop header stays one line');
       await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-rows`);
       await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商')).click()`);
       await browser.client.waitFor("Boolean(document.querySelector('input[aria-label=供应商名称]'))", "models:provider-create-form");
@@ -1161,6 +1166,18 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
+    if (scenario.name === 'models' && groupCase !== 'default') {
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-cancel]').click()`);
+      await browser.client.waitFor(`!document.querySelector('[data-model-admin-action-bar]')`, 'models:cancel-before-delete');
+      await browser.client.evaluate(`document.querySelector('[aria-label="删除供应商 供应商 B（合成）"]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[role=dialog]'))`, 'models:delete-provider-confirm');
+      await browser.client.evaluate(`document.querySelector('[role=dialog] button:last-child').click()`);
+      await browser.client.waitFor(`!document.querySelector('[data-model-provider-row="supplier-b"]') && ![...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商').disabled`, 'models:deleted-and-enabled');
+      assert.ok(await browser.client.evaluate(`Boolean(document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]'))`), 'deleting another supplier keeps the editor open');
+      assert.ok(await browser.client.evaluate(`document.body.textContent.includes('已删除供应商 供应商 B（合成）。')`), 'success toast appears');
+      assert.equal(await browser.client.evaluate(`document.querySelector('[data-model-provider-management]').textContent.includes('已删除供应商')`), false, 'no inline success row');
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-provider-deleted`);
+    }
     return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, modelGroupDrawer, providerScreenshot, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
