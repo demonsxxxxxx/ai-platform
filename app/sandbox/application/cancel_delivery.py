@@ -8,8 +8,10 @@ from typing import Any, Protocol
 
 _MAX_DELIVERY_LIMIT = 20
 _SCAN_BUDGET = 100
-_SEND_DEADLINE_SECONDS = 10.0
-_CLAIM_STALE_AFTER_SECONDS = 30
+# Endpoint recovery performs fresh provider identity/network inspections before
+# the five-second HTTP request. Keep room for that work within one batch budget.
+_SEND_DEADLINE_SECONDS = 25.0
+_CLAIM_STALE_AFTER_SECONDS = 60
 
 
 class SandboxCancelDeliveryRepository(Protocol):
@@ -124,7 +126,7 @@ class SandboxCancelDeliveryService:
             return 0
 
         # Calls share a single deadline, so a full batch cannot hold an HTTP
-        # worker for ten seconds per lease. Claims survive process death and
+        # worker for the entire budget per lease. Claims survive process death and
         # are recovered by the repository's stale-claim fence.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _SEND_DEADLINE_SECONDS

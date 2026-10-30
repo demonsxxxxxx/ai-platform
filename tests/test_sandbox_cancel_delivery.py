@@ -128,3 +128,63 @@ async def _return(value):
 
 async def _exact_response(run_id, attempt_id):
     return {"status": "cancel_requested", "run_id": run_id, "attempt_id": attempt_id}
+
+
+@pytest.mark.asyncio
+async def test_cancel_batch_deadline_cancels_all_provider_work_and_persists_retry(monkeypatch):
+    import asyncio
+    from app.sandbox.application import cancel_delivery
+
+    monkeypatch.setattr(cancel_delivery, "_SEND_DEADLINE_SECONDS", 0.05)
+    rows = [
+        {"run_id": f"run-{index}", "attempt_id": f"attempt-{index}",
+         "cancel_delivery_claim_token": f"claim-{index}"}
+        for index in range(3)
+    ]
+    repository = FakeRepository(rows)
+    entered = set()
+    exited = set()
+    all_started = asyncio.Event()
+
+    async def unavailable_provider(row):
+        entered.add(row["run_id"])
+        if len(entered) == len(rows):
+            all_started.set()
+        try:
+            await all_started.wait()
+            await asyncio.Event().wait()
+        finally:
+            exited.add(row["run_id"])
+
+    service = _service(repository, unavailable_provider)
+    assert await asyncio.wait_for(service.deliver_once(), timeout=1) == len(rows)
+    assert entered == exited == {row["run_id"] for row in rows}
+    assert len(repository.results) == len(rows)
+    assert all(not result["accepted"] and result["error_code"] == "timeout"
+               for _conn, result in repository.results)
+
+
+@pytest.mark.asyncio
+async def test_process_cancellation_leaves_claims_for_durable_recovery():
+    import asyncio
+    repository = FakeRepository([{
+        "run_id": "run-a", "attempt_id": "attempt-a",
+        "cancel_delivery_claim_token": "claim-a",
+    }])
+    entered = asyncio.Event()
+    exited = asyncio.Event()
+
+    async def unavailable_provider(_row):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            exited.set()
+
+    task = asyncio.create_task(_service(repository, unavailable_provider).deliver_once())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert exited.is_set()
+    assert repository.results == []

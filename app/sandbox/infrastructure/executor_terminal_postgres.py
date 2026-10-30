@@ -10,7 +10,7 @@ from app.sandbox.domain.lease_errors import (
     SandboxExecutorTerminalConflictError,
     SandboxLeaseReleaseScopeMismatchError,
 )
-from app.sandbox.api import ExecutorTerminalReceiptIdentity
+from app.sandbox.application.callback_authority import ExecutorTerminalReceiptIdentity
 
 def _validate_terminal_observation(
     *, run_id: str, executor_status: str, terminal_result: dict[str, Any]

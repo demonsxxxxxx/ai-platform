@@ -338,9 +338,11 @@ resource release. The original queue-worker generation may advance exactly once
 for cancellation while the lease retains its original generation.
 
 Claim and writeback use short Run → lease → Attempt transactions. Provider I/O
-runs outside these locks, with a ten-second cooperative batch budget and a
-five-second HTTP timeout. A new transaction rechecks current scope, Attempt,
-lease validity and claim before recording ACK or retry. Claims stale for thirty
+runs outside these locks, with a 25-second cooperative batch budget and a
+five-second HTTP timeout. The batch includes fresh provider endpoint identity
+and network inspections; those can exceed ten seconds on Docker Desktop before
+HTTP begins. A new transaction rechecks current scope, Attempt,
+lease validity and claim before recording ACK or retry. Claims stale for sixty
 seconds can be reclaimed. Retry backs off to at most 300 seconds; terminal
 receipts and invalid authority clear unfinished claims. Bounded keyset scans
 skip occupied rows and continue across rounds; their process-local position is

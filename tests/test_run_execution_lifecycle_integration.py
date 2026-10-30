@@ -602,7 +602,11 @@ def test_admission_worker_settlement_delivery_reclamation(
                     if result:
                         return result
                     await asyncio.sleep(0.5)
-                raise AssertionError(f"Lifecycle barrier timed out: {await state()}")
+                snapshot = await state()
+                (tmp_path / "timeout-state.json").write_text(
+                    stack._redact(json.dumps(snapshot, default=str, indent=2)), encoding="utf-8",
+                )
+                raise AssertionError(f"Lifecycle barrier timed out: {snapshot}")
 
             async def read_terminal_ack_marker():
                 api = stack._containers["api"]

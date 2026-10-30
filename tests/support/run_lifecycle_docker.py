@@ -470,7 +470,7 @@ class LifecycleDockerStack:
                     # sandbox provider. Give this trusted test API the same
                     # private, test-owned Docker proxy as the Worker.
                     "DOCKER_HOST": "unix:///socket/docker.sock",
-                    "SANDBOX_EXECUTOR_PUBLISHED_HOST": self.network_gateway,
+                    "SANDBOX_EXECUTOR_PUBLISHED_HOST": "127.0.0.1",
                 }
             )
             volumes = {
