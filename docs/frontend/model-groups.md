@@ -14,9 +14,11 @@
 
 管理员的“模型组分配”标签直接展示一张细边框、12px 圆角的列表 Card，不再重复“分组管理”标题或授权说明。搜索、状态筛选、数量及“新建业务组”位于 Card 顶部工具栏；窄屏保持搜索与新建同行，筛选和数量换到下一行。表头浅底及行分隔线贯通 Card 左右边缘，留白放在单元格内，不在表格外层保留白边。桌面内容最大宽度 1200px；列表按可用高度滚动，窄屏通过横向滚动访问完整列及编辑操作，不隐藏列。
 
-新建表单在同一 Card 的工具栏下方展开，避免多行列表把表单推到屏幕外；错误和加载状态保持可见；搜索、筛选、创建与抽屉保存继续由既有状态和原子接口拥有。旧列表标题、说明、独立新建行和仅上下边框的表格外壳已移除，不留兼容布局。mounted 回归覆盖新工具栏内的创建入口和原交互，route-layout smoke 在实际管理页覆盖多行、空搜索、单条搜索、新建表单可达性及 Card 边缘几何。
+“新建业务组”复用编辑右侧抽屉，仅要求名称，备注选填。服务端生成稳定编码，并将新业务组追加到当前租户有效业务组末尾；普通默认组固定在前。不再显示 Code、组编码、展示排序输入或排序列；列表只按名称搜索，分组选择处继续使用名称。已有编码及排序保留在后台，改名不改变模型、成员或历史任务。
 
-实际构建路由的合成 API 截图：[1440px 浅色](images/model-group-list-card/1440-light.png)、[1440px 深色](images/model-group-list-card/1440-dark.png)、[390px 浅色](images/model-group-list-card/390-light.png)、[390px 深色低高度](images/model-group-list-card/390-dark.png)。截图使用合成分组和账号，不代表真实服务或部署验收。
+创建成功后同一个抽屉直接进入“模型”，添加模型并指定默认模型后，可切换“成员”继续分配；不另设向导或再次打开抽屉。创建失败保留名称和备注，提交中禁止重复创建和关闭，关闭或卸载隔离迟到响应。重命名成功后标题使用新名称，保存不携带隐藏编码或排序字段。旧内联创建表单及手填编码流程已退役；旧标题、说明、独立新建行和仅上下边框的外壳仍保持缺席。mounted 回归覆盖创建后原地配置、失败草稿、重复提交、改名与原交互；route-layout smoke 在实际管理页覆盖多行、空/单条搜索、新建抽屉到模型/成员、Card 边缘及低高度可达性。
+
+实际构建路由的合成 API 截图：[1440px 浅色](images/model-group-list-card/1440-light.png)、[1440px 深色](images/model-group-list-card/1440-dark.png)、[390px 浅色](images/model-group-list-card/390-light.png)、[390px 深色低高度](images/model-group-list-card/390-dark.png)。新建抽屉：[1440px 浅色](images/model-group-list-card/create-1440-light.png)、[1440px 深色](images/model-group-list-card/create-1440-dark.png)、[390px 浅色](images/model-group-list-card/create-390-light.png)、[390px 深色低高度](images/model-group-list-card/create-390-dark.png)。截图使用合成分组和账号，不代表真实服务或部署验收。
 
 ## 多供应商配置与删除
 

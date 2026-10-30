@@ -133,7 +133,7 @@ export const modelGroupsApi = {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups/${encodeURIComponent(groupId)}`, requestOptions(options, "GET"));
   },
 
-  async create(payload: { code: string; name: string; remark?: string; sort_order?: number }, options: RequestOptions = {}): Promise<AdminModelGroupSummary> {
+  async create(payload: { code?: string; name: string; remark?: string; sort_order?: number }, options: RequestOptions = {}): Promise<AdminModelGroupSummary> {
     return authFetch(`${API_BASE}/api/ai/admin/model-groups`, requestOptions(options, "POST", payload));
   },
 

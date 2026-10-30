@@ -42,6 +42,10 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.ok(source.includes('models:group-empty-search'));
   assert.ok(source.includes('models:group-single-search'));
   assert.ok(source.includes('group create form stays reachable'));
+  assert.ok(source.includes('new group asks for a name only'));
+  assert.ok(source.includes('created group remains in the same drawer'));
+  assert.ok(source.includes('models:created-group-model-saved'));
+  assert.ok(source.includes('models:created-group-members'));
   assert.match(source, /skill-distribution-receipt/);
   assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);
