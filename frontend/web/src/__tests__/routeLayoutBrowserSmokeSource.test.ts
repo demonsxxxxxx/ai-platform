@@ -35,6 +35,13 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /geometry\.leftGap - geometry\.rightGap/);
   assert.match(source, /geometry\.scrollWidth > geometry\.clientWidth/);
   assert.match(source, /models:group-focus-restored/);
+  assert.ok(source.includes('group header meets left card edge'));
+  assert.ok(source.includes('group header meets right card edge'));
+  assert.ok(source.includes('new group shares the search row'));
+  assert.ok(source.includes('groupListGeometry.actionsReachable && groupListGeometry.lastRowReachable'));
+  assert.ok(source.includes('models:group-empty-search'));
+  assert.ok(source.includes('models:group-single-search'));
+  assert.ok(source.includes('group create form stays reachable'));
   assert.match(source, /skill-distribution-receipt/);
   assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);
