@@ -64,8 +64,7 @@ from app.execution.api import (
     parse_requested_model_selection,
     resolve_chat_model_selection,
 )
-from app.execution.api import model_selection_error_status, select_chat_route_model
-from app.execution.api import group_snapshot_fields, admit_document_plugin
+from app.execution.api import model_selection_error_status, select_chat_route_model, group_snapshot_fields, admit_document_plugin
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres

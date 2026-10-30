@@ -30,8 +30,7 @@ from app.control_plane_contracts import (
 )
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import resolve_chat_model_selection
-from app.execution.api import group_snapshot_fields, admit_document_plugin
+from app.execution.api import resolve_chat_model_selection, group_snapshot_fields, admit_document_plugin
 from app.execution.api import model_selection_error_status
 from app.runs.api import (
     reauthorize_model, requested_run_model_selection, selected_model_binding_fields,

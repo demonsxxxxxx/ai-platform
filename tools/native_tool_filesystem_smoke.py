@@ -259,8 +259,22 @@ for name in ('docx','xlsx','pdf','pptx'):
         pass
     else:
         raise AssertionError('image plugin is writable')
-script = "const fs=require('fs'); const {Document,Packer,Paragraph}=require('docx'); const PptxGenJS=require('pptxgenjs'); const {PDFDocument}=require('pdf-lib'); const React=require('react'); const {renderToStaticMarkup}=require('react-dom/server'); const {FaFile}=require('react-icons/fa'); const sharp=require('sharp'); (async()=>{await sharp(Buffer.from(renderToStaticMarkup(React.createElement(FaFile,{size:256})))).png().toFile('outputs/icon.png'); await fs.promises.writeFile('outputs/check.docx',await Packer.toBuffer(new Document({sections:[{children:[new Paragraph('Document skill check')]}]}))); const p=new PptxGenJS(); p.addSlide().addText('Document skill check',{x:1,y:1,w:6,h:1}); await p.writeFile({fileName:'outputs/check.pptx'}); const pdf=await PDFDocument.create(); pdf.addPage(); await fs.promises.writeFile('outputs/check.pdf',await pdf.save());})().catch(e=>{console.error(e);process.exit(1)});"
-subprocess.run(['node','-e',script],check=True,capture_output=True)
+script = """const fs=require('fs'); const assert=require('node:assert/strict');
+const {Document,Packer,Paragraph}=require('docx'); const PptxGenJS=require('pptxgenjs'); const {PDFDocument}=require('pdf-lib');
+const React=require('react'); const {renderToStaticMarkup}=require('react-dom/server'); const {FaFile}=require('react-icons/fa'); const sharp=require('sharp');
+const {imageSize}=require('image-size'); const {imageSizeFromFile}=require('image-size/fromFile');
+(async()=>{
+await sharp(Buffer.from(renderToStaticMarkup(React.createElement(FaFile,{size:256})))).png().toFile('outputs/icon.png');
+const icon=fs.readFileSync('outputs/icon.png');
+for (const size of [imageSize(icon),await imageSizeFromFile('outputs/icon.png')]) { assert.equal(size.width,256); assert.equal(size.height,256); }
+const malformed=Buffer.alloc(16); malformed.write('icns'); malformed.writeUInt32BE(16,4); malformed.write('ic07',8);
+assert.throws(()=>imageSize(malformed),/Invalid ICNS/);
+await fs.promises.writeFile('outputs/check.docx',await Packer.toBuffer(new Document({sections:[{children:[new Paragraph('Document skill check')]}]})));
+const p=new PptxGenJS(); const slide=p.addSlide(); slide.addText('Document skill check',{x:1,y:1,w:6,h:1});
+slide.addImage({path:'outputs/icon.png',x:1,y:2,w:1,h:1}); slide.addImage({data:'image/png;base64,'+icon.toString('base64'),x:3,y:2,w:1,h:1});
+await p.writeFile({fileName:'outputs/check.pptx'}); const pdf=await PDFDocument.create(); pdf.addPage(); await fs.promises.writeFile('outputs/check.pdf',await pdf.save());
+})().catch(e=>{console.error(e);process.exit(1)});"""
+subprocess.run(['node','-e',script],check=True,capture_output=True,timeout=30)
 for name in ('docx','pptx'):
     target=Path('outputs/rendered')/name
     target.mkdir(parents=True)

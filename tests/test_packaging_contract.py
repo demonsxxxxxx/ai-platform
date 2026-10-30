@@ -67,6 +67,12 @@ def test_document_plugin_and_dependencies_are_preinstalled_in_executor_image():
     lock = json.loads((package_root / "package-lock.json").read_text())
     assert set(package["dependencies"]) == {"docx", "pptxgenjs", "pdf-lib", "react", "react-dom", "react-icons", "sharp"}
     assert package["dependencies"] == lock["packages"][""]["dependencies"]
+    assert package["overrides"] == {"pptxgenjs": {"image-size": "2.0.3"}}
+    image_size_versions = {
+        metadata["version"] for path, metadata in lock["packages"].items()
+        if path.endswith("node_modules/image-size")
+    }
+    assert image_size_versions == {"2.0.3"}
     assert re.fullmatch(r"[a-f0-9]{40}", DOCUMENT_PLUGIN_REVISION)
 
 

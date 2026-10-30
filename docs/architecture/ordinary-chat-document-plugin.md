@@ -28,8 +28,12 @@ React DOM, `react-icons` and `sharp` packages; the
 Python lock supplies `openpyxl`, `pandas`, `markitdown`, Office/XML libraries,
 PDF creation/rendering and OCR bindings. LibreOffice Writer/Calc/Impress, Pandoc,
 Poppler, qpdf, zip/unzip, Tesseract with Chinese language data, and CJK fonts are
-installed in the same image used by native commands. Native commands keep a
-fixed credential-free PATH and NODE_PATH; they do not inherit executor secrets.
+installed in the same image used by native commands. The Node lock narrowly
+overrides `pptxgenjs`'s transitive `image-size` to `2.0.3`, fixing
+CVE-2025-71329 and CVE-2025-71330; image qualification checks buffer/file dimension
+reads, malformed ICNS rejection and PPTX image insertion/rendering.
+Native commands keep a fixed credential-free PATH and NODE_PATH; they do not
+inherit executor secrets.
 
 ## Admission, replay and SDK policy
 
