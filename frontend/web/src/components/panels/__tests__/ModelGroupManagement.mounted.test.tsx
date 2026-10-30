@@ -111,12 +111,22 @@ test("group management loads, creates, opens drawer and saves model/member lists
   const view = await mount();
   try {
     assert.match(view.container.textContent ?? "", /销售组/);
+    const card = view.container.querySelector('[aria-label="模型分组列表"]');
+    const toolbar = card?.querySelector('[role="group"][aria-label="模型分组操作"]');
+    assert.ok(card);
+    assert.ok(toolbar);
+    assert.equal(view.container.querySelector("h2"), null);
+    assert.doesNotMatch(view.container.textContent ?? "", /模型和用户成员通过分组统一授权/);
+    assert.ok(toolbar.querySelector('input[aria-label="搜索模型分组"]'));
+    assert.ok([...toolbar.querySelectorAll("button")].find((button) => button.textContent === "新建业务组"));
+    assert.ok(card.contains(view.container.querySelector("[data-model-group-table]")));
     await view.React.act(async () => {
       const createButton = [...view.container.querySelectorAll("button")].find((button) => button.textContent?.includes("新建业务组"));
       assert.ok(createButton); createButton.click();
     });
     const code = view.container.querySelector<HTMLInputElement>('input[aria-label="新分组 code"]');
     assert.ok(code);
+    assert.ok(card.contains(code));
     await view.React.act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(code, "support");
       code.dispatchEvent(new Event("input", { bubbles: true }));
