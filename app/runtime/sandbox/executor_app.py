@@ -81,7 +81,7 @@ from app.runtime.sandbox.contracts import (
     executor_callback_receipt_event_count,
 )
 from app.settings import get_settings
-from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, document_plugin_tool_subject
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
@@ -1242,11 +1242,8 @@ def _task_skill_ids(request: ExecutorTaskRequest) -> list[str]:
 
 def _task_tool_policy_subjects(request: ExecutorTaskRequest) -> list[dict[str, Any]]:
     value = request.config.get("tool_policy_subjects")
-    if not isinstance(value, list):
-        return []
-    return [dict(item) for item in value if isinstance(item, dict)]
-
-
+    subjects = [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    return subjects + document_plugin_tool_subject(request.config.get("document_plugin_revision"))
 
 
 
@@ -1858,6 +1855,7 @@ async def _default_executor_runner(
             "model_auto_compact_window": model_limits.auto_compact_window,
             "model_max_output_tokens": model_limits.max_output_tokens,
             "skills": skill_ids,
+            "document_plugin_revision": request.config.get("document_plugin_revision"),
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
             "on_text": on_text,

@@ -87,6 +87,7 @@ def test_installed_claude_agent_sdk_02174_contract(tmp_path):
         cli_path=str(cli_path),
         extra_args={"autocompact": "100000"},
         skills=["qa-review"],
+        plugins=[{"type": "local", "path": str(tmp_path / "document-skills")}],
         session_id="session-a",
         session_store=session_store,
         session_store_flush="eager",

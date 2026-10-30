@@ -160,6 +160,25 @@ def test_catalog_capacity_pair_and_anthropic_proxy_contract():
             _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", invalid)
 
 
+def test_installed_cli_structured_subtask_beta_is_messages_only():
+    headers = {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": (
+            "claude-code-20250219,interleaved-thinking-2025-05-14,"
+            "thinking-token-count-2026-05-13,context-management-2025-06-27,"
+            "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,"
+            "structured-outputs-2025-12-15"
+        ),
+    }
+    normalized = _runtime_proxy_headers("anthropic", "v1/messages", headers)
+    assert set(normalized["anthropic-beta"].split(",")) == set(headers["anthropic-beta"].split(","))
+    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
+        _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", headers)
+    for value in ("unknown-beta", "structured-outputs-2025-12-15,unknown-beta", "structured-outputs-2025-12-15,"):
+        with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
+            _runtime_proxy_headers("anthropic", "v1/messages", {**headers, "anthropic-beta": value})
+
+
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
     error = model_routes._translate_control_plane_error(
         ValueError("model_connection_api_key_required")

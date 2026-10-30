@@ -10,7 +10,7 @@ from app.control_plane_contracts import (
     RUN_PAYLOAD_SCHEMA_VERSION_V2,
     SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS,
 )
-from app.execution.api import legacy_input_capacity_to_auto_compact_window
+from app.execution.api import legacy_input_capacity_to_auto_compact_window, DOCUMENT_PLUGIN_INPUT_KEY, document_plugin_skill_names
 from app.agent_profile_execution_validation import validate_agent_profile_execution_input
 from app.skills.release_policy import validate_release_decision_lock
 from app.kernel.identifiers import assert_safe_id
@@ -245,6 +245,10 @@ class RunPayload:
             raise ValueError("run_payload_owner_generation_invalid")
         if self.schema_version not in SUPPORTED_RUN_PAYLOAD_SCHEMA_VERSIONS:
             raise ValueError("run_payload_schema_version_invalid")
+        document_revision = self.input.get(DOCUMENT_PLUGIN_INPUT_KEY)
+        document_plugin_skill_names(document_revision)
+        if document_revision is not None and (self.execution_kind != RUN_EXECUTION_KIND_HARNESS_CHAT or self.agent_profile):
+            raise ValueError("document_plugin_scope_invalid")
         if self.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
             if self.schema_version != RUN_PAYLOAD_SCHEMA_VERSION_V2:
                 raise ValueError("harness_chat_payload_schema_version_invalid")

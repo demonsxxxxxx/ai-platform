@@ -2493,6 +2493,31 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     ) == expected_error
 
 
+@pytest.mark.parametrize("granted", [False, True])
+def test_document_plugin_worker_evidence_requires_frozen_grant(granted):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    current_payload = payload(
+        execution_kind="harness_chat", skill_id=None, skill_manifests=[],
+        input={DOCUMENT_PLUGIN_INPUT_KEY: DOCUMENT_PLUGIN_REVISION} if granted else {},
+    )
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill", canonical_identity="document-skills:docx",
+    )
+    binding = {key: getattr(current_payload, key) for key in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+    )}
+    evidence = [RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration, binding=binding, tool_call_id="document-call",
+        lifecycle_phase=phase,
+    ).__dict__ for phase in ("invocation_requested", "completed")]
+    from app.execution.api import sandbox_reconciliation_payload, restored_sandbox_run_payload
+    restored = restored_sandbox_run_payload(sandbox_reconciliation_payload(current_payload), RunPayload, {})
+    assert restored.input.get(DOCUMENT_PLUGIN_INPUT_KEY) == (DOCUMENT_PLUGIN_REVISION if granted else None)
+    assert claude_agent_worker._capability_execution_error(restored, evidence) == (
+        None if granted else "required_tool_completion_evidence_mismatch"
+    )
+
+
 def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
     manifest = _test_skill_manifest("qa-review")
     current_payload = payload(

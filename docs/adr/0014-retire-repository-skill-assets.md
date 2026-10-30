@@ -2,6 +2,10 @@
 
 - Status: Accepted
 
+The [ordinary-chat document plugin](../architecture/ordinary-chat-document-plugin.md)
+is a separate image-provided Anthropic SDK plugin. It does not restore any of the
+six retired packages, repository-backed catalog sources, seeding, or admin sync.
+
 ## Decision
 
 Retire the six repository-provided Skill asset packages under `skills/`:

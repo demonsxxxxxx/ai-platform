@@ -1,3 +1,9 @@
+from app.execution.domain.document_plugin import (
+    DOCUMENT_PLUGIN_INPUT_KEY as DOCUMENT_PLUGIN_INPUT_KEY,
+    admit_document_plugin as admit_document_plugin,
+    document_plugin_skill_names as document_plugin_skill_names,
+    document_plugin_tool_subject as document_plugin_tool_subject,
+)
 from app.artifacts.api import (
     build_artifact_records as build_artifact_records,
     promote_artifact_reservations as promote_artifact_reservations,

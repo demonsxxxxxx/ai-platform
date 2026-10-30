@@ -5020,6 +5020,9 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
     assert calls["queue"]["execution_kind"] == "harness_chat"
     assert calls["queue"]["skill_id"] is None
     assert calls["queue"]["skill_manifests"] == []
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    assert calls["queue"]["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
+    assert calls["create_run"]["input_json"]["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
     assert calls["events"] == ["queued"]
 
 

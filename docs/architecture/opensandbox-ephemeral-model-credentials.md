@@ -64,8 +64,11 @@ authorization and API-key headers, injects `MODEL_PROXY_INTERNAL_TOKEN`, and
 adds the Run and Attempt headers. The existing `model_control_plane.py` then
 validates the binding, decrypts the pinned model connection, and forwards the
 request. Anthropic version and beta headers are restricted to the installed
-CLI's fixed per-path allowlist; other upstream headers remain filtered. The
-proxy does not implement OpenSandbox lifecycle or capability admission.
+CLI's fixed per-path allowlist; `structured-outputs-2025-12-15` is accepted only
+on `messages` for the installed CLI's structured subtask requests. It is not
+accepted on `count_tokens`; unknown/empty beta values and duplicate protocol
+headers remain rejected. Other upstream headers remain filtered. The proxy
+does not implement OpenSandbox lifecycle or capability admission.
 
 The pinned HTTP model transport uses the locked HTTPX/HTTPCore implementation
 for HTTP framing, socket operations and TLS. The platform validates every DNS
