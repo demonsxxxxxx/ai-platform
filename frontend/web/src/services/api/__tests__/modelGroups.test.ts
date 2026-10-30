@@ -50,6 +50,20 @@ test("model group mutations use dedicated atomic endpoints and preserve abort ow
   }
 });
 
+test("group creation omits server-owned fields while retaining explicit legacy callers", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ id: "group-a", code: "group_generated", name: "IT组" }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    await modelGroupsApi.create({ name: "IT组", remark: "备注" });
+    await modelGroupsApi.create({ name: "Legacy", code: "legacy", sort_order: 0 });
+    assert.deepEqual(bodies, [{ name: "IT组", remark: "备注" }, { name: "Legacy", code: "legacy", sort_order: 0 }]);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("employee picker scopes search and pagination to an exact department and forwards cancellation", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; signal?: AbortSignal | null }> = [];

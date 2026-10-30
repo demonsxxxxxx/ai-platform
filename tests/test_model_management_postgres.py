@@ -35,6 +35,77 @@ async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> N
 
 
 @pytest.mark.asyncio
+async def test_model_group_create_generates_stable_codes_and_serializes_append_order() -> None:
+    from app.execution.domain.model_groups import ModelGroupPolicyError, normalize_group_code
+    from app.execution.infrastructure.model_groups import create_group, list_admin_groups, update_group
+
+    dsn = _postgres_dsn()
+    schema_name = f"group_create_{uuid.uuid4().hex}"
+    connections = [await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row) for _ in range(2)]
+    first, second = connections
+    pending = None
+    try:
+        await first.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        for conn in connections:
+            await _set_search_path(conn, schema_name)
+        await first.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await first.execute("insert into tenants(id, name) values ('tenant-a', 'A'), ('tenant-b', 'B')")
+        async with first.transaction():
+            legacy = await create_group(first, tenant_id="tenant-a", name="Existing", code="legacy-code", sort_order=900)
+            generated = await create_group(first, tenant_id="tenant-a", name="IT组")
+        assert generated["sort_order"] == 901
+        assert normalize_group_code(generated["code"]) == generated["code"]
+        assert generated["code"] not in {"default", legacy["code"]}
+        async with first.transaction():
+            renamed = await update_group(first, tenant_id="tenant-a", group_id=generated["id"], name="IT新名称", enabled=None, remark=None, sort_order=None, revision=generated["revision"])
+        assert (renamed["id"], renamed["code"], renamed["sort_order"]) == (generated["id"], generated["code"], 901)
+        for code in ("default", "invalid/code"):
+            with pytest.raises(ModelGroupPolicyError):
+                async with first.transaction():
+                    await create_group(first, tenant_id="tenant-a", name="Rejected", code=code)
+        with pytest.raises(ModelGroupPolicyError, match="model_group_name_duplicate"):
+            async with first.transaction():
+                await create_group(first, tenant_id="tenant-a", name=" existing ")
+        async with first.transaction():
+            other = await create_group(first, tenant_id="tenant-b", name="Existing", sort_order=5000)
+            archived = await create_group(first, tenant_id="tenant-a", name="Archived", sort_order=4000)
+            await first.execute("update model_groups set archived_at = now() where id = %s", (archived["id"],))
+
+        started = asyncio.Event()
+        async def create_second():
+            async with second.transaction():
+                started.set()
+                return await create_group(second, tenant_id="tenant-a", name="Concurrent B")
+
+        async with first.transaction():
+            concurrent_a = await create_group(first, tenant_id="tenant-a", name="Concurrent A")
+            pending = asyncio.create_task(create_second())
+            await started.wait()
+            await asyncio.sleep(0.1)
+            assert not pending.done(), "append order is allocated under the existing group-policy lock"
+        concurrent_b = await asyncio.wait_for(pending, timeout=5)
+        assert (concurrent_a["sort_order"], concurrent_b["sort_order"]) == (902, 903)
+        assert concurrent_a["code"] != concurrent_b["code"]
+        rows = await list_admin_groups(first, tenant_id="tenant-a")
+        assert rows[0]["type"] == "ordinary_default"
+        assert rows[-1]["id"] == concurrent_b["id"]
+        assert other["id"] not in {row["id"] for row in rows}
+        assert next(row for row in rows if row["id"] == legacy["id"])["code"] == "legacy-code"
+        async with first.transaction():
+            await create_group(first, tenant_id="tenant-a", name="Max order", sort_order=2147483647)
+        with pytest.raises(ModelGroupPolicyError, match="model_group_sort_order_invalid"):
+            async with first.transaction():
+                await create_group(first, tenant_id="tenant-a", name="No integer overflow")
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await first.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        for conn in connections:
+            await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_model_resolution_shared_lock_allows_readers_and_blocks_activation() -> None:
     dsn = _postgres_dsn()
     schema_name = f"model_lock_{uuid.uuid4().hex}"

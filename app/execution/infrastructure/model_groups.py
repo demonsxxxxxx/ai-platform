@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from app.execution.domain.model_groups import (
     BUSINESS_GROUP_TYPE,
@@ -266,11 +267,20 @@ async def list_admin_groups(conn: Any, *, tenant_id: str) -> list[dict[str, Any]
     return [dict(row) for row in await cursor.fetchall()]
 
 
-async def create_group(conn: Any, *, tenant_id: str, code: str, name: str, remark: str = "", sort_order: int = 0) -> dict[str, Any]:
-    code = normalize_group_code(code)
+async def create_group(conn: Any, *, tenant_id: str, name: str, code: str | None = None, remark: str = "", sort_order: int | None = None) -> dict[str, Any]:
+    code = normalize_group_code(code if code is not None else f"group_{uuid4().hex}")
     name = normalize_group_name(name)
     if code == DEFAULT_GROUP_CODE:
         raise ModelGroupPolicyError("model_group_code_reserved")
+    await conn.execute("select pg_advisory_xact_lock(%s)", (_GROUP_LOCK_KEY,))
+    if sort_order is None:
+        position = await (await conn.execute(
+            "select coalesce(max(sort_order)::bigint, -1) + 1 as sort_order from model_groups where tenant_id = %s and type = 'business' and archived_at is null",
+            (tenant_id,),
+        )).fetchone()
+        sort_order = int(position["sort_order"])
+        if sort_order > 2147483647:
+            raise ModelGroupPolicyError("model_group_sort_order_invalid")
     duplicate = await conn.execute(
         "select 1 from model_groups where tenant_id = %s and lower(btrim(name)) = lower(btrim(%s)) and archived_at is null",
         (tenant_id, name),

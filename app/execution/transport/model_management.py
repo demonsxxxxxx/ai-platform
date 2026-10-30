@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from starlette.concurrency import iterate_in_threadpool
 from app.execution.domain.runtime_debug import normalize_execution_debug
@@ -106,10 +106,17 @@ class ModelProviderRetireRequest(BaseModel):
 
 class ModelGroupCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    code: str = Field(min_length=1, max_length=64)
+    code: str | None = Field(default=None, min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=160)
     remark: str = Field(default="", max_length=2000)
-    sort_order: StrictInt = Field(default=0, ge=0)
+    sort_order: StrictInt | None = Field(default=None, ge=0)
+
+    @field_validator("code", "sort_order")
+    @classmethod
+    def reject_explicit_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("omit the field to use a server-generated value")
+        return value
 
 
 class ModelGroupUpdateRequest(BaseModel):
@@ -206,6 +213,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_group_name_invalid",
         "model_group_name_duplicate",
         "model_group_code_invalid",
+        "model_group_sort_order_invalid",
         "model_group_type_invalid",
         "model_group_create_failed",
         "model_group_update_empty",
@@ -479,7 +487,7 @@ def build_model_management_router(
         _require_admin(principal, is_admin=is_admin)
         try:
             return await configured_model_control_plane().create_model_group(
-                tenant_id=principal.tenant_id, **payload.model_dump(),
+                tenant_id=principal.tenant_id, **payload.model_dump(exclude_unset=True),
             )
         except (ValueError, RuntimeError) as exc:
             raise _translate_control_plane_error(exc) from exc
