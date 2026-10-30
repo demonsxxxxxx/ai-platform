@@ -51,6 +51,19 @@ from app.required_tool_contract import builtin_capability_subjects
 from app.skills.execution_profiles import effective_skill_execution_profile
 
 
+_EMPTY_PROVIDER_CONTEXT_PACK = {
+    "schema_version": "ai-platform.executor-context-pack.v1",
+    "conversation_context": {
+        "schema_version": "ai-platform.executor-conversation-context.v2",
+        "execution_mode": "empty_start",
+        "provider_epoch_id": "pe_synthetic",
+        "provider_session_id": "00000000-0000-4000-8000-000000000002",
+        "source_sha256": "a" * 64,
+        "messages": [],
+    },
+}
+
+
 def test_catalog_parser_uses_shared_run_manifest_closure_limit(monkeypatch):
     binding = AuthorizedSkillCatalogBinding(
         tenant_id="tenant-a",
@@ -1157,7 +1170,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         materialize_run_skill_manifests,
     )
     monkeypatch.setattr(
-        "app.runs.application.terminalization_v4.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr("app.bootstrap.worker_run_preparation.admit_v4_stream", no_publication)
@@ -1327,6 +1340,7 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
@@ -1341,6 +1355,7 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "Choose the matching skill", **resolution.runtime_input_updates()},
         skill_version=primary_version,
         release_decision={
@@ -1421,6 +1436,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     selected_manifest = _manifest_from_row(rows[1])
@@ -1440,6 +1456,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         agent_id="general-agent",
         skill_id="ctd-32s73-stability-template-fill",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "Route this request", **compact_input},
         skill_version=str(selected_manifest["version"]),
         release_decision={
@@ -1512,6 +1529,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
@@ -1526,6 +1544,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "hello", **resolution.runtime_input_updates()},
         skill_version=primary_version,
         release_decision={

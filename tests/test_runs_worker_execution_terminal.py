@@ -62,3 +62,91 @@ async def test_worker_executor_failure_terminalizes_once_and_publishes_only_afte
         if cancel_requested else
         ["pending", "check_cancel", "fail", "error", "run_failed"]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", [None, "cas", "cancel_cas", "context", "release"])
+async def test_predispatch_context_and_terminal_share_transaction_and_rollback(fault):
+    writes = []
+    transactions = []
+    conn = object()
+
+    @asynccontextmanager
+    async def transaction():
+        try:
+            yield conn
+        except BaseException:
+            transactions.append("rollback")
+            raise
+        else:
+            transactions.append("commit")
+
+    async def pending(actual, **kwargs):
+        assert actual is conn
+        writes.append("pending")
+
+    class Attempt:
+        async def is_cancel_requested(self, actual):
+            return fault == "cancel_cas"
+
+        async def cancel(self, actual, **kwargs):
+            assert actual is conn
+            writes.append("terminal_cas")
+            return False
+
+    async def settle(actual, **kwargs):
+        assert actual is conn
+        writes.append("context")
+        if fault == "context":
+            raise ValueError("stale generation")
+
+    async def fail(actual, **kwargs):
+        assert actual is conn
+        writes.append("terminal_cas")
+        return fault != "cas"
+
+    async def event(actual, **kwargs):
+        assert actual is conn
+
+    async def release(actual, **kwargs):
+        assert actual is conn
+        writes.append("worker_lease")
+
+    async def release_continuation(actual, **kwargs):
+        assert actual is conn
+        writes.append("provider_lease_and_lineage")
+        if fault == "release":
+            raise ValueError("lease release failed")
+
+    service = WorkerExecutionTerminalService(
+        transaction_factory=transaction, prepare_pending_authority=pending,
+        append_event=event, fail_run=fail, settle_continuation=settle,
+        release_continuation_lease=release_continuation,
+    )
+    async def execute():
+        return await service.fail_or_cancel(
+            payload=SimpleNamespace(tenant_id="tenant", run_id="run", executor_type="fake"),
+            attempt_id="attempt", attempt=Attempt(), capabilities=object(),
+            failure_code="executor_failure", failure_message="safe", failure_result={},
+            release_runtime_lease=release, continuation_settlement={"synthetic": True},
+        )
+    if fault in {"context", "release"}:
+        with pytest.raises(ValueError):
+            await execute()
+    else:
+        outcome = await execute()
+        assert outcome.status == ("skipped" if fault in {"cas", "cancel_cas"} else "failed")
+    assert transactions == ["commit" if fault is None else "rollback"]
+    assert writes[:1] == ["context"]
+    if fault == "context":
+        assert writes == ["context"]
+    if fault in {"cas", "cancel_cas"}:
+        assert writes == ["context", "pending", "terminal_cas"]
+    if fault is None:
+        assert writes == [
+            "context", "pending", "terminal_cas", "worker_lease", "provider_lease_and_lineage",
+        ]
+    if fault == "release":
+        assert writes == [
+            "context", "pending", "terminal_cas", "worker_lease", "provider_lease_and_lineage",
+        ]

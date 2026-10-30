@@ -432,12 +432,32 @@ class FakeDockerContainers:
         self._client.containers_by_name[container.name] = container
         return container
 
-    def list(self, all: bool = False, filters: dict[str, Any] | None = None) -> list[FakeDockerContainer]:
+    def list(
+        self,
+        all: bool = False,
+        filters: dict[str, Any] | None = None,
+        sparse: bool = False,
+    ) -> list[FakeDockerContainer]:
         if self._client.list_error is not None:
             raise self._client.list_error
+        self._client.container_list_calls.append(
+            {"all": all, "filters": filters, "sparse": sparse}
+        )
         containers = list(self._client.containers_by_name.values())
         if not all:
             containers = [container for container in containers if container.status == "running"]
+        label_filters = (filters or {}).get("label", [])
+        if isinstance(label_filters, str):
+            label_filters = [label_filters]
+        for label_filter in label_filters:
+            key, separator, expected = str(label_filter).partition("=")
+            containers = [
+                container
+                for container in containers
+                if key in container.labels
+                and (not separator or container.labels[key] == expected)
+            ]
+        del sparse
         return containers
 
     def get(self, name: str) -> FakeDockerContainer:
@@ -449,6 +469,10 @@ class FakeDockerContainers:
         raise KeyError(name)
 
 
+class FakeDockerForbiddenError(RuntimeError):
+    status_code = 403
+
+
 class FakeDockerNetwork(dict):
     def __init__(self, client: "FakeDockerClient", attrs: dict[str, Any]) -> None:
         super().__init__(attrs=attrs)
@@ -458,7 +482,13 @@ class FakeDockerNetwork(dict):
         return None
 
     def connect(self, container: FakeDockerContainer, aliases: list[str] | None = None) -> None:
-        self._client.attach_to_network(container, self["attrs"]["Name"], aliases=aliases)
+        network_name = self["attrs"]["Name"]
+        self._client.network_connect_calls.append((network_name, container.id))
+        if container.id in self["attrs"]["Containers"]:
+            raise FakeDockerForbiddenError(
+                f"403 explanation='endpoint with name {container.name} already exists in network {network_name}'"
+            )
+        self._client.attach_to_network(container, network_name, aliases=aliases)
 
     def disconnect(self, container: FakeDockerContainer, force: bool = False) -> None:
         self._client.detach_from_network(container, self["attrs"]["Name"])
@@ -541,6 +571,8 @@ class FakeDockerClient:
             )
         }
         self.network_create_calls: list[tuple[str, dict[str, Any]]] = []
+        self.network_connect_calls: list[tuple[str, str]] = []
+        self.container_list_calls: list[dict[str, Any]] = []
         self.api = FakeDockerAPI(self)
         self.containers = FakeDockerContainers(self)
         self.networks = FakeDockerNetworks(self)
@@ -5370,6 +5402,92 @@ async def test_docker_cold_start_failures_stop_before_probes(monkeypatch, failur
         assert "ai-platform.governed_egress.proof" not in provider._leases[primary.id].labels
 
 
+def test_docker_callback_attachment_accepts_only_verified_duplicate_endpoint():
+    from app.platform.sandbox.docker_governed_network import attach_api_callback_witness
+    from app.platform.sandbox.errors import GovernedEgressAdmissionError
+
+    fake = FakeDockerClient()
+    network_name = "ai-platform-sandbox-egress-v2-test"
+    network = FakeDockerNetwork(
+        fake,
+        {
+            "Id": "network-test",
+            "Name": network_name,
+            "Driver": "bridge",
+            "Internal": True,
+            "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+            "Labels": {},
+            "Containers": {},
+        },
+    )
+    fake.networks_by_name[network_name] = network
+    api = fake.api_container
+    original_reload = api.reload
+
+    def reload_with_membership():
+        original_reload()
+        fake.attach_to_network(api, network_name, aliases=["api.sandbox.internal"])
+
+    def race_connect(_container, *_args, **_kwargs):
+        fake.network_connect_calls.append((network_name, api.id))
+        raise FakeDockerForbiddenError(
+            f"403 explanation='endpoint with name {api.name} already exists in network {network_name}'"
+        )
+
+    api.reload = reload_with_membership
+    network.connect = race_connect
+    attach_api_callback_witness(network, api)
+    assert fake.network_connect_calls == [(network_name, api.id)]
+
+    def reject_wrong_endpoint(_container, *_args, **_kwargs):
+        raise FakeDockerForbiddenError(
+            "403 explanation='endpoint with name another-api already exists in network "
+            + network_name
+            + "'"
+        )
+
+    api.attrs["NetworkSettings"]["Networks"].pop(network_name)
+    network.connect = reject_wrong_endpoint
+    with pytest.raises(GovernedEgressAdmissionError):
+        attach_api_callback_witness(network, api)
+
+
+def test_docker_callback_attachment_returns_before_connect_for_verified_membership():
+    from app.platform.sandbox.docker_governed_network import attach_api_callback_witness
+
+    fake = FakeDockerClient()
+    network_name = "ai-platform-sandbox-egress-v2-test"
+    network = FakeDockerNetwork(
+        fake,
+        {
+            "Id": "network-test",
+            "Name": network_name,
+            "Driver": "bridge",
+            "Internal": True,
+            "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+            "Labels": {},
+            "Containers": {},
+        },
+    )
+    fake.networks_by_name[network_name] = network
+    api = fake.api_container
+    fake.attach_to_network(api, network_name, aliases=["api.sandbox.internal"])
+    assert (
+        api.attrs["NetworkSettings"]["Networks"][network_name]["NetworkID"]
+        == network["attrs"]["Id"]
+    )
+    assert api.attrs["NetworkSettings"]["Networks"][network_name]["Aliases"] == [
+        "api.sandbox.internal"
+    ]
+
+    def unexpected_connect(*_args, **_kwargs):
+        raise AssertionError("verified API callback witness must not reconnect")
+
+    network.connect = unexpected_connect
+    attach_api_callback_witness(network, api)
+    assert fake.network_connect_calls == []
+
+
 @pytest.mark.asyncio
 async def test_docker_governed_network_is_per_sandbox_and_contains_only_api_and_lease(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
@@ -5704,6 +5822,21 @@ async def test_docker_reuses_fresh_post_create_proof_when_authoritative_state_is
     assert second.container_id == first.container_id
     assert len(fake.created) == 1
     assert fake.containers_by_name[first.container_name].removed is False
+    assert fake.network_connect_calls == [
+        (container_provider._governed_docker_network_name(first), fake.api_container.id)
+    ]
+    assert fake.container_list_calls
+    assert all(call["sparse"] is True for call in fake.container_list_calls)
+    assert all(
+        call["filters"] == {
+            "label": [
+                "ai-platform.release-role=api",
+                "ai-platform.release-owner=repo-local-compose",
+                "ai-platform.source-commit=" + "a" * 40,
+            ]
+        }
+        for call in fake.container_list_calls
+    )
 
 
 @pytest.mark.asyncio
@@ -6921,6 +7054,7 @@ async def test_docker_provider_recovers_unpublished_endpoint_and_refreshes_inspe
 @pytest.mark.asyncio
 async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(monkeypatch):
     import app.executor_reconciler as executor_reconciler
+    from app.sandbox.infrastructure import leases_postgres
     import app.runtime.sandbox.container_provider as container_provider
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -7020,7 +7154,7 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
 
     monkeypatch.setattr(executor_reconciler, "transaction", transaction)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        leases_postgres,
         "claim_sandbox_executor_suspects",
         claim,
     )
@@ -7032,12 +7166,14 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
     )
     monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", ExecutorClient)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        leases_postgres,
         "release_sandbox_executor_probe_claim",
         release,
     )
 
-    assert await executor_reconciler.probe_suspect_executor_tasks_once() == 0
+    assert await executor_reconciler.probe_suspect_executor_tasks_once(
+        lease_port=leases_postgres,
+    ) == 0
     assert len(recovered_requests) == 1
     assert recovered_requests[0].skill_ids == []
     assert recovered_requests[0].mcp_tool_ids == []

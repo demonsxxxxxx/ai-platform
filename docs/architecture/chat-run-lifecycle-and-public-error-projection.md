@@ -234,6 +234,16 @@ Chat and Copy have no
 client-supplied operation identity; a caller that loses the HTTP response must
 use session/Run history to locate the child before repeating the request.
 
+Server-side delivery-intent recovery proceeds without a browser retry. When an
+Attempt already exists, the scanner may claim the intent only to read back the
+original persisted payload and message identity; it must not enqueue again. It
+records `delivered` and the Chat `queued` projection together only after an
+actual queue receipt is read. An absent or unavailable receipt leaves the
+intent recoverable with backoff and does not fabricate delivery. A failed
+receipt-owner transaction rolls back both projections; the scanner may retry
+after that claim expires. A stale claim cannot commit the receipt, and a
+cancelled Run without an Attempt never crosses the queue boundary.
+
 Queue metrics, scheduling limits and Redis facts remain supported. Do not
 reintroduce the retired browser `queue_update` fallback. A disconnected browser
 does not determine the Run's execution state.

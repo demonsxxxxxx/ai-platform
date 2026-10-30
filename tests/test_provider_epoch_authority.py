@@ -200,6 +200,7 @@ def _coverage_row(**changes):
         "coverage_through_generation": 2,
         "entry_count": 1,
         "transcript_bytes": 100,
+        "structured_bytes": 100,
         "has_prior_messages": True,
         **changes,
     }
@@ -217,6 +218,9 @@ async def test_read_provider_coverage_returns_ready_epoch_metadata_without_messa
         "source_sha256": "a" * 64,
         "message_count": 5,
         "coverage_through_generation": 2,
+        "authority_schema_version": "ai-platform.conversation-authority.v2",
+        "provider_epoch_id": "pe-old",
+        "continuation": None,
     }
     assert "exists (" in conn.calls[0]
     assert "prior_message.content" not in conn.calls[0]
@@ -305,7 +309,7 @@ async def test_lineage_claim_rejects_a_different_active_run():
     ],
 )
 async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_preparation(
-    transcript_bytes, accepted,
+    transcript_bytes, accepted, monkeypatch,
 ):
     """Both native-resume gates enforce the same 64 MiB minus 16 MiB boundary."""
     assert PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES == 16 * 1024 * 1024
@@ -332,15 +336,24 @@ async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_
             "state": "ready",
             "coverage_source_sha256": receipt["source_sha256"],
             "coverage_message_count": 0,
+            "coverage_through_generation": 2,
+            "coverage_schema_version": "ai-platform.conversation-authority.v2",
             "entry_count": 1,
             "transcript_bytes": transcript_bytes,
             "structured_bytes": 100,
+            "next_sequence": 2,
             "writer_run_id": None,
             "writer_attempt_id": None,
             "writer_owner_generation": None,
             "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685",
         },
     )
+
+    async def verified_prefix(_conn, *, epoch, final_sequence):
+        assert epoch["id"] == "pe-old" and final_sequence == 1
+        return [{"sequence": 1, "subpath": "", "entry_json": {"type": "user"}}], transcript_bytes
+
+    monkeypatch.setattr(provider_epochs, "verified_provider_prefix", verified_prefix)
 
     if accepted:
         assert await provider_epochs.read_provider_coverage(
@@ -349,6 +362,9 @@ async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_
             "source_sha256": receipt["source_sha256"],
             "message_count": 5,
             "coverage_through_generation": 2,
+            "authority_schema_version": "ai-platform.conversation-authority.v2",
+            "provider_epoch_id": "pe-old",
+            "continuation": None,
         }
         result = await provider_epochs.prepare_provider_epoch(
             preparation_connection,
@@ -357,6 +373,8 @@ async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_
             conversation_context=context,
         )
         assert result["execution_mode"] == "native_resume"
+        assert result["provider_epoch_id"] != "pe-old"
+        assert result["source_epoch_id"] == "pe-old"
     else:
         with pytest.raises(
             ProviderSessionConflictError,
@@ -381,8 +399,8 @@ async def test_native_resume_transcript_reserve_is_consistent_for_admission_and_
 
 
 @pytest.mark.asyncio
-async def test_empty_bootstrap_without_persisted_mutation_releases_cleanly_after_failure():
-    for next_sequence, expected in ((1, "ready"), (2, "dirty")):
+async def test_unverified_failed_writer_keeps_lineage_even_without_native_mutation():
+    for next_sequence in (1, 2):
         conn = Connection()
         conn.release_row = {"status": "failed", "tenant_id": SCOPE.tenant_id,
                             "workspace_id": SCOPE.workspace_id, "user_id": SCOPE.user_id,
@@ -395,28 +413,67 @@ async def test_empty_bootstrap_without_persisted_mutation_releases_cleanly_after
                                                       run_id="run-current")
         states = [params[0] for sql, params in zip(conn.calls, conn.params)
                   if "update provider_session_epochs set state = %s" in sql]
-        assert states == [expected]
-        assert any("update provider_session_heads set active_run_id = null" in sql
-                   for sql in conn.calls)
+        assert states == []
+        assert not any("update provider_session_heads set active_run_id = null" in sql
+                       for sql in conn.calls)
 
 
 @pytest.mark.asyncio
-async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume():
+async def test_native_resume_rejects_source_epoch_not_selected_by_scoped_head():
+    receipt = source_receipt()
+    context = {"source_sha256": receipt["source_sha256"], "message_count": 0,
+               "current_message_id": "msg-user", "messages": [],
+               "selected_message_count": 0, "selected_turn_count": 0,
+               "source_epoch_id": "off-scope-epoch"}
+    head = {"active_run_id": "run-current", "current_epoch_id": "pe-current",
+            "next_epoch_number": 3, "state": "ready", "coverage_source_sha256": receipt["source_sha256"],
+            "coverage_message_count": 0, "coverage_through_generation": 2,
+            "coverage_schema_version": "ai-platform.conversation-authority.v2",
+            "entry_count": 1, "transcript_bytes": 100, "structured_bytes": 100,
+            "next_sequence": 2, "writer_run_id": None, "writer_attempt_id": None,
+            "writer_owner_generation": None,
+            "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685"}
+    conn = Connection(head=head)
+
+    with pytest.raises(ProviderSessionConflictError, match="provider_session_spec_mismatch"):
+        await provider_epochs.prepare_provider_epoch(
+            conn, scope=SCOPE, run_id="run-current", conversation_context=context,
+        )
+
+    assert not any(sql.startswith("insert into provider_session_epochs") for sql in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume(monkeypatch):
     receipt = source_receipt()
     context = {"source_sha256": receipt["source_sha256"], "message_count": 0,
                "current_message_id": "msg-user", "messages": [],
                "selected_message_count": 0, "selected_turn_count": 0}
     head = {"active_run_id": "run-current", "current_epoch_id": "pe-old",
             "next_epoch_number": 2, "state": "ready", "coverage_source_sha256": receipt["source_sha256"],
-            "coverage_message_count": 0, "entry_count": 1, "transcript_bytes": 100,
-            "structured_bytes": 100,
+            "coverage_message_count": 0, "entry_count": 1, "transcript_bytes": 15,
+            "next_sequence": 2, "coverage_through_generation": 1,
+            "coverage_schema_version": "ai-platform.conversation-authority.v2",
+            "structured_bytes": 15,
             "writer_run_id": None, "writer_attempt_id": None, "writer_owner_generation": None,
             "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685"}
+
+    async def verified_prefix(_conn, *, epoch, final_sequence):
+        assert epoch["id"] == "pe-old" and final_sequence == 1
+        return [{"sequence": 1, "subpath": "", "entry_json": {"type": "user"}}], 15
+
+    monkeypatch.setattr(provider_epochs, "verified_provider_prefix", verified_prefix)
+    conn = Connection(head=head)
     result = await provider_epochs.prepare_provider_epoch(
-        Connection(head=head), scope=SCOPE, run_id="run-current", conversation_context=context,
+        conn, scope=SCOPE, run_id="run-current", conversation_context=context,
     )
+    epoch_sql, epoch_params = next((sql, params) for sql, params in zip(conn.calls, conn.params)
+                                   if sql.startswith("insert into provider_session_epochs"))
+    assert "transcript_bytes, structured_bytes" in epoch_sql
+    assert epoch_params[13:15] == (15, 15)
     assert result["execution_mode"] == "native_resume"
-    assert result["provider_epoch_id"] == "pe-old" and result["messages"] == []
+    assert result["provider_epoch_id"] != "pe-old" and result["messages"] == []
+    assert result["source_epoch_id"] == "pe-old" and result["source_final_sequence"] == 1
     changed = copy.deepcopy(head)
     changed["coverage_message_count"] = 1
     with pytest.raises(ProviderSessionConflictError, match="provider_session_requires_new_conversation"):
@@ -706,7 +763,7 @@ async def test_assistant_coverage_is_verified_before_turn_epoch_and_head_updates
     updates = [(sql, params) for sql, params in zip(conn.calls, conn.params) if sql.startswith("update")]
     assert updates[0][0].startswith("update provider_turn_receipts")
     assert updates[1][0].startswith("update provider_session_epochs")
-    assert updates[2][0].startswith("update provider_session_heads")
+    assert len(updates) == 2  # Publication now requires a saved workspace in settlement.
     expected = extend_source_digest(receipt["source_sha256"], conn.rows)
     assert updates[0][1][2] == updates[1][1][0] == expected
     assert updates[1][1][2] == 2

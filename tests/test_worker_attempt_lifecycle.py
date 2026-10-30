@@ -253,3 +253,40 @@ async def test_fail_strips_private_diagnostics_when_current_attempt_is_absent():
     assert progress is True
     assert calls[0][1]["attempt_id"] is None
     assert calls[1][1]["result_json"] == {"message": "safe"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_diagnostics", [False, True])
+async def test_cancel_preserves_failure_diagnostics_before_cancelled_terminal_on_same_connection(with_diagnostics):
+    calls = []
+    connection = object()
+    original = {"message":"Execution delivery failed","error_code":"stream_delivery_rejected"}
+    result = {**original,"runtime_diagnostics":{"sdk":{"errors":["mcp_execution_outcome_unknown"]}}} if with_diagnostics else original
+    async def lock(actual,**kwargs):
+        assert actual is connection
+        return {"status":"running"}
+    async def current(actual,**kwargs):
+        assert actual is connection
+        return {"id":"attempt-a","status":"cancel_requested","owner_generation":5}
+    async def request(actual,**kwargs):
+        return await current(actual,**kwargs)
+    async def diagnostics(actual,**kwargs):
+        assert actual is connection
+        assert kwargs["error_code"] == "stream_delivery_rejected"
+        assert kwargs["result_json"] is result
+        calls.append("diagnostics")
+        return original
+    async def cancel(actual,**kwargs):
+        assert actual is connection
+        assert kwargs["result_json"] == original
+        calls.append("cancel_run")
+        return RunTerminalizationProgress(completed=True,status="cancelled",did_transition=True)
+    async def terminal(actual,**kwargs):
+        assert actual is connection
+        calls.append("terminal_attempt")
+    attempt = WorkerAttemptLifecycle.from_leased_attempt(tenant_id="tenant-a",run_id="run-a",
+        leased_attempt_id="queue-a",worker_id="worker-a",is_reconciliation=False,
+        ports=_lifecycle_ports(lock_run=lock,assert_current_attempt=current,request_attempt_cancel=request,
+            record_result_diagnostics=diagnostics,cancel_run=cancel,terminalize_attempt=terminal))
+    assert await attempt.cancel(connection,capabilities=object(),result_json=result)
+    assert calls == (["diagnostics"] if with_diagnostics else []) + ["cancel_run","terminal_attempt"]

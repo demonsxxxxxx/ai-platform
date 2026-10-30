@@ -30,6 +30,8 @@ class WorkerTerminalCompletionService:
         normalize_result: Callable, build_command: Callable,
         exception_failure: Callable, cancelled_error: type[Exception],
         publish: Callable, publish_result: Callable,
+        outer_terminal_transaction: bool = False,
+        terminal_fallback_allowed: bool = True,
     ) -> None:
         self._payload = payload
         self._attempt_id = attempt_id
@@ -44,6 +46,8 @@ class WorkerTerminalCompletionService:
         self._cancelled_error = cancelled_error
         self._publish = publish
         self._publish_result = publish_result
+        self._outer_terminal_transaction = outer_terminal_transaction
+        self._terminal_fallback_allowed = terminal_fallback_allowed
         self.runtime_lease_released = False
 
     def _outcome(self, terminal: Any) -> WorkerOutcome:
@@ -53,6 +57,8 @@ class WorkerTerminalCompletionService:
         )
 
     async def cancel(self) -> WorkerOutcome:
+        if self._outer_terminal_transaction or not self._terminal_fallback_allowed:
+            raise self._cancelled_error()
         terminal = await self._execution_terminal.cancel(
             attempt=self._attempt, capabilities=self._capabilities,
             release_runtime_lease=self._release,
@@ -62,11 +68,14 @@ class WorkerTerminalCompletionService:
         return self._outcome(terminal)
 
     async def fail(self, exc: Exception) -> WorkerOutcome:
+        if self._outer_terminal_transaction or not self._terminal_fallback_allowed:
+            raise exc
         code, message, result = self._exception_failure(exc)
         terminal = await self._execution_terminal.fail_or_cancel(
             payload=self._payload, attempt_id=self._attempt_id,
             attempt=self._attempt, capabilities=self._capabilities,
             failure_code=code, failure_message=message, failure_result=result,
+            continuation_settlement=getattr(exc, "predispatch_continuation_settlement", None),
             release_runtime_lease=self._release,
         )
         self.runtime_lease_released = terminal.status in {"failed", "cancelled"}
@@ -88,6 +97,6 @@ class WorkerTerminalCompletionService:
             capabilities=self._capabilities, release_runtime_lease=self._release,
         )
         self.runtime_lease_released = terminal.status in {"succeeded", "failed", "cancelled"}
-        if terminal.publish_run_event:
+        if terminal.publish_run_event and not self._outer_terminal_transaction:
             await self._publish_result(command, terminal)
         return self._outcome(terminal)

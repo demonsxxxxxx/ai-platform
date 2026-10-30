@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.bootstrap import execution_supervision as _worker_supervision
 from app.platform.tracing import safe_exception_log_fields
 
 from app.context.api import ProviderSessionConflictError
@@ -16,14 +17,15 @@ from app.executor_reconciler import (
     _context_payload,
     _reconciliation_request,
     _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
-    _persist_probe_terminal,
+    _persist_probe_terminal as _persist_probe_terminal_impl,
     _terminalize_reconciliation_failure as _terminalize_reconciliation_failure_impl,
-    probe_suspect_executor_tasks_once,
+    probe_suspect_executor_tasks_once as probe_suspect_executor_tasks_once_impl,
     reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
     run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
-from app.executors.base import ExecutorResult
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.executors.base import ExecutorResult, RunPayload
+from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
 from app.runtime.sandbox.executor_signals import (
@@ -35,6 +37,14 @@ from app.sandbox.api import (
     normalize_sdk_runtime_diagnostics,
 )
 from app.worker import WorkerOutcome
+
+
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
 
 
 class _Cursor:
@@ -59,6 +69,51 @@ async def _transaction():
     yield _Connection()
 
 
+class _LegacySupervisionStore:
+    """Model persisted legacy ownership for reconciler unit tests."""
+
+    def __init__(self) -> None:
+        self._claims: dict[str, dict[str, object]] = {}
+        self._next_claim = 0
+
+    async def read_domain_control(self, _connection, *, domain):
+        return {"domain": domain.value, "mode": "legacy", "owner_version": 1}
+
+    async def claim_domain_work(
+        self,
+        _connection,
+        *,
+        domain,
+        owner_mode,
+        worker_id,
+        ttl_seconds,
+        capacity=1,
+    ):
+        assert owner_mode == "legacy"
+        in_flight = sum(
+            claim["domain"] == domain.value for claim in self._claims.values()
+        )
+        if in_flight >= capacity:
+            return None
+        self._next_claim += 1
+        claim = {
+            "domain": domain.value,
+            "owner_mode": owner_mode,
+            "owner_version": 1,
+            "worker_id": worker_id,
+            "ttl_seconds": ttl_seconds,
+            "claim_token": f"test-claim-{self._next_claim}",
+        }
+        self._claims[str(claim["claim_token"])] = claim
+        return claim
+
+    async def claim_is_current(self, _connection, claim):
+        return self._claims.get(str(claim["claim_token"])) == claim
+
+    async def release_domain_work(self, _connection, claim):
+        return self._claims.pop(str(claim["claim_token"]), None) is not None
+
+
 class _EventPersistence:
     async def append_terminal_row(self, _conn, *, tenant_id, run_id):
         return None
@@ -79,6 +134,7 @@ _TEST_ATTEMPT_LIFECYCLE = SimpleNamespace(
 
 
 async def _terminalize_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
@@ -87,6 +143,7 @@ async def _terminalize_reconciliation_failure(*args, **kwargs):
 
 
 async def _finish_terminal_reconciliation_failure(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     kwargs.setdefault("run_diagnostics", None)
@@ -94,15 +151,27 @@ async def _finish_terminal_reconciliation_failure(*args, **kwargs):
 
 
 async def reconcile_pending_executor_terminals_once(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await reconcile_pending_executor_terminals_once_impl(*args, **kwargs)
 
 
 async def run_executor_terminal_reconciler(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
     kwargs.setdefault("attempt_lifecycle", _TEST_ATTEMPT_LIFECYCLE)
     kwargs.setdefault("lifecycle", _TEST_RUN_LIFECYCLE)
     return await run_executor_terminal_reconciler_impl(*args, **kwargs)
+
+
+async def probe_suspect_executor_tasks_once(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
+    return await probe_suspect_executor_tasks_once_impl(*args, **kwargs)
+
+
+async def _persist_probe_terminal(*args, **kwargs):
+    kwargs.setdefault("lease_port", sandbox_lease_repository)
+    return await _persist_probe_terminal_impl(*args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +179,7 @@ def _fake_executor_signal_cursor(monkeypatch):
     async def initialize():
         return ExecutorReconciliationSignalCursor("0-0")
 
-    async def no_retry():
+    async def no_retry(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr("app.executor_reconciler._next_terminal_retry_delay", no_retry)
@@ -118,6 +187,13 @@ def _fake_executor_signal_cursor(monkeypatch):
         "app.executor_reconciler.initialize_executor_reconciliation_signal_cursor",
         initialize,
     )
+
+
+@pytest.fixture(autouse=True)
+def _fake_persisted_supervision_owner(monkeypatch):
+    """Keep business-SQL fakes isolated while requiring a legacy owner claim."""
+    monkeypatch.setattr(_worker_supervision, "transaction", _transaction)
+    monkeypatch.setattr(_worker_supervision, "supervision_postgres", _LegacySupervisionStore())
 
 
 def _lease_row() -> dict[str, object]:
@@ -134,6 +210,50 @@ def _lease_row() -> dict[str, object]:
     }
 
 
+
+
+def _generation_bound_lease_row(*, legacy_snapshot=False):
+    row = _lease_row()
+    payload = RunPayload(
+        **{key: row[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        )},
+        agent_id="agent-a", skill_id=None, file_ids=[], input={}, owner_generation=4,
+        execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2",
+    )
+    snapshot = sandbox_reconciliation_payload(payload)
+    if legacy_snapshot:
+        snapshot["execution_payload"].pop("owner_generation", None)
+    row["lease_payload_json"] = {"attempt_id": payload.attempt_id, "owner_generation": 4}
+    row["executor_reconciliation_context_json"] = {
+        "adapter_name": "claude-agent-worker", "adapter_context": {}, "run_payload": snapshot,
+    }
+    return row
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legacy_snapshot):
+    row = _generation_bound_lease_row(legacy_snapshot=legacy_snapshot)
+    if not legacy_snapshot:
+        assert row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
+    _, payload = _context_payload(row)
+    assert payload.owner_generation == 4
+    assert _reconciliation_request(row, payload).owner_generation == 4
+
+
+@pytest.mark.parametrize("defect", ["snapshot_generation", "lease_attempt", "string_generation", "bool_generation", "zero_generation"])
+def test_reconciler_rejects_invalid_or_conflicting_lease_generation(defect):
+    row = _generation_bound_lease_row()
+    if defect == "snapshot_generation":
+        row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
+    elif defect == "lease_attempt":
+        row["lease_payload_json"]["attempt_id"] = "other-attempt"
+    else:
+        row["lease_payload_json"]["owner_generation"] = {
+            "string_generation": "4", "bool_generation": True, "zero_generation": 0,
+        }[defect]
+    with pytest.raises(ReconciliationAuthorityError, match="executor_reconciliation_owner_generation_mismatch"):
+        _context_payload(row)
 
 
 def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
@@ -154,6 +274,7 @@ def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
+        owner_generation=1,
         agent_id="agent-a",
         skill_id="qa-file-reviewer",
         model_value="model-a",
@@ -245,6 +366,7 @@ async def test_reconciler_uses_spare_capacity_while_first_completion_is_blocked(
 
     stop = asyncio.Event()
     first_started = asyncio.Event()
+    finish_first = asyncio.Event()
     second_finished = asyncio.Event()
     first_finished = asyncio.Event()
     calls = 0
@@ -259,11 +381,12 @@ async def test_reconciler_uses_spare_capacity_while_first_completion_is_blocked(
         try:
             if calls == 1:
                 first_started.set()
-                await asyncio.Event().wait()
+                await finish_first.wait()
             else:
                 await first_started.wait()
                 second_finished.set()
                 stop.set()
+                finish_first.set()
             return 1
         finally:
             active -= 1
@@ -320,28 +443,27 @@ async def test_reconciler_scans_while_signal_initialization_is_blocked(monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("concurrency", [1, 2, 4])
-async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_shutdown(monkeypatch, concurrency):
+async def test_reconciler_holds_bounded_slots_until_claimed_work_finishes_on_shutdown(
+    monkeypatch, concurrency
+):
     from app import executor_reconciler
 
     stop = asyncio.Event()
     started = asyncio.Event()
-    cancelled = asyncio.Event()
     release = asyncio.Event()
     calls = 0
-    cancellations = 0
+    monkeypatch.setattr(
+        executor_reconciler,
+        "get_settings",
+        lambda: SimpleNamespace(supervision_settlement_capacity=concurrency),
+    )
 
     async def reconcile(**_kwargs):
-        nonlocal calls, cancellations
+        nonlocal calls
         calls += 1
         if calls == concurrency:
             started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancellations += 1
-            if cancellations == concurrency:
-                cancelled.set()
-            await release.wait()
+        await release.wait()
         return 1
 
     async def no_work(**_kwargs):
@@ -356,7 +478,7 @@ async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_
         await asyncio.sleep(0.02)
         assert calls == concurrency
         stop.set()
-        await asyncio.wait_for(cancelled.wait(), 0.5)
+        await asyncio.sleep(0)
         assert not task.done()
         release.set()
         await asyncio.wait_for(task, 0.5)
@@ -383,7 +505,7 @@ async def test_reconciler_retries_at_due_time_without_notification_or_fallback_d
             stop.set()
         return 0
 
-    async def retry_delay():
+    async def retry_delay(*_args, **_kwargs):
         return 0.025
 
     async def no_work(**_kwargs):
@@ -484,6 +606,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
 
     stop_event = asyncio.Event()
     maintenance_started = asyncio.Event()
+    finish_maintenance = asyncio.Event()
     maintenance_finished = asyncio.Event()
     terminal_scanned = asyncio.Event()
     scans = 0
@@ -497,6 +620,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
             assert not maintenance_finished.is_set()
             terminal_scanned.set()
             stop_event.set()
+            finish_maintenance.set()
         return 0
 
     async def blocked(**_kwargs):
@@ -504,7 +628,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
         phase_calls += 1
         maintenance_started.set()
         try:
-            await asyncio.Event().wait()
+            await finish_maintenance.wait()
         finally:
             maintenance_finished.set()
 
@@ -543,7 +667,6 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
 
     stop_event = asyncio.Event()
     started = asyncio.Event()
-    cancelled = asyncio.Event()
     release = asyncio.Event()
     finished = asyncio.Event()
 
@@ -553,9 +676,6 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
     async def cleanup(**_kwargs):
         started.set()
         try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
             await release.wait()
         finally:
             finished.set()
@@ -574,7 +694,9 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
     task = asyncio.create_task(run_executor_terminal_reconciler(stop_event, concurrency=1))
     try:
-        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.wait_for(stop_event.wait(), timeout=1)
+        await asyncio.sleep(0)
         assert not task.done()
         assert not finished.is_set()
         release.set()
@@ -695,6 +817,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
 
     assert result == _result()
@@ -728,6 +851,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         },
         registry=Registry(),
         claim_token="claim-a",
+        lease_port=sandbox_lease_repository,
     )
     collection_diagnostics = terminal_results[-1]["runtime_diagnostics"]
     assert terminal_results[-1]["status"] == "failed"
@@ -747,6 +871,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
             await executor_reconciler._collect_workspace_and_convert_result(
                 {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
                 registry=Registry(), claim_token="claim-a",
+                lease_port=sandbox_lease_repository,
             )
         if isinstance(failure, ValueError):
             assert caught.value.__cause__ is failure
@@ -763,9 +888,137 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         "ok", "ok", "error", "ok", "ok", "error", "ok", "cancelled", "ok", "error",
     ]
     assert all(record.run_id == "run-a" and record.attempt_id == "attempt-a" for record in records)
-    assert "final.txt" not in repr([vars(record) for record in records])
-    assert "workspace collection failed" not in repr([vars(record) for record in records])
-    assert "private" not in repr([vars(record) for record in records])
+    logged = repr([_log_payload(record) for record in records])
+    for secret in (
+        "final.txt",
+        "workspace collection failed",
+        "/private/artifact-snapshot",
+        "private/reconciliations/claim-a/result.txt",
+        "private upload error",
+        "private cancel",
+        "private conversion error",
+    ):
+        assert secret not in logged
+
+
+@pytest.mark.asyncio
+async def test_saved_continuation_transfers_attempt_claim_without_provider_io(monkeypatch):
+    from app import executor_reconciler
+
+    scope = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "attempt-a",
+    }
+    continuation = {
+        **{key: scope[key] for key in ("tenant_id", "run_id", "attempt_id")},
+        "final_sequence": 2,
+        "workspace_receipt": {"state": "saved"},
+        "stop_evidence": "provider_stopped",
+    }
+    stage = {
+        "schema_version": "ai-platform.terminal-reconciliation.v1",
+        "scope": scope,
+        "owner_generation": 7,
+        "container_id": "container-a",
+        "artifact_workspace": None,
+        "terminal_result": {"run_id": "run-a", "status": "failed"},
+        "continuation": continuation,
+    }
+    payload = SimpleNamespace(
+        **scope,
+        owner_generation=7,
+        model_value="model-a",
+        model_id=None,
+        trace_id="trace-a",
+        agent_id="agent-a",
+        skill_id=None,
+        input={},
+    )
+    request = SimpleNamespace(**scope, owner_generation=7)
+    lease_row = {
+        **scope,
+        "id": "lease-a",
+        "provider": "fake",
+        "settlement_storage_version": "attempt.v1",
+        "runtime_container_id": "container-a",
+        "lease_payload_json": {
+            "attempt_id": "attempt-a",
+            "owner_generation": 7,
+            "terminal_reconciliation": stage,
+        },
+    }
+    calls = []
+
+    class Lease:
+        container_id = "container-a"
+
+        def model_copy(self, *, update):
+            assert update == {"workspace_host_path": "/workspace"}
+            return self
+
+    class Provider:
+        async def collect_workspace(self, *_args, **_kwargs):
+            pytest.fail("a saved checkpoint must not recollect workspace data")
+
+        async def stop(self, *_args, **_kwargs):
+            pytest.fail("a saved checkpoint must not reconnect to its producer")
+
+    class Adapter:
+        def reconcile_sandbox_terminal(self, **_kwargs):
+            raise AssertionError("conversion is dispatched through the storage bridge")
+
+    class Registry:
+        def get(self, name):
+            assert name == "claude-agent-worker"
+            return Adapter()
+
+    async def record(_lease_row, **kwargs):
+        calls.append((kwargs["claim_token"], kwargs["stage"]))
+
+    async def bridge(operation, **kwargs):
+        assert operation.__name__ == "reconcile_sandbox_terminal"
+        assert kwargs["terminal_result"] == stage["terminal_result"]
+        return _result()
+
+    monkeypatch.setattr(
+        executor_reconciler,
+        "_context_and_payload",
+        lambda _row: (
+            {"adapter_name": "claude-agent-worker", "adapter_context": {}},
+            stage["terminal_result"],
+            payload,
+        ),
+    )
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: request)
+    monkeypatch.setattr(
+        executor_reconciler,
+        "SandboxWorkspaceManager",
+        lambda: SimpleNamespace(
+            prepare=lambda _request: SimpleNamespace(workspace_host_path="/workspace")
+        ),
+    )
+    lease = Lease()
+    provider = Provider()
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_runtime_lease", lambda *_args, **_kwargs: lease)
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: provider)
+    monkeypatch.setattr(executor_reconciler, "_record_reconciliation_stage", record)
+    monkeypatch.setattr(executor_reconciler, "run_storage_io", bridge)
+
+    result, actual_provider, actual_lease = await executor_reconciler._collect_workspace_and_convert_result(
+        lease_row,
+        registry=Registry(),
+        claim_token="claim-b",
+        lease_port=sandbox_lease_repository,
+    )
+
+    assert calls == [("claim-b", stage)]
+    assert result.executor_payload["continuation_settlement"] == continuation
+    assert actual_provider is provider
+    assert actual_lease is lease
 
 
 def test_reconciler_quarantines_invalid_persisted_payload_without_run_authority(monkeypatch):
@@ -891,7 +1144,7 @@ async def test_reconciler_entrypoint_rejects_identity_mismatch_before_workspace_
         lambda *_args: SimpleNamespace(**payload_identity),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
@@ -942,6 +1195,205 @@ def _suspect_lease_row() -> dict[str, object]:
 
 
 @pytest.mark.asyncio
+async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(monkeypatch):
+    from app.executor_reconciler import _record_probe_dispatch_accepted
+
+    accepted_contexts = []
+    outcomes = []
+
+    class LeasePort:
+        async def read_unknown_receipt_probe_recovery_facts(self, _conn, **kwargs):
+            if kwargs["owner_generation"] != 4:
+                return None
+            return {
+                "owner_generation": 4,
+                "status": "active",
+                "attempt_id": "attempt-a",
+                "lease_payload_json": {"owner_generation": 4},
+                "dispatch_generation": 4,
+                "dispatch_lease_id": "lease-a",
+                "dispatch_provider": "fake",
+                "dispatch_task_id": "attempt-a",
+                "mapping_state": "unknown",
+                "dispatch_state": "unknown",
+                "intent_recovery_context_json": {
+                    "adapter_name": "opensandbox", "frozen": "intent"
+                },
+                "accepted_context_json": None,
+                "receipt_json": {"run_id": "run-a", "status": "succeeded"},
+            }
+
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **kwargs):
+            outcomes.append(kwargs)
+            return {"status": "accepted"}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", transaction)
+    lease_row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "executor_probe_claim_token": "probe-a",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "executor_reconciliation_intent_context_json": {
+            "adapter_name": "opensandbox", "frozen": "intent"
+        },
+    }
+    status = {"status": "completed", "run_id": "run-a", "attempt_id": "attempt-a"}
+    recovered = await _record_probe_dispatch_accepted(
+        lease_row,
+        status,
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is True
+    assert accepted_contexts[0]["reconciliation_context"] == {
+        "adapter_name": "opensandbox", "frozen": "intent"
+    }
+    assert outcomes[0]["outcome"] == "accepted"
+
+    accepted_contexts.clear()
+    outcomes.clear()
+    stale_row = {**lease_row, "lease_payload_json": {"owner_generation": 3, "attempt_id": "attempt-a"}}
+    recovered = await _record_probe_dispatch_accepted(
+        stale_row,
+        status,
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is False
+    assert accepted_contexts == []
+    assert outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_receipt_dispatch_cas_failure_rolls_back_acceptance(monkeypatch):
+    from app.executor_reconciler import _record_probe_dispatch_accepted
+
+    transactions = []
+    accepted_contexts = []
+
+    class LeasePort:
+        async def read_unknown_receipt_probe_recovery_facts(self, _conn, **_kwargs):
+            return {
+                "owner_generation": 4,
+                "status": "active",
+                "attempt_id": "attempt-a",
+                "lease_payload_json": {"owner_generation": 4},
+                "dispatch_generation": 4,
+                "dispatch_lease_id": "lease-a",
+                "dispatch_provider": "fake",
+                "dispatch_task_id": "attempt-a",
+                "mapping_state": "unknown",
+                "dispatch_state": "unknown",
+                "intent_recovery_context_json": {"frozen": "intent"},
+                "accepted_context_json": None,
+                "receipt_json": {"run_id": "run-a", "status": "succeeded"},
+            }
+
+        async def record_sandbox_executor_accepted(self, _conn, **kwargs):
+            accepted_contexts.append(kwargs)
+
+    class DispatchIntents:
+        async def record_outcome(self, _conn, **_kwargs):
+            return None
+
+    @asynccontextmanager
+    async def transaction():
+        record = {"rollback": False}
+        transactions.append(record)
+        try:
+            yield object()
+        except Exception:
+            record["rollback"] = True
+            raise
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", transaction)
+    lease_row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "executor_probe_claim_token": "probe-a",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "executor_reconciliation_intent_context_json": {"frozen": "intent"},
+    }
+    recovered = await _record_probe_dispatch_accepted(
+        lease_row,
+        {"status": "completed", "run_id": "run-a", "attempt_id": "attempt-a"},
+        dispatch_intents=DispatchIntents(),
+        lease_port=LeasePort(),
+    )
+    assert recovered is False
+    assert accepted_contexts
+    assert transactions == [{"rollback": True}]
+
+
+@pytest.mark.asyncio
+async def test_unknown_receipt_probe_keeps_unavailable_provider_recoverable(monkeypatch):
+    released = []
+    row = {
+        **_suspect_lease_row(),
+        "lease_payload_json": {"owner_generation": 4, "attempt_id": "attempt-a"},
+        "provider": "fake",
+        "settlement_receipt_present": True,
+        "settlement_mapping_state": "unknown",
+        "settlement_dispatch_state": "unknown",
+        "executor_reconciliation_intent_context_json": {
+            "adapter_name": "opensandbox", "executor_request": {}, "adapter_context": {},
+        },
+    }
+
+    async def claim(_conn, **_kwargs):
+        return [row]
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "running"}
+
+    async def release(_conn, **kwargs):
+        released.append(kwargs)
+        return True
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            return "http://executor", {}
+
+    class Client:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 10.0
+
+        async def get_status(self, *_args, **_kwargs):
+            raise TimeoutError("provider unavailable")
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(sandbox_lease_repository, "claim_sandbox_executor_suspects", claim)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr("app.executor_reconciler.create_container_provider", lambda _name: Provider())
+    monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
+    monkeypatch.setattr(sandbox_lease_repository, "release_sandbox_executor_probe_claim", release)
+
+    assert await probe_suspect_executor_tasks_once() == 0
+    assert len(released) == 1
+    assert released[0]["lease_id"] == "lease-a"
+    assert isinstance(released[0]["claim_token"], str)
+    assert released[0]["error"] == "executor_probe_unknown_receipt_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkeypatch):
     released = []
     claim_tokens = []
@@ -980,11 +1432,11 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -996,7 +1448,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
     )
     monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1028,7 +1480,7 @@ async def test_probe_persists_private_diagnostics_before_bounded_terminal_receip
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
     private = {
@@ -1080,7 +1532,7 @@ async def test_probe_persists_only_structural_protocol_evidence(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
     reported_result = {
@@ -1148,7 +1600,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.record_sandbox_executor_terminal",
+        sandbox_lease_repository, "record_sandbox_executor_terminal",
         record_terminal,
     )
 
@@ -1244,11 +1696,11 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1264,6 +1716,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     assert await probe_suspect_executor_tasks_once() == 1
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
     protocol_failure = persisted[0][1].pop("protocol_failure", None)
@@ -1322,10 +1775,10 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1336,7 +1789,7 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
         lambda _provider_name: Provider(),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1378,10 +1831,10 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects",
+        sandbox_lease_repository, "claim_sandbox_executor_suspects",
         claim,
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1396,7 +1849,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     )
     monkeypatch.setattr("app.executor_reconciler._persist_probe_terminal", persist)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim",
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim",
         release,
     )
 
@@ -1405,6 +1858,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     assert processed == 1
     assert len(persisted) == 1
     assert persisted[0][0]["id"] == "lease-a"
+    assert persisted[0][1].pop("lease_port") is sandbox_lease_repository
     assert isinstance(persisted[0][1].pop("claim_token"), str)
     assert persisted[0][1].pop("run_diagnostics") is None
     terminal_result = persisted[0][1].pop("terminal_result")
@@ -1447,9 +1901,9 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_suspects", claim
+        sandbox_lease_repository, "claim_sandbox_executor_suspects", claim
     )
-    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
@@ -1460,7 +1914,7 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
         lambda _provider_name: Provider(),
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.release_sandbox_executor_probe_claim", release
+        sandbox_lease_repository, "release_sandbox_executor_probe_claim", release
     )
 
     assert await probe_suspect_executor_tasks_once() == 0
@@ -1486,7 +1940,8 @@ def test_opensandbox_probe_error_facts_keep_only_typed_safe_fields():
 
 
 @pytest.mark.asyncio
-async def test_reconciler_exits_claim_transaction_before_terminalization_and_release(monkeypatch):
+@pytest.mark.parametrize("creates_checkpoint", [False, True])
+async def test_reconciler_exits_claim_transaction_before_terminalization_and_release(monkeypatch, creates_checkpoint):
     calls = []
     transaction_active = {}
     transaction_count = 0
@@ -1525,6 +1980,10 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
     async def collect(lease_row, **_kwargs):
         assert all(active is False for active in transaction_active.values())
         calls.append(("collect", lease_row["id"], transaction_count))
+        if creates_checkpoint:
+            lease_row.setdefault("lease_payload_json", {})["terminal_reconciliation"] = {
+                "continuation": {"stop_evidence": "provider_stopped"},
+            }
         return _result(), object(), object()
 
     async def terminalize(**kwargs):
@@ -1540,17 +1999,17 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
 
     monkeypatch.setattr("app.executor_reconciler.transaction", fenced_transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler.reconcile_executor_terminal_result", terminalize)
-    monkeypatch.setattr("app.executor_reconciler.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending", release)
+    monkeypatch.setattr(sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending", release)
 
     processed = await reconcile_pending_executor_terminals_once(
         worker_id="worker-a",
@@ -1563,15 +2022,90 @@ async def test_reconciler_exits_claim_transaction_before_terminalization_and_rel
         "get_run",
         "collect",
         "terminalize",
-        "cleanup_pending",
+        *([] if creates_checkpoint else ["cleanup_pending"]),
     ]
     assert calls[0] == ("has_claim", 2)
     assert calls[1] == ("get_run", 2)
     assert calls[2] == ("collect", "lease-a", 2)
     assert calls[3][0] == "terminalize"
     assert calls[3][2] == 2
-    assert calls[4] == ("cleanup_pending", calls[3][1], "lease-a", 3)
+    if not creates_checkpoint:
+        assert calls[4] == ("cleanup_pending", calls[3][1], "lease-a", 3)
     assert all(active is False for active in transaction_active.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_status", ["active", "released"])
+async def test_terminal_run_scanner_transfers_attempt_marker_before_lease_finalize(
+    monkeypatch, lease_status,
+):
+    calls = []
+    row = _lease_row()
+    scope = {key: row[key] for key in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+    )}
+    stage = {
+        "schema_version": "ai-platform.terminal-reconciliation.v1",
+        "scope": scope,
+        "owner_generation": 4,
+        "container_id": "container-a",
+        "terminal_result": {"run_id": "run-a", "status": "failed"},
+        "continuation": {
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "attempt_id": "attempt-a",
+            "stop_evidence": "provider_stopped",
+        },
+    }
+    row.update(
+        settlement_storage_version="attempt.v1",
+        status=lease_status,
+        released_at="2026-10-28T00:00:00Z" if lease_status == "released" else None,
+        runtime_container_id="container-a",
+        lease_payload_json={
+            "attempt_id": "attempt-a",
+            "owner_generation": 4,
+            "terminal_reconciliation": stage,
+        },
+    )
+
+    class LeasePort:
+        async def claim_sandbox_executor_reconciliations(self, _conn, **kwargs):
+            row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+            return [row]
+
+        async def has_sandbox_executor_reconciliation_claim(self, _conn, **kwargs):
+            return kwargs["claim_token"] == row["executor_reconciliation_claim_token"]
+
+        async def record_sandbox_reconciliation_stage(self, _conn, **kwargs):
+            calls.append(("transfer", kwargs["claim_token"], kwargs["stage"]))
+            return True
+
+        async def finalize_stopped_executor_checkpoint(self, _conn, **kwargs):
+            calls.append(("finalize", kwargs["claim_token"], kwargs["expected_stage"]))
+            return True
+
+    port = LeasePort()
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "failed"}
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
+    monkeypatch.setattr(
+        "app.executor_reconciler._collect_workspace_and_convert_result",
+        lambda *_args, **_kwargs: pytest.fail("a terminal Run only needs lease finalization"),
+    )
+
+    assert await reconcile_pending_executor_terminals_once(
+        lease_port=port,
+        attempt_lifecycle=_TEST_ATTEMPT_LIFECYCLE,
+        lifecycle=_TEST_RUN_LIFECYCLE,
+    ) == 1
+
+    assert len(calls) == 2
+    assert calls[0] == ("transfer", row["executor_reconciliation_claim_token"], stage)
+    assert calls[1] == ("finalize", row["executor_reconciliation_claim_token"], stage)
 
 
 @pytest.mark.asyncio
@@ -1593,12 +2127,12 @@ async def test_reconciler_cancellation_releases_entire_claimed_batch(monkeypatch
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -1640,13 +2174,13 @@ async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -1708,14 +2242,14 @@ async def test_reconciler_times_out_work_before_stale_claim_takeover(monkeypatch
         0.001,
     )
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run', get_run)
     monkeypatch.setattr(executor_reconciler, "_collect_workspace_and_convert_result", collect)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "retry_sandbox_executor_reconciliation",
         retry,
     )
@@ -1769,7 +2303,7 @@ async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(
 
     monkeypatch.setattr(executor_reconciler, "transaction", _transaction)
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "claim_sandbox_executor_reconciliations",
         claim,
     )
@@ -1781,7 +2315,7 @@ async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(
         lambda *_args, **_kwargs: pytest.fail("transient failure must remain retryable"),
     )
     monkeypatch.setattr(
-        executor_reconciler.sandbox_lease_repository,
+        sandbox_lease_repository,
         "retry_sandbox_executor_reconciliation",
         retry,
     )
@@ -1810,7 +2344,7 @@ async def test_reconciler_drains_ready_rows_without_idle_wait(monkeypatch):
     async def no_work(**_kwargs):
         return []
 
-    async def no_probe():
+    async def no_probe(**_kwargs):
         return 0
 
     async def unexpected_wait(**_kwargs):
@@ -1844,7 +2378,7 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
         calls.append("cleanup")
         return []
 
-    async def running_probe():
+    async def running_probe(**_kwargs):
         calls.append("probe")
         return 0
 
@@ -1980,7 +2514,8 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
 
     stop_event = asyncio.Event()
     next_probe_started = asyncio.Event()
-    next_probe_cancelled = asyncio.Event()
+    finish_next_probe = asyncio.Event()
+    next_probe_finished = asyncio.Event()
     calls: list[str] = []
 
     async def reconcile(**_kwargs):
@@ -1988,8 +2523,9 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
             # Observe consumption while the next batch is still blocked, not
             # only when the entire probe backlog has finished.
             await next_probe_started.wait()
-            assert not next_probe_cancelled.is_set()
+            assert not next_probe_finished.is_set()
             stop_event.set()
+            finish_next_probe.set()
         calls.append("reconcile")
         return 0
 
@@ -1997,15 +2533,15 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
         calls.append("cleanup")
         return []
 
-    async def persisted_probe():
+    async def persisted_probe(**_kwargs):
         calls.append("probe")
         if calls.count("probe") == 1:
             return 1
         next_probe_started.set()
         try:
-            await asyncio.Event().wait()
+            await finish_next_probe.wait()
         finally:
-            next_probe_cancelled.set()
+            next_probe_finished.set()
 
     async def idle_signal(**_kwargs):
         await asyncio.Event().wait()
@@ -2046,7 +2582,7 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
     assert calls.count("reconcile") == 2
     assert calls.count("probe") == 2
     assert calls.count("cleanup") == 1
-    assert next_probe_cancelled.is_set()
+    assert next_probe_finished.is_set()
 
 
 @pytest.mark.asyncio
@@ -2139,7 +2675,7 @@ async def test_reconciler_drains_receiptless_terminal_backlog_before_probe_idle(
     )
     monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_terminal", record)
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run", get_run)
-    monkeypatch.setattr(executor_reconciler, "_context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr(executor_reconciler, "_context_payload", lambda _row, **_kwargs: ({}, object()))
     monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
         executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row",
@@ -2380,7 +2916,17 @@ async def test_probe_and_terminal_claims_use_independent_attempt_counters():
 
     assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count" not in statements[0]
-    assert statements[0].count("make_interval(secs => %s)") == 2
+    assert statements[0].count("make_interval(secs => %s)") == 4
+    assert (
+        "lease.executor_probe_claim_token is null and "
+        "coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) "
+        "< now() - make_interval(secs => %s)"
+    ) in statements[0]
+    assert (
+        "lease.executor_probe_claim_token is not null and "
+        "coalesce(lease.executor_probe_claimed_at, lease.updated_at, lease.created_at) "
+        "< now() - make_interval(secs => %s)"
+    ) in statements[0]
     assert "executor_reconciliation_status = 'claimed'" in statements[0]
     assert "executor_reconciliation_claimed_at" in statements[0]
     assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
@@ -2542,14 +3088,14 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.claim_sandbox_executor_reconciliations",
+        sandbox_lease_repository, "claim_sandbox_executor_reconciliations",
         claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler._finish_terminal_reconciliation_failure", finish)
     monkeypatch.setattr(
-        "app.executor_reconciler.sandbox_lease_repository.retry_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "retry_sandbox_executor_reconciliation",
         retry,
     )
 
@@ -2630,12 +3176,12 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         no_provider_lineage,
     )
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
@@ -2744,13 +3290,13 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "request_cancel", request_cancel)
-    monkeypatch.setattr(f"{owner}.cancel_run_with_v4", cancel_run)
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.cancel_run_terminalization", cancel_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(_TEST_ATTEMPT_LIFECYCLE, "terminalize", terminalize_attempt)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
@@ -2812,11 +3358,11 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
     monkeypatch.setattr(f"{owner}.publish_run_event", publish)
 
     await _terminalize_reconciliation_failure(
@@ -2849,10 +3395,10 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr("app.runs.infrastructure.postgres.get_run", get_run)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
-    monkeypatch.setattr(f"{owner}.fail_run_with_v4", fail_run)
+    monkeypatch.setattr(f"{owner}.fail_run_terminalization", fail_run)
 
     with pytest.raises(RuntimeError, match="executor_reconciliation_claim_lost"):
         await _terminalize_reconciliation_failure(
@@ -2883,7 +3429,7 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     monkeypatch.setattr(f"{owner}._terminalize_reconciliation_failure", terminalize)
     monkeypatch.setattr(f"{owner}._sandbox_cleanup.container_lease_from_persisted_row", lambda _row: None)
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.quarantine_sandbox_executor_reconciliation",
+        sandbox_lease_repository, "quarantine_sandbox_executor_reconciliation",
         quarantine,
     )
 
@@ -2897,7 +3443,6 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     )
 
     assert calls == [
-        ("terminalize", "lease-a"),
         (
             "quarantine",
             {
@@ -2945,11 +3490,11 @@ async def test_terminal_failure_hands_off_cleanup_without_provider_io(monkeypatc
         provider_factory,
     )
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.has_sandbox_executor_reconciliation_claim",
+        sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim",
         has_claim,
     )
     monkeypatch.setattr(
-        f"{owner}.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending",
+        sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending",
         cleanup_pending,
     )
 
@@ -3035,7 +3580,7 @@ async def test_reconciliation_repository_writes_are_claim_fenced_and_aggregate_o
     assert "executor_reconciliation_status = 'finalized'" in release_sql
     assert "executor_reconciliation_error = ''" in release_sql
     assert "executor_reconciliation_error = null" not in release_sql
-    assert "executor_reconciliation_claim_token = %s" in release_sql
+    assert "executor_cleanup_claim_token = %s" in release_sql
     assert release_params[-2:] == ("lease-a", "claim-a")
 
     quarantine_sql, _ = statements[1]
@@ -3049,6 +3594,7 @@ async def test_reconciliation_repository_writes_are_claim_fenced_and_aggregate_o
     assert "expires_at = least" in cleanup_sql
     assert "released_at" not in cleanup_sql
 
+    assert "runtime_handle_verified_at" in " ".join(statement for statement, _ in statements)
     summary_sql, summary_params = statements[3]
     assert "where tenant_id = %s" in summary_sql
     assert "status in ('active', 'released')" in summary_sql
@@ -3075,8 +3621,18 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     lease_row = {
         "id": "lease-a",
         "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
         "user_id": "user-a",
+        "session_id": "session-a",
         "run_id": "run-a",
+        "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral",
+        "provider": "fake",
+        "runtime_container_id": "container-a",
+        "runtime_container_name": "container-a",
+        "runtime_executor_url": "http://executor.invalid",
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": "2026-10-26T00:00:00Z",
     }
     responses = [[lease_row], {"id": "lease-a"}, {"id": "lease-a"}, lease_row, {"id": "lease-a"}]
 
@@ -3104,6 +3660,12 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
         stale_after_seconds=45,
     )
     assert claimed == [lease_row]
+    from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+    recovered_lease = build_sandbox_runtime_cleanup().container_lease_from_persisted_row(
+        claimed[0]
+    )
+    assert recovered_lease is not None
+    assert recovered_lease.container_id == "container-a"
     assert await sandbox_lease_repository.has_failed_sandbox_executor_reconciliation_cleanup_claim(
         conn,
         lease_id="lease-a",
@@ -3134,35 +3696,36 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
 
     claim_sql, claim_params = statements[0]
     assert "status in ('active', 'released')" in claim_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in claim_sql
-    assert "executor_reconciliation_retry_not_before" in claim_sql
-    assert "executor_reconciliation_claimed_at is null" in claim_sql
-    assert "%s::text is null or tenant_id = %s" in claim_sql
-    assert "for update skip locked" in claim_sql
-    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a")
+    assert "executor_cleanup_status in ('failed', 'cleanup_pending', 'retry', 'claimed')" in claim_sql
+    assert "executor_cleanup_retry_not_before" in claim_sql
+    assert "executor_cleanup_claimed_at is null" in claim_sql
+    assert "%s::text is null or lease.tenant_id = %s" in claim_sql
+    assert "lease.runtime_handle_verified_at" in claim_sql
+    assert "for update of lease skip locked" in claim_sql
+    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a", "cleanup-a")
 
     has_claim_sql, _ = statements[1]
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in has_claim_sql
-    assert "executor_reconciliation_claim_token = %s" in has_claim_sql
+    assert "executor_cleanup_status = 'claimed'" in has_claim_sql
+    assert "executor_cleanup_claim_token = %s" in has_claim_sql
     assert "for update" in has_claim_sql
 
     release_claim_sql, _ = statements[2]
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in release_claim_sql
-    assert "executor_reconciliation_retry_not_before = now() + interval '30 seconds'" in release_claim_sql
-    assert "executor_reconciliation_claim_token = null" in release_claim_sql
-    assert "executor_reconciliation_claimed_at = now()" in release_claim_sql
+    assert "executor_cleanup_status = 'claimed'" in release_claim_sql
+    assert "executor_cleanup_retry_not_before = now() + interval '30 seconds'" in release_claim_sql
+    assert "executor_cleanup_claim_token = null" in release_claim_sql
+    assert "executor_cleanup_claimed_at = null" in release_claim_sql
 
     finalize_sql, finalize_params = statements[3]
     assert "set status = 'released'" in finalize_sql
     assert "executor_reconciliation_status = 'finalized'" in finalize_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in finalize_sql
-    assert "executor_reconciliation_claim_token = %s" in finalize_sql
+    assert "executor_cleanup_status = 'claimed'" in finalize_sql
+    assert "executor_cleanup_claim_token = %s" in finalize_sql
     assert finalize_params[-2:] == ("lease-a", "cleanup-a")
 
     quarantine_sql, _ = statements[4]
     assert "set status = 'quarantined'" in quarantine_sql
-    assert "executor_reconciliation_status in ('failed', 'cleanup_pending')" in quarantine_sql
-    assert "executor_reconciliation_claim_token = %s" in quarantine_sql
+    assert "executor_cleanup_status = 'claimed'" in quarantine_sql
+    assert "executor_cleanup_claim_token = %s" in quarantine_sql
 
 
 @pytest.mark.asyncio
@@ -3223,7 +3786,7 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run", get_run)
     monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
     monkeypatch.setattr("app.executor_reconciler.reconcile_executor_terminal_result", terminalize)
-    monkeypatch.setattr("app.executor_reconciler.sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending", release)
+    monkeypatch.setattr(sandbox_lease_repository, "mark_sandbox_executor_reconciliation_cleanup_pending", release)
 
     assert await reconcile_pending_executor_terminals_once() == 1
     if expected_release:
@@ -3238,3 +3801,58 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
                 else "executor_reconciliation_run_not_terminal"
             ),
         })]
+
+
+@pytest.mark.asyncio
+async def test_cancel_maintenance_watchdog_allows_endpoint_recovery_before_writeback(monkeypatch):
+    from app import executor_reconciler as module
+    from app.bootstrap.worker_maintenance import maintenance_phase_until_done
+    from app.sandbox.api import SandboxCancelDeliveryService
+
+    stop = asyncio.Event()
+    persisted = []
+    row = {"run_id": "run-a", "attempt_id": "attempt-a", "cancel_delivery_claim_token": "claim-a"}
+
+    class Repository:
+        async def claim_due(self, _conn, **_kwargs):
+            return [row], None
+
+        async def record_delivery_result(self, _conn, **kwargs):
+            persisted.append(kwargs)
+            stop.set()
+            return "accepted"
+
+    async def slow_endpoint(_row):
+        # Scale the outer watchdog only: this models 25 seconds of provider
+        # work and distinguishes it from the retired 20-second wrapper budget.
+        await asyncio.sleep(0.25)
+        return {"status": "cancel_requested", "run_id": "run-a", "attempt_id": "attempt-a"}
+
+    delivery = SandboxCancelDeliveryService(Repository(), _transaction, slow_endpoint)
+
+    async def phase(name, operation, interval_seconds, phase_budget_seconds, **kwargs):
+        if name != "executor-cancel-delivery":
+            await asyncio.Event().wait()
+        await maintenance_phase_until_done(
+            name, operation, interval_seconds, phase_budget_seconds / 100, **kwargs,
+        )
+
+    async def wait_forever(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    async def no_domain_work(*_args, **_kwargs):
+        return 0
+
+    async def no_retry(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(module, "maintenance_phase_until_done", phase)
+    monkeypatch.setattr(module, "initialize_executor_reconciliation_signal_cursor", wait_forever)
+    monkeypatch.setattr(module, "run_worker_scheduled_domain_operation", no_domain_work)
+    monkeypatch.setattr(module, "_next_terminal_retry_delay", no_retry)
+    await asyncio.wait_for(run_executor_terminal_reconciler(
+        stop, cancel_delivery=delivery,
+    ), timeout=1)
+    assert len(persisted) == 1
+    assert persisted[0]["accepted"] is True
+    assert persisted[0]["claimed_row"] == row

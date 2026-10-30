@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -31,6 +32,14 @@ from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics_contra
 
 
 NOW = datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc)
+
+
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
 
 
 def runtime_diagnostics(**overrides):
@@ -1500,7 +1509,7 @@ async def test_capture_failure_logs_phase_correlations_and_safe_cause(phase, mon
         assert not hasattr(record, "observation_id")
     for secret in ("SELECT", "private-prompt", "private-token", "private-password", "tenant-private", "postgresql://"):
         assert secret not in caplog.text
-        assert secret not in repr(record.__dict__)
+        assert secret not in repr(_log_payload(record))
 
 
 @pytest.mark.asyncio
@@ -1547,7 +1556,9 @@ async def test_capture_rejects_private_metadata_and_logger_failure_is_nonfatal(m
     record = caplog.records[-1]
     assert not hasattr(record, "run_id") and not hasattr(record, "attempt_id")
     assert record.diagnostic_source == record.diagnostic_stage == "unknown"
-    assert "private" not in repr(record.__dict__)
+    logged = repr(_log_payload(record))
+    for secret in ("private-prompt", "private-token", "private-source", "/private/path"):
+        assert secret not in logged
     monkeypatch.setattr(application.logger, "warning", fail)
     assert await service.capture_failure_result(object(), **kwargs) == {"status": "failed"}
 

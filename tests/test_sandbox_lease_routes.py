@@ -86,10 +86,17 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
         calls.append(("event", kwargs))
         return "evt-a"
 
+    async def disable_projection_write(_self, _conn, _scope):
+        return False
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr(
+        "app.sandbox.application.attempt_settlement_shadow.AttemptSettlementShadowLeaseRepository._write_enabled",
+        disable_projection_write,
+    )
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
@@ -110,6 +117,57 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
     assert body["lease_id"] == "lease-a"
     assert body["workspace"] == {"workspace": "/workspace", "inputs": "/workspace/inputs"}
     assert calls[1][1]["event_type"] == "sandbox_lease_created"
+
+
+def test_create_app_routes_sandbox_lease_calls_through_injected_port(monkeypatch):
+    calls = []
+
+    class LeaseTransport:
+        async def create_sandbox_lease(self, conn, **kwargs):
+            calls.append((conn, kwargs))
+            return lease_row(
+                sandbox_mode=kwargs["sandbox_mode"],
+                provider=kwargs["provider"],
+                resource_limits_json=kwargs["resource_limits_json"],
+                lease_payload_json=kwargs["lease_payload_json"],
+            )
+
+    port = LeaseTransport()
+
+    async def fake_get_authorized_run(_conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-a")
+        return {
+            "id": run_id,
+            "workspace_id": "workspace-a",
+            "session_id": "session-a",
+            "trace_id": "trace-a",
+        }
+
+    async def fake_append_event(_conn, **_kwargs):
+        return "evt-a"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.main.build_sandbox_lease_transport_port", lambda: port)
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
+
+    response = TestClient(create_app()).post(
+        "/api/ai/runs/run-a/sandbox/leases",
+        headers=headers(),
+        json={
+            "sandbox_mode": "ephemeral",
+            "provider": "fake",
+            "ttl_seconds": 600,
+            "resource_limits": {"max_seconds": 60},
+            "lease_payload": {"purpose": "test"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_lease"]["lease_id"] == "lease-a"
+    assert len(calls) == 1
+    assert calls[0][1]["run_id"] == "run-a"
 
 
 @pytest.mark.parametrize("provider", ("docker", "opensandbox"))
@@ -149,7 +207,7 @@ def test_public_create_never_persists_an_unverified_active_real_provider_lease(m
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.create_sandbox_lease", fake_create_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.create_sandbox_lease", fake_create_sandbox_lease)
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
@@ -213,7 +271,7 @@ def test_release_sandbox_lease_records_release_event(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fake_release_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.release_sandbox_lease", fake_release_sandbox_lease)
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 
@@ -267,7 +325,7 @@ def test_public_real_provider_release_stops_before_db_release(monkeypatch):
         fake_get_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease",
+        "app.sandbox.infrastructure.leases_postgres.release_sandbox_lease",
         fake_release_sandbox_lease,
     )
     monkeypatch.setattr(
@@ -295,6 +353,54 @@ def test_public_real_provider_release_stops_before_db_release(monkeypatch):
     ]
 
 
+def test_public_provider_release_uses_resource_authority_without_settlement_detail(monkeypatch):
+    calls = []
+    resource = verified_runtime_lease_row()
+
+    class LeaseTransport:
+        async def get_sandbox_lease(self, _conn, **_kwargs):
+            raise RuntimeError("attempt_settlement_projection_missing")
+
+        async def get_resource_sandbox_lease(self, _conn, **_kwargs):
+            calls.append(("resource_read", "lease-a"))
+            return dict(resource)
+
+        async def release_sandbox_lease(self, _conn, **kwargs):
+            calls.append(("release", kwargs["lease_id"], kwargs["reason"]))
+            return {**resource, "status": "released", "release_reason": kwargs["reason"]}
+
+    async def stop_sandbox_leases(rows, *, reason, provider_factory):
+        assert rows == [resource]
+        calls.append(("stop", "lease-a", reason))
+        return rows
+
+    async def fake_append_event(_conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.main.build_sandbox_lease_transport_port", lambda: LeaseTransport())
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.sandbox_leases._sandbox_cleanup.stop_sandbox_leases", stop_sandbox_leases)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/sandbox/leases/lease-a/release",
+        headers=headers(),
+        json={"reason": "cancelled"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_lease"]["status"] == "released"
+    assert calls == [
+        ("resource_read", "lease-a"),
+        ("stop", "lease-a", "cancelled"),
+        ("release", "lease-a", "cancelled"),
+        ("event", "sandbox_lease_released"),
+    ]
+
+
 def test_public_release_is_idempotent_after_release(monkeypatch):
     released = verified_runtime_lease_row(status="released", release_reason="cancelled")
 
@@ -314,7 +420,7 @@ def test_public_release_is_idempotent_after_release(monkeypatch):
         fake_get_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease",
+        "app.sandbox.infrastructure.leases_postgres.release_sandbox_lease",
         fail_release,
     )
     monkeypatch.setattr(
@@ -362,7 +468,7 @@ def test_public_release_does_not_mark_real_provider_lease_released_without_confi
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fake_release_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.release_sandbox_lease", fake_release_sandbox_lease)
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     monkeypatch.setattr("app.runtime.sandbox.container_provider.create_container_provider", provider_factory)
     monkeypatch.setattr("app.routes.sandbox_leases.create_container_provider", provider_factory, raising=False)
@@ -399,7 +505,7 @@ def test_release_denied_lookup_has_no_provider_or_db_side_effects(monkeypatch, m
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.get_sandbox_lease", fake_get_sandbox_lease)
-    monkeypatch.setattr("app.routes.sandbox_leases.sandbox_lease_repository.release_sandbox_lease", fail_release_sandbox_lease)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.release_sandbox_lease", fail_release_sandbox_lease)
     monkeypatch.setattr("app.runtime.sandbox.container_provider.create_container_provider", fail_provider_factory)
     monkeypatch.setattr("app.routes.sandbox_leases.create_container_provider", fail_provider_factory, raising=False)
     client = TestClient(create_app())

@@ -22,6 +22,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.bootstrap import session_continuation_projection
+from app.context.api import get_session_continuation
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -254,15 +256,16 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw_agent_id = row.get("agent_id")
     retired_agent = is_retired_agent_for_projection(
-        row.get("agent_id"),
+        raw_agent_id,
         row.get("agent_default_skill_id"),
         row.get("agent_profile_has_retired_skill"),
     )
     agent_id = (
         PUBLIC_RETIRED_AGENT_ID
         if retired_agent
-        else public_agent_id_for_projection(row.get("agent_id"), row.get("agent_default_skill_id"))
+        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
     )
     return {
         "id": row["id"],
@@ -1022,10 +1025,7 @@ def _compatibility_events_for_run_page(
         and event_visible_to_principal(event, principal)
         and (projected := _persisted_v4_message_delta(run, event)) is not None
     }
-    compact_terminal_answer = (
-        compact_answer_deltas
-        and status in {"succeeded", "failed", "cancelled"}
-    )
+    compact_terminal_answer = compact_answer_deltas and runs_api.is_terminal_run_status(status)
     pending_answer_events: list[tuple[dict[str, Any], dict[str, object]]] = []
 
     def emit_answer_event(
@@ -1362,7 +1362,7 @@ def _compatibility_events_for_run_page(
             )
         )
 
-    if include_terminal and status in {"succeeded", "failed", "cancelled"}:
+    if include_terminal and runs_api.is_terminal_run_status(status):
         terminal_data = {"run_id": run_id, "status": status}
         compatibility_events.append(
             _CompatibilityWireEvent(
@@ -1400,17 +1400,10 @@ def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
 
 
 def _platform_status(status: str) -> str:
-    return "cancelled" if status == "canceled" else status
+    return runs_api.normalize_run_status(status)
 
 
-def _lambchat_status(status: str) -> str:
-    status = _platform_status(status)
-    return {
-        "succeeded": "completed",
-        "failed": "error",
-        "queued": "pending",
-        "running": "running",
-    }.get(status, status)
+_lambchat_status = session_continuation_projection.lambchat_status
 
 
 @router.get("/auth/oauth/providers")
@@ -1771,6 +1764,9 @@ async def session_events(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
+        continuation_loader = session_continuation_projection.bind(
+            get_session_continuation, principal
+        )
 
         cursor_payload = (
             _decode_session_events_cursor(
@@ -1859,12 +1855,8 @@ async def session_events(
             target_runs_by_id = {str(run["id"]): run for run in target_runs}
             snapshot = snapshots[cursor_payload["index"]]
             run = target_runs_by_id[snapshot["id"]]
-            if snapshot["status"] in {"succeeded", "failed", "cancelled"}:
-                if _platform_status(str(run.get("status") or "")) != snapshot["status"]:
-                    raise HTTPException(
-                        status_code=400, detail="history_cursor_invalid"
-                    )
-
+            if not session_continuation_projection.cursor_valid(run, snapshot):
+                raise HTTPException(status_code=400, detail="history_cursor_invalid")
 
         if not cursor_payload["runs"]:
             return {
@@ -1874,6 +1866,7 @@ async def session_events(
                 "events": [],
                 "next_cursor": None,
                 "terminal_run_statuses": {},
+                "continuation": await continuation_loader(conn, session_id),
             }
 
         index = cursor_payload["index"]
@@ -2002,6 +1995,7 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
+            "continuation": await continuation_loader(conn, session_id),
         }
 
 
@@ -2042,6 +2036,9 @@ async def chat_status(
     run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    continuation_loader = session_continuation_projection.bind(
+        get_session_continuation, principal
+    )
     async with transaction() as conn:
         session = await conversations_postgres.get_authorized_lambchat_session(
             conn,
@@ -2076,12 +2073,14 @@ async def chat_status(
             target = next(
                 (row for row in rows if row.get("session_generation") is not None), None
             )
+        continuation = await continuation_loader(conn, session_id)
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {
         "session_id": session_id,
         "run_id": run_id,
         "status": _lambchat_status(raw_status),
         "raw_status": raw_status,
+        "continuation": continuation,
     }
 
 

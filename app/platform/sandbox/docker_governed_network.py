@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -19,8 +18,6 @@ from app.platform.sandbox.errors import GovernedEgressAdmissionError
 GOVERNED_DOCKER_CALLBACK_ALIAS = "api.sandbox.internal"
 GOVERNED_DOCKER_API_RELEASE_OWNER = "repo-local-compose"
 GOVERNED_DOCKER_NETWORK_OWNER = "sandbox-runtime-governed-egress-v2"
-
-_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -181,7 +178,17 @@ def docker_api_callback_witness(
     expected_source: str,
 ) -> tuple[Any, str, str]:
     try:
-        containers = client.containers.list(all=True)
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    "ai-platform.release-role=api",
+                    f"ai-platform.release-owner={GOVERNED_DOCKER_API_RELEASE_OWNER}",
+                    f"ai-platform.source-commit={expected_source}",
+                ]
+            },
+            sparse=True,
+        )
     except Exception:
         raise GovernedEgressAdmissionError() from None
     witnesses: list[tuple[Any, str, str]] = []
@@ -224,7 +231,17 @@ def docker_owned_api_callback_container(
     expected_source: str,
 ) -> tuple[Any, str]:
     try:
-        containers = client.containers.list(all=True)
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    "ai-platform.release-role=api",
+                    f"ai-platform.release-owner={GOVERNED_DOCKER_API_RELEASE_OWNER}",
+                    f"ai-platform.source-commit={expected_source}",
+                ]
+            },
+            sparse=True,
+        )
     except Exception:
         raise GovernedEgressAdmissionError() from None
     candidates: list[tuple[Any, str]] = []
@@ -298,17 +315,81 @@ def get_or_create_governed_docker_network(
     return network, network_id, network_name
 
 
+def _has_exact_api_callback_attachment(
+    api_container: Any,
+    network_name: str,
+    network_id: str,
+) -> bool:
+    attrs = getattr(api_container, "attrs", {})
+    network_settings = attrs.get("NetworkSettings") if isinstance(attrs, dict) else None
+    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+    attachment = networks.get(network_name) if isinstance(networks, dict) else None
+    aliases = attachment.get("Aliases") if isinstance(attachment, dict) else None
+    return (
+        isinstance(attachment, dict)
+        and str(attachment.get("NetworkID") or "").strip() == network_id
+        and isinstance(aliases, list)
+        and aliases.count(GOVERNED_DOCKER_CALLBACK_ALIAS) == 1
+    )
+
+
+def _is_duplicate_api_callback_attachment(
+    exc: Exception,
+    *,
+    network_name: str,
+    api_container: Any,
+) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if status_code != 403 and response_status != 403:
+        return False
+    match = re.search(
+        r"endpoint with name ([^\s]+) already exists in network ([^\s\"']+)",
+        str(exc),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return False
+    endpoint_name = str(getattr(api_container, "name", "") or "").lstrip("/")
+    return bool(
+        endpoint_name
+        and match.group(1) == endpoint_name
+        and match.group(2) == network_name
+    )
+
+
 def attach_api_callback_witness(network: Any, api_container: Any) -> None:
     connect = getattr(network, "connect", None)
     if not callable(connect):
         raise GovernedEgressAdmissionError() from None
+    attrs = docker_network_authoritative_attrs(network)
+    network_name = str(attrs.get("Name") or "").strip()
+    network_id = str(attrs.get("Id") or "").strip()
+    if not network_name or not network_id:
+        raise GovernedEgressAdmissionError() from None
+    if _has_exact_api_callback_attachment(api_container, network_name, network_id):
+        return
+    container_attrs = getattr(api_container, "attrs", {})
+    network_settings = container_attrs.get("NetworkSettings") if isinstance(container_attrs, dict) else None
+    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+    if isinstance(networks, dict) and network_name in networks:
+        raise GovernedEgressAdmissionError() from None
     try:
         connect(api_container, aliases=[GOVERNED_DOCKER_CALLBACK_ALIAS])
     except Exception as exc:
-        _logger.debug(
-            "Docker API callback witness is already attached or unavailable",
-            extra={"error_type": type(exc).__name__},
-        )
+        if not _is_duplicate_api_callback_attachment(
+            exc,
+            network_name=network_name,
+            api_container=api_container,
+        ):
+            raise GovernedEgressAdmissionError() from None
+        try:
+            api_container.reload()
+        except Exception:
+            raise GovernedEgressAdmissionError() from None
+        if not _has_exact_api_callback_attachment(api_container, network_name, network_id):
+            raise GovernedEgressAdmissionError() from None
 
 
 def docker_network_attachment(

@@ -46,12 +46,24 @@ async def coverage_db():
                     user_id text, session_id text, agent_id text, engine text, state text,
                     writer_run_id text, writer_attempt_id text, writer_owner_generation int,
                     coverage_source_sha256 text, coverage_message_count int,
-                    coverage_through_generation int, entry_count int, transcript_bytes int);
+                    coverage_through_generation int, entry_count int, transcript_bytes int,
+                    structured_bytes bigint not null default 0);
                 insert into sessions values('session', 'tenant', 'workspace', 'user', 'agent');
                 insert into runs values('current', 'tenant', 'workspace', 'user', 'session', 'agent', 2, 'queued', null);
                 insert into runs values('prior', 'tenant', 'workspace', 'user', 'session', 'agent', 1, 'cancelled', null);
                 insert into messages values('tenant', 'session', 'prior', 'user');
                 insert into provider_session_heads values('tenant', 'workspace', 'user', 'session', 'agent', 'claude', null, 'current');
+                alter table provider_session_heads add column recovery_json jsonb;
+                alter table provider_session_epochs add column coverage_schema_version text;
+                alter table provider_session_epochs add column recovery_json jsonb;
+                alter table provider_session_epochs add column next_sequence bigint;
+                alter table run_attempts add column id text;
+                alter table run_attempts add column execution_spec_json jsonb;
+                alter table run_attempts add column execution_spec_sha256 text;
+                alter table run_attempts add column owner_generation bigint;
+                alter table messages add column id text;
+                create table provider_turn_receipts(tenant_id text, run_id text, epoch_id text,
+                    attempt_id text, start_sequence bigint, user_message_id text, state text);
             """)
             yield conn
         finally:

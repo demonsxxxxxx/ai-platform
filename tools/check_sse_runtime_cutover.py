@@ -24,6 +24,7 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ('app/bootstrap/worker_run_preparation.py', 'prepare_worker_run'),
         ('app/bootstrap/worker_terminal_completion.py', 'build_worker_terminal_completion_service'),
         ('app/executor_reconciler.py', '_terminalize_reconciliation_failure'),
+        ('app/executor_reconciler.py', 'repair_quarantined_executor_checkpoint'),
         ('app/runs/application/cancellation.py', 'RunCancellationPostProcessor.post_cancel'),
         ('app/routes/runtime_callbacks.py', 'record_executor_callback'),
         ('app/streaming/application/worker_publication_v4.py', 'admit_v4_stream'),
@@ -500,7 +501,7 @@ def _is_awaited_call_statement(statement: ast.stmt, qualified_name: str) -> bool
 
 
 def _worker_admission_failures(worker: ast.AST) -> list[str]:
-    dispatch_name = "worker_execution_bootstrap.submit_worker_run_until_cancelled"
+    dispatch_name = "worker_execution_bootstrap.execute_worker_run"
     dispatch_line = _unique_call_line(
         _calls(worker),
         qualified_name=dispatch_name,
@@ -514,10 +515,7 @@ def _worker_admission_failures(worker: ast.AST) -> list[str]:
             ):
                 continue
             for dispatch_index, statement in enumerate(value):
-                if (
-                    dispatch_name,
-                    dispatch_line,
-                ) not in _calls(statement):
+                if (dispatch_name, dispatch_line) not in _calls(statement):
                     continue
                 if any(
                     _is_awaited_call_statement(prior, "admit_v4_stream")

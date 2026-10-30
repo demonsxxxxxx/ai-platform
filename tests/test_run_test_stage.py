@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.support import lifecycle_candidate_evidence, run_lifecycle_docker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SOURCE = REPO_ROOT / "tools" / "run_test_stage.py"
@@ -72,6 +73,166 @@ def _make_repo(tmp_path: Path, tests: dict[str, str]) -> Path:
     _git(repo, "add", "--all")
     _git(repo, "commit", "-m", "fixture")
     return repo
+
+
+def _lifecycle_evidence_bundle(tmp_path: Path, repo: Path):
+    bundle = tmp_path / "lifecycle-evidence"
+    bundle.mkdir()
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    binding = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    image_id = "sha256:" + "1" * 64
+    accepted = {
+        "accepted": True,
+        "operation_id": "op-synthetic",
+        "provider_name": "opensandbox",
+        "provider_version": "opensandbox-1.0.0",
+        "run_id": "run-synthetic",
+        "attempt_id": "attempt-synthetic",
+        "resource_id": "resource-synthetic",
+        "image_id": image_id,
+    }
+    artifact_payloads = {
+        "image_inspect": {
+            "id": image_id,
+            "labels": {
+                "ai-platform.source-commit": binding["head_sha"],
+                "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+                "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+                "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+            },
+        },
+        "security_profile": {
+            "profile_id": "lifecycle-sandbox-profile-v1",
+            "sha256": "5" * 64,
+            "enforced": True,
+        },
+        "provider_acceptance": accepted,
+        "sdk_invocation": {
+            "sdk_used": True,
+            "sdk_name": "agent-sdk",
+            "sdk_version": "1.2.3",
+            "invocation_id": "invocation-synthetic",
+            "session_id": "session-synthetic",
+            "run_id": accepted["run_id"],
+            "attempt_id": accepted["attempt_id"],
+            "resource_id": accepted["resource_id"],
+            "image_id": image_id,
+        },
+        "callback_receipt": {
+            "callback_received": True,
+            "http_status": 200,
+            "run_id": accepted["run_id"],
+            "attempt_id": accepted["attempt_id"],
+            "receipt_sha256": "2" * 64,
+        },
+        "answer_delivery": {
+            "delivered": True,
+            "http_status": 200,
+            "run_id": accepted["run_id"],
+            "answer_sha256": "3" * 64,
+        },
+        "file_download": {
+            "downloaded": True,
+            "http_status": 200,
+            "run_id": accepted["run_id"],
+            "sha256": "4" * 64,
+        },
+        "resource_stop": {
+            "stop_confirmed": True,
+            "released": True,
+            "resource_id": accepted["resource_id"],
+        },
+        "native_resume": {
+            "verified": True,
+            "current_authorization_rechecked": True,
+            "session_id": "session-synthetic",
+            "source_task": {
+                "accepted": True,
+                "operation_id": accepted["operation_id"],
+                "provider_name": accepted["provider_name"],
+                "provider_version": accepted["provider_version"],
+                "run_id": accepted["run_id"],
+                "attempt_id": accepted["attempt_id"],
+                "resource_id": accepted["resource_id"],
+                "image_id": image_id,
+                "sandbox_id": "sandbox-source",
+                "epoch_id": "epoch-1",
+                "sdk_invocation_id": "invocation-synthetic",
+            },
+            "target_task": {
+                "accepted": True,
+                "operation_id": "op-resume-synthetic",
+                "provider_name": accepted["provider_name"],
+                "provider_version": accepted["provider_version"],
+                "run_id": "run-resumed-synthetic",
+                "attempt_id": "attempt-resumed-synthetic",
+                "resource_id": "resource-resumed-synthetic",
+                "image_id": image_id,
+                "sandbox_id": "sandbox-target",
+                "epoch_id": "epoch-2",
+                "sdk_invocation": {
+                    "sdk_used": True,
+                    "sdk_name": "agent-sdk",
+                    "sdk_version": "1.2.3",
+                    "invocation_id": "invocation-resume-synthetic",
+                    "session_id": "session-synthetic",
+                    "run_id": "run-resumed-synthetic",
+                    "attempt_id": "attempt-resumed-synthetic",
+                    "resource_id": "resource-resumed-synthetic",
+                    "image_id": image_id,
+                },
+            },
+        },
+    }
+    records = []
+    for kind, payload in artifact_payloads.items():
+        content = json.dumps(payload, sort_keys=True).encode("utf-8")
+        (bundle / f"{kind}.json").write_bytes(content)
+        records.append(
+            {
+                "kind": kind,
+                "path": f"{kind}.json",
+                "sha256": lifecycle_candidate_evidence._sha256(content),
+            }
+        )
+    report = {
+        "schema_version": lifecycle_candidate_evidence.SCHEMA_VERSION,
+        "evidence_level": "L",
+        "status": "passed",
+        "source": binding,
+        "image": {
+            "id": image_id,
+            "source_head_sha": binding["head_sha"],
+            "dirty_source_sha256": binding["dirty_source_sha256"],
+            "lock_sha256": binding["lock_sha256"],
+            "build_dirty": binding["dirty"],
+        },
+        "dependencies": {
+            "python": "3.13.14",
+            "postgresql": "16.4",
+            "redis": "7.4.2",
+            "minio": "2025.4.22",
+            "agent_sdk": "1.2.3",
+            "provider": "opensandbox-1.0.0",
+        },
+        "security_profile": {
+            "id": "lifecycle-sandbox-profile-v1",
+            "sha256": "5" * 64,
+            "enforced": True,
+        },
+        "execution": {
+            "sdk_used": True,
+            "provider_used": True,
+            "scenarios": {
+                "R01": {"status": "passed"},
+                "R14": {"status": "passed"},
+            },
+        },
+        "evidence_artifacts": records,
+    }
+    report_path = bundle / "report.json"
+    report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    return bundle, report_path, image_id
 
 
 def _runner(
@@ -161,6 +322,478 @@ def test_runner_executes_explicit_selector_with_local_evidence(tmp_path):
     assert str(paths["basetemp"]).startswith(".pytest-tmp/test-runs/")
     assert (repo / str(paths["junit"])).is_file()
     assert (repo / str(paths["evidence"])).is_file()
+
+
+def test_runner_rejects_an_empty_selector_list(tmp_path):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+
+    completed = _runner(repo, "--stage", "empty-selector")
+
+    assert completed.returncode == 2
+    assert "required: selectors" in completed.stderr
+    assert not (repo / ".pytest-tmp" / "test-runs").exists()
+
+
+def test_missing_test_dependency_cannot_pass_zero_skip_stage(tmp_path):
+    repo = _make_repo(
+        tmp_path,
+        {
+            "test_missing_dependency.py": (
+                "import pytest\n\n"
+                "def test_required_dependency():\n"
+                "    pytest.importorskip('module_that_does_not_exist_for_lifecycle_gate')\n"
+            )
+        },
+    )
+
+    completed = _runner(
+        repo,
+        "--stage",
+        "missing-dependency",
+        "--require-zero-skips",
+        "tests/test_missing_dependency.py",
+    )
+
+    assert completed.returncode == 6
+    evidence = _single_evidence(repo)
+    assert evidence["status"] == "failed"
+    assert evidence["code"] == "skipped_tests_forbidden"
+    assert evidence["pytest"]["skipped"] == 1
+
+
+def test_lifecycle_candidate_evidence_requires_source_image_and_chain_artifacts(tmp_path):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    bundle, report_path, image_id = _lifecycle_evidence_bundle(tmp_path, repo)
+
+    summary = lifecycle_candidate_evidence.validate_candidate_evidence(
+        report_path,
+        repo_root=repo,
+        bundle_root=bundle,
+        image_id=image_id,
+    )
+
+    assert summary["status"] == "validated"
+    assert summary["evidence_level"] == "L"
+    assert summary["scenario_ids"] == ["R01", "R14"]
+    assert summary["evidence_artifacts"] == 9
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    [
+        (
+            "unrelated-sdk-run",
+            "SDK invocation is not bound to accepted Run/Attempt/resource/image",
+        ),
+        (
+            "unrelated-resume-source",
+            "native resume source task does not match first accepted execution",
+        ),
+        (
+            "unrelated-resume-session",
+            "native resume target SDK invocation does not match target task at session_id",
+        ),
+    ],
+)
+def test_lifecycle_candidate_evidence_rejects_unrelated_sdk_or_resume_chain(
+    tmp_path, mutation, expected_message
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    bundle, report_path, image_id = _lifecycle_evidence_bundle(tmp_path, repo)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    kind = "sdk_invocation" if mutation == "unrelated-sdk-run" else "native_resume"
+    artifact_record = next(
+        record for record in report["evidence_artifacts"] if record["kind"] == kind
+    )
+    artifact_path = bundle / artifact_record["path"]
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    if mutation == "unrelated-sdk-run":
+        artifact_payload["run_id"] = "run-unrelated-synthetic"
+    elif mutation == "unrelated-resume-source":
+        artifact_payload["source_task"]["run_id"] = "run-unrelated-synthetic"
+    elif mutation == "unrelated-resume-session":
+        artifact_payload["target_task"]["sdk_invocation"]["session_id"] = (
+            "session-unrelated-synthetic"
+        )
+    content = json.dumps(artifact_payload, sort_keys=True).encode("utf-8")
+    artifact_path.write_bytes(content)
+    artifact_record["sha256"] = lifecycle_candidate_evidence._sha256(content)
+    report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(lifecycle_candidate_evidence.EvidenceValidationError) as caught:
+        lifecycle_candidate_evidence.validate_candidate_evidence(
+            report_path,
+            repo_root=repo,
+            bundle_root=bundle,
+            image_id=image_id,
+        )
+
+    assert expected_message in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    [
+        ("empty-artifacts", "missing chain evidence artifacts"),
+        ("wrong-source", "report source binding differs at head_sha"),
+        ("wrong-image", "report image id differs from inspected candidate"),
+        ("wrong-image-source", "candidate image was built from a different source SHA"),
+        (
+            "wrong-image-label",
+            "candidate image label does not match at ai-platform.source-commit",
+        ),
+        ("missing-dependency", "dependencies.redis must contain an observed value"),
+    ],
+)
+def test_lifecycle_candidate_evidence_negative_controls_fail_closed(
+    tmp_path, mutation, expected_message
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    bundle, report_path, image_id = _lifecycle_evidence_bundle(tmp_path, repo)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if mutation == "empty-artifacts":
+        report["evidence_artifacts"] = []
+    elif mutation == "wrong-source":
+        report["source"]["head_sha"] = "0" * 40
+    elif mutation == "wrong-image":
+        report["image"]["id"] = "sha256:" + "0" * 64
+    elif mutation == "wrong-image-source":
+        report["image"]["source_head_sha"] = "0" * 40
+    elif mutation == "wrong-image-label":
+        artifact_record = next(
+            record for record in report["evidence_artifacts"] if record["kind"] == "image_inspect"
+        )
+        artifact_path = bundle / artifact_record["path"]
+        artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact_payload["labels"]["ai-platform.source-commit"] = "0" * 40
+        content = json.dumps(artifact_payload, sort_keys=True).encode("utf-8")
+        artifact_path.write_bytes(content)
+        artifact_record["sha256"] = lifecycle_candidate_evidence._sha256(content)
+    elif mutation == "missing-dependency":
+        report["dependencies"]["redis"] = "unknown"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(lifecycle_candidate_evidence.EvidenceValidationError) as caught:
+        lifecycle_candidate_evidence.validate_candidate_evidence(
+            report_path,
+            repo_root=repo,
+            bundle_root=bundle,
+            image_id=image_id,
+        )
+
+    assert expected_message in str(caught.value)
+
+
+def test_lifecycle_candidate_evidence_rejects_source_mutation_after_capture(tmp_path):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    bundle, report_path, image_id = _lifecycle_evidence_bundle(tmp_path, repo)
+    (repo / "tests" / "test_pass.py").write_text(
+        "def test_pass():\n    assert False\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        lifecycle_candidate_evidence.EvidenceValidationError,
+        match="report source binding differs at dirty_source_sha256",
+    ):
+        lifecycle_candidate_evidence.validate_candidate_evidence(
+            report_path,
+            repo_root=repo,
+            bundle_root=bundle,
+            image_id=image_id,
+        )
+
+
+def test_candidate_source_binding_hashes_external_symlink_text_without_reading_target(
+    tmp_path, monkeypatch
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    target_a = tmp_path / "external-node-modules-a"
+    target_b = tmp_path / "external-node-modules-b"
+    target_a.mkdir()
+    target_b.mkdir()
+    target_file = target_a / "package.js"
+    target_file.write_text("EXTERNAL_CONTENT_A", encoding="utf-8")
+    (target_b / "package.js").write_text("EXTERNAL_CONTENT_B", encoding="utf-8")
+    link = repo / "node_modules"
+    try:
+        link.symlink_to(target_a, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"directory symlink unavailable: {error}")
+
+    root = repo.resolve()
+    original_open = Path.open
+
+    def open_candidate_files_only(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if "r" in mode or "+" in mode:
+            assert path.resolve().is_relative_to(root), "external symlink target contents must not be read"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_candidate_files_only)
+    first = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+    target_file.write_text("EXTERNAL_CONTENT_CHANGED", encoding="utf-8")
+    same_link = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    assert same_link["dirty_source_sha256"] == first["dirty_source_sha256"]
+
+    link.unlink()
+    link.symlink_to(target_b, target_is_directory=True)
+    changed_link = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    assert changed_link["dirty_source_sha256"] != first["dirty_source_sha256"]
+
+
+def test_candidate_source_binding_rejects_external_lockfile_without_reading_it(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    external = tmp_path / "external.lock"
+    external.write_text("EXTERNAL_LOCK_CONTENT", encoding="utf-8")
+    (repo / "uv.lock").symlink_to(external)
+    original_read = Path.read_bytes
+
+    def read_candidate_only(path):
+        assert path.resolve().is_relative_to(repo.resolve())
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_candidate_only)
+    with pytest.raises(
+        lifecycle_candidate_evidence.EvidenceValidationError,
+        match="candidate uv.lock resolves outside the worktree",
+    ):
+        lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+
+def test_candidate_source_binding_rejects_ordinary_file_below_external_symlink(
+    tmp_path, monkeypatch
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    external = tmp_path / "external-source"
+    external.mkdir()
+    (external / "package.py").write_text("external source", encoding="utf-8")
+    (repo / "node_modules").symlink_to(external, target_is_directory=True)
+
+    def git_paths(_root, *arguments):
+        if arguments == ("rev-parse", "HEAD"):
+            return b"a" * 40
+        if arguments == ("ls-files", "--cached", "--others", "--exclude-standard", "-z"):
+            return b"node_modules/package.py\0"
+        if arguments == ("status", "--porcelain", "--untracked-files=all"):
+            return b""
+        raise AssertionError(f"unexpected Git arguments: {arguments}")
+
+    monkeypatch.setattr(lifecycle_candidate_evidence, "_git", git_paths)
+    with pytest.raises(
+        lifecycle_candidate_evidence.EvidenceValidationError,
+        match="candidate path resolves outside the worktree",
+    ):
+        lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+
+def test_lifecycle_control_manifest_binds_candidate_runtime_and_profile(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    binding = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    image_id = "sha256:" + "6" * 64
+    labels = {
+        "ai-platform.source-commit": binding["head_sha"],
+        "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+        "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+        "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+    }
+    monkeypatch.setattr(run_lifecycle_docker, "ROOT", repo)
+    monkeypatch.setattr(
+        run_lifecycle_docker,
+        "_inspect_candidate_image",
+        lambda _: {"id": image_id, "labels": labels},
+    )
+
+    class Runtime:
+        def runtime_dependency_versions(self):
+            return {
+                "python": "Python 3.13.14",
+                "postgresql": "postgres (PostgreSQL) 16.10",
+                "redis": "Redis server v=7.4.2",
+                "minio": "minio version RELEASE.2025-05-24",
+            }
+
+        def security_profile_observation(self, *, image_id):
+            return {
+                "profile_id": "governed",
+                "egress_policy_enabled_in_api_config": True,
+                "runtime_image_ids": {"api": image_id, "identity": image_id},
+            }
+
+    output = tmp_path / "control-evidence"
+    manifest_path = run_lifecycle_docker.write_lifecycle_control_evidence(
+        output,
+        image_id=image_id,
+        source_commit=str(binding["head_sha"]),
+        stack=Runtime(),
+        scenario={"run_id": "run-synthetic", "provider": "docker"},
+    )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["sdk_used"] is False
+    assert manifest["image_id"] == image_id
+    assert len(manifest["candidate_artifacts"]) == 4
+    artifact_payloads = {}
+    for artifact in manifest["candidate_artifacts"]:
+        content = (output / artifact["path"]).read_bytes()
+        assert lifecycle_candidate_evidence._sha256(content) == artifact["sha256"]
+        artifact_payloads[artifact["path"]] = json.loads(content)
+    assert artifact_payloads["runtime-dependency-versions.json"]["redis"] == (
+        "Redis server v=7.4.2"
+    )
+    profile = artifact_payloads["sandbox-security-profile.json"]
+    assert profile["profile_id"] == "governed"
+    assert "enforced" not in profile
+
+
+def _lifecycle_build_repo(tmp_path: Path) -> Path:
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    for relative, content in {
+        "uv.lock": "version = 1\n",
+        "Dockerfile": "FROM python:3.13-slim\n",
+        "tests/support/run_lifecycle_executor.py": "# fixture\n",
+        "tests/support/run_lifecycle_docker_proxy.py": "# fixture\n",
+        "tests/fixtures/run-lifecycle/Dockerfile": "FROM python:3.13-slim\n",
+    }.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return repo
+
+
+def test_lifecycle_image_build_labels_source_and_lockfile_and_inspects_them(
+    tmp_path, monkeypatch
+):
+    repo = _lifecycle_build_repo(tmp_path)
+    binding = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    image_id = "sha256:" + "8" * 64
+    labels = {
+        "ai-platform.source-commit": binding["head_sha"],
+        "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+        "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+        "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+    }
+    commands = []
+    monkeypatch.setattr(run_lifecycle_docker, "ROOT", repo)
+    monkeypatch.setattr(
+        run_lifecycle_docker,
+        "_run_build",
+        lambda command, log_path: commands.append(command),
+    )
+    monkeypatch.setattr(
+        run_lifecycle_docker,
+        "_inspect_candidate_image",
+        lambda _: {"id": image_id, "labels": labels},
+    )
+
+    built_id = run_lifecycle_docker.build_control_image(tmp_path / "build-evidence")
+
+    assert built_id == image_id
+    assert len(commands) == 2
+    expected_labels = {f"{name}={value}" for name, value in labels.items()}
+    for command in commands:
+        actual_labels = {
+            command[index + 1]
+            for index, argument in enumerate(command[:-1])
+            if argument == "--label"
+        }
+        assert expected_labels <= actual_labels
+
+
+def test_lifecycle_image_build_rejects_source_changes_during_build(tmp_path, monkeypatch):
+    repo = _lifecycle_build_repo(tmp_path)
+    binding = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    image_id = "sha256:" + "9" * 64
+    labels = {
+        "ai-platform.source-commit": binding["head_sha"],
+        "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+        "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+        "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+    }
+    builds = 0
+
+    def build(command, log_path):
+        nonlocal builds
+        builds += 1
+        if builds == 1:
+            source_path = repo / "tests/support/run_lifecycle_executor.py"
+            source_path.write_text("# changed while building\n", encoding="utf-8")
+
+    monkeypatch.setattr(run_lifecycle_docker, "ROOT", repo)
+    monkeypatch.setattr(run_lifecycle_docker, "_run_build", build)
+    monkeypatch.setattr(
+        run_lifecycle_docker,
+        "_inspect_candidate_image",
+        lambda _: {"id": image_id, "labels": labels},
+    )
+
+    with pytest.raises(RuntimeError, match="source changed while lifecycle image was being built"):
+        run_lifecycle_docker.build_control_image(tmp_path / "build-evidence")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_message"),
+    [
+        ("wrong-image", "candidate image source binding differs"),
+        ("mutated-tree", "candidate image source binding differs"),
+        ("missing-dependency", "lifecycle redis version was not observed"),
+    ],
+)
+def test_lifecycle_control_manifest_rejects_wrong_image_tree_or_missing_dependency(
+    tmp_path, monkeypatch, mutation, expected_message
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    binding = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    image_id = "sha256:" + "7" * 64
+    labels = {
+        "ai-platform.source-commit": binding["head_sha"],
+        "ai-platform.source-tree-sha256": binding["dirty_source_sha256"],
+        "ai-platform.uv-lock-sha256": binding["lock_sha256"],
+        "ai-platform.build-dirty": str(binding["dirty"]).lower(),
+    }
+    if mutation == "wrong-image":
+        labels["ai-platform.source-commit"] = "0" * 40
+    monkeypatch.setattr(run_lifecycle_docker, "ROOT", repo)
+    monkeypatch.setattr(
+        run_lifecycle_docker,
+        "_inspect_candidate_image",
+        lambda _: {"id": image_id, "labels": labels},
+    )
+
+    class Runtime:
+        def runtime_dependency_versions(self):
+            versions = {
+                "python": "Python 3.13.14",
+                "postgresql": "postgres (PostgreSQL) 16.10",
+                "redis": "Redis server v=7.4.2",
+                "minio": "minio version RELEASE.2025-05-24",
+            }
+            if mutation == "missing-dependency":
+                versions.pop("redis")
+            return versions
+
+        def security_profile_observation(self, *, image_id):
+            return {
+                "profile_id": "governed",
+                "egress_policy_enabled_in_api_config": True,
+                "runtime_image_ids": {"api": image_id, "identity": image_id},
+            }
+
+    if mutation == "mutated-tree":
+        (repo / "tests" / "test_pass.py").write_text(
+            "def test_pass():\n    assert False\n", encoding="utf-8"
+        )
+    with pytest.raises(RuntimeError, match=expected_message):
+        run_lifecycle_docker.write_lifecycle_control_evidence(
+            tmp_path / "control-evidence",
+            image_id=image_id,
+            source_commit=str(binding["head_sha"]),
+            stack=Runtime(),
+            scenario={"run_id": "run-synthetic"},
+        )
 
 
 def test_runner_supports_deep_temporary_fixture_paths(tmp_path):

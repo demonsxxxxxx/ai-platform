@@ -3,6 +3,7 @@ from app.platform.tracing import safe_exception_log_fields
 from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import json
+import logging
 import sys
 import types
 from contextlib import asynccontextmanager
@@ -7090,6 +7091,14 @@ async def test_sdk_unknown_local_exceptions_do_not_claim_provider_or_input_failu
     assert exception_text in str(result.runtime_diagnostics)
 
 
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["success", "failure", "cancel"])
 @pytest.mark.usefixtures("terminal_stage_logs")
@@ -7100,7 +7109,18 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
     caplog.set_level("INFO")
     sdk = _fake_sdk({}, hook_invocations=[])
     original_query = sdk.query
-    failure = asyncio.CancelledError() if ending == "cancel" else RuntimeError("private flush failure /path token")
+    private_prompt = "SDK_PRIVATE_PROMPT_SENTINEL"
+    private_path = "/workspace/private-output.txt"
+    private_token = "SDK_PRIVATE_TOKEN_SENTINEL"
+    failure = (
+        asyncio.CancelledError(
+            f"SDK_PRIVATE_FLUSH_SENTINEL {private_path} token={private_token}"
+        )
+        if ending == "cancel"
+        else RuntimeError(
+            f"SDK_PRIVATE_FLUSH_SENTINEL {private_path} token={private_token}"
+        )
+    )
 
     async def delayed_query(**kwargs):
         async for message in original_query(**kwargs):
@@ -7115,11 +7135,12 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     if ending == "cancel":
-        with pytest.raises(asyncio.CancelledError):
-            await run_claude_agent_sdk(prompt="private prompt", cwd=tmp_path, skill_id=None,
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await run_claude_agent_sdk(prompt=private_prompt, cwd=tmp_path, skill_id=None,
                                       run_id="run-a", attempt_id="attempt-a")
+        assert caught.value is failure
     else:
-        result = await run_claude_agent_sdk(prompt="private prompt", cwd=tmp_path, skill_id=None,
+        result = await run_claude_agent_sdk(prompt=private_prompt, cwd=tmp_path, skill_id=None,
                                            run_id="run-a", attempt_id="attempt-a")
         assert (result.error is None) == (ending == "success")
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
@@ -7127,7 +7148,11 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
     assert records[0].terminal_phase == "sdk_final_flush"
     assert records[0].terminal_phase_duration_ms == 1750
     assert records[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
-    assert "private" not in repr(vars(records[0]))
+    logged = repr(_log_payload(records[0]))
+    assert private_prompt not in logged
+    assert private_path not in logged
+    assert private_token not in logged
+    assert "SDK_PRIVATE_FLUSH_SENTINEL" not in logged
 
 
 async def _persist_sdk_failure_diagnostics(result):
@@ -7294,7 +7319,8 @@ async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkey
     assert closed.is_set()
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == "" and not result.received_structured_terminal
-    assert result.provider_final_sequence is None
+    assert result.provider_final_sequence == 1
+    assert result.sdk_settlement["mirror_complete"] is False
     assert result.response_files == [] and result.response_file_descriptors == []
     assert len(json.dumps(result.runtime_diagnostics).encode()) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
     public, private = await _persist_sdk_failure_diagnostics(result)

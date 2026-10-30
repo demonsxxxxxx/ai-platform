@@ -1,6 +1,69 @@
-"""Leases persistence. Callers own the connection and transaction."""
+"""Sandbox lease PostgreSQL adapters. Callers own the connection and transaction."""
 
 from __future__ import annotations
+
+from app.sandbox.domain.lease_errors import (
+    SandboxExecutorTerminalConflictError as SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
+)
+from app.sandbox.infrastructure.executor_cleanup_postgres import (
+    claim_failed_sandbox_executor_reconciliation_cleanups as claim_failed_sandbox_executor_reconciliation_cleanups,
+    finalize_failed_sandbox_executor_reconciliation_cleanup as finalize_failed_sandbox_executor_reconciliation_cleanup,
+    get_sandbox_resource_cleanup_summary as get_sandbox_resource_cleanup_summary,
+    has_failed_sandbox_executor_reconciliation_cleanup_claim as has_failed_sandbox_executor_reconciliation_cleanup_claim,
+    mark_sandbox_executor_reconciliation_cleanup_pending as mark_sandbox_executor_reconciliation_cleanup_pending,
+    mark_sandbox_executor_cleanup_pending as mark_sandbox_executor_cleanup_pending,
+    quarantine_failed_sandbox_executor_reconciliation_cleanup as quarantine_failed_sandbox_executor_reconciliation_cleanup,
+    release_failed_sandbox_executor_reconciliation_cleanup_claim as release_failed_sandbox_executor_reconciliation_cleanup_claim,
+)
+from app.sandbox.infrastructure.executor_probe_postgres import (
+    claim_sandbox_executor_suspects as claim_sandbox_executor_suspects,
+    list_sandbox_executor_suspect_candidate_scopes as list_sandbox_executor_suspect_candidate_scopes,
+    read_unknown_receipt_probe_recovery_facts as read_unknown_receipt_probe_recovery_facts,
+    release_sandbox_executor_probe_claim as release_sandbox_executor_probe_claim,
+)
+from app.sandbox.infrastructure.executor_terminal_postgres import (
+    record_sandbox_executor_terminal as record_sandbox_executor_terminal,
+    record_sandbox_executor_terminal_observation as record_sandbox_executor_terminal_observation,
+    record_sandbox_executor_terminal_diagnostics as record_sandbox_executor_terminal_diagnostics,
+)
+from app.sandbox.infrastructure.executor_terminal_reconciliation_postgres import (
+    claim_sandbox_executor_reconciliations as claim_sandbox_executor_reconciliations,
+    get_sandbox_executor_reconciliation_summary as get_sandbox_executor_reconciliation_summary,
+    has_sandbox_executor_reconciliation_claim as has_sandbox_executor_reconciliation_claim,
+    is_sandbox_executor_reconciliation_claim_current as is_sandbox_executor_reconciliation_claim_current,
+    list_sandbox_executor_reconciliation_candidate_scopes as list_sandbox_executor_reconciliation_candidate_scopes,
+    next_sandbox_executor_reconciliation_retry_delay as next_sandbox_executor_reconciliation_retry_delay,
+    quarantine_sandbox_executor_reconciliation as quarantine_sandbox_executor_reconciliation,
+    retry_sandbox_executor_reconciliation as retry_sandbox_executor_reconciliation,
+)
+from app.sandbox.infrastructure.lease_runtime_postgres import (
+    cleanup_expired_sandbox_leases as cleanup_expired_sandbox_leases,
+    create_sandbox_lease as create_sandbox_lease,
+    fence_sandbox_lease_release as fence_sandbox_lease_release,
+    get_sandbox_lease_scope as get_sandbox_lease_scope,
+    list_expired_active_sandbox_leases as list_expired_active_sandbox_leases,
+    new_lease_id as new_lease_id,
+    record_opensandbox_renewal_receipt as record_opensandbox_renewal_receipt,
+    record_sandbox_executor_accepted as record_sandbox_executor_accepted,
+    record_sandbox_executor_accepted_observation as record_sandbox_executor_accepted_observation,
+    record_sandbox_executor_heartbeat as record_sandbox_executor_heartbeat,
+    release_active_sandbox_leases_for_run as release_active_sandbox_leases_for_run,
+    release_sandbox_lease as release_sandbox_lease,
+    release_stopped_sandbox_leases as release_stopped_sandbox_leases,
+)
+from app.sandbox.infrastructure.checkpoints_postgres import (
+    claim_quarantined_checkpoint_for_repair_legacy as claim_quarantined_checkpoint_for_repair_legacy,
+    claim_quarantined_checkpoint_for_repair_resource as claim_quarantined_checkpoint_for_repair_resource,
+    finalize_stopped_executor_checkpoint_legacy as finalize_stopped_executor_checkpoint_legacy,
+    finalize_stopped_executor_checkpoint_resource as finalize_stopped_executor_checkpoint_resource,
+    get_quarantined_checkpoint_for_repair_legacy as get_quarantined_checkpoint_for_repair_legacy,
+    get_quarantined_checkpoint_for_repair_resource as get_quarantined_checkpoint_for_repair_resource,
+    get_scoped_checkpoint_lease as get_scoped_checkpoint_lease,
+    record_sandbox_reconciliation_stage_legacy as record_sandbox_reconciliation_stage_legacy,
+    record_sandbox_reconciliation_stage_resource as record_sandbox_reconciliation_stage_resource,
+)
+
 
 from app.platform.public_payload import sanitize_public_text
 from app.identity.infrastructure.audit_postgres import append_audit_log
@@ -14,9 +77,10 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
         """select id as lease_id, attempt_id, provider, sandbox_mode, status,
                   heartbeat_at, expires_at, released_at, release_reason,
                   executor_status, executor_heartbeat_at, executor_terminal_received_at,
-                  executor_reconciliation_status, executor_reconciliation_attempt_count,
-                  executor_terminal_reconciliation_attempt_count, executor_reconciled_at,
-                  executor_reconciliation_context_json->'dispatch_timings' as dispatch_timings
+                  executor_reconciliation_attempt_count, executor_reconciliation_error,
+                  executor_reconciled_at, executor_probe_claimed_at,
+                  executor_cleanup_status, executor_cleanup_claimed_at,
+                  executor_cleanup_retry_not_before
            from sandbox_leases where tenant_id=%s and run_id=%s
            order by created_at desc limit 101""", (tenant_id, run_id),
     )
@@ -24,17 +88,9 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
     projected = []
     for row in rows[:100]:
         item = dict(row)
-        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_reconciliation_status", "release_reason"):
+        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_cleanup_status", "release_reason"):
             item[name] = sanitize_public_text(item.get(name))[:256] or None
-        timings = item.get("dispatch_timings")
-        item["dispatch_timings"] = {
-            name: value for name, value in (timings.items() if isinstance(timings, dict) else ())
-            if name in {"sandbox_queue_wait_latency_ms", "sandbox_lease_acquire_latency_ms", "sandbox_container_start_latency_ms",
-                        "sandbox_container_cold_start_latency_ms", "sandbox_healthcheck_latency_ms", "sandbox_executor_dispatch_latency_ms",
-                        "executor_first_token_latency_ms", "executor_tool_call_latency_ms", "executor_model_latency_ms",
-                        "document_processing_latency_ms", "artifact_upload_latency_ms", "sandbox_cleanup_latency_ms", "sandbox_total_latency_ms"}
-            and type(value) in (int, float) and 0 <= value <= 86_400_000
-        }
+        item["dispatch_timings"] = {}
         projected.append(item)
     return {"leases": projected, "leases_truncated": len(rows) > 100, "lease_limit": 100}
 
@@ -133,12 +189,22 @@ async def list_current_sandbox_runtime_leases_for_attempt(
           and sandbox_leases.status = 'active'
           and sandbox_leases.expires_at is not null
           and sandbox_leases.expires_at > clock_timestamp()
-        order by sandbox_leases.created_at asc
-        for update of sandbox_leases, run_attempts
+        order by sandbox_leases.id asc
+        for update of sandbox_leases
         """,
         (tenant_id, run_id, attempt_id),
     )
-    return list(await cursor.fetchall())
+    rows = list(await cursor.fetchall())
+    if rows:
+        await conn.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    return rows
 
 
 async def list_cancelling_provider_tail_leases_for_attempt(
@@ -164,9 +230,65 @@ async def list_cancelling_provider_tail_leases_for_attempt(
           and runs.status = 'running' and runs.cancel_requested_at is not null
           and lease.status = 'active' and lease.released_at is null
           and lease.expires_at is not null and lease.expires_at > clock_timestamp()
-        order by lease.created_at asc for update of lease, attempt
+        order by lease.id asc for update of lease
         """, (tenant_id, run_id, attempt_id),
     )
+    rows = list(await cursor.fetchall())
+    if rows:
+        await conn.execute(
+            """
+            select id from run_attempts
+            where tenant_id = %s and run_id = %s and id = %s
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    return rows
+
+
+async def list_cancelling_executor_terminal_leases_for_attempt(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+) -> list[dict[str, Any]]:
+    """Lock only the original live lease for terminal-receipt cancellation drain."""
+    query = """
+        select lease.* from sandbox_leases lease
+        join run_attempts attempt on attempt.tenant_id = lease.tenant_id
+          and attempt.run_id = lease.run_id and attempt.id = lease.attempt_id
+        join runs on runs.tenant_id = attempt.tenant_id and runs.id = attempt.run_id
+        where lease.tenant_id = %s and lease.run_id = %s
+          and lease.attempt_id = %s
+          and lease.workspace_id = runs.workspace_id
+          and lease.user_id = runs.user_id
+          and lease.session_id = runs.session_id
+          and lease.lease_payload_json->>'attempt_id' = lease.attempt_id
+          and lease.lease_payload_json->>'owner_generation' = (attempt.owner_generation - 1)::text
+          and attempt.status = 'cancel_requested'
+          and attempt.owner_kind = 'queue_worker'
+          and runs.status = 'running' and runs.cancel_requested_at is not null
+          and lease.status = 'active' and lease.released_at is null
+          and lease.expires_at is not null and lease.expires_at > clock_timestamp()
+        order by lease.id asc
+    """
+    params = (tenant_id, run_id, attempt_id)
+    cursor = await conn.execute(query + " for update of lease", params)
+    rows = list(await cursor.fetchall())
+    if not rows:
+        return []
+    await conn.execute(
+        """
+        select id from run_attempts
+        where tenant_id = %s and run_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
+    # Recheck after taking the Attempt lock so a takeover that won the race
+    # cannot reuse the row observed by the lease-first query above.
+    cursor = await conn.execute(query, params)
     return list(await cursor.fetchall())
 
 
@@ -288,5 +410,25 @@ async def lock_scoped_reconciliation_receipt(
         """,
         (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
          claim_token, str(expected_owner_generation)),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def lock_scoped_reconciliation_resource(
+    conn, *, tenant_id: str, workspace_id: str, user_id: str, session_id: str,
+    run_id: str, attempt_id: str, lease_id: str, expected_owner_generation: int,
+) -> bool:
+    """Lock the exact Sandbox resource while Runs supplies settlement authority."""
+    cursor = await conn.execute(
+        """
+        select id from sandbox_leases
+        where id = %s and tenant_id = %s and workspace_id = %s and user_id = %s
+          and session_id = %s and run_id = %s and attempt_id = %s
+          and status in ('active', 'released')
+          and lease_payload_json->>'owner_generation' = %s
+        for update
+        """,
+        (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+         str(expected_owner_generation)),
     )
     return await cursor.fetchone() is not None

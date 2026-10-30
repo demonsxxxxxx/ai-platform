@@ -28,7 +28,12 @@ QUESTIONS = [{
 
 
 @pytest.fixture
-async def inputs_db():
+async def inputs_db(monkeypatch):
+    from app.bootstrap.context import configure_context_services
+    from app.context.application import provider_sessions
+
+    monkeypatch.setattr(provider_sessions, "_use_cases", provider_sessions._use_cases)
+    configure_context_services()
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN")
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -54,18 +59,30 @@ async def inputs_db():
                   cancel_requested_at timestamptz, workspace_id text, session_id text,
                   agent_id text, context_snapshot_id text, created_at timestamptz not null default now(),
                   primary key(tenant_id,id));
-                create table sessions (id text primary key, tenant_id text, user_id text, status text);
-                insert into sessions values ('session','tenant','owner','active');
+                create table sessions (
+                  id text primary key, tenant_id text, workspace_id text, user_id text,
+                  agent_id text, status text,
+                  unique(tenant_id,workspace_id,user_id,id,agent_id)
+                );
+                insert into sessions(id,tenant_id,workspace_id,user_id,agent_id,status)
+                  values ('session','tenant','workspace','owner','agent','active');
                 create table run_attempts (
                   id text primary key, tenant_id text, run_id text, status text, ordinal int);
                 insert into runs values ('tenant','run','owner','running',null,
                   'workspace','session','agent','context',now());
                 insert into run_attempts values ('attempt','tenant','run','running',1);
+                alter table run_attempts add column owner_generation bigint not null default 1;
+                alter table run_attempts add column execution_spec_sha256 text;
+                alter table run_attempts add column execution_spec_json jsonb not null default '{}';
             """)
             source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
+            head_start = source.index("create table if not exists provider_session_heads (")
+            head_end = source.index("\n);", head_start) + len("\n);")
+            await conn.execute(source[head_start:head_end])
             start = source.index("create table if not exists run_input_sessions")
             end = source.index("create or replace function", start)
             await conn.execute(source[start:end])
+            await conn.execute(Path("app/execution/infrastructure/recovery_operations_schema.sql").read_text())
             await conn.commit()
         yield connect, build_run_inputs_service()
     finally:
@@ -472,12 +489,12 @@ async def test_session_input_history_paginates_owned_runs_and_rejects_foreign_cu
     async with connect() as conn, conn.transaction():
         await callback(service, conn, "open")
         await submit(service, conn, input_id=str(uuid4()), text="old round")
-        await conn.execute("update runs set status='completed', created_at=now()-interval '1 day'")
+        await conn.execute("update runs set status='succeeded', created_at=now()-interval '1 day'")
         await conn.execute("""insert into runs (tenant_id,id,user_id,status,session_id,created_at) values
-            ('tenant','next','owner','completed','session',now()),
-            ('tenant','foreign','other','completed','session',now()),
-            ('other','foreign-tenant','owner','completed','session',now()),
-            ('tenant','other-session','owner','completed','another',now())""")
+            ('tenant','next','owner','succeeded','session',now()),
+            ('tenant','foreign','other','succeeded','session',now()),
+            ('other','foreign-tenant','owner','succeeded','session',now()),
+            ('tenant','other-session','owner','succeeded','another',now())""")
         page = await service.get_session_history(conn, tenant_id="tenant", user_id="owner", session_id="session", limit=1)
         assert [item["run_id"] for item in page["runs"]] == ["next"]
         assert page["has_more"] and page["next_before_run_id"] == "next"

@@ -89,6 +89,7 @@ export const ChatInput = memo(function ChatInput({
   canSend = true,
   placeholder,
   modelUnavailableReason,
+  unavailableReason,
   acceptedFileTypes,
   disableSlashCommands = false,
   tools = EMPTY_TOOLS,
@@ -1066,6 +1067,7 @@ export const ChatInput = memo(function ChatInput({
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
                 canSend={canSend}
+                unavailableReason={unavailableReason}
                 isLoading={isLoading}
                 canStop={canStop}
                 canSubmit={canSubmit}

@@ -1,8 +1,19 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.workspace_versions import (
+    restore_workspace_skill_outputs as restore_workspace_skill_outputs,
+    restore_workspace_version as restore_workspace_version,
+    save_workspace_version as save_workspace_version,
+    verify_workspace_version as verify_workspace_version,
+)
+from app.sandbox.domain.workspace_version import WorkspaceVersionError as WorkspaceVersionError
+
 from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
 
 from app.sandbox.application.callback_authority import (
+    ExecutorTerminalReceiptIdentity as ExecutorTerminalReceiptIdentity,
+    ProviderSessionAppendIdentity as ProviderSessionAppendIdentity,
+    SandboxCallbackIdentity as SandboxCallbackIdentity,
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
 )
@@ -11,14 +22,33 @@ from app.sandbox.application.diagnostic_capture import (
     capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
 )
 
+from app.sandbox.application.dispatch_intent import (
+    DispatchOutcome as DispatchOutcome,
+    SandboxDispatchIdentity as SandboxDispatchIdentity,
+    SandboxDispatchIntentRepository as SandboxDispatchIntentRepository,
+    SandboxDispatchIntentService as SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown as SandboxDispatchOutcomeUnknown,
+)
+
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
+    finalize_stopped_executor_checkpoint as finalize_stopped_executor_checkpoint,
+)
+from app.sandbox.application.cancel_delivery import (
+    SandboxCancelDeliveryService as SandboxCancelDeliveryService,
 )
 
 from app.sandbox.application.runtime_cleanup import (
     SandboxCleanupPersistenceError as SandboxCleanupPersistenceError,
     SandboxRuntimeCleanup as SandboxRuntimeCleanup,
     SandboxRuntimeCleanupError as SandboxRuntimeCleanupError,
+)
+from app.sandbox.application.lease_ports import (
+    SandboxExecutorCallbackLeasePort as SandboxExecutorCallbackLeasePort,
+    SandboxExecutorReconciliationPort as SandboxExecutorReconciliationPort,
+    SandboxRunLeaseReader as SandboxRunLeaseReader,
+    SandboxRuntimeLeasePort as SandboxRuntimeLeasePort,
+    SandboxLeaseTransportPort as SandboxLeaseTransportPort,
 )
 
 from dataclasses import asdict, dataclass
@@ -31,6 +61,10 @@ from app.sandbox.domain.executor_failure import (
     canonical_executor_reported_failure_code as canonical_executor_reported_failure_code,
     executor_reported_failure_message as executor_reported_failure_message,
     normalize_executor_reported_failure as normalize_executor_reported_failure,
+)
+from app.sandbox.domain.lease_errors import (
+    SandboxExecutorTerminalConflictError as SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
 )
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,

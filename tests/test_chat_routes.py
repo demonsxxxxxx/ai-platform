@@ -33,6 +33,7 @@ import app.platform.postgres.errors as _repo_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
 import app.skills.infrastructure.resolution_postgres as _repo_app_skills_infrastructure_resolution_postgres
 from app.auth import AuthPrincipal
+from app.control_plane_contracts import HARNESS_CHAT_EXECUTOR_TYPE
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.main import create_app
 from app.execution.api import RunModelSelection
@@ -45,7 +46,7 @@ from app.models import (
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.platform.postgres.errors import RepositoryConflictError
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress, compile_execution_spec_for_dispatch
 from app.routes.chat import (
     _admit_chat_submission as _route_admit_chat_submission,
     _audit_capability_denial,
@@ -140,7 +141,7 @@ def _stub_terminal_provider_lineage(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.runs.application.provider_terminalization.release_provider_lineage",
+        "app.runs.application.run_terminalization.release_provider_lineage",
         release,
     )
 
@@ -765,37 +766,173 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
     ]
 
 
-@pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
-@pytest.mark.parametrize(
-    ("message", "selected_tools", "expected_authorizations"),
-    [
-        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], 1),
-    ],
-    ids=["negative-veto", "affirmative"],
-)
-@pytest.mark.asyncio
-async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
-    monkeypatch, roles, message, selected_tools, expected_authorizations
+def test_keyed_chat_retry_admission_route_persists_durable_receipt(
+    monkeypatch, chat_submission_client
 ):
-    calls = {"authorization": 0}
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    submission = {
+        "submission_id": submission_id,
+        "state": "accepted_pending_enqueue",
+        "run_id": "run-history",
+        "session_id": "session-history",
+        "outcome_json": {
+            "session_id": "session-history",
+            "run_id": "run-history",
+            "status": "accepted_pending_enqueue",
+            "submission_id": submission_id,
+        },
+    }
+    intent_payload = {
+        "file_ids": [],
+        "input": {"message": "accepted once"},
+        "executor_type": HARNESS_CHAT_EXECUTOR_TYPE,
+        "execution_kind": "harness_chat",
+        "skill_version": None,
+        "release_decision": {},
+        "skill_manifests": [],
+        "context_snapshot_id": "ctx-history",
+        "context_snapshot": {
+            "context_snapshot_id": "ctx-history",
+            "source": "chat_stream",
+        },
+        "model_id": "frozen-model",
+        "model_value": "provider/frozen",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+    calls = []
 
-    async def authorize_run(*_args, **_kwargs):
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_recover(**_kwargs):
+        return ChatSubmissionResponse(
+            submission_id=submission_id,
+            state="accepted_pending_enqueue",
+            outcome=submission["outcome_json"],
+            run_status="queued",
+        )
+
+    async def fake_get_submission(_conn, **_kwargs):
+        return submission
+
+    async def fake_finalize(_conn, **kwargs):
+        calls.append(("finalize", kwargs))
+        submission.update(kwargs)
+
+    async def fake_get_run(_conn, **_kwargs):
         return {
-            "executor_type": "claude-agent-worker",
-            "skill_version": "hash-general-chat",
-            "input_modes": ["chat"],
+            "id": "run-history",
+            "status": "queued",
+            "workspace_id": "workspace-history",
+            "session_id": "session-history",
+            "agent_id": "general-agent",
+            "execution_kind": "harness_chat",
+            "skill_id": None,
+            "input_json": {
+                **intent_payload,
+                "intent": {"selected_capability": "general_chat"},
+            },
+            "context_snapshot_id": "ctx-history",
+            "admitted_agent_profile_revision": None,
+            "admitted_agent_profile_hash": None,
         }
 
-    async def authorize_tools(*_args, **_kwargs):
-        calls["authorization"] += 1
-        return [{"tool_id": "gateway::qa-search"}]
+    async def no_retired_control(*_args, **_kwargs):
+        return False
+
+    class DeliveryIntents:
+        enabled = True
+
+        async def deliver_one(self, *, tenant_id, run_id):
+            calls.append(("deliver", tenant_id, run_id))
+            return SimpleNamespace(
+                receipt=SimpleNamespace(
+                    queue_position=2,
+                    queue_admission_ordinal=9,
+                    message_id="frozen-message",
+                    source="redis_readback_queued",
+                ),
+                error_code=None,
+            )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat._recover_preledger_chat_submission", fake_recover)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "get_chat_submission", fake_get_submission)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", fake_finalize)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, "get_authorized_run", fake_get_run)
+    monkeypatch.setattr("app.routes.chat.reject_chat_submission_for_retired_platform_multi_agent", no_retired_control)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", AsyncMock())
+    chat_submission_client.app.state.run_delivery_intents = DeliveryIntents()
+
+    response = chat_submission_client.post(
+        f"/api/chat/submissions/{submission_id}/retry-admission",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "queued"
+    assert response.json()["outcome"]["queue_position"] == 2
+    assert calls == [("deliver", "tenant-a", "run-history"), ("finalize", {
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "submission_id": submission_id,
+        "state": "queued",
+        "outcome_json": {
+            "session_id": "session-history",
+            "run_id": "run-history",
+            "status": "queued",
+            "submission_id": submission_id,
+            "queue_position": 2,
+        },
+        "queue_position": 2,
+        "queue_admission_ordinal": 9,
+        "queue_message_id": "frozen-message",
+    })]
+
+
+@pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
+@pytest.mark.parametrize(
+    ("message", "selected_tools", "continuation", "expected_tools"),
+    [
+        ("调用 MCP create_test_object，不要调用 Bash", [" lifecycle-recovery::create_test_object ", "lifecycle-recovery::delete_test_object"], False,
+         ["lifecycle-recovery::create_test_object", "lifecycle-recovery::delete_test_object"]),
+        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], False, ["gateway::qa-search"]),
+        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], False, ["gateway::qa-search"]),
+        ("不要调用 MCP，只解释它是什么", [], True, []),
+        ("不要调用 MCP，只解释它是什么", None, True, None),
+        ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"]),
+    ],
+    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative"],
+)
+@pytest.mark.asyncio
+async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_polarity(
+    monkeypatch, roles, message, selected_tools, continuation, expected_tools
+):
+    calls = {"authorization": []}
+    request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
+
+    async def authorize_tools(*_args, **kwargs):
+        calls["authorization"].append(kwargs)
+        return [{"tool_id": tool_id} for tool_id in kwargs["tool_ids"]]
+
+    async def owned_session(*_args, **kwargs):
+        assert kwargs["tenant_id"] == request_principal.tenant_id
+        assert kwargs["user_id"] == request_principal.user_id
+        return {"id": "ses-polarity", "workspace_id": "default", "agent_id": "general-agent"}
+
+    async def latest_input(*_args, **_kwargs):
+        return {"input": {"mcp_tool_ids": ["gateway::prior-search"]}}
+
+    async def prior_runs(*_args, **_kwargs):
+        return []
 
     async def create_session(*_args, **_kwargs):
         return "ses-polarity"
 
     async def create_run(*_args, **kwargs):
         calls["run_input"] = kwargs["input_json"]["input"]
+        calls["intent"] = kwargs["input_json"]["intent"]
         return "run-polarity"
 
     async def append_message(*_args, **_kwargs):
@@ -803,6 +940,21 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def enqueue(payload):
         calls["queue_input"] = payload["input"]
+        calls["frozen_input"] = compile_execution_spec_for_dispatch(
+            run_identity=payload,
+            queue_payload=QueueRunPayload.model_validate(payload),
+            trace_id="trace-polarity",
+            context_snapshot_id=payload["context_snapshot_id"],
+            context_snapshot=payload["context_snapshot"],
+            context_pack={},
+            run_model_snapshot={
+                "model_id": payload["model_id"],
+                "model_value": payload["model_value"],
+                "model_gateway_revision": 1,
+                "auto_compact_window": 100000,
+                "max_output_tokens": 2048,
+            },
+        ).to_mapping()["input"]
         return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     async def manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
@@ -821,7 +973,9 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
-    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize_run)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', latest_input)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'list_authorized_session_runs', prior_runs)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
@@ -836,15 +990,31 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
 
     response = await chat_stream(
-        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
-        principal=principal(roles=roles),
+        ChatStreamRequest(
+            message=message,
+            selected_mcp_tool_ids=selected_tools,
+            session_id="ses-polarity" if continuation else None,
+        ),
+        principal=request_principal,
     )
 
     assert response.status == "queued"
-    assert calls["authorization"] == expected_authorizations
-    expected_tools = selected_tools if expected_authorizations else None
+    assert calls["authorization"] == ([{
+        "tenant_id": request_principal.tenant_id,
+        "tool_ids": expected_tools,
+        "principal_department_id": request_principal.department_id,
+        "principal_department_ids": request_principal.department_ids,
+        "principal_roles": request_principal.roles,
+        "is_admin": "admin" in roles,
+        "permissions": request_principal.permissions,
+    }] if expected_tools is not None else [])
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert calls["frozen_input"] == calls["run_input"]
+    assert calls["run_input"]["message"] == message
+    assert "required_tool" not in calls["run_input"]
+    assert calls["intent"]["selected_capability"] == "general_chat"
+    assert calls["intent"]["confirmed_by_user"] is False
 
 
 @pytest.mark.parametrize(
@@ -1637,7 +1807,14 @@ async def test_retry_admission_preserves_existing_submission_admission(monkeypat
             "outcome_json": _pending_submission_row()["outcome_json"],
         }, False
 
-    async def admit(*, principal: AuthPrincipal, submission_id: str, v4_capabilities, run_lifecycle):
+    async def admit(
+        *,
+        principal: AuthPrincipal,
+        submission_id: str,
+        v4_capabilities,
+        run_lifecycle,
+        delivery_intents=None,
+    ):
         assert principal.user_id == "user-a"
         assert v4_capabilities is _TEST_V4_CAPABILITIES
         admitted.append(submission_id)
@@ -2108,6 +2285,12 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     async def forbidden_failure_transition(*_args, **_kwargs):
         raise AssertionError("concurrent success must not be replaced by enqueue_failed")
 
+    finalized = []
+
+    async def finalize_queue_success(_conn, **kwargs):
+        finalized.append(kwargs)
+        submission.update(kwargs)
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
@@ -2115,7 +2298,7 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
-    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize_queue_success, raising=False)
 
     response = await _admit_chat_submission(
         principal=principal(),
@@ -2124,6 +2307,8 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
 
     assert response.state == "queued"
     assert calls == ["read", "enqueue", "read"]
+    assert finalized[0]["state"] == "queued"
+    assert finalized[0]["queue_message_id"] == "stable-message-id"
 
 
 @pytest.mark.asyncio
@@ -2902,6 +3087,7 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
     }
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
+@pytest.mark.parametrize("delivery_enabled", [False, True])
 @pytest.mark.parametrize(
     "current_message",
     [
@@ -2913,7 +3099,7 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
     ],
 )
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(
-    monkeypatch, enqueue_mode, current_message
+    monkeypatch, enqueue_mode, current_message, delivery_enabled
 ):
     calls = []
 
@@ -3051,6 +3237,33 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", fake_read_queue_admission)
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight)
+    if delivery_enabled:
+        class DeliveryIntents:
+            enabled = True
+
+            async def record(self, conn, payload, *, source, **_kwargs):
+                calls.append(("delivery_intent", source, dict(payload)))
+
+            async def deliver_one(self, *, tenant_id, run_id):
+                calls.append(("delivery", tenant_id, run_id))
+                if enqueue_mode == "unknown":
+                    return SimpleNamespace(receipt=None, error_code="queue_response_unknown")
+                return SimpleNamespace(
+                    receipt=SimpleNamespace(
+                        queue_position=3,
+                        queue_admission_ordinal=30,
+                        message_id="frozen-message",
+                        source="redis_metadata",
+                    ),
+                    error_code=None,
+                )
+
+        monkeypatch.setattr(
+            _TEST_STREAM_REQUEST.app.state,
+            "run_delivery_intents",
+            DeliveryIntents(),
+            raising=False,
+        )
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3066,9 +3279,20 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     assert response.run_id == "run_3"
     assert response.session_id == "ses_3"
-    queued_input = next(item[1]["input"] for item in calls if item[0] == "queue_payload")
+    queued_payload = (
+        next(item[2] for item in calls if item[0] == "delivery_intent")
+        if delivery_enabled
+        else next(item[1] for item in calls if item[0] == "queue_payload")
+    )
+    queued_input = queued_payload["input"]
     assert queued_input["message"] == current_message
     assert ("message", "user", current_message, "run_3") in calls
+    if delivery_enabled:
+        persisted = next(item for item in calls if item[0] == "delivery_intent")
+        assert persisted[1] == "chat"
+        assert persisted[2]["run_id"] == "run_3"
+        assert [item[0] for item in calls].count("delivery") == 1
+        assert not any(item[0] == "queue" for item in calls)
     if enqueue_mode == "unknown":
         assert response.status == "accepted_pending_enqueue"
         assert response.queue_position is None
@@ -3088,9 +3312,14 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
     message_index = next(index for index, item in enumerate(calls) if item[0] == "message")
     event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
-    queue_index = next(index for index, item in enumerate(calls) if item[0] == "queue_payload")
+    queue_item_name = "delivery_intent" if delivery_enabled else "queue_payload"
+    queue_index = next(index for index, item in enumerate(calls) if item[0] == queue_item_name)
     assert snapshot_index < message_index < event_index < queue_index
-    queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
+    queue_payload = (
+        next(item[2] for item in calls if item[0] == "delivery_intent")
+        if delivery_enabled
+        else next(item[1] for item in calls if item[0] == "queue_payload")
+    )
     assert queue_payload["executor_type"] == "claude-agent-worker"
     assert queue_payload["run_id"] == "run_3"
     assert queue_payload["file_ids"] == ["file_1"]
@@ -3281,7 +3510,8 @@ async def test_chat_stream_legacy_nested_mcp_selector_returns_controlled_400_bef
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch):
+@pytest.mark.parametrize("message", ["run", "调用 MCP，不要调用 Bash", "不要调用 MCP，只解释"])
+async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch, message):
     calls = []
 
     async def deny_selection(*_args, **kwargs):
@@ -3301,7 +3531,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="run",
+                message=message,
                 selected_mcp_tool_ids=["gateway::tenant-search"],
             ),
             principal=principal(),

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from typing import Any
+from functools import partial
+from app.context.api import provider_session_verification_scope
 
 from app.agent_apps.capability_state import exact_invoked_skills
+from app.bootstrap.conversation_continuation import build_continuation_settlement_ports
 from app.artifacts import api as artifacts_api
 from app.artifacts.infrastructure import records_postgres as artifact_records_postgres
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.control_plane_contracts import artifact_lineage_contract, artifact_manifest_contract
 from app.execution import api as execution_api
 from app.persistence import artifacts as artifact_persistence
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.platform.postgres.limits import MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
 from app.platform.public_payload import sanitize_public_text
 from app.platform.postgres import values as platform_values
@@ -36,6 +39,7 @@ def build_worker_artifact_records(result: Any, *, reconciliation: bool) -> list[
 
 
 def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.WorkerResultCommitService:
+    sandbox_reconciliation = build_sandbox_executor_reconciliation_port()
     limits = execution_api.AnswerPersistenceLimits(
         MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes
     )
@@ -91,11 +95,12 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
             provider_final_sequence=result.executor_payload.get("provider_session_final_sequence"),
         )
 
+    continuation = build_continuation_settlement_ports()
     return TimedWorkerResultCommitService(
         transaction_factory=transaction_factory,
         lock_run=runs_postgres.get_run,
         reconciliation_claim_current=(
-            sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current
+            sandbox_reconciliation.is_sandbox_executor_reconciliation_claim_current
         ),
         materialize_answer=materialize_answer,
         persist_artifacts=persist_artifacts,
@@ -108,6 +113,9 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
             result, sanitize_text=sanitize_public_text
         ),
         prefers_cancelled=execution_api.sandbox_failure_prefers_cancelled,
+        settle_continuation=continuation.commit,
+        release_continuation_lease=continuation.release,
+        verification_scope=partial(provider_session_verification_scope, transaction_factory),
     )
 
 

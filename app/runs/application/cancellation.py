@@ -20,6 +20,15 @@ class RunCancellationQueueCleanupError(RuntimeError):
         super().__init__("queue_cleanup_failed")
 
 
+class RunCancellationDeliveryDeferred(RuntimeError):
+    """Immediate executor cancellation failed; durable delivery remains pending."""
+
+    error_code = "sandbox_cancel_delivery_failed"
+
+    def __init__(self) -> None:
+        super().__init__(self.error_code)
+
+
 class RunCancellationSandboxCleanup(Protocol):
     async def cleanup_cancelled_run_leases(
         self,
@@ -33,11 +42,12 @@ class RunCancellationSandboxCleanup(Protocol):
         trace_id: str | None,
         provider_factory: Callable[..., Any],
         transaction_factory: Callable[[], AsyncContextManager[object]],
-    ) -> None: ...
+    ) -> list[dict[str, Any]]: ...
 
 
 RunCancellationQueueCleanup = Callable[..., Awaitable[Any]]
 RunCancellationStreamOperation = Callable[..., Awaitable[Any]]
+RunCancellationDelivery = Callable[..., Awaitable[int]]
 RunCancellationWarning = Callable[[str, str, Exception], None]
 
 
@@ -54,6 +64,8 @@ class RunCancellationPostProcessor:
         admit_stream: RunCancellationStreamOperation,
         publish_event: RunCancellationStreamOperation,
         warn: RunCancellationWarning,
+        handoff_cancelled_attempt: Callable[..., Awaitable[bool]] | None = None,
+        deliver_cancel: RunCancellationDelivery | None = None,
     ) -> None:
         self._queue_cleanup = queue_cleanup
         self._sandbox_cleanup = sandbox_cleanup
@@ -62,6 +74,8 @@ class RunCancellationPostProcessor:
         self.admit_v4_stream = admit_stream
         self.publish_run_event = publish_event
         self._warn = warn
+        self._handoff_cancelled_attempt = handoff_cancelled_attempt
+        self._deliver_cancel = deliver_cancel
 
     async def post_cancel(
         self,
@@ -75,6 +89,27 @@ class RunCancellationPostProcessor:
     ) -> dict[str, Any] | None:
         if cancellation is None:
             return None
+        result = cancellation.as_route_result()
+        result.pop("_terminalization_progress", None)
+        if (
+            result["status"] == "cancel_requested"
+            and cancellation.attempt_id
+            and self._deliver_cancel is not None
+        ):
+            delivery_failed = False
+            try:
+                await self._deliver_cancel(
+                    tenant_id=tenant_id,
+                    run_id=cancellation.run_id,
+                )
+            except Exception:  # noqa: BLE001 - durable delivery retries after this immediate attempt.
+                delivery_failed = True
+            if delivery_failed:
+                self._warn(
+                    "Sandbox cancellation delivery deferred",
+                    cancellation.run_id,
+                    RunCancellationDeliveryDeferred(),
+                )
         if cancellation.attempt_id:
             try:
                 await self.admit_v4_stream(
@@ -87,8 +122,6 @@ class RunCancellationPostProcessor:
                 self._warn(
                     "Cancellation v4 admission deferred", cancellation.run_id, exc,
                 )
-        result = cancellation.as_route_result()
-        result.pop("_terminalization_progress", None)
         if cancellation.attempt_id:
             try:
                 await self.publish_run_event(
@@ -106,17 +139,35 @@ class RunCancellationPostProcessor:
                 await self._queue_cleanup(tenant_id=tenant_id, run_id=cancellation.run_id)
             except Exception as exc:  # noqa: BLE001 - report after sandbox cleanup
                 queue_cleanup_failures.append(exc)
-        await self._sandbox_cleanup.cleanup_cancelled_run_leases(
-            result.get("active_sandbox_leases"),
-            tenant_id=tenant_id,
-            run_id=cancellation.run_id,
-            user_id=user_id,
-            requested_by_role=requested_by_role,
-            reason=reason,
-            trace_id=result.get("trace_id"),
-            provider_factory=self._provider_factory,
-            transaction_factory=self._transaction_factory,
-        )
+        if result["status"] == "cancelled":
+            released_leases = await self._sandbox_cleanup.cleanup_cancelled_run_leases(
+                result.get("active_sandbox_leases"),
+                tenant_id=tenant_id,
+                run_id=cancellation.run_id,
+                user_id=user_id,
+                requested_by_role=requested_by_role,
+                reason=reason,
+                trace_id=result.get("trace_id"),
+                provider_factory=self._provider_factory,
+                transaction_factory=self._transaction_factory,
+            )
+            if (
+                self._handoff_cancelled_attempt is not None
+                and cancellation.attempt_id
+                and cancellation.attempt_owner_generation is not None
+            ):
+                released_ids = tuple(
+                    str(lease["id"])
+                    for lease in released_leases
+                    if isinstance(lease, dict) and lease.get("id")
+                )
+                await self._handoff_cancelled_attempt(
+                    tenant_id=tenant_id,
+                    run_id=cancellation.run_id,
+                    attempt_id=cancellation.attempt_id,
+                    expected_owner_generation=cancellation.attempt_owner_generation,
+                    resource_lease_ids=released_ids,
+                )
         if queue_cleanup_failures:
             raise RunCancellationQueueCleanupError(queue_cleanup_failures)
         return result
@@ -133,6 +184,7 @@ class CancelRequestAuthority:
     requested_by_role: CancelRequesterRole
     source: CancelEventSource
     newly_requested: bool
+    attempt_owner_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +195,7 @@ class CancelRequestResult:
     active_sandbox_leases: tuple[dict[str, Any], ...]
     initial_terminalization_progress: RunTerminalizationProgress | None
     attempt_id: str | None = None
+    attempt_owner_generation: int | None = None
 
     def as_route_result(self) -> dict[str, Any]:
         result: dict[str, Any] = {"run_id": self.run_id, "status": self.status}
@@ -182,6 +235,17 @@ class RunCancellationPersistence(Protocol):
         authority: CancelRequestAuthority,
         progress: RunTerminalizationProgress | None,
     ) -> CancelRequestResult: ...
+
+    async def handoff_cancelled_attempt(
+        self,
+        conn: object,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        expected_owner_generation: int,
+        resource_lease_ids: tuple[str, ...],
+    ) -> bool: ...
 
 
 class RunCancellationEventWriter(Protocol):
@@ -231,12 +295,14 @@ class RunCancellationUseCase:
         event_writer: RunCancellationEventWriter,
         progress_terminalization: RunTerminalizationProgressor,
         post_processor: RunCancellationPostProcessor | None = None,
+        stage_cancel_delivery: Callable[..., Awaitable[int]] | None = None,
     ) -> None:
         self._transaction_factory = transaction_factory
         self._persistence = persistence
         self._event_writer = event_writer
         self._progress_terminalization = progress_terminalization
         self._post_processor = post_processor
+        self._stage_cancel_delivery = stage_cancel_delivery
 
     async def post_cancel(
         self,
@@ -322,20 +388,35 @@ class RunCancellationUseCase:
                 source=authority.source,
                 trace_ref=authority.trace_ref,
             )
-        progress = await self._progress_terminalization(
-            conn,
-            tenant_id=tenant_id,
-            run_id=authority.run_id,
-        )
+        progress = None
+        # An admitted Attempt owns SDK drain and settlement; intent is not EOF.
+        if authority.prior_status == "queued" and authority.attempt_id is None:
+            progress = await self._progress_terminalization(
+                conn,
+                tenant_id=tenant_id,
+                run_id=authority.run_id,
+            )
         if progress is not None and progress.did_transition:
             await self._event_writer.append_terminal(
                 conn,
                 tenant_id=tenant_id,
                 run_id=authority.run_id,
             )
-        return await self._persistence.finish_request(
+        cancellation = await self._persistence.finish_request(
             conn,
             tenant_id=tenant_id,
             authority=authority,
             progress=progress,
         )
+        if (
+            self._stage_cancel_delivery is not None
+            and cancellation.status == "cancel_requested"
+            and cancellation.attempt_id
+        ):
+            await self._stage_cancel_delivery(
+                conn,
+                tenant_id=tenant_id,
+                run_id=cancellation.run_id,
+                attempt_id=cancellation.attempt_id,
+            )
+        return cancellation

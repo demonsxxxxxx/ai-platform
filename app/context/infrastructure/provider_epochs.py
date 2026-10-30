@@ -14,11 +14,21 @@ from psycopg import AsyncConnection
 from app.context.domain.conversation_authority import (
     extend_source_digest,
     initial_source_digest,
-    validate_authority_receipt,
 )
+from app.context.domain.conversation_recovery import (
+    RECOVERY_SCHEMA_VERSION,
+    provider_restore_size,
+    validate_provider_authority_receipt,
+)
+from app.context.infrastructure.provider_continuation import (
+    get_session_continuation,
+    settle_provider_continuation,
+)
+from app.context.infrastructure.unclaimed_provider_continuation import advance_unclaimed_terminal_generation
 from app.context.domain.provider_media import (
     PROVIDER_MEDIA_FORMAT, ProviderMediaTransfer, ProviderMediaProjection, restore_provider_images,
 )
+from app.context.infrastructure.provider_epoch_verification import provider_epoch_verification_scope
 from app.context.infrastructure.provider_images import (
     reserve_provider_images, promote_provider_images, queue_provider_images_for_deletion,
 )
@@ -101,13 +111,13 @@ async def read_provider_coverage(
     values = _scope_values(scope)
     cursor = await conn.execute(
         """
-        select head.current_epoch_id, head.active_run_id,
+        select head.current_epoch_id, head.active_run_id, head.recovery_json,
                current_run.session_generation,
                epoch.id as epoch_id, epoch.state, epoch.writer_run_id,
                epoch.writer_attempt_id, epoch.writer_owner_generation,
                epoch.coverage_source_sha256, epoch.coverage_message_count,
-               epoch.coverage_through_generation, epoch.entry_count,
-               epoch.transcript_bytes,
+               epoch.coverage_through_generation, epoch.coverage_schema_version, epoch.entry_count,
+               epoch.transcript_bytes, epoch.structured_bytes,
                exists (
                  select 1 from messages prior_message
                  join sessions prior_session on prior_session.tenant_id = prior_message.tenant_id
@@ -128,13 +138,49 @@ async def read_provider_coverage(
                          and prior_run.session_id = head.session_id
                          and prior_run.agent_id = head.agent_id
                          and prior_run.status in ('failed', 'cancelled')
-                         and prior_run.started_at is null
-                         and not exists (
-                           select 1 from run_attempts prior_attempt
-                           where prior_attempt.tenant_id = prior_run.tenant_id
-                             and prior_attempt.run_id = prior_run.id
-                             and (prior_attempt.started_at is not null
-                               or prior_attempt.status not in ('failed', 'cancelled'))
+                         and (
+                           (prior_run.started_at is null and not exists (
+                             select 1 from run_attempts prior_attempt
+                             where prior_attempt.tenant_id = prior_run.tenant_id
+                               and prior_attempt.run_id = prior_run.id
+                               and (prior_attempt.started_at is not null
+                                 or prior_attempt.status not in ('failed', 'cancelled'))
+                           ))
+                           or exists (
+                             select 1 from provider_turn_receipts unaccepted
+                             join provider_session_epochs stopped_epoch on stopped_epoch.id = unaccepted.epoch_id
+                               and stopped_epoch.tenant_id = head.tenant_id
+                               and stopped_epoch.workspace_id = head.workspace_id
+                               and stopped_epoch.user_id = head.user_id
+                               and stopped_epoch.session_id = head.session_id
+                               and stopped_epoch.agent_id = head.agent_id and stopped_epoch.engine = head.engine
+                             where unaccepted.tenant_id = prior_run.tenant_id and unaccepted.state = 'failed'
+                               and unaccepted.run_id = prior_run.id
+                               and unaccepted.user_message_id = prior_message.id
+                               and stopped_epoch.next_sequence = unaccepted.start_sequence
+                               and stopped_epoch.recovery_json->>'source_run_id' = prior_run.id
+                               and stopped_epoch.recovery_json->>'source_attempt_id' = unaccepted.attempt_id
+                               and stopped_epoch.recovery_json->>'input_accepted' = 'false'
+                               and stopped_epoch.recovery_json->>'stop_evidence' in ('provider_stopped', 'provider_not_found')
+                           )
+                           or exists (
+                             select 1 from run_attempts unclaimed_attempt
+                             join provider_session_epochs unused_epoch on unused_epoch.tenant_id = head.tenant_id
+                               and unused_epoch.workspace_id = head.workspace_id and unused_epoch.user_id = head.user_id
+                               and unused_epoch.session_id = head.session_id and unused_epoch.agent_id = head.agent_id
+                               and unused_epoch.engine = head.engine and unused_epoch.state = 'closed'
+                               and unused_epoch.id = unclaimed_attempt.execution_spec_json->'context_pack'->'conversation_context'->>'provider_epoch_id'
+                             where unclaimed_attempt.tenant_id = prior_run.tenant_id and unclaimed_attempt.run_id = prior_run.id
+                               and unused_epoch.recovery_json->>'settlement_kind' = 'unclaimed_unaccepted'
+                               and unused_epoch.recovery_json->>'source_run_id' = prior_run.id
+                               and unused_epoch.recovery_json->>'source_attempt_id' = unclaimed_attempt.id
+                               and unused_epoch.recovery_json->>'current_message_id' = prior_message.id
+                               and unused_epoch.recovery_json->>'execution_spec_sha256' = unclaimed_attempt.execution_spec_sha256
+                               and unused_epoch.recovery_json->>'owner_generation' = unclaimed_attempt.owner_generation::text
+                               and unused_epoch.recovery_json->>'input_accepted' = 'false'
+                               and unused_epoch.recovery_json->>'ack_unknown' = 'false'
+                               and unused_epoch.recovery_json->>'stop_evidence' in ('provider_stopped', 'provider_not_found', 'provider_not_created')
+                           )
                          )
                      )
                    )
@@ -160,6 +206,7 @@ async def read_provider_coverage(
         raise ProviderSessionConflictError("provider_session_lineage_busy")
     if row["session_generation"] != session_generation:
         raise ProviderSessionConflictError("provider_session_scope_invalid")
+    _require_continuation_available(row.get("recovery_json"))
     if row["current_epoch_id"] is None:
         if row["has_prior_messages"]:
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
@@ -177,6 +224,7 @@ async def read_provider_coverage(
     digest = row["coverage_source_sha256"]
     count = row["coverage_message_count"]
     coverage_generation = row["coverage_through_generation"]
+    restore_count, restore_bytes = provider_restore_size(row, row.get("recovery_json"))
     if (
         row["epoch_id"] != row["current_epoch_id"]
         or row["state"] != "ready"
@@ -190,16 +238,19 @@ async def read_provider_coverage(
         or type(coverage_generation) is not int
         or coverage_generation < 1
         or coverage_generation >= session_generation
-        or type(row["entry_count"]) is not int
-        or row["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
-        or type(row["transcript_bytes"]) is not int
-        or row["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
+        or type(restore_count) is not int or restore_count < 0
+        or restore_count > MAX_PROVIDER_SESSION_ENTRIES - 128
+        or type(restore_bytes) is not int or restore_bytes < 0
+        or restore_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
     ):
         raise ProviderSessionConflictError("provider_session_requires_new_conversation")
     return {
         "source_sha256": digest,
         "message_count": count,
         "coverage_through_generation": coverage_generation,
+        "authority_schema_version": row.get("coverage_schema_version", "ai-platform.conversation-authority.v2"),
+        "provider_epoch_id": row["epoch_id"],
+        "continuation": row.get("recovery_json"),
     }
 
 
@@ -210,8 +261,12 @@ async def release_provider_lineage(conn: AsyncConnection, *, tenant_id: str, run
         select runs.status, head.tenant_id, head.workspace_id, head.user_id,
                head.session_id, head.agent_id, head.engine, head.active_attempt_id,
                epoch.id as epoch_id, epoch.state as epoch_state,
-               epoch.next_sequence, epoch.coverage_source_sha256,
-               turn.start_sequence, turn.state as turn_state
+               epoch.next_sequence, epoch.coverage_source_sha256, epoch.recovery_json,
+               turn.start_sequence, turn.state as turn_state,
+               exists (select 1 from run_attempts started_attempt
+                       where started_attempt.tenant_id = runs.tenant_id
+                         and started_attempt.run_id = runs.id
+                         and started_attempt.started_at is not null) as has_started_attempt
         from runs
         join provider_session_heads head on head.tenant_id = runs.tenant_id
           and head.workspace_id = runs.workspace_id and head.user_id = runs.user_id
@@ -231,9 +286,17 @@ async def release_provider_lineage(conn: AsyncConnection, *, tenant_id: str, run
     head = await cursor.fetchone()
     if head is None:
         return
+    if head["epoch_id"] is None and head.get("has_started_attempt"):
+        from app.context.infrastructure.unclaimed_provider_continuation import unclaimed_lineage_release_proven
+
+        if not await unclaimed_lineage_release_proven(conn, head=head, run_id=run_id):
+            return
     if head["epoch_id"] is not None:
+        recovery = head.get("recovery_json")
+        if not isinstance(recovery, dict) or recovery.get("stop_evidence") not in {"provider_stopped", "provider_not_found"}:
+            return
         if head["status"] == "succeeded":
-            if head["turn_state"] != "committed" or head["epoch_state"] != "ready":
+            if head["turn_state"] != "committed":
                 raise ProviderSessionConflictError("provider_session_coverage_uncommitted")
             await conn.execute(
                 """
@@ -243,21 +306,12 @@ async def release_provider_lineage(conn: AsyncConnection, *, tenant_id: str, run
                 """, (head["epoch_id"], run_id, head["active_attempt_id"]),
             )
         else:
-            untouched = (type(head["start_sequence"]) is int
-                         and head["start_sequence"] == head["next_sequence"])
             await conn.execute(
                 """
-                update provider_session_epochs set state = %s, writer_run_id = null,
+                update provider_session_epochs set writer_run_id = null,
                   writer_attempt_id = null, writer_owner_generation = null, updated_at = now()
                 where id = %s and writer_run_id = %s and writer_attempt_id = %s
-                """, ("ready" if untouched else "dirty", head["epoch_id"], run_id,
-                      head["active_attempt_id"]),
-            )
-            await conn.execute(
-                """
-                update provider_turn_receipts set state = 'failed', updated_at = now()
-                where tenant_id = %s and run_id = %s and attempt_id = %s and state <> 'committed'
-                """, (tenant_id, run_id, head["active_attempt_id"]),
+                """, (head["epoch_id"], run_id, head["active_attempt_id"]),
             )
     await conn.execute(
         """
@@ -291,17 +345,23 @@ async def _locked_callback_epoch(
         select head.current_epoch_id, head.active_run_id, head.active_attempt_id,
                epoch.id, epoch.provider_session_id, epoch.state, epoch.next_sequence,
                epoch.entry_count, epoch.transcript_bytes, epoch.structured_bytes, epoch.coverage_source_sha256,
+               epoch.source_epoch_id, epoch.source_final_sequence,
                epoch.writer_run_id, epoch.writer_attempt_id, epoch.writer_owner_generation
         from provider_session_heads head
         join provider_session_epochs epoch on epoch.tenant_id = head.tenant_id
           and epoch.workspace_id = head.workspace_id and epoch.user_id = head.user_id
           and epoch.session_id = head.session_id and epoch.agent_id = head.agent_id
           and epoch.engine = head.engine and epoch.provider_session_id = %s::uuid
+          and epoch.id = (
+            select frozen.execution_spec_json->'context_pack'->'conversation_context'->>'provider_epoch_id'
+            from run_attempts frozen where frozen.tenant_id = head.tenant_id
+              and frozen.run_id = %s and frozen.id = %s
+          )
         where head.tenant_id = %s and head.workspace_id = %s and head.user_id = %s
           and head.session_id = %s and head.agent_id = %s and head.engine = %s
           and head.active_run_id = %s
         for update of head, epoch
-        """, (provider_uuid, *values, run_id),
+        """, (provider_uuid, run_id, attempt_id, *values, run_id),
     )
     epoch = await cursor.fetchone()
     if epoch is None or epoch["state"] in {"dirty", "closed"}:
@@ -337,9 +397,13 @@ async def _locked_callback_epoch(
         attempt is None or not isinstance(private, dict)
         or private.get("provider_epoch_id") != epoch["id"]
         or private.get("provider_session_id") != provider_uuid
+        or (private.get("source_epoch_id") is not None and (
+            private.get("source_epoch_id") != epoch.get("source_epoch_id")
+            or private.get("source_final_sequence") != epoch.get("source_final_sequence")
+        ))
         or private.get("execution_mode") not in {"native_resume", "empty_start"}
         or (private["execution_mode"] == "native_resume" and (
-            epoch["current_epoch_id"] != epoch["id"] or epoch["coverage_source_sha256"] != private.get("source_sha256")
+            epoch["coverage_source_sha256"] != private.get("source_sha256")
         ))
         or (private["execution_mode"] != "native_resume" and epoch["state"] != "bootstrapping" and epoch["writer_run_id"] != run_id)
     ):
@@ -444,12 +508,15 @@ async def prepare_callback_media(
     tenant_id: str, workspace_id: str, user_id: str, session_id: str, agent_id: str,
     run_id: str, attempt_id: str, provider_session_id: str, action: str,
     entries: list[dict], subpath: str | None, expected_sequence: int | None,
+    provider_epoch_id: str | None = None,
 ) -> ProviderMediaTransfer:
     scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
     epoch, attempt, _private = await _locked_callback_epoch(
         conn, scope=scope, run_id=run_id, attempt_id=attempt_id,
         provider_session_id=provider_session_id, allow_cancel_tail=action == "append",
     )
+    if provider_epoch_id is not None and provider_epoch_id != epoch["id"]:
+        raise ProviderSessionConflictError("provider_session_spec_mismatch")
     if action == "append":
         batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=subpath)
         digest = batch_digest(normalize_provider_subpath(subpath), [item.entry for item in batch])
@@ -474,6 +541,7 @@ async def callback_provider_epoch(
     provider_session_id: str, action: str, subpath: str | None,
     entries: list[dict[str, Any]], expected_sequence: int | None,
     include_child_entries: bool = False,
+    provider_epoch_id: str | None = None,
     media: ProviderMediaTransfer | None = None,
 ) -> dict[str, Any]:
     scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
@@ -481,6 +549,8 @@ async def callback_provider_epoch(
         conn, scope=scope, run_id=run_id, attempt_id=attempt_id,
         provider_session_id=provider_session_id, allow_cancel_tail=action == "append",
     )
+    if provider_epoch_id is not None and provider_epoch_id != epoch["id"]:
+        raise ProviderSessionConflictError("provider_session_spec_mismatch")
     if media is not None and (
         not media.completed or media.epoch_id != epoch["id"]
         or media.owner_generation != attempt["owner_generation"]
@@ -581,96 +651,68 @@ async def callback_provider_epoch(
 async def _verified_provider_entries(
     conn: AsyncConnection, *, epoch: Mapping[str, Any], media: ProviderMediaTransfer | None = None,
 ) -> list[dict[str, Any]]:
-    """Verify the native transcript being restored against existing append receipts.
+    """Verify all paths and append receipts before exposing native entries."""
+    from app.context.infrastructure.provider_epoch_ledger import read_provider_ledger, verify_provider_ledger
 
-    Coverage digests describe business turns, not native bytes. Check all paths
-    together since their sequences share one epoch; never accept a nonempty
-    prefix merely because its coverage metadata still looks ready. No legacy
-    receipt is invented from potentially incomplete history.
-    """
-    cursor = await conn.execute(
-        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json "
-        "from provider_session_entries "
-        "where epoch_id = %s order by sequence asc limit %s",
-        (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
-    )
-    rows = list(await cursor.fetchall())
-    if len(rows) > MAX_PROVIDER_SESSION_ENTRIES:
-        raise ProviderSessionConflictError("provider_session_transcript_too_large")
-    if (type(epoch.get("entry_count")) is not int
-        or type(epoch.get("next_sequence")) is not int
-        or epoch["entry_count"] != len(rows)
-        or epoch["next_sequence"] != len(rows) + 1
-        or any(type(row.get("sequence")) is not int or row["sequence"] != i
-               for i, row in enumerate(rows, 1))):
-        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-    cursor = await conn.execute(
-        "select expected_sequence, entry_count, last_sequence, batch_sha256 "
-        "from provider_session_append_receipts where epoch_id = %s "
-        "order by expected_sequence asc limit %s",
-        (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
-    )
-    receipts = list(await cursor.fetchall())
-    expected = 1
-    total_bytes = 0
-    structured_bytes = 0
-    try:
-        for receipt in receipts:
-            count = receipt.get("entry_count")
-            if (type(count) is not int or count < 1
-                or type(receipt.get("expected_sequence")) is not int
-                or type(receipt.get("last_sequence")) is not int
-                or receipt["expected_sequence"] != expected
-                or receipt["last_sequence"] != expected + count - 1
-                or receipt["last_sequence"] >= epoch["next_sequence"]):
-                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-            batch_rows = rows[expected - 1:expected + count - 1]
-            path = batch_rows[0]["subpath"]
-            if (not isinstance(path, str)
-                or (normalize_provider_subpath(path) or "") != path
-                or any(row.get("subpath") != path for row in batch_rows)):
-                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-            entries = []
-            ambiguous_legacy = False
-            for row in batch_rows:
+    rows, receipts = await read_provider_ledger(conn, epoch=epoch)
+    return verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts, media=media)
+
+async def verified_provider_prefix(
+    conn: AsyncConnection, *, epoch: Mapping[str, Any], final_sequence: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Restore only at a complete ACK boundary after verifying the whole ledger."""
+    from app.context.infrastructure.provider_epoch_ledger import read_provider_ledger, verify_provider_ledger
+    from app.context.infrastructure.provider_epoch_verification import checked_epoch_proof
+
+    rows, receipts = await read_provider_ledger(conn, epoch=epoch)
+    proof = None
+    if any(row.get("image_references") for row in rows):
+        proof = await checked_epoch_proof(conn, epoch=epoch, rows=rows, receipts=receipts)
+        # The media proof authenticates the canonical ledger and referenced
+        # objects. Rehydrate only the canonical entry values needed to copy the
+        # frozen prefix; keep the copied image fields projected and references
+        # shared with the source image rows.
+        try:
+            for row in rows:
                 original = row.get("entry_canonical_json")
                 if original is None:
-                    entry = row["entry_json"]
-                    ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
-                else:
-                    entry = json.loads(original)
-                    if _canonical(entry).decode("utf-8") != original:
-                        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-                structured_bytes += provider_entry_json_bytes(entry)
-                refs = row["image_references"]
-                if refs:
-                    if row["image_format"] != PROVIDER_MEDIA_FORMAT or original is None:
-                        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-                    entry = restore_provider_images(entry, refs, values=media.values if media else {})
-                entries.append(entry)
-            batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=path)
-            if any(item.entry != original for item, original in zip(batch, entries)):
-                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-            if batch_digest(path, [item.entry for item in batch]) != receipt.get("batch_sha256"):
-                # JSONB cannot prove whether a legacy large integer was a float
-                # or whether zero was negative. Never authenticate guessed bytes.
-                code = ("provider_session_integrity_unavailable" if ambiguous_legacy
-                        else "provider_session_integrity_mismatch")
-                raise ProviderSessionConflictError(code)
-            for row, item in zip(batch_rows, batch):
-                row["entry_json"] = item.entry
-            total_bytes += batch_bytes
-            expected += count
-    except ProviderSessionConflictError:
-        raise
-    except (ValueError, KeyError, TypeError) as exc:
-        raise ProviderSessionConflictError("provider_session_integrity_mismatch") from exc
-    if expected != epoch["next_sequence"]:
-        raise ProviderSessionConflictError("provider_session_integrity_unavailable")
-    if (type(epoch.get("structured_bytes")) is not int or structured_bytes != epoch["structured_bytes"]
-        or type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]):
-        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-    return rows
+                    raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                entry = json.loads(original)
+                if _canonical(entry).decode("utf-8") != original:
+                    raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                row["entry_json"] = entry
+        except (ValueError, TypeError) as exc:
+            raise ProviderSessionConflictError("provider_session_integrity_mismatch") from exc
+    else:
+        rows = verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts)
+    if type(final_sequence) is not int or not 0 <= final_sequence < epoch["next_sequence"]:
+        raise ProviderSessionConflictError("provider_session_terminal_receipt_invalid")
+    if final_sequence:
+        cursor = await conn.execute(
+            "select last_sequence from provider_session_append_receipts "
+            "where epoch_id = %s and last_sequence = %s", (epoch["id"], final_sequence),
+        )
+        if await cursor.fetchone() is None:
+            raise ProviderSessionConflictError("provider_session_terminal_receipt_invalid")
+    prefix = rows[:final_sequence]
+    total = proof.prefix_bytes[final_sequence] if proof else sum(
+        provider_entry_json_bytes(row["entry_json"]) for row in prefix
+    )
+    return prefix, total
+
+
+def _require_continuation_available(recovery: object) -> None:
+    if recovery is None:
+        return  # Existing successfully committed v2 epochs predate recovery receipts.
+    if (not isinstance(recovery, dict)
+        or recovery.get("schema_version") != RECOVERY_SCHEMA_VERSION
+        or recovery.get("state") not in ("resumable", "recovery_candidate", "blocked")):
+        raise ProviderSessionConflictError("provider_session_native_unavailable")
+    if recovery["state"] == "blocked":
+        reason = recovery.get("reason_code")
+        if not isinstance(reason, str) or reason not in {"writer_unverified", "workspace_unsaved", "native_unavailable"}:
+            reason = "native_unavailable"
+        raise ProviderSessionConflictError("provider_session_" + reason)
 
 
 def _has_ambiguous_legacy_number(value: object) -> bool:
@@ -697,6 +739,9 @@ async def prepare_provider_epoch(
     cursor = await conn.execute(
         """
         select head.current_epoch_id, head.next_epoch_number, head.active_run_id,
+               head.recovery_json as head_recovery_json,
+               epoch.id, epoch.next_sequence, epoch.recovery_json, epoch.coverage_schema_version,
+               epoch.coverage_through_generation,
                epoch.provider_session_id, epoch.state, epoch.coverage_source_sha256,
                epoch.coverage_message_count, epoch.entry_count, epoch.transcript_bytes, epoch.structured_bytes,
                epoch.writer_run_id, epoch.writer_attempt_id, epoch.writer_owner_generation
@@ -727,10 +772,14 @@ async def prepare_provider_epoch(
         frozen = existing_attempt.get("frozen_context")
         if (not isinstance(frozen, dict) or frozen.get("source_sha256") != digest
             or frozen.get("current_message_id") != conversation_context.get("current_message_id")
+            or frozen.get("message_count") != count
+            or frozen.get("authority_schema_version", "ai-platform.conversation-authority.v2") != conversation_context.get("authority_schema_version", "ai-platform.conversation-authority.v2")
             or frozen.get("provider_epoch_id") is None):
             raise ProviderSessionConflictError("provider_session_spec_mismatch")
         return dict(frozen)
+    _require_continuation_available(head.get("head_recovery_json"))
     if head["current_epoch_id"] is not None:
+        restore_count, restore_bytes = provider_restore_size(head, head.get("recovery_json"))
         if (
             head["state"] != "ready"
             or head["writer_run_id"] is not None
@@ -738,13 +787,65 @@ async def prepare_provider_epoch(
             or head["writer_owner_generation"] is not None
             or head["coverage_source_sha256"] != digest
             or head["coverage_message_count"] != count
-            or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
-            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
+            or head.get("coverage_schema_version", "ai-platform.conversation-authority.v2") != conversation_context.get("authority_schema_version", "ai-platform.conversation-authority.v2")
+            or type(restore_count) is not int or restore_count < 0
+            or restore_count > MAX_PROVIDER_SESSION_ENTRIES - 128
+            or type(restore_bytes) is not int or restore_bytes < 0
+            or restore_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES
         ):
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
-        epoch_id = head["current_epoch_id"]
+        source_id = head["current_epoch_id"]
+        if (conversation_context.get("source_epoch_id") is not None
+            and conversation_context["source_epoch_id"] != source_id):
+            raise ProviderSessionConflictError("provider_session_spec_mismatch")
+        source = {**head, **dict(zip(("tenant_id", "workspace_id", "user_id", "session_id", "agent_id"), values)), "id": source_id}
+        recovery = head.get("recovery_json") or {}
+        if recovery and (recovery.get("provider_epoch_id") != source_id
+                         or recovery.get("workspace_saved") is not True):
+            raise ProviderSessionConflictError("provider_session_native_unavailable")
+        final_sequence = recovery.get("final_sequence", head["next_sequence"] - 1)
+        prefix, prefix_bytes = await verified_provider_prefix(
+            conn, epoch=source, final_sequence=final_sequence,
+        )
+        if len(prefix) != restore_count or prefix_bytes != restore_bytes:
+            raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+        epoch_id = f"pe_{uuid.uuid4().hex}"
         provider_id = str(head["provider_session_id"])
         mode = "native_resume"
+        prefix_structured_bytes = sum(provider_entry_json_bytes(row["entry_json"]) for row in prefix)
+        await conn.execute(
+            """
+            insert into provider_session_epochs (
+              id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+              epoch_number, provider_session_id, state, source_epoch_id, source_final_sequence,
+              next_sequence, entry_count, transcript_bytes, structured_bytes, coverage_source_sha256,
+              coverage_through_generation, coverage_message_count, coverage_schema_version
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, 'ready', %s, %s,
+                      %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (epoch_id, *values, head["next_epoch_number"], provider_id, source_id,
+                  final_sequence, final_sequence + 1, len(prefix), prefix_bytes, prefix_structured_bytes, digest,
+                  head["coverage_through_generation"], count, head["coverage_schema_version"]),
+        )
+        await conn.execute(
+            """
+            insert into provider_session_entries (
+              id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json, image_format, image_references, created_at
+            ) select %s || sequence::text, tenant_id, workspace_id, user_id, session_id, agent_id,
+              engine, %s, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json, image_format, image_references, created_at
+            from provider_session_entries where epoch_id = %s and sequence <= %s
+            """, (f"pse_{uuid.uuid4().hex}_", epoch_id, source_id, final_sequence),
+        )
+        await conn.execute(
+            """
+            insert into provider_session_append_receipts (
+              epoch_id, expected_sequence, batch_sha256, entry_count, last_sequence,
+              run_id, attempt_id, owner_generation, created_at
+            ) select %s, expected_sequence, batch_sha256, entry_count, last_sequence,
+              run_id, attempt_id, owner_generation, created_at
+            from provider_session_append_receipts where epoch_id = %s and last_sequence <= %s
+            """, (epoch_id, source_id, final_sequence),
+        )
     else:
         scope_fields = {
             "tenant_id": scope.tenant_id,
@@ -766,13 +867,13 @@ async def prepare_provider_epoch(
             ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s::uuid, 'bootstrapping')
             """, (epoch_id, *values, head["next_epoch_number"], provider_id),
         )
-        await conn.execute(
-            """
-            update provider_session_heads set next_epoch_number = next_epoch_number + 1,
-              updated_at = now() where tenant_id = %s and workspace_id = %s and user_id = %s
-              and session_id = %s and agent_id = %s and engine = %s and active_run_id = %s
-            """, (*values, run_id),
-        )
+    await conn.execute(
+        """
+        update provider_session_heads set next_epoch_number = next_epoch_number + 1,
+          updated_at = now() where tenant_id = %s and workspace_id = %s and user_id = %s
+          and session_id = %s and agent_id = %s and engine = %s and active_run_id = %s
+        """, (*values, run_id),
+    )
     return {
         **conversation_context,
         "messages": [] if mode == "native_resume" else conversation_context["messages"],
@@ -781,6 +882,8 @@ async def prepare_provider_epoch(
         "execution_mode": mode,
         "provider_epoch_id": epoch_id,
         "provider_session_id": provider_id,
+        **({"source_epoch_id": source_id, "source_final_sequence": final_sequence,
+            "recovery": head.get("recovery_json")} if mode == "native_resume" else {}),
     }
 
 
@@ -861,7 +964,7 @@ async def commit_provider_turn(
         # eager append. The locked epoch is the authoritative sequence source.
         final_sequence = row["next_sequence"] - 1
     frozen = row["frozen_context"]
-    receipt = validate_authority_receipt(row["conversation_authority_json"])
+    receipt = validate_provider_authority_receipt(row["conversation_authority_json"])
     scope = {name: row[name] for name in
              ("tenant_id", "workspace_id", "user_id", "session_id", "agent_id")}
     if (
@@ -883,7 +986,7 @@ async def commit_provider_turn(
             and (row["bootstrap_source_sha256"] != receipt["source_sha256"]
                  or row["current_epoch_id"] == row["epoch_id"]))
         or (frozen.get("execution_mode") == "native_resume"
-            and (row["current_epoch_id"] != row["epoch_id"]
+            and (row["current_epoch_id"] != frozen.get("source_epoch_id", row["epoch_id"])
                  or row["coverage_source_sha256"] != receipt["source_sha256"]))
         or frozen.get("execution_mode") not in {"native_resume", "empty_start"}
     ):
@@ -917,30 +1020,54 @@ async def commit_provider_turn(
         """
         update provider_session_epochs set state = 'ready',
           coverage_source_sha256 = %s, coverage_through_generation = %s,
-          coverage_message_count = %s, updated_at = now()
+          coverage_message_count = %s, coverage_schema_version = %s, updated_at = now()
         where id = %s and writer_run_id = %s and writer_attempt_id = %s
         """, (committed_digest, row["session_generation"],
-              receipt["message_count"] + len(messages), row["epoch_id"], run_id, attempt_id),
+              receipt["message_count"] + len(messages), receipt["schema_version"], row["epoch_id"], run_id, attempt_id),
     )
-    if row["current_epoch_id"] != row["epoch_id"]:
-        if row["current_epoch_id"]:
-            await conn.execute(
-                """
-                update provider_session_epochs set state = 'closed', closed_at = now(), updated_at = now()
-                where id = %s and state in ('ready', 'dirty')
-                """, (row["current_epoch_id"],),
-            )
-        await conn.execute(
-            """
-            update provider_session_heads set current_epoch_id = %s, updated_at = now()
-            where tenant_id = %s and workspace_id = %s and user_id = %s
-              and session_id = %s and agent_id = %s and engine = 'claude'
-              and active_run_id = %s and active_attempt_id = %s
-            """, (row["epoch_id"], *scope.values(), run_id, attempt_id),
-        )
+    # Only settle_provider_continuation may publish the head after workspace save.
+
+
+async def read_verified_native_invocation(
+    conn: AsyncConnection, *, scope: Mapping[str, str], epoch_id: str,
+    source_run_id: str, source_attempt_id: str, final_sequence: int,
+    invocation_id: str, native_tool_name: str,
+) -> dict[str, Any]:
+    cursor = await conn.execute(
+        """select * from provider_session_epochs where id=%s and tenant_id=%s
+           and workspace_id=%s and user_id=%s and session_id=%s
+           and recovery_json->>'source_run_id'=%s and recovery_json->>'source_attempt_id'=%s
+           and writer_run_id is null for share""",
+        (epoch_id, scope["tenant_id"], scope["workspace_id"], scope["user_id"], scope["session_id"],
+         source_run_id, source_attempt_id),
+    )
+    epoch = await cursor.fetchone()
+    if epoch is None:
+        raise ProviderSessionConflictError("provider_session_scope_mismatch")
+    rows, _ = await verified_provider_prefix(conn, epoch=epoch, final_sequence=final_sequence)
+    matches = []
+    for row in rows:
+        entry = row["entry_json"]
+        message = entry.get("message") if isinstance(entry, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") == invocation_id:
+                matches.append(block)
+    from app.context.infrastructure.provider_epoch_verification import native_call_blocks
+    native_blocks = native_call_blocks(epoch_id, final_sequence=final_sequence)
+    if native_blocks is not None:
+        matches = [block for block in native_blocks if block.get("id") == invocation_id]
+    if len(matches) != 1 or matches[0].get("name") != native_tool_name or not isinstance(matches[0].get("input"), dict):
+        raise ProviderSessionConflictError("provider_session_native_invocation_invalid")
+    return matches[0]["input"]
+
 
 
 class PostgresProviderEpochRepository:
+    verification_scope = staticmethod(provider_epoch_verification_scope)
+    read_verified_native_invocation = staticmethod(read_verified_native_invocation)
     prepare_callback_media = staticmethod(prepare_callback_media)
     queue_images_for_deletion = staticmethod(queue_provider_images_for_deletion)
     callback_epoch = staticmethod(callback_provider_epoch)
@@ -949,6 +1076,9 @@ class PostgresProviderEpochRepository:
     release_lineage = staticmethod(release_provider_lineage)
     prepare_epoch = staticmethod(prepare_provider_epoch)
     commit_turn = staticmethod(commit_provider_turn)
+    settle_continuation = staticmethod(settle_provider_continuation)
+    advance_unclaimed_terminal_generation = staticmethod(advance_unclaimed_terminal_generation)
+    get_continuation = staticmethod(get_session_continuation)
 
 
 async def read_usage_provider_session(conn, *, tenant_id: str, run_id: str, attempt_id: str) -> str | None:

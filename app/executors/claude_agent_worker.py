@@ -1,5 +1,4 @@
 import inspect
-import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +14,6 @@ from app.context.api import (
 from app.bootstrap.context import (
     materialize_worker_context_files,
 )
-from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
@@ -51,7 +49,7 @@ from app.execution.api import (
     collect_workspace_artifacts,
     runtime_terminal_payload,
 )
-from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.path_safety import ensure_path_inside
 from app.required_tool_contract import (
     capability_invocation_completion_decision,
     validate_runtime_tool_evidence,
@@ -72,7 +70,8 @@ from app.runtime.sandbox.contracts import (
     ModelTokenLimits,
     SandboxRuntimeRequest,
 )
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.bootstrap.sandbox_runtime import SandboxRuntime
+from app.bootstrap import claude_continuation
 from app.settings import get_settings
 from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
 from app.skills.api import (
@@ -276,11 +275,7 @@ def _sandbox_runtime_provider(runtime: object) -> str:
     return ""
 
 
-def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] | None:
-    manifest = context_pack.get("context_manifest")
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
-        return None
-    return manifest
+_context_manifest_from_pack = claude_continuation.context_manifest_from_pack
 
 
 def _runtime_request_skill_ids(
@@ -412,7 +407,9 @@ class ClaudeAgentWorkerAdapter:
             )
         if not bool(getattr(settings, "claude_agent_sdk_enabled", False)):
             return self._sdk_required_result(payload, sdk_result=None)
-        sandbox_runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        sandbox_runtime = claude_continuation.build_sandbox_runtime(
+            SandboxRuntime, settings.sandbox_workspace_root
+        )
         actual_provider = _sandbox_runtime_provider(sandbox_runtime)
         if actual_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
@@ -541,7 +538,15 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         resolved_workspace = workspace or _run_workspace(settings, payload)
         resolved_workspace_root = workspace_root or settings.claude_agent_workspace_root
-        _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
+        context_pack = self._executor_context_pack(payload)
+        restore_binding = await claude_continuation.prepare_workspace_restore(
+            payload,
+            context_pack,
+            resolved_workspace_root,
+            resolved_workspace,
+            workspace is not None,
+            settings.sandbox_container_provider,
+        )
         materialized_file_names = await self._materialize_files(payload, resolved_workspace)
         file_names = list(materialized_file_names)
         raw_attachment_metadata = getattr(materialized_file_names, "attachment_metadata", [])
@@ -659,6 +664,12 @@ class ClaudeAgentWorkerAdapter:
                 workspace=resolved_workspace,
                 skills=selected_skills,
             )
+        )
+        await claude_continuation.finish_workspace_restore(
+            restore_binding,
+            context_pack,
+            staged_skill_names,
+            resolved_workspace_root,
         )
         if selected_skills:
             await _emit_public_progress_event(
@@ -825,10 +836,15 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             **execution_api.claude_provider_session_dispatch(payload, context_pack),
+            **claude_continuation.request_fields(
+                payload, context_pack, runtime_context_manifest, settings
+            ),
             governed_permission_wait=False,
             reconciliation_context=reconciliation_context,
         )
-        runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        runtime = sandbox_runtime or claude_continuation.build_sandbox_runtime(
+            SandboxRuntime, settings.sandbox_workspace_root
+        )
         runtime_event_sink = None
         if event_sink is not None:
 
@@ -1299,24 +1315,6 @@ def _string_list(value: object) -> list[str]:
 
 def _run_workspace(settings: object, payload: RunPayload) -> Path:
     return Path(settings.claude_agent_workspace_root) / payload.tenant_id / payload.run_id
-
-
-def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
-    ensure_creatable_inside(
-        workspace_root,
-        workspace,
-        "run workspace must stay inside the configured workspace root",
-    )
-    if workspace.exists():
-        if workspace.is_symlink() or not workspace.is_dir():
-            raise ValueError("run workspace must stay inside the configured workspace root")
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True, exist_ok=False)
-    ensure_creatable_inside(
-        workspace_root,
-        workspace,
-        "run workspace must stay inside the configured workspace root",
-    )
 
 
 def _sdk_used_skill_names(

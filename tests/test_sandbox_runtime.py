@@ -22,13 +22,37 @@ from app.runtime.sandbox.contracts import (
     WorkspaceLease,
 )
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
-from app.sandbox.api import SandboxExecutorHttpError
+from app.sandbox.api import (
+    SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown,
+    SandboxExecutorHttpError,
+)
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
-from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError
+from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
+
+
+class _TestDispatchIntentRepository:
+    async def persist_intent(self, _conn, *, identity, reconciliation_context):
+        return {"lease_id": identity.lease_id, "status": "intent"}, True
+
+    async def record_outcome(self, _conn, *, identity, outcome):
+        return {"lease_id": identity.lease_id, "status": outcome}
+
+
+class SandboxRuntime(_SandboxRuntime):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("lease_port", sandbox_lease_repository)
+        kwargs.setdefault("callback_lease_port", sandbox_lease_repository)
+        kwargs.setdefault(
+            "dispatch_intents",
+            SandboxDispatchIntentService(_TestDispatchIntentRepository()),
+        )
+        super().__init__(*args, **kwargs)
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -276,6 +300,8 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "materialized_file_names": ["z.docx", "a.docx"],
         "system_prompt": "Private profile instruction",
         "provider_session_resume_required": False,
+        "provider_epoch_id": None,
+        "operation_receipts_enabled": False,
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
@@ -1390,6 +1416,8 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
     from app.runtime.sandbox.executor_signals import ExecutorSignalUnavailable
 
     events = []
+    status_reads = []
+    release_calls = []
     in_transaction = False
 
     class StubSettings:
@@ -1438,25 +1466,42 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
     async def execute(_executor_url, task_request):
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
+    async def get_status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    async def release_lease(lease, reason, lease_record_id=None):
+        release_calls.append((lease, reason, lease_record_id))
+
     monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
     monkeypatch.setattr(runtime_module, "_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(runtime_module, "transaction", transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
     monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish, raising=False)
     provider = FakeContainerProvider(executor_url="http://executor.test")
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=provider,
         execute_task=execute,
+        get_executor_status=get_status,
         callback_token_resolver=lambda _token_id: "secret-token",
+        release_lease=release_lease,
     )
 
     if commit_fails:
-        with pytest.raises(RuntimeError, match="synthetic acceptance commit failure"):
+        with pytest.raises(
+            SandboxDispatchOutcomeUnknown,
+            match="sandbox_dispatch_outcome_unknown",
+        ) as raised:
             await runtime.submit(request(attempt_id="a"))
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "synthetic acceptance commit failure"
         assert "rollback" in events
         assert "wake" not in events
+        assert status_reads == [("run-a", "a")]
+        assert release_calls == []
+        assert len(await provider.list_runtime_containers({})) == 1
         return
     if signal_unavailable == "cancelled" and state == "pending":
         with pytest.raises(asyncio.CancelledError):
@@ -1510,8 +1555,8 @@ async def test_accepted_terminal_keeps_runtime_through_worker_execution_owner(tm
 
     monkeypatch.setattr(runtime_module, "get_settings", lambda: Settings())
     monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create)
-    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
     monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish)
     provider = Provider(executor_url="http://executor.test")
     runtime = SandboxRuntime(workspace_root=tmp_path, provider=provider, execute_task=execute, callback_token_resolver=lambda _id: "synthetic-token")
@@ -1602,13 +1647,13 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.record_sandbox_executor_accepted",
+        sandbox_lease_repository, "record_sandbox_executor_accepted",
         record_sandbox_executor_accepted,
     )
 
@@ -1706,6 +1751,318 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_lost_dispatch_ack_recovers_exact_task_without_resubmitting(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+
+    executions = []
+    status_reads = []
+    outcomes = []
+    accepted = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-dispatch-a"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert identity.attempt_id == "qat_test-runtime-attempt"
+        assert identity.owner_generation == 1
+        assert identity.lease_id == "lease-dispatch-a"
+        assert reconciliation_context["adapter_name"] == "claude-agent-worker"
+        return {"dispatch_id": "dispatch-a", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-a", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        accepted.append(kwargs)
+        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+
+    async def execute(_url, task_request, **_kwargs):
+        executions.append((task_request.run_id, task_request.attempt_id))
+        raise RuntimeError("acknowledgement lost after provider accepted")
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id, dict(executor_headers)))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-dispatch-a",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
+    )
+
+    result = await runtime.submit(request())
+
+    assert result.status == "accepted"
+    assert executions == [("run-a", "qat_test-runtime-attempt")]
+    assert status_reads[0][:2] == ("run-a", "qat_test-runtime-attempt")
+    assert status_reads[0][2]
+    assert outcomes == [("lease-dispatch-a", "accepted")]
+    assert accepted[0]["lease_id"] == "lease-dispatch-a"
+
+
+@pytest.mark.asyncio
+async def test_lost_dispatch_ack_with_failed_status_probe_is_typed_unknown(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+    from app.sandbox.api import SandboxDispatchOutcomeUnknown
+
+    posts = []
+    status_reads = []
+    outcomes = []
+    accepted = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-dispatch-unknown"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert identity.lease_id == "lease-dispatch-unknown"
+        assert reconciliation_context["adapter_name"] == "claude-agent-worker"
+        return {"dispatch_id": "dispatch-unknown", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-unknown", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        accepted.append(kwargs)
+        raise AssertionError("unconfirmed acceptance must not be recorded")
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        raise TimeoutError("POST acknowledgement lost")
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id, dict(executor_headers)))
+        raise TimeoutError("first exact-task probe unavailable")
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-dispatch-unknown",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
+    )
+
+    with pytest.raises(SandboxDispatchOutcomeUnknown, match="sandbox_dispatch_outcome_unknown"):
+        await runtime.submit(request())
+
+    assert posts == [("run-a", "qat_test-runtime-attempt")]
+    assert len(status_reads) == 1
+    assert status_reads[0][:2] == posts[0]
+    assert status_reads[0][2]
+    assert outcomes == [("lease-dispatch-unknown", "unknown")]
+    assert accepted == []
+
+
+@pytest.mark.asyncio
+async def test_definitive_dispatch_refusal_is_undispatched_and_settles_same_attempt(
+    tmp_path, monkeypatch,
+):
+    from app.execution.api import ContinuationSettlementPorts
+    from app.runtime.sandbox import runtime as runtime_module
+
+    stopped = []
+    posts = []
+    outcomes = []
+    accepted = []
+    refusal = SandboxExecutorHttpError(
+        status_code=401,
+        error_code="invalid_executor_credential",
+        detail="invalid_executor_credential",
+    )
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    class RecordingProvider(FakeContainerProvider):
+        async def stop(self, lease, *, reason):
+            stopped.append((lease.run_id, lease.labels["ai-platform.attempt_id"], reason))
+            return await super().stop(lease, reason=reason)
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-dispatch-refused"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        assert (identity.run_id, identity.attempt_id, identity.owner_generation) == (
+            "run-a", "qat_test-runtime-attempt", 4,
+        )
+        return {"dispatch_id": "dispatch-refused", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.run_id, identity.attempt_id, outcome))
+        return {"dispatch_id": "dispatch-refused", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        accepted.append(kwargs)
+        raise AssertionError("a definitive refusal must not record acceptance")
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        raise refusal
+
+    async def status(_url, **_kwargs):
+        raise TimeoutError("refusal status probe unavailable")
+
+    async def unused(*_args, **_kwargs):
+        raise AssertionError("undispatched requests have no SDK continuation to save")
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-dispatch-refused",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=RecordingProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
+        continuation_ports=ContinuationSettlementPorts(unused, unused),
+    )
+
+    with pytest.raises(SandboxExecutorHttpError) as caught:
+        await runtime.submit(request(
+            sandbox_mode="persistent", provider_epoch_id="epoch-a", owner_generation=4,
+        ))
+
+    assert caught.value is refusal
+    assert posts == [("run-a", "qat_test-runtime-attempt")]
+    assert outcomes == [("run-a", "qat_test-runtime-attempt", "rejected")]
+    assert accepted == []
+    assert stopped == [("run-a", "qat_test-runtime-attempt", "dispatch_failed")]
+    settlement = caught.value.predispatch_continuation_settlement
+    assert settlement["attempt_id"] == "qat_test-runtime-attempt"
+    assert settlement["stop_evidence"] == "provider_stopped"
+    assert settlement["sdk_settlement"]["owner_generation"] == 4
+    assert settlement["sdk_settlement"]["input_accepted"] is False
+    assert settlement["runtime_lease"]["lease_id"] == "lease-dispatch-refused"
+
+
+@pytest.mark.asyncio
+async def test_accepted_commit_retry_returns_accepted_after_exact_task_probe(tmp_path, monkeypatch):
+    from app.runtime.sandbox import runtime as runtime_module
+
+    posts = []
+    status_reads = []
+    outcomes = []
+    accepted_attempts = 0
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-accepted-retry"}
+
+    async def persist_intent(_conn, *, identity, reconciliation_context):
+        return {"dispatch_id": "dispatch-retry", "status": "intent"}, True
+
+    async def record_outcome(_conn, *, identity, outcome):
+        outcomes.append((identity.lease_id, outcome))
+        return {"dispatch_id": "dispatch-retry", "status": outcome}
+
+    async def record_accepted(_conn, **kwargs):
+        nonlocal accepted_attempts
+        accepted_attempts += 1
+        if accepted_attempts == 1:
+            raise RuntimeError("first acceptance transaction failed")
+        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+
+    async def execute(_url, task_request, **_kwargs):
+        posts.append((task_request.run_id, task_request.attempt_id))
+        return {"status": "accepted", "run_id": task_request.run_id, "attempt_id": task_request.attempt_id}
+
+    async def status(_url, *, run_id, attempt_id, executor_headers):
+        status_reads.append((run_id, attempt_id))
+        return {"status": "running", "run_id": run_id, "attempt_id": attempt_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    lease_port = SimpleNamespace(
+        new_lease_id=lambda: "lease-accepted-retry",
+        create_sandbox_lease=create_lease,
+        record_sandbox_executor_accepted=record_accepted,
+        fence_sandbox_lease_release=noop_lease,
+    )
+    dispatch_repository = SimpleNamespace(
+        persist_intent=persist_intent,
+        record_outcome=record_outcome,
+    )
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        get_executor_status=status,
+        callback_token_resolver=lambda _token_id: "synthetic-token",
+        lease_port=lease_port,
+        dispatch_intents=SandboxDispatchIntentService(dispatch_repository),
+    )
+
+    result = await runtime.submit(request())
+
+    assert result.status == "accepted"
+    assert posts == [("run-a", "qat_test-runtime-attempt")]
+    assert status_reads == [("run-a", "qat_test-runtime-attempt")]
+    assert accepted_attempts == 2
+    assert outcomes == [
+        ("lease-accepted-retry", "accepted"),
+        ("lease-accepted-retry", "accepted"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
     calls = []
     from app.settings import (
@@ -1797,8 +2154,8 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=_short_sandbox_workspace_root(tmp_path),
@@ -1864,7 +2221,7 @@ async def test_internal_test_bridge_lease_persists_exact_cleanup_identity(tmp_pa
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_lease)
     runtime = SandboxRuntime(workspace_root=_short_sandbox_workspace_root(tmp_path), provider=FakeContainerProvider())
     workspace = runtime.workspace_manager.prepare(runtime_request)
     labels = internal_test_opensandbox_lease_labels(
@@ -2092,8 +2449,8 @@ async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_hand
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -2262,8 +2619,8 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr(sandbox_lease_repository, "fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
         workspace_root=tmp_path,
@@ -2529,15 +2886,15 @@ async def test_runtime_fences_default_lease_when_commit_confirmation_is_lost(tmp
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        sandbox_lease_repository, "new_lease_id",
         lambda: "lease-preallocated",
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        sandbox_lease_repository, "create_sandbox_lease",
         create_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     provider = FakeContainerProvider(executor_url="http://executor.test")
@@ -2583,7 +2940,8 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
         sandbox_callback_token = "settings-token"
         sandbox_container_provider = "fake"
         sandbox_container_start_timeout_seconds = 60
-        sandbox_cleanup_timeout_seconds = 0.01
+        # Windows timer ticks can exceed 10 ms; both cleanup deadlines remain exercised.
+        sandbox_cleanup_timeout_seconds = 0.1 if os.name == "nt" else 0.01
 
         sandbox_lease_ttl_seconds = 1800
     async def create_sandbox_lease(_conn, **kwargs):
@@ -2608,15 +2966,15 @@ async def test_runtime_release_fence_prevents_late_default_lease_insert(tmp_path
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", late_record_transaction)
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.new_lease_id",
+        sandbox_lease_repository, "new_lease_id",
         lambda: "lease-preallocated",
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease",
+        sandbox_lease_repository, "create_sandbox_lease",
         create_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release",
+        sandbox_lease_repository, "fence_sandbox_lease_release",
         fence_sandbox_lease_release,
     )
     runtime = SandboxRuntime(
@@ -3033,3 +3391,108 @@ async def test_runtime_execution_owner_cancel_before_lease_established_releases_
 
     assert stopped.quiescent is True
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["callback", "create", "record", "stage", "dispatch"])
+async def test_runtime_attaches_only_proven_predispatch_continuation_receipt(tmp_path, monkeypatch, phase):
+    calls = []
+    original = ValueError("synthetic startup failure")
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 1800
+
+    class Provider(FakeContainerProvider):
+        async def create_or_reuse(self, req, workspace):
+            calls.append("create")
+            if phase == "create":
+                raise original
+            return await super().create_or_reuse(req, workspace)
+
+        async def stage_workspace(self, *args):
+            calls.append("stage")
+            if phase == "stage":
+                raise original
+
+        async def stop(self, lease, *, reason):
+            calls.append("stop")
+            return await super().stop(lease, reason=reason)
+
+    async def execute(*args, **kwargs):
+        calls.append("dispatch")
+        raise original
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: Settings())
+    def record(*args):
+        if phase == "record":
+            raise original
+
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path), provider=Provider(), execute_task=execute,
+        record_lease=record, release_lease=noop_lease,
+    )
+    if phase == "callback":
+        def reject(_provider):
+            raise original
+        monkeypatch.setattr(runtime, "_trusted_callback_target", reject)
+    with pytest.raises(ValueError) as caught:
+        await runtime.submit(request(provider_epoch_id="epoch-a", owner_generation=4))
+    assert caught.value is original
+    settlement = getattr(original, "predispatch_continuation_settlement", None)
+    if phase in {"create", "dispatch"}:
+        assert settlement is None
+    else:
+        assert settlement["stop_evidence"] == ("provider_not_created" if phase == "callback" else "provider_stopped")
+        assert settlement["sdk_settlement"]["owner_generation"] == 4
+        assert settlement["sdk_settlement"]["input_accepted"] is False
+        assert settlement["sdk_settlement"]["ack_unknown"] is False
+        assert settlement["workspace_receipt"] is None
+        assert settlement["attempt_id"] == "qat_test-runtime-attempt"
+    if phase == "callback":
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_status,foreign_container", [("stopped", False), ("failed", False), ("stopped", True)])
+async def test_runtime_predispatch_receipt_requires_exact_stop_and_defers_lease_release(tmp_path, monkeypatch, stop_status, foreign_container):
+    from app.execution.api import ContinuationSettlementPorts
+    released = []
+    original = ValueError("synthetic stage failure")
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 1800
+
+    class Provider(FakeContainerProvider):
+        async def stage_workspace(self, *args):
+            raise original
+
+        async def stop(self, lease, *, reason):
+            return StopResult(status=stop_status, container_id="foreign" if foreign_container else lease.container_id)
+
+    async def unused(*args, **kwargs):
+        raise AssertionError("an unstarted executor has no workspace/SDK receipt")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: Settings())
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path), provider=Provider(),
+        record_lease=lambda *args: {"id": "lease-exact"}, release_lease=lambda *args: released.append(args),
+        continuation_ports=ContinuationSettlementPorts(unused, unused),
+    )
+    expected = ValueError if stop_status == "stopped" and not foreign_container else SandboxRuntimeCleanupError
+    with pytest.raises(expected) as caught:
+        await runtime.submit(request(provider_epoch_id="epoch-a", owner_generation=4))
+    assert released == []
+    if expected is ValueError:
+        assert caught.value is original
+        assert original.predispatch_continuation_settlement["runtime_lease"] == {
+            "lease_id": "lease-exact", "tenant_id": "tenant-a", "user_id": "user-a",
+            "run_id": "run-a", "attempt_id": "qat_test-runtime-attempt",
+        }
+    else:
+        assert caught.value.__cause__ is original
+        assert not hasattr(caught.value, "predispatch_continuation_settlement")
+        assert not hasattr(original, "predispatch_continuation_settlement")

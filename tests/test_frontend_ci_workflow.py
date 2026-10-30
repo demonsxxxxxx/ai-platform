@@ -165,7 +165,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
     assert (
         "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 "
-        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
+        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx "
+        "src/hooks/useAgent/__tests__/conversationContinuation.test.ts"
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
@@ -185,7 +186,16 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
     assert contract["on"] == {
-        "pull_request": {"branches": ["main"]},
+        "pull_request": {
+            "branches": [
+                "main",
+                "feat/n01-lifecycle-control-chain",
+                "test/run-lifecycle-control-chain",
+                "feat/lifecycle-phase1",
+                "feat/lifecycle-phase2",
+                "feat/lifecycle-phase3",
+            ]
+        },
         "push": {"branches": ["main"]},
         "workflow_dispatch": "",
     }

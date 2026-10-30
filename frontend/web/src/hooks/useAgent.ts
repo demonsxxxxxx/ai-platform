@@ -10,6 +10,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useSyncExternalStore,
 } from "react";
 import { toast } from "@lobehub/ui/base-ui";
 import i18n from "../i18n";
@@ -35,6 +36,7 @@ import {
 import { agentRunModelOptions } from "../services/api/session";
 import {
   CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION,
+  canContinueConversation,
   type ChatSubmissionPreLedgerAbsenceResolution,
   type ChatSubmissionResolution,
 } from "../services/api/session";
@@ -792,6 +794,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  // Session identity alone does not confirm that a new submission is safe.
+  const [sessionContinuationPending, setSessionContinuationPending] = useState(false);
+  const sessionContinuationPendingRef = useRef(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
   const [error, setError] = useState<string | null>(null);
@@ -844,6 +849,34 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     runControlLifecycleRef.current = new RunControlLifecycle();
   }
   const runControlLifecycle = runControlLifecycleRef.current;
+  const continuationSnapshot = useSyncExternalStore(
+    runControlLifecycle.subscribe, runControlLifecycle.getSnapshot,
+  );
+  const continuationPending = (
+    sessionContinuationPending && !(continuationSnapshot.owner?.sessionId === sessionId && continuationSnapshot.continuationLoaded)
+  ) || (continuationSnapshot.owner !== null &&
+    !continuationSnapshot.continuationLoaded && continuationSnapshot.continuationCheckRequired && !isLoading);
+
+  useEffect(() => {
+    const owner = continuationSnapshot.owner;
+    if (!owner || isLoadingHistory) return;
+    const settling = continuationSnapshot.continuation?.state === "settling";
+    if (!settling && (isLoading || !continuationPending || !continuationSnapshot.continuationCheckAutomatic)) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let disposed = false;
+    const read = async () => {
+      await runControlLifecycle.refreshContinuation(owner);
+      if (!disposed && runControlLifecycle.isCurrentOwner(owner) &&
+        runControlLifecycle.getSnapshot().continuation?.state === "settling") {
+        timer = setTimeout(read, 1500);
+      }
+    };
+    if (settling && !continuationPending) timer = setTimeout(read, 1500);
+    else void read();
+    return () => { disposed = true; if (timer !== undefined) clearTimeout(timer); };
+  }, [continuationPending, continuationSnapshot.continuation?.state,
+    continuationSnapshot.continuationCheckAutomatic,
+    continuationSnapshot.owner, isLoading, isLoadingHistory, runControlLifecycle]);
 
   // Track processed event IDs to prevent duplicates
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -1184,6 +1217,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         });
       }
       publicStreamPresentationRef.current?.invalidate();
+      if (!isLoadingHistoryRef.current && outcome !== "status_unavailable") {
+        runControlLifecycle.markContinuationPending(runId);
+      }
       currentRunIdRef.current = null;
       setCanStopGeneration(false);
       clearReconcileOwners({ preserveTerminalHydrations: true });
@@ -1346,7 +1382,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       });
       return true;
     },
-    [clearReconcileOwners],
+    [clearReconcileOwners, runControlLifecycle],
   );
 
   const finalizeTerminalRun = useCallback(
@@ -1402,6 +1438,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
 
+      if (!isLoadingHistoryRef.current) runControlLifecycle.markContinuationPending(targetRunId);
       toast.dismiss("chat-queue");
       setIsLoading(false);
       setConnectionStatus("disconnected");
@@ -1422,7 +1459,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       );
       return true;
     },
-    [],
+    [runControlLifecycle],
   );
 
   const resumeRunAfterRejectedTerminalSynchronization = useCallback(
@@ -1795,6 +1832,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const createSSEContext = useCallback(
     (): SSEConnectionContext => ({
       ...createEventHandlerContext(),
+      onRunStatusRead: (response) => {
+        const owner = runControlLifecycle.getSnapshot().owner;
+        if (owner) runControlLifecycle.observeContinuation(owner, response);
+      },
       isMountedRef,
       abortControllerRef,
       isConnectingRef,
@@ -1808,7 +1849,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       hydrateTerminalRun,
       hydrateActiveRun,
     }),
-    [createEventHandlerContext, hydrateActiveRun, hydrateTerminalRun],
+    [createEventHandlerContext, hydrateActiveRun, hydrateTerminalRun, runControlLifecycle],
   );
 
   const reconcileCurrentRun = useCallback(async () => {
@@ -1906,6 +1947,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
       }
       const historyLoadToken = beginHistoryLoad(historyLoadTokenRef);
+      sessionContinuationPendingRef.current = true;
+      setSessionContinuationPending(true);
       invalidateRunControl({ preserveParent: preservesRunControlParent });
       const previousSessionId = sessionIdRef.current;
       const previousRunId = currentRunIdRef.current;
@@ -1918,6 +1961,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const isCurrentHistoryLoadRequest = () =>
         isMountedRef.current &&
         mountedGenerationRef.current === mountedGeneration &&
+        runControlAuthIdentityRef.current === historyAuthIdentity &&
+        runControlAuthRevisionRef.current === historyAuthRevision &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       handoffActivePreAdmissionSubmission({ projectMessages: false });
       sessionAgentAuthorityRef.current = null;
@@ -1976,6 +2021,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
           const identity = authoritativeSession.agent_conversation;
           const invalidAuthoritativeIdentity =
+            sessionData.id !== targetSessionId ||
             authoritativeSession.session_id !== targetSessionId ||
             authoritativeSession.agent_id !== loadedAgentId ||
             (identity !== null && identity.agent_id !== loadedAgentId);
@@ -2028,6 +2074,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return null;
           }
 
+          if (!eventsData || typeof eventsData !== "object" || !Array.isArray(eventsData.events) ||
+            ("session_id" in eventsData && eventsData.session_id !== targetSessionId)) {
+            throw new Error("invalid_session_events_projection");
+          }
           const historyCurrentRunId = resolveHistoryCurrentRunId({
             targetRunId,
             sessionData,
@@ -2042,6 +2092,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             // transport budget; only a true session/run handoff starts over.
             retryCountRef.current = 0;
           }
+          // An unread status is not a successful legacy response without continuation.
+          if (historyCurrentRunId) {
+            bindRunControlParent(targetSessionId, historyCurrentRunId);
+            // History owns this read and its retry/authentication budget.
+            runControlLifecycle.markContinuationPending(historyCurrentRunId, { automatic: false });
+          }
           const statusResult = historyCurrentRunId
             ? await queryAuthoritativeRunStatus({
                 sessionId: targetSessionId,
@@ -2055,6 +2111,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             : null;
           if (!isCurrentHistoryLoadRequest()) {
             return null;
+          }
+          const continuationOwner = runControlLifecycle.getSnapshot().owner;
+          if (continuationOwner && statusResult?.kind === "resolved") {
+            runControlLifecycle.observeContinuation(continuationOwner, statusResult.data);
+          }
+          const confirmedRunStatus = continuationOwner?.sessionId === targetSessionId &&
+            runControlLifecycle.getSnapshot().continuationLoaded;
+          const confirmedEmptySession = !historyCurrentRunId && !targetRunId &&
+            eventsData.current_run_id === null && eventsData.events.length === 0;
+          if (confirmedRunStatus || confirmedEmptySession) {
+            sessionContinuationPendingRef.current = false;
+            setSessionContinuationPending(false);
           }
 
           // Reconnect only after the authoritative run record says it is
@@ -2176,14 +2244,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               );
             },
           });
-
-          // A restored active or terminal run becomes the authoritative parent
-          // for the persistent playback lifecycle. The lifecycle itself owns
-          // its snapshot; this only binds the parent identity before any panel
-          // read or child adoption can publish.
-          if (historyCurrentRunId) {
-            bindRunControlParent(targetSessionId, historyCurrentRunId);
-          }
 
           const historyMessageId = historyCurrentRunId
             ? ([...reconstructedMessages]
@@ -2483,7 +2543,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       selectedSkill?: SelectedSkillRequest | null,
       selectedAgentProfile?: SelectedAgentProfileRequest | null,
     ): Promise<SubmissionOutcome> => {
-      if (!isMountedRef.current) return { status: "failed" };
+      if (!isMountedRef.current || isLoadingHistoryRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
 
       if (submissionAuthIncarnationFenceRef.current !== null) {
@@ -2506,6 +2566,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "failed" };
       }
       const requestSessionId = sessionIdRef.current;
+      const continuationState = runControlLifecycle.getSnapshot();
+      if (sessionContinuationPendingRef.current && !(
+        continuationState.owner?.sessionId === requestSessionId && continuationState.continuationLoaded
+      )) return { status: "failed" };
+      if (continuationState.owner?.sessionId === requestSessionId && (
+        (!continuationState.continuationLoaded && continuationState.continuationCheckRequired) ||
+        !canContinueConversation(continuationState.continuation)
+      )) return { status: "failed" };
       const requestAgentId = sessionAgentIdRef.current;
       const sessionAuthority = sessionAgentAuthorityRef.current;
       const invalidSessionAuthority =
@@ -2529,6 +2597,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         requestedThinkingEffort === "high"
           ? requestedThinkingEffort
           : "auto";
+      sessionContinuationPendingRef.current = false;
+      setSessionContinuationPending(false);
       // A new user submission replaces the parent run before it can mutate
       // optimistic transcript state or issue its POST. This fences a pending
       // retry/resume owner from starting while the next chat admission is open.
@@ -3090,6 +3160,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       bindRunControlParent,
       handoffActivePreAdmissionSubmission,
       invalidateRunControl,
+      runControlLifecycle,
       bindBrowserObservation,
     ],
   );
@@ -3119,6 +3190,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     // Invalidate every asynchronous owner before clearing React state so a
     // delayed submit or history restore cannot repopulate this blank session.
     historyLoadTokenRef.current += 1;
+    sessionContinuationPendingRef.current = false;
+    setSessionContinuationPending(false);
     invalidateRunControl();
     handoffActivePreAdmissionSubmission({ projectMessages: false });
     sessionGenerationRef.current += 1;
@@ -3572,6 +3645,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     const pending = submissionUncertaintyRef.current;
     if (
+      isAuthLoading ||
       submissionAuthIncarnationFenceRef.current !== null ||
       authScope === null ||
       pending === null ||
@@ -3664,6 +3738,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     currentRunId,
     runInputsRunId,
     runInputs,
+    continuation: continuationSnapshot.continuation,
+    continuationPending,
     canStopGeneration,
     isReconnecting:
       connectionStatus === "reconnecting" ||

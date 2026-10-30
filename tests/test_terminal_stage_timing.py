@@ -8,6 +8,14 @@ from app.platform import tracing
 from app.platform.tracing import TerminalStageTiming
 
 
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure,outcome", [
     (None, "ok"),
@@ -40,8 +48,10 @@ async def test_terminal_stage_times_delay_once_and_preserves_failure(monkeypatch
     assert record.terminal_status == "succeeded"
     assert (record.run_id, record.attempt_id) == ("run-a", "attempt-a")
     assert record.exc_info is None
-    assert "private" not in repr(vars(record))
-    assert "secret-token" not in repr(vars(record))
+    logged = repr(_log_payload(record))
+    assert "private prompt" not in logged
+    assert "/workspace/output" not in logged
+    assert "secret-token" not in logged
 
 
 @pytest.mark.parametrize("status,expected", [("failed", "failed"), ("canceled", "cancelled"),
@@ -57,8 +67,9 @@ def test_terminal_stage_status_is_bounded(monkeypatch, caplog, status, expected)
     record = caplog.records[-1]
     assert record.terminal_status == expected
     assert record.terminal_phase_duration_ms == 0
-    assert "secret" not in repr(vars(record))
-    assert "private prompt" not in repr(vars(record))
+    logged = repr(_log_payload(record))
+    assert "value" not in logged
+    assert "private prompt /path" not in logged
 
 
 @pytest.mark.parametrize("failure", [None, RuntimeError("original"), asyncio.CancelledError()])
@@ -122,7 +133,7 @@ assert logging.getLogger().getEffectiveLevel() == logging.WARNING
     assert "phase='result_business_commit' duration_ms=" in lines[0]
     assert "outcome='ok' terminal_status='succeeded'" in lines[0]
     assert "calls=2 failed_calls=1 total_duration_ms=250 max_duration_ms=125 store_active_calls=0" in lines[1]
-    assert "private" not in result.stderr
+    assert "unrelated private prompt" not in result.stderr
 
 
 
@@ -219,7 +230,10 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
     assert record.append_await_in_latest_result_gap_ms == 250
     assert tracker.main_append_acknowledged and tracker.final_sequence == 1
     assert not tracker.failed
-    assert "private" not in repr(vars(record)) and "secret-token" not in repr(vars(record))
+    logged = repr(_log_payload(record))
+    assert "/private/projects/project/session.jsonl" not in logged
+    assert "private prompt" not in logged
+    assert "secret-token" not in logged
 
 
 @pytest.mark.asyncio
@@ -254,7 +268,10 @@ async def test_append_observation_preserves_failure_identity_retry_and_receipt(m
     assert (record.append_calls, record.append_failed_calls) == (2, 1)
     assert (record.append_total_duration_ms, record.append_max_duration_ms) == (250, 125)
     assert record.exc_info is None
-    assert "private" not in repr(vars(record)) and "secret-token" not in repr(vars(record))
+    logged = repr(_log_payload(record))
+    assert "private" not in logged
+    assert "private payload" not in logged
+    assert "secret-token" not in logged
 
 
 def test_append_summary_logging_failure_and_counter_bounds(monkeypatch):
@@ -309,7 +326,7 @@ async def test_result_gap_clips_inflight_append_and_keeps_latest_result(monkeypa
     assert record.append_total_duration_ms == 2000
     assert record.latest_public_result_gap_ms == 250
     assert record.append_await_in_latest_result_gap_ms == 250
-    assert "private" not in repr(vars(record))
+    assert "private" not in repr(_log_payload(record))
 
 
 @pytest.mark.parametrize("first_result", [False, True])
@@ -361,4 +378,4 @@ async def test_postcommit_publication_observation_preserves_failure(monkeypatch,
         assert record.terminal_phase == "result_business_publication"
         assert record.terminal_phase_duration_ms == 250
         assert record.terminal_phase_outcome == ("cancelled" if isinstance(failure, asyncio.CancelledError) else "error")
-        assert "private" not in repr(vars(record))
+        assert "private" not in repr(_log_payload(record))

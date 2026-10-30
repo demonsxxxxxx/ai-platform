@@ -29,8 +29,8 @@ from app.runs.infrastructure.capability_admission_postgres import extract_run_mc
 from app.runs.infrastructure.capability_admission_postgres import normalize_run_input_for_enqueue
 from app.runs.infrastructure.capability_admission_postgres import require_replay_source_identity
 from app.runs.infrastructure.capability_admission_postgres import strip_caller_run_auth_snapshot_fields
-from app.runs.infrastructure.creation_postgres import ACTIVE_RUN_STATUSES
-from app.runs.infrastructure.creation_postgres import RETRYABLE_RUN_STATUSES
+from app.runs.domain.retry import RUN_RETRYABLE_STATUSES
+from app.runs.domain.run_status import ACTIVE_RUN_STATUSES
 from app.runs.infrastructure.creation_postgres import allocate_session_run_generation
 from app.runs.infrastructure.creation_postgres import get_authorized_run
 from app.runs.infrastructure.postgres import get_active_resume_for_source_run
@@ -323,7 +323,7 @@ async def retry_run_as_new_task(
     if source is None:
         return None
     source_status = str(source.get("status") or "")
-    if source_status not in RETRYABLE_RUN_STATUSES:
+    if source_status not in RUN_RETRYABLE_STATUSES:
         raise RepositoryConflictError("status_not_retryable")
     active_retry = await get_active_retry_for_source_run(
         conn,

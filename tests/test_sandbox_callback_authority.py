@@ -6,8 +6,37 @@ import pytest
 
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
 from app.runs.infrastructure import postgres as runs_postgres
-from app.sandbox.api import SandboxCallbackAuthorityError
+from app.sandbox.api import (
+    ProviderSessionAppendIdentity,
+    SandboxCallbackAuthorityError,
+    SandboxCallbackIdentity,
+)
 from app.sandbox.infrastructure import leases_postgres
+
+
+def test_only_provider_session_append_receives_tail_writer_identity():
+    from app.routes.runtime_callbacks import _callback_identity
+    from app.runtime.sandbox.contracts import ProviderSessionCallbackRequest
+
+    append = ProviderSessionCallbackRequest(
+        action="append",
+        run_id="run",
+        attempt_id="attempt",
+        callback_token_id="token",
+        provider_session_id="provider-session",
+        entries=[{"type": "assistant"}],
+        expected_sequence=1,
+    )
+    load = ProviderSessionCallbackRequest(
+        action="load",
+        run_id="run",
+        attempt_id="attempt",
+        callback_token_id="token",
+        provider_session_id="provider-session",
+    )
+
+    assert isinstance(_callback_identity(append), ProviderSessionAppendIdentity)
+    assert type(_callback_identity(load)) is SandboxCallbackIdentity
 
 
 @pytest.mark.asyncio
@@ -15,7 +44,7 @@ from app.sandbox.infrastructure import leases_postgres
 @pytest.mark.parametrize(
     ("failure", "reason", "expected_calls"),
     [
-        (None, None, ["read", "run_lock", "attempt_lock"]),
+        (None, None, ["read", "run_lock", "lease_lock"]),
         ("missing", "run_not_found", ["read"]),
         ("session", "callback_session_mismatch", ["read"]),
         ("terminal", "run_already_terminal", ["read"]),
@@ -23,11 +52,11 @@ from app.sandbox.infrastructure import leases_postgres
         ("locked_tenant", "sandbox_runtime_attempt_inactive", ["read", "run_lock"]),
         ("locked_session", "callback_session_mismatch", ["read", "run_lock"]),
         ("locked_terminal", "run_already_terminal", ["read", "run_lock"]),
-        ("no_lease", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "attempt_lock"]),
-        ("duplicate", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "attempt_lock"]),
-        ("attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "attempt_lock"]),
-        ("payload_attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "attempt_lock"]),
-        ("generation", "sandbox_runtime_owner_generation_stale", ["read", "run_lock", "attempt_lock"]),
+        ("no_lease", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "lease_lock"]),
+        ("duplicate", "sandbox_runtime_attempt_inactive", ["read", "run_lock", "lease_lock"]),
+        ("attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "lease_lock"]),
+        ("payload_attempt", "sandbox_runtime_attempt_mismatch", ["read", "run_lock", "lease_lock"]),
+        ("generation", "sandbox_runtime_owner_generation_stale", ["read", "run_lock", "lease_lock"]),
     ],
 )
 async def test_assembled_callback_authority_preserves_durable_fences(monkeypatch, entry, failure, reason, expected_calls):
@@ -58,7 +87,7 @@ async def test_assembled_callback_authority_preserves_durable_fences(monkeypatch
     async def current(conn, **scope):
         assert conn is connection
         assert scope == {"tenant_id": "durable-tenant", "run_id": "run", "attempt_id": "attempt"}
-        calls.append("attempt_lock")
+        calls.append("lease_lock")
         row = deepcopy(lease)
         if failure == "no_lease":
             return []
@@ -82,18 +111,27 @@ async def test_assembled_callback_authority_preserves_durable_fences(monkeypatch
     from app.routes import runtime_callbacks
 
     lock = authority.lock_run_then_attempt if entry == "application" else runtime_callbacks._lock_callback_authority
-    kwargs = dict(run_id="run", attempt_id="attempt", callback_token_id="generation-token", session_id="session")
+    identity = SandboxCallbackIdentity(
+        run_id="run", attempt_id="attempt", callback_token_id="generation-token", session_id="session",
+    )
     if reason:
         error_type = SandboxCallbackAuthorityError if entry == "application" else HTTPException
         with pytest.raises(error_type) as caught:
-            await lock(connection, **kwargs)
+            if entry == "application":
+                await lock(connection, identity)
+            else:
+                await lock(connection, identity=identity)
         if entry == "application":
             assert str(caught.value) == reason
         else:
             assert caught.value.detail == reason
             assert caught.value.status_code == (404 if reason == "run_not_found" else 409)
     else:
-        assert await lock(connection, **kwargs) == (run, lease)
+        if entry == "application":
+            result = await lock(connection, identity)
+        else:
+            result = await lock(connection, identity=identity)
+        assert result == (run, lease)
     assert calls == expected_calls
 
 
@@ -110,14 +148,41 @@ async def test_provider_tail_is_explicit_fallback_only(monkeypatch, allow_tail, 
     monkeypatch.setattr(leases_postgres, "list_cancelling_provider_tail_leases_for_attempt", tail)
     authority = build_sandbox_callback_authority()
     conn = object()
-    scope = dict(tenant_id="tenant", run_id="run", attempt_id="attempt")
+    identity = SandboxCallbackIdentity(run_id="run", attempt_id="attempt", callback_token_id="token")
     if not active and not allow_tail:
         with pytest.raises(SandboxCallbackAuthorityError, match="sandbox_runtime_attempt_inactive"):
-            await authority.recheck_attempt(conn, **scope, callback_token_id="token", allow_provider_tail=allow_tail)
+            await authority.recheck_attempt(conn, tenant_id="tenant", identity=identity)
+    elif allow_tail:
+        append_identity = ProviderSessionAppendIdentity(
+            run_id="run", attempt_id="attempt", callback_token_id="token",
+        )
+        assert await authority.recheck_provider_session_append(
+            conn, tenant_id="tenant", identity=append_identity,
+        ) is lease
     else:
-        assert await authority.recheck_attempt(conn, **scope, callback_token_id="token", allow_provider_tail=allow_tail) is lease
+        assert await authority.recheck_attempt(conn, tenant_id="tenant", identity=identity) is lease
+    scope = {"tenant_id": "tenant", "run_id": "run", "attempt_id": "attempt"}
     current.assert_awaited_once_with(conn, **scope)
     if allow_tail and not active:
         tail.assert_awaited_once_with(conn, **scope)
     else:
         tail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_tail_rejects_ordinary_callback_identity(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    current = AsyncMock(return_value=[])
+    tail = AsyncMock(return_value=[{"attempt_id": "attempt", "lease_payload_json": {"attempt_id": "attempt"}}])
+    monkeypatch.setattr(leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", current)
+    monkeypatch.setattr(leases_postgres, "list_cancelling_provider_tail_leases_for_attempt", tail)
+    authority = build_sandbox_callback_authority()
+    identity = SandboxCallbackIdentity(run_id="run", attempt_id="attempt", callback_token_id="token")
+
+    with pytest.raises(SandboxCallbackAuthorityError, match="provider_session_append_identity_required"):
+        await authority.recheck_provider_session_append(
+            object(), tenant_id="tenant", identity=identity,
+        )
+    current.assert_not_awaited()
+    tail.assert_not_awaited()

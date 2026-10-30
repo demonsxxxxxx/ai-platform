@@ -49,7 +49,7 @@ the current transport behavior.
 `RunLifecycleService` now owns ordinary complete/fail/cancel/enqueue-failure
 transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
-`terminalization_v4` coordinates provider lineage and committed event rows.
+`run_terminalization` coordinates provider lineage and committed event rows.
 The current [application ports](../../app/runs/application/lifecycle.py) are
 `RunLifecyclePersistence`, `RunEventWriter`, and `RunAuditWriter`.
 [Lifecycle composition](../../app/bootstrap/run_lifecycle.py) injects
@@ -61,6 +61,31 @@ running writer. Worker dispatch locks the session-consistent queued Run through
 `RunAttemptLifecycleService`; the durable Attempt transition projects running in
 PostgreSQL. Pre-dispatch failures without a valid specification retain their
 Run-only terminal paths. Source, tests, image and runtime acceptance remain separate.
+
+### 1.2 Attempt settlement cutover and retirement
+
+Attempt settlement read and write authority use separate PostgreSQL version
+markers and separate operator cutovers. N40's reader activation selects mapped
+Attempt details for terminal receipt, recovery, finalizer and diagnostic reads;
+N41's writer activation stops writes to the inventoried Sandbox settlement
+columns. Neither activation is inferred from schema application or from a
+missing detail row. Their code and lifecycle-specific acceptance inventory are
+owned by [Execution Specification and Attempt Lifecycle](execution-spec-and-attempt-lifecycle.md)
+and the [Phase 4 implementation plan](../exec-plans/run-lifecycle-implementation-plan.md).
+
+N42 retires the Redis stale-Run business fence while preserving queue delivery
+owner tokens, ACK/requeue behavior, capacity controls and the independent SSE
+contract. N43 schema `2026.10.25.11` adds a durable retirement marker and an
+explicit operator path for dropping the eight legacy settlement fields, three
+indexes and old status constraint. `retirement-status` and `prepare-retirement`
+are read-only; only `retire` may drop them after current core readiness, both
+Attempt markers, complete history mapping, and drained Run/resource claims have
+been established. Expired claim TTLs do not prove external I/O stopped. The
+operator records old-binary shutdown, Run/resource drain, backup/restore drill
+and minimum compatible version; the code does not verify those production
+facts. Retirement has no automatic down migration, and legacy mapping/read
+compatibility is rejected afterward. Real SDK/Sandbox, fourteen-scenario and
+deployment acceptance remain separate from local PostgreSQL and CI evidence.
 
 ## 2. Source ownership
 
@@ -169,8 +194,11 @@ The migration MUST preserve these observable semantics:
    cannot undo Run finalization or hide its authoritative final answer.
 9. **Sandbox cleanup remains Sandbox-owned.** Owner and administrator cancellation
    retain separate authorization commands, then use one Runs-owned post-cancellation
-   operation after the transaction commits. That operation admits and publishes
-   the exact Attempt stream when present, removes queued payloads only for a
+   operation after the transaction commits. For an active Attempt, the original
+   transaction also stages durable executor cancellation. The post-processor
+   attempts that control delivery before admitting and publishing the exact
+   Attempt stream. SDK drain, stopped workspace and business settlement remain
+   separate barriers. It removes queued payloads only for a
    cancelled Run, and always attempts Sandbox cleanup before reporting a queue
    failure. Publication failures do not prevent cleanup. Bootstrap injects these
    collaborators; neither HTTP route owns a separate cleanup implementation.
@@ -181,8 +209,20 @@ The migration MUST preserve these observable semantics:
    failure. The existing stop-under-lock compatibility mechanism must remain
    until the Sandbox owner activates its separately proven claim/I/O/receipt
    replacement. Runs never calls a provider or marks
-   a Sandbox lease released. A cancelled Run with cleanup pending does not claim
-   that the Sandbox was released.
+   a Sandbox lease released. After Sandbox returns exact released-lease evidence,
+   Runs may perform one owner-fenced Attempt handoff only when the Run remains
+   `running` with durable cancellation requested, the Attempt is still
+   `cancel_requested` under the captured queue-worker generation, no same-Run
+   active resource remains, and no terminal receipt is pending. The handoff
+   assigns `reconciler/cancel-cleanup` and advances the execution generation,
+   preserving the monotonic heartbeat and lease timestamps. The PG stale owner
+   may consume this exact stopped-owner handoff before the old timestamp expires;
+   other live owners remain excluded. Claim and writeback still require their
+   exact Attempt, generation and claim token. A repeat cancellation can re-read
+   released evidence after an interrupted handoff. Stop failure, tenant/Attempt/
+   generation mismatch, another active resource, or a pending receipt leaves
+   the queue owner and lease untouched. A cancelled Run with cleanup pending
+   does not claim that the Sandbox was released.
 10. **Rollback is atomic.** Any exception before transaction completion rolls
     back the state transition and its event/audit facts together.
 
@@ -308,14 +348,19 @@ The barriers remain separate:
   existing stale/CAS classification; bootstrap selects the decorator without
   changing its public constructor or contract. A `skipped` status is not a newly
   written result. Existing SDK-placeholder lease bookkeeping remains inside the
-  commit; later physical reconciler sandbox stop/release is outside it.
+  commit. Continuation-capable Claude Attempts require exact provider stop and
+  private workspace save before this business transaction; Context/Run terminal
+  facts and lease release share its fence. Other cleanup-only provider work stays
+  outside the business transaction.
 
 `result_business_publication` measures Worker publication after the unchanged
 commit and release-flag update. The separate `terminal_receipt_publication` span
 observes callback-row publication only. Neither proves frontend receipt/history
 or artifact download visibility. `reconciler_provider_stop` measures provider stop
-between claim verification and lease finalization, after business terminality;
-it excludes those two transactions and can delay the next serial reconciliation.
+between claim verification and lease finalization. For continuation-capable Claude
+Attempts it precedes private save and business terminality; a later cleanup-only
+stop may follow terminality. The span excludes the surrounding transactions and
+can delay the next serial reconciliation.
 Existing `reconciler_result_conversion` remains the artifact-path screening span;
 no per-file payload, upload-only claim or new tracing system is introduced.
 
@@ -353,6 +398,25 @@ Business reconciliation remains durable; no maintenance loop scans SSE delivery
 work. Final hydration converges even when Redis publication fails. Test doubles implement
 application ports and are injected by tests; they are not production registries
 or global monkeypatch requirements.
+
+Execution supervision is composed through `bootstrap.execution_supervision`,
+which injects the PostgreSQL store and transaction boundary into the
+application-level domain scheduler. Existing delivery, probe, settlement and
+Sandbox cleanup action owners remain the only executors. Their existing loops
+keep independent scan limits, polling cadence, I/O budget and domain capacity.
+The persisted domain mode selects which owner may claim: `legacy` admits only
+the legacy path, `unified` invokes the same action owner through a unified claim,
+and `draining` admits neither path. A mode/version change fences new claims
+across replicas. An active action keeps its claim until its operation completes;
+cancellation waits for that completion before releasing the slot.
+
+Supervision and shadow observation default to disabled. Enabling the feature does
+not change domain ownership by itself; the operator must request drain and
+activate each domain separately. An expired claim is not proof that its process
+or remote I/O stopped. Claim recovery requires a human operator to supply the
+exact domain and owner versions, claim token, worker identity, operator identity
+and stop evidence; the application records that evidence but does not verify it.
+The claim TTL is not an external exactly-once guarantee.
 
 ### Forbidden dependency mechanisms
 

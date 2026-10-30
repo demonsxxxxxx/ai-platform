@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -169,6 +170,81 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
         subject["identity"] = identity
         subjects[identity] = subject
     return subjects
+
+
+@dataclass(frozen=True)
+class RecoveryToolGate:
+    """Trusted recovery evidence narrows, but never grants, tool authority."""
+
+    allowed: frozenset[str]
+    released: frozenset[str]
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "RecoveryToolGate | None":
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) != {
+            "state", "allowed_tool_identities", "released_tool_identities",
+        } or value["state"] != "inspection":
+            raise ValueError("recovery_tool_gate_invalid")
+        lists = [value["allowed_tool_identities"], value["released_tool_identities"]]
+        if any(not isinstance(items, list) or len(items) > 256 or any(
+            not isinstance(item, str) or not item or len(item) > 512 for item in items
+        ) for items in lists):
+            raise ValueError("recovery_tool_gate_invalid")
+        allowed, released = map(frozenset, lists)
+        if not released <= allowed:
+            raise ValueError("recovery_tool_gate_invalid")
+        return cls(allowed, released)
+
+    @staticmethod
+    def evidence_identity_matches(
+        evidence: object, *, run_id: str, attempt_id: str,
+        tool_identity: str, invocation_id: str,
+    ) -> bool:
+        return (
+            isinstance(evidence, dict)
+            and evidence.get("schema_version") == "ai-platform.recovery-operation-evidence.v1"
+            and all(evidence.get(key) == value for key, value in {
+                "run_id": run_id, "attempt_id": attempt_id,
+                "tool_identity": tool_identity, "invocation_id": invocation_id,
+            }.items())
+        )
+
+    @classmethod
+    def evidence_matches(cls, evidence: object, **identity: str) -> bool:
+        return (
+            isinstance(evidence, dict)
+            and cls.evidence_identity_matches(evidence, **identity)
+            and isinstance(evidence.get("operation_key"), str)
+            and re.fullmatch(r"rop_[0-9a-f]{32}", evidence["operation_key"]) is not None
+        )
+
+    @classmethod
+    def evidence_allows(cls, evidence: object, **identity: str) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+        return (
+            cls.evidence_matches(evidence, **identity)
+            and evidence.get("decision") == "allow"
+            and evidence.get("evidence_kind") in ("platform_receipt", "reconciliation")
+            and (
+                evidence.get("permission_basis") == "retry_not_effective"
+                and evidence.get("verified_outcome") == "not_effective"
+                or evidence.get("permission_basis") == "current_invocation_authorized"
+                and evidence.get("verified_outcome") in ("unknown", "not_effective")
+            )
+        )
+
+    def denial(self, identity: str, subject: dict[str, Any] | None) -> str | None:
+        if identity not in self.allowed:
+            return "recovery_tool_not_allowed"
+        # An identity-wide release cannot authorize a particular repeated effect.
+        if identity in {"Read", "Glob", "Grep", "LS"}:
+            return None
+        if identity.startswith("mcp__") and subject and subject.get("write_capable") is False:
+            return None
+        return "recovery_effect_unconfirmed"
 
 
 @dataclass(frozen=True)

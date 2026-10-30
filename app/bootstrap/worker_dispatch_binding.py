@@ -1,6 +1,8 @@
 """Bind the Runs Worker dispatch transaction to Context, MCP and Execution."""
 
 from typing import Any
+from functools import partial
+from app.context.api import provider_session_verification_scope
 
 from app.bootstrap.context import (
     materialize_queued_worker_context_snapshot,
@@ -15,7 +17,8 @@ from app.execution.api import (
     release_worker_runtime_sandbox_lease,
 )
 from app.execution_boundary import ordinary_worker_run_uses_runtime_sandbox
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_runtime_lease_port
 from app.mcp import api as mcp_api
 from app.platform.postgres import errors as platform_errors
 from app.runs import api as runs_api
@@ -52,7 +55,7 @@ def _worker_runtime_evidence(*, worker_id: str | None, executor_type: str) -> di
 async def create_worker_runtime_lease(conn: Any, **kwargs: Any) -> Any:
     return await create_worker_runtime_sandbox_lease(
         conn, **kwargs, ttl_seconds=get_settings().sandbox_lease_ttl_seconds,
-        create_lease=sandbox_lease_repository.create_sandbox_lease,
+        create_lease=build_sandbox_runtime_lease_port().create_sandbox_lease,
     )
 
 
@@ -74,6 +77,7 @@ def build_worker_dispatch_binding_service(
             materialize=materialize_queued_worker_context_snapshot,
             project=worker_context_snapshot_ref_from_row,
             execution_pack=executor_context_pack_from_snapshot,
+            verification_scope=partial(provider_session_verification_scope, transaction_factory),
         ),
         execution=runs_api.WorkerDispatchExecutionPorts(
             project_spec=project_execution_spec_to_run_payload,
