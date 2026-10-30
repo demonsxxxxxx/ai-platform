@@ -89,8 +89,10 @@ class RunCancellationPostProcessor:
     ) -> dict[str, Any] | None:
         if cancellation is None:
             return None
+        result = cancellation.as_route_result()
+        result.pop("_terminalization_progress", None)
         if (
-            cancellation.status == "cancel_requested"
+            result["status"] == "cancel_requested"
             and cancellation.attempt_id
             and self._deliver_cancel is not None
         ):
@@ -120,8 +122,6 @@ class RunCancellationPostProcessor:
                 self._warn(
                     "Cancellation v4 admission deferred", cancellation.run_id, exc,
                 )
-        result = cancellation.as_route_result()
-        result.pop("_terminalization_progress", None)
         if cancellation.attempt_id:
             try:
                 await self.publish_run_event(

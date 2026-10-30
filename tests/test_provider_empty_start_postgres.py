@@ -46,7 +46,8 @@ async def coverage_db():
                     user_id text, session_id text, agent_id text, engine text, state text,
                     writer_run_id text, writer_attempt_id text, writer_owner_generation int,
                     coverage_source_sha256 text, coverage_message_count int,
-                    coverage_through_generation int, entry_count int, transcript_bytes int);
+                    coverage_through_generation int, entry_count int, transcript_bytes int,
+                    structured_bytes bigint not null default 0);
                 insert into sessions values('session', 'tenant', 'workspace', 'user', 'agent');
                 insert into runs values('current', 'tenant', 'workspace', 'user', 'session', 'agent', 2, 'queued', null);
                 insert into runs values('prior', 'tenant', 'workspace', 'user', 'session', 'agent', 1, 'cancelled', null);

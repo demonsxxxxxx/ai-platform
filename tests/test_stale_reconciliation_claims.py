@@ -29,7 +29,7 @@ from app.platform.tracing import standard_trace_id
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.execution_spec import EXECUTION_SPEC_SCHEMA_VERSION, compile_execution_spec
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
     activate_attempt_settlement_storage,
     prepare_attempt_settlement_storage_cutover,
 )
@@ -893,17 +893,21 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
         async def _noop():
             return None
 
-        async def _empty_list():
-            return []
-
         async def handoff(**kwargs):
             if rejection == "wrong_generation":
                 kwargs["expected_owner_generation"] += 1
             async with transaction_factory() as conn:
                 return await persistence.handoff_cancelled_attempt(conn, **kwargs)
 
+        post_cancel_side_effects = []
+
         async def released_cleanup(_leases, **_kwargs):
+            post_cancel_side_effects.append("cleanup")
             return [{"id": f"lease-{suffix}"}]
+
+        async def premature_handoff(**_kwargs):
+            post_cancel_side_effects.append("handoff")
+            raise RuntimeError("active cancellation must remain with its execution owner")
 
         first_processor = RunCancellationPostProcessor(
             queue_cleanup=lambda **_kwargs: _noop(),
@@ -911,39 +915,33 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
             provider_factory=object(), transaction_factory=transaction_factory,
             admit_stream=lambda *_args, **_kwargs: _noop(),
             publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
-            handoff_cancelled_attempt=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("handoff interrupted")),
+            handoff_cancelled_attempt=premature_handoff,
         )
         receipt = CancelRequestResult(
             run_id, "cancel_requested", None, ({"id": f"lease-{suffix}"},), None,
             attempt_id, generation,
         )
-        with pytest.raises(RuntimeError, match="handoff interrupted"):
-            await first_processor.post_cancel(
-                receipt, tenant_id=tenant_id, user_id=f"user-{suffix}",
-                requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
-            )
-
-        repeat_processor = RunCancellationPostProcessor(
-            queue_cleanup=lambda **_kwargs: _noop(),
-            sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=lambda *_args, **_kwargs: _empty_list()),
-            provider_factory=object(), transaction_factory=transaction_factory,
-            admit_stream=lambda *_args, **_kwargs: _noop(),
-            publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
-            handoff_cancelled_attempt=handoff,
+        posted = await first_processor.post_cancel(
+            receipt, tenant_id=tenant_id, user_id=f"user-{suffix}",
+            requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
         )
+        assert posted is not None and posted["status"] == "cancel_requested"
+        assert post_cancel_side_effects == []
+
         if rejection == "missing_marker":
             with pytest.raises(RuntimeError, match="marker_invalid"):
-                await repeat_processor.post_cancel(
-                    CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
-                    tenant_id=tenant_id, user_id=f"user-{suffix}",
-                    requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+                await handoff(
+                    tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+                    expected_owner_generation=generation,
+                    resource_lease_ids=(f"lease-{suffix}",),
                 )
         else:
-            await repeat_processor.post_cancel(
-                CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
-                tenant_id=tenant_id, user_id=f"user-{suffix}",
-                requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+            handed_off = await handoff(
+                tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+                expected_owner_generation=generation,
+                resource_lease_ids=(f"lease-{suffix}",),
             )
+            assert handed_off is (rejection is None)
         async with transaction_factory() as conn:
             final = await (await conn.execute(
                 "select owner_kind, owner_id, owner_generation, lease_expires_at, last_heartbeat_at "

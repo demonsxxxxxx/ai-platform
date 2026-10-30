@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
+from app.sandbox.domain.checkpoint_stage import ensure_reconciliation_stage_size
 
 
 class SandboxCheckpointSettlementMixin:
@@ -212,11 +212,7 @@ class SandboxCheckpointSettlementMixin:
     async def record_sandbox_reconciliation_stage(
         self, conn: Any, *, lease_id: str, claim_token: str, stage: dict[str, Any],
     ) -> bool:
-        ensure_json_size(
-            stage,
-            max_bytes=RUN_RESULT_MAX_BYTES,
-            code="sandbox_reconciliation_stage_too_large",
-        )
+        ensure_reconciliation_stage_size(stage)
         stage_binding = self._valid_checkpoint_stage(stage)
         if stage_binding is None or not isinstance(claim_token, str) or not claim_token:
             return False

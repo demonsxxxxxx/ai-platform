@@ -7,7 +7,7 @@ from typing import Any
 
 from app.runs.domain.attempt_settlement_projection import AttemptSettlementProjectionConflict
 from app.runs.infrastructure.attempt_settlement_writer_postgres import _current_owned_detail
-from app.runs.infrastructure.attempt_settlement_projection_postgres import _mapping
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import _mapping
 
 
 _CHECKPOINT_REPAIR_SCOPE_FIELDS = frozenset(

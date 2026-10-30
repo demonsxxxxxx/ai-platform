@@ -33,12 +33,9 @@ async def test_real_cli_interrupt_resume_uses_authenticated_callback_and_fresh_p
     monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: SimpleNamespace(sandbox_callback_token=secret))
     async with unclaimed_db() as conn:
         await conn.execute("""
-            alter table sandbox_leases add column id text;
             alter table sandbox_leases add column workspace_id text default 'workspace';
             alter table sandbox_leases add column user_id text default 'user';
             alter table sandbox_leases add column session_id text default 'session';
-            alter table sandbox_leases add column created_at timestamptz default now();
-            alter table sandbox_leases add column executor_terminal_json jsonb;
         """)
         frozen = await prepare(conn, "first", 1)
         await conn.execute("update sandbox_leases set id='lease-first',lease_payload_json=%s where run_id='first'",

@@ -22,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.routes import session_continuation_projection
 from app.context.api import get_session_continuation
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
@@ -1402,14 +1403,7 @@ def _platform_status(status: str) -> str:
     return runs_api.normalize_run_status(status)
 
 
-def _lambchat_status(status: str) -> str:
-    status = _platform_status(status)
-    return {
-        "succeeded": "completed",
-        "failed": "error",
-        "queued": "pending",
-        "running": "running",
-    }.get(status, status)
+_lambchat_status = session_continuation_projection.lambchat_status
 
 
 @router.get("/auth/oauth/providers")
@@ -1770,6 +1764,9 @@ async def session_events(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
+        continuation_loader = session_continuation_projection.bind(
+            get_session_continuation, principal
+        )
 
         cursor_payload = (
             _decode_session_events_cursor(
@@ -1858,14 +1855,8 @@ async def session_events(
             target_runs_by_id = {str(run["id"]): run for run in target_runs}
             snapshot = snapshots[cursor_payload["index"]]
             run = target_runs_by_id[snapshot["id"]]
-            if runs_api.is_terminal_run_status(snapshot["status"]):
-                if _platform_status(str(run.get("status") or "")) != _platform_status(
-                    str(snapshot.get("status") or "")
-                ):
-                    raise HTTPException(
-                        status_code=400, detail="history_cursor_invalid"
-                    )
-
+            if not session_continuation_projection.cursor_valid(run, snapshot):
+                raise HTTPException(status_code=400, detail="history_cursor_invalid")
 
         if not cursor_payload["runs"]:
             return {
@@ -1875,12 +1866,7 @@ async def session_events(
                 "events": [],
                 "next_cursor": None,
                 "terminal_run_statuses": {},
-                "continuation": await get_session_continuation(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    session_id=session_id,
-                ),
+                "continuation": await continuation_loader(conn, session_id),
             }
 
         index = cursor_payload["index"]
@@ -2009,9 +1995,7 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
-            "continuation": await get_session_continuation(
-                conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
-            ),
+            "continuation": await continuation_loader(conn, session_id),
         }
 
 
@@ -2052,6 +2036,9 @@ async def chat_status(
     run_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    continuation_loader = session_continuation_projection.bind(
+        get_session_continuation, principal
+    )
     async with transaction() as conn:
         session = await conversations_postgres.get_authorized_lambchat_session(
             conn,
@@ -2086,9 +2073,7 @@ async def chat_status(
             target = next(
                 (row for row in rows if row.get("session_generation") is not None), None
             )
-        continuation = await get_session_continuation(
-            conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
-        )
+        continuation = await continuation_loader(conn, session_id)
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {
         "session_id": session_id,

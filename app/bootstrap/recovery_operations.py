@@ -27,6 +27,24 @@ def recovery_operation_sources(recovery: dict) -> list[dict]:
     return [{key: source[key] for key in keys} for source in sources]
 
 
+async def _verified_native_input(conn: Any, *, invocation: RecoveryInvocation,
+                                 recovery: dict, subjects: list, native_id: str):
+    from app.bootstrap.claude_mcp import prepare_claude_mcp
+    from app.context import api as context_api
+
+    registration = prepare_claude_mcp({item["identity"]: item for item in subjects
+                                      if isinstance(item, dict) and isinstance(item.get("identity"), str)}, {})
+    native_tool_name = registration.sdk_names.get(invocation.tool_identity)
+    if native_tool_name is None:
+        raise context_api.ProviderSessionConflictError("provider_session_native_invocation_invalid")
+    return await context_api.read_verified_native_invocation(
+        conn, scope=invocation.scope.mapping(), epoch_id=recovery.get("provider_epoch_id"),
+        source_run_id=recovery.get("source_run_id"), source_attempt_id=recovery.get("source_attempt_id"),
+        final_sequence=recovery.get("final_sequence"), invocation_id=native_id,
+        native_tool_name=native_tool_name,
+    )
+
+
 async def publish_recovery_source_questions(conn: Any, *, run: dict, attempt_id: str) -> dict:
     cursor = await conn.execute(
         """select owner_generation, execution_spec_json->'context_pack'->'conversation_context'->'recovery' as recovery
@@ -155,19 +173,10 @@ async def _current_authority(conn: Any, *, invocation: RecoveryInvocation):
                        if isinstance(item, dict) and item.get("identity") == invocation.tool_identity]
     if len(source_subjects) != 1 or source_subjects[0].get("public_operation_summary") != declaration:
         return replace(unavailable, public_summary_reason="recovery_operation_public_object_metadata_changed")
-    from app.bootstrap.claude_mcp import prepare_claude_mcp
-    # Reuse the exact adapter alias table; underscores never infer remote names.
-    registration = prepare_claude_mcp({item["identity"]: item for item in all_source_subjects
-                                      if isinstance(item, dict) and isinstance(item.get("identity"), str)}, {})
-    native_tool_name = registration.sdk_names.get(invocation.tool_identity)
-    if native_tool_name is None:
-        return replace(unavailable, public_summary_reason="recovery_operation_native_evidence_invalid")
     try:
-        native_input = await context_api.read_verified_native_invocation(
-            conn, scope=invocation.scope.mapping(), epoch_id=recovery.get("provider_epoch_id"),
-            source_run_id=recovery.get("source_run_id"), source_attempt_id=recovery.get("source_attempt_id"),
-            final_sequence=recovery.get("final_sequence"), invocation_id=native_id,
-            native_tool_name=native_tool_name,
+        native_input = await _verified_native_input(
+            conn, invocation=invocation, recovery=recovery,
+            subjects=all_source_subjects, native_id=native_id,
         )
         summary = mcp_api.public_operation_summary(declaration, native_input)
     except context_api.ProviderSessionConflictError:
@@ -252,15 +261,20 @@ async def _frozen_binding(conn: Any, *, invocation: RecoveryInvocation, operatio
             and operation["native_tool_use_id"] == invocation.invocation_id):
         return False
     cursor = await conn.execute(
-        """select 1 from provider_session_entries where epoch_id=%s and tenant_id=%s
-             and workspace_id=%s and user_id=%s and session_id=%s and sequence<=%s
-             and jsonb_path_exists(entry_json,
-                 '$.message.content[*] ? (@.type == "tool_use" && @.id == $id)',
-                 jsonb_build_object('id', %s::text)) limit 1""",
-        (recovery["provider_epoch_id"], *invocation.scope.mapping().values(),
-         recovery.get("final_sequence"), invocation.invocation_id),
+        """select execution_spec_json->'input'->'_runtime_tool_policy_subjects' as subjects
+           from run_attempts where tenant_id=%s and run_id=%s and id=%s""",
+        (invocation.scope.tenant_id, recovery["source_run_id"], recovery["source_attempt_id"]),
     )
-    return await cursor.fetchone() is not None
+    source = await cursor.fetchone()
+    from app.context import api as context_api
+    try:
+        await _verified_native_input(
+            conn, invocation=invocation, recovery=recovery,
+            subjects=(source or {}).get("subjects") or [], native_id=invocation.invocation_id,
+        )
+    except context_api.ProviderSessionConflictError:
+        return False
+    return True
 
 
 def build_recovery_operations() -> tuple[RecoveryOperationsService, RunInputsService]:

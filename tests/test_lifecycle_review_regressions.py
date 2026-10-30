@@ -61,19 +61,20 @@ async def test_reconciler_retry_after_stop_preserves_success_and_nonempty_attach
     async def io(operation, **kwargs):
         kwargs.pop("on_abandoned", None)
         return operation(**kwargs)
+    lease_port = SimpleNamespace(has_sandbox_executor_reconciliation_claim=claim)
     monkeypatch.setattr(r, "_context_and_payload", lambda _: (context, terminal, SimpleNamespace(attempt_id="a")))
     monkeypatch.setattr(r, "_reconciliation_request", lambda *args: request)
     monkeypatch.setattr(r, "SandboxWorkspaceManager", lambda: SimpleNamespace(prepare=lambda _: workspace))
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _: lease)
     monkeypatch.setattr(r, "_container_provider_for_lease", lambda _: Provider())
     monkeypatch.setattr(r, "transaction", transaction)
-    monkeypatch.setattr(r.sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", claim)
     monkeypatch.setattr(r, "_record_reconciliation_stage", checkpoint)
     monkeypatch.setattr(r, "run_storage_io", io)
     async def reconcile():
         return await r._collect_workspace_and_convert_result(
             row, registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
-            claim_token="claim", continuation_ports=ContinuationSettlementPorts(save, unused),
+            claim_token="claim", lease_port=lease_port,
+            continuation_ports=ContinuationSettlementPorts(save, unused),
         )
     if failure == "conversion":
         with pytest.raises(OSError):
@@ -129,6 +130,7 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
     from app.runtime.sandbox.container_provider import FakeContainerProvider
     from app.executors.base import RunExecutionOwner, ExecutorDispatchAccepted
     from app.execution.application.adapter_run import submit_run_until_cancelled
+    from app.sandbox.domain.lease_errors import SandboxLeaseReleaseScopeMismatchError
     from tests.test_sandbox_runtime import request
     sent = asyncio.Event()
     calls = []
@@ -168,11 +170,16 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
     @asynccontextmanager
     async def transaction(): yield object()
     async def accepted(*args, **kwargs): calls.append("durable-observation")
+    async def persist_intent(*args, **kwargs):
+        calls.append("durable-observation")
+        return {"status": "intent"}, True
+    async def record_outcome(*args, **kwargs):
+        return {"status": kwargs["outcome"]}
     async def receipt(*args, **kwargs):
         calls.append("durable-terminal")
         assert kwargs["terminal_result"]["sdk_settlement"]["input_accepted"] is True
         if race == "write_conflict":
-            raise module.sandbox_lease_repository.SandboxLeaseReleaseScopeMismatchError("concurrent release")
+            raise SandboxLeaseReleaseScopeMismatchError("concurrent release")
     async def persisted(*args, **kwargs):
         calls.append("persisted-handoff")
         assert kwargs == dict(tenant_id="t", workspace_id="w", user_id="u", session_id="s",
@@ -183,11 +190,16 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
                 "message": "cancelled", "error_code": "executor_cancelled", "error_message": "Task cancelled"}}
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(sandbox_callback_base_url="http://platform.test", sandbox_callback_token="synthetic", sandbox_lease_ttl_seconds=1800))
     monkeypatch.setattr(module, "transaction", transaction)
-    monkeypatch.setattr(module.sandbox_lease_repository, "record_sandbox_executor_accepted", accepted)
-    monkeypatch.setattr(module.sandbox_lease_repository, "record_sandbox_executor_terminal", receipt)
-    monkeypatch.setattr(module.sandbox_lease_repository, "get_sandbox_executor_terminal_handoff", persisted, raising=False)
     runtime = module.SandboxRuntime(workspace_root=tmp_path.parent / race, provider=Provider(executor_url="http://executor.test"),
-        execute_task=execute, callback_token_resolver=lambda _: "synthetic", record_lease=lambda *args: "lease",
+        execute_task=execute, callback_token_resolver=lambda _: "synthetic",
+        lease_port=SimpleNamespace(
+            new_lease_id=lambda: "lease",
+            record_sandbox_executor_accepted=accepted,
+            get_sandbox_executor_terminal_handoff=persisted,
+        ),
+        callback_lease_port=SimpleNamespace(record_sandbox_executor_terminal=receipt),
+        dispatch_intents=SimpleNamespace(persist_intent=persist_intent, record_outcome=record_outcome),
+        record_lease=lambda *args: "lease",
         release_lease=unexpected, continuation_ports=ContinuationSettlementPorts(unexpected, unexpected))
     runtime.executor_client = SimpleNamespace(cancel=cancel, get_status=status)
     runtime._uses_default_lease_recorder = True
@@ -342,7 +354,10 @@ async def test_terminal_cas_passes_exact_transition_to_context_before_return(ter
         calls.append("context-finalize")
         assert kwargs["previous"] == previous
         assert kwargs["terminal"]["owner_generation"] == 8
-    service = RunAttemptLifecycleService(SimpleNamespace(get_run_attempt=get, terminalize_run_attempt=transition), finalize)
+    service = RunAttemptLifecycleService(
+        SimpleNamespace(get_run_attempt=get, terminalize_run_attempt=transition),
+        finalize_terminal_transition=finalize,
+    )
     result = await service.terminalize(object(), tenant_id="t", run_id="r", attempt_id="a", status=terminal)
     assert result["owner_generation"] == 8
     assert calls == ["terminal-cas", "context-finalize"]

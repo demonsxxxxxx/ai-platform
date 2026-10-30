@@ -14,7 +14,7 @@ from app.platform.postgres.limits import (
     ensure_json_size,
 )
 from app.runs.domain.run_status import is_terminal_run_status
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     get_attempt_settlement_storage_version,
 )
 from app.runs.infrastructure.steps_postgres import _cancel_open_run_steps, _fail_open_run_steps

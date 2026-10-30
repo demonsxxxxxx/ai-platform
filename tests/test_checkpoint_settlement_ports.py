@@ -5,8 +5,14 @@ from datetime import datetime, timezone
 import unittest
 from typing import Any
 
+from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES
 from app.sandbox.application.attempt_settlement_shadow import (
     AttemptSettlementShadowLeaseRepository,
+)
+from app.sandbox.domain.checkpoint_stage import (
+    SANDBOX_RECONCILIATION_STAGE_MAX_BYTES,
+    SandboxCheckpointSizeLimitError,
+    ensure_reconciliation_stage_size,
 )
 from app.sandbox.infrastructure import checkpoints_postgres
 
@@ -258,6 +264,30 @@ class CheckpointSettlementPortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["claim_marker"]["claim_token"], "claim-1")
         self.assertTrue(any(name == "read_attempt" for name, _ in settlement.calls))
         self.assertFalse(any(name == "record_stage_legacy" for name, _ in repository.calls))
+
+    async def test_stage_size_guard_preserves_compact_utf8_byte_boundary(self) -> None:
+        self.assertEqual(SANDBOX_RECONCILIATION_STAGE_MAX_BYTES, RUN_RESULT_MAX_BYTES)
+        json_overhead = len('{"value":""}'.encode("utf-8"))
+        exact_value = "é" * ((SANDBOX_RECONCILIATION_STAGE_MAX_BYTES - json_overhead) // 2)
+        ensure_reconciliation_stage_size({"value": exact_value})
+
+        port, repository, _settlement = self._repository()
+        oversized_stage = self._stage()
+        oversized_stage["extra"] = "x" * SANDBOX_RECONCILIATION_STAGE_MAX_BYTES
+        with self.assertRaises(SandboxCheckpointSizeLimitError) as raised:
+            await port.record_sandbox_reconciliation_stage(
+                None, lease_id="lease-1", claim_token="claim-1", stage=oversized_stage,
+            )
+
+        self.assertEqual(raised.exception.code, "sandbox_reconciliation_stage_too_large")
+        self.assertFalse(repository.calls)
+
+    def test_stage_size_guard_preserves_invalid_json_error_code(self) -> None:
+        for value in ({"value": float("nan")}, {"value": "\ud800"}, {"value": object()}):
+            with self.subTest(value_type=type(value["value"]).__name__):
+                with self.assertRaises(SandboxCheckpointSizeLimitError) as raised:
+                    ensure_reconciliation_stage_size(value)
+                self.assertEqual(raised.exception.code, "sandbox_reconciliation_stage_invalid")
 
     async def test_stage_rejects_stale_runs_claim_without_resource_write(self) -> None:
         port, repository, settlement = self._repository()

@@ -503,6 +503,72 @@ def test_lifecycle_candidate_evidence_rejects_source_mutation_after_capture(tmp_
         )
 
 
+def test_candidate_source_binding_hashes_external_symlink_text_without_reading_target(
+    tmp_path, monkeypatch
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    target_a = tmp_path / "external-node-modules-a"
+    target_b = tmp_path / "external-node-modules-b"
+    target_a.mkdir()
+    target_b.mkdir()
+    target_file = target_a / "package.js"
+    target_file.write_text("EXTERNAL_CONTENT_A", encoding="utf-8")
+    (target_b / "package.js").write_text("EXTERNAL_CONTENT_B", encoding="utf-8")
+    link = repo / "node_modules"
+    try:
+        link.symlink_to(target_a, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"directory symlink unavailable: {error}")
+
+    root = repo.resolve()
+    original_open = Path.open
+
+    def open_candidate_files_only(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if "r" in mode or "+" in mode:
+            assert path.resolve().is_relative_to(root), "external symlink target contents must not be read"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_candidate_files_only)
+    first = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+    target_file.write_text("EXTERNAL_CONTENT_CHANGED", encoding="utf-8")
+    same_link = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    assert same_link["dirty_source_sha256"] == first["dirty_source_sha256"]
+
+    link.unlink()
+    link.symlink_to(target_b, target_is_directory=True)
+    changed_link = lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+    assert changed_link["dirty_source_sha256"] != first["dirty_source_sha256"]
+
+
+def test_candidate_source_binding_rejects_ordinary_file_below_external_symlink(
+    tmp_path, monkeypatch
+):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    external = tmp_path / "external-source"
+    external.mkdir()
+    (external / "package.py").write_text("external source", encoding="utf-8")
+    (repo / "node_modules").symlink_to(external, target_is_directory=True)
+
+    def git_paths(_root, *arguments):
+        if arguments == ("rev-parse", "HEAD"):
+            return b"a" * 40
+        if arguments == ("ls-files", "--cached", "--others", "--exclude-standard", "-z"):
+            return b"node_modules/package.py\0"
+        if arguments == ("status", "--porcelain", "--untracked-files=all"):
+            return b""
+        raise AssertionError(f"unexpected Git arguments: {arguments}")
+
+    monkeypatch.setattr(lifecycle_candidate_evidence, "_git", git_paths)
+    with pytest.raises(
+        lifecycle_candidate_evidence.EvidenceValidationError,
+        match="candidate path resolves outside the worktree",
+    ):
+        lifecycle_candidate_evidence.capture_candidate_source_binding(repo)
+
+
 def test_lifecycle_control_manifest_binds_candidate_runtime_and_profile(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
     (repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")

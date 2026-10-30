@@ -39,6 +39,14 @@ from app.sandbox.api import (
 from app.worker import WorkerOutcome
 
 
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
+
+
 class _Cursor:
     def __init__(self, row):
         self._row = row
@@ -880,9 +888,17 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         "ok", "ok", "error", "ok", "ok", "error", "ok", "cancelled", "ok", "error",
     ]
     assert all(record.run_id == "run-a" and record.attempt_id == "attempt-a" for record in records)
-    assert "final.txt" not in repr([vars(record) for record in records])
-    assert "workspace collection failed" not in repr([vars(record) for record in records])
-    assert "private" not in repr([vars(record) for record in records])
+    logged = repr([_log_payload(record) for record in records])
+    for secret in (
+        "final.txt",
+        "workspace collection failed",
+        "/private/artifact-snapshot",
+        "private/reconciliations/claim-a/result.txt",
+        "private upload error",
+        "private cancel",
+        "private conversion error",
+    ):
+        assert secret not in logged
 
 
 @pytest.mark.asyncio

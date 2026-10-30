@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import sys
 import threading
 import types
@@ -5686,6 +5687,14 @@ def stopped_continuation_ports(monkeypatch):
     return ContinuationSettlementPorts(save, unexpected_settlement)
 
 
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_upload", [False, True])
 @pytest.mark.usefixtures("terminal_stage_logs")
@@ -5768,7 +5777,16 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     assert [record.terminal_phase_duration_ms for record in records] == [0, 3000]
     assert records[-1].terminal_phase_outcome == ("error" if fail_upload else "ok")
     assert all(record.run_id == current.run_id and record.attempt_id == current.attempt_id for record in records)
-    assert "private" not in repr([vars(record) for record in records])
+    logged = repr([_log_payload(record) for record in records])
+    for secret in (
+        "private",
+        str(selected),
+        "private-result.txt",
+        "private output body",
+        "private storage key and credential",
+        "private answer",
+    ):
+        assert secret not in logged
 
 
 @pytest.mark.asyncio
@@ -5948,11 +5966,11 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         assert "synthetic-bearer" not in repr(persistence.value)
         assert "synthetic-token" not in repr(persistence.value)
         assert "/private/workspace" in repr(persistence.value)  # admin diagnostics keep paths
-    logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
+    logs = [_log_payload(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
     assert len(logs) == (0 if collection_mode == "ok" else 1)
     assert "synthetic-token" not in repr(logs)
     assert "/private/workspace" not in repr(logs)
     if status != "succeeded" and collection_mode.startswith("transaction_"):
-        degraded = [vars(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
+        degraded = [_log_payload(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
         assert len(degraded) == 1
         assert "private diagnostic transaction" not in repr(degraded)

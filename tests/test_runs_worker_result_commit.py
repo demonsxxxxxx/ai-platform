@@ -1,4 +1,5 @@
 from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -6,6 +7,14 @@ import pytest
 
 from app.runs.api import WorkerResultCommitCommand, WorkerResultCommitService
 from app.runs.infrastructure.worker_result_commit_timing import TimedWorkerResultCommitService
+
+
+def _log_payload(record):
+    metadata = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
+    return {
+        "message": record.getMessage(),
+        "extra": {key: value for key, value in record.__dict__.items() if key not in metadata},
+    }
 
 
 @pytest.mark.asyncio
@@ -390,7 +399,10 @@ async def test_timed_result_commit_includes_transaction_exit_without_changing_er
     assert records[0].terminal_phase == "result_business_commit"
     assert records[0].terminal_phase_duration_ms == 2500
     assert records[0].terminal_phase_outcome == {"success": "ok", "commit_failure": "error", "cancel": "cancelled"}[ending]
-    assert "private" not in repr(vars(records[0]))
+    logged = repr(_log_payload(records[0]))
+    assert "private answer" not in logged
+    assert "private cancellation" not in logged
+    assert "private database failure" not in logged
 
 
 def test_worker_result_commit_bootstrap_selects_timing_without_changing_public_contract():

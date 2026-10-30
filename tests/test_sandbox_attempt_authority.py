@@ -117,7 +117,7 @@ async def sandbox_attempt_authority_db():
                     attempt_row["id"],
                     json.dumps({
                         "attempt_id": attempt_row["id"],
-                        "owner_generation": str(attempt_row["owner_generation"]),
+                        "owner_generation": attempt_row["owner_generation"],
                     }),
                     json.dumps(context),
                     json.dumps({"adapter_name": "test"}),

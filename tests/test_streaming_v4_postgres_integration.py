@@ -1387,7 +1387,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 run_id=run,
             )
             assert first is not None
-            assert first["status"] == "cancelled"
+            assert first["status"] == "cancel_requested"
 
             second = await _request_owner_cancel(
                 use_case,
@@ -1396,7 +1396,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 run_id=run,
             )
             assert second is not None
-            assert second["status"] == "cancelled"
+            assert second["status"] == "cancel_requested"
 
 
             cursor = await conn.execute(
@@ -1415,8 +1415,6 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             rows = await cursor.fetchall()
             assert [row["event_type"] for row in rows] == [
                 "run.cancel_requested",
-                "run_cancelled",
-                "run.cancelled",
             ]
             assert [row["sequence"] for row in rows] == sorted(
                 row["sequence"] for row in rows
@@ -1439,7 +1437,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 "target_id": run,
                 "payload_json": {
                     "run_id": run,
-                    "result_status": "cancelled",
+                    "result_status": "cancel_requested",
                     "requested_by_role": "owner",
                 },
             }
@@ -1466,7 +1464,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
                 run_id=run,
             )
             assert result is not None
-            assert result["status"] == "cancelled"
+            assert result["status"] == "cancel_requested"
 
             event_cursor = await conn.execute(
                 """
@@ -1498,7 +1496,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
                 "payload_json": {
                     "run_id": run,
                     "target_user_id": user,
-                    "result_status": "cancelled",
+                    "result_status": "cancel_requested",
                 },
             }
 

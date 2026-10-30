@@ -1,8 +1,8 @@
-"""Platform admission -> production Worker -> durable Attempt/native epoch dispatch.
+"""Platform admission -> durable queue delivery -> production Worker/native epoch dispatch.
 
 The executor is injectable: its host runs the real CLI in the continuation test.
-Redis enqueue/publication and company identity lookup are synthetic; PostgreSQL
-Run/Attempt/Context persistence and production admission/worker are never mocked.
+Only the Redis queue/publication boundaries and company identity lookup are synthetic;
+PostgreSQL admission/outbox/Run/Attempt/Context and production Worker are exercised.
 """
 # ruff: noqa: F401,F811 -- imported pytest fixtures are injected by name.
 from __future__ import annotations
@@ -23,6 +23,19 @@ from tests.support.db_transactions import event_loop_policy
 from tests.support.lifecycle_platform_entry import platform_entry
 
 sandbox_leases = build_sandbox_runtime_lease_port()
+
+
+async def assert_delivered_intent(platform, run_id):
+    async with platform.transaction() as conn:
+        intent = await (await conn.execute(
+            "select * from run_delivery_intents where tenant_id=%s and run_id=%s",
+            (platform.principal.tenant_id, run_id),
+        )).fetchone()
+    assert intent is not None
+    assert intent["source"] == "chat"
+    assert intent["state"] == "delivered"
+    assert intent["queue_message_id"] == intent["payload_sha256"]
+    return intent
 
 
 async def dispatch(platform, raw):
@@ -65,6 +78,8 @@ async def dispatch(platform, raw):
 async def test_admitted_run_is_frozen_by_production_worker(platform_entry):
     platform = platform_entry
     response, raw = await platform.admit("hello")
+    intent = await assert_delivered_intent(platform, response.run_id)
+    assert intent["queue_payload_json"]
     async with platform.transaction() as conn:
         assert (await (await conn.execute("select count(*) as n from run_attempts")).fetchone())["n"] == 0
     payload = await dispatch(platform, raw)
@@ -105,7 +120,7 @@ async def test_admission_worker_cli_cancel_terminal_and_new_run_native_resume(pl
     from app.bootstrap import conversation_continuation as continuation, run_lifecycle
     from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreAdapter
     from app.routes import runtime_callbacks
-    from app.runs.api import cancel_run_with_v4, WorkerResultCommitCommand
+    from app.runs.api import cancel_run_terminalization, WorkerResultCommitCommand
     from app.executors.base import ExecutorResult
     from app.execution.api import bind_worker_attempt_lifecycle, project_worker_terminal_result
     from app.bootstrap.worker_attempt_lifecycle import build_worker_attempt_lifecycle_ports
@@ -144,6 +159,8 @@ async def test_admission_worker_cli_cancel_terminal_and_new_run_native_resume(pl
                                    Turn.text("resumed answer", delay=0)]) as model:
             for turn, prompt in enumerate(("hello", "continue after stop"), 1):
                 response, raw = await platform.admit(prompt, session_id)
+                intent = await assert_delivered_intent(platform, response.run_id)
+                assert intent["queue_payload_json"]
                 payload = await dispatch(platform, raw)
                 session_id = response.session_id
                 native = payload.context_pack["conversation_context"]
@@ -226,7 +243,7 @@ async def test_admission_worker_cli_cancel_terminal_and_new_run_native_resume(pl
                             stop_evidence="provider_stopped", sdk_settlement=dict(input_accepted=True,
                             ack_unknown=False, mirror_complete=True), external_effect_unknown=False)
                         assert settled["state"] == "resumable"
-                        progress = await cancel_run_with_v4(
+                        progress = await cancel_run_terminalization(
                             conn, lifecycle=platform.lifecycle, capabilities=platform.capabilities,
                             tenant_id=payload.tenant_id, run_id=payload.run_id, result_json={"message": "cancelled"})
                         assert progress.did_transition and progress.status == "cancelled"

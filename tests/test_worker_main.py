@@ -3083,6 +3083,7 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
     from app.bootstrap import executor_reconciliation
 
     lease_port = object()
+    cancel_delivery = object()
     stop_event = asyncio.Event()
     captured = {}
 
@@ -3094,6 +3095,11 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
         executor_reconciliation,
         "build_sandbox_executor_reconciliation_port",
         lambda: lease_port,
+    )
+    monkeypatch.setattr(
+        executor_reconciliation,
+        "build_sandbox_cancel_delivery_service",
+        lambda: cancel_delivery,
     )
     monkeypatch.setattr(
         executor_reconciliation,
@@ -3113,6 +3119,7 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
         executor_reconciliation.SandboxDispatchIntentService,
     )
     assert dispatch_intents._repository is executor_reconciliation.dispatch_postgres
+    assert captured.pop("cancel_delivery") is cancel_delivery
     assert captured == {
         "stop_event": stop_event,
         "lease_port": lease_port,

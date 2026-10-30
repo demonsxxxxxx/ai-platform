@@ -14,9 +14,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.db import close_pool, transaction  # noqa: E402
 from app import schema_migrations  # noqa: E402
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (  # noqa: E402
-    activate_attempt_settlement_storage,
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (  # noqa: E402
     get_attempt_settlement_storage_version,
+)
+from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (  # noqa: E402
+    activate_attempt_settlement_storage,
     prepare_attempt_settlement_storage_cutover,
 )
 from app.runs.infrastructure.attempt_settlement_writer_postgres import (  # noqa: E402

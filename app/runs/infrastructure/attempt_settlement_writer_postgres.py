@@ -12,7 +12,7 @@ from app.runs.domain.attempt_settlement_projection import (
     AttemptSettlementProjectionConflict,
     CleanupObservation,
 )
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     ATTEMPT_SETTLEMENT_WRITER_VERSIONS,
     _ATTEMPT_FIELDS,
     _RUN_FIELDS,

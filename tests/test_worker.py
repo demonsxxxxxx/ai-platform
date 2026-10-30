@@ -4657,7 +4657,11 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
         async def submit_run(self, payload, event_sink=None):
             if predispatch:
                 from app.runtime.sandbox.runtime import SandboxRuntime
-                runtime = SandboxRuntime(workspace_root="unused")
+                runtime = SandboxRuntime(
+                    workspace_root="unused",
+                    lease_port=object(),
+                    dispatch_intents=object(),
+                )
                 def reject(_provider):
                     raise RuntimeError("executor crashed")
                 monkeypatch.setattr(runtime, "_trusted_callback_target", reject)

@@ -62,7 +62,6 @@ async def test_two_native_ack_objects_http_questions_authenticated_answers_and_a
             alter table sandbox_leases add column workspace_id text default 'workspace';
             alter table sandbox_leases add column user_id text default 'user';
             alter table sandbox_leases add column session_id text default 'session';
-            alter table sandbox_leases add column created_at timestamptz default now();
         """)
         await conn.execute(shared[shared.index("create table if not exists mcp_servers"):shared.index("create table if not exists mcp_tools")])
         start = shared.index("create table if not exists run_input_sessions")

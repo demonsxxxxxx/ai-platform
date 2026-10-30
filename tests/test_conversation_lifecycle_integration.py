@@ -85,7 +85,6 @@ async def test_unclaimed_terminal_uses_real_composition_current_generation_and_a
             attempt_id="attempt-target", status="cancelled", terminal_reason="run_cancelled")
         assert terminal["owner_generation"] == 4
         await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="target")
-        await conn.execute("alter table sandbox_leases add column executor_terminal_json jsonb")
         assert await get_session_continuation(conn, tenant_id="tenant", user_id="user", session_id="session") is None
         assert (await prepare(conn, "next", 2))["execution_mode"] == "empty_start"
 
@@ -109,7 +108,6 @@ async def test_hard_fault_composition_reconciles_real_host_prefix_not_sandbox_co
 @pytest.mark.asyncio
 async def test_status_distinguishes_running_supplement_from_actual_settlement(unclaimed_db):
     async with unclaimed_db() as conn:
-        await conn.execute("alter table sandbox_leases add column executor_terminal_json jsonb")
         frozen = await prepare(conn, "target", 1)
         # Ordinary active input remains usable, even without a committed recovery head yet.
         assert await get_session_continuation(conn, tenant_id="tenant", user_id="user", session_id="session") is None
@@ -134,9 +132,6 @@ async def test_actual_host_recovery_callback_blocks_ambiguous_confirmation_witho
     monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: SimpleNamespace(sandbox_callback_token=secret))
     async with unclaimed_db() as conn:
         await conn.execute("""
-            alter table sandbox_leases add column id text;
-            alter table sandbox_leases add column created_at timestamptz default now();
-            alter table sandbox_leases add column executor_terminal_json jsonb;
             alter table run_attempts add constraint uq_test_attempt_id unique(id);
         """)
         shared = Path("app/schema.sql").read_text()

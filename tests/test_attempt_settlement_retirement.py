@@ -12,11 +12,13 @@ import pytest
 
 from app import schema_migrations
 from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    activate_attempt_settlement_storage,
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     backfill_attempt_settlement_projections,
-    prepare_attempt_settlement_storage_cutover,
     read_attempt_settlement,
+)
+from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
+    activate_attempt_settlement_storage,
+    prepare_attempt_settlement_storage_cutover,
 )
 from app.runs.infrastructure.attempt_settlement_retirement_postgres import (
     attempt_settlement_retirement_status,

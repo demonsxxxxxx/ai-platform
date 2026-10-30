@@ -10,8 +10,10 @@ from app.bootstrap.attempt_settlement_projection import (
 )
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.runs.infrastructure import lifecycle_postgres
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
     activate_attempt_settlement_storage,
+)
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     backfill_attempt_settlement_projections,
 )
 from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
@@ -50,6 +52,16 @@ async def _activate_reader(connect) -> None:
             conn, operator_confirmations=_READER_CONFIRMATIONS,
         )
         assert result["status"] == "activated"
+
+
+@pytest.fixture
+def attempt_settlement_context(monkeypatch):
+    """Bind the real Context composition root and restore its process singleton."""
+    from app.bootstrap.context import configure_context_services
+    from app.context.application import provider_sessions
+
+    monkeypatch.setattr(provider_sessions, "_use_cases", provider_sessions._use_cases)
+    configure_context_services()
 
 
 async def _start_attempt_with_lease(conn, *, run_id: str, context_id: str):
@@ -119,7 +131,7 @@ async def _start_attempt_with_lease(conn, *, run_id: str, context_id: str):
 
 @pytest.mark.asyncio
 async def test_active_writer_initializes_and_merges_receipts_without_generation_changes(
-    attempt_settlement_db,
+    attempt_settlement_db, attempt_settlement_context,
 ):
     connect, *_ = attempt_settlement_db
     await _activate_reader(connect)
@@ -265,7 +277,7 @@ async def test_writer_cutover_waits_for_fenced_source_writer_and_repeats_without
 ):
     connect, *_ = attempt_settlement_db
     await _activate_reader(connect)
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
         lock_attempt_settlement_writer_fence,
         refresh_attempt_settlement_projection,
     )

@@ -20,10 +20,11 @@ from app.bootstrap.attempt_settlement_projection import (
     build_attempt_settlement_projection_service,
 )
 from app.runs.infrastructure import postgres as attempt_postgres
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     AttemptSettlementProjectionConflict,
 )
-from app.runs.infrastructure import attempt_settlement_projection_postgres as settlement_store
+from app.runs.infrastructure import attempt_settlement_projection_store_postgres as settlement_store
+from app.runs.infrastructure import attempt_settlement_storage_cutover_postgres as settlement_cutover
 from app.runs.domain.attempt_settlement_projection import (
     project_legacy_attempt_settlement,
 )
@@ -428,7 +429,7 @@ async def test_resource_lease_reader_does_not_require_attempt_settlement_detail(
 
 @pytest.mark.asyncio
 async def test_attempt_settlement_activation_requires_explicit_operator_acceptance():
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
         activate_attempt_settlement_storage,
     )
 
@@ -748,7 +749,7 @@ async def test_real_postgres_cutover_waits_for_writer_refresh_and_uses_fresh_sna
 
     async def source_writer_without_projection():
         async with transaction_schema() as conn:
-            from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+            from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
                 lock_attempt_settlement_writer_fence,
             )
             await lock_attempt_settlement_writer_fence(conn)
@@ -769,7 +770,7 @@ async def test_real_postgres_cutover_waits_for_writer_refresh_and_uses_fresh_sna
         async with connect_schema() as conn, conn.transaction():
             activation_pid.append(conn.pgconn.backend_pid)
             activation_started.set()
-            return await settlement_store.activate_attempt_settlement_storage(
+            return await settlement_cutover.activate_attempt_settlement_storage(
                 conn,
                 operator_confirmations=confirmations,
                 lock_timeout_seconds=8,
@@ -1143,7 +1144,7 @@ async def test_real_postgres_attempt_reader_isolates_unknown_receipt_from_mapped
     """An unverifiable receipt stays visible while mapped work makes progress."""
     connect, *_ = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
         list_due_attempt_settlements,
         refresh_attempt_settlement_projection,
         persist_attempt_settlement_projection,
@@ -1550,10 +1551,10 @@ async def test_real_postgres_expand_repeat_backfill_compare_and_receipt_fence(at
     connect, original_generation, first, second, status = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
     assert first["status"] == "applied"
-    assert first["version"] == "2026.10.25.11"
+    assert first["version"] == "2026.10.29.2"
     assert second["status"] == "current"
     assert status["ready"] is True
-    assert status["target_version"] == "2026.10.25.11"
+    assert status["target_version"] == "2026.10.29.2"
 
     async with connect() as conn, conn.transaction():
         storage_marker = await (
@@ -2643,9 +2644,13 @@ async def test_real_postgres_reverse_batch_release_does_not_deadlock_ordered_bac
     from contextlib import asynccontextmanager
 
     import app.executor_reconciler as executor_reconciler
-    import app.runs.infrastructure.attempt_settlement_projection_postgres as settlement_store
+    from app.runs.infrastructure import (
+        attempt_settlement_projection_store_postgres as settlement_store,
+    )
     from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
-    from app.sandbox.infrastructure import executor_reconciliation_postgres
+    from app.sandbox.infrastructure import (
+        executor_terminal_reconciliation_postgres as executor_terminal_reconciliation,
+    )
 
     connect, *_ = attempt_settlement_db
     projection_service = build_attempt_settlement_projection_service()
@@ -2853,7 +2858,7 @@ async def test_real_postgres_reverse_batch_release_does_not_deadlock_ordered_bac
 
     async def claim_recovered_batch():
         async with connect() as conn, conn.transaction():
-            return await executor_reconciliation_postgres.claim_sandbox_executor_reconciliations(
+            return await executor_terminal_reconciliation.claim_sandbox_executor_reconciliations(
                 conn,
                 claim_token=recovered_claim_token,
                 limit=2,
@@ -2906,7 +2911,7 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
         SandboxReconciliationReceiptAuthority,
     )
     from app.sandbox.infrastructure import leases_postgres
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
         activate_attempt_settlement_storage,
     )
 
@@ -3056,7 +3061,7 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
 
 @pytest.mark.asyncio
 async def test_cutover_accounts_for_execution_receipts_without_an_attempt(attempt_settlement_db):
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_storage_cutover_postgres import (
         activate_attempt_settlement_storage,
         prepare_attempt_settlement_storage_cutover,
     )

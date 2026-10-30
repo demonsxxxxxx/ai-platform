@@ -86,12 +86,12 @@ def capture_candidate_source_binding(repo_root: Path) -> dict[str, object]:
         except UnicodeDecodeError as error:
             raise EvidenceValidationError("candidate path is not valid UTF-8") from error
         path = root / relative_name
-        if not path.resolve().is_relative_to(root):
-            raise EvidenceValidationError("candidate path resolves outside the worktree")
         tree_digest.update(raw_name + b"\0")
         if path.is_symlink():
             target = path.readlink().as_posix().encode("utf-8")
             tree_digest.update(b"symlink\0" + target + b"\0")
+        elif not path.resolve().is_relative_to(root):
+            raise EvidenceValidationError("candidate path resolves outside the worktree")
         elif path.is_file():
             tree_digest.update(b"file\0" + path.read_bytes() + b"\0")
         else:

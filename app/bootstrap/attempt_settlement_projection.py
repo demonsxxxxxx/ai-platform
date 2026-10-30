@@ -4,7 +4,7 @@ from app.runs.api import (
     AttemptSettlementProjectionPorts,
     AttemptSettlementProjectionService,
 )
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_projection_store_postgres import (
     backfill_attempt_settlement_projections,
     compare_attempt_settlement_projections,
     compare_attempt_settlement_snapshot,
