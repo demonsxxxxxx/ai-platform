@@ -263,6 +263,39 @@ def test_selected_skill_contract_is_shared_nested_and_strict():
         )
 
 
+def test_create_run_request_rejects_retired_auto_selection_mode():
+    with pytest.raises(ValueError, match="model_selection_conflict"):
+        CreateRunRequest(
+            workspace_id="workspace-a",
+            agent_id="general-agent",
+            capability_id="general_chat",
+            selection_mode="auto",
+        )
+
+
+def test_queue_payload_defaults_new_runs_to_explicit_but_decodes_historical_auto():
+    from app.executors.base import RunPayload
+
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "agent-a",
+        "execution_kind": "harness_chat",
+        "executor_type": "claude-agent-worker",
+        "schema_version": "ai-platform.run-payload.v2",
+    }
+
+    assert QueueRunPayload(**payload).model_selection_mode == "explicit"
+    assert QueueRunPayload(**payload, model_selection_mode="auto").model_selection_mode == "auto"
+    executor_payload = {key: value for key, value in payload.items() if key != "executor_type"}
+    executor_payload.update(attempt_id="attempt-a", skill_id=None, file_ids=[], input={})
+    assert RunPayload(**executor_payload).model_selection_mode == "explicit"
+    assert RunPayload(**executor_payload, model_selection_mode="auto").model_selection_mode == "auto"
+
+
 def test_resolve_run_selector_uses_selected_skill_without_opening_raw_selector():
     request = CreateRunRequest(
         workspace_id="workspace-a",
@@ -4621,7 +4654,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
         calls.append(("resolve_model", conn, selection))
         fields = dict(group_id="group-a", group_code="default" if group_type == "ordinary_default" else "alpha",
-                      group_type=group_type, group_revision=1, selection_mode="auto", usage_scene=usage_scene,
+                      group_type=group_type, group_revision=1, selection_mode="explicit", usage_scene=usage_scene,
                       policy_version="model-groups.v1")
         try:
             validate_model_group_snapshot(**fields)
@@ -4721,7 +4754,7 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
         "group_code": "default" if group_type == "ordinary_default" else "alpha",
         "group_type": group_type,
         "group_revision": 1,
-        "selection_mode": "auto",
+        "selection_mode": "explicit",
         "usage_scene": "expert" if purpose == "conversation" else "skill",
         "policy_version": "model-groups.v1",
     }

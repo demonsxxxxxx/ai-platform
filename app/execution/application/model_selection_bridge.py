@@ -17,9 +17,10 @@ def inherit_explicit_selection(
     if not isinstance(input_json, dict):
         return selection
     if selection is not None:
-        if selection.get("id") or selection.get("value") or selection.get("selection_mode") != "auto":
+        if selection.get("id") or selection.get("value") or selection.get("selection_mode") is not None:
             return selection
-        if selection.get("group_id") != input_json.get("model_group_id"):
+        requested_group_id = selection.get("group_id")
+        if requested_group_id is not None and requested_group_id != input_json.get("model_group_id"):
             return selection
     model_id = input_json.get("model_id")
     model_value = input_json.get("model_value")

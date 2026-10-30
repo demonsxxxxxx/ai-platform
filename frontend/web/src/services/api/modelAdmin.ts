@@ -14,12 +14,20 @@ export interface AdminModelProvider {
   name: string;
   revision: number | null;
   model_count: number;
+  configured?: boolean;
+  enabled_model_count?: number;
+  missing_model_count?: number;
 }
 
 export interface ModelProviderImpact extends AdminModelProvider {
   group_count: number;
   default_group_count: number;
   active_run_count: number;
+  cleanable_count: number;
+  blocked_models: Array<{
+    id: string; label: string; group_count: number; default_group_count: number;
+    active_run_count: number; groups: Array<{ name: string }>;
+  }>;
 }
 
 export interface AdminModelEntry {
@@ -59,7 +67,7 @@ export const modelAdminApi = {
     return authFetch(`${API_BASE}/api/ai/admin/model-providers/${encodeURIComponent(id)}/impact${options.missingOnly ? "?missing_only=true" : ""}`, { signal: options.signal, cache: "no-store" });
   },
 
-  retireProvider(id: string, expectedRevision: number | null, options: ModelAdminRequestOptions = {}): Promise<{ id: string; deleted: boolean }> {
+  retireProvider(id: string, expectedRevision: number | null, options: ModelAdminRequestOptions = {}): Promise<{ id: string; deleted: boolean; model_count?: number; retained_count?: number }> {
     return authFetch(`${API_BASE}/api/ai/admin/model-providers/${encodeURIComponent(id)}/retire`, { method: "POST", signal: options.signal, body: JSON.stringify({ expected_revision: expectedRevision, confirm: true, ...(options.missingOnly ? { missing_only: true } : {}) }) });
   },
 

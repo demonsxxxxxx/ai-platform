@@ -789,10 +789,14 @@ async def test_successor_activation_ledger_advances_to_current_schema():
 @pytest.mark.asyncio
 async def test_main_and_lifecycle_schema_ledgers_converge_without_rewriting_history():
     state = SharedMigrationState()
-    main_version = schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+    previous_main_version = schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+    main_version = schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
     lifecycle_version = schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+    previous_main_checksum = "c" * 64
     main_checksum = "a" * 64
     lifecycle_checksum = "b" * 64
+    state.ledger[previous_main_version] = previous_main_checksum
+    state.migration_states[previous_main_version] = "applied"
     state.ledger[main_version] = main_checksum
     state.migration_states[main_version] = "applied"
     state.ledger[lifecycle_version] = lifecycle_checksum
@@ -807,11 +811,15 @@ async def test_main_and_lifecycle_schema_ledgers_converge_without_rewriting_hist
         index_connection_factory=index_connection_factory(state),
     )
 
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.29.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION not in {main_version, lifecycle_version}
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.30.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION not in {
+        previous_main_version, main_version, lifecycle_version,
+    }
     assert first["status"] == "applied"
     assert second["status"] == "current"
     assert state.schema_execute_count == 1
+    assert state.ledger[previous_main_version] == previous_main_checksum
+    assert state.migration_states[previous_main_version] == "applied"
     assert state.ledger[main_version] == main_checksum
     assert state.migration_states[main_version] == "applied"
     assert state.ledger[lifecycle_version] == lifecycle_checksum
@@ -838,6 +846,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION == "2026.10.28.1"
     assert schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION == "2026.10.28.2"
     assert schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION == "2026.10.29.1"
+    assert schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION == "2026.10.29.2"
     assert schema_migrations.MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION == "2026.10.22.1"
     assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
     assert schema_migrations.RUN_DELIVERY_INTENTS_SCHEMA_VERSION == "2026.10.25.2"
@@ -851,11 +860,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION == "2026.10.25.11"
-    assert schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION == "2026.10.30.1"
     assert schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION == "2026.10.22.2"
     assert schema_migrations.RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION == "2026.10.23.1"
     assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.30.1"
     assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_delivery_intents", "claim_token", "uuid", False) in schema_migrations.CRITICAL_COLUMNS

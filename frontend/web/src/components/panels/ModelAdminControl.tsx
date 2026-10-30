@@ -10,6 +10,7 @@ import { ApiRequestError } from "../../services/api/fetch";
 import { modelGroupsApi, type AdminModelGroupDetails, type AdminModelGroupSummary } from "../../services/api/modelGroups";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { GroupDrawer } from "./ModelGroupManagement";
+import { useSavedModelGroupCatalog } from "./useSavedModelGroupCatalog";
 
 import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 
@@ -75,6 +76,10 @@ interface ModelCatalogReceipt {
   connectionVersion: number;
   revision: number | null;
 }
+interface ModelCatalogSyncSummary {
+  newCandidates: number;
+  upstreamMissing: number;
+}
 
 function connectionOrigin(value: string): string {
   const trimmed = value.trim();
@@ -90,13 +95,18 @@ function connectionOrigin(value: string): string {
 
 function modelDraftSignature(models: AdminModelEntry[]): string {
   return JSON.stringify(models.map((model) => [
-    model.id, model.value, model.label, model.enabled,
+    model.id, model.value, model.label, model.enabled, model.available,
     model.order, model.auto_compact_window ?? null, model.max_output_tokens ?? null,
   ]));
 }
 
-function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEntry[]): AdminModelEntry[] {
-  return candidates.map((candidate) => {
+function mergeModelCandidates(
+  candidates: AdminModelEntry[],
+  draft: AdminModelEntry[],
+  savedModels: AdminModelEntry[],
+): AdminModelEntry[] {
+  const candidateIds = new Set(candidates.map((model) => model.id));
+  const available = candidates.map((candidate) => {
     const previous = draft.find((model) => model.id === candidate.id && model.value === candidate.value);
     return previous ? {
       ...candidate,
@@ -104,6 +114,13 @@ function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEn
       auto_compact_window: previous.auto_compact_window, max_output_tokens: previous.max_output_tokens,
     } : candidate;
   });
+  const unavailable = savedModels
+    .filter((model) => !candidateIds.has(model.id))
+    .map((model) => ({
+      ...(draft.find((previous) => previous.id === model.id && previous.value === model.value) ?? model),
+      available: false,
+    }));
+  return [...available, ...unavailable];
 }
 
 export type ModelAdminControlState = "loading" | "ready" | "degraded";
@@ -133,6 +150,7 @@ export function ModelAdminControl({
   const [credential, setCredential] = useState("");
   const [draft, setDraft] = useState<AdminModelEntry[]>([]);
   const [catalogReceipt, setCatalogReceipt] = useState<ModelCatalogReceipt | null>(null);
+  const [catalogSummary, setCatalogSummary] = useState<ModelCatalogSyncSummary | null>(null);
   const [testState, setTestState] = useState<"untested" | "testing" | "passed" | "failed">("untested");
   const [busy, setBusy] = useState<ModelAdminOperation | null>(null);
   useEffect(() => { onBusyChange?.(busy !== null); }, [busy, onBusyChange]);
@@ -143,7 +161,7 @@ export function ModelAdminControl({
   const [groupFilter, setGroupFilter] = useState("all");
   const [editingGroup, setEditingGroup] = useState<AdminModelGroupSummary | null>(null);
   const [groupTab, setGroupTab] = useState<"models" | "members">("models");
-  const groupTrigger = useRef<HTMLElement | null>(null);
+  const groupTrigger = useRef<HTMLButtonElement | HTMLAnchorElement | null>(null);
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const modelTrigger = useRef<HTMLElement | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -163,6 +181,7 @@ export function ModelAdminControl({
   } | null>(null);
   const groupRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const groupRequestSequence = useRef(0);
+  const { savedGroupCatalog, loadSavedGroupCatalog, clearSavedGroupCatalog } = useSavedModelGroupCatalog(providerId, editingGroup, errorMessage);
   const connectionVersion = useRef(0);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ModelAdminRequestOwner | null>(null);
@@ -195,11 +214,23 @@ export function ModelAdminControl({
     setBusy(null);
   }, [ownsRequest]);
 
+  const closeGroup = useCallback(() => {
+    clearSavedGroupCatalog();
+    setEditingGroup(null);
+  }, [clearSavedGroupCatalog]);
+
+  const openGroup = (group: AdminModelGroupSummary, tab: "models" | "members") => {
+    setGroupTab(tab);
+    setEditingGroup(group);
+    loadSavedGroupCatalog(group);
+  };
+
   const applyState = useCallback((next: AdminModelState) => {
     setState(next);
     setBaseUrl(next.connection.base_url || "");
     setCredential("");
     setDraft(next.models);
+    setCatalogSummary(null);
     setCatalogReceipt(next.connection.configured ? {
       connectionVersion: connectionVersion.current, revision: next.connection.revision,
     } : null);
@@ -213,6 +244,7 @@ export function ModelAdminControl({
     if (!owner) return;
     setCredential("");
     setCatalogReceipt(null);
+    setCatalogSummary(null);
     setTestState("untested");
     setError(null);
     setPublishError(null);
@@ -245,10 +277,13 @@ export function ModelAdminControl({
   useEffect(() => {
     groupRequestRef.current?.controller.abort();
     groupRequestRef.current = null;
-    setGroupOptions([]);
     setGroupDetails({});
     setGroupDetailsReady(false);
-    if (!canManage) return undefined;
+    if (!canManage) {
+      setGroupOptions([]);
+      return undefined;
+    }
+    // Preserve the drawer's focus target while refreshing group details after a save.
     const controller = new AbortController();
     const sequence = ++groupRequestSequence.current;
     groupRequestRef.current = { controller, sequence };
@@ -277,6 +312,7 @@ export function ModelAdminControl({
     connectionVersion.current += 1;
     setBusy(null);
     setCatalogReceipt(null);
+    setCatalogSummary(null);
     setTestState("untested");
     setError(null); setPublishError(null); setMessage(null);
     return true;
@@ -285,10 +321,14 @@ export function ModelAdminControl({
   const reuseSavedCredential = Boolean(state?.connection.configured
     && connectionOrigin(baseUrl) === connectionOrigin(state.connection.base_url));
   const connectionReady = Boolean(state && baseUrl.trim() && (credential.trim() || reuseSavedCredential));
-  const hasChanges = Boolean(state && (credential.trim()
-    || connectionOrigin(baseUrl) !== connectionOrigin(state.connection.base_url)
+  const connectionChanged = Boolean(state && (credential.trim()
+    || connectionOrigin(baseUrl) !== connectionOrigin(state.connection.base_url)));
+  const hasChanges = Boolean(state && (connectionChanged
     || modelDraftSignature(draft) !== modelDraftSignature(state.models)));
   useEffect(() => { onDirtyChange?.(hasChanges); }, [hasChanges, onDirtyChange]);
+  useEffect(() => {
+    if (hasChanges || !canManage) closeGroup();
+  }, [hasChanges, canManage, closeGroup]);
   const canPublish = Boolean(state && hasChanges && catalogReceipt
     && catalogReceipt.connectionVersion === connectionVersion.current);
   const connectionLocked = busy === "load" || busy === "publish";
@@ -300,6 +340,7 @@ export function ModelAdminControl({
     const requestedUrl = baseUrl.trim();
     const requestedCredential = credential.trim() || undefined;
     setTestState("testing");
+    if (operation === "discover") setCatalogSummary(null);
     setError(null); setPublishError(null); setMessage(null);
     try {
       const result = await modelAdminApi.discover(requestedUrl, requestedCredential, {
@@ -313,14 +354,20 @@ export function ModelAdminControl({
         // Discovery may refresh candidates, but cannot acknowledge another admin's edits.
         if (!state || result.connection.revision !== state.connection.revision) {
           setCatalogReceipt(null);
+          setCatalogSummary(null);
           setPublishError("模型配置已被更新，未保存编辑已保留，请重新加载配置后再发布。");
           return;
         }
-        setDraft(mergeModelCandidates(result.models, draft));
+        const candidateIds = new Set(result.models.map((model) => model.id));
+        setDraft(mergeModelCandidates(result.models, draft, state.models));
+        setCatalogSummary({
+          newCandidates: result.models.filter((model) => !state.models.some((saved) => saved.id === model.id)).length,
+          upstreamMissing: state.models.filter((model) => !candidateIds.has(model.id)).length,
+        });
         setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: state.connection.revision });
-        setMessage(`已获取 ${result.models.length} 个候选模型，已有编辑已保留；保存后生效。`);
+        setMessage(`已获取 ${result.models.length} 个上游模型候选。目录已更新为草稿，保存后生效；已有编辑已保留。`);
       } else {
-        setMessage(`连接测试通过，上游返回 ${result.models.length} 个模型；测试不会保存配置。`);
+        setMessage("连接测试通过，已读取上游模型目录。");
       }
     } catch (caught) {
       if (!ownsRequest(owner)) return;
@@ -382,6 +429,7 @@ export function ModelAdminControl({
       if (!ownsRequest(owner)) return;
       applyState(next);
       onProviderChanged?.();
+      onGroupsChanged?.();
       setTestState("passed");
       const refreshed = await refreshModels({ force: true });
       if (!ownsRequest(owner)) return;
@@ -402,6 +450,12 @@ export function ModelAdminControl({
     return !current || !saved || modelDraftSignature([current]) !== modelDraftSignature([saved]);
   }).map((model) => model.id));
   const pendingCount = changedModelIds.size + (credential.trim() || connectionOrigin(baseUrl) !== connectionOrigin(state?.connection.base_url ?? "") ? 1 : 0);
+  const modelDraftState = (model: AdminModelEntry) => {
+    const saved = state?.models.find((item) => item.id === model.id);
+    if (!saved) return "candidate" as const;
+    if (connectionChanged || modelDraftSignature([model]) !== modelDraftSignature([saved])) return "modified" as const;
+    return "saved" as const;
+  };
   const modelGroupIds = useMemo(() => {
     const ids = new Map<string, string[]>();
     for (const group of groupOptions) {
@@ -415,6 +469,11 @@ export function ModelAdminControl({
   const batchGroups = groupOptions.filter((group) => group.enabled);
   const filteredGroup = groupOptions.find((group) => group.id === groupFilter
     || (groupFilter === "default" && group.type === "ordinary_default"));
+  const editingGroupCatalog = editingGroup
+    && savedGroupCatalog?.groupId === editingGroup.id
+    && savedGroupCatalog.providerId === providerId
+    ? savedGroupCatalog
+    : null;
   const refreshGroups = async (signal?: AbortSignal) => {
     const result = await modelGroupsApi.listAdmin({ signal });
     const details = await Promise.all(result.groups.map((g) => modelGroupsApi.details(g.id, { signal })));
@@ -475,6 +534,11 @@ export function ModelAdminControl({
 
   const runBatch = async (preview: boolean) => {
     if (activeRequest.current) return;
+    if (hasChanges) {
+      setBatchError("请先保存供应商配置，再分配模型。");
+      clearBatchPreview();
+      return;
+    }
     const previewIntent = currentBatchIntent;
     const intent = preview ? previewIntent : batchPreviewIntent;
     if (!intent) return;
@@ -546,12 +610,15 @@ export function ModelAdminControl({
               : testState === "passed" ? "当前连接测试通过" : testState === "failed" ? "当前连接测试失败"
                 : state?.connection.configured && reuseSavedCredential && !credential ? "已配置 · 尚未测试" : "连接草稿 · 尚未测试"}
           </Tag>
-          <Button data-model-admin-test disabled={busy !== null || !connectionReady} onClick={() => void discover("test")} htmlType="button" icon={<PlugZap size={16} />}>测试连接</Button>
+          <Button data-model-admin-test title="检查模型目录连接" disabled={busy !== null || !connectionReady} onClick={() => void discover("test")} htmlType="button" icon={<PlugZap size={16} />}>测试连接</Button>
           <Button data-model-admin-discover loading={busy === "discover"} disabled={busy !== null || !connectionReady} onClick={() => void discover("discover")} htmlType="button" icon={<RefreshCw size={16} />}>获取上游模型</Button>
         </div>
         {error ? <p className="mt-3 text-sm text-[var(--theme-danger-text)]" role="alert">{error}</p> : null}
         {error || (publishError && !catalogReceipt) ? <Button type="text" size="small" data-model-admin-reload disabled={connectionLocked} onClick={() => void load()} htmlType="button">{hasChanges ? "放弃草稿并读取最新配置" : "重试读取配置"}</Button> : null}
         {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
+        {catalogSummary ? <p className="mt-2 text-xs text-[var(--theme-text-secondary)]" data-model-admin-sync-summary>
+          目录同步摘要：新增候选 {catalogSummary.newCandidates} 个 · 上游缺失 {catalogSummary.upstreamMissing} 个
+        </p> : null}
       </div>
 
       <div className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:min-h-0 lg:flex-1 lg:shrink">
@@ -595,22 +662,37 @@ export function ModelAdminControl({
         {filteredGroup ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] p-3" data-model-admin-group-settings>
           <span className="text-sm font-medium">{filteredGroup.name}</span>
           <span className="text-xs text-[var(--theme-text-secondary)]">模型可加入多个组；各组的启用、展示顺序与默认模型独立配置。</span>
-          <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("models"); setEditingGroup(filteredGroup); }}>编辑组内模型</Button>
-          {filteredGroup.type === "business" ? <Button size="small" disabled={busy !== null} onClick={(event) => { groupTrigger.current = event.currentTarget; setGroupTab("members"); setEditingGroup(filteredGroup); }}>管理成员</Button> : null}
+          <Button ref={groupTab === "models" ? groupTrigger : undefined} size="small" disabled={busy !== null || hasChanges} onClick={() => openGroup(filteredGroup, "models")}>编辑组内模型</Button>
+          {filteredGroup.type === "business" ? <Button ref={groupTab === "members" ? groupTrigger : undefined} size="small" disabled={busy !== null || hasChanges} onClick={() => openGroup(filteredGroup, "members")}>管理成员</Button> : null}
+          {hasChanges ? <span className="text-xs text-[var(--theme-warning-text)]">请先保存供应商配置，再调整组分配。</span> : null}
+        </div> : null}
+        {editingGroup && editingGroupCatalog?.status === "error" ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2" role="alert" data-model-admin-group-catalog-error>
+          <span>无法读取已保存的完整模型目录：{editingGroupCatalog.error}</span>
+          <Button size="small" disabled={busy !== null || hasChanges} data-model-admin-group-catalog-retry onClick={() => loadSavedGroupCatalog(editingGroup)} htmlType="button">重试加载目录</Button>
+          <Button size="small" data-model-admin-group-catalog-close onClick={closeGroup} htmlType="button">关闭</Button>
+        </div> : null}
+        {editingGroup && (!editingGroupCatalog || editingGroupCatalog.status === "loading") ? <div className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-text-secondary)]" role="status" data-model-admin-group-catalog-loading>
+          <span>正在读取已保存的完整模型目录…</span>
+          <Button size="small" data-model-admin-group-catalog-close onClick={closeGroup} htmlType="button">取消</Button>
+        </div> : null}
+        {editingGroup && editingGroupCatalog?.status === "ready" && (busy !== null || hasChanges) ? <div className="flex items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-warning-text)]" role="status" data-model-admin-group-catalog-gated>
+          <span>{hasChanges ? "请先保存供应商配置，再编辑组模型。" : "供应商配置仍在处理中，完成后即可编辑组模型。"}</span>
+          <Button size="small" disabled={busy !== null} onClick={closeGroup} htmlType="button">关闭</Button>
         </div> : null}
         {selectedModelIds.length ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] p-3" data-model-admin-batch-toolbar>
           <span className="text-xs font-medium">已选 {selectedModelIds.length} 个模型</span>
           <div className="flex flex-wrap items-center gap-2" aria-label="批量目标业务组" data-model-admin-batch-groups>
             {batchGroups.map((group) => <Checkbox key={group.id} aria-label={`批量目标 ${group.name}`} checked={batchGroupIds.includes(group.id)} disabled={busy !== null} onChange={(checked) => setBatchGroupIds((current) => checked ? [...current, group.id] : current.filter((id) => id !== group.id))}>{group.name}</Checkbox>)}
           </div>
-          <Button size="small" disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("add"); setBatchPreview(null); }} htmlType="button">批量添加</Button>
-          <Button size="small" disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("replace"); setBatchPreview(null); }} htmlType="button">批量替换</Button>
-          <Button size="small" danger disabled={!batchGroupIds.length || busy !== null} onClick={() => { setBatchOperation("remove"); setBatchPreview(null); }} htmlType="button">批量移出</Button>
+          <Button size="small" disabled={!batchGroupIds.length || busy !== null || hasChanges} onClick={() => { setBatchOperation("add"); setBatchPreview(null); }} htmlType="button">批量添加</Button>
+          <Button size="small" disabled={!batchGroupIds.length || busy !== null || hasChanges} onClick={() => { setBatchOperation("replace"); setBatchPreview(null); }} htmlType="button">批量替换</Button>
+          <Button size="small" danger disabled={!batchGroupIds.length || busy !== null || hasChanges} onClick={() => { setBatchOperation("remove"); setBatchPreview(null); }} htmlType="button">批量移出</Button>
+          {hasChanges ? <span className="text-xs text-[var(--theme-warning-text)]">请先保存供应商配置，再分配模型。</span> : null}
           {batchError ? <span role="alert" className="text-xs text-[var(--theme-danger-text)]">{batchError}</span> : null}
         </div> : null}
         {batchOperation ? <div className="flex flex-wrap items-center gap-2 border-b border-[var(--theme-border)] px-3 py-2" data-model-admin-batch-confirm>
           <span className="text-xs text-[var(--theme-text-secondary)]">{batchOperation === "add" ? "添加" : batchOperation === "replace" ? "替换" : "移出"}前先预览原子影响；确认后一次提交。</span>
-          <Button size="small" loading={busy === "batch"} disabled={busy !== null} onClick={() => void runBatch(true)} htmlType="button">预览影响</Button>
+          <Button size="small" loading={busy === "batch"} disabled={busy !== null || hasChanges} onClick={() => void runBatch(true)} htmlType="button">预览影响</Button>
           {batchPreview ? <><span className="text-xs text-[var(--theme-text-secondary)]" data-model-admin-batch-preview>预览将影响 {batchPreview.groups.filter((group) => group.changed).length} 个分组，{batchPreview.changed ? "确认后原子提交" : "无需变更"}。</span><Button size="small" type="primary" loading={busy === "batch"} disabled={busy !== null || !batchPreview.changed} onClick={() => void runBatch(false)} htmlType="button">确认并保存</Button></> : null}
           <Button size="small" disabled={busy !== null} onClick={() => { setBatchOperation(null); setBatchPreview(null); }} htmlType="button">取消</Button>
         </div> : null}
@@ -621,8 +703,8 @@ export function ModelAdminControl({
             onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
             columns={[
               { key: "selected", width: 52, title: "选择", render: (_value, model) => <Checkbox aria-label={`选择模型 ${model.label}`} data-model-admin-select={model.id} checked={selectedModelIds.includes(model.id)} disabled={busy !== null} onChange={(checked) => setSelectedModelIds((current) => checked ? [...current, model.id] : current.filter((id) => id !== model.id))} /> },
-              { key: "identity", width: 260, title: "模型", render: (_value, model) => <div className="min-w-0"><Button type="text" className="max-w-full justify-start px-0" aria-label={`编辑模型 ${model.label}`} data-model-admin-edit={model.id} onClick={(event) => { modelTrigger.current = event.currentTarget; setEditingModelId(model.id); }} icon={<DatabaseZap size={16} />}><span className="truncate text-sm font-medium">{model.label}</span></Button><div className="flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]" data-model-admin-group-tags><span className="max-w-full truncate" title={model.value}>{model.value}</span>{(modelGroupIds.get(model.id) ?? []).map((groupId) => { const group = groupOptions.find((item) => item.id === groupId); return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null; })}{!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}</div></div> },
-              { key: "provider", width: 120, title: "提供方", render: (_value, model) => model.provider_name || model.provider || "未提供" },
+              { key: "identity", width: 260, title: "模型", render: (_value, model) => <div className="min-w-0"><Button type="text" className="max-w-full justify-start px-0" aria-label={`编辑模型 ${model.label}`} data-model-admin-edit={model.id} onClick={(event) => { modelTrigger.current = event.currentTarget; setEditingModelId(model.id); }} icon={<DatabaseZap size={16} />}><span className="truncate text-sm font-medium">{model.label}</span></Button><div className="flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]" data-model-admin-group-tags><span className="max-w-full truncate" title={model.value}>{model.value}</span><Tag size="small" data-model-admin-draft-state={modelDraftState(model)}>{modelDraftState(model) === "candidate" ? "待保存候选" : modelDraftState(model) === "modified" ? "待保存修改" : "已保存"}</Tag>{(modelGroupIds.get(model.id) ?? []).map((groupId) => { const group = groupOptions.find((item) => item.id === groupId); return group ? <Tag key={group.id} size="small">{group.type === "ordinary_default" ? "普通默认组" : group.name}</Tag> : null; })}{!modelGroupIds.has(model.id) ? <Tag size="small">未分组</Tag> : null}</div></div> },
+              { key: "provider", width: 120, title: "供应商", render: (_value, model) => model.provider_name || "未知供应商" },
               { key: "window", width: 140, title: "压缩窗口", render: (_value, model) => model.auto_compact_window?.toLocaleString() ?? "默认 100,000" },
               { key: "output", width: 140, title: "最大输出 Token", render: (_value, model) => model.max_output_tokens?.toLocaleString() ?? "未设置" },
               { key: "availability", width: 100, title: "状态", render: (_value, model) => <Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag> },
@@ -638,7 +720,7 @@ export function ModelAdminControl({
           <DrawerContent><div className="space-y-5 p-5">
             <section className="space-y-3"><h3 className="text-base font-semibold">基本信息</h3>
               <label className="flex flex-col gap-1 text-sm">平台显示名称<Input aria-label={`${editingModel.value} 平台显示名称`} disabled={busy !== null} value={editingModel.label} onChange={(event) => updateDraft(editingModel.id, { label: event.target.value })} /></label>
-              <p className="text-sm text-[var(--theme-text-secondary)]">提供方：{editingModel.provider || "未提供"}</p>
+              <p className="text-sm text-[var(--theme-text-secondary)]">供应商：{editingModel.provider_name || "未知供应商"}</p>
             </section>
             <section className="space-y-3"><h3 className="text-base font-semibold">默认参数</h3>
               <label className="flex flex-col gap-1 text-sm">压缩窗口<Input aria-label={`${editingModel.value} 压缩窗口 Token`} aria-describedby="model-admin-compaction-window-hint" disabled={!editingModel.available || busy !== null} min={AUTO_COMPACT_WINDOW_MIN} max={AUTO_COMPACT_WINDOW_MAX} step={1000} onChange={(event) => updateDraft(editingModel.id, { auto_compact_window: event.target.value ? Number(event.target.value) : undefined })} placeholder="默认 100000" type="number" value={editingModel.auto_compact_window ?? ""} /></label>
@@ -674,7 +756,7 @@ export function ModelAdminControl({
           ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</Button>
         </div>
       </div> : publishError ? <p role="alert" className="text-sm text-[var(--theme-danger-text)]">{publishError}</p> : null}
-      <GroupDrawer group={editingGroup} catalog={draft} initialTab={groupTab} onClose={() => setEditingGroup(null)} onChanged={refreshGroups} finalFocus={groupTrigger} />
+      <GroupDrawer group={editingGroupCatalog?.status === "ready" && !hasChanges && busy === null ? editingGroup : null} catalog={editingGroupCatalog?.status === "ready" ? editingGroupCatalog.models : []} providers={editingGroupCatalog?.status === "ready" ? editingGroupCatalog.providers : []} initialTab={groupTab} onClose={closeGroup} onChanged={refreshGroups} finalFocus={groupTrigger} />
     </section>
   );
 }

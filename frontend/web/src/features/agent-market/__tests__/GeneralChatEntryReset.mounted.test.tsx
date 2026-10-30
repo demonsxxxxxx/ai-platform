@@ -56,6 +56,7 @@ const { AppContent } = await import("../../../components/layout/AppContent/index
 const { authApi } = await import("../../../services/api/auth");
 const { sessionApi } = await import("../../../services/api/session");
 const { modelPublicApi } = await import("../../../services/api/modelPublic");
+const { modelGroupsApi } = await import("../../../services/api/modelGroups");
 const { Permission } = await import("../../../types/auth");
 await import("../../../i18n");
 
@@ -71,6 +72,34 @@ async function click(element: Element | null | undefined) {
   });
 }
 
+type ChatModelFixture = {
+  groups: Awaited<ReturnType<typeof modelGroupsApi.listPublic>>["groups"];
+  models: Awaited<ReturnType<typeof modelPublicApi.listAvailable>>;
+};
+
+const explicitChatModelFixture: ChatModelFixture = {
+  groups: [{ id: "group-chat", code: "chat", name: "聊天业务组", type: "business", enabled: true,
+    revision: 1, is_primary: true, availability: "available", models: [] }],
+  models: {
+    models: [
+      { id: "model-a", value: "provider/model-a", label: "Model A" },
+      { id: "model-b", value: "provider/model-b", label: "Model B" },
+    ],
+    count: 2, enabled_count: 2, default_model_id: "model-a",
+  },
+};
+
+async function fillAndSendComposer(container: HTMLElement, message: string) {
+  const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+  assert.ok(textarea, "expected the chat composer");
+  await React.act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, message);
+    textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  await click(container.querySelector('[data-slot="composer-send"]'));
+  await settle();
+}
+
 /**
  * The primary 对话 entry must start a blank general conversation from any
  * sidebar presentation: the expanded panel and the collapsed/mobile rail.
@@ -80,12 +109,15 @@ async function expectGeneralResetToBlank(params: {
   findEntry: (container: HTMLElement) => HTMLButtonElement | undefined;
   isAdmin?: boolean;
   fromApps?: boolean;
+  modelFixture?: ChatModelFixture;
+  restoredAgentOptions?: Record<string, boolean | string | number>;
   verifyNavigation?: (container: HTMLElement) => Promise<void>;
 }): Promise<void> {
   const originals = {
     session: { ...sessionApi },
     auth: { ...authApi },
     models: { ...modelPublicApi },
+    groups: { ...modelGroupsApi },
   };
   const loads: string[] = [];
   localStorage.setItem("ai-platform-theme", "light");
@@ -96,7 +128,11 @@ async function expectGeneralResetToBlank(params: {
     email: "user-a@example.test", roles: [],
     permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE, Permission.SESSION_READ],
     is_admin: params.isAdmin ?? false, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
-  modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }], count: 1, enabled_count: 1, default_model_id: "model-default" });
+  const modelFixture = params.modelFixture;
+  modelPublicApi.listAvailable = async () => modelFixture?.models ?? ({ models: [{ id: "model-default", value: "model-default", label: "Default" }], count: 1, enabled_count: 1, default_model_id: "model-default" });
+  if (modelFixture) {
+    modelGroupsApi.listPublic = async () => ({ groups: modelFixture.groups, count: modelFixture.groups.length, version: "model-groups.v1" });
+  }
   Object.assign(sessionApi, {
     listAuthoritative: async () => [{
       id: GENERIC_SESSION_ID, name: "General demo", agent_id: "general-chat",
@@ -111,7 +147,7 @@ async function expectGeneralResetToBlank(params: {
     get: async (id: string) => ({
       id, name: "General demo", agent_id: "general-chat",
       created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
-      is_active: true, metadata: {},
+      is_active: true, metadata: params.restoredAgentOptions ? { agent_options: params.restoredAgentOptions } : {},
     }),
     getEvents: async (id: string) => {
       loads.push(id);
@@ -175,6 +211,7 @@ async function expectGeneralResetToBlank(params: {
     Object.assign(sessionApi, originals.session);
     Object.assign(authApi, originals.auth);
     Object.assign(modelPublicApi, originals.models);
+    Object.assign(modelGroupsApi, originals.groups);
   }
 };
 
@@ -287,3 +324,66 @@ for (const isAdmin of [false, true]) {
     });
   });
 }
+
+test("an unavailable group default prompts and manual same-group selection submits explicitly", async () => {
+  const submissions: unknown[][] = [];
+  const modelFixture: ChatModelFixture = {
+    ...explicitChatModelFixture,
+    models: { ...explicitChatModelFixture.models, default_model_id: "unavailable-model" },
+  };
+  await expectGeneralResetToBlank({
+    label: "unavailable group default",
+    findEntry: expandedEntry,
+    modelFixture,
+    async verifyNavigation(container) {
+      for (let index = 0; index < 20 && !container.textContent?.includes("默认模型暂不可用"); index += 1) await settle();
+      assert.match(container.textContent ?? "", /默认模型暂不可用，请手动选择同组模型/);
+
+      sessionApi.submitChat = (async (...args) => {
+        submissions.push(args);
+        return { session_id: "demo-general", run_id: null, status: "needs_confirmation", suggestions: [] };
+      }) as typeof sessionApi.submitChat;
+      await click(container.querySelector("[data-composer-model-trigger]"));
+      for (let index = 0; index < 20 && !document.querySelector('[data-composer-model-option="model-b"]'); index += 1) await settle();
+      await click(document.querySelector('[data-composer-model-option="model-b"]'));
+      await fillAndSendComposer(container, "use the selected same-group model");
+
+      assert.equal(submissions.length, 1);
+      const options = submissions[0]?.[2] as Record<string, unknown>;
+      assert.equal(options.group_id, "group-chat");
+      assert.equal(options.model_id, "model-b");
+      assert.equal(options.model, "provider/model-b");
+      assert.equal(options.selection_mode, "explicit");
+    },
+  });
+});
+
+test("history with a concrete model and legacy auto mode restores and submits explicitly", async () => {
+  const submissions: unknown[][] = [];
+  await expectGeneralResetToBlank({
+    label: "legacy history model",
+    findEntry: expandedEntry,
+    modelFixture: explicitChatModelFixture,
+    restoredAgentOptions: {
+      model_id: "model-b",
+      model: "provider/model-b",
+      group_id: "group-chat",
+      selection_mode: "auto",
+    },
+    async verifyNavigation(container) {
+      assert.match(container.textContent ?? "", /Model B/);
+      sessionApi.submitChat = (async (...args) => {
+        submissions.push(args);
+        return { session_id: "demo-general", run_id: null, status: "needs_confirmation", suggestions: [] };
+      }) as typeof sessionApi.submitChat;
+      await fillAndSendComposer(container, "continue with the historical model");
+
+      assert.equal(submissions.length, 1);
+      const options = submissions[0]?.[2] as Record<string, unknown>;
+      assert.equal(options.group_id, "group-chat");
+      assert.equal(options.model_id, "model-b");
+      assert.equal(options.model, "provider/model-b");
+      assert.equal(options.selection_mode, "explicit");
+    },
+  });
+});

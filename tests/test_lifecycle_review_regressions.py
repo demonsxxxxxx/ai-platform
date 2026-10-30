@@ -157,9 +157,12 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         await asyncio.Event().wait()  # Remote accepted, network response never arrives.
     async def unexpected(*args, **kwargs): raise AssertionError("no early release/save")
     async def cancel(*args, **kwargs):
+        assert kwargs["run_id"] == "r"
         assert kwargs["attempt_id"] == "a"
         calls.append("cancel-sdk")
     async def status(*args, **kwargs):
+        assert kwargs["run_id"] == "r"
+        assert kwargs["attempt_id"] == "a"
         calls.append("observe-terminal")
         if race == "get_404":
             raise OSError("GET 404 after terminal ACK")
@@ -177,6 +180,13 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         return {"status": kwargs["outcome"]}
     async def receipt(*args, **kwargs):
         calls.append("durable-terminal")
+        assert kwargs["tenant_id"] == "t"
+        assert kwargs["run_id"] == "r"
+        assert kwargs["attempt_id"] == "a"
+        assert kwargs["lease_id"] == "lease"
+        assert kwargs["executor_status"] == "cancelled"
+        assert kwargs["terminal_result"]["run_id"] == "r"
+        assert kwargs["terminal_result"]["status"] == "cancelled"
         assert kwargs["terminal_result"]["sdk_settlement"]["input_accepted"] is True
         if race == "write_conflict":
             raise SandboxLeaseReleaseScopeMismatchError("concurrent release")
@@ -218,6 +228,7 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         cancel_requested=cancelled, poll_interval_seconds=.001,
     ), 3)
     assert isinstance(result, ExecutorDispatchAccepted)
+    assert rejected is (race in {"unowned_404", "foreign_terminal"})
     assert calls == {
         "live": ["durable-observation", "cancel-sdk", "observe-terminal", "durable-terminal"],
         "endpoint_404": ["durable-observation", "persisted-handoff"],

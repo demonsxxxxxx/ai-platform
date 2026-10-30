@@ -119,8 +119,9 @@ async def batch_group_models(
         if default_before and default_before not in desired and desired:
             raise ModelGroupPolicyError("model_group_default_change_required")
         default_after = default_before if default_before in desired else None
-        if not current and desired:
-            default_after = min(projected.values(), key=lambda item: (item["display_order"], item["model_id"]))["model_id"]
+        if default_before is None and not any(item["enabled"] for item in current.values()) and desired:
+            first_enabled = min((item for item in projected.values() if item["enabled"]), key=lambda item: (item["display_order"], item["model_id"]), default=None)
+            default_after = first_enabled["model_id"] if first_enabled else None
         changes.append({
             "group_id": group_id,
             "group_type": str(groups[group_id]["type"]),

@@ -385,7 +385,7 @@ async def resolve_run_model(
     user_id: str,
     tenant_id: str | None = None,
     group_id: str | None = None,
-    selection_mode: str = "auto",
+    selection_mode: str | None = None,
     usage_scene: str = "independent",
 ) -> RunModelSelection | None:
     if tenant_id is None:

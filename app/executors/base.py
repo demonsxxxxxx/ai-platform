@@ -233,7 +233,7 @@ class RunPayload:
     model_group_code: str | None = None
     model_group_type: str | None = None
     model_group_revision: int | None = None
-    model_selection_mode: str = "auto"
+    model_selection_mode: str = "explicit"
     usage_scene: str = "independent"
     model_policy_version: str | None = None
     agent_profile: dict[str, Any] = field(default_factory=dict)

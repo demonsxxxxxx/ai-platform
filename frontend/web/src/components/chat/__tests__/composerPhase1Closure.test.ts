@@ -22,7 +22,8 @@ test("composer exposes the backed model panel", () => {
   assert.match(modelPanel, /<ComposerMenuItem/);
   assert.doesNotMatch(modelPanel, /data-composer-model-provider/);
   assert.doesNotMatch(modelPanel, /model\.provider/);
-  assert.match(modelPanel, /onSelectModel\(model\.id,\s*model\.value,\s*"explicit"\)/);
+  assert.match(modelPanel, /onSelectModel\(model\.id,\s*model\.value\)/);
+  assert.doesNotMatch(modelPanel, /selectionMode|modelSelectionMode|"auto"\s*\|\s*"explicit"/);
 });
 
 test("model projections flow from app content into chat input", () => {
@@ -35,7 +36,7 @@ test("model projections flow from app content into chat input", () => {
   assert.match(types, /currentModelId\?:\s*string/);
   assert.match(
     types,
-    /onSelectModel\?:\s*\(modelId:\s*string,\s*modelValue:\s*string[\s\S]*?mode\?:\s*"auto" \| "explicit"\)\s*=>\s*void/,
+    /onSelectModel\?:\s*\(modelId:\s*string,\s*modelValue:\s*string\)\s*=>\s*void/,
   );
 
   assert.match(
@@ -49,7 +50,8 @@ test("model projections flow from app content into chat input", () => {
 
   assert.match(chatView, /availableModels:\s*ModelOption\[\]/);
   assert.match(chatView, /currentModelId:\s*string/);
-  assert.match(chatView, /onSelectModel:\s*\(modelId:\s*string,\s*modelValue:\s*string[\s\S]*?mode\?:\s*"auto" \| "explicit"\)\s*=>\s*void/);
+  assert.match(chatView, /onSelectModel:\s*\(modelId:\s*string,\s*modelValue:\s*string\)\s*=>\s*void/);
+  for (const source of [types, chatApp, chatView]) assert.doesNotMatch(source, /modelSelectionMode|"auto"\s*\|\s*"explicit"/);
   assert.match(chatView, /availableModels,/);
   assert.match(chatView, /currentModelId,/);
   assert.match(chatView, /onSelectModel,/);

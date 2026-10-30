@@ -172,8 +172,8 @@ export function ModelCatalogPanel() {
         <div className="shrink-0 border-b border-[var(--theme-border)] px-4 pt-3">
           <TabsRoot value={adminTab} onValueChange={(value) => setAdminTab(value as "catalog" | "groups")}>
             <TabsList aria-label="模型配置标签" variant="point">
-              <TabsTab value="catalog" variant="point" data-model-admin-tab="catalog">模型配置</TabsTab>
-              <TabsTab value="groups" variant="point" data-model-admin-tab="groups">分组管理</TabsTab>
+              <TabsTab value="catalog" variant="point" data-model-admin-tab="catalog">供应商配置</TabsTab>
+              <TabsTab value="groups" variant="point" data-model-admin-tab="groups">模型组分配</TabsTab>
               <TabsIndicator variant="point" />
             </TabsList>
           </TabsRoot>

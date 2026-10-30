@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from app.execution.domain.model_groups import (
     ModelGroupPolicyError,
-    choose_weighted_model,
     normalize_group_code,
     normalize_group_name,
 )
 from app.execution.infrastructure.model_groups import resolve_company_employee_user
-from app.execution.application.model_selection import parse_requested_model_selection
+from app.execution.application.model_selection import RunModelSelection, parse_requested_model_selection
 from app.runs.api import EXECUTION_SPEC_SCHEMA_VERSION_V4, ExecutionSpecError, compile_execution_spec
 
 
@@ -30,14 +27,13 @@ def test_migration_mapping_rejects_multiple_user_groups():
         _mapping({"version": VERSION, "groups": [], "users": [{"tenant_id": "tenant-a", "user_id": "user-a", "group_codes": ["sales", "support"], "primary_group_code": "sales"}]})
 
 
-def test_weighted_selection_uses_highest_priority_layer_and_weight():
-    rows = [
-        {"model_id": "low", "priority": 1, "weight": 100},
-        {"model_id": "high-a", "priority": 2, "weight": 1},
-        {"model_id": "high-b", "priority": 2, "weight": 100},
-    ]
-    assert choose_weighted_model(rows, rng=SimpleNamespace(uniform=lambda _a, _b: 0.5))["model_id"] == "high-a"
-    assert choose_weighted_model(rows, rng=SimpleNamespace(uniform=lambda _a, _b: 100.5))["model_id"] == "high-b"
+def test_new_run_model_selection_defaults_to_explicit_mode():
+    selected = RunModelSelection(
+        model_id="model-a",
+        model_value="provider/model-a",
+        connection_revision=1,
+    )
+    assert selected.selection_mode == "explicit"
 
 
 @pytest.mark.asyncio
@@ -55,7 +51,7 @@ async def test_unavailable_group_default_never_substitutes_another_model(monkeyp
     public = await model_groups.list_public_group_models(None, tenant_id="t", user_id="u", group_id="group-a", usage_scene="chat")
     assert public["default_model_id"] is None
     with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
-        await model_groups.resolve_group_model(None, tenant_id="t", user_id="u", group_id="group-a", model_id=None, model_value=None, selection_mode="auto", usage_scene="chat")
+        await model_groups.resolve_group_model(None, tenant_id="t", user_id="u", group_id="group-a", model_id=None, model_value=None, selection_mode=None, usage_scene="chat")
 
 
 @pytest.mark.asyncio
@@ -97,23 +93,30 @@ async def test_work_id_resolution_requires_one_company_login_mapping_in_the_same
         )
 
 
-def test_model_selector_accepts_matching_id_and_value_and_rejects_auto_with_model():
+def test_model_selector_accepts_matching_id_and_value_and_rejects_retired_auto_mode():
     assert parse_requested_model_selection({
         "model_id": "model-a", "model": "provider/model-a",
     }) == {"id": "model-a", "value": "provider/model-a"}
     assert parse_requested_model_selection({"group_id": "group-a"}) == {"group_id": "group-a"}
-    with pytest.raises(ValueError, match="model_selection_conflict"):
-        parse_requested_model_selection({"model_id": "model-a", "selection_mode": "auto"})
+    for selection in (
+        {"selection_mode": "auto"},
+        {"group_id": "group-a", "selection_mode": "auto"},
+        {"model_id": "model-a", "selection_mode": "auto"},
+    ):
+        with pytest.raises(ValueError, match="model_selection_conflict"):
+            parse_requested_model_selection(selection)
 
 
-def test_auto_continuation_keeps_frozen_model_unless_group_changes():
+def test_continuation_inherits_frozen_model_only_without_a_new_selection():
     from app.execution.application.model_selection_bridge import inherit_explicit_selection
     previous = {"model_id": "m", "model_value": "provider/m", "model_group_id": "a"}
     expected = {"id": "m", "value": "provider/m", "group_id": "a", "selection_mode": "explicit"}
     assert inherit_explicit_selection(None, previous) == expected
-    assert inherit_explicit_selection({"group_id": "a", "selection_mode": "auto"}, previous) == expected
-    changed = {"group_id": "b", "selection_mode": "auto"}
+    assert inherit_explicit_selection({"group_id": "a"}, previous) == expected
+    changed = {"group_id": "b"}
     assert inherit_explicit_selection(changed, previous) == changed
+    auto = {"group_id": "a", "selection_mode": "auto"}
+    assert inherit_explicit_selection(auto, previous) == auto
     explicit = {"id": "other", "selection_mode": "explicit"}
     assert inherit_explicit_selection(explicit, previous) == explicit
 

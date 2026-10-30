@@ -1135,6 +1135,15 @@ class SandboxRuntime:
                         lease.executor_headers,
                     )
                 except BaseException as dispatch_error:
+                    if isinstance(dispatch_error, asyncio.CancelledError) and observation_handed_off:
+                        # The owner's stop callback committed this exact terminal
+                        # receipt before cancelling the outstanding dispatch await.
+                        # Keep reconciliation as the settlement owner.
+                        sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
+                        return build_runtime_result({
+                            "status": "accepted", "run_id": request.run_id,
+                            "attempt_id": request.attempt_id,
+                        })
                     if not self._uses_default_lease_recorder:
                         raise
                     if isinstance(dispatch_error, asyncio.CancelledError):

@@ -38,6 +38,8 @@ ORIGIN_MAIN_MODEL_GROUPS_COMMIT = (
     "5ca18da3ec298ed5d9bd017ca1f284faa8877cce"
 )
 ORIGIN_MAIN_SCHEMA_COMMIT = "def30a87e87dbd721167250902b295f2ee60a353"
+ORIGIN_MAIN_MODEL_PROVIDERS_COMMIT = ORIGIN_MAIN_SCHEMA_COMMIT
+ORIGIN_MAIN_ENABLED_DEFAULT_COMMIT = "c01a098f60449ffa44aba9aa15ace1c1f7b3e645"
 LIFECYCLE_SCHEMA_COMMIT = "af5d4ca026f6c801cab801b30137345554112ba0"
 CONVERSATION_RECOVERY_SCHEMA_COMMIT = "abe2b7a0323425e4b80ad902e6f1160ca68e0da1"
 
@@ -987,6 +989,231 @@ async def test_real_postgres_main_lifecycle_and_conversation_schemas_converge(
         )
         assert repeated["status"] == "current"
         assert repeated["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+    finally:
+        sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_enabled_default_step_follows_provider_version_and_repairs_rows(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_provider_to_enabled_default_{uuid.uuid4().hex}"
+    previous = _load_schema_migrations_at_commit(
+        tmp_path, ORIGIN_MAIN_MODEL_PROVIDERS_COMMIT
+    )
+    admin = await psycopg.AsyncConnection.connect(
+        dsn, autocommit=True, row_factory=dict_row
+    )
+    factory = _transaction_factory(dsn, schema_name)
+    index_factory = _index_connection_factory(dsn, schema_name)
+    try:
+        assert previous.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        provider_result = await previous.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert provider_result["version"] == schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION
+        async with factory() as conn:
+            assert (await previous.schema_status(conn))["ready"] is True
+
+        await admin.execute("insert into tenants(id, name) values ('repair-tenant', 'Repair Tenant')")
+        await admin.execute(
+            """
+            insert into model_gateway_revisions(
+              revision, base_url, api_key_ciphertext, key_fingerprint, active, created_by
+            ) values (1, 'https://synthetic.example', decode('00', 'hex'),
+                     '0123456789abcdef', true, 'repair-user')
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_catalog_entries(
+              model_id, upstream_model_id, display_name, provider, enabled,
+              upstream_available, first_seen_revision, last_seen_revision
+            ) values
+              ('disabled-model', 'provider/disabled', 'Disabled', 'compatible', true, true, 1, 1),
+              ('enabled-model', 'provider/enabled', 'Enabled', 'compatible', true, true, 1, 1)
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_groups(id, tenant_id, code, name, type, default_model_id, revision)
+            values ('repair-group', 'repair-tenant', 'repair', 'Repair', 'business', 'disabled-model', 7),
+                   ('empty-group', 'repair-tenant', 'empty', 'Empty', 'business', 'disabled-model', 9),
+                   ('valid-group', 'repair-tenant', 'valid', 'Valid', 'business', 'enabled-model', 11)
+            """
+        )
+        await admin.execute(
+            """
+            insert into model_group_models(group_id, model_id, enabled, display_order)
+            values ('repair-group', 'disabled-model', false, 0),
+                   ('repair-group', 'enabled-model', true, 1),
+                   ('empty-group', 'disabled-model', false, 0),
+                   ('valid-group', 'enabled-model', true, 0)
+            """
+        )
+
+        enabled_default_result = await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert enabled_default_result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        rows = await (await admin.execute(
+            "select id, default_model_id, revision from model_groups order by id"
+        )).fetchall()
+        assert rows == [
+            {"id": "empty-group", "default_model_id": None, "revision": 10},
+            {"id": "repair-group", "default_model_id": "enabled-model", "revision": 8},
+            {"id": "valid-group", "default_model_id": "enabled-model", "revision": 11},
+        ]
+        ledger_rows = await (await admin.execute(
+            "select version, checksum_sha256 from schema_migrations order by version"
+        )).fetchall()
+        assert ledger_rows == [
+            {"version": schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION,
+             "checksum_sha256": previous.schema_checksum()},
+            {"version": schema_migrations.TARGET_SCHEMA_VERSION,
+             "checksum_sha256": schema_migrations.schema_checksum()},
+        ]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_real_postgres_current_main_to_integrated_migration_preserves_retired_layout(
+    tmp_path: Path,
+):
+    dsn = _postgres_dsn()
+    schema_name = f"schema_current_main_to_integrated_{uuid.uuid4().hex}"
+    previous = _load_schema_migrations_at_commit(
+        tmp_path, ORIGIN_MAIN_ENABLED_DEFAULT_COMMIT
+    )
+    admin = await psycopg.AsyncConnection.connect(
+        dsn, autocommit=True, row_factory=dict_row
+    )
+    try:
+        assert previous.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
+        previous_checksum = previous.schema_checksum()
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        factory = _transaction_factory(dsn, schema_name)
+        index_factory = _index_connection_factory(dsn, schema_name)
+
+        main_result = await previous.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert main_result == {
+            "status": "applied",
+            "version": previous.TARGET_SCHEMA_VERSION,
+            "checksum_sha256": previous_checksum,
+        }
+        async with factory() as conn:
+            assert (await previous.schema_status(conn))["ready"] is True
+
+        # Model a c01 main ledger whose Sandbox projection was retired by the
+        # lifecycle cutover before this integrated schema is applied.
+        await admin.execute(
+            """
+            create table run_attempt_settlement_retirement (
+              singleton boolean not null default true,
+              state text not null default 'expanded',
+              retirement_version text not null default '2026.10.25.11',
+              minimum_compatible_version text,
+              operator_declaration jsonb,
+              retired_at timestamptz,
+              updated_at timestamptz not null default now(),
+              constraint run_attempt_settlement_retirement_pkey primary key (singleton),
+              constraint chk_run_attempt_settlement_retirement_singleton check (singleton),
+              constraint chk_run_attempt_settlement_retirement_state check (
+                state in ('expanded', 'retired')
+              ),
+              constraint chk_run_attempt_settlement_retirement_receipt check (
+                (state = 'expanded' and retired_at is null)
+                or (state = 'retired' and retired_at is not null
+                    and minimum_compatible_version is not null
+                    and operator_declaration is not null)
+              )
+            )
+            """
+        )
+        await admin.execute(
+            """
+            insert into run_attempt_settlement_retirement(
+              singleton, state, retirement_version, minimum_compatible_version,
+              operator_declaration, retired_at
+            ) values (
+              true, 'retired', %s, 'test-min-compatible',
+              '{"fixture":true}'::jsonb, clock_timestamp()
+            )
+            """,
+            (schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION,),
+        )
+        await admin.execute(
+            sql.SQL("alter table sandbox_leases drop constraint if exists {}").format(
+                sql.Identifier(schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_CONSTRAINT[1])
+            )
+        )
+        for index_name in schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_INDEXES:
+            await admin.execute(
+                sql.SQL("drop index if exists {}").format(sql.Identifier(index_name))
+            )
+        for column_name in schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_COLUMNS:
+            await admin.execute(
+                sql.SQL("alter table sandbox_leases drop column if exists {}").format(
+                    sql.Identifier(column_name)
+                )
+            )
+        await admin.execute(
+            "delete from schema_index_migrations where index_name = any(%s::text[])",
+            (list(schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_INDEXES),),
+        )
+
+        integrated_result = await schema_migrations.apply_migrations(
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert integrated_result == {
+            "status": "applied",
+            "version": schema_migrations.MODEL_LIFECYCLE_CONVERGENCE_SCHEMA_VERSION,
+            "checksum_sha256": schema_migrations.schema_checksum(),
+        }
+        ledger_rows = await (await admin.execute(
+            "select version, checksum_sha256, state from schema_migrations order by version"
+        )).fetchall()
+        assert ledger_rows == [
+            {
+                "version": previous.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": previous_checksum,
+                "state": "applied",
+            },
+            {
+                "version": schema_migrations.TARGET_SCHEMA_VERSION,
+                "checksum_sha256": schema_migrations.schema_checksum(),
+                "state": "applied",
+            },
+        ]
+        legacy_columns = await (await admin.execute(
+            """
+            select column_name from information_schema.columns
+            where table_schema = %s and table_name = 'sandbox_leases'
+              and column_name = any(%s::text[])
+            """,
+            (schema_name, list(schema_migrations.LEGACY_ATTEMPT_SETTLEMENT_COLUMNS)),
+        )).fetchall()
+        assert legacy_columns == []
+        async with factory() as conn:
+            status = await schema_migrations.schema_status(conn)
+        assert status["ready"] is True
+        assert status["target_version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        assert status["retirement_state"] == "retired"
+        assert status["retirement_layout_current"] is True
+        assert status["index_ledger_current"] is True
     finally:
         sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))

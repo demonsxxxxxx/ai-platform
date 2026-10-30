@@ -13,7 +13,7 @@ class RunModelSnapshotRepository(Protocol):
         connection_revision: int, auto_compact_window: int, max_output_tokens: int,
         group_id: str | None = None, group_code: str | None = None,
         group_type: str | None = None, group_revision: int | None = None,
-        selection_mode: str = "auto", usage_scene: str = "independent",
+        selection_mode: str = "explicit", usage_scene: str = "independent",
         policy_version: str | None = None,
     ) -> None: ...
 

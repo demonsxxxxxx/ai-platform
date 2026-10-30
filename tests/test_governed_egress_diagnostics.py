@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -103,7 +104,8 @@ def test_default_callback_probe_classifies_http_payload_commit_and_success(
 
     class LocalExecContainer:
         def exec_run(self, command, **_kwargs):
-            completed = subprocess.run(command, capture_output=True, check=False, timeout=5)
+            local_command = [sys.executable, *command[1:]]
+            completed = subprocess.run(local_command, capture_output=True, check=False, timeout=5)
             return SimpleNamespace(exit_code=completed.returncode)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)

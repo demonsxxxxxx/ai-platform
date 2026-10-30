@@ -347,7 +347,7 @@ entering the SDK. Its receipt deadline begins when dispatch processing starts.
 Duplicate cancel does not interrupt the original writer's bounded mirror drain.
 An ACK alone never terminalizes a Run, releases a resource or creates tool success.
 
-The integration schema `2026.10.29.2` adds these fields and guards while preserving
+The integration schema `2026.10.30.1` adds these fields and guards while preserving
 main, lifecycle and conversation migration history. Apply it before matching
 API/Worker/executor binaries. Drain incompatible binaries and in-flight tasks
 before a binary rollback; old consumers cannot drain the new cancel intents or

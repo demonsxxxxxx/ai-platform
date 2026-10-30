@@ -1170,7 +1170,7 @@ async def bind_run_model(
     group_code: str | None = None,
     group_type: str | None = None,
     group_revision: int | None = None,
-    selection_mode: str = "auto",
+    selection_mode: str = "explicit",
     usage_scene: str = "independent",
     policy_version: str | None = None,
 ) -> None:

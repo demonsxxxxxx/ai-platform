@@ -27,7 +27,7 @@ def group_snapshot_fields(selected_model: RunModelSelection | None) -> dict[str,
         "model_group_code": getattr(selected_model, "group_code", None),
         "model_group_type": getattr(selected_model, "group_type", None),
         "model_group_revision": getattr(selected_model, "group_revision", None),
-        "model_selection_mode": getattr(selected_model, "selection_mode", "auto"),
+        "model_selection_mode": getattr(selected_model, "selection_mode", "explicit"),
         "usage_scene": getattr(selected_model, "usage_scene", "independent"),
         "model_policy_version": getattr(selected_model, "policy_version", None),
     }

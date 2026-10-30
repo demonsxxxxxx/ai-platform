@@ -108,6 +108,34 @@ async def seed_admission(
         ],
     )
 
+    model = await (await conn.execute(
+        "select model_id from model_catalog_entries "
+        "where provider_id = 'legacy' and upstream_model_id = %s",
+        (SYNTHETIC_MODEL_NAME,),
+    )).fetchone()
+    if model is None:
+        raise RuntimeError("run_lifecycle_admission_model_missing")
+    group_id = f"lifecycle-group-{user_id}"
+    await conn.execute(
+        """insert into model_groups(id,tenant_id,code,name,type,default_model_id)
+           values (%s,%s,%s,'Lifecycle acceptance','business',%s)
+           on conflict (id) do update set default_model_id=excluded.default_model_id,
+             enabled=true, archived_at=null""",
+        (group_id, TENANT_ID, group_id, model["model_id"]),
+    )
+    await conn.execute(
+        """insert into model_group_models(group_id,model_id,enabled)
+           values (%s,%s,true) on conflict (group_id,model_id)
+           do update set enabled=true""",
+        (group_id, model["model_id"]),
+    )
+    await conn.execute(
+        """insert into model_group_members(tenant_id,group_id,user_id,is_primary)
+           values (%s,%s,%s,true) on conflict (tenant_id,user_id)
+           do update set group_id=excluded.group_id,is_primary=true""",
+        (TENANT_ID, group_id, user_id),
+    )
+
 
 __all__ = [
     "GENERAL_AGENT_ID",

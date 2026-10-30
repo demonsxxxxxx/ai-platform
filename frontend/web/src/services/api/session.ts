@@ -389,10 +389,11 @@ export function buildSubmitChatBody({
   selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
 }): Record<string, unknown> {
+  const serializedAgentOptions = serializeChatAgentOptions(agentOptions);
   const body: Record<string, unknown> = {
     message,
     session_id: sessionId,
-    agent_options: agentOptions,
+    agent_options: serializedAgentOptions,
     attachments: attachments?.map((attachment) => {
       const projected = { ...attachment };
       delete projected.profileDriveReference;
@@ -423,6 +424,21 @@ export function buildSubmitChatBody({
     body.user_timezone = userTimezone;
   }
   return body;
+}
+
+function serializeChatAgentOptions(
+  agentOptions?: Record<string, boolean | string | number>,
+): Record<string, boolean | string | number> | undefined {
+  if (!agentOptions) return agentOptions;
+  const selectionMode = agentOptions.selection_mode;
+  if (selectionMode !== undefined && selectionMode !== "explicit") {
+    throw new Error("unsupported_model_selection_mode");
+  }
+  const hasConcreteModel =
+    (typeof agentOptions.model_id === "string" && agentOptions.model_id.trim().length > 0) ||
+    (typeof agentOptions.model === "string" && agentOptions.model.trim().length > 0);
+  if (!hasConcreteModel && selectionMode !== "explicit") return agentOptions;
+  return { ...agentOptions, selection_mode: "explicit" };
 }
 
 export function buildSessionRunsUrl(
@@ -534,7 +550,7 @@ export interface AgentAppRunRequest {
   model_id?: string;
   model?: string;
   group_id?: string;
-  selection_mode?: "auto" | "explicit";
+  selection_mode?: "explicit";
   user_timezone?: string;
 }
 
@@ -568,19 +584,22 @@ export function buildAgentAppRunBody({
 }
 
 export function agentRunModelOptions(agentOptions?: Record<string, boolean | string | number>): Pick<AgentAppRunRequest, "model_id" | "model" | "group_id" | "selection_mode"> {
+  const serializedAgentOptions = serializeChatAgentOptions(agentOptions);
   const modelId =
-    typeof agentOptions?.model_id === "string" && agentOptions.model_id.trim()
-      ? agentOptions.model_id
+    typeof serializedAgentOptions?.model_id === "string" && serializedAgentOptions.model_id.trim()
+      ? serializedAgentOptions.model_id
       : undefined;
   const model =
-    typeof agentOptions?.model === "string" && agentOptions.model.trim()
-      ? agentOptions.model
+    typeof serializedAgentOptions?.model === "string" && serializedAgentOptions.model.trim()
+      ? serializedAgentOptions.model
       : undefined;
   const groupId =
-    typeof agentOptions?.group_id === "string" && agentOptions.group_id.trim()
-      ? agentOptions.group_id
+    typeof serializedAgentOptions?.group_id === "string" && serializedAgentOptions.group_id.trim()
+      ? serializedAgentOptions.group_id
       : undefined;
-  const selectionMode = agentOptions?.selection_mode === "explicit" ? "explicit" : agentOptions?.selection_mode === "auto" ? "auto" : undefined;
+  const selectionMode = serializedAgentOptions?.selection_mode === "explicit" || modelId || model
+    ? "explicit"
+    : undefined;
   return {
     ...(modelId ? { model_id: modelId } : {}),
     ...(model ? { model } : {}),

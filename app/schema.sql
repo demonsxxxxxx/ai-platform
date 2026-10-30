@@ -1644,11 +1644,22 @@ do $$ begin
     alter table model_groups add column default_model_id text;
     update model_groups g set default_model_id = (
       select m.model_id from model_group_models m where m.group_id = g.id
+        and m.enabled
       order by m.display_order, m.model_id limit 1
     );
   end if;
 end $$;
 do $$ begin
+  -- Repair defaults initialized from a disabled association by earlier schemas.
+  update model_groups g set default_model_id = (
+    select m.model_id from model_group_models m
+    where m.group_id = g.id and m.enabled
+    order by m.display_order, m.model_id limit 1
+  ), revision = g.revision + 1, updated_at = now()
+  where exists (
+    select 1 from model_group_models m
+    where m.group_id = g.id and m.model_id = g.default_model_id and not m.enabled
+  );
   if not exists (select 1 from pg_constraint where conrelid = 'model_groups'::regclass and conname = 'chk_model_groups_type') then
     alter table model_groups add constraint chk_model_groups_type check (type in ('ordinary_default', 'business'));
   end if;
