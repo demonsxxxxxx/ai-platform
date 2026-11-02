@@ -57,6 +57,23 @@
   white-space: nowrap;
 }
 
+.memberGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+  gap: 8px;
+}
+
+.memberCard {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-bg-card);
+}
+
 @media (max-width: 639px) {
   .page {
     padding: 24px 16px;

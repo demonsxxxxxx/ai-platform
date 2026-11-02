@@ -2180,8 +2180,8 @@ def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
 
     assert response_b.status_code == 200
     assert response_a.status_code == 409
-    assert committed_effects == [("user", "user-b"), ("company_identity", "user-b"), ("audit", "user-b")]
-    assert rolled_back_effects == [[("user", "user-a"), ("company_identity", "user-a"), ("audit", "user-a")]]
+    assert committed_effects == [("company_identity", "user-b"), ("audit", "user-b")]
+    assert rolled_back_effects == [[("company_identity", "user-a"), ("audit", "user-a")]]
 
 
 def test_late_logout_cannot_clear_newer_login_or_context_cookie(monkeypatch):

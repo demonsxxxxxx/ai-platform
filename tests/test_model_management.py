@@ -62,7 +62,7 @@ def _key() -> str:
 
 def test_model_services_share_repository_and_inject_company_directory(monkeypatch):
     from app.bootstrap import model_services
-    from app.identity.api import CompanyEmployeeDirectoryService
+    from app.identity.api import CompanyEmployeeProvisioningService
 
     captured = {}
     monkeypatch.setattr(model_services, "configure_model_control_plane", lambda service: captured.update(models=service))
@@ -72,7 +72,7 @@ def test_model_services_share_repository_and_inject_company_directory(monkeypatc
     model_services.configure_model_services()
 
     assert captured["models"]._repository is captured["follow_up"]._repository
-    assert isinstance(captured["models"]._employee_directory, CompanyEmployeeDirectoryService)
+    assert isinstance(captured["models"]._employee_identities, CompanyEmployeeProvisioningService)
     assert not hasattr(captured["models"]._repository, "existing_user_ids")
     assert captured["models"]._settings_provider is captured["follow_up"]._settings_provider
 

@@ -20,7 +20,8 @@ from app.execution.infrastructure.model_management import resolve_run_model
 
 
 def _service(repository, directory=None):
-    from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService
+    from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeProvisioningService
+    from app.identity.infrastructure.postgres import PostgresCompanyEmployeeIdentityStore
 
     in_transaction = False
 
@@ -36,7 +37,6 @@ def _service(repository, directory=None):
     async def read_employees():
         assert not in_transaction, "directory I/O must not hold a database transaction"
         return [CompanyEmployee(work_id, "Employee") for work_id in repository.existing]
-
 
     class Security:
         def normalize(self, base_url):
@@ -59,7 +59,7 @@ def _service(repository, directory=None):
             model_connection_allowed_internal_hosts="",
         ),
         repository=repository,
-        employee_directory=directory or CompanyEmployeeDirectoryService(read_employees, tenant_id="tenant-a"),
+        employee_identities=CompanyEmployeeProvisioningService(directory or CompanyEmployeeDirectoryService(read_employees, tenant_id="tenant-a"), PostgresCompanyEmployeeIdentityStore()),
         security=Security(),
         upstream=Upstream(),
         attempt_capability_verifier=lambda **_kwargs: True,

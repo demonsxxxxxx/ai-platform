@@ -234,6 +234,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_group_member_identity_required",
         "company_identity_not_mapped",
         "company_identity_ambiguous",
+        "company_identity_binding_conflict",
         "model_group_impact_confirmation_required",
         "model_group_references_exist",
         "model_group_active_runs",

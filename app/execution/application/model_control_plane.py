@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
 
+from app.identity.api import CompanyEmployee
 from app.execution.domain.runtime_debug import normalize_execution_debug
 from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.application.model_stream_ownership import (
@@ -130,6 +131,8 @@ class ModelManagementRepository(Protocol):
 
     async def set_group_models(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
 
+    async def require_group_member_edit(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
     async def set_group_members(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
 
     async def batch_group_models(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
@@ -140,11 +143,10 @@ class ModelManagementRepository(Protocol):
 
     async def set_users_group_memberships_batch(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
 
-    async def resolve_company_employee_user(self, conn: Any, **kwargs: Any) -> dict[str, str]: ...
+class EmployeeIdentityProvisioner(Protocol):
+    async def resolve(self, *, tenant_id: str, work_ids: set[str]) -> list[CompanyEmployee]: ...
 
-
-class EmployeeGrantValidator(Protocol):
-    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None: ...
+    async def provision(self, conn: Any, *, tenant_id: str, employees: list[CompanyEmployee]) -> dict[str, str]: ...
 
 
 class ModelEndpointSecurity(Protocol):
@@ -223,7 +225,7 @@ class ModelControlPlaneService:
         upstream: ModelUpstream,
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
         diagnostic_recorder: Callable[..., Any] | None = None,
-        employee_directory: EmployeeGrantValidator | None = None,
+        employee_identities: EmployeeIdentityProvisioner | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -232,7 +234,7 @@ class ModelControlPlaneService:
         self._upstream = upstream
         self._attempt_capability_verifier = attempt_capability_verifier
         self._diagnostic_recorder = diagnostic_recorder
-        self._employee_directory = employee_directory
+        self._employee_identities = employee_identities
 
     async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
         facts = normalize_execution_debug(debug)
@@ -462,20 +464,27 @@ class ModelControlPlaneService:
             return await self._repository.batch_group_models(conn, **kwargs)
 
     async def set_model_group_members(self, **kwargs: Any) -> dict[str, Any]:
+        requested = kwargs.pop("members", [])
+        for member in requested:
+            if not isinstance(member, dict):
+                raise ValueError("model_group_member_invalid")
+            if member.get("user_id") is not None and member.get("work_id") is not None:
+                raise ValueError("model_group_member_identity_conflict")
+        work_ids = {member["work_id"] for member in requested if member.get("work_id") is not None}
+        if any(not isinstance(work_id, str) or not work_id.strip() for work_id in work_ids):
+            raise ValueError("model_group_member_identity_required")
+        if work_ids and self._employee_identities is None:
+            raise RuntimeError("company_employee_directory_unavailable")
+        employees = await self._employee_identities.resolve(tenant_id=kwargs["tenant_id"], work_ids=work_ids) if work_ids else []
         async with self._transaction() as conn:
+            await self._repository.require_group_member_edit(conn, tenant_id=kwargs["tenant_id"], group_id=kwargs["group_id"], revision=kwargs["revision"])
+            identities = await self._employee_identities.provision(conn, tenant_id=kwargs["tenant_id"], employees=employees) if employees else {}
             members = []
-            for member in kwargs.pop("members", []):
-                if not isinstance(member, dict):
-                    raise ValueError("model_group_member_invalid")
+            for member in requested:
                 user_id = member.get("user_id")
                 work_id = member.get("work_id")
-                if user_id is not None and work_id is not None:
-                    raise ValueError("model_group_member_identity_conflict")
                 if work_id is not None:
-                    resolved = await self._repository.resolve_company_employee_user(
-                        conn, tenant_id=kwargs["tenant_id"], work_id=work_id,
-                    )
-                    user_id = resolved["user_id"]
+                    user_id = identities[work_id]
                 if not isinstance(user_id, str) or not user_id.strip():
                     raise ValueError("model_group_member_identity_required")
                 members.append({"user_id": user_id, "is_primary": bool(member.get("is_primary"))})

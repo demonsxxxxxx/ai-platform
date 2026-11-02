@@ -83,6 +83,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
       { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 2, configured: true, enabled_model_count: 2, missing_model_count: 0 }
     ];
     let createdGroup = null;
+    const groupMembers = ${groupCase === "cards" ? `Array.from({length:14},(_,i)=>({user_id:'member-'+i,work_id:'SYNTH-'+i,display_name:'合成员工 '+i,auth_source:'company-login',is_primary:true}))` : `[{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }]`};
     const groupLayoutModelCount = ${groupCase === "business" ? 2 : 1};
     const groupLayoutModels = ${JSON.stringify(groupCase === "business" ? [
       { model_id: "mdl-0", model_value: "demo/model-0", label: "Model 0", enabled: true, display_order: 0, priority: 100, weight: 100 },
@@ -281,10 +282,11 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/model-groups/group-default') return json({
         id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true, members: [], models: []
       });
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout/members' && method === 'PUT' && ${groupCase === "cards"}) return json({detail:'company_identity_not_mapped'},422);
       if (url.pathname === '/api/ai/admin/model-groups/group-layout') return json({
         id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1,
         ...(groupLayoutDefaultModelId ? { default_model_id: groupLayoutDefaultModelId } : {}),
-        members: [{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }],
+        members: groupMembers,
         models: groupLayoutModels
       });
       if (url.pathname === '/api/ai/admin/model-groups/group-layout/models' && method === 'PUT') return json({
@@ -827,6 +829,18 @@ async function runCase(viewport, scenario) {
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
         await browser.client.waitFor(`!document.querySelector('[aria-label="公司组织架构选人"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.getAttribute('aria-label') === '按组织架构选择人员' && document.querySelectorAll('[data-model-group-selected-member]').length === 1`, "members:escape-draft-focus");
+      }
+      if (groupCase === 'cards') {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-selected-member]').length === 14`, 'members:cards-ready');
+        const cards = await browser.client.evaluate(`(() => { const nodes=[...document.querySelectorAll('[data-model-group-selected-member]')]; const boxes=nodes.map(n=>n.getBoundingClientRect()); const grid=nodes[0].parentElement; return {count:nodes.length,columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,contained:boxes.every(b=>b.width>=180 && b.right<=innerWidth && b.left>=0),removable:nodes.every(n=>Boolean(n.querySelector('button[aria-label^="移除成员"]')))};})()`);
+        assert.equal(cards.count,14); assert.ok(cards.contained && cards.removable);
+        if(viewport.width>=1024) assert.ok(cards.columns>=2,'desktop members form multiple cards per row');
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] button')].find(b=>b.textContent==='保存成员')).click()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-drawer] [role=alert]')?.textContent.includes('公司账号映射')`,'members:actionable-error');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-selected-member]').length`),14);
+        await browser.client.evaluate(`document.querySelector('[data-model-group-drawer] [role=alert]').scrollIntoView({block:'start'})`);
+        await captureScreenshot(browser.client,evidenceDir,`${theme}-${viewport.name}-member-cards`);
       }
       modelGroupDrawer = { tabs, screenshot, memberPicker };
       if (groupCase === "delete") {

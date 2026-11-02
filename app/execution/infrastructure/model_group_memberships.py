@@ -90,10 +90,7 @@ async def set_user_group_memberships(
     return {"user_id": user_id, "group_ids": group_ids, "primary_group_id": primary, "revision": current["revision"] + 1}
 
 
-async def set_group_members(
-    conn: Any, *, tenant_id: str, group_id: str, revision: int,
-    members: list[dict[str, Any]], confirm_default_fallback: bool = False,
-) -> dict[str, Any]:
+async def require_group_member_edit(conn: Any, *, tenant_id: str, group_id: str, revision: int) -> dict[str, Any]:
     await conn.execute("select pg_advisory_xact_lock(%s)", (GROUP_LOCK_KEY,))
     group = await (await conn.execute(
         "select type, enabled, archived_at, revision from model_groups where tenant_id = %s and id = %s for update",
@@ -103,6 +100,14 @@ async def set_group_members(
         raise ModelGroupPolicyError("group_not_available")
     if int(group["revision"]) != revision:
         raise ModelGroupPolicyError("model_policy_changed")
+    return group
+
+
+async def set_group_members(
+    conn: Any, *, tenant_id: str, group_id: str, revision: int,
+    members: list[dict[str, Any]], confirm_default_fallback: bool = False,
+) -> dict[str, Any]:
+    group = await require_group_member_edit(conn, tenant_id=tenant_id, group_id=group_id, revision=revision)
     wanted = {m["user_id"]: m for m in members}
     if len(wanted) != len(members):
         raise ModelGroupPolicyError("model_group_member_duplicate")

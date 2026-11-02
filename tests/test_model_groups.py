@@ -7,7 +7,6 @@ from app.execution.domain.model_groups import (
     normalize_group_code,
     normalize_group_name,
 )
-from app.execution.infrastructure.model_groups import resolve_company_employee_user
 from app.execution.application.model_selection import RunModelSelection, parse_requested_model_selection
 from app.runs.api import EXECUTION_SPEC_SCHEMA_VERSION_V4, ExecutionSpecError, compile_execution_spec
 
@@ -52,45 +51,6 @@ async def test_unavailable_group_default_never_substitutes_another_model(monkeyp
     assert public["default_model_id"] is None
     with pytest.raises(ModelGroupPolicyError, match="model_not_available"):
         await model_groups.resolve_group_model(None, tenant_id="t", user_id="u", group_id="group-a", model_id=None, model_value=None, selection_mode=None, usage_scene="chat")
-
-
-@pytest.mark.asyncio
-async def test_work_id_resolution_requires_one_company_login_mapping_in_the_same_tenant():
-    class Cursor:
-        def __init__(self, rows):
-            self.rows = rows
-
-        async def fetchall(self):
-            return self.rows
-
-    class Connection:
-        async def execute(self, _sql, _params):
-            return Cursor([{
-                "id": "platform-user-1",
-                "display_name": "Employee",
-                "auth_source": "company-login",
-                "external_id": "W001",
-            }])
-
-    resolved = await resolve_company_employee_user(
-        Connection(), tenant_id="tenant-a", work_id="W001",
-    )
-    assert resolved == {
-        "user_id": "platform-user-1",
-        "work_id": "W001",
-        "display_name": "Employee",
-        "auth_source": "company-login",
-        "tenant_id": "tenant-a",
-    }
-
-    class AmbiguousConnection:
-        async def execute(self, _sql, _params):
-            return Cursor([{"id": "a"}, {"id": "b"}])
-
-    with pytest.raises(ModelGroupPolicyError, match="company_identity_ambiguous"):
-        await resolve_company_employee_user(
-            AmbiguousConnection(), tenant_id="tenant-a", work_id="W001",
-        )
 
 
 def test_model_selector_accepts_matching_id_and_value_and_rejects_retired_auto_mode():
@@ -148,3 +108,55 @@ def test_v4_execution_spec_requires_group_snapshot_fields():
     invalid.pop("usage_scene")
     with pytest.raises(ExecutionSpecError, match="execution_spec_fields_invalid"):
         compile_execution_spec(invalid)
+
+
+@pytest.mark.asyncio
+async def test_employee_preassignment_checks_directory_before_transaction_and_provisions_atomically():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from app.execution.application.model_control_plane import ModelControlPlaneService
+    from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeProvisioningService
+    events = []
+    active = False
+    fail = False
+    async def read():
+        assert not active
+        events.append("directory")
+        if fail:
+            raise RuntimeError("company_employee_directory_unavailable")
+        return [CompanyEmployee("NEW", "Trusted name")]
+    class Store:
+        async def ensure_employee(self, conn, **kwargs):
+            assert active and conn == "conn"
+            assert kwargs == {"tenant_id":"tenant-a","work_id":"NEW","display_name":"Trusted name"}
+            events.append("provision")
+            return "NEW"
+    class Repository:
+        async def require_group_member_edit(self, conn, **kwargs):
+            assert active
+            events.append("group-lock")
+        async def set_group_members(self, conn, **kwargs):
+            assert active and kwargs["members"] == [{"user_id":"NEW","is_primary":True}]
+            events.append("members")
+            return {"revision":2}
+    @asynccontextmanager
+    async def transaction():
+        nonlocal active
+        active = True
+        events.append("transaction")
+        try:
+            yield "conn"
+        finally:
+            active = False
+    service = ModelControlPlaneService(transaction_factory=transaction, settings_provider=lambda: None,
+        repository=Repository(),security=SimpleNamespace(),upstream=SimpleNamespace(),attempt_capability_verifier=lambda **_:False,
+        employee_identities=CompanyEmployeeProvisioningService(CompanyEmployeeDirectoryService(read,tenant_id="tenant-a"),Store()))
+    async def save():
+        return await service.set_model_group_members(tenant_id="tenant-a",group_id="g",revision=1,members=[{"work_id":"NEW","is_primary":True}])
+    assert await save() == {"revision":2}
+    assert events == ["directory","transaction","group-lock","provision","members"]
+    fail = True
+    events.clear()
+    with pytest.raises(RuntimeError, match="company_employee_directory_unavailable"):
+        await save()
+    assert events == ["directory"]

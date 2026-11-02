@@ -54,6 +54,13 @@ const ERROR_COPY: Record<string, string> = {
   model_group_fallback_confirmation_required: "移除最后一个业务组需要确认回到默认组并失去普通聊天资格。",
   group_not_available: "分组不存在、已停用或不属于当前租户。",
   model_group_member_unknown_user: "成员身份无效或已停用。",
+  company_identity_not_mapped: "部分员工尚未建立公司账号映射，成员未保存，请联系管理员。",
+  company_identity_ambiguous: "员工工号对应多个平台账号，成员未保存，请联系管理员核对身份。",
+  company_identity_binding_conflict: "员工账号存在身份冲突或已停用，成员未保存，请联系管理员核对。",
+  model_user_access_unknown_user: "所选员工已不在公司目录中，请重新选择。",
+  company_employee_directory_forbidden: "当前租户无法使用该公司员工目录，成员未保存。",
+  company_employee_unknown: "所选员工已不在公司目录中，请重新选择。",
+  company_employee_directory_unavailable: "公司员工目录暂不可用，请稍后重试，所选成员已保留。",
   model_group_name_duplicate: "已有同名分组，请使用其他名称。",
   model_group_name_invalid: "请输入有效的分组名称。",
   model_group_sort_order_invalid: "暂时无法为新分组分配顺序，请联系管理员。"
@@ -91,10 +98,10 @@ function GroupMemberEditor({
         </div>
         <Button type="primary" loading={busy} disabled={busy} htmlType="button" onClick={() => void onSave(selected, details.revision)} icon={<Save size={15} />}>保存成员</Button>
       </div>
-      <div className="overflow-hidden rounded-lg border border-[var(--theme-border)]">
+      <div className={selected.length ? styles.memberGrid : "rounded-lg border border-[var(--theme-border)]"}>
         {selected.length ? selected.map((member) => {
           const id = member.work_id || member.user_id;
-          return <div key={id} className="flex items-center gap-3 border-b border-[var(--theme-border)] px-3 py-3 last:border-b-0" data-model-group-selected-member={id}>
+          return <div key={id} className={styles.memberCard} data-model-group-selected-member={id}>
             <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{member.display_name || id}</p><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{member.work_id ? `工号：${member.work_id}` : `平台账号：${member.user_id}`}</p></div>
             <Button type="text" size="small" disabled={busy} aria-label={`移除成员 ${member.display_name || id}`} onClick={() => setSelected((current) => current.filter((item) => (item.work_id || item.user_id) !== id))} icon={<X size={15} />} />
           </div>;

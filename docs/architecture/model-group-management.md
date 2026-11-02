@@ -227,10 +227,17 @@ price, quota, channel pool, or fallback platform is introduced.
 
 User-directory identity is explicit: the user-management path sends a stable
 platform `user_id`; the employee-directory path may send a `work_id`, which the
-server resolves only to exactly one same-tenant active `users` row whose
-`auth_source` is `company-login` and whose `external_id` matches the work ID.
-Display-name or string equality is never used as an identity binding. Ambiguous
-or unmapped work IDs fail closed.
+server first validates against the fresh identity-owned employee directory, outside
+the database transaction. Identity provisioning then reuses exactly one same-tenant
+active company-login mapping or creates the minimal company-login user with the work
+ID used by first login. It never issues a session, password, roles or credentials.
+Display names come from the trusted directory, not the client. Unknown, duplicate,
+disabled, foreign-tenant or conflicting identities fail closed; no silent skips.
+The group revision/lock is checked before provisioning, and all identity records and
+membership changes share the same transaction, so stale/rejected edits leave no users.
+Identity provisioning and company login share a per-identity advisory lock. First
+login updates that identity without replacing its ID or memberships. Existing user-ID
+edits retain their contract. The previous login-required work-ID resolver is retired.
 
 The employee picker joins the existing pure DingTalk department directory with
 employee `departId` values from the same source. The admin-only employee list

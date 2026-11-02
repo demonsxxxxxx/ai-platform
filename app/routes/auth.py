@@ -365,12 +365,6 @@ async def _store_mcp_login_jwt(
 async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
     """Write company-login user and audit state inside the caller's transaction."""
 
-    await ensure_user(
-        conn,
-        tenant_id=principal.tenant_id,
-        user_id=principal.user_id,
-        display_name=principal.display_name,
-    )
     if principal.source == "company-login":
         await ensure_company_login_user(
             conn,
@@ -379,6 +373,8 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
             work_id=principal.user_id,
             display_name=principal.display_name,
         )
+    else:
+        await ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
     await append_audit_log(
         conn,
         tenant_id=principal.tenant_id,

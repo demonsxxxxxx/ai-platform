@@ -70,7 +70,16 @@ class CompanyEmployeeDirectoryService:
             "total": len(matches), "offset": offset, "limit": limit, "snapshot_id": revision,
         }
 
-    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None:
+    async def resolve_grants(self, *, tenant_id: str, work_ids: set[str]) -> list[CompanyEmployee]:
         self._require_scope(tenant_id)
-        if work_ids and not work_ids.issubset({item.work_id for item in await self._reader()}):
+        if not work_ids:
+            return []
+        employees = [item for item in await self._reader() if item.work_id in work_ids]
+        if work_ids != {item.work_id for item in employees}:
             raise ValueError("model_user_access_unknown_user")
+        if len(employees) != len(work_ids):
+            raise ValueError("company_identity_ambiguous")
+        return employees
+
+    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None:
+        await self.resolve_grants(tenant_id=tenant_id, work_ids=work_ids)
