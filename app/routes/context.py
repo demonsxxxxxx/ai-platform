@@ -31,7 +31,7 @@ from app.db import transaction
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
 from app.kernel.memory_redaction import redact_memory_metadata, redact_memory_text
-from app.models import (
+from app.bootstrap.context_requests import (
     ContextSnapshotRequest,
     MemoryPolicyRequest,
     MemoryRecordRequest,

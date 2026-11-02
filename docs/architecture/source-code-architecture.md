@@ -92,6 +92,11 @@ A bounded context MAY contain:
 internal symbol. They MUST expose the smallest contract peers need and MUST NOT
 expose concrete infrastructure adapters.
 
+Context snapshot/share and memory HTTP request schemas live in
+`context/transport/requests.py`; `bootstrap/context_requests.py` assembles these
+contracts for the existing Context router. The global `app.models` bucket no
+longer owns or re-exports these requests.
+
 ### 2.1 Bounded-context ownership
 
 | Context | Owns | Does not own |
