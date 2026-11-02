@@ -67,6 +67,27 @@ TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
 TRUSTED_CALLBACK_URL = f"{TRUSTED_CALLBACK_BASE_URL}/api/ai/runtime/callbacks/executor"
 
 
+def test_authorized_skill_callback_uses_fixed_label_without_public_skill_allowlist():
+    subjects = [
+        {
+            "identity": "Skill",
+            "allowed_skill_names": ["qa-review"],
+            "public_skill_labels": {"qa-review": "Confidential title"},
+        }
+    ]
+
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="qa-review",
+        subjects=subjects,
+    ) == "Skill"
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="unlisted-skill",
+        subjects=subjects,
+    ) == ""
+
+
 def task_payload(
     callback_url: str = TRUSTED_CALLBACK_URL,
     *,

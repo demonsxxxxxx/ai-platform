@@ -73,7 +73,7 @@ convergence folds work into a summary that the user may reopen. The display cont
 | `message.part.delta` / classification | Pending and answer outside the fold; work inside | Incrementally gated Assistant prose with explicit stable part identity |
 | Retained `commentary.delta` with `worktrace_` summary ID | Visible in work details | Legacy sanitized work narration |
 | Other `commentary.delta` | Visible inline outside the work-details fold | Existing explicit sanitized public summaries and historical events |
-| Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
+| Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); Skill events use the fixed `Skill` label; lifecycle status; and bounded duration |
 | Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
 | Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, private identifier, storage key, credential, trace, or executor payload |
@@ -113,25 +113,17 @@ but their command, arguments, paths, read query, file body, stdout, stderr, and
 result do not render. The same raw-data prohibition applies to Write, Edit,
 Search, Skill, MCP, browser, and future tool categories; allowing every detail
 except Bash and Read would bypass the public projection boundary. Opaque operation
-identities may support reducer correlation but are not user-facing labels. A
-sanitized `skill` `display_name` sourced from current authorized Skill metadata
-is presentation authority and is retained in a dedicated public field. The same
-authority applies when accepted answer text names an authorized Skill: the answer
-gate substitutes the sanitized public display name, while an authorized internal
-Skill without public metadata receives only the fixed Skill category label. Public
-names retain their original printable characters; ASCII letters, digits, punctuation
-and spaces are not converted to fullwidth. Authorized display names may contain
-their own Skill identity, including an exact match or a version suffix. The adapter
-supplies those approved replacements separately from independent private values;
-the stream gate preserves their characters and applies each replacement idempotently
-through chunk boundaries, source routing and terminal release. This does not exempt
-credentials, private MCP identities, runtime paths or dynamically registered tool-call
-IDs from redaction. All hook and lifecycle call-ID entries use the same dynamic
-classification; a public identity later claimed as a private call ID fails closed
-and records disclosure when it already appeared in accepted text. The former
-fullwidth conversion and its test expectations are retired; already committed
-historical text is not rewritten. Other private capability
-identifiers remain redacted. Other Tool `display_name` values
+identities may support reducer correlation but are not user-facing labels. Skill
+tool events use the fixed `Skill` label, and accepted answer text replaces an
+authorized Skill identity with the fixed `【技能】` label. The v4 stream adapter
+does not use public Skill catalog names or Skill subject labels as presentation
+authority. Skill execution authorization and invocation evidence remain tied to
+the current Run's authorized capability set. Credentials, private MCP identities,
+runtime paths, and dynamically registered tool-call IDs remain redacted. All hook
+and lifecycle call-ID entries use the same dynamic classification; a Skill identity
+later claimed as a private call ID is redacted as a call ID. Historical committed
+v4 events and answer text are not rewritten and retain the projection accepted when
+they were recorded. Other private capability identifiers remain redacted. Other Tool `display_name` values
 and all subagent `display_name` values remain protocol facts but are not
 presentation authority in compatibility-shaped parts; ordinary chat derives their
 fixed labels from the allowlisted category and subagent kind.

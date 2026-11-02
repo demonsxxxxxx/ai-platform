@@ -17,7 +17,6 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _canonical_sdk_error,
     _diagnostic_terminal_class,
-    _public_skill_replacement,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     build_sdk_env,
@@ -4200,16 +4199,6 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
 
 
 
-@pytest.mark.parametrize(
-    "public_name",
-    ["Reference Search", "input-tax-reconciliation", "进项税核对 V8"],
-)
-def test_public_skill_replacement_preserves_name_characters(public_name):
-    assert _public_skill_replacement(
-        "qa-review", {"qa-review": {"name": public_name}}
-    ) == f"【技能：{public_name}】"
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -4228,7 +4217,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4237,7 +4226,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "capability",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4246,7 +4235,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "tool",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4255,7 +4244,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             True,
             "mcp__tenant-server__search",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4273,7 +4262,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能：input-tax-reconciliation】",
+            "【技能】",
             "",
         ),
         (
@@ -4282,7 +4271,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "reference-search V8",
-            "【技能：reference-search V8】",
+            "【技能】",
             "",
         ),
         (
@@ -4291,7 +4280,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "进项税核对 V8",
-            "【技能：进项税核对 V8】",
+            "【技能】",
             "",
         ),
         (
@@ -4300,7 +4289,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "█",
+            "【技能】",
             "input-tax-reconciliation",
         ),
         (
@@ -4309,12 +4298,12 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "█",
+            "【技能】",
             "tax",
         ),
     ],
 )
-async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
+async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     monkeypatch,
     tmp_path,
     optional_skill,
@@ -4398,24 +4387,35 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
 
 
 @pytest.mark.asyncio
-async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_identity(
+async def test_sdk_skill_identity_and_dynamic_hook_id_stay_redacted_across_chunks(
     monkeypatch, tmp_path
 ):
     identity = "reference-search"
-    hook_input = {
+    dynamic_call_id = "hook-only-private-call"
+    identity_hook_input = {
         "tool_name": "Skill",
         "tool_use_id": identity,
         "tool_input": {"skill": identity},
     }
+    dynamic_hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": dynamic_call_id,
+        "tool_input": {"skill": identity},
+    }
+    deltas = []
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
         _scripted_sdk(
             {},
             [
-                *_completed_text_steps(f"Using {identity}. "),
-                ("hook", ("PreToolUse", hook_input, identity)),
-                ("hook", ("PostToolUseFailure", hook_input, identity)),
+                ("completed_text", "Using reference-"),
+                ("completed_text", "search. "),
+                ("hook", ("PreToolUse", identity_hook_input, identity)),
+                ("hook", ("PostToolUseFailure", identity_hook_input, identity)),
+                ("hook", ("PreToolUse", dynamic_hook_input, dynamic_call_id)),
+                ("hook", ("PostToolUseFailure", dynamic_hook_input, dynamic_call_id)),
+                ("completed_text", f"After hook ID {dynamic_call_id}. "),
             ],
             result_text="",
         ),
@@ -4430,13 +4430,14 @@ async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_ide
         skills=[identity],
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_skill_subject(identity)],
+        on_text=deltas.append,
         on_capability_evidence=_acknowledge_capability_evidence,
-        public_skill_metadata={
-            identity: {"name": f"{identity} V8", "version": "1.0.0", "availability": "available"}
-        },
     )
-    assert result.error == "claude_agent_sdk_output_validation_failed"
-    assert result.answer_receipt is None
+    assert result.error is None
+    assert result.message == "Using 【技能】. After hook ID █. "
+    assert "".join(deltas) == result.message
+    assert identity not in result.message
+    assert dynamic_call_id not in result.message
 
 
 @pytest.mark.asyncio
