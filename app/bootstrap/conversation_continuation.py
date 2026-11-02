@@ -225,6 +225,5 @@ def runtime_continuation_fields(context_pack: Any, tool_policy_subjects: list[di
         )
         fields["recovery_tool_gate"] = {
             "state": "inspection", "allowed_tool_identities": sorted(allowed),
-            "released_tool_identities": [],
         }
     return fields

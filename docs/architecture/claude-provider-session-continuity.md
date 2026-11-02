@@ -250,6 +250,12 @@ facts never grant execution or lift inspection. Original operation evidence join
 as private `operation_sources` through later stop/save settlement, separately from
 the latest native restore epoch. A no-write successful turn cannot clear inherited
 inspection, and outcome verification alone is not broad write authorization.
+The final system prompt, including these facts, must fit the 64,000-character
+executor limit; overflow fails before SDK client creation without silently dropping
+facts. An exact, authorized frozen Attempt subject marked read-only does not create
+an external-effect record or a recovery question. Historical rows are excluded
+only when that same source subject proves the operation was read-only; missing or
+ambiguous evidence remains subject to the recovery gate.
 Execution records host-issued operation identities before
 external calls. Started/completed sandbox reports do not verify outcomes. Only an
 authenticated owner response to an exact host question or a registered authoritative

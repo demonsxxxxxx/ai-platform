@@ -539,6 +539,62 @@ async def test_host_fact_enters_current_system_context_before_client_without_cha
     assert len(captured["sdk_user_messages"]) == 1 and not port.acks and not port.questions
 
 
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_final_recovery_prompt_limit_is_checked_before_sdk_client_creation(
+    monkeypatch, tmp_path, overflow,
+):
+    from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, RecoveryOperationFact
+    from app.executors.claude.prompts import (
+        FILE_TASK_SYSTEM_PROMPT,
+        compose_system_prompt,
+        recovery_operation_facts_section,
+    )
+
+    target_length = MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS + int(overflow)
+
+    def facts_for_prompt_length(length):
+        for fixed_count in range(128):
+            fixed = tuple(RecoveryOperationFact("x" * 1000, "succeeded") for _ in range(fixed_count))
+            probe = RecoveryOperationFact("x", "succeeded")
+            prompt = compose_system_prompt(
+                FILE_TASK_SYSTEM_PROMPT,
+                recovery_operation_facts_section((*fixed, probe)),
+            )
+            last_summary_length = 1 + length - len(prompt)
+            if 1 <= last_summary_length <= 1000:
+                facts = (*fixed, RecoveryOperationFact("x" * last_summary_length, "succeeded"))
+                final_prompt = compose_system_prompt(
+                    FILE_TASK_SYSTEM_PROMPT, recovery_operation_facts_section(facts),
+                )
+                if len(final_prompt) == length:
+                    return facts
+        raise AssertionError("could not construct bounded recovery facts at target length")
+
+    facts = facts_for_prompt_length(target_length)
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    port = Inputs()
+
+    async def resolved():
+        return RunInputSnapshot("open", recovery_operation_facts=facts)
+
+    port.open = resolved
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="unchanged", cwd=tmp_path, skill_id=None,
+        run_id="run", attempt_id="attempt", interaction_client=port,
+    )
+
+    if overflow:
+        assert result.error == "claude_agent_sdk_input_context_too_large"
+        assert "client_options" not in captured
+        assert result.sdk_settlement["input_accepted"] is False
+    else:
+        assert result.error is None
+        assert len(captured["client_options"].system_prompt["prompt"]) == target_length
+
+
 @pytest.mark.parametrize("stop", ["cancel", "timeout"])
 async def test_cancel_during_host_wait_finalizes_actor_without_creating_sdk_client(monkeypatch, tmp_path, stop):
     captured = {}

@@ -68,6 +68,7 @@ from app.execution.api import (
     RECOVERY_CONFIRMATION_TIMEOUT_SECONDS,
     AUTO_COMPACT_WINDOW_MAX_TOKENS,
     AUTO_COMPACT_WINDOW_MIN_TOKENS,
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
@@ -3716,6 +3717,14 @@ async def run_claude_agent_sdk(
                 async for message in responses:
                     if provider_session_store is not None:
                         provider_session_store.observe_public_message(is_result=isinstance(message, ResultMessage))
+                    if isinstance(message, TaskStartedMessage):
+                        if message.task_type in {"local_agent", "local_workflow"}:
+                            pending_tasks.add(message.task_id)
+                    elif isinstance(message, TaskNotificationMessage):
+                        pending_tasks.discard(message.task_id)
+                    elif isinstance(message, TaskUpdatedMessage):
+                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+                            pending_tasks.discard(message.task_id)
                     if stop_requested and not isinstance(message, (ResultMessage, MirrorErrorMessage)):
                         # Drain terminal evidence, never supplementary inputs or public output.
                         continue
@@ -3732,15 +3741,7 @@ async def run_claude_agent_sdk(
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)
                             for denial in permission_denials:
                                 await reconcile_sdk_permission_denial(denial)
-                    if isinstance(message, TaskStartedMessage):
-                        if message.task_type in {"local_agent", "local_workflow"}:
-                            pending_tasks.add(message.task_id)
-                    elif isinstance(message, TaskNotificationMessage):
-                        pending_tasks.discard(message.task_id)
-                    elif isinstance(message, TaskUpdatedMessage):
-                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
-                            pending_tasks.discard(message.task_id)
-                    elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
+                    if isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
                         # A background agent may wake a follow-up turn. Its first
                         # Result is not the completion of the platform Run.
                         continue
@@ -4330,7 +4331,7 @@ async def run_claude_agent_sdk(
             if answer_stream_gate.private_token_exposed:
                 terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
-        if not answer_stream_gate.failed and isinstance(
+        if not stop_requested and not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
         ):
             for source_key, public_text in routed_final_chunks:
@@ -4345,7 +4346,8 @@ async def run_claude_agent_sdk(
                     )
                     break
         public_terminal_allowed = (
-            terminal_error is None
+            not stop_requested
+            and terminal_error is None
             and not answer_stream_gate.failed
             and capability_completion_error() is None
             and not mcp_execution_conflict_observed()
@@ -4510,13 +4512,31 @@ async def run_claude_agent_sdk(
         try:
             async with mcp_registration.activate(options):
                 try:
+                    composed_prompt = sdk_system_prompt["prompt"]
                     if interaction_actor is not None:
                         snapshot = await interaction_actor.open()
                         facts_section = recovery_operation_facts_section(snapshot.recovery_operation_facts)
                         if facts_section:
-                            options.system_prompt = {**sdk_system_prompt, "prompt": compose_system_prompt(
-                                sdk_system_prompt["prompt"], facts_section,
-                            )}
+                            composed_prompt = compose_system_prompt(composed_prompt, facts_section)
+                            options.system_prompt = {**sdk_system_prompt, "prompt": composed_prompt}
+                    if len(composed_prompt) > MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS:
+                        if interaction_actor is not None:
+                            await interaction_actor.cancel()
+                        await callback_tracker.seal_and_wait()
+                        seal_agent_candidates(_SDK_INPUT_CONTEXT_TOO_LARGE)
+                        result = assemble_run_result(
+                            error=_SDK_INPUT_CONTEXT_TOO_LARGE,
+                            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                                _SDK_INPUT_CONTEXT_TOO_LARGE,
+                                failure_source="recovery_facts_prompt_limit",
+                                sdk_errors="composed_system_prompt_too_large",
+                            ),
+                        )
+                        if not result_ready.done():
+                            result_ready.set_result(result)
+                        if not protocol_settled.done():
+                            protocol_settled.set_result(None)
+                        return result
                     client = client_factory(options)
                 except BaseException:
                     if interaction_actor is not None:

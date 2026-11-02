@@ -15,6 +15,41 @@ from app.runs.application.inputs import RunInputsService
 from app.runs.infrastructure import inputs_postgres
 
 
+_TRUSTED_CAPABILITY_SUBJECT_FIELDS = ("registered", "declared", "active", "distributed")
+
+
+def trusted_capability_subject(subjects: object, tool_identity: str) -> dict | None:
+    """Return one exact subject only when its frozen authorization is complete."""
+    if not isinstance(subjects, list):
+        return None
+    matches = [
+        subject for subject in subjects
+        if isinstance(subject, dict) and subject.get("identity") == tool_identity
+    ]
+    if len(matches) != 1 or not all(
+        matches[0].get(key) is True for key in _TRUSTED_CAPABILITY_SUBJECT_FIELDS
+    ):
+        return None
+    return matches[0]
+
+
+async def frozen_attempt_tool_policy_subjects(
+    conn: Any, *, scope: RecoveryOperationScope, run_id: str, attempt_id: str,
+) -> list[dict] | None:
+    """Read capability subjects from the scoped, persisted Attempt execution spec."""
+    cursor = await conn.execute(
+        """select attempt.execution_spec_json->'input'->'_runtime_tool_policy_subjects' as subjects
+           from runs owner join run_attempts attempt on attempt.tenant_id=owner.tenant_id
+             and attempt.run_id=owner.id
+           where owner.tenant_id=%s and owner.workspace_id=%s and owner.user_id=%s
+             and owner.session_id=%s and owner.id=%s and attempt.id=%s""",
+        (*scope.mapping().values(), run_id, attempt_id),
+    )
+    row = await cursor.fetchone()
+    subjects = (row or {}).get("subjects")
+    return subjects if isinstance(subjects, list) else None
+
+
 def recovery_operation_sources(recovery: dict) -> list[dict]:
     """Frozen operation authority stays separate from the latest native restore epoch."""
     if recovery.get("state") != "recovery_candidate":
@@ -49,7 +84,19 @@ async def publish_recovery_source_questions(conn: Any, *, run: dict, attempt_id:
                order by operation_key""",
             (*scope.mapping().values(), source["source_run_id"], source["source_attempt_id"]),
         )
-        for operation in await cursor.fetchall():
+        operations = await cursor.fetchall()
+        if not operations:
+            continue
+        source_subjects = await frozen_attempt_tool_policy_subjects(
+            conn, scope=scope, run_id=source["source_run_id"],
+            attempt_id=source["source_attempt_id"],
+        )
+        for operation in operations:
+            subject = trusted_capability_subject(source_subjects, operation["tool_identity"])
+            # Historical recovery rows may contain a sandbox-reported write flag.
+            # Only the exact frozen Attempt subject can prove this was read-only.
+            if subject is not None and subject.get("write_capable") is False:
+                continue
             confirmation = RecoverySourceConfirmation(scope, run["id"], attempt_id,
                 attempt["owner_generation"], operation["operation_key"], operation["tool_identity"])
             if operation["verified_outcome"] != "unknown":
@@ -97,16 +144,24 @@ async def _current_authority(conn: Any, *, invocation: RecoveryInvocation):
             raise RecoveryOperationError("recovery_operation_source_invalid")
         native_id = operation["native_tool_use_id"]
         recovery = {**source, "state": recovery.get("state")}
-    subject = next((item for item in (row.get("subjects") or [])
-                    if isinstance(item, dict) and item.get("identity") == invocation.tool_identity), {})
+    subject = trusted_capability_subject(row.get("subjects"), invocation.tool_identity)
+    source_subject = None
+    if isinstance(invocation, RecoverySourceConfirmation):
+        source_subjects = await frozen_attempt_tool_policy_subjects(
+            conn, scope=invocation.scope, run_id=recovery["source_run_id"],
+            attempt_id=recovery["source_attempt_id"],
+        )
+        source_subject = trusted_capability_subject(source_subjects, invocation.tool_identity)
+    classification_subject = source_subject if isinstance(invocation, RecoverySourceConfirmation) else subject
     gated = recovery.get("state") == "recovery_candidate" and (
-        isinstance(invocation, RecoverySourceConfirmation) or subject.get("write_capable") is not False)
+        classification_subject is None or classification_subject.get("write_capable") is not False)
     unavailable = RecoveryInvocationAuthority(gated, manual_confirmation_available=False)
-    if isinstance(invocation, RecoverySourceConfirmation) and not all(
-        subject.get(key) is True for key in ("registered", "declared", "active", "distributed")
-    ):
+    if isinstance(invocation, RecoverySourceConfirmation) and (subject is None or source_subject is None):
         return replace(unavailable, public_summary_reason="recovery_operation_authority_stale")
     # Started evidence may arrive before the native tool_use append; read only on recovery.
+    if gated and subject is None:
+        return replace(unavailable, public_summary_reason="recovery_operation_authority_stale")
+    subject = subject or {}
     declaration = subject.get("public_operation_summary")
     if not gated or declaration is None:
         return unavailable

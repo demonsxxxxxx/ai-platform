@@ -283,7 +283,8 @@ async def test_production_summary_gap_keeps_two_started_facts_but_publishes_no_a
             assert query.count("%s") == len(params)
             async def row():
                 return {"frozen": {"recovery": {"state": "recovery_candidate"}} if self.recovering else {},
-                        "subjects": [{"identity": "mcp__private-server__private-write", "public_tool_label": "创建条目", "write_capable": True}]}
+                        "subjects": [{"identity": "mcp__private-server__private-write", "public_tool_label": "创建条目", "write_capable": True,
+                                      "registered": True, "declared": True, "active": True, "distributed": True}]}
             return SimpleNamespace(fetchone=row)
     conn = Conn()
     scope = RecoveryOperationScope("tenant", "workspace", "user", "session")
@@ -317,7 +318,9 @@ async def test_production_summary_gap_rejects_preexisting_question_answers(optio
     class Conn:
         async def execute(self, query, params):
             async def row():
-                return {"frozen": {"recovery": {"state": "recovery_candidate"}}, "subjects": []}
+                return {"frozen": {"recovery": {"state": "recovery_candidate"}},
+                        "subjects": [{"identity": s.current.tool_identity, "write_capable": True,
+                                      "registered": True, "declared": True, "active": True, "distributed": True}]}
             return SimpleNamespace(fetchone=row)
     service = replace(s.service, authorize_current=_current_authority)
     with pytest.raises(RecoveryOperationError, match="public_object_metadata_missing"):
@@ -423,7 +426,7 @@ async def test_recovery_metadata_denial_validates_identity_at_both_sdk_hooks(mon
         return evidence
     await run_claude_agent_sdk(prompt="synthetic", cwd=tmp_path, skill_id=None, tool_policy_subjects=[subject],
         run_id="run-a", attempt_id="attempt-a", execution_policy="sandbox_brokered",
-        recovery_tool_gate={"state": "inspection", "allowed_tool_identities": [identity], "released_tool_identities": []},
+        recovery_tool_gate={"state": "inspection", "allowed_tool_identities": [identity]},
         recovery_tool_gate_query=query)
     permission = captured["permission_results"][0]
     hook = captured["hook_results"][0][1]["hookSpecificOutput"]

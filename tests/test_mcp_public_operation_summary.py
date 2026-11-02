@@ -75,7 +75,7 @@ def test_execution_spec_codec_preserves_private_declaration_for_host_consumer():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("defect,reason", [(None, None), ("revoked", "metadata_changed"), ("source_mapping", "metadata_changed"), ("missing_field", "field_missing"), ("sensitive", "value_invalid"), ("unsupported", "value_invalid"), ("native", "native_evidence_invalid")])
+@pytest.mark.parametrize("defect,reason", [(None, None), ("revoked", "metadata_changed"), ("source_mapping", "metadata_changed"), ("missing_summary", "metadata_missing"), ("missing_field", "field_missing"), ("sensitive", "value_invalid"), ("unsupported", "value_invalid"), ("native", "native_evidence_invalid")])
 @pytest.mark.parametrize("binding_kind", ["native_invocation", "source_operation"])
 async def test_production_authority_requires_source_current_registration_and_exact_ack_projection(monkeypatch, defect, reason, binding_kind):
     from copy import deepcopy
@@ -87,6 +87,8 @@ async def test_production_authority_requires_source_current_registration_and_exa
     from app import principal_authority
     subject = {"identity": "mcp__vendor__create_project", "mcp_server": "vendor", "mcp_tool": "create_project", "capability_id": "vendor::create_project", "write_capable": True, "public_operation_summary": DECLARATION,
                "registered": True, "declared": True, "active": True, "distributed": True}
+    if defect == "missing_summary":
+        subject.pop("public_operation_summary")
     recovery = dict(state="recovery_candidate", source_run_id="source", source_attempt_id="attempt-source", provider_epoch_id="epoch", final_sequence=2)
     if binding_kind == "source_operation":
         recovery = {**recovery, "source_run_id": "no-write-turn", "source_attempt_id": "no-write-attempt",

@@ -177,25 +177,21 @@ class RecoveryToolGate:
     """Trusted recovery evidence narrows, but never grants, tool authority."""
 
     allowed: frozenset[str]
-    released: frozenset[str]
 
     @classmethod
     def from_mapping(cls, value: object) -> "RecoveryToolGate | None":
         if value is None:
             return None
         if not isinstance(value, dict) or set(value) != {
-            "state", "allowed_tool_identities", "released_tool_identities",
+            "state", "allowed_tool_identities",
         } or value["state"] != "inspection":
             raise ValueError("recovery_tool_gate_invalid")
-        lists = [value["allowed_tool_identities"], value["released_tool_identities"]]
-        if any(not isinstance(items, list) or len(items) > 256 or any(
-            not isinstance(item, str) or not item or len(item) > 512 for item in items
-        ) for items in lists):
+        allowed = value["allowed_tool_identities"]
+        if not isinstance(allowed, list) or len(allowed) > 256 or any(
+            not isinstance(item, str) or not item or len(item) > 512 for item in allowed
+        ):
             raise ValueError("recovery_tool_gate_invalid")
-        allowed, released = map(frozenset, lists)
-        if not released <= allowed:
-            raise ValueError("recovery_tool_gate_invalid")
-        return cls(allowed, released)
+        return cls(frozenset(allowed))
 
     @staticmethod
     def evidence_identity_matches(
@@ -239,7 +235,7 @@ class RecoveryToolGate:
     def denial(self, identity: str, subject: dict[str, Any] | None) -> str | None:
         if identity not in self.allowed:
             return "recovery_tool_not_allowed"
-        # An identity-wide release cannot authorize a particular repeated effect.
+        # Inspection scope cannot authorize a particular repeated effect.
         if identity in {"Read", "Glob", "Grep", "LS"}:
             return None
         if identity.startswith("mcp__") and subject and subject.get("write_capable") is False:

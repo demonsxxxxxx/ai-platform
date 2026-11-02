@@ -279,3 +279,199 @@ async def test_two_native_ack_objects_http_questions_authenticated_answers_and_a
             assert (await host_start()).json()["recovery_operation_facts"] == []
         denied = await effect("target", "private-native-a", "query")
         assert denied.json()["decision"] == "deny" and "question_id" not in denied.json()
+
+
+@pytest.mark.asyncio
+async def test_read_only_mcp_lifecycle_is_not_recovered_and_legacy_rows_are_filtered(unclaimed_db, monkeypatch):
+    from app import principal_authority
+    from app.context.application.provider_sessions import ProviderSessionUseCases, configure_provider_session_use_cases
+    from app.routes import runtime_callbacks
+    from app.settings import Settings
+
+    configure_provider_session_use_cases(ProviderSessionUseCases(provider_epochs.PostgresProviderEpochRepository()))
+    configure_mcp_runtime()
+    principal = AuthPrincipal(
+        tenant_id="tenant", user_id="user", display_name="Synthetic", department_id="110",
+        direct_department_ids=("110",), department_ids=("100", "110"),
+        department_authority_status="available", roles=["user"], permissions=["mcp:read"], source="test",
+    )
+
+    async def current_principal(**kwargs):
+        assert kwargs == {"tenant_id": "tenant", "user_id": "user"}
+        return principal
+
+    monkeypatch.setattr(principal_authority, "resolve_current_principal", current_principal)
+    settings = Settings(sandbox_callback_token="synthetic-callback-secret-only")
+    monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: settings)
+
+    @asynccontextmanager
+    async def transaction():
+        async with unclaimed_db() as conn, conn.transaction():
+            yield conn
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
+    app = FastAPI()
+    app.include_router(runtime_callbacks.router, prefix="/api")
+    _, app.state.run_inputs_service = build_recovery_operations()
+    shared = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    def read_only_subject(tool_name, *, summary):
+        tool = {
+            "tool_id": f"vendor::{tool_name}", "server_id": "vendor", "name": tool_name,
+            "allowed_tools": [tool_name], "endpoint": "", "transport_type": "streamable_http",
+            "auth_mode": "none", "registry_status": "active", "policy_status": "active",
+            "server_status": "active", "effective_status": "active", "visible_to_user": True,
+            "risk_level": "low", "write_capable": False,
+        }
+        if summary:
+            tool["public_operation_summary"] = {
+                "action_label": "查询项目", "object_label": "项目名称", "object_path": ["project", "name"],
+            }
+        return mcp_api.mcp_capability_subject(tool, distribution_usable=True, sanitize_label=str)
+
+    summarized_read = read_only_subject("list_projects", summary=True)
+    unsummarized_read = read_only_subject("list_metadata", summary=False)
+    write_subject = None
+    async with transaction() as conn:
+        await conn.execute("""
+            create table tenants(id text primary key);
+            insert into tenants values('tenant');
+            alter table run_attempts add unique(id);
+            alter table sandbox_leases add column workspace_id text default 'workspace';
+            alter table sandbox_leases add column user_id text default 'user';
+            alter table sandbox_leases add column session_id text default 'session';
+            alter table sandbox_leases add column created_at timestamptz default now();
+        """)
+        await conn.execute(shared[shared.index("create table if not exists mcp_servers"):shared.index("create table if not exists mcp_tools")])
+        start = shared.index("create table if not exists run_input_sessions")
+        await conn.execute(shared[start:shared.index("create or replace function", start)])
+        await conn.execute(Path("app/execution/infrastructure/recovery_operations_schema.sql").read_text())
+        await conn.execute("insert into tenant_capability_distribution_backfills values('tenant',now())")
+        await conn.execute("insert into mcp_servers(id,tenant_id,name) values('server','tenant','vendor')")
+        await mcp_postgres.upsert_mcp_server_distribution(
+            conn, tenant_id="tenant", server_name="vendor", status="active", visible_to_user=True,
+            scope_mode="allowlist", department_ids=["100"], allowed_roles=["user"],
+            metadata_json={"public_operation_summaries": {"create_project": DECLARATION}}, updated_by="user",
+        )
+        tool = await mcp_api.get_mcp_tool_registry_entry(conn, tenant_id="tenant", tool_id="vendor::create_project")
+        write_subject = mcp_api.mcp_capability_subject(tool, distribution_usable=True, sanitize_label=str)
+        assert write_subject["write_capable"] is True
+        subjects = [write_subject, summarized_read, unsummarized_read]
+        source = await prepare(conn, "source", 1)
+        await conn.execute(
+            "update run_attempts set execution_spec_json=jsonb_set(execution_spec_json,'{input}',%s) where id='attempt-source'",
+            (Jsonb({"_runtime_tool_policy_subjects": subjects}),),
+        )
+        await conn.execute(
+            "update sandbox_leases set lease_payload_json=lease_payload_json || %s where run_id='source'",
+            (Jsonb({"attempt_id": "attempt-source", "callback_token_id": "cbt:source:attempt-source:g2"}),),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async def effect(run, attempt, native, tool_identity, operation):
+            token_id = f"cbt:{run}:{attempt}:g2"
+            return await client.post(
+                "/api/runtime/callbacks/recovery-operation",
+                headers={"X-AI-Platform-Callback-Token": derive_callback_token(settings.sandbox_callback_token, token_id)},
+                json={"run_id": run, "attempt_id": attempt, "callback_token_id": token_id,
+                      "tool_identity": tool_identity, "invocation_id": native, "operation": operation},
+            )
+
+        # A frozen read-only capability without a public summary still reports normal lifecycle facts.
+        for operation in ("started", "completed"):
+            response = await effect("source", "attempt-source", "native-read-no-summary",
+                                    unsummarized_read["identity"], operation)
+            assert response.status_code == 200, response.text
+            assert response.json() == {"accepted": True}
+        async with transaction() as conn:
+            assert (await (await conn.execute(
+                "select count(*) as n from execution_recovery_operations where source_run_id='source'",
+            )).fetchone())["n"] == 0
+
+        started = await effect("source", "attempt-source", "native-write", write_subject["identity"], "started")
+        assert started.status_code == 200, started.text
+        async with transaction() as conn:
+            assert (await (await conn.execute(
+                "select count(*) as n from execution_recovery_operations where source_run_id='source'",
+            )).fetchone())["n"] == 1
+            await callback(conn, "source", source, "load")
+            await callback(conn, "source", source, "append", [{
+                "type": "assistant", "uuid": "synthetic-assistant", "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "native-write", "name": write_subject["identity"],
+                     "input": {"project": {"name": "华东项目"}}},
+                    {"type": "tool_use", "id": "native-legacy-read", "name": summarized_read["identity"],
+                     "input": {"project": {"name": "旧只读查询"}}},
+                    {"type": "tool_use", "id": "native-read-no-summary", "name": unsummarized_read["identity"],
+                     "input": {}},
+                ]},
+            }], 1)
+            await callback(conn, "source", source, "append", [{
+                "type": "user", "uuid": "synthetic-results", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "native-write", "is_error": True, "content": "synthetic timeout"},
+                    {"type": "tool_result", "tool_use_id": "native-legacy-read", "content": "synthetic read"},
+                    {"type": "tool_result", "tool_use_id": "native-read-no-summary", "content": "synthetic read"},
+                ]},
+            }], 2)
+        completed = await effect("source", "attempt-source", "native-write", write_subject["identity"], "completed")
+        assert completed.status_code == 200, completed.text
+
+        async with transaction() as conn:
+            # This simulates a row written by an older producer that mislabeled a frozen read-only tool.
+            await conn.execute(
+                """insert into execution_recovery_operations(
+                     operation_key,tenant_id,workspace_id,user_id,session_id,source_run_id,source_attempt_id,
+                     source_generation,native_tool_use_id,tool_identity,tool_facts_json,public_summary,reported_status)
+                   values(%s,'tenant','workspace','user','session','source','attempt-source',2,
+                     'native-legacy-read',%s,%s::jsonb,'Legacy read operation','completed')""",
+                ("rop_" + "a" * 32, summarized_read["identity"], Jsonb({"write_capable": True})),
+            )
+            receipt = dict(
+                schema_version="ai-platform.workspace-version.v1", state="saved", version_id="synthetic-version",
+                scope={**{key: value for key, value in SCOPE_MAP.items() if key != "agent_id"},
+                       "run_id": "source", "attempt_id": "attempt-source"},
+                file_count=0, total_bytes=0, source_stop_evidence="provider_stopped",
+            )
+            await settle_provider_continuation(
+                conn, tenant_id="tenant", run_id="source", attempt_id="attempt-source", final_sequence=2,
+                workspace_receipt=receipt, stop_evidence="provider_stopped",
+                sdk_settlement=dict(owner_generation=2, input_accepted=True, mirror_complete=True),
+                external_effect_unknown=True,
+            )
+            await conn.execute("update runs set status='failed' where id='source'")
+            await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="source")
+            target = await prepare(conn, "target", 2)
+            assert target["recovery"]["state"] == "recovery_candidate"
+            await conn.execute(
+                "update run_attempts set execution_spec_json=jsonb_set(execution_spec_json,'{input}',%s) where id='attempt-target'",
+                (Jsonb({"_runtime_tool_policy_subjects": subjects}),),
+            )
+            await conn.execute(
+                "update sandbox_leases set lease_payload_json=lease_payload_json || %s where run_id='target'",
+                (Jsonb({"attempt_id": "attempt-target", "callback_token_id": "cbt:target:attempt-target:g2"}),),
+            )
+            await conn.execute("insert into run_input_sessions(tenant_id,run_id,attempt_id) values('tenant','target','attempt-target')")
+
+        token_id = "cbt:target:attempt-target:g2"
+        opened = await client.post(
+            "/api/runtime/callbacks/inputs",
+            headers={"X-AI-Platform-Callback-Token": derive_callback_token(settings.sandbox_callback_token, token_id)},
+            json={"run_id": "target", "attempt_id": "attempt-target", "callback_token_id": token_id, "operation": "open"},
+        )
+        assert opened.status_code == 200, opened.text
+        result = opened.json()
+        assert result["recovery_confirmation_pending"]
+        assert result["recovery_operation_facts"] == []
+        async with transaction() as conn:
+            operations = await (await conn.execute(
+                "select operation_key,tool_identity,verified_outcome from execution_recovery_operations where source_run_id='source' order by tool_identity",
+            )).fetchall()
+            assert len(operations) == 2
+            writes = [row for row in operations if row["tool_identity"] == write_subject["identity"]]
+            assert len(writes) == 1 and writes[0]["verified_outcome"] == "unknown"
+            questions = await (await conn.execute("select question_id from run_input_questions where run_id='target'")).fetchall()
+            assert len(questions) == 1
+            bindings = await (await conn.execute(
+                "select operation_key,tool_identity,binding_kind from execution_recovery_invocations where run_id='target'",
+            )).fetchall()
+            assert bindings == [{"operation_key": writes[0]["operation_key"],
+                                 "tool_identity": write_subject["identity"], "binding_kind": "source_operation"}]

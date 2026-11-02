@@ -303,7 +303,7 @@ async def test_sdk_boundary_waits_for_authenticated_run_input_service_confirmati
     task = asyncio.create_task(run_claude_agent_sdk(
         prompt="synthetic", cwd=tmp_path, skill_id=None, tool_policy_subjects=[subject],
         run_id=s.current.run_id, attempt_id=s.current.attempt_id, execution_policy="sandbox_brokered",
-        recovery_tool_gate={"state": "inspection", "allowed_tool_identities": [identity], "released_tool_identities": []},
+        recovery_tool_gate={"state": "inspection", "allowed_tool_identities": [identity]},
         recovery_tool_gate_query=query, on_agent_event=ack, on_capability_evidence=ack,
     ))
     try:
@@ -337,9 +337,9 @@ async def test_started_ack_is_idempotent_but_native_identity_cannot_change_facts
     assert s.store.operations[s.operation_key]["source_generation"] == 1
 
 
-def test_identity_release_and_success_receipt_cannot_authorize_a_repeated_write():
+def test_success_receipt_cannot_authorize_a_repeated_write():
     identity = "mcp__vendor__write"
-    gate = RecoveryToolGate.from_mapping({"state": "inspection", "allowed_tool_identities": [identity], "released_tool_identities": [identity]})
+    gate = RecoveryToolGate.from_mapping({"state": "inspection", "allowed_tool_identities": [identity]})
     assert gate.denial(identity, {"write_capable": True}) == "recovery_effect_unconfirmed"
     evidence = dict(schema_version="ai-platform.recovery-operation-evidence.v1", decision="allow",
                     evidence_kind="platform_receipt", operation_key="rop_" + uuid4().hex,
@@ -417,3 +417,122 @@ async def test_source_confirmation_verifies_original_without_authorizing_any_inv
 
 async def source_authority(s, *, invocation, **kwargs):
     return RecoveryInvocationAuthority(True, public_summary="创建项目；项目名称：合成项目") if invocation in s.active else None
+
+
+@pytest.mark.asyncio
+async def test_source_questions_use_frozen_subject_and_ignore_legacy_read_rows_without_summary(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.bootstrap import recovery_operations as recovery
+
+    recovery_binding = {
+        "state": "recovery_candidate", "source_run_id": "source-run",
+        "source_attempt_id": "source-attempt", "provider_epoch_id": "source-epoch",
+        "final_sequence": 4,
+    }
+    trusted = {"registered": True, "declared": True, "active": True, "distributed": True}
+    source_subjects = [
+        {**trusted, "identity": "mcp__vendor__read", "write_capable": False},
+        # Missing summary means the possible write must remain denied, never inferred read-only.
+        {**trusted, "identity": "mcp__vendor__write", "write_capable": True},
+    ]
+    operations = [
+        {"operation_key": "rop_" + "a" * 32, "tool_identity": "mcp__vendor__read", "verified_outcome": "unknown"},
+        {"operation_key": "rop_" + "b" * 32, "tool_identity": "mcp__vendor__write", "verified_outcome": "unknown"},
+    ]
+
+    class Conn:
+        async def execute(self, query, params):
+            if "owner_generation, execution_spec_json" in query:
+                return SimpleNamespace(fetchone=lambda: _async_value({
+                    "owner_generation": 3, "recovery": recovery_binding,
+                }))
+            if "from execution_recovery_operations" in query:
+                return SimpleNamespace(fetchall=lambda: _async_value(operations))
+            if "as subjects" in query:
+                return SimpleNamespace(fetchone=lambda: _async_value({"subjects": source_subjects}))
+            raise AssertionError(f"unexpected query: {query}")
+
+    class Service:
+        authoritative_queries = {}
+
+        def __init__(self):
+            self.confirmations = []
+
+        async def publish_source_confirmation(self, conn, *, confirmation, frozen_binding_ref):
+            self.confirmations.append((confirmation.tool_identity, frozen_binding_ref))
+            return {"decision": "deny", "reason_code": "recovery_operation_public_object_metadata_missing"}
+
+        async def source_confirmation_fact(self, conn, *, confirmation):
+            raise AssertionError("unknown operations have no confirmation fact")
+
+    service = Service()
+    monkeypatch.setattr(recovery, "build_recovery_operations", lambda: (service, None))
+
+    result = await recovery.publish_recovery_source_questions(
+        Conn(), run={"id": "recovery-run", "tenant_id": "tenant", "workspace_id": "workspace",
+                    "user_id": "user", "session_id": "session"},
+        attempt_id="recovery-attempt",
+    )
+
+    assert service.confirmations == [("mcp__vendor__write", "source-epoch")]
+    assert result["recovery_confirmation_pending"] is False
+    assert result["recovery_confirmation_reason"] == "recovery_operation_public_object_metadata_missing"
+    assert result["recovery_operation_facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_recovery_callbacks_preserve_lifecycle_without_recording_effects(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.bootstrap import recovery_operations as recovery
+    from app.routes import runtime_callbacks
+    from app.runtime.sandbox.contracts import RecoveryOperationCallbackRequest
+
+    subject = {
+        "identity": "mcp__vendor__read", "registered": True, "declared": True,
+        "active": True, "distributed": True, "write_capable": False,
+    }
+
+    class Conn:
+        async def execute(self, query, params):
+            assert "as subjects" in query and params[-2:] == ("run", "attempt")
+            async def fetchone():
+                return {"subjects": [subject]}
+            return SimpleNamespace(fetchone=fetchone)
+
+    class Service:
+        async def record_started(self, *args, **kwargs):
+            raise AssertionError("read-only calls must not enter recovery tracking")
+
+        async def record_reported(self, *args, **kwargs):
+            raise AssertionError("read-only calls must not enter recovery tracking")
+
+    conn = Conn()
+    run = {"tenant_id": "tenant", "workspace_id": "workspace", "user_id": "user", "session_id": "session"}
+    lease = {"lease_payload_json": {"owner_generation": 2}}
+
+    @asynccontextmanager
+    async def callback_transaction(*args, **kwargs):
+        yield conn
+
+    async def lock_callback_authority(*args, **kwargs):
+        return run, lease
+
+    monkeypatch.setattr(runtime_callbacks, "provider_callback_transaction", callback_transaction)
+    monkeypatch.setattr(runtime_callbacks, "_lock_callback_authority", lock_callback_authority)
+    monkeypatch.setattr(runtime_callbacks, "_require_valid_callback_token", lambda *args, **kwargs: None)
+    monkeypatch.setattr(recovery, "build_recovery_operations", lambda: (Service(), None))
+
+    for operation in ("started", "completed"):
+        callback = RecoveryOperationCallbackRequest(
+            run_id="run", attempt_id="attempt", callback_token_id="token",
+            invocation_id="native-read", tool_identity=subject["identity"], operation=operation,
+        )
+        result = await runtime_callbacks.recovery_operation_callback(callback, callback_token="token")
+        assert result == {"accepted": True}
+
+
+async def _async_value(value):
+    return value

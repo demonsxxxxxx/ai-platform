@@ -334,6 +334,101 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_frame", ["notification", "updated"])
+async def test_cancel_accounts_background_completion_before_filter_and_settles_result_mirror(
+    monkeypatch, tmp_path, terminal_frame,
+):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[], append_provider_session=False)
+    started, interrupted = asyncio.Event(), asyncio.Event()
+    tail_started, release_tail = asyncio.Event(), asyncio.Event()
+    public_events = []
+
+    class TaskStartedMessage:
+        task_id = "agent-task"
+        task_type = "local_agent"
+
+    class TaskNotificationMessage:
+        task_id = "agent-task"
+        status = "completed"
+
+    class TaskUpdatedMessage:
+        task_id = "agent-task"
+        patch = {"status": "completed"}
+
+    sdk.TaskStartedMessage = TaskStartedMessage
+    sdk.TaskNotificationMessage = TaskNotificationMessage
+    sdk.TaskUpdatedMessage = TaskUpdatedMessage
+
+    class Store:
+        accepted_final_sequence = None
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, entries):
+            if entries[0]["uuid"] == "tail":
+                tail_started.set()
+                await release_tail.wait()
+                self.accepted_final_sequence = 2
+            else:
+                self.accepted_final_sequence = 1
+
+    store = Store()
+
+    def result_message():
+        message = sdk.ResultMessage()
+        message.session_id = "provider-a"
+        message.usage = {"input_tokens": 1}
+        return message
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            await self.options.session_store.append("provider-a", [{"uuid": "main"}])
+            yield TaskStartedMessage()
+            started.set()
+            await interrupted.wait()
+            # An intermediate Result is not Run completion while the agent is pending.
+            yield result_message()
+            yield TaskNotificationMessage() if terminal_frame == "notification" else TaskUpdatedMessage()
+            yield result_message()
+            await self.options.session_store.append("provider-a", [{"uuid": "tail"}])
+
+        async def interrupt(self):
+            interrupted.set()
+
+    async def on_agent_event(batch):
+        public_events.extend(event.event_type for event in batch)
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="delegate", cwd=tmp_path, skill_id=None, session_id="provider-a",
+        session_store=store, provider_session_resume_required=False,
+        run_id="run", attempt_id="attempt", on_agent_event=on_agent_event,
+        client_fn=Client,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.wait_for(tail_started.wait(), 1)
+        assert not task.done()
+        release_tail.set()
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await asyncio.wait_for(task, 2)
+        settlement = cancelled.value.sdk_settlement
+        assert settlement.provider_final_sequence == 2
+        assert settlement.sdk_settlement["received_result"] is True
+        assert settlement.sdk_settlement["mirror_complete"] is True
+        assert public_events == ["subagent.started"]
+    finally:
+        release_tail.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tail_failure", [False, True])
 @pytest.mark.parametrize("cleanup_failure", [False, True])
 async def test_runner_completes_after_final_mirror_before_slow_teardown(

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.bootstrap.conversation_continuation import runtime_continuation_fields
 from app.execution.api import ContinuationSettlementPorts
 from app.executors.claude.capability_policy import RecoveryToolGate
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
@@ -16,15 +17,14 @@ from app.runs.application.worker_result_commit import WorkerResultCommitCommand,
 @pytest.mark.parametrize("tool", ["Bash", "Agent", "Skill", "WebFetch", "WebSearch", "Write", "Edit", "NotebookEdit", "mcp__server__write", "mcp__server__code"])
 def test_recovery_inspection_denies_execution_and_unconfirmed_effects(tool):
     gate = RecoveryToolGate.from_mapping({
-        "state": "inspection", "allowed_tool_identities": [tool], "released_tool_identities": [],
+        "state": "inspection", "allowed_tool_identities": [tool],
     })
     assert gate.denial(tool, {"write_capable": True}) == "recovery_effect_unconfirmed"
 
 
-def test_recovery_inspection_requires_operation_evidence_even_for_released_write_identities():
+def test_recovery_inspection_allows_read_only_surfaces_and_keeps_scope_exact():
     gate = RecoveryToolGate.from_mapping({
         "state": "inspection", "allowed_tool_identities": ["Read", "mcp__server__query", "mcp__server__write", "Bash"],
-        "released_tool_identities": ["mcp__server__write"],
     })
     assert gate.denial("Read", None) is None
     assert gate.denial("mcp__server__query", {"write_capable": False}) is None
@@ -32,7 +32,34 @@ def test_recovery_inspection_requires_operation_evidence_even_for_released_write
     assert gate.denial("Bash", {"write_capable": False}) == "recovery_effect_unconfirmed"
     assert gate.denial("Glob", None) == "recovery_tool_not_allowed"
     with pytest.raises(ValueError, match="recovery_tool_gate_invalid"):
-        RecoveryToolGate.from_mapping({"state": "inspection", "allowed_tool_identities": [], "released_tool_identities": ["Bash"]})
+        RecoveryToolGate.from_mapping({
+            "state": "inspection", "allowed_tool_identities": [], "extra": [],
+        })
+
+
+def test_recovery_candidate_emits_only_the_allowed_tool_gate_scope():
+    fields = runtime_continuation_fields(
+        {"conversation_context": {
+            "provider_epoch_id": "epoch-a",
+            "recovery": {
+                "state": "recovery_candidate",
+                "workspace_receipt": {"state": "saved"},
+            },
+        }},
+        [
+            {"identity": "mcp__server__write", "registered": True, "declared": True,
+             "active": True, "distributed": True},
+            {"identity": "mcp__server__query", "registered": True, "declared": True,
+             "active": True, "distributed": True},
+        ],
+    )
+
+    assert fields["recovery_tool_gate"] == {
+        "state": "inspection",
+        "allowed_tool_identities": [
+            "Glob", "Grep", "LS", "Read", "mcp__server__query", "mcp__server__write",
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -252,7 +279,7 @@ async def test_recovery_gate_denies_at_sdk_pretool_and_permission_boundaries(mon
     await run_claude_agent_sdk(
         prompt="synthetic", cwd=tmp_path, skill_id=None, tool_policy_subjects=[subject],
         execution_policy="sandbox_brokered", recovery_tool_gate={
-            "state": "inspection", "allowed_tool_identities": [tool], "released_tool_identities": [],
+            "state": "inspection", "allowed_tool_identities": [tool],
         },
     )
     assert captured["permission_results"][0].behavior == "deny"
@@ -462,7 +489,7 @@ async def test_recovery_operation_queries_trusted_evidence_at_actual_sdk_boundar
         prompt="synthetic", cwd=tmp_path, skill_id=None, tool_policy_subjects=[subject],
         run_id="run-a", attempt_id="attempt-a", on_capability_evidence=acknowledged,
         on_agent_event=acknowledged, execution_policy="sandbox_brokered", recovery_tool_gate={
-            "state": "inspection", "allowed_tool_identities": [identity], "released_tool_identities": [],
+            "state": "inspection", "allowed_tool_identities": [identity],
         }, recovery_tool_gate_query=query,
     )
     expected = "allow" if evidence_state == "confirmed" else "deny"
@@ -515,7 +542,7 @@ async def test_recovery_evidence_can_unlock_the_same_attempt_without_changing_au
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     subject = _subject(tool_name="write")
     subject["write_capable"] = True
-    gate = {"state": "inspection", "allowed_tool_identities": [identity], "released_tool_identities": []}
+    gate = {"state": "inspection", "allowed_tool_identities": [identity]}
     checks = 0
     async def query(**kwargs):
         nonlocal checks
@@ -534,4 +561,4 @@ async def test_recovery_evidence_can_unlock_the_same_attempt_without_changing_au
         on_capability_evidence=acknowledged, on_agent_event=acknowledged,
     )
     assert [item[1]["hookSpecificOutput"]["permissionDecision"] for item in captured["hook_results"]] == ["deny", "allow"]
-    assert checks == 2 and gate["released_tool_identities"] == []
+    assert checks == 2 and gate == {"state": "inspection", "allowed_tool_identities": [identity]}

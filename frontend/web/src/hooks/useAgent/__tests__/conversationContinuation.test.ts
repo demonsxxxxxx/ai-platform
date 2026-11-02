@@ -43,7 +43,8 @@ test("continuation provides specific fixed guidance and fail-closed sending for 
   assert.match(publicContinuationMessage(parsePublicContinuation(settling)), /草稿已保留/);
   const candidate = parsePublicContinuation({ ...saved, state: "recovery_candidate" });
   assert.equal(canContinueConversation(candidate), true);
-  assert.match(publicContinuationMessage(candidate), /先检查恢复状态/);
+  assert.match(publicContinuationMessage(candidate), /检查现场、核实操作/);
+  assert.match(publicContinuationMessage(candidate), /文件修改和其他执行能力仍受限制/);
   assert.match(publicContinuationMessage(parsePublicContinuation(saved)), /不会自动重发/);
   const source = readFileSync(new URL("../../../components/layout/AppContent/ChatView.tsx", import.meta.url), "utf8");
   assert.match(source, /!terminalResultSynchronizing && !continuationBlocksSend/);

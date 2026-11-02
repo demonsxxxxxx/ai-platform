@@ -22,7 +22,8 @@ async def test_pending_principal_lookup_rechecks_live_authority_before_any_grant
 
     s = await scenario()
     subject = dict(identity=s.current.tool_identity, mcp_server="vendor", mcp_tool="write",
-                   capability_id="vendor::write", write_capable=True, public_operation_summary=DECLARATION)
+                   capability_id="vendor::write", write_capable=True, public_operation_summary=DECLARATION,
+                   registered=True, declared=True, active=True, distributed=True)
     recovery = dict(state="recovery_candidate", source_run_id=s.source.run_id,
                     source_attempt_id=s.source.attempt_id, provider_epoch_id="epoch", final_sequence=1)
     binding = next(iter(s.store.bindings.values()))

@@ -720,7 +720,11 @@ async def recovery_operation_callback(
     callback: RecoveryOperationCallbackRequest,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
 ) -> dict[str, Any]:
-    from app.bootstrap.recovery_operations import build_recovery_operations
+    from app.bootstrap.recovery_operations import (
+        build_recovery_operations,
+        frozen_attempt_tool_policy_subjects,
+        trusted_capability_subject,
+    )
     from app.execution.api import RecoveryInvocation, RecoveryOperationScope, RecoveryOperationError
 
     _require_valid_callback_token(callback_token, callback.callback_token_id,
@@ -744,6 +748,27 @@ async def recovery_operation_callback(
                 callback.invocation_id, callback.tool_identity,
             )
             service, _inputs = build_recovery_operations()
+            subjects = await frozen_attempt_tool_policy_subjects(
+                conn, scope=invocation.scope, run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+            subject = trusted_capability_subject(subjects, invocation.tool_identity)
+            if subject is None:
+                raise RecoveryOperationError("recovery_operation_tool_unauthorized")
+            if subject.get("write_capable") is False:
+                # Read-only MCP calls keep their ordinary lifecycle, but never enter
+                # the external-effect recovery ledger or create owner questions.
+                if callback.operation == "query":
+                    return {
+                        "schema_version": "ai-platform.recovery-operation-evidence.v1",
+                        "run_id": invocation.run_id,
+                        "attempt_id": invocation.attempt_id,
+                        "tool_identity": invocation.tool_identity,
+                        "invocation_id": invocation.invocation_id,
+                        "decision": "deny",
+                        "reason_code": "recovery_operation_not_required",
+                    }
+                return {"accepted": True}
             if callback.operation in {"completed", "failed"}:
                 cursor = await conn.execute(
                     """select operation_key from execution_recovery_operations where tenant_id=%s
@@ -757,22 +782,12 @@ async def recovery_operation_callback(
                     operation_key=operation["operation_key"], status=callback.operation)
                 return {"accepted": True}
             authority = await service._authority(conn, invocation)
-            subject_cursor = await conn.execute(
-                "select execution_spec_json from run_attempts where tenant_id=%s and id=%s and run_id=%s",
-                (run["tenant_id"], callback.attempt_id, callback.run_id),
-            )
-            spec = (await subject_cursor.fetchone())["execution_spec_json"]
-            subjects = spec.get("input", {}).get("_runtime_tool_policy_subjects", [])
-            if not any(item.get("identity") == invocation.tool_identity
-                       and all(item.get(key) is True for key in ("registered", "declared", "active", "distributed"))
-                       for item in subjects if isinstance(item, dict)):
-                raise RecoveryOperationError("recovery_operation_tool_unauthorized")
             if callback.operation == "query":
                 if not authority.requires_recovery_gate:
                     raise RecoveryOperationError("recovery_operation_binding_invalid")
-                if not authority.manual_confirmation_available and invocation.tool_identity not in service.authoritative_queries:
-                    return await service.query(conn, invocation=invocation)
                 binding = await service.persistence.get_binding(conn, invocation=invocation)
+                operation = None
+                recovery = None
                 if binding is None:
                     cursor = await conn.execute(
                         """select attempt.execution_spec_json->'context_pack'->'conversation_context'->'recovery' as recovery
@@ -788,9 +803,29 @@ async def recovery_operation_callback(
                         (*invocation.scope.mapping().values(), recovery.get("source_run_id"),
                          recovery.get("source_attempt_id"), invocation.invocation_id, invocation.tool_identity),
                     )
-                    operation = await cursor.fetchone()
-                    if operation is None:
+                    source_operation = await cursor.fetchone()
+                    if source_operation is None:
                         return {"decision": "deny", "reason_code": "recovery_operation_binding_missing"}
+                    operation = await service.persistence.get_operation(
+                        conn, scope=invocation.scope, operation_key=source_operation["operation_key"],
+                    )
+                else:
+                    operation = await service.persistence.get_operation(
+                        conn, scope=invocation.scope, operation_key=binding["operation_key"],
+                    )
+                if operation is None:
+                    return {"decision": "deny", "reason_code": "recovery_operation_binding_missing"}
+                source_subjects = await frozen_attempt_tool_policy_subjects(
+                    conn, scope=invocation.scope, run_id=operation["source_run_id"],
+                    attempt_id=operation["source_attempt_id"],
+                )
+                source_subject = trusted_capability_subject(source_subjects, operation["tool_identity"])
+                if source_subject is not None and source_subject.get("write_capable") is False:
+                    # Ignore legacy rows whose sandbox-supplied facts mislabeled a read.
+                    return {"decision": "deny", "reason_code": "recovery_operation_not_required"}
+                if not authority.manual_confirmation_available and invocation.tool_identity not in service.authoritative_queries:
+                    return await service.query(conn, invocation=invocation)
+                if binding is None:
                     await service.bind_invocation(
                         conn, invocation=invocation, operation_key=operation["operation_key"],
                         frozen_binding_ref=recovery["provider_epoch_id"],
