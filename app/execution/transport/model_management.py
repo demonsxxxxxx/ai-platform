@@ -599,7 +599,7 @@ def build_model_management_router(
             return await configured_model_control_plane().set_model_group_members(
                 tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
             )
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, PermissionError) as exc:
             raise _translate_control_plane_error(exc) from exc
 
     @router.get("/admin/model-providers/{provider_id}")

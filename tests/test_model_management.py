@@ -1977,3 +1977,20 @@ def test_model_provider_routes_require_admin_and_keep_provider_scope(monkeypatch
     for method, path, payload in requests:
         assert client.request(method, path, **({"json": payload} if payload else {})).status_code == 403
     assert captured == []
+
+
+def test_group_member_employee_directory_scope_denial_is_http_403(monkeypatch):
+    class Service:
+        async def set_model_group_members(self, **kwargs):
+            assert kwargs["tenant_id"] == "foreign-tenant"
+            raise PermissionError("company_employee_directory_forbidden")
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: Service())
+    app = FastAPI()
+    app.include_router(model_routes.build_model_management_router(
+        principal_dependency=lambda: SimpleNamespace(user_id="admin", tenant_id="foreign-tenant"),
+        is_admin=lambda _: True), prefix="/api/ai")
+    response = TestClient(app).put("/api/ai/admin/model-groups/g/members", json={
+        "revision": 1, "members": [{"work_id": "NEW", "is_primary": True}],
+    })
+    assert response.status_code == 403
+    assert response.json() == {"detail": "company_employee_directory_forbidden"}
