@@ -32,33 +32,6 @@ __all__ = [
 ]
 
 
-async def resolve_company_employee_user(
-    conn: Any, *, tenant_id: str, work_id: str,
-) -> dict[str, str]:
-    cursor = await conn.execute(
-        """
-        select id, display_name, auth_source, coalesce(external_id, '') as external_id
-        from users
-        where tenant_id = %s and status = 'active' and auth_source = 'company-login'
-          and external_id = %s
-        """,
-        (tenant_id, work_id),
-    )
-    rows = await cursor.fetchall()
-    if len(rows) != 1:
-        raise ModelGroupPolicyError(
-            "company_identity_ambiguous" if len(rows) > 1 else "company_identity_not_mapped"
-        )
-    row = rows[0]
-    return {
-        "user_id": str(row["id"]),
-        "work_id": work_id,
-        "display_name": str(row["display_name"]),
-        "auth_source": str(row["auth_source"]),
-        "tenant_id": tenant_id,
-    }
-
-
 async def _effective_group(conn: Any, *, tenant_id: str, user_id: str, group_id: str | None, usage_scene: str) -> dict[str, Any]:
     if usage_scene not in {USAGE_SCENE_CHAT, USAGE_SCENE_EXPERT, "independent", "skill"}:
         raise ModelGroupPolicyError("model_policy_unavailable")

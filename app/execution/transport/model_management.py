@@ -234,6 +234,7 @@ def _translate_control_plane_error(exc: Exception) -> HTTPException:
         "model_group_member_identity_required",
         "company_identity_not_mapped",
         "company_identity_ambiguous",
+        "company_identity_binding_conflict",
         "model_group_impact_confirmation_required",
         "model_group_references_exist",
         "model_group_active_runs",
@@ -598,7 +599,7 @@ def build_model_management_router(
             return await configured_model_control_plane().set_model_group_members(
                 tenant_id=principal.tenant_id, group_id=group_id, **payload.model_dump(),
             )
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, PermissionError) as exc:
             raise _translate_control_plane_error(exc) from exc
 
     @router.get("/admin/model-providers/{provider_id}")

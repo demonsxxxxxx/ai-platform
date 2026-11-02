@@ -8,6 +8,7 @@ import { companyEmployeesApi } from "../../../services/api/companyEmployees.ts";
 import { capabilityDistributionApi } from "../../../services/api/capabilityDistribution.ts";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb.ts";
 import { installModelCatalogTestProvider } from "../../../contexts/__tests__/modelCatalogTestProvider.tsx";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 const dom = installSelectTestDom();
 installBrowserAuthTestDb();
@@ -736,4 +737,24 @@ test("model add area explains an empty catalog, an all-selected catalog and no s
     await setInputText(noMatchView, search, "not-in-catalog");
     assert.equal(add.querySelector("[data-model-group-no-match]")?.textContent, "没有匹配的可添加模型。");
   } finally { await noMatchView.React.act(async () => noMatchView.root.unmount()); noMatchView.restore(); }
+});
+
+
+test("member identity failure is actionable and retains every selected employee card", async () => {
+  const members = Array.from({ length: 14 }, (_, index) => ({ user_id: "", work_id: `W${index}`, display_name: `员工 ${index}`, is_primary: true }));
+  const view = await mount({ ...details, members, member_count: 14 });
+  const click = async (label: string) => view.React.act(async () => {
+    const node = [...document.querySelectorAll<HTMLElement>("button")].find((item) => item.textContent === label || item.getAttribute("aria-label") === label);
+    assert.ok(node, label); node.click();
+  });
+  try {
+    await click("编辑 销售组"); await click("成员");
+    assert.doesNotMatch(document.querySelector('[data-model-group-drawer]')?.textContent ?? "", /每人只归属一个组|删除会处理成员去向/);
+    modelGroupsApi.setMembers = async () => { throw new ApiRequestError("加载会话失败", 422, "company_identity_not_mapped"); };
+    await click("保存成员");
+    assert.match(document.querySelector('[data-model-group-drawer] [role=alert]')?.textContent ?? "", /公司账号映射.*未保存/);
+    assert.doesNotMatch(document.querySelector('[role=alert]')?.textContent ?? "", /加载会话失败/);
+    assert.equal(document.querySelectorAll('[data-model-group-selected-member]').length, 14);
+    assert.equal([...document.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === "保存成员")?.disabled, false);
+  } finally { await view.React.act(async () => view.root.unmount()); view.restore(); }
 });

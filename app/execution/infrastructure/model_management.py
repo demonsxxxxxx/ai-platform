@@ -516,6 +516,10 @@ class PostgresModelManagementRepository:
         from app.execution.infrastructure.model_groups import set_group_models
         return await set_group_models(conn, **kwargs)
 
+    async def require_group_member_edit(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
+        from .model_group_memberships import require_group_member_edit
+        return await require_group_member_edit(conn, **kwargs)
+
     async def set_group_members(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
         from app.execution.infrastructure.model_groups import set_group_members
         return await set_group_members(conn, **kwargs)
@@ -535,11 +539,6 @@ class PostgresModelManagementRepository:
     async def set_users_group_memberships_batch(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, Any]:
         from app.execution.infrastructure.model_groups import set_users_group_memberships_batch
         return await set_users_group_memberships_batch(conn, **kwargs)
-
-    async def resolve_company_employee_user(self, conn: AsyncConnection, **kwargs: Any) -> dict[str, str]:
-        from app.execution.infrastructure.model_groups import resolve_company_employee_user
-        return await resolve_company_employee_user(conn, **kwargs)
-
 
 def _connection_from_row(row: dict[str, Any], *, encryption_key: str) -> ActiveConnection:
     revision = int(row["revision"])

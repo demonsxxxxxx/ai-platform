@@ -824,3 +824,95 @@ async def test_group_snapshot_binding_replay_and_completion_boundaries(default_e
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_employee_preassignment_uses_login_identity_and_rolls_back_on_invalid_members():
+    from app.identity.api import CompanyEmployee, CompanyEmployeeDirectoryService, CompanyEmployeeProvisioningService
+    from app.identity.infrastructure.postgres import PostgresCompanyEmployeeIdentityStore, ensure_company_login_user
+    from app.execution.application.model_control_plane import ModelControlPlaneService
+    from app.execution.infrastructure.model_management import PostgresModelManagementRepository
+    from types import SimpleNamespace
+
+    conn = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+    schema = "employee_preassign_" + uuid.uuid4().hex
+    try:
+        await _prepare_schema(conn, schema)
+        await conn.execute("insert into model_groups(id,tenant_id,code,name,type) values ('g1','tenant-a','g1','G1','business'),('g2','tenant-a','g2','G2','business')")
+        roster = [CompanyEmployee("E-NEW", "New employee"), CompanyEmployee("W001", "Existing"), CompanyEmployee("E-CONFLICT", "Conflict"), CompanyEmployee("E-BEFORE", "Second")]
+        in_transaction = False
+        async def read():
+            assert not in_transaction, "remote roster lookup must precede database transaction"
+            return roster
+        @asynccontextmanager
+        async def transaction():
+            nonlocal in_transaction
+            async with conn.transaction():
+                in_transaction = True
+                try:
+                    yield conn
+                finally:
+                    in_transaction = False
+        service = ModelControlPlaneService(transaction_factory=transaction, settings_provider=lambda: None,
+            repository=PostgresModelManagementRepository(), security=SimpleNamespace(), upstream=SimpleNamespace(),
+            attempt_capability_verifier=lambda **_kwargs: False,
+            employee_identities=CompanyEmployeeProvisioningService(CompanyEmployeeDirectoryService(read, tenant_id="tenant-a"), PostgresCompanyEmployeeIdentityStore()))
+        async def save(ids, revision, group="g1"):
+            return await service.set_model_group_members(tenant_id="tenant-a", group_id=group, revision=revision,
+                members=[{"work_id": wid, "is_primary": True} for wid in ids])
+        result = await save(["E-NEW", "W001"], 1)
+        member = await (await conn.execute("select user_id from model_group_members where group_id='g1' and user_id='E-NEW'")).fetchone()
+        assert member["user_id"] == "E-NEW"
+        before = await (await conn.execute("select id,auth_source,external_id,model_group_membership_revision from users where id='E-NEW'")).fetchone()
+        async with conn.transaction():
+            await ensure_company_login_user(conn, tenant_id="tenant-a", user_id="E-NEW", work_id="E-NEW", display_name="Login name")
+        assert await (await conn.execute("select id,auth_source,external_id,model_group_membership_revision from users where id='E-NEW'")).fetchone() == before
+        assert (await (await conn.execute("select count(*) as n from users where external_id='E-NEW'")).fetchone())["n"] == 1
+        # First login and administrative provisioning share the same per-identity transaction lock.
+        import asyncio
+        other = await psycopg.AsyncConnection.connect(_postgres_dsn(), autocommit=True, row_factory=dict_row)
+        try:
+            await other.execute(sql.SQL("set search_path to {}, public").format(sql.Identifier(schema)))
+            async def first_login():
+                async with other.transaction():
+                    await ensure_company_login_user(other, tenant_id="tenant-a", user_id="E-RACE", work_id="E-RACE", display_name="Login")
+            async with conn.transaction():
+                await PostgresCompanyEmployeeIdentityStore().ensure_employee(conn, tenant_id="tenant-a", work_id="E-RACE", display_name="Directory")
+                locked = await (await other.execute("select pg_try_advisory_xact_lock(hashtextextended(%s,749120018)) as ok", ("tenant-a:E-RACE",))).fetchone()
+                assert locked["ok"] is False
+                task = asyncio.create_task(first_login())
+                await asyncio.sleep(0)
+            await asyncio.wait_for(task, 5)
+            assert (await (await conn.execute("select count(*) as n from users where id='E-RACE'")).fetchone())["n"] == 1
+        finally:
+            await other.close()
+        await save(["E-NEW"], 1, "g2")
+        result["revision"] = (await (await conn.execute("select revision from model_groups where id='g1'")).fetchone())["revision"]
+        assert (await (await conn.execute("select group_id from model_group_members where user_id='E-NEW'")).fetchone())["group_id"] == "g2"
+        # Unknown directory entries, tenant mismatch and disabled/conflicting users never acquire grants.
+        with pytest.raises(ValueError, match="model_user_access_unknown_user"):
+            await save(["NOT-IN-ROSTER"], result["revision"])
+        await conn.execute("insert into users(id,tenant_id,display_name,status) values ('E-CONFLICT','tenant-b','Other','active')")
+        with pytest.raises(ValueError, match="company_identity_binding_conflict"):
+            await save(["E-BEFORE", "E-CONFLICT"], result["revision"])
+        assert await (await conn.execute("select 1 from users where id='E-BEFORE'")).fetchone() is None
+        await conn.execute("insert into users(id,tenant_id,display_name,auth_source,external_id) values ('duplicate','tenant-a','Duplicate','company-login','W001')")
+        with pytest.raises(ValueError, match="company_identity_ambiguous"):
+            await save(["W001"], result["revision"])
+        await conn.execute("delete from users where id='duplicate'")
+        with pytest.raises(ValueError, match="model_policy_changed"):
+            await save(["E-BEFORE"], 999)
+        assert await (await conn.execute("select 1 from users where id='E-BEFORE'")).fetchone() is None
+        await conn.execute("update users set status='disabled' where id='E-NEW'")
+        with pytest.raises(ValueError, match="model_group_member_unknown_user"):
+            await save(["E-NEW"], 2, "g2")
+        assert (await (await conn.execute("select status from users where id='E-NEW'")).fetchone())["status"] == "disabled"
+        with pytest.raises(PermissionError, match="company_employee_directory_forbidden"):
+            await service.set_model_group_members(tenant_id="tenant-b", group_id="g1", revision=1, members=[{"work_id":"E-NEW"}])
+        roster.append(CompanyEmployee("W001", "Duplicate"))
+        with pytest.raises(ValueError, match="company_identity_ambiguous"):
+            await save(["W001"], result["revision"])
+    finally:
+        await conn.execute("set search_path to public")
+        await conn.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema)))
+        await conn.close()

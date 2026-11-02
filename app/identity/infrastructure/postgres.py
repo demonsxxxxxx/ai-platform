@@ -57,11 +57,18 @@ async def ensure_company_login_user(
     display_name: str,
 ) -> None:
     """Bind a company identity only within the authenticated tenant."""
+    await conn.execute("select pg_advisory_xact_lock(hashtextextended(%s, 749120018))", (tenant_id + ":" + work_id,))
     existing = await conn.execute(
         "select tenant_id, auth_source, external_id from users where id = %s for update",
         (user_id,),
     )
     row = await existing.fetchone()
+    duplicate = await conn.execute(
+        "select 1 from users where tenant_id = %s and auth_source = 'company-login' and external_id = %s and id <> %s",
+        (tenant_id, work_id, user_id),
+    )
+    if await duplicate.fetchone() is not None:
+        raise RepositoryAuthorizationError("company_identity_binding_conflict")
     if row is None:
         await conn.execute(
             """
@@ -72,12 +79,6 @@ async def ensure_company_login_user(
         )
         return
     if str(row["tenant_id"]) != tenant_id:
-        raise RepositoryAuthorizationError("company_identity_binding_conflict")
-    duplicate = await conn.execute(
-        "select 1 from users where tenant_id = %s and auth_source = 'company-login' and external_id = %s and id <> %s",
-        (tenant_id, work_id, user_id),
-    )
-    if await duplicate.fetchone() is not None:
         raise RepositoryAuthorizationError("company_identity_binding_conflict")
     if str(row["auth_source"]) not in {"unknown", "company-login"}:
         raise RepositoryAuthorizationError("company_identity_binding_conflict")
@@ -93,6 +94,26 @@ async def ensure_company_login_user(
     )
     if await updated.fetchone() is None:
         raise RepositoryAuthorizationError("company_identity_binding_conflict")
+
+
+class PostgresCompanyEmployeeIdentityStore:
+    async def ensure_employee(self, conn: AsyncConnection, *, tenant_id: str, work_id: str, display_name: str) -> str:
+        await conn.execute("select pg_advisory_xact_lock(hashtextextended(%s, 749120018))", (tenant_id + ":" + work_id,))
+        rows = await (await conn.execute(
+            "select id, status from users where tenant_id = %s and auth_source = 'company-login' and external_id = %s for update",
+            (tenant_id, work_id),
+        )).fetchall()
+        if len(rows) > 1:
+            raise ValueError("company_identity_ambiguous")
+        if rows:
+            if rows[0]["status"] != "active":
+                raise ValueError("model_group_member_unknown_user")
+            return str(rows[0]["id"])
+        try:
+            await ensure_company_login_user(conn, tenant_id=tenant_id, user_id=work_id, work_id=work_id, display_name=display_name)
+        except RepositoryAuthorizationError as exc:
+            raise ValueError("company_identity_binding_conflict") from exc
+        return work_id
 
 
 async def ensure_submission_principal(

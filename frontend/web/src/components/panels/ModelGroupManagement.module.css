@@ -57,7 +57,34 @@
   white-space: nowrap;
 }
 
+.memberGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 6px;
+}
+
+.memberCard {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  min-height: 52px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-bg-card);
+}
+
+.memberCard p {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
 @media (max-width: 639px) {
+  .memberGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .page {
     padding: 24px 16px;
   }
