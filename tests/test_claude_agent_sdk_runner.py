@@ -17,7 +17,6 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _canonical_sdk_error,
     _diagnostic_terminal_class,
-    _public_skill_replacement,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     build_sdk_env,
@@ -4200,16 +4199,6 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
 
 
 
-@pytest.mark.parametrize(
-    "public_name",
-    ["Reference Search", "input-tax-reconciliation", "进项税核对 V8"],
-)
-def test_public_skill_replacement_preserves_name_characters(public_name):
-    assert _public_skill_replacement(
-        "qa-review", {"qa-review": {"name": public_name}}
-    ) == f"【技能：{public_name}】"
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -4228,7 +4217,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4237,7 +4226,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "capability",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4246,7 +4235,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "tool",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4255,7 +4244,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             True,
             "mcp__tenant-server__search",
             "Reference Search",
-            "【技能：Reference Search】",
+            "【技能】",
             "",
         ),
         (
@@ -4273,7 +4262,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能：input-tax-reconciliation】",
+            "【技能】",
             "",
         ),
         (
@@ -4282,7 +4271,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "reference-search V8",
-            "【技能：reference-search V8】",
+            "【技能】",
             "",
         ),
         (
@@ -4291,7 +4280,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "进项税核对 V8",
-            "【技能：进项税核对 V8】",
+            "【技能】",
             "",
         ),
         (
@@ -4300,7 +4289,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "█",
+            "【技能】",
             "input-tax-reconciliation",
         ),
         (
@@ -4309,12 +4298,12 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "█",
+            "【技能】",
             "tax",
         ),
     ],
 )
-async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
+async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     monkeypatch,
     tmp_path,
     optional_skill,

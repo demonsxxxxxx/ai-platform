@@ -38,5 +38,4 @@ def document_plugin_tool_subject(revision: object) -> list[dict[str, Any]]:
         "object_authorized": True, "parameters_authorized": True,
         "risk_level": "low", "write_capable": False,
         "allowed_skill_names": names,
-        "public_skill_labels": dict(zip(names, ("Word 文档", "Excel 表格", "PowerPoint 演示文稿", "PDF 文档"))),
     }]

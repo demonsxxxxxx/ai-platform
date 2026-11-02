@@ -448,7 +448,6 @@ class ClaudeSdkAgentEventAdapter:
         attempt_id: str,
         authorized_capabilities: Mapping[str, object] | None = None,
         tool_policy_subjects: list[dict[str, Any]] | None = None,
-        public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
         payload_sanitizer: Callable[[object], object],
         tool_identity_resolver: Callable[[object], str] = str,
@@ -489,7 +488,7 @@ class ClaudeSdkAgentEventAdapter:
         self._policy_decisions: set[str] = set()
         self._seen_events: set[str] = set()
         self._capabilities: dict[str, tuple[str, str]] = {}
-        self._load_capabilities(authorized_capabilities, tool_policy_subjects, public_skill_metadata)
+        self._load_capabilities(authorized_capabilities, tool_policy_subjects)
 
     @property
     def sealed(self) -> bool:
@@ -532,7 +531,6 @@ class ClaudeSdkAgentEventAdapter:
         self,
         configured: Mapping[str, object] | None,
         subjects: list[dict[str, Any]] | None,
-        skill_metadata: Mapping[str, Mapping[str, str]] | None,
     ) -> None:
         if isinstance(configured, Mapping):
             for identity, value in configured.items():
@@ -546,7 +544,11 @@ class ClaudeSdkAgentEventAdapter:
                 elif isinstance(value, (tuple, list)) and len(value) >= 2:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
-                safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                safe_label = (
+                    "Skill"
+                    if category == "skill"
+                    else _safe_display(label, sanitizer=self._sanitizer)
+                )
                 if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                     self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
@@ -558,17 +560,10 @@ class ClaudeSdkAgentEventAdapter:
             if identity == "Skill":
                 names = subject.get("allowed_skill_names")
                 if isinstance(names, list):
-                    labels = subject.get("public_skill_labels")
                     for name in names:
                         if not isinstance(name, str):
                             continue
-                        label = labels.get(name) if isinstance(labels, dict) else None
-                        safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        if not safe_label and isinstance(skill_metadata, Mapping):
-                            metadata = skill_metadata.get(name)
-                            label = metadata.get("display_name") if isinstance(metadata, Mapping) else None
-                            safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        self._capabilities[name] = ("skill", safe_label or "Skill")
+                        self._capabilities[name] = ("skill", "Skill")
                 continue
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
