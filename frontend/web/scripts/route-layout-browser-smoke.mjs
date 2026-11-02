@@ -833,9 +833,9 @@ async function runCase(viewport, scenario) {
       if (groupCase === 'cards') {
         await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
         await browser.client.waitFor(`document.querySelectorAll('[data-model-group-selected-member]').length === 14`, 'members:cards-ready');
-        const cards = await browser.client.evaluate(`(() => { const nodes=[...document.querySelectorAll('[data-model-group-selected-member]')]; const boxes=nodes.map(n=>n.getBoundingClientRect()); const grid=nodes[0].parentElement; return {count:nodes.length,columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,contained:boxes.every(b=>b.width>=180 && b.right<=innerWidth && b.left>=0),removable:nodes.every(n=>Boolean(n.querySelector('button[aria-label^="移除成员"]')))};})()`);
+        const cards = await browser.client.evaluate(`(() => { const nodes=[...document.querySelectorAll('[data-model-group-selected-member]')]; const boxes=nodes.map(n=>n.getBoundingClientRect()); const grid=nodes[0].parentElement; return {count:nodes.length,columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,contained:boxes.every(b=>b.width>=150 && b.right<=innerWidth && b.left>=0),removable:nodes.every(n=>Boolean(n.querySelector('button[aria-label^="移除成员"]')))};})()`);
         assert.equal(cards.count,14); assert.ok(cards.contained && cards.removable);
-        if(viewport.width>=1024) assert.ok(cards.columns>=2,'desktop members form multiple cards per row');
+        if(viewport.width>=1024) assert.ok(cards.columns>=4,'desktop members form compact four-column cards');
         await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] button')].find(b=>b.textContent==='保存成员')).click()`);
         await browser.client.waitFor(`document.querySelector('[data-model-group-drawer] [role=alert]')?.textContent.includes('公司账号映射')`,'members:actionable-error');
         assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-selected-member]').length`),14);
