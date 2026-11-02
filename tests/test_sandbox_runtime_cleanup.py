@@ -747,14 +747,17 @@ async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effe
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(monkeypatch):
+@pytest.mark.parametrize("reconciliation_status", ["failed", "cleanup_pending"])
+async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(
+    monkeypatch, reconciliation_status,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
         runtime_container_id=None,
         lease_payload_json=None,
         executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        executor_reconciliation_status=reconciliation_status,
     )
     calls = []
 
