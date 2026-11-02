@@ -12,8 +12,7 @@
 }
 
 .chat-input-container {
-  border-radius: 1.25rem;
-  min-height: 104px;
+  border-radius: var(--radius-composer);
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:
@@ -36,16 +35,19 @@
    pushing the transcript away. */
 .chat-input-container[data-question-mode] {
   max-height: none;
-  min-height: 0;
   padding: 0.75rem;
-  max-width: 48rem;
-  margin-inline: auto;
 }
 
 .chat-input-container[data-question-mode] [data-slot="composer-task-surface"] {
   max-height: calc(100dvh - 12rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* 16px composer text at every width (also prevents iOS focus zoom); the
+   library input style would otherwise win over a utility class. */
+.chat-input-container textarea {
+  font-size: 1rem;
 }
 
 /* Chat input textarea placeholder */
@@ -63,12 +65,7 @@
   }
 
   html[data-mobile-keyboard="true"] .chat-input-container {
-    border-radius: 1.25rem;
     transition: none;
-  }
-
-  .chat-input-container textarea {
-    font-size: 16px;
   }
 }
 

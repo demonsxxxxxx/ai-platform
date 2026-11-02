@@ -1115,7 +1115,7 @@ export function ChatView({
 
       {historyReadError && (
         <div
-          className="mx-auto mb-2 flex max-w-[76rem] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
+          className="mx-auto mb-2 flex max-w-[var(--chat-column-max)] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
           data-chat-history-read-error
           role="alert"
         >
@@ -1146,7 +1146,7 @@ export function ChatView({
         </div>
       )}
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-[76rem] px-2">
+        <div className="mx-auto mb-2 flex max-w-[var(--chat-column-max)] px-2">
           <Button type="text"
             htmlType="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -1160,7 +1160,7 @@ export function ChatView({
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
         <div
-          className="mx-auto mb-3 flex max-w-[76rem] flex-wrap gap-2 px-2"
+          className="mx-auto mb-3 flex max-w-[var(--chat-column-max)] flex-wrap gap-2 px-2"
           data-agent-starter-prompts
         >
           <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
@@ -1180,7 +1180,7 @@ export function ChatView({
         </div>
       ) : null}
       {runInputs?.loadFailed ? (
-        <div className="mx-auto mb-2 flex w-full max-w-[76rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
+        <div className="mx-auto mb-2 flex w-full max-w-[var(--chat-column-max)] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
           <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
           <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refresh()} htmlType="button">
             {t("common.retry", "重试")}
@@ -1195,7 +1195,7 @@ export function ChatView({
         taskSurface={runInputs
           ? (stop) => <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} stop={stop} />
           : undefined}
-        className="mx-auto max-w-[76rem] px-2"
+        className="mx-auto max-w-[var(--chat-column-max)] px-2"
       />
     </div>
   );
@@ -1234,7 +1234,7 @@ export function ChatView({
                 data-agent-chat-opening
                 data-workbench-empty-state="agent-chat"
               >
-                <section className="chat-start-surface flex w-full max-w-[76rem] flex-1 flex-col items-center gap-4">
+                <section className="chat-start-surface flex w-full max-w-[var(--chat-column-max)] flex-1 flex-col items-center gap-4">
                   {/* The published description is the opening text; it is not a runtime message. */}
                   {agentEmptyProfile.description ? (
                     <p

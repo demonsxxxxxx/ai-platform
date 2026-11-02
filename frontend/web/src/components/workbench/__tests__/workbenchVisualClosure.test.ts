@@ -41,7 +41,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
   assert.doesNotMatch(text, /hero-card|gradient-orb|nested-card/);
   assert.doesNotMatch(text, /rounded-3xl/);
-  assert.match(text, /rounded-\[1\.25rem\]|border-radius:\s*1\.25rem/);
+  assert.match(text, /border-radius:\s*var\(--radius-composer\)/);
   assert.doesNotMatch(tabContent, /max-w-4xl|sm:max-w-5xl|lg:max-w-6xl/);
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
@@ -664,7 +664,7 @@ test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
   const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*104px/);
+  assert.match(css, /border-radius:\s*var\(--radius-composer\)/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(composer, /flex w-full flex-col/);
   assert.match(composer, /PopoverPortal/);

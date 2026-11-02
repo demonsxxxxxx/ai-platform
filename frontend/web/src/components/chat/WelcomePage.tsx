@@ -48,7 +48,7 @@ export const WelcomePage = memo(function WelcomePage({
       <EmptyState
         data-chat-start-surface
         data-chat-composer-first
-        className="chat-start-surface flex w-full max-w-[76rem] shrink-0 flex-col items-center gap-6"
+        className="chat-start-surface flex w-full max-w-[var(--chat-column-max)] shrink-0 flex-col items-center gap-6"
       >
         <div
           data-chat-start-header

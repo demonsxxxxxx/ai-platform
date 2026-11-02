@@ -144,15 +144,16 @@ test("keeps active conversations wide, readable, and visually compact", () => {
     "../../../skeletons/ChatSkeletons.tsx",
   ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
-  assert.match(view, /className="mx-auto max-w-\[76rem\] px-2"/);
+  assert.match(view, /className="mx-auto max-w-\[var\(--chat-column-max\)\] px-2"/);
   assert.match(message, /<AssistantMessageContent/);
   for (const source of [view, thread, composerRoot, userMessage, ...companionSources]) {
-    assert.match(source, /max-w-\[76rem\]/);
+    assert.match(source, /max-w-\[var\(--chat-column-max\)\]/);
+    assert.doesNotMatch(source, /max-w-\[76rem\]/);
     assert.doesNotMatch(source, /max-w-\[60rem\]/);
   }
-  assert.match(thread, /max-w-\[76rem\] flex-col break-words px-2/);
-  assert.match(userMessage, /max-w-\[76rem\] justify-end px-2/);
-  assert.match(userMessage, /sm:max-w-\[75%\]/);
+  assert.match(thread, /max-w-\[var\(--chat-column-max\)\] flex-col break-words px-2/);
+  assert.match(userMessage, /max-w-\[var\(--chat-column-max\)\] justify-end px-2/);
+  assert.match(userMessage, /max-w-\[90%\][^"]*sm:max-w-\[70%\]/);
 });
 
 // Exercise the real hook while mounted: storage isolation alone is insufficient

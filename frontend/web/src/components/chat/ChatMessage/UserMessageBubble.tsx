@@ -53,8 +53,8 @@ export function UserMessageBubble({
 
   return (
     <div className="group w-full py-2">
-      <div className="mx-auto flex max-w-[76rem] justify-end px-2">
-        <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[75%]" data-user-message-group>
+      <div className="mx-auto flex max-w-[var(--chat-column-max)] justify-end px-2">
+        <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[70%]" data-user-message-group>
           {lockedSkillLabel && (
             <div
               data-locked-skill-label={lockedSkillLabel}
