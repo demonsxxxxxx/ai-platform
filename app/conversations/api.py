@@ -21,3 +21,8 @@ from app.conversations.application.submission_failures import (
     submission_error_detail as submission_error_detail,
     submission_error_code as submission_error_code,
 )
+
+from app.conversations.application.intent_files import (
+    FileSummary as FileSummary,
+    resolve_intent_files as resolve_intent_files,
+)
