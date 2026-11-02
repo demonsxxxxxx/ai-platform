@@ -4,6 +4,7 @@ import LobeThemeProvider from "@lobehub/ui/es/ThemeProvider/index";
 import { en, zhCn } from "@lobehub/ui/i18n";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
+import { LOBE_THEME_TOKEN_OVERRIDES } from "../styles/themeContract";
 import { useTheme } from "./ThemeContext";
 
 /** Connect library styling and portals to the application's existing preferences. */
@@ -18,7 +19,7 @@ export function LobeUiProvider({ children }: { children: ReactNode }) {
         appearance={theme}
         enableCustomFonts={false}
         enableGlobalStyle={false}
-        theme={{ token: { borderRadius: 8, fontFamily: "var(--font-ui)" } }}
+        theme={{ token: LOBE_THEME_TOKEN_OVERRIDES }}
       >
         {children}
       </LobeThemeProvider>

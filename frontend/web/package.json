@@ -29,7 +29,7 @@
     "migrate-tests": "tsx scripts/migrate-tests.ts",
     "test:document-previews": "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 src/components/documents/__tests__/*.test.ts* src/components/documents/previews/__tests__/*.test.ts* src/components/documents/utils/__tests__/*.test.ts* src/components/common/__tests__/*.test.ts* src/components/chat/ChatMessage/items/__tests__/*.test.ts* src/components/chat/__tests__/lazyBoundary.test.ts src/components/layout/AppContent/__tests__/externalNavigationState.test.ts src/components/layout/AppContent/__tests__/useMessageScroll.test.ts",
     "test:pwa": "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 src/__tests__/pwaGuards.test.ts src/__tests__/pwaRouting.test.ts src/__tests__/swOfflineFallback.test.ts",
-    "test:browser-preferences": "node --import tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 src/contexts/__tests__/BrowserPreferences.mounted.test.tsx src/utils/__tests__/themeDom.test.ts src/features/agent-builder/__tests__/AgentBuilderShell.test.tsx",
+    "test:browser-preferences": "node --import tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 src/contexts/__tests__/BrowserPreferences.mounted.test.tsx src/utils/__tests__/themeDom.test.ts src/styles/__tests__/themeContract.test.ts src/features/agent-builder/__tests__/AgentBuilderShell.test.tsx",
     "check:style-rules": "node scripts/check-style-rules.mjs"
   },
   "dependencies": {

@@ -10,6 +10,7 @@
 | Markdown primitive | `@assistant-ui/react-markdown@0.14.23` |
 | 锁文件中的 core / store / tap | `0.3.29 / 0.3.21 / 0.9.23`，由 runtime 传递引入 |
 | Elements 源码 | assistant-ui `727a02dc3fe5286ded479cb792f48acbff336cd7` |
+| 对话视觉参照 | 同一提交的 ChatGPT Clone `apps/docs/components/pages/examples/chatgpt.tsx`；尺寸规格归[视觉约束](visual-guidelines.md)第 7 节 |
 | 通用控件与工具链 | Lobe `5.61.0`、React `19.2.5`、Tailwind 3、TS 5.6、Vite 6 保持 |
 | 显式 content Markdown | 直接依赖解析为 react-markdown `9.1.0`；primitive 使用 `10.1.0` |
 
@@ -25,7 +26,7 @@
 - `SessionSidebar` 从原 session source 派生 `ExternalStoreThreadListAdapter`，经 `ChatAppContent → ChatView` 接入同一 runtime。专家分组、分页、未读、路由和修改回执保留原 owner，没有第二次拉取或第二个会话缓存。
 - 原生 tool/data parts 只含获准字段或空占位。业务活动从同一公开快照取 props，禁止客户端 tool execute/addToolResult、原始 args/result、私有命令/路径和隐藏思考。安全正文中用户需要的代码、JSON 和项目路径正常显示。
 
-平台合同见[聊天终态与公开投影](../architecture/chat-run-lifecycle-and-public-error-projection.md)、[SSE wire](../architecture/redis-streams-sse-wire-protocol.md)、[文本 part](../implementation/streaming-message-parts-design.md)和[Claude 连续性](../architecture/claude-provider-session-continuity.md)。Claude Clone 是视觉示例；Managed Agents 的托管 session/sandbox 不替代本项目 Python SDK 与平台执行链。
+平台合同见[聊天终态与公开投影](../architecture/chat-run-lifecycle-and-public-error-projection.md)、[SSE wire](../architecture/redis-streams-sse-wire-protocol.md)、[文本 part](../implementation/streaming-message-parts-design.md)和[Claude 连续性](../architecture/claude-provider-session-continuity.md)。ChatGPT Clone 只提供布局与外观：它的 AI SDK、Assistant Cloud、云端附件和语音接线不进入本项目，示例中没有平台协议的操作（语音、分享、反馈、重新生成、编辑、分支）不显示。Managed Agents 的托管 session/sandbox 同样不替代本项目 Python SDK 与平台执行链。
 
 ## 源码与生产消费者对应
 
@@ -60,11 +61,9 @@
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
-专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
-
 ## 开场布局与模型就绪状态
 
-普通新对话的欢迎语、快捷任务和输入框沿用同一条 1216px 内容栏，快捷任务与输入框对齐，输入框紧随任务入口，不再靠 `mt-auto` 分离到页面底部。有消息时仍使用原底部 Composer slot，桌面底部留 24px，手机保留安全区；专家开场、历史加载及待答任务表面保持各自原有入口。布局不增加第二个 Composer 或草稿 owner。
+普通新对话的欢迎语、快捷任务和输入框沿用同一条阅读列（`--chat-column-max`，宽度见视觉约束第 7 节），快捷任务与输入框对齐，输入框紧随任务入口，不再靠 `mt-auto` 分离到页面底部。有消息时仍使用原底部 Composer slot，桌面底部留 24px，手机保留安全区；专家开场、历史加载及待答任务表面保持各自原有入口。布局不增加第二个 Composer 或草稿 owner。
 
 模型就绪提示由 ChatAppContent 的当前目录/选择状态派生，随 ChatView → ChatInput 进入工具栏，在模型选择器旁使用 `--theme-danger-text` 显示提示；无可用模型时提示“当前没有可用模型，请联系管理员申请。”，不再在页面底部另放模型错误。未选可用模型时输入和附件草稿仍保留，发送按钮、Enter 与原生 Composer 注册共同阻止发送。聊天输入区不提供模型组配置入口，所有用户都只看到状态提示。加载、读取失败、授权失效和默认模型失效保留各自原因，不自动切组或用第一项回退。服务器模型准入、自动唯一组绑定与冻结 Run 快照未变。
 

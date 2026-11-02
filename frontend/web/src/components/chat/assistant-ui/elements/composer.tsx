@@ -7,13 +7,13 @@ import { clsx } from "clsx";
 import { useTranslation } from "react-i18next";
 
 export function Composer({ className, ...props }: ComponentProps<typeof ComposerPrimitive.Root>) {
-  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[76rem] flex-col px-2", className)} {...props} />;
+  return <ComposerPrimitive.Root data-slot="composer" className={clsx("aui-composer-root relative mx-auto flex w-full max-w-[var(--chat-column-max)] flex-col px-2", className)} {...props} />;
 }
 
 export const ComposerBar = forwardRef<HTMLDivElement, ComponentProps<"div"> & { dragActive?: boolean }>(
   function ComposerBar({ dragActive, className, style, ...props }, ref) {
     return <div ref={ref} data-slot="composer-bar" data-drag-active={dragActive || undefined}
-      className={clsx("chat-input-container flex w-full flex-col gap-2 rounded-2xl border p-2.5 transition-colors", className)}
+      className={clsx("chat-input-container flex w-full flex-col gap-2 border p-2.5 transition-colors", className)}
       style={{ background: "var(--theme-workbench-panel)", borderColor: dragActive ? "var(--theme-primary)" : "var(--theme-border)", borderStyle: dragActive ? "dashed" : "solid", ...style }} {...props} />;
   },
 );
@@ -23,7 +23,7 @@ export const ComposerInput = forwardRef<HTMLTextAreaElement, TextareaHTMLAttribu
     return <ComposerPrimitive.Input asChild submitMode="none" cancelOnEscape={false} addAttachmentOnPaste={false}
       unstable_focusOnRunStart={false} unstable_focusOnThreadSwitched={false} ref={ref} {...props}>
       <TextArea variant="borderless" className="w-full" style={{ padding: 0 }}
-        classNames={{ input: clsx("aui-composer-input min-h-[48px] max-h-48 resize-none overflow-y-auto px-2.5 py-1 text-[15px] leading-6", className) }}
+        classNames={{ input: clsx("aui-composer-input min-h-[48px] max-h-48 resize-none overflow-y-auto px-2.5 py-1 leading-6", className) }}
         styles={{ input: style }} />
     </ComposerPrimitive.Input>;
   },
