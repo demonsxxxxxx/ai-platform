@@ -48,7 +48,7 @@ export const WelcomePage = memo(function WelcomePage({
       <EmptyState
         data-chat-start-surface
         data-chat-composer-first
-        className="chat-start-surface flex w-full max-w-[76rem] flex-1 flex-col items-center gap-6"
+        className="chat-start-surface flex w-full max-w-[76rem] shrink-0 flex-col items-center gap-6"
       >
         <div
           data-chat-start-header
@@ -71,7 +71,7 @@ export const WelcomePage = memo(function WelcomePage({
 
         <div
           data-chat-start-suggestions
-          className="grid w-full max-w-2xl gap-2 sm:grid-cols-3"
+          className="grid w-full gap-2 px-4 sm:grid-cols-3"
           role="group"
           aria-label="常见任务"
         >
@@ -93,7 +93,7 @@ export const WelcomePage = memo(function WelcomePage({
           })}
         </div>
 
-        <div data-chat-empty-composer className="mt-auto w-full pt-8">
+        <div data-chat-empty-composer className="w-full">
           {composer}
         </div>
       </EmptyState>

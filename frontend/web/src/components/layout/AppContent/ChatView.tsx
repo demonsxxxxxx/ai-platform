@@ -173,6 +173,7 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
+  modelUnavailableReason?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
   composerDraftHandoffKey?: string | null;
@@ -202,6 +203,7 @@ interface ChatViewProps {
   availableModels: ModelOption[];
   currentModelId: string;
   onSelectModel: (modelId: string, modelValue: string) => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -249,6 +251,7 @@ export function ChatView({
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
+  modelUnavailableReason,
   initialComposerDraft,
   initialComposerDraftKey,
   composerDraftHandoffKey,
@@ -275,6 +278,7 @@ export function ChatView({
   availableModels,
   currentModelId,
   onSelectModel,
+  onModelSelectorOpen,
   onSendMessage,
   canRetryPendingSubmission,
   onRetryPendingSubmission,
@@ -750,6 +754,15 @@ export function ChatView({
   const handleProfileDriveFileDrop = useCallback(
     async (reference: ProfileDriveFileReference) => {
       const requestKey = `${sessionId ?? "new"}\u0000${reference.source_id}\u0000${reference.path}`;
+      const existing = attachments.find((item) => item.profileDriveReference?.source_id === reference.source_id && item.profileDriveReference.path === reference.path);
+      if (existing) {
+        if (existing.isUploading) return;
+        return {
+          file_id: existing.key, run_id: null, name: existing.name,
+          mime_type: existing.mimeType, size_bytes: existing.size,
+          preview_url: existing.url ?? null, download_url: existing.downloadUrl ?? existing.url ?? "",
+        } satisfies SessionInputFile;
+      }
       if (profileDriveDropInFlightRef.current.has(requestKey)) return;
       profileDriveDropInFlightRef.current.add(requestKey);
       const pendingId = `profile-drive-${uuid()}`;
@@ -762,6 +775,7 @@ export function ChatView({
         size: 0,
         isUploading: true,
         uploadStatus: "uploading",
+        profileDriveReference: reference,
       };
       onAttachmentsChange((current) => [...current, pendingAttachment]);
       try {
@@ -782,7 +796,7 @@ export function ChatView({
               : current,
           );
         }
-        const attachment = sessionInputFileToAttachment(file);
+        const attachment = { ...sessionInputFileToAttachment(file), profileDriveReference: reference };
         onAttachmentsChange((current) =>
           current.map((item) => (item.id === pendingId ? attachment : item)),
         );
@@ -808,7 +822,7 @@ export function ChatView({
         profileDriveDropInFlightRef.current.delete(requestKey);
       }
     },
-    [onAttachmentsChange, sessionId, t],
+    [attachments, onAttachmentsChange, sessionId, t],
   );
 
   const handleProfileDriveDragOver = useCallback(
@@ -956,8 +970,9 @@ export function ChatView({
     canSend: canSendInCurrentView,
     unavailableReason: canSendMessage && continuationBlocksSend
       ? publicContinuationMessage(continuation, continuationPending) : undefined,
-    placeholder: continuationBlocksSend
+    placeholder: canSendMessage && continuationBlocksSend
       ? publicContinuationMessage(continuation, continuationPending) : composerPlaceholder,
+    modelUnavailableReason,
     acceptedFileTypes: undefined,
     disableSlashCommands: Boolean(agentEmptyProfile),
     tools,
@@ -982,6 +997,7 @@ export function ChatView({
     availableModels,
     currentModelId,
     onSelectModel,
+    onModelSelectorOpen,
     attachments,
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,
@@ -1044,6 +1060,8 @@ export function ChatView({
       sessionId={sessionId}
       onProfileDriveFileImported={handleProfileDriveFileImported}
       onProfileDriveFileDrop={handleProfileDriveFileDrop}
+      attachments={attachments}
+      onRemoveAttachment={uploadControls.removeAttachment}
     />
   );
 
@@ -1054,7 +1072,7 @@ export function ChatView({
           role="status"
           aria-live="polite"
           data-chat-continuation={continuationPending ? "checking" : continuation?.state ?? "unavailable"}
-          className="mx-auto mb-2 max-w-[60rem] px-2 text-sm text-[var(--theme-text-secondary)]"
+          className="mx-auto mb-2 max-w-[76rem] px-2 text-sm text-[var(--theme-text-secondary)]"
         >
           {publicContinuationMessage(continuation, continuationPending)}
           {continuationPending && !sessionRunning ? (

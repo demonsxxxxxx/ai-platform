@@ -39,7 +39,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     const context = document.querySelector('[data-workbench-region=context]');
     const popup = context.closest('[role=dialog]');
     const rect = n => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
-    const scroll = context.querySelector('[data-librechat-context-overview]');
+    const scroll = context.querySelector('[role=tabpanel]:not([hidden]) [data-profile-drive-tree-scroll]');
     const before = window.scrollY;
     scroll.scrollTop = scroll.scrollHeight;
     return { thread: rect(column), context: rect(context), popup: popup ? rect(popup) : null,
@@ -55,7 +55,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     assert.equal(geometry.popup, null);
     assert.ok(Math.abs(geometry.thread.y - geometry.context.y) < 2);
     assert.ok(geometry.context.x >= geometry.thread.right - 1);
-    assert.ok(geometry.context.width >= 288 && geometry.context.width <= 321);
+    assert.ok(geometry.context.width >= 280 && geometry.context.width <= 520);
   } else {
     assert.ok(geometry.popup && geometry.popup.x >= 0 && geometry.popup.right <= viewport.width + 1);
     assert.ok(geometry.popup.bottom <= viewport.height + 1 && geometry.focusedInside);
@@ -65,7 +65,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     await key(client, "Tab", "Tab", 9, 8);
     await client.waitFor(`document.querySelector('[role=dialog]').contains(document.activeElement)`, "chat:drawer-shift-tab-trap");
   }
-  await client.evaluate(`(() => { document.querySelector('#profile-drive-profile-tab').focus(); document.querySelector('[data-librechat-context-overview]').scrollTop = 0; })()`);
+  await client.evaluate(`(() => { document.querySelector('#profile-drive-profile-tab').focus(); document.querySelector('[role=tabpanel]:not([hidden]) [data-profile-drive-tree-scroll]').scrollTop = 0; })()`);
   const filesScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-files`);
   await key(client, "Escape", "Escape", 27);
   await client.waitFor(`!document.querySelector('[data-workbench-region=context]') && document.activeElement === document.querySelector('[data-librechat-context-toggle]')`, "chat:files-close-focus");
@@ -79,6 +79,29 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     await client.waitFor(`!document.querySelector('[data-workbench-region=context]')`, "chat:backdrop-close");
   }
   if (scenario !== "chat-integration") return { geometry, filesScreenshot, suggestionDraft: true };
+
+  await client.evaluate('window.__chatIntegration.attachmentPreview()');
+  await client.waitFor("document.querySelectorAll('[data-slot=composer-attachment]').length === 3", "chat:attachment-preview");
+  const attachmentLayout = await client.evaluate(`(() => {
+    const list = document.querySelector('[data-slot=composer-attachments]');
+    const card = list.querySelector('[data-slot=attachment-root]');
+    const title = card.querySelector('[title]');
+    const remove = card.querySelector('button[aria-label^="移除附件"]');
+    const rect = card.getBoundingClientRect();
+    return { fullName: title?.title, ellipsis: title && title.scrollWidth > title.clientWidth,
+      size: card.textContent, width: rect.width, left: rect.left, right: rect.right,
+      removeVisible: remove && Number(getComputedStyle(remove).opacity) === 1 && remove.getBoundingClientRect().width >= 24,
+      pageOverflow: document.documentElement.scrollWidth > innerWidth,
+      scrollable: list.scrollWidth > list.clientWidth,
+      queued: Boolean(list.querySelector('[data-state=queued]')), uploading: Boolean(list.querySelector('[role=progressbar][aria-valuenow="45"]')) };
+  })()`);
+  assert.ok(attachmentLayout.fullName?.includes('ECM SDK说明文档v5.17') && attachmentLayout.ellipsis && attachmentLayout.size.includes('1.9 MB'), JSON.stringify(attachmentLayout));
+  assert.ok(attachmentLayout.removeVisible && attachmentLayout.queued && attachmentLayout.uploading && !attachmentLayout.pageOverflow, JSON.stringify(attachmentLayout));
+  assert.ok(attachmentLayout.left >= 0 && attachmentLayout.right <= viewport.width && attachmentLayout.width >= 240, JSON.stringify(attachmentLayout));
+  const attachmentsScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-composer-attachments`);
+  await client.evaluate(`document.querySelector('[data-slot=composer-attachment] button[aria-label^="移除附件"]').click()`);
+  await client.waitFor("document.querySelectorAll('[data-slot=composer-attachment]').length === 2", "chat:attachment-remove");
+  await client.evaluate('window.__chatIntegration.attach()');
 
   await client.evaluate(`(() => { window.__chatCopies = []; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => window.__chatCopies.push(text) } }); document.querySelector('button[aria-label="发送消息"]').click(); })()`);
   await client.waitFor(`window.__chatIntegration.sends === 1 && Boolean(document.querySelector('button[aria-label="停止生成"]'))`, "chat:send-once");
@@ -396,6 +419,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`Boolean(document.querySelector('[data-composer-model-trigger]'))`, "chat:model-trigger");
   await client.evaluate(`(() => { const trigger = document.querySelector('[data-composer-model-trigger]'); trigger.focus(); trigger.click(); })()`);
   await client.waitFor(`Boolean(document.querySelector('[data-composer-model-panel] input'))`, "chat:model-picker");
+  assert.equal(await client.evaluate(`Boolean(document.querySelector('[aria-label="选择模型分组"]'))`), false);
   await client.waitFor(`(() => { const panel = document.querySelector('[data-composer-model-panel]'); const box = panel.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth + 1 && box.top >= 0 && box.bottom <= innerHeight + 1 && box.height > 40; })()`, "chat:model-contained");
   const modelScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-model-picker`);
   await client.evaluate(`document.querySelector('[data-composer-model-panel] input').focus()`);
@@ -406,7 +430,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`Boolean(document.querySelector('[data-composer-model-option="model-b"]'))`, "chat:model-reopen");
   await client.evaluate(`document.querySelector('[data-composer-model-option="model-b"]').click()`);
   await client.waitFor(`document.querySelector('[data-composer-model-trigger]')?.textContent.includes('合成模型乙') && !document.querySelector('[data-composer-model-panel]')`, "chat:model-selected");
-  return { geometry, activity, reveal, entryClearOfMessage, unifiedSurface, collapsedHistoryScreenshot, longQuestion, longQuestionScreenshot, coexistence, receiptScroll: scrolled, historyOnlyLayout, coexistenceScreenshot, historyOnlyScreenshot, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, questionScreenshots,
+  return { geometry, attachmentLayout, attachmentsScreenshot, activity, reveal, entryClearOfMessage, unifiedSurface, collapsedHistoryScreenshot, longQuestion, longQuestionScreenshot, coexistence, receiptScroll: scrolled, historyOnlyLayout, coexistenceScreenshot, historyOnlyScreenshot, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, questionScreenshots,
     modelSelected: true, modelFocusReturn: true, suggestionDraft: true, hydratedAttachment: true, questionAnswers: true, mermaid: true, waitingPainted: true, richTextReachable: true,
     sendOnce: true, streamUpdated: true, stopConfirmed: true, cancellationRetainsText: true, synchronized: true, richText: true, safeFailure: true, copyVerified: true };
 }

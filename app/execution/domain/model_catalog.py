@@ -17,7 +17,6 @@ _MAX_MODEL_DISPLAY_NAME_CHARS = 160
 AUTO_COMPACT_WINDOW_MIN_TOKENS = 100_000
 AUTO_COMPACT_WINDOW_MAX_TOKENS = 1_000_000
 AUTO_COMPACT_WINDOW_DEFAULT_TOKENS = 100_000
-_SAFE_PRINCIPAL_USER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@+-]{0,127}\Z")
 
 
 def normalize_model_token_limit(value: object, *, field_name: str) -> int | None:
@@ -84,7 +83,10 @@ def validate_upstream_model_id(value: str) -> str:
     return value
 
 
-def platform_model_id(upstream_model_id: str) -> str:
+def platform_model_id(upstream_model_id: str, provider_id: str = "legacy") -> str:
+    if provider_id != "legacy":
+        digest = hashlib.sha256(f"{provider_id}\0{upstream_model_id}".encode("utf-8")).hexdigest()[:32]
+        return f"mdl_{digest}"
     if (
         _SAFE_PLATFORM_ID.fullmatch(upstream_model_id)
         and not upstream_model_id.startswith(_GENERATED_PLATFORM_ID_PREFIX)
@@ -94,10 +96,10 @@ def platform_model_id(upstream_model_id: str) -> str:
     return f"mdl_{digest}"
 
 
-def discovered_model_mapping(upstream_model_ids: Sequence[str]) -> dict[str, str]:
+def discovered_model_mapping(upstream_model_ids: Sequence[str], provider_id: str = "legacy") -> dict[str, str]:
     discovered: dict[str, str] = {}
     for upstream_model_id in upstream_model_ids:
-        model_id = platform_model_id(upstream_model_id)
+        model_id = platform_model_id(upstream_model_id, provider_id)
         previous = discovered.setdefault(model_id, upstream_model_id)
         if previous != upstream_model_id:
             raise ValueError("model_catalog_identity_collision")
@@ -155,89 +157,17 @@ def normalize_model_display_name(
     return display_name
 
 
-def normalize_model_user_access(
-    access_mode: object,
-    allowed_user_ids: object,
-    *,
-    current: tuple[str, list[str]] | None = None,
-) -> tuple[str, list[str]]:
-    """Normalize per-model user access.
-
-    A model that never configured access is available to every authenticated
-    user. An update that omits the fields keeps the saved restriction, so an
-    older client cannot silently widen a restricted model. Omitted mode with a
-    user list is read as an explicit restricted selection rather than "everyone".
-    """
-
-    if access_mode is None:
-        if allowed_user_ids is None:
-            return current if current is not None else ("all", [])
-        if isinstance(allowed_user_ids, (list, tuple)) and not allowed_user_ids:
-            # Fields omitted together on a restricted model keep the saved list.
-            return current if current is not None else ("all", [])
-        if isinstance(allowed_user_ids, (list, tuple)):
-            return _normalize_selected_users(allowed_user_ids)
-        raise ValueError("model_user_access_invalid")
-    if access_mode == "all":
-        return "all", []
-    if access_mode != "selected" or not isinstance(allowed_user_ids, (list, tuple)):
-        raise ValueError("model_user_access_invalid")
-    return _normalize_selected_users(allowed_user_ids)
-
-
-def _normalize_selected_users(allowed_user_ids: Sequence[object]) -> tuple[str, list[str]]:
-    normalized: list[str] = []
-    for user_id in allowed_user_ids:
-        if (
-            not isinstance(user_id, str)
-            or not _SAFE_PRINCIPAL_USER_ID.fullmatch(user_id)
-            or ".." in user_id
-        ):
-            raise ValueError("model_user_access_invalid")
-        if user_id not in normalized:
-            normalized.append(user_id)
-    # An empty selection would otherwise silently mean "everyone".
-    if not normalized:
-        raise ValueError("model_user_access_requires_users")
-    return "selected", normalized
-
-
-def current_model_user_access(row: Mapping[str, Any]) -> tuple[str, list[str]]:
-    """Read the saved access pair for inheritance across an update."""
-
-    mode = str(row.get("access_mode") or "all")
-    if mode != "selected":
-        return "all", []
-    allowed = row.get("allowed_user_ids")
-    return "selected", [str(item) for item in allowed] if isinstance(allowed, (list, tuple)) else []
-
-
-def model_visible_to_user(row: Mapping[str, Any], *, user_id: str) -> bool:
-    access_mode = str(row.get("access_mode") or "all")
-    if access_mode == "all":
-        return True
-    if access_mode != "selected":
-        return False
-    allowed = row.get("allowed_user_ids")
-    if not isinstance(allowed, (list, tuple)):
-        return False
-    return user_id in [str(item) for item in allowed]
-
-
 def admin_model_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     projection = {
         "id": str(row["model_id"]),
         "value": str(row["upstream_model_id"]),
         "label": str(row["display_name"]),
         "provider": str(row["provider"]),
+        "provider_id": str(row.get("provider_id") or "legacy"),
+        "provider_name": str(row.get("provider_name") or "默认供应商"),
         "enabled": bool(row["enabled"]),
         "available": bool(row["upstream_available"]),
-        "is_default": bool(row["is_default"]),
         "order": int(row["display_order"]),
-        "access_mode": str(row.get("access_mode") or "all"),
-        "allowed_user_ids": [
-            str(item) for item in (row.get("allowed_user_ids") or [])
-        ],
         "last_seen_revision": int(row["last_seen_revision"]),
         "last_seen_at": row["last_seen_at"].isoformat(),
     }

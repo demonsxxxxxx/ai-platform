@@ -236,6 +236,7 @@ test("a recovered Agent Conversation keeps composer models and omits client capa
             {
               model_id: "client-model",
               model: "provider/client-model",
+              group_id: "group-restored", selection_mode: "explicit",
               enable_thinking: "high",
             },
             undefined,
@@ -258,6 +259,7 @@ test("a recovered Agent Conversation keeps composer models and omits client capa
     assert.deepEqual(submissions[0]?.[2], {
       model_id: "client-model",
       model: "provider/client-model",
+      group_id: "group-restored", selection_mode: "explicit",
     });
     assert.deepEqual(submissions[1]?.[2], {});
     for (const submission of submissions) {

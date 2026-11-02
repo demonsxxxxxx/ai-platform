@@ -40,7 +40,8 @@ async def settle_unclaimed_continuation(
         from runs owning_run
         join run_attempts attempt on attempt.tenant_id = owning_run.tenant_id
           and attempt.run_id = owning_run.id and attempt.id = %s
-          and attempt.execution_spec_schema_version in ('ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
+          and attempt.execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
         join run_context_snapshots snapshot on snapshot.tenant_id = owning_run.tenant_id
           and snapshot.workspace_id = owning_run.workspace_id and snapshot.user_id = owning_run.user_id
           and snapshot.session_id = owning_run.session_id and snapshot.run_id = owning_run.id

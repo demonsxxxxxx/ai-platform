@@ -3525,6 +3525,32 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_rejects_retired_auto_selection_before_run_side_effects(monkeypatch):
+    calls = []
+
+    async def fail_side_effect(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("retired auto selection must be rejected before Run persistence")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fail_side_effect)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.create_session", fail_side_effect)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.create_run", fail_side_effect)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.append_message", fail_side_effect)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_side_effect)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", agent_options={"selection_mode": "auto"}),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "model_selection_conflict"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("raw_model_id", [True, 123, 1.5])
 async def test_chat_stream_rejects_non_string_model_id_without_coercion(
     monkeypatch,
@@ -3625,8 +3651,9 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
-    async def fake_resolve_chat_model_selection(conn, *, selection, user_id):
+    async def fake_resolve_chat_model_selection(conn, *, selection, user_id, **kwargs):
         assert selection == {"id": "pro-tier", "value": "openai/gpt-5"}
+        assert kwargs["usage_scene"] in {"chat", "expert"}
         return RunModelSelection(
             model_id="pro-tier",
             model_value="openai/gpt-5",
@@ -3801,6 +3828,9 @@ async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeyp
     assert queue_payload["release_decision"] == {}
     assert calls["create_run"]["execution_kind"] == "harness_chat"
     assert calls["create_run"]["skill_id"] is None
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    assert queue_payload["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
+    assert calls["create_run"]["input_json"]["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
     assert calls["context"]["workspace_id"] == "frc_test_a_default"
     assert calls["context"]["skill_id"] is None
     assert calls["context"]["source"] == "chat_stream"
@@ -5804,7 +5834,8 @@ async def test_profile_secondary_skill_denial_is_audited_after_transaction_rollb
 
 
 @pytest.mark.asyncio
-async def test_first_selector_free_profile_submit_keeps_the_persisted_non_general_skill(monkeypatch):
+@pytest.mark.parametrize("default_group", [False, True])
+async def test_first_selector_free_profile_submit_keeps_the_persisted_non_general_skill(monkeypatch, default_group):
     from app.agent_apps import AgentProfileAdmission
     from app.models import AgentConversationIdentity
 
@@ -5878,6 +5909,17 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
 
     async def forbidden_submission_claim(*_args, **_kwargs):
         raise AssertionError("a denied unkeyed Agent request must not mint a recovery key")
+
+    if default_group:
+        async def default_expert_model(_conn, *, usage_scene, **_kwargs):
+            assert usage_scene == "expert"
+            from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
+            validate_model_group_snapshot(group_id="default-group", group_code="default", group_type="ordinary_default",
+                group_revision=1, selection_mode="explicit", usage_scene=usage_scene, policy_version="model-groups.v1")
+            return SimpleNamespace(model_id="default-model", model_value="provider/default", connection_revision=1,
+                auto_compact_window=200000, max_output_tokens=2048, group_id="default-group", group_code="default",
+                group_type="ordinary_default", group_revision=1, selection_mode="explicit", usage_scene="expert", policy_version="model-groups.v1")
+        monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", default_expert_model)
 
     async def authorize_transport_mcp_defaults(*_args, **_kwargs):
         return None

@@ -29,7 +29,8 @@ async def test_two_admin_interleaving_omitted_update_cannot_restore_committed_re
         await conn.execute("""
             create table tenants(id text primary key);
             insert into tenants values('tenant-a');
-            create table users(id text primary key, tenant_id text, display_name text);
+            create table users(id text primary key, tenant_id text, display_name text,
+                auth_source text, external_id text);
             create table audit_logs(id text, tenant_id text, user_id text, action text,
                 target_type text, target_id text, trace_id text, schema_version text, payload_json jsonb);
         """)

@@ -36,8 +36,6 @@ from app.runtime.sandbox.creation_claim import (
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_STAGE_IDENTITY,
-    PROFILE_DRIVE_STAGE_LEASE_FLAG,
     ContainerLease,
     ExecutorTaskRequest,
     ExecutorTerminalResult,
@@ -313,25 +311,6 @@ class SandboxRuntime:
         )
         if credential_subjects:
             lease_payload[MCP_CREDENTIAL_SUBJECTS_LEASE_KEY] = credential_subjects
-        if any(
-            isinstance(subject, dict)
-            and subject.get("identity") == PROFILE_DRIVE_STAGE_IDENTITY
-            and subject.get("mcp_server") == "ai-platform-context"
-            and all(
-                subject.get(key) is True
-                for key in (
-                    "registered",
-                    "declared",
-                    "active",
-                    "distributed",
-                    "identity_authorized",
-                    "object_authorized",
-                    "parameters_authorized",
-                )
-            )
-            for subject in request.tool_policy_subjects
-        ):
-            lease_payload[PROFILE_DRIVE_STAGE_LEASE_FLAG] = True
         if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
             lease_payload["internal_test_lease_version"] = "active-v1"
             lease_payload["requested_image"] = image_subject
@@ -951,6 +930,8 @@ class SandboxRuntime:
             recovery_tool_gate = getattr(request, "recovery_tool_gate", None)
             if recovery_tool_gate is not None:
                 task_config["recovery_tool_gate"] = recovery_tool_gate
+            if request.document_plugin_revision is not None:
+                task_config["document_plugin_revision"] = request.document_plugin_revision
             if request.model_token_limits is not None:
                 task_config["model_token_limits"] = request.model_token_limits.model_dump()
             if request.context_manifest:

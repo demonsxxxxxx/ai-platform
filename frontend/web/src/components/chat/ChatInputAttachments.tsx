@@ -20,7 +20,7 @@ export function ChatInputAttachments({
   return (
     <div
       data-slot="composer-attachments"
-      className="mx-3 mt-2.5 -mb-1 flex gap-3 overflow-x-auto attachment-scroll pb-1"
+      className="mx-3 mt-3 flex min-w-0 gap-2 overflow-x-auto attachment-scroll pb-2"
       data-composer-file-reference-list
     >
       {attachments.map((attachment) => {
@@ -29,6 +29,7 @@ export function ChatInputAttachments({
         return (
           <div
             key={attachment.id}
+            className="min-w-0 shrink-0"
             data-slot="composer-attachment"
             data-composer-file-reference={attachment.id}
             data-composer-file-state={

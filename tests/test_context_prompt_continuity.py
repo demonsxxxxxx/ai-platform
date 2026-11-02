@@ -497,7 +497,6 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "read_session_messages" not in captured["allowed_tools"]
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
-    assert "stage_profile_drive_file_to_workspace" not in captured["allowed_tools"]
     assert captured["active_context_checks"] == "staging"
     stage_tool = server["tools"][1]
     with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):

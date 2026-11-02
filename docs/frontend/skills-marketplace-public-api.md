@@ -244,7 +244,14 @@ while each Gateway owns its internal catalog and ACL caching. A single
 unavailable Server does not hide tools from other Servers. Responses expose
 stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
-internal IDs, or cache keys. Execution resolves only Server-qualified references.
+internal IDs, or cache keys. For an enterprise Gateway, a fresh anonymous
+catalog read may add the optional `upstream_server` display field only when its
+public tool name has one unique exact match in the user-authorized `tools/list`
+result. A missing, invalid, duplicate, or unavailable source leaves the
+user-effective tool selectable with `upstream_server: null`; this metadata is
+not an ACL, identity, execution route, or model input. Generic MCP connections
+do not perform this anonymous read and retain connection-based grouping.
+Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
 Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
@@ -279,10 +286,12 @@ which returns the current user's JWT to an authenticated page with
 - the document translator keeps it only in memory, validates the child window
   and nonce, and sends it to the fixed translator origin; the translator keeps
   it in tab-scoped `sessionStorage` for its API calls;
-- the administrator-only ProfileDrive marketplace page keeps it only for one
-  request to the fixed same-origin `/api/profile-drive/` proxy. That proxy
-  strips the AI Platform session cookie and forwards the JWT as
-  `Authorization` to the configured connector.
+- ProfileDrive keeps it only for one request to the fixed same-origin
+  `/api/profile-drive/` proxy. That proxy strips the AI Platform session cookie
+  and forwards the JWT as `Authorization` to the configured connector. The
+  connector page and file area reuse the same authentication dialog and flow;
+  profile and public files share the connection, and successful authentication
+  refreshes the file area.
 
 Neither flow places the JWT in a URL or AI Platform browser storage. At MCP
 execution time the Worker reuses the existing Capability Distribution and Tool
@@ -291,17 +300,13 @@ opens enterprise Gateway sessions with the current user's standard
 `Authorization`, or generic MCP sessions with static headers plus
 `JWT-Authorization`, and refreshes the user credential before each dispatch. It then
 exposes only the authorized selected tools through the SDK's in-process MCP
-interface. For ProfileDrive, an authorized `read_text_file` selection is mapped
-inside the governed sandbox to `stage_profile_drive_file_to_workspace`: the
-attempt-bound platform callback reads the current user's JWT, streams at most
-512 MiB from the fixed HTTPS connector upstream, and atomically places the file
-under the Run workspace. The tool result contains only the workspace-relative
-path and byte count; SMB credentials and file bytes never enter model messages.
-The connector's existing JSON `read_text_file` tool remains available only as a
-compatibility surface for non-AI-Platform consumers and is not exposed alongside
-the workspace staging tool in sandbox Runs. Other SDK calls pass through the
-adapter to their original remote tool names. There is no separate generic MCP
-Broker capability or model-selected upstream URL, and runtime connection
+interface. Native MCP tool results, including text, images, errors, structured fields and
+unmarked resource content, pass through the selected authorized bridge unchanged.
+A resource-capable MCP tool remains responsible for its own authorization and
+content semantics; the platform does not infer a file type, parse document bytes,
+or create a parallel ProfileDrive retrieval path. Other SDK calls pass through
+the adapter to their original remote tool names. There is no separate generic
+MCP Broker capability or model-selected upstream URL, and runtime connection
 material is removed from reconciliation persistence.
 
 The [MCP execution contract](../architecture/mcp-tool-execution.md) owns selected-tool exposure, SDK alias mapping, HTTP/SSE transport limits, and runnable acceptance. Command/stdin (`sandbox`) configuration writes are rejected until a governed process adapter exists; existing rows remain readable but do not authorize command execution. Ordinary directory responses with `unavailable_reason` display unavailable state rather than an empty successful catalog.

@@ -28,7 +28,12 @@ QUESTIONS = [{
 
 
 @pytest.fixture
-async def inputs_db():
+async def inputs_db(monkeypatch):
+    from app.bootstrap.context import configure_context_services
+    from app.context.application import provider_sessions
+
+    monkeypatch.setattr(provider_sessions, "_use_cases", None)
+    configure_context_services()
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN")
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -54,20 +59,26 @@ async def inputs_db():
                   cancel_requested_at timestamptz, workspace_id text, session_id text,
                   agent_id text, context_snapshot_id text, created_at timestamptz not null default now(),
                   primary key(tenant_id,id));
-                create table sessions (id text primary key, tenant_id text, user_id text, status text);
-                insert into sessions values ('session','tenant','owner','active');
+                create table sessions (id text primary key, tenant_id text, user_id text, status text,
+                  workspace_id text default 'workspace', agent_id text default 'agent',
+                  unique(tenant_id,workspace_id,user_id,id,agent_id));
+                insert into sessions(id,tenant_id,user_id,status) values ('session','tenant','owner','active');
                 create table run_attempts (
                   id text primary key, tenant_id text, run_id text, status text, ordinal int);
                 insert into runs values ('tenant','run','owner','running',null,
                   'workspace','session','agent','context',now());
                 insert into run_attempts values ('attempt','tenant','run','running',1);
                 alter table run_attempts add column owner_generation bigint not null default 1;
+                alter table run_attempts add column execution_spec_sha256 text;
                 alter table run_attempts add column execution_spec_json jsonb not null default '{}';
             """)
             source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
             start = source.index("create table if not exists run_input_sessions")
             end = source.index("create or replace function", start)
             await conn.execute(source[start:end])
+            provider_start = source.index("create table if not exists provider_session_heads")
+            await conn.execute(source[provider_start:source.index("-- A populated pre-#511", provider_start)])
+            await conn.execute(Path("app/context/infrastructure/conversation_recovery_schema.sql").read_text())
             await conn.execute(Path("app/execution/infrastructure/recovery_operations_schema.sql").read_text())
             await conn.commit()
         yield connect, build_run_inputs_service()

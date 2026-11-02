@@ -13,6 +13,12 @@ uv lock --check
 uv sync --locked --extra test --no-install-project
 ```
 
+The backend/executor also preinstalls the official Anthropic document suite and
+its pinned Node/Python/OS dependencies under the
+[ordinary-chat document plugin contract](ordinary-chat-document-plugin.md).
+Its fixed upstream archive is integrity-checked during image construction; the
+upstream Skill contents and licenses are preserved without source vendoring.
+
 The backend Dockerfile uses the same lock with `uv sync --locked`; it must not
 derive an unlocked requirements file from `pyproject.toml`. Keep index, proxy,
 and credential values out of Git, issue/PR text, and command output. The default
@@ -53,7 +59,11 @@ platforms, then update the Dockerfile, version declaration, lock when applicable
 and focused tests in one review.
 
 Pull requests and `main` run the stable `backend required` and `frontend required`
-checks. Those checks include real Docker builds. The frontend workflow owns the full
+checks. PR image jobs perform real Docker builds only when the affected image
+inputs change; `not_affected` retains a successful check without a build. Main
+pushes and ordinary validation workflow dispatches delegate image builds to the
+controlled Packaging workflow described below. Their aggregate success alone is
+not image-build evidence. The frontend workflow owns the full
 audit, test, lint, type-check, and build coverage through four JS test shards, an
 independent Python audit/contract job, and the lint/build/trace job. The local
 `ci:verify` command retains the complete serial reproduction path. The frontend

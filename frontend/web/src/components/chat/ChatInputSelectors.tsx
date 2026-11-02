@@ -63,7 +63,6 @@ export function ChatInputSelectors({
             tools={tools}
             onToggleTool={onToggleTool}
             onToggleCategory={onToggleCategory}
-            onToggleAll={onToggleAll}
             enabledCount={enabledToolsCount}
             totalCount={totalToolsCount}
             isOpen={activePanel === "tools"}
@@ -93,7 +92,7 @@ export function ChatInputSelectors({
             />
           </LibreChatSelectorModal>
         )}
-      {onSelectModel && availableModels.length > 0 && (
+      {onSelectModel && (
         <LibreChatSelectorModal panel="model">
           <ComposerModelPicker
             models={availableModels}

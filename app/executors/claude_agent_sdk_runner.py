@@ -90,7 +90,6 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -105,6 +104,7 @@ from app.sandbox.api import (
     workspace_read_allowed,
 )
 from app.settings import get_settings
+from app.platform.sandbox.claude_native_filesystem import claude_workspace_env
 from app.skills.api import is_valid_executable_skill_name
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
@@ -670,17 +670,7 @@ def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | Non
         if value:
             env[key] = value
     if cwd is not None:
-        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
-        home = cwd / ".home"
-        env["HOME"] = str(home)
-        env["USERPROFILE"] = str(home)
-        env["CLAUDE_CONFIG_DIR"] = str(cwd / ".claude-config")
-        env["XDG_CONFIG_HOME"] = str(home / ".config")
-        env["XDG_CACHE_HOME"] = str(home / ".cache")
-        env["XDG_DATA_HOME"] = str(home / ".local" / "share")
-        env["TMPDIR"] = str(cwd / ".tmp")
-        env["TMP"] = str(cwd / ".tmp")
-        env["TEMP"] = str(cwd / ".tmp")
+        env.update(claude_workspace_env(cwd))
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
     if settings.anthropic_auth_token:
@@ -815,9 +805,7 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
-    default_tool_names = (
-        name for name in _SDK_INTERNAL_CONTEXT_TOOLS if name != PROFILE_DRIVE_STAGE_TOOL
-    )
+    default_tool_names = iter(_SDK_INTERNAL_CONTEXT_TOOLS)
     selected_tool_names = {
         name
         for name in (tool_names or default_tool_names)
@@ -841,7 +829,6 @@ def _build_context_retrieval_mcp_server(
                 "context_file_too_large",
                 "context_file_size_required",
                 *ARTIFACT_TRANSFER_SAFE_ERRORS,
-                "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
@@ -884,14 +871,6 @@ def _build_context_retrieval_mcp_server(
         return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
-        PROFILE_DRIVE_STAGE_TOOL,
-        "Copy any file type from the authenticated user's Profile Desktop into the current run workspace and return a workspace-relative path.",
-        {"path": str},
-    )
-    async def stage_profile_drive_file_to_workspace(args):
-        return await _run(PROFILE_DRIVE_STAGE_TOOL, args)
-
-    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -907,7 +886,6 @@ def _build_context_retrieval_mcp_server(
         read_run_artifact,
         stage_context_file_to_workspace,
         stage_run_artifact_to_workspace,
-        stage_profile_drive_file_to_workspace,
         search_memory,
     ]
     return create_server(
@@ -1143,6 +1121,7 @@ def _workspace_path_parameters_authorized(
     tool_input: object,
     *,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     mutating_key = _WORKSPACE_MUTATING_PATH_PARAMETER.get(tool_name)
     path_bearing_tool = (
@@ -1171,7 +1150,7 @@ def _workspace_path_parameters_authorized(
         return lexical_relative, resolved_relative
 
     def readable_path_parts_authorized(relative: Path) -> bool:
-        return workspace_read_allowed(PurePosixPath(relative.as_posix()))
+        return workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
 
     def writable_path_parts_authorized(relative: Path) -> bool:
         return workspace_mutation_allowed(PurePosixPath(relative.as_posix()))
@@ -1252,6 +1231,7 @@ def _workspace_search_result_path_authorized(
     *,
     search_path: object,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     if not isinstance(raw_path, str) or not raw_path.strip() or "\x00" in raw_path:
         return False
@@ -1274,7 +1254,7 @@ def _workspace_search_result_path_authorized(
             lexical_relative = Path(os.path.abspath(candidate)).relative_to(root)
             resolved_relative = candidate.resolve(strict=False).relative_to(root)
             if not all(
-                workspace_read_allowed(PurePosixPath(relative.as_posix()))
+                workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
                 for relative in (lexical_relative, resolved_relative)
             ):
                 return False
@@ -1308,6 +1288,7 @@ def _filtered_workspace_search_text(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     budget: dict[str, int],
 ) -> tuple[str, bool]:
     output_mode = str(tool_input.get("output_mode") or "files_with_matches")
@@ -1341,7 +1322,7 @@ def _filtered_workspace_search_text(
             allowed = _workspace_search_result_path_authorized(
                 result_path,
                 search_path=search_path,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
             )
         encoded_size = len(line.encode("utf-8")) + 1
         if (
@@ -1365,6 +1346,7 @@ def _filtered_workspace_search_output(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     _budget: dict[str, int] | None = None,
 ) -> tuple[object, bool]:
     """Filter private paths from the SDK result before it returns to the model."""
@@ -1376,7 +1358,7 @@ def _filtered_workspace_search_output(
             tool_response,
             tool_name=tool_name,
             tool_input=tool_input,
-            workspace_root=workspace_root,
+            workspace_root=workspace_root, native_session_id=native_session_id,
             budget=budget,
         )
         if (
@@ -1397,7 +1379,7 @@ def _filtered_workspace_search_output(
                 item,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
                 _budget=budget,
             )
             filtered_items.append(filtered)
@@ -1423,116 +1405,93 @@ def _filtered_workspace_search_output(
 
     changed = False
     filenames = tool_response.get("filenames")
-    filtered_filenames: list[object] = []
+    filtered_filenames = []
     if isinstance(filenames, list):
         for path in filenames[:_WORKSPACE_SEARCH_MAX_OUTPUT_LINES]:
-            encoded_size = len(str(path).encode("utf-8")) + 1
             if not _workspace_search_result_path_authorized(
-                path,
-                search_path=tool_input.get("path") or ".",
-                workspace_root=workspace_root,
+                path, search_path=tool_input.get("path") or ".",
+                workspace_root=workspace_root, native_session_id=native_session_id,
             ):
                 continue
+            encoded_size = len(path.encode("utf-8")) + 1
             if (
                 budget["lines"] >= _WORKSPACE_SEARCH_MAX_OUTPUT_LINES
-                or budget["bytes"] + encoded_size
-                > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
+                or budget["bytes"] + encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
             ):
                 continue
             filtered_filenames.append(path)
             budget["lines"] += 1
             budget["bytes"] += encoded_size
         changed = filtered_filenames != filenames
-    elif tool_name in {"Glob", "Grep"}:
+    elif "filenames" in tool_response:
         changed = True
 
-    filtered_values: dict[str, object] = {}
+    mode = tool_response.get("mode") or tool_input.get("output_mode") or "files_with_matches"
+    if mode not in {"content", "files_with_matches", "count"}:
+        mode = "files_with_matches"
+    filtered_values = {}
     for key in ("content", "text", "data"):
-        if key not in tool_response:
-            continue
-        filtered, item_changed = _filtered_workspace_search_output(
-            tool_response[key],
-            tool_name=tool_name,
-            tool_input=tool_input,
-            workspace_root=workspace_root,
-            _budget=budget,
-        )
-        filtered_values[key] = filtered
-        changed = changed or item_changed
+        if key in tool_response:
+            filtered, item_changed = _filtered_workspace_search_output(
+                tool_response[key], tool_name=tool_name,
+                tool_input={**tool_input, "output_mode": mode},
+                workspace_root=workspace_root, native_session_id=native_session_id,
+                _budget=budget,
+            )
+            filtered_values[key] = filtered
+            changed = changed or item_changed
 
-    if tool_name == "Glob":
-        duration_ms = tool_response.get("durationMs")
-        if not isinstance(duration_ms, (int, float)) or isinstance(duration_ms, bool):
-            duration_ms = 0
-        filtered_response: dict[str, object] = {
-            "durationMs": duration_ms,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-            "truncated": tool_response.get("truncated") is True,
-            # The SDK accepts these fields as optional; recompute them from
-            # the visible result so private paths never survive as counts.
-            "totalMatches": len(filtered_filenames),
-            "countIsComplete": True,
-        }
-    elif tool_name == "Grep":
-        mode = str(
-            tool_response.get("mode")
-            or tool_input.get("output_mode")
-            or "files_with_matches"
+    filtered_response: dict[str, object] = {
+        **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
+    }
+    if tool_name in {"Glob", "Grep"}:
+        # Retain only safe SDK scalars; path-bearing values are filtered above.
+        numeric_fields = (
+            ("durationMs", "numFiles", "totalMatches") if tool_name == "Glob"
+            else ("numFiles", "numLines", "numMatches", "totalLines", "appliedLimit", "appliedOffset")
         )
-        if mode not in {"content", "files_with_matches", "count"}:
-            mode = "files_with_matches"
-        filtered_response = {
-            "mode": mode,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-        }
-        if "content" in filtered_values:
-            filtered_response["content"] = filtered_values["content"]
-        if mode == "count":
-            count_lines = (
-                filtered_values.get("content", "").splitlines()
-                if isinstance(filtered_values.get("content"), str)
-                else []
-            )
-            visible_counts = [
-                int(match.group(1))
-                for line in count_lines
-                if (
-                    match := re.fullmatch(r".+?:(\d+)", line.strip())
-                )
-                is not None
-            ]
-            filtered_response["numFiles"] = len(visible_counts)
-            filtered_response["numMatches"] = sum(visible_counts)
-        elif mode == "content" and isinstance(
-            filtered_values.get("content"), str
-        ):
-            visible_lines = sum(
-                1
-                for line in filtered_values["content"].splitlines()
-                if _workspace_search_line_path(
-                    line,
-                    tool_name="Grep",
-                    output_mode="content",
-                )
-                is not None
-            )
-            filtered_response["numLines"] = visible_lines
-            filtered_response["totalLines"] = visible_lines
-        for pagination_key in ("appliedLimit", "appliedOffset"):
-            pagination_value = tool_response.get(pagination_key)
-            if (
-                isinstance(pagination_value, int)
-                and not isinstance(pagination_value, bool)
-                and pagination_value >= 0
-            ):
-                filtered_response[pagination_key] = pagination_value
+        for key in numeric_fields:
+            value = tool_response.get(key)
+            valid = isinstance(value, int) or key == "durationMs" and isinstance(value, float)
+            if valid and not isinstance(value, bool) and value >= 0:
+                filtered_response[key] = value
+        if tool_name == "Glob":
+            for key in ("truncated", "countIsComplete"):
+                if isinstance(tool_response.get(key), bool):
+                    filtered_response[key] = tool_response[key]
+            # Never claim a complete count after either owner truncated output.
+            if changed or tool_response.get("truncated") is True or tool_response.get("countIsComplete") is False:
+                filtered_response["truncated"] = True
+                filtered_response.pop("totalMatches", None)
+                if "countIsComplete" in tool_response:
+                    filtered_response["countIsComplete"] = False
+            if changed:
+                filtered_response["numFiles"] = len(filtered_filenames)
+        else:
+            if "mode" in tool_response:
+                filtered_response["mode"] = mode
+            if "content" in filtered_values:
+                filtered_response["content"] = filtered_values["content"]
+            paginated = any(key in filtered_response for key in ("appliedLimit", "appliedOffset"))
+            if changed or paginated:
+                filtered_response.pop("totalLines", None)
+            content = filtered_values.get("content")
+            if changed and mode == "files_with_matches":
+                filtered_response["numFiles"] = len(filtered_filenames)
+            elif changed and isinstance(content, str):
+                if mode == "count":
+                    counts = [int(match.group(1)) for line in content.splitlines()
+                              if (match := re.fullmatch(r".+?:(\d+)", line.strip()))]
+                    filtered_response["numFiles"] = len(counts)
+                    if "numMatches" in tool_response:
+                        filtered_response["numMatches"] = sum(counts)
+                else:
+                    filtered_response["numLines"] = sum(
+                        _workspace_search_line_path(line, tool_name="Grep", output_mode="content") is not None
+                        for line in content.splitlines()
+                    )
     else:
-        filtered_response = {
-            **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
-            **filtered_values,
-        }
+        filtered_response.update(filtered_values)
         for key in ("mode", "type", "tool_use_id"):
             value = tool_response.get(key)
             if isinstance(value, str):
@@ -1541,13 +1500,7 @@ def _filtered_workspace_search_output(
     changed = changed or filtered_response != tool_response
     if root_call:
         try:
-            encoded_size = len(
-                json.dumps(
-                    filtered_response,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
+            encoded_size = len(json.dumps(filtered_response, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             return _WORKSPACE_SEARCH_OUTPUT_NOTICE, True
         if encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES:
@@ -1606,6 +1559,7 @@ async def run_claude_agent_sdk(
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
+    document_plugin_revision: str | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_sdk_text: Callable[[dict[str, object]], None] | None = None,
@@ -2002,6 +1956,10 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
+    from app.execution.api import document_plugin_skill_names, document_plugin_tool_subject
+    from app.bootstrap.claude_document_plugin import prepare_claude_document_plugin
+    plugin_skills = document_plugin_skill_names(document_plugin_revision)
+    plugin_options, document_plugin_read_allowed = prepare_claude_document_plugin(document_plugin_revision)
     configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
         not is_valid_executable_skill_name(name)
@@ -2026,6 +1984,12 @@ async def run_claude_agent_sdk(
     )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    plugin_subjects = document_plugin_tool_subject(document_plugin_revision)
+    if plugin_subjects:
+        if skill_id is not None or configured_skills:
+            raise ValueError("document_plugin_scope_invalid")
+        configured_skills = plugin_skills
+        authorized_subjects.update(_canonical_tool_policy_subjects(plugin_subjects))
     if (
         sandbox_brokered
         and set(SANDBOX_LOCAL_TOOL_IDENTITIES).intersection(authorized_subjects)
@@ -2142,9 +2106,7 @@ async def run_claude_agent_sdk(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
                 else [
-                    name
-                    for name in _SDK_INTERNAL_CONTEXT_TOOLS
-                    if name != PROFILE_DRIVE_STAGE_TOOL
+                    name for name in _SDK_INTERNAL_CONTEXT_TOOLS
                 ]
             ),
         )
@@ -2172,9 +2134,7 @@ async def run_claude_agent_sdk(
         internal_context_tools: set[str] = set()
     elif tool_policy_subjects is None:
         internal_context_tools = {
-            name
-            for name in _SDK_INTERNAL_CONTEXT_TOOLS
-            if name != PROFILE_DRIVE_STAGE_TOOL
+            name for name in _SDK_INTERNAL_CONTEXT_TOOLS
         }
     else:
         internal_context_tools = set(requested_internal_context_tools)
@@ -2376,6 +2336,9 @@ async def run_claude_agent_sdk(
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
+    private_replacements.update({plugin["path"]: private_replacement for plugin in plugin_options})
+    if document_plugin_revision is not None:
+        private_replacements[document_plugin_revision] = private_replacement
     workspace_token = str(cwd)
     if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
         private_replacements[workspace_token] = private_replacement
@@ -2439,7 +2402,7 @@ async def run_claude_agent_sdk(
         ClaudeSdkAgentEventAdapter(
             run_id=run_id,
             attempt_id=attempt_id,
-            tool_policy_subjects=tool_policy_subjects,
+            tool_policy_subjects=[*(tool_policy_subjects or []), *plugin_subjects],
             public_skill_metadata=public_skill_metadata,
             sanitizer=sanitize_public_answer_text,
             payload_sanitizer=sanitize_public_event_candidate,
@@ -2764,7 +2727,11 @@ async def run_claude_agent_sdk(
                     subject,
                     subject_tool_name,
                     tool_input,
-                    workspace_root=cwd,
+                    workspace_root=cwd, native_session_id=session_id,
+                ) or (
+                    subject_tool_name == "Read"
+                    and isinstance(tool_input, dict)
+                    and document_plugin_read_allowed(tool_input.get("file_path"))
                 )
             if (
                 parameters_authorized
@@ -3360,7 +3327,7 @@ async def run_claude_agent_sdk(
                         hook_input["tool_response"],
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        workspace_root=cwd,
+                        workspace_root=cwd, native_session_id=session_id,
                     )
                     if changed:
                         return {
@@ -3523,6 +3490,7 @@ async def run_claude_agent_sdk(
             else {}
         ),
         skills=configured_skills,
+        plugins=plugin_options,
         max_turns=max_turns,
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,

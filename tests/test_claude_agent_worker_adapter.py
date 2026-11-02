@@ -1211,7 +1211,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         )
 
 
-def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, tmp_path):
+def test_collect_workspace_artifacts_preserves_selected_docx_bytes(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
@@ -1240,157 +1240,71 @@ def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, t
     assert stored[0][1] == content
 
 
-def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "document.docx").write_bytes(b"not-a-docx")
-
-    storage_calls = []
-
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("invalid required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="synthetic-document-skill", agent_id="synthetic-document-agent"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize(
-    ("content_types_xml", "relationships_xml"),
-    [
-        (
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types" />',
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" />',
-        ),
-        (
-            (
-                '<?xml version="1.0" encoding="UTF-16"?>'
-                '<!DOCTYPE Types [<!ENTITY main "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">]>'
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" ContentType="&main;" />'
-                "</Types>"
-            ).encode("utf-16"),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="//word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "<Override PartName=\"/word/document.xml\" ContentType=\"text/plain\" />"
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="other/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-    ],
-    ids=(
-        "missing-opc-references",
-        "utf16-internal-entity",
-        "noncanonical-target",
-        "ambiguous-main-declarations",
-    ),
-)
-def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
-    monkeypatch,
-    tmp_path,
-    content_types_xml,
-    relationships_xml,
+def test_collect_workspace_artifacts_delivers_opaque_docx_bytes_with_mixed_files(
+    monkeypatch, tmp_path
 ):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    with zipfile.ZipFile(output / "document.docx", "w") as archive:
-        archive.writestr("[Content_Types].xml", content_types_xml)
-        archive.writestr("_rels/.rels", relationships_xml)
-        archive.writestr(
-            "word/document.xml",
-            '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
-        )
+    opaque_docx = b"original selected docx bytes"
+    (output / "nonstandard.docx").write_bytes(opaque_docx)
 
-    storage_calls = []
+    malformed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(malformed_docx_stream, "w") as archive:
+        archive.writestr("word/document.xml", b"<broken")
+    malformed_docx = malformed_docx_stream.getvalue()
+    (output / "malformed.docx").write_bytes(malformed_docx)
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("malformed required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="qa-file-reviewer"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
-def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    document_path = output / "document.docx"
-    with zipfile.ZipFile(document_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    compressed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(
+        compressed_docx_stream, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         archive.writestr("word/document.xml", b"A" * 1025)
-
-    monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
-
+    compressed_docx = compressed_docx_stream.getvalue()
+    assert len(compressed_docx) < 1025
+    (output / "compressed.docx").write_bytes(compressed_docx)
+    (output / "notes.txt").write_bytes(b"selected alongside DOCX")
     storage_calls = []
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("oversized required artifacts must not be uploaded")
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            storage_calls.append((content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FakeStorage)
 
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id=skill_id),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"),
+        workspace,
+        response_files=[
+            "output/nonstandard.docx",
+            "output/malformed.docx",
+            "output/compressed.docx",
+            "output/notes.txt",
+        ],
+    )
+
+    assert [artifact.artifact_type for artifact in artifacts] == [
+        "result_docx",
+        "result_docx",
+        "result_docx",
+        "report_txt",
+    ]
+    assert storage_calls == [
+        (
+            opaque_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            malformed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            compressed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (b"selected alongside DOCX", "text/plain; charset=utf-8"),
+    ]
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
@@ -2577,6 +2491,31 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         evidence,
         available_skill_identities=[skill_id],
     ) == expected_error
+
+
+@pytest.mark.parametrize("granted", [False, True])
+def test_document_plugin_worker_evidence_requires_frozen_grant(granted):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    current_payload = payload(
+        execution_kind="harness_chat", skill_id=None, skill_manifests=[],
+        input={DOCUMENT_PLUGIN_INPUT_KEY: DOCUMENT_PLUGIN_REVISION} if granted else {},
+    )
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill", canonical_identity="document-skills:docx",
+    )
+    binding = {key: getattr(current_payload, key) for key in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+    )}
+    evidence = [RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration, binding=binding, tool_call_id="document-call",
+        lifecycle_phase=phase,
+    ).__dict__ for phase in ("invocation_requested", "completed")]
+    from app.execution.api import sandbox_reconciliation_payload, restored_sandbox_run_payload
+    restored = restored_sandbox_run_payload(sandbox_reconciliation_payload(current_payload), RunPayload, {})
+    assert restored.input.get(DOCUMENT_PLUGIN_INPUT_KEY) == (DOCUMENT_PLUGIN_REVISION if granted else None)
+    assert claude_agent_worker._capability_execution_error(restored, evidence) == (
+        None if granted else "required_tool_completion_evidence_mismatch"
+    )
 
 
 def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
@@ -4335,55 +4274,6 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
         "Bash",
         "Write",
     ]
-
-
-def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging():
-    profile_drive_read = {
-        "identity": "mcp__ProfileDriveMCPServer__read_text_file",
-        "mcp_server": "ProfileDriveMCPServer",
-        "mcp_tool": "read_text_file",
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "risk_level": "low",
-        "write_capable": False,
-        "parameter_delegation": "external_mcp",
-    }
-    payload = types.SimpleNamespace(
-        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
-    )
-
-    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
-        payload,
-        sandbox_provider="opensandbox",
-    )
-
-    assert [subject["identity"] for subject in subjects] == [
-        "mcp__ai-platform-response__attach_file",
-        "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
-    ]
-    assert subjects[1]["allowed_parameter_keys"] == ["path"]
-    assert subjects[1]["required_parameter_keys"] == ["path"]
-    assert subjects[1]["public_tool_label"] == "准备共享文件"
-
-    profile_drive_read["parameters_authorized"] = False
-    denied_payload = types.SimpleNamespace(
-        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
-    )
-    denied_subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
-        denied_payload,
-        sandbox_provider="opensandbox",
-    )
-
-    assert all(
-        subject["identity"]
-        != "mcp__ai-platform-context__stage_profile_drive_file_to_workspace"
-        for subject in denied_subjects
-    )
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():

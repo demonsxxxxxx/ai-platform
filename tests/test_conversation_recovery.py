@@ -114,6 +114,19 @@ async def test_prefix_validates_main_children_full_bytes_and_whole_ack_boundary(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_mirror", [None, {"type": "legacy-drift"}])
+async def test_recovery_prefix_reads_canonical_only_and_ignores_legacy_mirror(legacy_mirror):
+    conn = PrefixConnection()
+    originals = [copy.deepcopy(row["entry_json"]) for row in conn.entries]
+    for row in conn.entries:
+        row["entry_canonical_json"] = provider_epochs._canonical(row["entry_json"]).decode()
+        row["entry_json"] = legacy_mirror
+    prefix, total = await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=3)
+    assert [row["entry_json"] for row in prefix] == originals
+    assert total == conn.epoch["transcript_bytes"]
+
+
+@pytest.mark.asyncio
 async def test_session_store_preserves_frozen_epoch_and_reports_unknown_ack_without_advancing_final():
     adapter = ClaudeSessionStoreAdapter(
         callback_url="https://callback.invalid", callback_token="synthetic", callback_token_id="synthetic",

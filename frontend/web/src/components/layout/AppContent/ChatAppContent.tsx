@@ -41,10 +41,7 @@ import {
   getExternalNavigationTargetFile,
   shouldScrollToBottomAfterExternalNavigation,
 } from "./externalNavigationState";
-import {
-  reconcileCurrentModelSelection,
-  resolveDefaultModelSelection,
-} from "./modelSelection";
+import { reconcileCurrentModelSelection } from "./modelSelection";
 import { getRestoredModelSelection } from "./sessionState";
 import {
   buildEffectiveSkills,
@@ -412,7 +409,16 @@ export function ChatAppContent({
     sessionId: null,
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
-  const { availableModels, defaultModel } = useModelCatalogContext();
+  const {
+    availableModels,
+    defaultModel,
+    defaultModelId,
+    refreshModels,
+    selectedGroupId,
+    selectedGroup,
+    selectionError: catalogSelectionError,
+    isLoading: modelsLoading,
+  } = useModelCatalogContext();
   const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
@@ -713,24 +719,52 @@ export function ChatAppContent({
   const [currentModelValue, setCurrentModelValue] = useState("");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
+  const modelGroupRef = useRef(selectedGroupId || null);
+
   useEffect(() => {
-    if (!availableModels) return;
+    if (catalogSelectionError) {
+      setCurrentModelId("");
+      setCurrentModelValue("");
+      setModelSelectionError(catalogSelectionError);
+    }
+  }, [catalogSelectionError]);
+
+  useEffect(() => {
+    const priorGroupId = modelGroupRef.current;
+    if (selectedGroupId) modelGroupRef.current = selectedGroupId;
+    if (priorGroupId && selectedGroupId && priorGroupId !== selectedGroupId) {
+      const groupDefault = availableModels?.find((model) => model.id === defaultModelId);
+      setCurrentModelId(groupDefault?.id ?? "");
+      setCurrentModelValue(groupDefault?.value ?? "");
+      setModelSelectionError(catalogSelectionError);
+      return;
+    }
+    if (!availableModels || catalogSelectionError) return;
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
-    const stillAvailable = availableModels.some((model) =>
+    const stillAvailable = availableModels.filter((model) =>
       (currentModelId && model.id === currentModelId)
-      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+      || (!currentModelId && currentModelValue && model.value === currentModelValue)).length === 1;
     if (hasPriorSelection && !stillAvailable) {
       setCurrentModelId("");
       setCurrentModelValue("");
       setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
       return;
     }
-    if (modelSelectionError) return;
+    if (modelSelectionError) {
+      if (modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"
+        && !hasPriorSelection && defaultModel) setModelSelectionError(null);
+      return;
+    }
+    if (!currentModelId && !currentModelValue && !defaultModel) {
+      setModelSelectionError("默认模型暂不可用，请手动选择同组模型。");
+      return;
+    }
     const nextSelection = reconcileCurrentModelSelection({
       availableModels,
       currentModelId,
       currentModelValue,
-      fallbackDefaultValue: defaultModel,
+      storedDefaultId: defaultModelId,
+      storedDefaultValue: defaultModel,
     });
 
     if (nextSelection.modelId !== currentModelId) {
@@ -739,7 +773,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, defaultModelId, modelSelectionError, selectedGroupId]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -779,6 +813,8 @@ export function ChatAppContent({
         selectedMcpToolIds: undefined,
         agentOptions: {
           ...lockedAgentOptionValues,
+          ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
+          selection_mode: "explicit",
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
@@ -788,6 +824,8 @@ export function ChatAppContent({
         selectedMcpToolIds: sessionConfig.selectedMcpToolIds,
         agentOptions: {
           ...agentOptionValues,
+          ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
+          selection_mode: "explicit",
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
@@ -984,7 +1022,12 @@ export function ChatAppContent({
       restoreSessionConfig(config);
 
       if (config.agent_options) {
-        restoreAgentOptions(config.agent_options);
+        const restoredAgentOptions = { ...config.agent_options };
+        delete restoredAgentOptions.model_id;
+        delete restoredAgentOptions.model;
+        delete restoredAgentOptions.group_id;
+        delete restoredAgentOptions.selection_mode;
+        restoreAgentOptions(restoredAgentOptions);
 
         const restoredModelSelection = getRestoredModelSelection(config);
         setModelSelectionError(null);
@@ -1023,11 +1066,6 @@ export function ChatAppContent({
       navigate(agentWorkspaceRouteBasePath);
       return;
     }
-    const nextSelection = resolveDefaultModelSelection({
-      availableModels,
-      fallbackDefaultValue: defaultModel,
-    });
-
     setAgentConversationState(conversationState("generic", null));
     handleNewSession();
     clearSelectedSkill();
@@ -1035,12 +1073,10 @@ export function ChatAppContent({
 
     resetAgentOptionDefaults();
 
-    setCurrentModelId(nextSelection.modelId);
-    setCurrentModelValue(nextSelection.modelValue);
+    setCurrentModelId("");
+    setCurrentModelValue("");
     setModelSelectionError(null);
   }, [
-    availableModels,
-    defaultModel,
     handleNewSession,
     clearSelectedSkill,
     resetToDefaults,
@@ -1060,10 +1096,12 @@ export function ChatAppContent({
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
       setAgentWorkspaceError(null);
-      if (!availableModels?.some((model) => model.id === currentModelId
-        && model.value === currentModelValue)) {
-        setModelSelectionError(availableModels?.length
-          ? "请先选择当前可用的模型。" : "当前没有可用模型，请联系管理员。");
+      if (!selectedGroup || !availableModels?.length) {
+        setModelSelectionError("当前没有可用业务组或模型，请联系管理员配置业务组。");
+        return { status: "failed" };
+      }
+      if (!availableModels.some((model) => model.id === currentModelId && model.value === currentModelValue)) {
+        setModelSelectionError("请先选择当前可用的模型。");
         return { status: "failed" };
       }
       if (!agentWorkspace || sessionId) {
@@ -1177,6 +1215,7 @@ export function ChatAppContent({
       availableModels,
       currentModelId,
       currentModelValue,
+      selectedGroup,
     ],
   );
 
@@ -1350,6 +1389,10 @@ export function ChatAppContent({
             canSendMessage={canSendMessage}
             continuation={agentWorkspaceTranscriptReady ? continuation : undefined}
             continuationPending={agentWorkspaceTranscriptReady && continuationPending}
+            modelUnavailableReason={modelsLoading && !currentModelId ? "正在加载模型…" : modelSelectionError
+              ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
+                ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError
+              : !currentModelId ? "暂时无法读取可用模型，请重试。" : undefined}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={
@@ -1409,6 +1452,7 @@ export function ChatAppContent({
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
             onSelectModel={handleSelectModel}
+            onModelSelectorOpen={refreshModels}
             onSendMessage={handleSendMessage}
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}
@@ -1431,11 +1475,6 @@ export function ChatAppContent({
             WorkbenchShellComponent={WorkbenchShell}
             />
           </ChatMcpCatalogContext.Provider>
-        {modelSelectionError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
-            {modelSelectionError}
-          </p>
-        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {agentWorkspaceError}

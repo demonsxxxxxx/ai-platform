@@ -1,5 +1,12 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.application.model_reauthorization import (
+    reauthorize_model as reauthorize_model,
+    requested_run_model_selection as requested_run_model_selection,
+    selected_model_binding_fields as selected_model_binding_fields,
+    direct_run_usage_scene as direct_run_usage_scene,
+)
+
 from app.runs.domain.run_performance import (
     BROWSER_LATENCY_MAX_MS as BROWSER_LATENCY_MAX_MS,
 )
@@ -162,6 +169,7 @@ from app.runs.domain.execution_spec import (
 )
 from app.runs.domain.execution_spec import (
     EXECUTION_SPEC_SCHEMA_VERSION_V3 as EXECUTION_SPEC_SCHEMA_VERSION_V3,
+    EXECUTION_SPEC_SCHEMA_VERSION_V4 as EXECUTION_SPEC_SCHEMA_VERSION_V4,
 )
 from app.runs.domain.execution_spec import ExecutionSpec as ExecutionSpec
 from app.runs.domain.execution_spec import ExecutionSpecError as ExecutionSpecError
@@ -172,7 +180,7 @@ from app.runs.application.model_snapshot import (
     bind_run_model as bind_run_model,
 )
 from app.runs.application.model_snapshot import (
-    inherit_run_model as inherit_run_model,
+    replace_run_model_snapshot as replace_run_model_snapshot,
 )
 from app.runs.application.model_snapshot import (
     load_run_model_snapshot as load_run_model_snapshot,

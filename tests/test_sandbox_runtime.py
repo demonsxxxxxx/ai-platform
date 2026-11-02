@@ -137,7 +137,9 @@ def test_sandbox_request_rejects_invalid_public_skill_metadata():
 
 
 @pytest.mark.asyncio
-async def test_runtime_dispatches_public_skill_metadata_to_executor(monkeypatch):
+@pytest.mark.parametrize("document_grant", [False, True])
+async def test_runtime_dispatches_public_skill_metadata_to_executor(monkeypatch, document_grant):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
     sent = []
 
     class StubSettings:
@@ -188,10 +190,16 @@ async def test_runtime_dispatches_public_skill_metadata_to_executor(monkeypatch)
         }
     }
 
-    result = await runtime.submit(request(public_skill_metadata=metadata))
+    if document_grant:
+        metadata = {}
+    result = await runtime.submit(request(public_skill_metadata=metadata, **({"skill_ids": [], "document_plugin_revision": DOCUMENT_PLUGIN_REVISION} if document_grant else {})))
 
     assert result.status == "accepted"
     assert sent[0][1].config["public_skill_metadata"] == metadata
+    if document_grant:
+        assert sent[0][1].config["document_plugin_revision"] == DOCUMENT_PLUGIN_REVISION
+    else:
+        assert "document_plugin_revision" not in sent[0][1].config
 
 
 @pytest.mark.asyncio

@@ -16,12 +16,6 @@ from app.context.api import (
 )
 
 from app.control_plane_contracts import normalize_thinking_effort
-# Retained imports for runtime, callback, and executor compatibility callers.
-from app.files.api import (
-    PROFILE_DRIVE_READ_TEXT_IDENTITY as PROFILE_DRIVE_READ_TEXT_IDENTITY,
-    PROFILE_DRIVE_STAGE_IDENTITY as PROFILE_DRIVE_STAGE_IDENTITY,
-    PROFILE_DRIVE_STAGE_TOOL as PROFILE_DRIVE_STAGE_TOOL,
-)
 from app.mcp.api import assert_mcp_tool_reference
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
@@ -39,8 +33,6 @@ EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
 EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/mcp-credential"
-PROFILE_DRIVE_STAGE_MAX_BYTES = 512 * 1024 * 1024
-PROFILE_DRIVE_STAGE_LEASE_FLAG = "profile_drive_file_staging_authorized"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -307,6 +299,7 @@ class SandboxRuntimeRequest(BaseModel):
     owner_generation: int = Field(default=1, ge=1)
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
+    document_plugin_revision: str | None = None
     public_skill_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
     mcp_tool_ids: list[str] = Field(default_factory=list)
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
@@ -345,6 +338,13 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
+
+    @field_validator("document_plugin_revision")
+    @classmethod
+    def validate_document_plugin_revision(cls, value: str | None):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value)
+        return value
 
     @field_validator("skill_ids", "file_ids")
     @classmethod
@@ -537,6 +537,10 @@ class ExecutorTaskRequest(BaseModel):
     @field_validator("config")
     @classmethod
     def validate_config(cls, value: dict[str, Any]):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value.get("document_plugin_revision"))
+        if value.get("document_plugin_revision") is not None and value.get("skill_ids"):
+            raise ValueError("document_plugin_scope_invalid")
         if "thinking_effort" in value:
             normalize_thinking_effort(value["thinking_effort"])
         if "model_token_limits" in value:
@@ -887,7 +891,6 @@ class ExecutorContextRetrievalRequest(BaseModel):
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",
-        "stage_profile_drive_file_to_workspace",
         "search_memory",
     ]
     arguments: dict[str, Any] = Field(default_factory=dict)

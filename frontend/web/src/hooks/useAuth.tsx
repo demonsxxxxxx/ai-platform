@@ -29,6 +29,10 @@ import {
 import { ApiRequestError, FORCE_RELOGIN_EVENT } from "../services/api/fetch";
 import { mapPrincipalToUser, type PrincipalResponseWire } from "../services/api/auth";
 import { SESSION_REFRESHED_EVENT } from "../services/api/tokenManager";
+import {
+  registerExpiredSessionRecovery,
+  type ExpiredSessionRecoveryResult,
+} from "../services/api/expiredSessionRecovery";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
 import {
@@ -148,6 +152,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mountedRef = useRef(false);
   const authOperationGenerationRef = useRef(0);
   const authOperationAbortControllerRef = useRef<AbortController | null>(null);
+  const authOperationBlocksRecoveryRef = useRef(false);
   const forcedReloginInProgressRef = useRef(false);
   const currentUserRef = useRef(user);
   currentUserRef.current = user;
@@ -165,8 +170,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const beginAuthOperation = useCallback((
     expectedMarker: string | null = getAccessToken(),
+    blocksExpiredSessionRecovery = false,
   ): AuthOperationOwner => {
     invalidateAuthOperation();
+    authOperationBlocksRecoveryRef.current = blocksExpiredSessionRecovery;
     const abortController = new AbortController();
     authOperationAbortControllerRef.current = abortController;
     return {
@@ -183,6 +190,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     authOperationAbortControllerRef.current === owner.abortController &&
     !owner.abortController.signal.aborted
   ), []);
+
+  const finishAuthOperation = useCallback((owner: AuthOperationOwner) => {
+    if (authOperationGenerationRef.current === owner.generation
+      && authOperationAbortControllerRef.current === owner.abortController) {
+      authOperationBlocksRecoveryRef.current = false;
+    }
+  }, []);
 
   const isCurrentAuthOperation = useCallback((owner: AuthOperationOwner) => (
     isOwnedAuthOperation(owner) && getAccessToken() === owner.expectedMarker
@@ -304,6 +318,109 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [isCurrentAuthOperation]);
 
+  const recoverExpiredBrowserSession = useCallback(async (
+    expectedMarker: string,
+    recoverySignal: AbortSignal,
+  ): Promise<ExpiredSessionRecoveryResult> => {
+    if (
+      !mountedRef.current ||
+      recoverySignal.aborted ||
+      authOperationBlocksRecoveryRef.current ||
+      getAccessToken() !== expectedMarker
+    ) {
+      return { status: "cancelled" };
+    }
+
+    const previousPrincipal = currentUserRef.current;
+    const previousTenantId = previousPrincipal?.tenant_id;
+    if (!previousPrincipal || !previousTenantId) return { status: "unavailable" };
+    const owner = beginAuthOperation(expectedMarker, true);
+    const abortOwner = () => {
+      if (!owner.abortController.signal.aborted) {
+        owner.abortController.abort(
+          recoverySignal.reason ?? new DOMException("Session recovery cancelled", "AbortError"),
+        );
+      }
+    };
+    if (recoverySignal.aborted) abortOwner();
+    else recoverySignal.addEventListener("abort", abortOwner, { once: true });
+
+    if (!isCurrentAuthOperation(owner)) {
+      recoverySignal.removeEventListener("abort", abortOwner);
+      finishAuthOperation(owner);
+      return { status: "cancelled" };
+    }
+    // Keep the authenticated page mounted while its requests await recovery.
+    // ProtectedRoute would otherwise unmount it and cancel those requests.
+    let sessionEstablished = false;
+
+    try {
+      const config = await authApi.getADLoginConfig(owner.abortController.signal);
+      if (!isCurrentAuthOperation(owner)) return { status: "cancelled" };
+      if (!config.ad_login_url) return { status: "unavailable" };
+
+      const companyJwt = await authApi.fetchCompanyADLogin(
+        config.ad_login_url,
+        owner.abortController.signal,
+      );
+      if (!isCurrentAuthOperation(owner)) return { status: "cancelled" };
+
+      await ensureBrowserAuthContextBeforeLogin(owner.abortController.signal);
+      if (!isCurrentAuthOperation(owner)) return { status: "cancelled" };
+
+      // Once the login mutation starts, settle its identity even if its last
+      // request waiter leaves. Explicit logout/replacement still aborts owner.
+      recoverySignal.removeEventListener("abort", abortOwner);
+      await authApi.loginWithAD(companyJwt, owner.abortController.signal, {
+        user_id: previousPrincipal.id,
+        tenant_id: previousTenantId,
+      });
+      if (!isCurrentAuthOperation(owner)) return { status: "cancelled" };
+      sessionEstablished = true;
+
+      const recoveredPrincipal = await getCurrentUserWithOneStaleRepair(owner);
+      if (!isCurrentAuthOperation(owner)) return { status: "cancelled" };
+      // Publishing the new incarnation can cancel old request owners. Finish
+      // this already-verified identity projection independently of those waits.
+      recoverySignal.removeEventListener("abort", abortOwner);
+      if (!establishLocalSession(owner)) return { status: "cancelled" };
+      const sessionMarker = getAccessToken();
+      if (!sessionMarker || sessionMarker === expectedMarker) {
+        return { status: "unavailable" };
+      }
+      if (!applyAuthenticatedUser(recoveredPrincipal, owner)) {
+        return { status: "cancelled" };
+      }
+
+      return {
+        status: "recovered",
+        sessionMarker,
+        principalMatchesPrevious: previousPrincipal !== null
+          && recoveredPrincipal.id === previousPrincipal.id
+          && recoveredPrincipal.tenant_id === previousPrincipal.tenant_id,
+      };
+    } catch {
+      if (sessionEstablished && isCurrentAuthOperation(owner)) {
+        rememberRedirectPathForLogin();
+        await rollbackOwnedSession(owner);
+      }
+      return isCurrentAuthOperation(owner)
+        ? { status: "unavailable" }
+        : { status: "cancelled" };
+    } finally {
+      recoverySignal.removeEventListener("abort", abortOwner);
+      finishAuthOperation(owner);
+    }
+  }, [
+    applyAuthenticatedUser,
+    beginAuthOperation,
+    establishLocalSession,
+    finishAuthOperation,
+    getCurrentUserWithOneStaleRepair,
+    isCurrentAuthOperation,
+    rollbackOwnedSession,
+  ]);
+
   const hydrateOwnedUser = useCallback(async (
     owner: AuthOperationOwner,
     failClosedOnAnyError: boolean,
@@ -417,16 +534,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 监听登出事件
   useEffect(() => {
     const handleLogout = () => {
-      const owner = beginAuthOperation();
+      const owner = beginAuthOperation(getAccessToken(), true);
       applyLoggedOut(owner);
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
+      finishAuthOperation(owner);
     };
 
     const handleForceRelogin = () => {
       if (forcedReloginInProgressRef.current) return;
       forcedReloginInProgressRef.current = true;
       rememberRedirectPathForLogin();
-      const owner = beginAuthOperation();
+      const owner = beginAuthOperation(getAccessToken(), true);
       if (!isCurrentAuthOperation(owner)) {
         forcedReloginInProgressRef.current = false;
         return;
@@ -437,12 +555,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await authApi.logout(owner.abortController.signal);
         } catch {
           // Local convergence still allows the login page to re-establish a fresh context.
+        } finally {
+          if (isCurrentAuthOperation(owner)) {
+            applyLoggedOut(owner);
+            setIsLoading(false);
+          }
+          finishAuthOperation(owner);
+          forcedReloginInProgressRef.current = false;
         }
-        if (isCurrentAuthOperation(owner)) {
-          applyLoggedOut(owner);
-          setIsLoading(false);
-        }
-        forcedReloginInProgressRef.current = false;
       })();
     };
 
@@ -485,20 +605,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const change = classifyBrowserAuthStorageEvent(event);
       if (!change) return;
       if (change.type === "logout") {
-        const owner = beginAuthOperation(null);
+        const owner = beginAuthOperation(null, true);
         applyLoggedOut(owner);
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
+        finishAuthOperation(owner);
         return;
       }
 
-      const owner = beginAuthOperation(change.marker);
+      const owner = beginAuthOperation(change.marker, true);
       if (!isCurrentAuthOperation(owner)) return;
       // A marker value change is an identity replacement, not a refresh of A.
       // Clear A before asking the backend to project B.
       clearAuthPresentation(owner, false);
       setIsLoading(true);
-      void hydrateOwnedUser(owner, true);
+      void hydrateOwnedUser(owner, true).finally(() => finishAuthOperation(owner));
     };
+
+    const unregisterExpiredSessionRecovery = registerExpiredSessionRecovery(
+      recoverExpiredBrowserSession,
+    );
 
     window.addEventListener("auth:logout", handleLogout);
     window.addEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
@@ -509,14 +634,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.removeEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
       window.removeEventListener(SESSION_REFRESHED_EVENT, handleSessionRefreshed);
       window.removeEventListener("storage", handleStorage);
+      unregisterExpiredSessionRecovery();
     };
   }, [
     applyAuthenticatedUser,
     applyLoggedOut,
     beginAuthOperation,
     clearAuthPresentation,
+    finishAuthOperation,
     hydrateOwnedUser,
     isCurrentAuthOperation,
+    recoverExpiredBrowserSession,
   ]);
 
   // 登录
@@ -525,7 +653,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       credentials: LoginRequest,
       turnstileToken?: string,
     ): Promise<AuthOperationOutcome<string | null>> => {
-      const owner = beginAuthOperation();
+      const owner = beginAuthOperation(getAccessToken(), true);
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
@@ -558,6 +686,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         throw error;
       } finally {
+        finishAuthOperation(owner);
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
@@ -565,6 +694,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticatedUser,
       beginAuthOperation,
       establishLocalSession,
+      finishAuthOperation,
       getCurrentUserWithOneStaleRepair,
       isCurrentAuthOperation,
       rollbackOwnedSession,
@@ -574,7 +704,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // AD 登录：先取得 Windows 身份签发的公司 JWT，再建立并提交平台 session。
   const loginWithAD = useCallback(
     async (loginUrl: string): Promise<AuthOperationOutcome<string | null>> => {
-      const owner = beginAuthOperation();
+      const owner = beginAuthOperation(getAccessToken(), true);
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
@@ -604,6 +734,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         throw error;
       } finally {
+        finishAuthOperation(owner);
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
@@ -611,6 +742,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticatedUser,
       beginAuthOperation,
       establishLocalSession,
+      finishAuthOperation,
       getCurrentUserWithOneStaleRepair,
       isCurrentAuthOperation,
       rollbackOwnedSession,
@@ -619,7 +751,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // OAuth 登录由服务端 state 绑定同一个 browser auth context。
   const loginWithOAuth = useCallback(async (provider: string) => {
-    const owner = beginAuthOperation();
+    const owner = beginAuthOperation(getAccessToken(), true);
     if (isCurrentAuthOperation(owner)) setIsLoading(true);
     try {
       await ensureBrowserAuthContext(owner.abortController.signal);
@@ -631,9 +763,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!isCurrentAuthOperation(owner)) return;
       window.location.href = buildOAuthLoginUrl(provider, state);
     } finally {
+      finishAuthOperation(owner);
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
-  }, [beginAuthOperation, isCurrentAuthOperation]);
+  }, [beginAuthOperation, finishAuthOperation, isCurrentAuthOperation]);
 
   // 处理 OAuth 回调
   const handleOAuthCallback = useCallback(
@@ -642,7 +775,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       code: string,
       state: string,
     ): Promise<AuthOperationOutcome> => {
-      const owner = beginAuthOperation();
+      const owner = beginAuthOperation(getAccessToken(), true);
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
@@ -670,6 +803,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         throw error;
       } finally {
+        finishAuthOperation(owner);
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
@@ -677,6 +811,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticatedUser,
       beginAuthOperation,
       establishLocalSession,
+      finishAuthOperation,
       getCurrentUserWithOneStaleRepair,
       isCurrentAuthOperation,
       rollbackOwnedSession,
@@ -685,7 +820,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 登出
   const logout = useCallback(async () => {
-    const owner = beginAuthOperation();
+    const owner = beginAuthOperation(getAccessToken(), true);
     if (isCurrentAuthOperation(owner)) setIsLoading(true);
     try {
       await authApi.logout(owner.abortController.signal);
@@ -697,9 +832,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error("[useAuth] Failed to close the current session");
       return false;
     } finally {
+      finishAuthOperation(owner);
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
-  }, [applyLoggedOut, beginAuthOperation, isCurrentAuthOperation]);
+  }, [applyLoggedOut, beginAuthOperation, finishAuthOperation, isCurrentAuthOperation]);
 
   // 检查是否拥有某个权限
   const hasPermission = useCallback(

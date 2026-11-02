@@ -1384,7 +1384,23 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 run_id=run,
             )
             assert first is not None
-            assert first["status"] == "cancelled"
+            assert first["status"] == "cancel_requested"
+            pending = await (await conn.execute(
+                "select status, cancel_requested_at from runs where tenant_id=%s and id=%s",
+                (tenant, run),
+            )).fetchone()
+            assert pending["status"] == "queued" and pending["cancel_requested_at"] is not None
+            progress = await cancel_run_with_v4(
+                conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
+                capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
+                result_json={"message": "任务已取消"},
+            )
+            assert progress.did_transition and progress.status == "cancelled"
+            terminal_attempt = await build_run_attempt_lifecycle_service().terminalize(
+                conn, tenant_id=tenant, run_id=run, attempt_id=attempt,
+                status="cancelled", terminal_reason="run_cancelled",
+            )
+            assert terminal_attempt["status"] == "cancelled"
 
             second = await _request_owner_cancel(
                 use_case,
@@ -1440,7 +1456,11 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                     "requested_by_role": "owner",
                 },
             }
-            assert audits == [expected_audit, expected_audit]
+            requested_audit = {**expected_audit, "payload_json": {
+                **expected_audit["payload_json"], "result_status": "cancel_requested",
+            }}
+            # now() is transaction-stable; random audit IDs do not encode request order.
+            assert sorted(audits, key=lambda row: row["payload_json"]["result_status"]) == [requested_audit, expected_audit]
 
 
 @pytest.mark.asyncio
@@ -1463,7 +1483,18 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
                 run_id=run,
             )
             assert result is not None
-            assert result["status"] == "cancelled"
+            assert result["status"] == "cancel_requested"
+            progress = await cancel_run_with_v4(
+                conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
+                capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
+                result_json={"message": "任务已取消"},
+            )
+            assert progress.did_transition and progress.status == "cancelled"
+            terminal_attempt = await build_run_attempt_lifecycle_service().terminalize(
+                conn, tenant_id=tenant, run_id=run, attempt_id=attempt,
+                status="cancelled", terminal_reason="run_cancelled",
+            )
+            assert terminal_attempt["status"] == "cancelled"
 
             event_cursor = await conn.execute(
                 """
@@ -1495,7 +1526,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
                 "payload_json": {
                     "run_id": run,
                     "target_user_id": user,
-                    "result_status": "cancelled",
+                    "result_status": "cancel_requested",
                 },
             }
 

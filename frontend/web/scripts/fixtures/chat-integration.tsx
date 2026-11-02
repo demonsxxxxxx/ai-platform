@@ -88,7 +88,7 @@ function longHistoryProjection(index: number): RunInputsProjection {
     ],
   };
 }
-const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
+const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -165,6 +165,11 @@ export function Fixture() {
       questions: [{ key: "long", header: "长问题", multiSelect: false, question: "请选择处理方式：" + "这是一个用于验证长问题在受限高度内仍可完整读取的问题描述。".repeat(8),
         options: Array.from({ length: 8 }, (_, index) => ({ key: `opt-${index}`, label: `处理方式 ${index + 1}`, description: "选项说明用于填充真实高度" })) }],
     }] });
+    fixtureState.attachmentPreview = () => setAttachments([
+      { id: "long-name", key: "long-name", name: "ECM SDK说明文档v5.17_企业集成开发指南与接口参考_最终修订版.pdf", type: "document", mimeType: "application/pdf", size: 1992294 },
+      { id: "queued-file", name: "等待上传的附件.docx", type: "document", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 2048, isUploading: true, uploadStatus: "queued" },
+      { id: "uploading-file", name: "上传中的附件.txt", type: "document", mimeType: "text/plain", size: 1024, isUploading: true, uploadStatus: "uploading", uploadProgress: 45 },
+    ]);
     fixtureState.attach = () => setAttachments([{ id: "attachment-synthetic", key: "attachment-synthetic", name: "已确认附件.pdf", type: "document", mimeType: "application/pdf", size: 2048 }]);
     // Multiple closed Runs must share one scroll budget, including their titles.
     fixtureState.showHistoryWithReceipts = () => setHistoryProjections(Array.from({ length: 10 }, (_, index) => longHistoryProjection(index)));

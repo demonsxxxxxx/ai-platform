@@ -2,101 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import threading
-import zipfile
-import xml.etree.ElementTree as ElementTree
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
-from xml.parsers import expat
 
 from app.sandbox.api import workspace_delivery_file_allowed
 
 _MAX_WORKSPACE_ARTIFACT_FILES = 128
 _MAX_WORKSPACE_ARTIFACT_FILE_BYTES = 64 * 1024 * 1024
 _MAX_WORKSPACE_ARTIFACT_TOTAL_BYTES = 256 * 1024 * 1024
-_MAX_DOCX_ARCHIVE_ENTRIES = 2000
-_MAX_DOCX_ARCHIVE_ENTRY_BYTES = 32 * 1024 * 1024
-_MAX_DOCX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
-
-def _parse_docx_xml(raw_xml: bytes) -> ElementTree.Element:
-    parser = expat.ParserCreate()
-
-    def reject_declaration(*_args: object) -> None:
-        raise ValueError("DTD and entity declarations are not allowed")
-
-    parser.StartDoctypeDeclHandler = reject_declaration
-    parser.EntityDeclHandler = reject_declaration
-    parser.ExternalEntityRefHandler = reject_declaration
-    parser.Parse(raw_xml, True)
-    return ElementTree.fromstring(raw_xml)
-
-
-def valid_docx_artifact(path: Path) -> bool:
-    try:
-        with zipfile.ZipFile(path) as archive:
-            entries = archive.infolist()
-            if (
-                len(entries) > _MAX_DOCX_ARCHIVE_ENTRIES
-                or len({entry.filename for entry in entries}) != len(entries)
-            ):
-                return False
-            total_bytes = 0
-            for entry in entries:
-                if entry.file_size < 0 or entry.file_size > _MAX_DOCX_ARCHIVE_ENTRY_BYTES:
-                    return False
-                total_bytes += entry.file_size
-                if total_bytes > _MAX_DOCX_ARCHIVE_TOTAL_BYTES:
-                    return False
-            expected_roots = {
-                "[Content_Types].xml": "{http://schemas.openxmlformats.org/package/2006/content-types}Types",
-                "_rels/.rels": "{http://schemas.openxmlformats.org/package/2006/relationships}Relationships",
-            }
-            member_names = {entry.filename for entry in entries}
-            if "word/document.xml" not in member_names or any(
-                member not in member_names for member in expected_roots
-            ):
-                return False
-            roots: dict[str, ElementTree.Element] = {}
-            for member in (*expected_roots, "word/document.xml"):
-                roots[member] = _parse_docx_xml(archive.read(member))
-            if any(roots[member].tag != root for member, root in expected_roots.items()):
-                return False
-            if roots["word/document.xml"].tag not in {
-                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}document",
-                "{http://purl.oclc.org/ooxml/wordprocessingml/main}document",
-            }:
-                return False
-            content_type_overrides = [
-                child
-                for child in roots["[Content_Types].xml"]
-                if child.tag
-                == "{http://schemas.openxmlformats.org/package/2006/content-types}Override"
-                and child.get("PartName") == "/word/document.xml"
-            ]
-            office_document_relationships = [
-                child
-                for child in roots["_rels/.rels"]
-                if child.tag
-                == "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
-                and child.get("Type")
-                in {
-                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
-                    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument",
-                }
-            ]
-            return (
-                len(content_type_overrides) == 1
-                and content_type_overrides[0].get("ContentType")
-                == "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
-                and len(office_document_relationships) == 1
-                and bool(office_document_relationships[0].get("Id"))
-                and office_document_relationships[0].get("TargetMode", "Internal")
-                == "Internal"
-                and office_document_relationships[0].get("Target")
-                == "word/document.xml"
-            )
-    except Exception:
-        return False
 
 
 def artifact_content_type(filename: str) -> str:
@@ -147,7 +61,6 @@ def collect_workspace_artifacts(
     source_executor: str,
     workspace: Path,
     response_files: Any,
-    required_artifact_types: Iterable[str],
     artifact_factory: Callable[..., Any],
     storage_factory: Callable[[], Any],
     ensure_inside: Callable[[Path, Path, str], None],
@@ -243,12 +156,6 @@ def collect_workspace_artifacts(
             raise ValueError("workspace artifacts exceed the total byte limit")
         seen_candidates.add(resolved)
         candidates.append((resolved, descriptor_by_path.get(relative.as_posix())))
-
-    for path, _descriptor in candidates:
-        if artifact_type(path.name) == "result_docx" and not valid_docx_artifact(path):
-            raise ValueError("response DOCX file is invalid")
-    if set(required_artifact_types) - {artifact_type(path.name) for path, _ in candidates}:
-        return []
 
     artifacts: list[Any] = []
     try:

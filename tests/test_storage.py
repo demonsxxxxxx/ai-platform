@@ -661,7 +661,7 @@ def test_artifact_batch_uses_one_confirmation_and_preserves_reservation_order(bu
     artifacts = collect_workspace_artifacts(
         tenant_id="synthetic", workspace_id="synthetic", session_id="synthetic", run_id="synthetic",
         source_executor="synthetic", workspace=tmp_path, response_files=["output/a.txt", "output/b.txt"],
-        required_artifact_types=(), artifact_factory=lambda **kwargs: kwargs, storage_factory=lambda: storage,
+        artifact_factory=lambda **kwargs: kwargs, storage_factory=lambda: storage,
         ensure_inside=lambda root, path, _message: path.relative_to(root), reserve_storage=reserve,
     )
     assert [item[0] for item in operations] == ["reserve", "put", "reserve", "put"]

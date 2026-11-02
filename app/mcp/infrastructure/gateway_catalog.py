@@ -11,12 +11,28 @@ from app.mcp.domain.errors import McpToolDiscoveryError
 from app.mcp.infrastructure.catalog import _canonical_live_definition, _validated_discovery_target
 
 
+_GATEWAY_UPSTREAM_LABEL_MAX_LENGTH = 128
+
+
+def _upstream_server_label(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    label = value.strip()
+    if not label or len(label.encode("utf-8")) > _GATEWAY_UPSTREAM_LABEL_MAX_LENGTH or any(
+        ord(character) < 32 or ord(character) == 127 for character in label
+    ):
+        return None
+    return label
+
+
 class GatewayCatalogAdapter:
     def __init__(self, *, timeout_seconds: float = 10.0, max_response_bytes: int = 1024 * 1024):
         self._timeout_seconds = timeout_seconds
         self._max_response_bytes = max_response_bytes
 
-    async def discover_definitions(self, endpoint: str) -> tuple[dict, ...]:
+    async def discover_definitions(
+        self, endpoint: str, *, allow_ambiguous_names: bool = False,
+    ) -> tuple[dict, ...]:
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 target = await _validated_discovery_target(endpoint)
@@ -40,7 +56,9 @@ class GatewayCatalogAdapter:
                             if len(body) + len(chunk) > self._max_response_bytes:
                                 raise McpToolDiscoveryError("response_too_large")
                             body.extend(chunk)
-                return _catalog_definitions(json.loads(body))
+                return _catalog_definitions(
+                    json.loads(body), allow_ambiguous_names=allow_ambiguous_names,
+                )
         except McpToolDiscoveryError:
             raise
         except (TimeoutError, httpx.HTTPError):
@@ -49,15 +67,19 @@ class GatewayCatalogAdapter:
             raise McpToolDiscoveryError("protocol_error") from None
 
 
-def _catalog_definitions(payload: object) -> tuple[dict, ...]:
+def _catalog_definitions(
+    payload: object, *, allow_ambiguous_names: bool = False,
+) -> tuple[dict, ...]:
     if not isinstance(payload, dict) or not isinstance(payload.get("servers"), list):
         raise McpToolDiscoveryError("protocol_error")
     definitions = []
     names: set[str] = set()
+    ambiguous_names: set[str] = set()
     for server in payload["servers"]:
         if (not isinstance(server, dict) or not isinstance(server.get("tools"), list)
                 or type(server.get("catalogGeneration")) is not int):
             raise McpToolDiscoveryError("protocol_error")
+        upstream_server = _upstream_server_label(server.get("projectName"))
         for tool in server["tools"]:
             if (not isinstance(tool, dict) or type(tool.get("available")) is not bool
                     or type(tool.get("definitionRevision")) is not int
@@ -65,12 +87,19 @@ def _catalog_definitions(payload: object) -> tuple[dict, ...]:
                     or not isinstance(tool.get("inputSchema"), dict)):
                 raise McpToolDiscoveryError("protocol_error")
             definition = _canonical_live_definition(tool)
+            definition["upstream_server"] = upstream_server
             if definition["name"] in names:
-                raise McpToolDiscoveryError("protocol_error")
+                if not allow_ambiguous_names:
+                    raise McpToolDiscoveryError("protocol_error")
+                ambiguous_names.add(definition["name"])
             names.add(definition["name"])
             definition["available"] = (
                 tool["available"] and tool["catalogGeneration"] > 0
                 and tool["catalogGeneration"] == server["catalogGeneration"]
             )
             definitions.append(definition)
+    if ambiguous_names:
+        for definition in definitions:
+            if definition["name"] in ambiguous_names:
+                definition["upstream_server"] = None
     return tuple(definitions)

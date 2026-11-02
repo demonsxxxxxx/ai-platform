@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -7,6 +8,8 @@ import { checkChatIntegration } from "./chat-integration-browser-checks.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
 const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
+const directorySize = Number(process.env.AI_PLATFORM_ROUTE_LAYOUT_DIRECTORY_SIZE || 205);
+if (!Number.isInteger(directorySize) || directorySize < 205 || directorySize > 50000) throw new Error("route_layout_directory_size_invalid");
 if (!["light", "dark"].includes(theme)) throw new Error("route_layout_smoke_theme_invalid");
 const evidenceDir = resolve(
   process.env.AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR || "../../.codex-tmp/route-layout-browser-smoke",
@@ -61,6 +64,34 @@ function bootstrapSource(loading = false, chatFiles = false) {
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
     window.addEventListener('unhandledrejection', (event) => state.errors.push(String(event.reason)));
     const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+    const providerAModels = Array.from({ length: 29 }, (_, index) => ({
+      id: 'mdl-' + index,
+      value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
+      label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
+      provider: 'compatible', provider_id: 'legacy', provider_name: '默认供应商', enabled: index < 2, available: true,
+      order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
+      auto_compact_window: index < 2 ? 200000 : undefined,
+      max_output_tokens: index < 2 ? 2048 : undefined
+    }));
+    const providerBModels = [0, 1].map((index) => ({
+      id: 'mdl-b' + index, value: 'b/demo-model-' + index, label: 'B Model ' + index,
+      provider: 'compatible', provider_id: 'supplier-b', provider_name: '供应商 B（合成）', enabled: true, available: true,
+      order: index + 1, last_seen_revision: 8, last_seen_at: '2026-01-01T00:00:00Z'
+    }));
+    let providers = [
+      { id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, configured: true, enabled_model_count: 2, missing_model_count: 0 },
+      { id: 'supplier-b', name: '供应商 B（合成）', revision: 8, model_count: 2, configured: true, enabled_model_count: 2, missing_model_count: 0 }
+    ];
+    let createdGroup = null;
+    const groupMembers = ${groupCase === "cards" ? `Array.from({length:14},(_,i)=>({user_id:'member-'+i,work_id:'SYNTH-'+i,display_name:'合成员工 '+i,auth_source:'company-login',is_primary:true}))` : `[{ user_id: 'layout-user', work_id: 'layout-user', display_name: 'Layout Admin', auth_source: 'company-login', is_primary: true }]`};
+    const groupLayoutModelCount = ${groupCase === "business" ? 2 : 1};
+    const groupLayoutModels = ${JSON.stringify(groupCase === "business" ? [
+      { model_id: "mdl-0", model_value: "demo/model-0", label: "Model 0", enabled: true, display_order: 0, priority: 100, weight: 100 },
+      { model_id: "mdl-b0", model_value: "b/demo-model-0", label: "B Model 0", enabled: true, display_order: 1, priority: 100, weight: 100 }
+    ] : [
+      { model_id: "mdl-0", model_value: "demo/model-0", label: "Model 0", enabled: true, display_order: 0, priority: 100, weight: 100 }
+    ])};
+    const groupLayoutDefaultModelId = ${JSON.stringify(groupCase === "business" ? "mdl-0" : null)};
     const skill = {
       skill_name: 'qa-file-reviewer', expected_version: '0.1.0', input_modes: ['docx'], requires_file: true,
       description: 'Schema-seeded baseline for QA Word Review.', tags: ['review'], files: ['SKILL.md'], enabled: true,
@@ -115,7 +146,11 @@ function bootstrapSource(loading = false, chatFiles = false) {
       const raw = typeof input === 'string' ? input : input.url;
       const url = new URL(raw, location.origin);
       const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
-      if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
+      let payload;
+      if (typeof init.body === 'string') {
+        try { payload = JSON.parse(init.body); } catch { payload = undefined; }
+      }
+      if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method, ...(payload === undefined ? {} : { body: payload }) });
       if (${loading} && url.pathname === '/api/ai/auth/me') return new Promise(() => {});
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
@@ -139,6 +174,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
         latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0',
         latest_display_version: '0.1.0', current_display_version: '0.1.0', latest_uploaded_at: '2026-08-09T00:00:00Z', rollout_percent: 100
       }] });
+      if (url.pathname === '/api/admin/capability-distributions/department-directory' && ${groupCase === "members"}) return json({ departments: [{ directory_id: '123', authority_id: '123', name: '总公司', path: '总公司', selectable: true, reason: null, children: [{ directory_id: '456', authority_id: '456', name: '销售与客户支持事业部', path: '总公司 / 销售与客户支持事业部', children: [], selectable: true, reason: null }] }] });
       if (url.pathname === '/api/admin/capability-distributions/department-directory') return json({ departments: [{
         directory_id: '1', authority_id: '1', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
       }] });
@@ -189,18 +225,74 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
         contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
-      if (url.pathname === '/api/ai/admin/models') return json({
-        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
-        models: Array.from({ length: 29 }, (_, index) => ({
-          id: 'mdl-' + index,
-          value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
-          label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
-          provider: 'compatible', enabled: index < 2, available: true, is_default: index === 0,
-          order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
-          auto_compact_window: index < 2 ? 200000 : undefined,
-          max_output_tokens: index < 2 ? 2048 : undefined
-        }))
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b/impact') return json({ ...providers.find(p => p.id === 'supplier-b'), group_count: 0, default_group_count: 0, active_run_count: 0, cleanable_count: 2, blocked_models: [] });
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b/retire') { providers = providers.filter(p => p.id !== 'supplier-b'); return json({ id: 'supplier-b', deleted: true }); }
+      if (url.pathname === '/api/ai/admin/model-providers/supplier-b') return json({
+        providers,
+        connection: { configured: true, revision: 8, base_url: 'https://supplier-b.example.invalid', key_fingerprint: 'synthetic' }, models: providerBModels
       });
+      if (url.pathname === '/api/ai/admin/model-providers/legacy/impact') return json({ id: 'legacy', name: '默认供应商', revision: 7, model_count: 29, group_count: 1, default_group_count: 1, active_run_count: 0, cleanable_count: 28, blocked_models: [{id:'mdl-0',label:'Model 0',group_count:1,default_group_count:1,active_run_count:0,groups:[{name:'布局测试组'}]}] });
+      if (url.pathname === '/api/ai/admin/model-providers/legacy') return json({
+        providers,
+        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
+        models: providerAModels
+      });
+      if (url.pathname === '/api/ai/admin/models') return json({
+        providers,
+        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
+        models: [...providerAModels, ...providerBModels]
+      });
+      if (url.pathname === '/api/ai/models/groups') return json({
+        groups: [{ id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, is_primary: true, availability: 'available', models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', enabled: true }] }],
+        count: 1, version: 'model-groups.v1'
+      });
+      if (url.pathname === '/api/ai/admin/model-groups' && method === 'POST') {
+        createdGroup = { id: 'group-created', code: 'group_server_generated', name: payload.name, remark: payload.remark, type: 'business', enabled: true, revision: 1, sort_order: 32, model_count: 0, member_count: 0, members: [], models: [], default_model_id: null };
+        return json(createdGroup);
+      }
+      if (url.pathname === '/api/ai/admin/model-groups/group-created/models' && method === 'PUT') {
+        createdGroup = { ...createdGroup, models: payload.models, default_model_id: payload.default_model_id, model_count: payload.models.length, revision: createdGroup.revision + 1 };
+        return json({ group_id: createdGroup.id, revision: createdGroup.revision, default_model_id: createdGroup.default_model_id });
+      }
+      if (url.pathname === '/api/ai/admin/model-groups/group-created') return json(createdGroup);
+      if (url.pathname === '/api/ai/admin/model-groups') return json({
+        groups: [...${groupCase === "default" ? `[
+          { id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true },
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1 }
+        ]` : `[
+          { id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1 }
+        ]`}, ...Array.from({ length: 30 }, (_, index) => ({ id: 'group-extra-' + index, code: 'extra-' + index, name: '合成业务组 ' + (index + 1), type: 'business', enabled: index % 2 === 0, revision: 1, sort_order: index + 2, model_count: 1, member_count: index + 1 })), ...(createdGroup ? [createdGroup] : [])], version: 'model-groups.v1'
+      });
+      if (url.pathname === '/api/ai/admin/company-employees') {
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const department = url.searchParams.get('department_id');
+        const search = (url.searchParams.get('search') || '').toLowerCase();
+        const employees = Array.from({ length: ${directorySize} }, (_, index) => ({ work_id: 'synthetic-' + index, display_name: '合成员工 ' + (index + 1), department_ids: [index < 103 ? '456' : '123'] }))
+          .filter(employee => (!department || employee.department_ids.includes(department)) && (!search || (employee.work_id + ' ' + employee.display_name).toLowerCase().includes(search)));
+        return json({ employees: employees.slice(offset, offset + 100), total: employees.length, offset, limit: 100, snapshot_id: 'synthetic-directory-v1' });
+      }
+      if (url.pathname === '/api/ai/admin/users') return json({
+        schema_version: 'ai-platform.admin-user-diagnostics.v1', users: [{ user_id: 'layout-user', display_name: 'Layout Admin', status: 'active', session_count: 0, run_count: 0, queued_run_count: 0, running_run_count: 0, succeeded_run_count: 0, failed_run_count: 0, cancelled_run_count: 0 }], total: 1, offset: 0, limit: 50
+      });
+      if (url.pathname === '/api/ai/admin/users/layout-user/model-groups') return json({ user_id: 'layout-user', revision: 1, groups: [], primary_group_id: null, default_implicit: true });
+      if (url.pathname.startsWith('/api/ai/admin/model-groups/group-extra-')) {
+        const index = Number(url.pathname.split('group-extra-')[1]);
+        return json({ id: 'group-extra-' + index, code: 'extra-' + index, name: '合成业务组 ' + (index + 1), type: 'business', enabled: index % 2 === 0, revision: 1, sort_order: index + 2, model_count: 1, member_count: index + 1, models: [groupLayoutModels[0]], members: [] });
+      }
+      if (url.pathname === '/api/ai/admin/model-groups/group-default') return json({
+        id: 'group-default', code: 'default', name: '普通默认组', type: 'ordinary_default', enabled: true, revision: 1, remark: '', sort_order: 0, model_count: 0, member_count: 32, members_are_implicit: true, members: [], models: []
+      });
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout/members' && method === 'PUT' && ${groupCase === "cards"}) return json({detail:'company_identity_not_mapped'},422);
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout') return json({
+        id: 'group-layout', code: 'layout', name: '布局测试组', type: 'business', enabled: true, revision: 1, remark: '', sort_order: 1, model_count: groupLayoutModelCount, member_count: 1,
+        ...(groupLayoutDefaultModelId ? { default_model_id: groupLayoutDefaultModelId } : {}),
+        members: groupMembers,
+        models: groupLayoutModels
+      });
+      if (url.pathname === '/api/ai/admin/model-groups/group-layout/models' && method === 'PUT') return json({
+        group_id: 'group-layout', revision: Number(payload?.revision ?? 1) + 1, default_model_id: payload?.default_model_id ?? null
+      });
+      if (url.pathname === '/api/ai/files/long-name' && method === 'DELETE') return json({ key: 'long-name', deleted: true });
       if (url.pathname === '/api/agent/models/available') return json({
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
@@ -340,12 +432,20 @@ const cases = [
     requiredRequests: ["/api/ai/admin/runs/monitor"],
   },
   {
+    path: "/users",
+    selector: "[data-workbench-projection-page=users]",
+    name: "users",
+    scroller: "[data-projection-list-panel]",
+    requiredSelectors: ["[data-workbench-projection-page=users]", "[data-user-model-groups=layout-user]"],
+    requiredRequests: ["/api/ai/admin/users"],
+  },
+  {
     path: "/models",
-    selector: "[data-model-admin-control]",
+    selector: "[data-model-provider-management]",
     name: "models",
     scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
-    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]"],
-    requiredRequests: ["/api/ai/admin/models"],
+    requiredSelectors: ["[data-model-provider-row]", "[data-model-admin-tab=groups]"],
+    requiredRequests: ["/api/ai/admin/models", "/api/ai/admin/model-groups"],
   },
 ];
 const viewports = [
@@ -356,6 +456,9 @@ const viewports = [
 ];
 const requestedCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_CASE;
 const requestedViewport = process.env.AI_PLATFORM_ROUTE_LAYOUT_VIEWPORT;
+if (requestedViewport === "mobile-short") viewports.push({ name: "mobile-short", width: 390, height: 560, mobile: true });
+if (requestedViewport === "desktop-short") viewports.push({ name: "desktop-short", width: 1440, height: 640, mobile: false });
+const groupCase = process.env.AI_PLATFORM_ROUTE_LAYOUT_GROUP_CASE || "business";
 const selectedCases = requestedCase
   ? cases.filter((scenario) => scenario.name === requestedCase)
   : cases;
@@ -384,6 +487,11 @@ async function runCase(viewport, scenario) {
         requests: window.__routeLayoutSmoke?.requests || []
       }))()`);
       throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
+    }
+    if (scenario.name === "users") {
+      await browser.client.waitFor("Boolean(document.querySelector('button[data-user-model-groups=layout-user]'))", "users:group-trigger");
+      await browser.client.evaluate("document.querySelector('button[data-user-model-groups=layout-user]').click()");
+      await browser.client.waitFor("Boolean(document.querySelector('[data-user-model-groups=layout-user] [role=combobox]'))", "users:single-group-ready");
     }
     if (scenario.name === "builder") {
       await browser.client.evaluate(`(() => {
@@ -490,17 +598,349 @@ async function runCase(viewport, scenario) {
         if (!centered) throw new Error('plugins:collapsed-icon-not-centered');
       }
     }
+    let modelGroupDrawer = null;
+    let providerScreenshot = null;
     if (scenario.name === "models") {
-      await browser.client.evaluate(`(() => {
+      assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-provider-expanded]').length`), 0, "providers start collapsed");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-providers-collapsed`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 供应商 B（合成）"]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-model-provider-row="supplier-b"] [data-provider-expanded]') && document.querySelector('[aria-label="模型 API 地址"]').value.includes('supplier-b') && document.querySelectorAll('[data-model-provider-row="supplier-b"] [data-model-admin-model]').length === 2)`, "models:provider-b-expanded");
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]') && document.querySelectorAll('[data-model-admin-model]').length === 29)`, "models:provider-a-expanded");
+      await browser.client.evaluate(`document.querySelector('[aria-label="供应商 默认供应商"]').scrollIntoView({block:'start'})`);
+      const cleanupLayout = await browser.client.evaluate(`(() => { const row = document.querySelector('[data-model-provider-row="legacy"]'); const header = row.querySelector('[data-provider-header]'); const button = [...header.querySelectorAll('button')].find(b => b.textContent.trim() === '清理上游已移除模型'); const box = button?.getBoundingClientRect(); const frame = header.getBoundingClientRect(); return { inHeader: Boolean(button), contained: Boolean(box && box.top >= frame.top && box.bottom <= frame.bottom && box.right <= frame.right), singleLine: frame.height < 64, editorHasCleanup: [...row.querySelector('[data-provider-expanded]').querySelectorAll('button')].some(b => b.textContent.trim() === '清理上游已移除模型') }; })()`);
+      assert.ok(cleanupLayout.inHeader && cleanupLayout.contained && !cleanupLayout.editorHasCleanup, 'cleanup belongs to its provider header');
+      if (viewport.width >= 1024) assert.ok(cleanupLayout.singleLine, 'desktop header stays one line');
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-rows`);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商')).click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('input[aria-label=供应商名称]'))", "models:provider-create-form");
+      providerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-provider-create`);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '取消新增')).click()`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="删除供应商 默认供应商"]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-provider-delete-blocked]'))", "models:provider-reference-block");
+      assert.match(await browser.client.evaluate("document.querySelector('[data-provider-delete-blocked]').textContent"), /关联 1 个分组、1 个默认模型/);
+      await browser.client.evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '关闭检查结果')).click()`);
+      const tabs = [];
+      const groupName = groupCase === "default" ? "普通默认组" : "布局测试组";
+      if (groupCase === "business") {
+        await browser.client.evaluate(`(() => {
+          const label = [...document.querySelectorAll('label')].find((node) => node.textContent.trim() === '筛选模型分组');
+          const control = label ? document.getElementById(label.htmlFor) : null;
+          const trigger = control?.matches('[role=combobox]') ? control : control?.querySelector('[role=combobox]');
+          if (!trigger) throw new Error('provider_group_filter_missing');
+          trigger.click();
+        })()`);
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].some((node) => node.textContent.includes('布局测试组')))`, `${viewport.name}:models:provider-group-filter-options`);
+        await browser.client.evaluate(`(() => {
+          const option = [...document.querySelectorAll('[role=option]')].find((node) => node.textContent.includes('布局测试组'));
+          if (!option) throw new Error('provider_group_filter_option_missing');
+          option.click();
+        })()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-admin-group-settings] button') && document.querySelector('[data-model-admin-group-settings]').textContent.includes('布局测试组'))`, `${viewport.name}:models:provider-group-entry-ready`);
+        const globalCatalogReadsBeforeDrawer = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models' && request.method === 'GET').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-admin-group-settings] button')].find((node) => node.textContent.trim() === '编辑组内模型')).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-drawer]') && window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models' && request.method === 'GET').length > ${globalCatalogReadsBeforeDrawer})`, `${viewport.name}:models:provider-entry-global-catalog`);
+      } else {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="groups"]').click()`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-management]'))", `${viewport.name}:models:groups-tab`);
+        await browser.client.waitFor("document.querySelectorAll('[data-model-group-table] tbody tr').length > 30", `${viewport.name}:models:groups-loaded`);
+        await browser.client.evaluate(`document.querySelector('[data-model-group-management]').scrollTop = 0`);
+        const groupListGeometry = await browser.client.evaluate(`(() => {
+          const page = document.querySelector('[data-model-group-management]');
+          const card = page.querySelector('[aria-label="模型分组列表"]');
+          const toolbar = card.querySelector('[aria-label="模型分组操作"]');
+          const search = toolbar.querySelector('input').getBoundingClientRect();
+          const create = [...toolbar.querySelectorAll('button')].find(node => node.textContent.trim() === '新建业务组').getBoundingClientRect();
+          const table = card.querySelector('[data-model-group-table]');
+          const header = table.querySelector('thead').getBoundingClientRect();
+          const frame = card.getBoundingClientRect();
+          const style = getComputedStyle(card);
+          table.scrollLeft = table.scrollWidth;
+          const actions = table.querySelector('tbody tr td:last-child').getBoundingClientRect();
+          const tableFrame = table.getBoundingClientRect();
+          const actionsReachable = actions.right <= tableFrame.right + 1 && actions.left >= tableFrame.left;
+          table.scrollLeft = 0;
+          page.scrollTop = page.scrollHeight;
+          const last = table.querySelector('tbody tr:last-child').getBoundingClientRect();
+          const scrollFrame = page.getBoundingClientRect();
+          const lastRowReachable = last.bottom <= Math.min(scrollFrame.bottom, innerHeight) + 1;
+          page.scrollTop = 0;
+          return { radius: style.borderTopLeftRadius, leftBorder: style.borderLeftWidth, rightBorder: style.borderRightWidth,
+            headerLeftGap: header.left - frame.left - 1, headerRightGap: frame.right - 1 - header.right,
+            createSearchCenterDelta: Math.abs((search.top + search.bottom - create.top - create.bottom) / 2),
+            rows: table.querySelectorAll('tbody tr').length, actionsReachable, lastRowReachable,
+            headingAbsent: !page.querySelector('h2'), descriptionAbsent: !page.textContent.includes('模型和用户成员通过分组统一授权') };
+        })()`);
+        assert.equal(groupListGeometry.radius, '12px');
+        assert.equal(groupListGeometry.leftBorder, '1px');
+        assert.equal(groupListGeometry.rightBorder, '1px');
+        assert.ok(Math.abs(groupListGeometry.headerLeftGap) <= 1, 'group header meets left card edge');
+        if (viewport.width >= 1024) assert.ok(Math.abs(groupListGeometry.headerRightGap) <= 1, 'group header meets right card edge');
+        assert.ok(groupListGeometry.createSearchCenterDelta <= 1, 'new group shares the search row');
+        assert.ok(groupListGeometry.actionsReachable && groupListGeometry.lastRowReachable, 'all group rows and actions remain reachable');
+        assert.ok(groupListGeometry.headingAbsent && groupListGeometry.descriptionAbsent);
+        await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-list`);
+        const chooseGroupStatus = async (label) => {
+          await browser.client.evaluate(`document.querySelector('[aria-label="模型分组操作"] [role=combobox]').click()`);
+          await browser.client.waitFor("Boolean(document.querySelector('[role=option]'))", 'models:group-status-options');
+          await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find(node => node.textContent.trim() === ${JSON.stringify(label)})).click()`);
+        };
+        await chooseGroupStatus('状态：已停用');
+        await browser.client.waitFor("document.querySelectorAll('[data-model-group-table] tbody tr').length === 15", 'models:group-status-filter');
+        await chooseGroupStatus('状态：全部');
+        const setGroupSearch = async (value) => {
+          await browser.client.evaluate(`(() => { const input = document.querySelector('[aria-label="搜索模型分组"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+        };
+        await setGroupSearch('no-matching-group');
+        await browser.client.waitFor("document.querySelector('[data-model-group-table]').textContent.includes('暂无模型分组')", 'models:group-empty-search');
+        await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-empty`);
+        await setGroupSearch(groupName);
+        await browser.client.waitFor("document.querySelectorAll('[data-model-group-table] tbody tr').length === 1", 'models:group-single-search');
+        await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-single`);
+        await browser.client.evaluate(`(() => { const button = [...document.querySelectorAll('[aria-label="模型分组操作"] button')].find(node => node.textContent.trim() === '新建业务组'); button.focus(); button.click(); })()`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-create]'))", 'models:group-create-open');
+        await browser.client.waitFor(`(() => { const drawer = document.querySelector('[data-model-group-drawer]'); if (!drawer) return false; const frame = drawer.getBoundingClientRect(); const close = drawer.querySelector('[aria-label="关闭分组抽屉"]').getBoundingClientRect(); return Math.abs(frame.right - innerWidth) < 2 && Math.abs(frame.width - Math.min(768, innerWidth)) < 2 && close.right <= innerWidth && drawer.getAnimations({ subtree: true }).every(animation => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running'); })()`, 'models:group-create-painted');
+        const createReachable = await browser.client.evaluate(`(() => { const form = document.querySelector('[data-model-group-create]'); const submit = [...form.querySelectorAll('button')].find(node => node.textContent.trim() === '创建'); submit.scrollIntoView({ block: 'center' }); const rect = submit.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight; })()`);
+        assert.ok(createReachable, 'group create form stays reachable');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-create] input').length`), 1, 'new group asks for a name only');
+        assert.equal(await browser.client.evaluate(`document.querySelector('[data-model-group-management]').textContent.includes('展示排序')`), false);
+        await browser.client.evaluate(`(() => { window.__createdGroupDrawer = document.querySelector('[data-model-group-drawer]'); const input = document.querySelector('[aria-label="新分组名称"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'IT测试组'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+        await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-create`);
+        await browser.client.evaluate(`document.querySelector('[data-model-group-create]').requestSubmit()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-drawer]')?.getAttribute('aria-label') === 'IT测试组 分组' && document.querySelector('[data-model-group-drawer] [role=tab][aria-selected=true]')?.textContent === '模型'`, 'models:created-group-models');
+        assert.ok(await browser.client.evaluate(`document.querySelector('[data-model-group-drawer]') === window.__createdGroupDrawer`), 'created group remains in the same drawer');
+        assert.equal(await browser.client.evaluate(`document.querySelector('[data-model-group-drawer]').textContent.includes('group_server_generated')`), false);
+        const createdPayload = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.find(request => request.path === '/api/ai/admin/model-groups' && request.method === 'POST').body`);
+        assert.deepEqual(createdPayload, { name: 'IT测试组', remark: '' });
+        await browser.client.evaluate(`document.querySelector('[data-model-group-add-models] summary').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-catalog-model="mdl-0"] [role=checkbox]'))`, 'models:created-group-catalog');
+        await browser.client.evaluate(`document.querySelector('[data-model-group-catalog-model="mdl-0"] [role=checkbox]').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-0"] input[type=radio]'))`, 'models:created-group-model-selected');
+        await browser.client.evaluate(`document.querySelector('[data-model-group-model="mdl-0"] input[type=radio]').click()`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find(node => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`window.__routeLayoutSmoke.requests.some(request => request.path === '/api/ai/admin/model-groups/group-created/models' && request.method === 'PUT' && request.body.default_model_id === 'mdl-0')`, 'models:created-group-model-saved');
+        await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-created-models`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-members]'))`, 'models:created-group-members');
+        await browser.client.evaluate(`document.querySelector('[aria-label="关闭分组抽屉"]').click()`);
+        await browser.client.waitFor(`!document.querySelector('[data-model-group-drawer]')`, 'models:created-group-close');
+        await browser.client.evaluate(`document.querySelector('[data-model-group-management]').scrollTop = 0`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="编辑 ${groupName}"]'))`, `${viewport.name}:models:group-edit-ready`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="编辑 ${groupName}"]').click()`);
+      }
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-group-models]'))", `${viewport.name}:models:drawer-loaded`);
+      await browser.client.waitFor(`(() => {
+        const drawer = document.querySelector('[data-model-group-drawer]');
+        const panel = drawer?.querySelector('[data-drawer-placement]');
+        return Boolean(panel && Math.abs(panel.getBoundingClientRect().left - drawer.getBoundingClientRect().left) < 2);
+      })()`, `${viewport.name}:models:drawer-settled`);
+      const drawerTabs = groupCase === "default" ? ["基本信息", "模型"] : ["基本信息", "模型", "成员"];
+      for (const tab of drawerTabs) {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === ${JSON.stringify(tab)})).click()`);
+        await browser.client.waitFor(`(() => {
+          const drawer = document.querySelector('[data-model-group-drawer]');
+          const panel = [...drawer.querySelectorAll('[role=tabpanel]')].find(node => node.checkVisibility());
+          const rect = panel.getBoundingClientRect(); const frame = drawer.getBoundingClientRect();
+          return Math.abs((rect.left - frame.left) - (frame.right - rect.right)) <= 2;
+        })()`, `${viewport.name}:models:tab-position-settled:${tab}`);
+        const geometry = await browser.client.evaluate(`(() => {
+          const drawer = document.querySelector('[data-model-group-drawer]');
+          const panel = [...drawer.querySelectorAll('[role=tabpanel]')].find(node => node.checkVisibility());
+          const rect = panel.getBoundingClientRect();
+          const frame = drawer.getBoundingClientRect();
+          return { leftGap: rect.left - frame.left, rightGap: frame.right - rect.right,
+            width: rect.width, scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth };
+        })()`);
+        tabs.push({ tab, ...geometry });
+        if (Math.abs(geometry.leftGap - geometry.rightGap) > 2 || geometry.leftGap > 24 || geometry.scrollWidth > geometry.clientWidth + 1) {
+          throw new Error(`model_group_drawer_width_failed:${viewport.name}:${tab}:${JSON.stringify(geometry)}`);
+        }
+      }
+      await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '模型')).click()`);
+      if (groupCase === "default") await browser.client.waitFor("document.body.innerText.includes('普通默认组模型可供专家及独立业务入口') && document.body.innerText.includes('暂无已加入模型')", `${viewport.name}:models:default-empty-state`);
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-group-add-models] summary').click()`);
+        await browser.client.evaluate(`(() => {
+          const input = document.querySelector('[aria-label="搜索可添加模型"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Model 28');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-catalog-model]').length === 1 && Boolean(document.querySelector('[data-model-group-catalog-model="mdl-28"]'))`, 'models:group-model-search');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-model]').length`), groupCase === "business" ? 2 : 1, 'search preserves assigned models');
+      }
+      if (groupCase === "business") {
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"]') && !document.querySelector('[data-model-group-model="mdl-b0"] [data-group-model-missing]'))`, `${viewport.name}:models:cross-provider-assigned-ready`);
+        const assignedProviderState = await browser.client.evaluate(`(() => {
+          const assigned = document.querySelector('[data-model-group-model="mdl-b0"]');
+          return { assignedIsNormal: Boolean(assigned && !assigned.querySelector('[data-group-model-missing]')),
+            providerLabel: assigned?.querySelector('[data-model-group-upstream-id]')?.textContent ?? '' };
+        })()`);
+        if (!assignedProviderState.assignedIsNormal || !assignedProviderState.providerLabel.includes('供应商 B（合成）')) {
+          throw new Error(`models:provider-global-catalog-mismatch:${JSON.stringify(assignedProviderState)}`);
+        }
+        await browser.client.evaluate(`(() => {
+          const input = document.querySelector('[aria-label="搜索可添加模型"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'B Model 1');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await browser.client.waitFor(`Boolean(document.querySelectorAll('[data-model-group-catalog-model]').length === 1 && document.querySelector('[data-model-group-catalog-model="mdl-b1"]'))`, `${viewport.name}:models:provider-b-candidate`);
+        const candidateProviderState = await browser.client.evaluate(`(() => {
+          const candidate = document.querySelector('[data-model-group-catalog-model="mdl-b1"]');
+          return { providerLabel: candidate?.textContent ?? '', hasWarnings: Boolean(candidate?.querySelector('[data-group-model-catalog-status]')) };
+        })()`);
+        if (candidateProviderState.hasWarnings || !candidateProviderState.providerLabel.includes('供应商 B（合成）')) {
+          throw new Error(`models:provider-b-candidate_invalid:${JSON.stringify(candidateProviderState)}`);
+        }
+        await browser.client.evaluate(`document.querySelector('[data-model-group-catalog-model="mdl-b1"] [role=checkbox]').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b1"]') && document.querySelectorAll('[data-model-group-model]').length === 3)`, `${viewport.name}:models:provider-b-model-added`);
+      }
+      const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-drawer`);
+      let memberPicker = null;
+      if (groupCase === "members") {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="按组织架构选择人员"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '${directorySize}' && Boolean(document.querySelector('[aria-label="总公司 / 销售与客户支持事业部"]'))`, "members:all-pages");
+        if (directorySize > 10000) {
+          await browser.client.evaluate(`document.querySelector('[aria-label="全选全部人员"]').click()`);
+          await browser.client.waitFor(`document.querySelector('.model-member-picker-selected').innerText.includes('已选 ${directorySize + 1} 人') && Boolean(document.querySelector('.model-member-picker-limit'))`, 'members:large-roster-selected');
+          const rendered = await browser.client.evaluate(`({ employees:document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length, chips:document.querySelectorAll('.model-member-picker-chips button').length })`);
+          if (rendered.employees > 30 || rendered.chips > 30) throw new Error('members:large-roster-unbounded-dom:' + JSON.stringify(rendered));
+          await browser.client.evaluate(`([...document.querySelectorAll('.model-member-picker-selected button')].find(node => node.textContent === '清空')).click()`);
+        }
+        await browser.client.evaluate(`document.querySelector('[aria-label="总公司 / 销售与客户支持事业部"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '103'`, "members:department-selected");
+        await browser.client.evaluate(`document.querySelector('[aria-label="全选本部门"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'true'`, "members:select-all-pages");
+        await browser.client.evaluate(`document.querySelector('[data-model-group-member-directory] [role=checkbox]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'mixed'`, "members:indeterminate");
+        // Selection changes row wrapping; scroll against Virtuoso's updated measurements.
+        await browser.client.waitFor(`(() => { const directory = document.querySelector('.model-member-picker-panel [data-virtuoso-scroller]'); directory.scrollTop = directory.scrollHeight; return document.querySelector('[data-model-group-member-directory]').innerText.includes('synthetic-102') && directory.scrollTop + directory.clientHeight >= directory.scrollHeight - 2; })()`, "members:virtual-last-row");
+        memberPicker = await browser.client.evaluate(`(() => { const popup = document.querySelector('.model-member-picker-panel'); const rect = popup.getBoundingClientRect(); const directory = popup.querySelector('[data-virtuoso-scroller]'); const footer = popup.querySelector('.model-member-picker-footer').getBoundingClientRect(); return { contained: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1 && popup.scrollWidth <= popup.clientWidth + 1 && footer.bottom <= innerHeight, rows: Number(popup.querySelector('[data-model-group-member-directory]').dataset.employeeTotal), renderedRows: directory.querySelectorAll('[role=checkbox]').length, scrollReachable: directory.scrollTop + directory.clientHeight >= directory.scrollHeight - 2 }; })()`);
+        if (memberPicker.renderedRows >= memberPicker.rows) throw new Error('members:unbounded-render');
+        memberPicker.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-organization-picker`);
+        if (!memberPicker.contained || !memberPicker.scrollReachable) throw new Error(`member_picker_geometry:${JSON.stringify(memberPicker)}`);
+        await browser.client.evaluate(`(() => { const input = document.querySelector('[aria-label="搜索公司员工"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'synthetic-${directorySize - 1}'); input.dispatchEvent(new Event('input', { bubbles:true })); })()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-member-directory] [role=checkbox]').length === 1 && document.querySelector('[data-model-group-member-directory]').innerText.includes('synthetic-${directorySize - 1}')`, "members:company-search");
+        await browser.client.evaluate(`document.querySelector('[aria-label="全选搜索结果"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="全选搜索结果"]').getAttribute('aria-checked') === 'true'`, "members:select-search-results");
+        memberPicker.searchScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-organization-search`);
+        await browser.client.evaluate(`(() => { const input = document.querySelector('[aria-label="搜索公司员工"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ''); input.dispatchEvent(new Event('input', { bubbles:true })); })()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-member-directory]')?.dataset.employeeTotal === '103' && document.querySelector('[aria-label="全选本部门"]').getAttribute('aria-checked') === 'mixed'`, "members:restore-department");
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.waitFor(`!document.querySelector('[aria-label="公司组织架构选人"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.getAttribute('aria-label') === '按组织架构选择人员' && document.querySelectorAll('[data-model-group-selected-member]').length === 1`, "members:escape-draft-focus");
+      }
+      if (groupCase === 'cards') {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] [role=tab]')].find(node => node.textContent === '成员')).click()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-group-selected-member]').length === 14`, 'members:cards-ready');
+        const cards = await browser.client.evaluate(`(() => { const nodes=[...document.querySelectorAll('[data-model-group-selected-member]')]; const boxes=nodes.map(n=>n.getBoundingClientRect()); const grid=nodes[0].parentElement; return {count:nodes.length,columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,contained:boxes.every(b=>b.width>=150 && b.right<=innerWidth && b.left>=0),removable:nodes.every(n=>Boolean(n.querySelector('button[aria-label^="移除成员"]')))};})()`);
+        assert.equal(cards.count,14); assert.ok(cards.contained && cards.removable);
+        const actions = await browser.client.evaluate(`(() => { const drawer = document.querySelector('[data-model-group-drawer]'); const remove = drawer.querySelector('button[aria-label^="移除成员"]'); const deleteGroup = [...drawer.querySelectorAll('button')].find(b => b.textContent === '删除分组'); const outlined = b => { const s = getComputedStyle(b); return parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== 'none' && s.borderTopColor !== 'transparent' && s.borderTopColor !== 'rgba(0, 0, 0, 0)'; }; return { noHints: !/每人只归属一个组|删除会处理成员去向/.test(drawer.textContent), outlined: outlined(remove) && outlined(deleteGroup) }; })()`);
+        assert.ok(actions.noHints && actions.outlined, 'member hints retired and destructive buttons visibly outlined');
+        if(viewport.width>=1024) assert.ok(cards.columns>=4,'desktop members form compact four-column cards');
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] button')].find(b=>b.textContent==='保存成员')).click()`);
+        await browser.client.waitFor(`document.querySelector('[data-model-group-drawer] [role=alert]')?.textContent.includes('公司账号映射')`,'members:actionable-error');
+        assert.equal(await browser.client.evaluate(`document.querySelectorAll('[data-model-group-selected-member]').length`),14);
+        await browser.client.evaluate(`document.querySelector('[data-model-group-drawer] [role=alert]').scrollIntoView({block:'start'})`);
+        await captureScreenshot(browser.client,evidenceDir,`${theme}-${viewport.name}-member-cards`);
+      }
+      modelGroupDrawer = { tabs, screenshot, memberPicker };
+      if (groupCase === "delete") {
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-drawer] button')].find(node => node.textContent === '删除分组')).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="确认删除分组"] [role=combobox]'))`, "delete:confirmation");
+        await browser.client.evaluate(`document.querySelector('[aria-label="确认删除分组"] [role=combobox]').focus()`);
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowDown", windowsVirtualKeyCode: 40 });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowDown", windowsVirtualKeyCode: 40 });
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].find(node => node.checkVisibility()))`, "delete:destinations");
+        await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find(node => node.textContent.includes('确认全部回普通默认组'))).click()`);
+        await browser.client.waitFor(`document.querySelector('[aria-label="确认删除分组"]').innerText.includes('确认删除即确认')`, "delete:fallback-warning");
+        await browser.client.waitFor(`!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true })`, "delete:selection-settled");
+        const geometry = await browser.client.evaluate(`(() => { const modal = document.querySelector('[aria-label="确认删除分组"]'); const rect = modal.getBoundingClientRect(); const submit = [...modal.querySelectorAll('button')].find(node => node.textContent === '确认删除'); return { contained: rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight + 1, enabled: !submit.disabled }; })()`);
+        geometry.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-model-group-delete`);
+        if (!geometry.contained || !geometry.enabled) throw new Error(`delete_confirmation_failed:${JSON.stringify(geometry)}`);
+        modelGroupDrawer.deletion = geometry;
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await browser.client.waitFor(`!document.querySelector('[aria-label="确认删除分组"]') && Boolean(document.querySelector('[data-model-group-drawer]')) && document.activeElement?.textContent === '删除分组'`, "delete:cancel-preserves-drawer");
+      }
+      if (groupCase === "business") {
+        const modelRowSwitch = (modelId) => `[data-model-group-model="${modelId}"] [role="switch"]`;
+        const defaultRadio = (modelId) => `[data-model-group-model="${modelId}"] input[type="radio"]`;
+        const saveEnabled = () => browser.client.evaluate(`Boolean([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型') && ![...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型').disabled)`);
+        const clickAssignedSwitch = async (modelId) => browser.client.evaluate(`(() => {
+          const toggle = document.querySelector(${JSON.stringify(modelRowSwitch(modelId))});
+          if (!toggle) throw new Error('group_model_switch_missing:${modelId}');
+          toggle.click();
+        })()`);
+        const latestModelsPayload = () => browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').at(-1)?.body ?? null`);
+
+        await clickAssignedSwitch('mdl-0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-0"] [role="switch"]')?.getAttribute('aria-checked') === 'false' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:disabled-default-cleared`);
+        assert.equal(await saveEnabled(), false, 'enabled members require a selected default');
+        await browser.client.evaluate(`document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))}).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))})?.checked && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:replacement-default-selected`);
+        const priorWrites = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${priorWrites})`, `${viewport.name}:models:replacement-default-saved`);
+        assert.equal((await latestModelsPayload())?.default_model_id, 'mdl-b0', 'disabling a default clears it until a replacement is selected');
+
+        await clickAssignedSwitch('mdl-b0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"] [role="switch"]')?.getAttribute('aria-checked') === 'false' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:remaining-enabled-needs-default`);
+        assert.equal(await saveEnabled(), false, 'a remaining enabled model requires a default');
+        await clickAssignedSwitch('mdl-b1');
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[data-model-group-model] [role="switch"]')].every((toggle) => toggle.getAttribute('aria-checked') === 'false') && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:all-disabled-valid`);
+        assert.equal(await saveEnabled(), true, 'all disabled models can be saved without a default');
+        const writesBeforeNull = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${writesBeforeNull} && window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').at(-1)?.body?.default_model_id === null)`, `${viewport.name}:models:all-disabled-null-saved`);
+        const nullPayload = await latestModelsPayload();
+        if (nullPayload?.default_model_id !== null || !nullPayload.models.every((model) => model.enabled === false)) {
+          throw new Error(`models:all-disabled-payload_invalid:${JSON.stringify(nullPayload)}`);
+        }
+
+        await clickAssignedSwitch('mdl-b0');
+        await browser.client.waitFor(`Boolean(document.querySelector('[data-model-group-model="mdl-b0"] [role="switch"]')?.getAttribute('aria-checked') === 'true' && document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:reenabled-needs-default`);
+        assert.equal(await saveEnabled(), false, 're-enabling a model requires choosing a default');
+        await browser.client.evaluate(`document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))}).click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector(${JSON.stringify(defaultRadio('mdl-b0'))})?.checked && !document.querySelector('[data-model-group-default-error]'))`, `${viewport.name}:models:reenabled-default-selected`);
+        const writesBeforeReenabled = await browser.client.evaluate(`window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length`);
+        await browser.client.evaluate(`([...document.querySelectorAll('[data-model-group-models] button')].find((node) => node.textContent.trim() === '保存模型')).click()`);
+        await browser.client.waitFor(`Boolean(window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/model-groups/group-layout/models' && request.method === 'PUT').length > ${writesBeforeReenabled})`, `${viewport.name}:models:reenabled-default-saved`);
+        assert.equal((await latestModelsPayload())?.default_model_id, 'mdl-b0', 're-enabled model saves only after explicit default selection');
+      }
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor(groupCase === "business"
+        ? `Boolean(!document.querySelector('[data-model-group-drawer]') && document.activeElement?.textContent.trim() === '编辑组内模型')`
+        : `Boolean(!document.querySelector('[data-model-group-drawer]') && document.activeElement?.getAttribute('aria-label') === '编辑 ${groupName}')`, `${viewport.name}:models:group-focus-restored`);
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-tab="catalog"]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-model-admin-control]'))", `${viewport.name}:models:catalog-restored`);
+      if (groupCase === "business") {
+        await browser.client.evaluate(`(() => {
+          const label = [...document.querySelectorAll('label')].find((node) => node.textContent.trim() === '筛选模型分组');
+          const control = document.getElementById(label.htmlFor);
+          (control.matches('[role=combobox]') ? control : control.querySelector('[role=combobox]')).click();
+        })()`);
+        await browser.client.waitFor(`Boolean([...document.querySelectorAll('[role=option]')].some((node) => node.textContent.trim() === '分组：全部'))`, 'models:restore-all-groups-option');
+        await browser.client.evaluate(`([...document.querySelectorAll('[role=option]')].find((node) => node.textContent.trim() === '分组：全部')).click()`);
+        await browser.client.waitFor(`document.querySelectorAll('[data-model-admin-model]').length === 29`, 'models:all-provider-models-restored');
+      }
+      if (groupCase !== "default") await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
         if (!input) throw new Error('synthetic_deepseek_missing');
         input.focus();
         input.click();
       })()`);
-      await browser.client.waitFor(
-        `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
+      if (groupCase !== "default") await browser.client.waitFor(
+        `Boolean(document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3)`,
         `${viewport.name}:models:enabled-toggle`,
       );
+      if (groupCase !== "default") {
+        await browser.client.evaluate(`document.querySelector('[data-model-admin-edit="mdl-18"]').click()`);
+        await browser.client.waitFor(`Boolean(document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填')`, `${viewport.name}:models:editor-limits`);
+        await browser.client.evaluate(`document.querySelector('[aria-label="关闭模型编辑"]').click()`);
+        await browser.client.waitFor(`Boolean(!document.querySelector('[data-model-admin-editor]'))`, `${viewport.name}:models:editor-closed`);
+      }
     }
     const responsiveLayout = await browser.client.evaluate(`(() => {
       const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();
@@ -549,7 +989,7 @@ async function runCase(viewport, scenario) {
         requests: [...requestedPaths],
       };
     })()`);
-    if (scenario.name === "models") {
+    if (scenario.name === "models" && groupCase !== "default") {
       await browser.client.evaluate(`document.querySelector('[data-model-admin-publish]').click()`);
       await browser.client.waitFor(
         `Boolean(document.querySelector('[data-model-admin-action-bar] [role="alert"]'))`,
@@ -571,7 +1011,8 @@ async function runCase(viewport, scenario) {
       throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable, missingRequests })}`);
     }
     let modelLayout = null;
-    if (scenario.name === "models") {
+    if (scenario.name === "models" && groupCase !== "default") {
+      if (viewport.width < 1024) await browser.client.evaluate(`document.querySelector('[data-model-admin-action-bar]').scrollIntoView({block:'end'})`);
       modelLayout = await browser.client.evaluate(`(() => {
         const table = document.querySelector('[data-model-admin-table-scroll]');
         const header = table.querySelector('thead').getBoundingClientRect();
@@ -590,10 +1031,9 @@ async function runCase(viewport, scenario) {
           fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
           rows: table.querySelectorAll('[data-model-admin-model]').length,
           enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
-          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输出 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
-          actionBottomGap: Math.round(innerHeight - bar.bottom),
+          actionBottomGap: Math.round(document.querySelector('[data-provider-expanded]').getBoundingClientRect().bottom - bar.bottom),
           publishErrorVisible: document.querySelector('[data-model-admin-action-bar] [role="alert"]')?.textContent.includes('deepseek-v4-flash-cc') ?? false,
           publishRequestCount: window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models/publish').length,
           tableScrollable: table.scrollHeight > table.clientHeight,
@@ -604,7 +1044,7 @@ async function runCase(viewport, scenario) {
         };
       })()`);
       if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
-        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {
@@ -837,7 +1277,19 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
+    if (scenario.name === 'models' && groupCase !== 'default') {
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-cancel]').click()`);
+      await browser.client.waitFor(`!document.querySelector('[data-model-admin-action-bar]')`, 'models:cancel-before-delete');
+      await browser.client.evaluate(`document.querySelector('[aria-label="删除供应商 供应商 B（合成）"]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[role=dialog]'))`, 'models:delete-provider-confirm');
+      await browser.client.evaluate(`document.querySelector('[role=dialog] button:last-child').click()`);
+      await browser.client.waitFor(`!document.querySelector('[data-model-provider-row="supplier-b"]') && ![...document.querySelectorAll('button')].find(b => b.textContent.trim() === '新增供应商').disabled`, 'models:deleted-and-enabled');
+      assert.ok(await browser.client.evaluate(`Boolean(document.querySelector('[data-model-provider-row="legacy"] [data-provider-expanded]'))`), 'deleting another supplier keeps the editor open');
+      assert.ok(await browser.client.evaluate(`document.body.textContent.includes('已删除供应商 供应商 B（合成）。')`), 'success toast appears');
+      assert.equal(await browser.client.evaluate(`document.querySelector('[data-model-provider-management]').textContent.includes('已删除供应商')`), false, 'no inline success row');
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-provider-deleted`);
+    }
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, modelGroupDrawer, providerScreenshot, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));

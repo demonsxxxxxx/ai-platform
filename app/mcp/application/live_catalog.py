@@ -59,10 +59,17 @@ class LiveMcpTool:
     write_capable: bool = True
     risk_level: str = "high"
     available: bool | None = None
+    upstream_server: str | None = None
+    gateway_source: bool = False
 
     def public_payload(self) -> dict[str, Any]:
         return {
             **({"available": self.available} if self.available is not None else {}),
+            **(
+                {"upstream_server": self.upstream_server}
+                if self.gateway_source
+                else {}
+            ),
             "tool_id": self.tool_id,
             "label": self.label,
             "description": self.description,
@@ -78,6 +85,38 @@ class LiveMcpServerResult:
     tools: tuple[LiveMcpTool, ...]
     unavailable_reason: str | None = None
     failure: McpCatalogFailure | None = None
+
+
+def _safe_upstream_label(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    label = value.strip()
+    if not label or len(label.encode("utf-8")) > 128 or any(
+        ord(character) < 32 or ord(character) == 127 for character in label
+    ):
+        return None
+    return label
+
+
+def _exact_upstream_labels(
+    authorized_names: set[str], definitions: tuple[dict, ...],
+) -> dict[str, str]:
+    """Decorate only unique anonymous names; never let metadata widen authority."""
+    labels_by_name: dict[str, list[str | None]] = {}
+    for definition in definitions:
+        if not isinstance(definition, dict):
+            continue
+        name = definition.get("name")
+        if not isinstance(name, str) or name not in authorized_names:
+            continue
+        labels_by_name.setdefault(name, []).append(
+            _safe_upstream_label(definition.get("upstream_server")),
+        )
+    return {
+        name: labels[0]
+        for name, labels in labels_by_name.items()
+        if len(labels) == 1 and labels[0] is not None
+    }
 
 
 class LiveMcpCatalogService:
@@ -107,7 +146,8 @@ class LiveMcpCatalogService:
                     tool_id=build_mcp_tool_reference(server_id, definition["name"]),
                     server_id=server_id, public_tool_name=definition["name"],
                     label=definition["name"], description=definition["description"],
-                    available=definition["available"],
+                    upstream_server=definition.get("upstream_server"),
+                    available=definition["available"], gateway_source=True,
                 ) for definition in definitions
             ))
         except Exception as exc:
@@ -141,6 +181,23 @@ class LiveMcpCatalogService:
                 **({"integration_kind": "enterprise_gateway"}
                    if getattr(target, "integration_kind", "mcp") == "enterprise_gateway" else {}),
             )
+            is_gateway = getattr(target, "integration_kind", "mcp") == "enterprise_gateway"
+            upstream_by_tool: dict[str, str] = {}
+            if is_gateway and self._gateway_catalog is not None:
+                try:
+                    anonymous_definitions = await self._gateway_catalog.discover_definitions(
+                        target.endpoint, allow_ambiguous_names=True,
+                    )
+                    authorized_names = {
+                        item["name"]
+                        for item in definitions
+                        if isinstance(item, dict) and isinstance(item.get("name"), str)
+                    }
+                    upstream_by_tool = _exact_upstream_labels(
+                        authorized_names, anonymous_definitions,
+                    )
+                except Exception:  # noqa: BLE001 - display decoration must not affect tool authority.
+                    upstream_by_tool = {}
             stage = "tool_projection"
             tools = tuple(
                 LiveMcpTool(
@@ -149,6 +206,8 @@ class LiveMcpCatalogService:
                     public_tool_name=definition["name"],
                     label=definition["name"],
                     description=definition["description"],
+                    upstream_server=upstream_by_tool.get(definition["name"]),
+                    gateway_source=is_gateway,
                     write_capable=not bool(
                         isinstance(definition.get("annotations"), dict)
                         and definition["annotations"].get("readOnlyHint") is True

@@ -18,7 +18,7 @@ from typing import Any
 from app.context.domain.provider_media import ProviderMediaTransfer
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES, MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
-    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES, ProviderSessionConflictError, provider_entry_json_bytes,
+    ProviderSessionConflictError, provider_entry_json_bytes,
 )
 from app.context.infrastructure.provider_epoch_ledger import read_provider_ledger, verify_provider_ledger
 from app.context.infrastructure.provider_images import read_epoch_images
@@ -81,8 +81,7 @@ async def snapshot_epoch_ledger(conn, *, binding: dict, epoch_id: str):
     if epoch is None:
         raise ProviderSessionConflictError("provider_session_scope_mismatch")
     if (not 0 <= epoch["entry_count"] <= MAX_PROVIDER_SESSION_ENTRIES
-        or not 0 <= epoch["transcript_bytes"] <= MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
-        or not 0 <= epoch["structured_bytes"] <= MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES):
+        or not 0 <= epoch["transcript_bytes"] <= MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
     rows, receipts = await read_provider_ledger(conn, epoch=epoch)
     objects = await read_epoch_images(conn, epoch=epoch) if any(row.get("image_references") for row in rows) else []

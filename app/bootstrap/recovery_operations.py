@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from typing import Any
 
 from app.execution.api import (
@@ -252,15 +253,23 @@ async def _frozen_binding(conn: Any, *, invocation: RecoveryInvocation, operatio
             and operation["native_tool_use_id"] == invocation.invocation_id):
         return False
     cursor = await conn.execute(
-        """select 1 from provider_session_entries where epoch_id=%s and tenant_id=%s
-             and workspace_id=%s and user_id=%s and session_id=%s and sequence<=%s
-             and jsonb_path_exists(entry_json,
-                 '$.message.content[*] ? (@.type == "tool_use" && @.id == $id)',
-                 jsonb_build_object('id', %s::text)) limit 1""",
+        """select entry_canonical_json::text as canonical, entry_json
+           from provider_session_entries where epoch_id=%s and tenant_id=%s
+             and workspace_id=%s and user_id=%s and session_id=%s and sequence<=%s""",
         (recovery["provider_epoch_id"], *invocation.scope.mapping().values(),
-         recovery.get("final_sequence"), invocation.invocation_id),
+         recovery.get("final_sequence")),
     )
-    return await cursor.fetchone() is not None
+    # PostgreSQL JSON extraction rejects native NULs; decode the original in Python.
+    for row in await cursor.fetchall():
+        entry = json.loads(row["canonical"]) if row["canonical"] is not None else row["entry_json"]
+        message = entry.get("message") if isinstance(entry, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") == "tool_use"
+            and block.get("id") == invocation.invocation_id for block in content
+        ):
+            return True
+    return False
 
 
 def build_recovery_operations() -> tuple[RecoveryOperationsService, RunInputsService]:

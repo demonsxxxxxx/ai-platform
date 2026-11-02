@@ -12,7 +12,7 @@ from app.context.domain.conversation_recovery import (
 )
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES, MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
-    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     ProviderSessionConflictError,
 )
 
@@ -84,7 +84,8 @@ async def settle_provider_continuation(
         from runs owning_run
         join run_attempts attempt on attempt.tenant_id = owning_run.tenant_id
           and attempt.run_id = owning_run.id and attempt.id = %s
-          and attempt.execution_spec_schema_version in ('ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3')
+          and attempt.execution_spec_schema_version in (
+            'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
         join run_context_snapshots snapshot on snapshot.tenant_id = owning_run.tenant_id
           and snapshot.workspace_id = owning_run.workspace_id and snapshot.user_id = owning_run.user_id
           and snapshot.session_id = owning_run.session_id and snapshot.run_id = owning_run.id
@@ -325,8 +326,7 @@ async def get_session_continuation(
     blocked = isinstance(recovery, dict) and recovery.get("state") == "blocked"
     restore_count, restore_bytes = provider_restore_size(row, recovery)
     capacity = (type(restore_count) is int and restore_count > MAX_PROVIDER_SESSION_ENTRIES - 128
-                or type(restore_bytes) is int and restore_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 16 * 1024 * 1024
-                or type(row.get("structured_bytes")) is int and row["structured_bytes"] > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES - 2 * 1024 * 1024)
+                or type(restore_bytes) is int and restore_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES)
     if recovery is None and not settling and not capacity:
         return None  # Confirmed legacy v2 head keeps its original admission contract.
     return public_continuation(recovery, settling=settling and not blocked,

@@ -13,8 +13,7 @@ from app.context.domain.provider_sessions import (
 
 async def read_provider_ledger(conn: Any, *, epoch: Mapping[str, Any]):
     cursor = await conn.execute(
-        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json, "
-        "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
+        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json "
         "from provider_session_entries "
         "where epoch_id = %s order by sequence asc limit %s for share",
         (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
@@ -69,8 +68,7 @@ def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receip
                     ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
                 else:
                     entry = json.loads(original)
-                    if (row.get("canonical_matches") is not True
-                        or _canonical(entry).decode("utf-8") != original):
+                    if _canonical(entry).decode("utf-8") != original:
                         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
                 structured_bytes += provider_entry_json_bytes(entry)
                 refs = row["image_references"]

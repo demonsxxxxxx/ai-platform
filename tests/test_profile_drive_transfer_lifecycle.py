@@ -207,65 +207,6 @@ async def test_asgi_failure_before_iteration_closes_transfer(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_runtime_admission_failure_after_open_closes_owner(monkeypatch, cancel):
-    from types import SimpleNamespace
-    from fastapi import HTTPException
-    import app.routes.runtime_callbacks as callbacks
-
-    stream = Stream(close_error=True)
-    clients = client_factory(monkeypatch, lambda request: httpx.Response(
-        200, headers={"Content-Length": "1"}, stream=stream))
-
-    class Transaction:
-        async def __aenter__(self):
-            return object()
-        async def __aexit__(self, *args):
-            return None
-
-    from app.runs.infrastructure import postgres as runs_postgres
-    from app.sandbox.infrastructure import leases_postgres
-
-    async def run_identity(*args, **kwargs):
-        return {"tenant_id": "tenant", "user_id": "user", "session_id": "session", "status": "running"}
-
-    class JwtStore:
-        async def get(self, principal):
-            return "synthetic"
-
-    failure = asyncio.CancelledError() if cancel else HTTPException(403, "attempt_expired")
-
-    lease_checks = 0
-
-    async def current_lease(*args, **kwargs):
-        nonlocal lease_checks
-        lease_checks += 1
-        if lease_checks > 1:
-            raise failure
-        return [{"attempt_id": "attempt", "lease_payload_json": {
-            "attempt_id": "attempt", callbacks.PROFILE_DRIVE_STAGE_LEASE_FLAG: True,
-        }}]
-
-    monkeypatch.setattr(callbacks, "transaction", Transaction)
-    monkeypatch.setattr(runs_postgres, "get_run_identity", run_identity)
-    monkeypatch.setattr(leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", current_lease)
-    monkeypatch.setattr(callbacks, "get_mcp_principal_jwt_store", lambda: JwtStore())
-    monkeypatch.setattr(callbacks, "open_profile_drive_file", transfer_module.open_profile_drive_file)
-    monkeypatch.setattr(callbacks, "get_settings", lambda: SimpleNamespace(
-        profile_drive_transfer_upstream="https://synthetic.invalid",
-        profile_drive_transfer_ca_cert_file="",
-        profile_drive_transfer_read_timeout_seconds=60,
-        profile_drive_transfer_total_timeout_seconds=1800,
-    ))
-    request = SimpleNamespace(arguments={"path": "sample.txt"}, run_id="run", attempt_id="attempt",
-                              session_id="session", callback_token_id="callback")
-    with pytest.raises(type(failure)) as caught:
-        await callbacks._profile_drive_file_response(request)
-    assert caught.value is failure
-    assert stream.closed and clients[0].is_closed
-
-
-@pytest.mark.asyncio
 async def test_httpx_eof_auto_close_failure_is_failed_transfer_and_removes_temp(monkeypatch, tmp_path):
     stream = Stream(close_error=True)
     clients = client_factory(monkeypatch, lambda request: httpx.Response(

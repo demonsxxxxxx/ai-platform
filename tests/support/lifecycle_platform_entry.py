@@ -109,6 +109,14 @@ async def platform_entry(monkeypatch, tmp_path):
         await admin.execute("""insert into model_catalog_entries(model_id,upstream_model_id,display_name,provider,enabled,
             upstream_available,is_default,display_order,auto_compact_window,max_output_tokens,first_seen_revision,last_seen_revision)
             values ('synthetic-model','claude-sonnet-4-5-20250929','Synthetic','compatible',true,true,true,1,100000,2048,1,1)""")
+        await admin.execute("""
+            insert into model_groups(id,tenant_id,code,name,type,default_model_id)
+              values('synthetic-group','default','synthetic','Synthetic','business','synthetic-model');
+            insert into model_group_members(tenant_id,group_id,user_id,is_primary)
+              values('default','synthetic-group','synthetic-user',true);
+            insert into model_group_models(group_id,model_id)
+              values('synthetic-group','synthetic-model');
+        """)
         yield SimpleNamespace(transaction=transaction, admit=admit, principal=principal, capabilities=capabilities,
                               lifecycle=lifecycle, attempts=attempts, settings=settings)
     finally:

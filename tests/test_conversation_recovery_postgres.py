@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from psycopg.types.json import Jsonb
 
-from app.context.domain.conversation_authority import make_authority_receipt
 from app.context.domain.conversation_recovery import (
     AUTHORITY_V3, make_provider_coverage_authority_receipt,
 )
@@ -30,24 +29,16 @@ async def lifecycle_db(recovery_db):
         await conn.execute("""
             alter table sessions add column if not exists status text default 'active';
             alter table sandbox_leases add column executor_terminal_json jsonb;
-            alter table runs add column workspace_id text default 'workspace';
-            alter table runs add column user_id text default 'user';
-            alter table runs add column session_id text default 'session';
-            alter table runs add column agent_id text default 'agent';
-            alter table runs add column session_generation bigint default 2;
-            alter table runs add column context_snapshot_id text default 'snapshot';
-            alter table runs add column started_at timestamptz default now();
-            alter table run_attempts add column ordinal int default 1;
-            create table run_context_snapshots(id text, tenant_id text, workspace_id text,
-              user_id text, session_id text, run_id text, context_kind text, conversation_authority_json jsonb);
-            create table messages(id text, tenant_id text, session_id text, run_id text,
-              role text, content text, created_at timestamptz default now());
-            insert into messages(id,tenant_id,session_id,run_id,role,content)
-              values('current-user','tenant','session','run','user','OLD');
+            alter table runs alter column workspace_id set default 'workspace';
+            alter table runs alter column user_id set default 'user';
+            alter table runs alter column session_id set default 'session';
+            alter table runs alter column agent_id set default 'agent';
+            alter table runs alter column session_generation set default 2;
+            alter table runs alter column context_snapshot_id set default 'snapshot';
+            alter table runs alter column started_at set default now();
+            alter table run_attempts alter column ordinal set default 1;
+            alter table messages alter column created_at set default now();
         """)
-        receipt = make_authority_receipt(scope=SCOPE_MAP, through_session_generation=2,
-                                         message_count=0, source_sha256="a" * 64, current_message_id="current-user")
-        await conn.execute("insert into run_context_snapshots values('snapshot','tenant','workspace','user','session','run','executor',%s)", (Jsonb(receipt),))
     return recovery_db
 
 
@@ -98,8 +89,11 @@ async def callback(conn, name, action, **changes):
     return await provider_epochs.callback_provider_epoch(conn, **kwargs)
 
 
-async def test_interrupted_first_turn_publishes_v3_then_resumes_same_uuid_new_epoch(lifecycle_db):
+@pytest.mark.parametrize("spec_version", ["ai-platform.execution-spec.v2", "ai-platform.execution-spec.v3", "ai-platform.execution-spec.v4"])
+async def test_interrupted_first_turn_publishes_v3_then_resumes_same_uuid_new_epoch(lifecycle_db, spec_version):
     async with lifecycle_db() as conn:
+        await conn.execute("update run_attempts set execution_spec_schema_version=%s", (spec_version,))
+        assert (await (await conn.execute("select count(*) as n from provider_session_entries where entry_json is null")).fetchone())["n"] == 2
         await request_cancel(conn)
         await conn.execute("update runs set status='cancelled' where id='run'")
         recovery = await settle(conn, sdk_settlement={**settlement(), "owner_generation": 3,

@@ -58,6 +58,7 @@ export function ToolCallItem({
   publicDisplayName,
   publicOperationId,
   durationMs,
+  showDuration = false,
 }: {
   status?: "started" | "completed" | "failed" | "denied";
   cancelled?: boolean;
@@ -65,6 +66,7 @@ export function ToolCallItem({
   publicDisplayName?: string;
   publicOperationId?: string;
   durationMs?: number;
+  showDuration?: boolean;
 }) {
   const { t } = useTranslation();
   const canonicalDisplayName = getPublicToolDisplayName(
@@ -109,7 +111,7 @@ export function ToolCallItem({
       : lifecycleStatus === "completed"
         ? t("chat.runStatus.event.toolCallCompleted", { defaultValue: "操作已完成" })
         : undefined;
-  const durationLabel = formatDurationMs(durationMs);
+  const durationLabel = showDuration ? formatDurationMs(durationMs) : null;
   const ToolIcon = publicCategoryIcon(publicCategory);
   const publicCategoryLabel = PUBLIC_CATEGORY_LABELS[publicCategory] || "工具";
 
@@ -122,7 +124,7 @@ export function ToolCallItem({
       suffix={
         statusLabel || durationLabel ? (
           <span className="text-xs font-medium">
-            {durationLabel && <span className="mr-1.5 tabular-nums">{durationLabel}</span>}
+            {durationLabel ? <span className="mr-1.5 tabular-nums">{durationLabel}</span> : null}
             {statusLabel}
           </span>
         ) : undefined

@@ -24,6 +24,37 @@ from tests.test_mcp_public_operation_summary import DECLARATION
 from tests.test_provider_unclaimed_continuation_postgres import unclaimed_db, prepare, callback, SCOPE_MAP
 
 
+@pytest.mark.parametrize("canonical_only", [True, False])
+async def test_frozen_binding_reads_native_json_without_requiring_jsonb_mirror(unclaimed_db, canonical_only):
+    from app.bootstrap.recovery_operations import _frozen_binding
+    from app.execution.api import RecoveryInvocation, RecoveryOperationScope
+
+    async with unclaimed_db() as conn:
+        frozen = await prepare(conn, "source", 1)
+        await callback(conn, "source", frozen, "load")
+        entries = [
+            {"type": "user", "message": {"content": "ordinary text"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "native-write", "name": "synthetic-write",
+                 "input": {"opaque": "real\u0000nul" if canonical_only else "legacy", "number": -0.0}},
+            ]}},
+        ]
+        await callback(conn, "source", frozen, "append", entries, 1)
+        if not canonical_only:
+            await conn.execute("update provider_session_entries set entry_json=entry_canonical_json::jsonb, entry_canonical_json=null")
+        recovery = {"provider_epoch_id": frozen["provider_epoch_id"], "source_run_id": "source",
+                    "source_attempt_id": "attempt-source", "final_sequence": 2}
+        await conn.execute(
+            "update run_attempts set execution_spec_json=jsonb_set(execution_spec_json,'{context_pack,conversation_context,recovery}',%s)",
+            (Jsonb(recovery),),
+        )
+        invocation = RecoveryInvocation(RecoveryOperationScope("tenant", "workspace", "user", "session"),
+                                        "source", "attempt-source", 2, "native-write", "synthetic-write")
+        operation = {"source_run_id": "source", "source_attempt_id": "attempt-source", "native_tool_use_id": "native-write"}
+        assert await _frozen_binding(conn, invocation=invocation, operation=operation, frozen_binding_ref=frozen["provider_epoch_id"])
+        assert not await _frozen_binding(conn, invocation=invocation, operation=operation, frozen_binding_ref="wrong-epoch")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["native_query", "host_startup", "host_unresolved", "host_metadata_revoked", "host_native_mismatch", "host_lease_expired"])
 async def test_two_native_ack_objects_http_questions_authenticated_answers_and_allow_once(unclaimed_db, monkeypatch, entry):

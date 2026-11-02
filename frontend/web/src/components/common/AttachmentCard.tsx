@@ -102,7 +102,7 @@ export const AttachmentCard = memo(function AttachmentCard({
         data-slot="attachment-root"
         data-state={state}
         data-attachment-source="composer"
-        className="group relative flex items-center gap-2.5"
+        className="composer-attachment-card"
       >
         <Button
           type="text"
@@ -114,35 +114,30 @@ export const AttachmentCard = memo(function AttachmentCard({
             height: "auto",
             minWidth: 0,
             width: "100%",
-            padding: "8px 12px",
+            padding: "8px",
+            background: "transparent",
+            border: "none",
+            boxShadow: "none",
             justifyContent: "flex-start",
             textAlign: "left",
           }}
-          className={clsx(
-            "relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2",
-            "rounded-lg border border-[var(--theme-border)]",
-            "bg-[var(--theme-bg-card)] dark:bg-neutral-900",
-            "shadow-[0_4px_12px_rgba(18,38,63,0.03)] cursor-pointer select-none",
-            "transition-colors duration-150 ease-out",
-            "hover:bg-[var(--theme-bg-sidebar)] active:opacity-90",
-            isUploading && !onCancel && "pointer-events-none",
-          )}
+          className={clsx("composer-attachment-tile", isUploading && !onCancel && "pointer-events-none")}
         >
           <div
             className={clsx(
               "shrink-0 flex items-center justify-center rounded-lg overflow-hidden",
               "transition-transform duration-200",
               !isUploading && "group-hover:scale-105",
-              isImage ? "size-10" : clsx("size-10", bgColor),
+              isImage ? "size-10" : "size-10 bg-[var(--theme-hover)]",
             )}
           >
             {isUploading ? (
               isQueued ? (
-                <Clock3 size={18} className={iconColor} aria-hidden="true" />
+                <Clock3 size={18} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
               ) : (
                 <Loader2
                   size={18}
-                  className={clsx(iconColor, "animate-spin")}
+                  className={"text-[var(--theme-text-secondary)] animate-spin"}
                   aria-hidden="true"
                 />
               )
@@ -153,12 +148,13 @@ export const AttachmentCard = memo(function AttachmentCard({
                 className="h-full w-full object-cover"
               />
             ) : (
-              <FileIcon size={18} className={iconColor} aria-hidden="true" />
+              <FileIcon size={18} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
             )}
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <span className="max-w-[120px] truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:max-w-[160px]">
+            <span title={attachment.name}
+              className="block w-full truncate text-[13px] font-medium leading-5 text-[var(--theme-text)]">
               {attachment.name}
             </span>
             <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
@@ -197,7 +193,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 event.stopPropagation();
                 onCancel();
               }}
-              style={{ height: 24, width: 24, padding: 0 }}
+              style={{ height: 32, width: 32, padding: 0 }}
               className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
               aria-label={t("fileUpload.cancelUpload")}
@@ -210,11 +206,8 @@ export const AttachmentCard = memo(function AttachmentCard({
                 type="text"
                 htmlType="button"
                 onClick={handleRemove}
-                style={{ height: 24, width: 24, padding: 0 }}
-                className={clsx(
-                  removeButtonClass,
-                  "sm:opacity-0 sm:group-hover:opacity-100",
-                )}
+                style={{ height: 32, width: 32, padding: 0 }}
+                className={removeButtonClass}
                 aria-label={`${t("fileUpload.removeAttachment")} ${attachment.name}`}
               >
                 <X size={12} aria-hidden="true" />

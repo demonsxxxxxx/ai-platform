@@ -8,7 +8,7 @@ import pytest
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.infrastructure import catalog, runtime
-from app.mcp.infrastructure.gateway_catalog import GatewayCatalogAdapter
+from app.mcp.infrastructure.gateway_catalog import GatewayCatalogAdapter, _catalog_definitions
 from app.executors.claude.capability_policy import _mcp_server_options
 
 
@@ -53,6 +53,8 @@ async def test_gateway_catalog_uses_no_credentials_and_preserves_unavailability(
     assert result.unavailable_reason is None
     assert [tool.available for tool in result.tools] == [True, False]
     assert result.tools[0].tool_id == "gateway::demo.lookup"
+    assert result.tools[0].upstream_server == "demo"
+    assert result.tools[0].public_payload()["upstream_server"] == "demo"
     assert len(requests) == 1
     request = requests[0]
     assert str(request.url) == "https://8.8.8.8/api/mcp/catalog"
@@ -60,6 +62,128 @@ async def test_gateway_catalog_uses_no_credentials_and_preserves_unavailability(
     assert request.extensions["sni_hostname"] == "gateway.example"
     assert not {"authorization", "jwt-authorization", "cookie", "x-api-key"}.intersection(request.headers)
     assert all(client.is_closed for client in clients)
+
+
+def test_gateway_catalog_ambiguous_names_are_display_unknown_only_when_requested():
+    data = payload()
+    duplicate = dict(data["servers"][0]["tools"][0])
+    duplicate["name"] = data["servers"][0]["tools"][0]["name"]
+    data["servers"].append({
+        "id": 2,
+        "projectName": "other",
+        "catalogGeneration": 2,
+        "tools": [duplicate],
+    })
+
+    with pytest.raises(McpToolDiscoveryError, match="^protocol_error$"):
+        _catalog_definitions(data)
+    definitions = _catalog_definitions(data, allow_ambiguous_names=True)
+    assert [definition["upstream_server"] for definition in definitions if definition["name"] == "demo.lookup"] == [None, None]
+
+
+def test_gateway_catalog_invalid_project_label_is_optional_display_metadata():
+    data = payload()
+    data["servers"][0]["projectName"] = "bad\nsource"
+    definitions = _catalog_definitions(data)
+    assert all(definition["upstream_server"] is None for definition in definitions)
+
+
+@pytest.mark.asyncio
+async def test_gateway_user_catalog_decorates_only_exact_authorized_names_once():
+    class UserDiscovery:
+        async def discover_definitions(self, *_args, **_kwargs):
+            return (
+                {"name": "demo.lookup", "description": "allowed", "annotations": {}},
+                {"name": "demo.hidden", "description": "not in anonymous catalog", "annotations": {}},
+                {"name": "demo.duplicate", "description": "duplicate display metadata", "annotations": {}},
+                {"name": "demo.invalid", "description": "invalid display metadata", "annotations": {}},
+            )
+
+    class AnonymousCatalog:
+        calls = 0
+
+        async def discover_definitions(self, endpoint, *, allow_ambiguous_names=False):
+            self.calls += 1
+            assert endpoint == "https://gateway.example/mcp"
+            assert allow_ambiguous_names is True
+            return (
+                {"name": "demo.lookup", "description": "anonymous", "upstream_server": "项目一"},
+                {"name": "demo.unselected", "description": "must not authorize", "upstream_server": "项目二"},
+                {"name": "demo.duplicate", "description": "first", "upstream_server": "项目二"},
+                {"name": "demo.duplicate", "description": "second", "upstream_server": "项目三"},
+                {"name": "demo.invalid", "description": "bad", "upstream_server": 42},
+            )
+
+    anonymous = AnonymousCatalog()
+
+    async def target(*_args):
+        return SimpleNamespace(
+            endpoint="https://gateway.example/mcp",
+            static_headers={},
+            transport="streamable_http",
+            integration_kind="enterprise_gateway",
+        )
+
+    result = await LiveMcpCatalogService(
+        target_resolver=target,
+        discovery=UserDiscovery(),
+        gateway_catalog=anonymous,
+    ).list_server_tools(
+        tenant_id="tenant", user_id="user", server_id="gateway", jwt="user.jwt",
+    )
+    assert anonymous.calls == 1
+    assert [(tool.public_tool_name, tool.upstream_server, tool.tool_id) for tool in result.tools] == [
+        ("demo.lookup", "项目一", "gateway::demo.lookup"),
+        ("demo.hidden", None, "gateway::demo.hidden"),
+        ("demo.duplicate", None, "gateway::demo.duplicate"),
+        ("demo.invalid", None, "gateway::demo.invalid"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_decoration_failure_keeps_user_catalog_and_stable_references():
+    class UserDiscovery:
+        async def discover_definitions(self, *_args, **_kwargs):
+            return ({"name": "tool", "description": "allowed", "annotations": {}},)
+
+    class BrokenCatalog:
+        async def discover_definitions(self, *_args, **_kwargs):
+            raise McpToolDiscoveryError("transport_failure")
+
+    async def target(*_args):
+        return SimpleNamespace(
+            endpoint="https://gateway.example/mcp", static_headers={}, transport="http",
+            integration_kind="enterprise_gateway",
+        )
+
+    result = await LiveMcpCatalogService(
+        target_resolver=target, discovery=UserDiscovery(), gateway_catalog=BrokenCatalog(),
+    ).list_server_tools(tenant_id="tenant", user_id="user", server_id="gateway", jwt="user.jwt")
+    assert result.unavailable_reason is None
+    assert result.tools[0].tool_id == "gateway::tool"
+    assert result.tools[0].upstream_server is None
+    assert result.tools[0].public_payload()["upstream_server"] is None
+
+
+@pytest.mark.asyncio
+async def test_generic_mcp_does_not_read_anonymous_catalog():
+    class UserDiscovery:
+        async def discover_definitions(self, *_args, **_kwargs):
+            return ({"name": "tool", "description": "allowed", "annotations": {}},)
+
+    class AnonymousCatalog:
+        async def discover_definitions(self, *_args, **_kwargs):
+            raise AssertionError("generic MCP must not perform anonymous catalog reads")
+
+    async def target(*_args):
+        return SimpleNamespace(
+            endpoint="https://mcp.example/mcp", static_headers={}, transport="http", integration_kind="mcp",
+        )
+
+    result = await LiveMcpCatalogService(
+        target_resolver=target, discovery=UserDiscovery(), gateway_catalog=AnonymousCatalog(),
+    ).list_server_tools(tenant_id="tenant", user_id="user", server_id="generic", jwt="user.jwt")
+    assert "upstream_server" not in result.tools[0].public_payload()
 
 
 @pytest.mark.asyncio
