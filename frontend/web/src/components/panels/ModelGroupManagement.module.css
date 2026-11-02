@@ -81,6 +81,10 @@
 }
 
 @media (max-width: 639px) {
+  .memberGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .page {
     padding: 24px 16px;
   }

@@ -749,6 +749,7 @@ test("member identity failure is actionable and retains every selected employee 
   });
   try {
     await click("编辑 销售组"); await click("成员");
+    assert.doesNotMatch(document.querySelector('[data-model-group-drawer]')?.textContent ?? "", /每人只归属一个组|删除会处理成员去向/);
     modelGroupsApi.setMembers = async () => { throw new ApiRequestError("加载会话失败", 422, "company_identity_not_mapped"); };
     await click("保存成员");
     assert.match(document.querySelector('[data-model-group-drawer] [role=alert]')?.textContent ?? "", /公司账号映射.*未保存/);

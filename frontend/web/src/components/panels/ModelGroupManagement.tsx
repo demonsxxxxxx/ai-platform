@@ -94,7 +94,6 @@ function GroupMemberEditor({
       <div className="flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold">已选成员 · {selected.length} 人</h3>
-          <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">每人只归属一个组；保存后，新增成员将从原业务组转入本组。</p>
         </div>
         <Button type="primary" loading={busy} disabled={busy} htmlType="button" onClick={() => void onSave(selected, details.revision)} icon={<Save size={15} />}>保存成员</Button>
       </div>
@@ -103,7 +102,7 @@ function GroupMemberEditor({
           const id = member.work_id || member.user_id;
           return <div key={id} className={styles.memberCard} data-model-group-selected-member={id}>
             <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{member.display_name || id}</p><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{member.work_id ? `工号：${member.work_id}` : `平台账号：${member.user_id}`}</p></div>
-            <Button type="text" size="small" disabled={busy} aria-label={`移除成员 ${member.display_name || id}`} onClick={() => setSelected((current) => current.filter((item) => (item.work_id || item.user_id) !== id))} icon={<X size={15} />} />
+            <Button type="default" danger size="small" disabled={busy} aria-label={`移除成员 ${member.display_name || id}`} onClick={() => setSelected((current) => current.filter((item) => (item.work_id || item.user_id) !== id))} icon={<X size={15} />} />
           </div>;
         }) : <div className="flex flex-col items-center gap-2 px-4 py-8 text-center"><Users size={24} className="text-[var(--theme-text-secondary)]" /><p className="text-sm font-medium">暂无成员</p><p className="text-sm text-[var(--theme-text-secondary)]">从下方公司员工目录选择人员加入。</p></div>}
       </div>
@@ -336,7 +335,7 @@ export function GroupDrawer({
                 {group.type === "business" ? <TabsPanel value="members" keepMounted className="min-h-0 pt-5"><GroupMemberEditor details={details} busy={Boolean(busy)} onSave={saveMembers} /></TabsPanel> : null}
               </TabsRoot> : null}
               {details && group?.type === "ordinary_default" ? <div className="mt-5 flex items-center gap-2 rounded-lg border border-[var(--theme-border)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"><Users size={15} className="shrink-0" /><span>自动归属 {details.member_count} 人：平台内尚未加入业务组的有效账号，不是钉钉全员或历史登录人数。</span></div> : null}
-              {details && group?.type === "business" ? <section className="mt-6 space-y-2 border-t border-[var(--theme-border)] pt-4"><p className="text-xs text-[var(--theme-text-secondary)]">删除会处理成员去向并解除本组模型关联，保留历史任务；不会删除模型。</p><Button ref={deleteTrigger} type="text" danger disabled={Boolean(busy)} loading={busy === "delete"} onClick={() => void openDelete()} icon={<Trash2 size={15} />} htmlType="button">删除分组</Button></section> : null}
+              {details && group?.type === "business" ? <section className="mt-6 border-t border-[var(--theme-border)] pt-4"><Button ref={deleteTrigger} type="default" danger disabled={Boolean(busy)} loading={busy === "delete"} onClick={() => void openDelete()} icon={<Trash2 size={15} />} htmlType="button">删除分组</Button></section> : null}
             </div>
           </DrawerContent>
         </DrawerPopup></DrawerPortal>
