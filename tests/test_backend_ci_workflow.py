@@ -195,6 +195,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_runs_worker_dispatch_binding.py",
         "tests/test_runs_worker_early_failure.py",
         "tests/test_runs_worker_execution_terminal.py",
+        "tests/test_cancelled_predispatch_continuation.py",
         "tests/test_runs_worker_locked_authorization.py",
         "tests/test_sandbox_persistence.py",
         "tests/test_skills_authorization.py",
