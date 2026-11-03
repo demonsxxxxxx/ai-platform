@@ -37,18 +37,47 @@ class WorkerExecutionTerminalService:
         self._verification_scope = verification_scope
 
     async def cancel(
-        self, *, attempt: Any, capabilities: Any,
+        self, *, payload: Any, attempt_id: str, attempt: Any, capabilities: Any,
         release_runtime_lease: Callable[..., Awaitable[None]],
+        continuation_settlement: dict[str, Any] | None = None,
     ) -> WorkerExecutionTerminalOutcome:
-        async with self._transaction_factory() as conn:
-            terminal_written = await attempt.cancel(
-                conn, capabilities=capabilities, result_json={"message": "任务已取消"},
-            )
-            if not terminal_written:
+        async with AsyncExitStack() as verification:
+            if continuation_settlement is not None and self._verification_scope is not None:
+                await verification.enter_async_context(self._verification_scope(
+                    tenant_id=payload.tenant_id, run_id=payload.run_id,
+                ))
+            try:
+                async with self._transaction_factory() as conn:
+                    if continuation_settlement is not None:
+                        await self._prepare_pending_authority(
+                            conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
+                            attempt_id=attempt_id,
+                        )
+                        if self._settle_continuation is None or self._release_continuation_lease is None:
+                            raise RuntimeError("continuation_settlement_ports_unconfigured")
+                        sdk = dict(continuation_settlement["sdk_settlement"])
+                        sdk["owner_generation"] = await attempt.bind_undispatched_cancel_generation(
+                            conn, owner_generation=sdk["owner_generation"],
+                        )
+                        continuation_settlement = {**continuation_settlement, "sdk_settlement": sdk}
+                        await self._settle_continuation(
+                            conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
+                            attempt_id=attempt_id, settlement=continuation_settlement,
+                        )
+                    terminal_written = await attempt.cancel(
+                        conn, capabilities=capabilities, result_json={"message": "任务已取消"},
+                    )
+                    if not terminal_written:
+                        raise _WorkerExecutionTerminalBlocked()
+                    await release_runtime_lease(conn, reason="run_cancelled")
+                    if continuation_settlement is not None:
+                        await self._release_continuation_lease(
+                            conn, settlement=continuation_settlement, reason="run_cancelled",
+                        )
+            except _WorkerExecutionTerminalBlocked:
                 return WorkerExecutionTerminalOutcome(
                     "skipped", "stale_terminal_state", "Run already reached a terminal state",
                 )
-            await release_runtime_lease(conn, reason="run_cancelled")
         return WorkerExecutionTerminalOutcome("cancelled")
 
     async def fail_or_cancel(

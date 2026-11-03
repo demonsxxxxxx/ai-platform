@@ -163,6 +163,11 @@ async def test_prepared_started_attempt_before_first_callback_can_close_and_cont
         assert closing["recovery_json"]["owner_generation"] == transitioned["owner_generation"]
         await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="target")
         assert (await (await conn.execute("select active_run_id,active_attempt_id from provider_session_heads")).fetchone()) == dict(active_run_id=None, active_attempt_id=None)
+        if terminal == "cancelled" and source:
+            from app.context.infrastructure.provider_continuation import get_session_continuation
+            await conn.execute("alter table sandbox_leases add column executor_terminal_json jsonb")
+            public = await get_session_continuation(conn, tenant_id="tenant", user_id="user", session_id="session")
+            assert public["action"] == "continue" and public["reason_code"] != "writer_unverified"
         next_frozen = await prepare(conn, "next", 3 if with_source else 2)
         assert next_frozen["execution_mode"] == ("native_resume" if with_source else "empty_start")
         if source:

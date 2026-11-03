@@ -7,6 +7,29 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def undispatched_continuation_settlement(
+    request: Any, *, stop_evidence: str, lease_id: str | None = None,
+) -> dict[str, Any]:
+    """Only the owner still before SDK dispatch may issue this closing proof."""
+    settlement = {
+        "tenant_id": request.tenant_id, "run_id": request.run_id,
+        "attempt_id": request.attempt_id, "final_sequence": None,
+        "workspace_receipt": None, "stop_evidence": stop_evidence,
+        "sdk_settlement": {
+            "owner_generation": request.owner_generation, "input_accepted": False,
+            "ack_unknown": False, "mirror_complete": False, "received_result": False,
+            "terminal_reason": "predispatch_failure",
+        },
+        "external_effect_unknown": False,
+    }
+    if lease_id is not None:
+        settlement["runtime_lease"] = {
+            "lease_id": lease_id, "tenant_id": request.tenant_id, "user_id": request.user_id,
+            "run_id": request.run_id, "attempt_id": request.attempt_id,
+        }
+    return settlement
+
+
 @dataclass(frozen=True)
 class ContinuationSettlementPorts:
     save_workspace_version: Callable[..., Awaitable[Any]]

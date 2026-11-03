@@ -79,6 +79,14 @@ async def submit_run_until_cancelled(
                 # A durable same-Attempt handoff/result still owns terminal settlement.
                 if submit_task.done() and not submit_task.cancelled() and submit_task.exception() is None:
                     return submit_task.result()
+                try:
+                    submit_task.result()
+                except (asyncio.CancelledError, Exception) as exc:
+                    cancelled = WorkerRunCancelled()
+                    proof = getattr(exc, "predispatch_continuation_settlement", None)
+                    if proof is not None:
+                        cancelled.predispatch_continuation_settlement = proof
+                    raise cancelled from exc
                 raise WorkerRunCancelled
             done, _ = await asyncio.wait(
                 {submit_task},

@@ -66,7 +66,8 @@ async def test_worker_executor_failure_terminalizes_once_and_publishes_only_afte
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [None, "cas", "context", "release"])
-async def test_predispatch_context_and_terminal_share_transaction_and_rollback(fault):
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_predispatch_context_and_terminal_share_transaction_and_rollback(fault, cancelled):
     writes = []
     transactions = []
     conn = object()
@@ -87,6 +88,13 @@ async def test_predispatch_context_and_terminal_share_transaction_and_rollback(f
     class Attempt:
         async def is_cancel_requested(self, actual):
             return False
+
+        async def bind_undispatched_cancel_generation(self, actual, *, owner_generation):
+            assert actual is conn and owner_generation == 4
+            return 5
+
+        async def cancel(self, actual, **kwargs):
+            return await fail(actual, **kwargs)
 
     async def settle(actual, **kwargs):
         assert actual is conn
@@ -118,6 +126,12 @@ async def test_predispatch_context_and_terminal_share_transaction_and_rollback(f
         release_continuation_lease=release_continuation,
     )
     async def execute():
+        if cancelled:
+            return await service.cancel(
+                payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+                attempt_id="attempt", attempt=Attempt(), capabilities=object(),
+                release_runtime_lease=release, continuation_settlement={"sdk_settlement": {"owner_generation": 4}},
+            )
         return await service.fail_or_cancel(
             payload=SimpleNamespace(tenant_id="tenant", run_id="run", executor_type="fake"),
             attempt_id="attempt", attempt=Attempt(), capabilities=object(),
@@ -129,7 +143,7 @@ async def test_predispatch_context_and_terminal_share_transaction_and_rollback(f
             await execute()
     else:
         outcome = await execute()
-        assert outcome.status == ("skipped" if fault == "cas" else "failed")
+        assert outcome.status == ("skipped" if fault == "cas" else "cancelled" if cancelled else "failed")
     assert transactions == ["commit" if fault is None else "rollback"]
     assert writes[:1] == ["context"]
     if fault == "cas":

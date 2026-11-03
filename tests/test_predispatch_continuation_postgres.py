@@ -27,8 +27,9 @@ from tests.test_sandbox_runtime import request
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", [None, "stale_generation", "terminal_cas"])
+@pytest.mark.parametrize("cancelled", [False, True])
 async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admission(
-    executor_acceptance_database, monkeypatch, fault,
+    executor_acceptance_database, monkeypatch, fault, cancelled,
 ):
     conn = executor_acceptance_database
     configure_context_services()
@@ -93,7 +94,12 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
             return RunTerminalizationProgress(completed=False, status=None)
         return await lifecycle.fail_run(actual, **kwargs)
     # Keep the real Run/Attempt CAS; v4 delivery and diagnostics have separate owning tests.
-    ports = replace(ports, fail_run=fail_run, record_result_diagnostics=None)
+    async def cancel_run(actual, *, capabilities, **kwargs):
+        if fault == "terminal_cas":
+            from app.runs.api import RunTerminalizationProgress
+            return RunTerminalizationProgress(completed=False, status=None)
+        return await lifecycle.cancel_run(actual, **kwargs)
+    ports = replace(ports, fail_run=fail_run, cancel_run=cancel_run, record_result_diagnostics=None)
     attempt = WorkerAttemptLifecycle.from_leased_attempt(
         tenant_id="tenant-a", run_id="run-a", leased_attempt_id="queue-a", worker_id="worker-a",
         is_reconciliation=False, ports=ports,
@@ -103,7 +109,19 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
     )
     async def release(*args, **kwargs):
         pass
+    if cancelled:
+        await conn.execute("update runs set cancel_requested_at=now() where id='run-a'")
+        cancelled_attempt = await attempts.request_cancel(
+            conn, tenant_id="tenant-a", run_id="run-a", attempt_id=started["id"],
+        )
+        assert cancelled_attempt["owner_generation"] == 5
     async def terminalize():
+        if cancelled:
+            return await service.cancel(
+                payload=SimpleNamespace(tenant_id="tenant-a", run_id="run-a"),
+                attempt_id=started["id"], attempt=attempt, capabilities=object(),
+                release_runtime_lease=release, continuation_settlement=receipt,
+            )
         return await service.fail_or_cancel(
             payload=SimpleNamespace(tenant_id="tenant-a",run_id="run-a",executor_type="claude-agent-worker"),
             attempt_id=started["id"], attempt=attempt, capabilities=object(), failure_code="executor_failure",
@@ -111,11 +129,12 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
             continuation_settlement=receipt,
         )
     if fault == "stale_generation":
-        with pytest.raises(ProviderSessionConflictError):
+        from app.platform.postgres.errors import RepositoryConflictError
+        with pytest.raises(RepositoryConflictError if cancelled else ProviderSessionConflictError):
             await terminalize()
     else:
         outcome = await terminalize()
-        assert outcome.status == ("skipped" if fault else "failed")
+        assert outcome.status == ("skipped" if fault else "cancelled" if cancelled else "failed")
     epoch = await (await conn.execute("select * from provider_session_epochs where id=%s", (frozen["provider_epoch_id"],))).fetchone()
     assert all(epoch[key] is None for key in ("writer_run_id", "writer_attempt_id", "writer_owner_generation"))
     assert (await (await conn.execute("select count(*) as n from provider_turn_receipts")).fetchone())["n"] == 0
@@ -125,13 +144,15 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
     assert current["execution_spec_sha256"] == spec.spec_sha256
     if fault:
         assert epoch["state"] == "bootstrapping" and epoch["recovery_json"] is None
-        assert current["status"] == "running" and current["owner_generation"] == 4
+        assert current["status"] == ("cancel_requested" if cancelled else "running")
+        assert current["owner_generation"] == (5 if cancelled else 4)
         assert head["active_run_id"] == "run-a"
         return
     assert epoch["state"] == "closed"
     assert epoch["recovery_json"]["stop_evidence"] == "provider_not_created"
-    assert epoch["recovery_json"]["owner_generation"] == current["owner_generation"] == 5
-    assert current["status"] == "failed" and head["active_run_id"] is None
+    assert epoch["recovery_json"]["owner_generation"] == current["owner_generation"] == (6 if cancelled else 5)
+    assert current["status"] == ("cancelled" if cancelled else "failed")
+    assert head["active_run_id"] is None and head["active_attempt_id"] is None
     assert head["current_epoch_id"] is None and head["recovery_json"] is None
     await conn.execute("insert into runs(id,tenant_id,workspace_id,session_id,user_id,agent_id,status,execution_kind,session_generation) values('next-run','tenant-a','workspace-a','session-a','user-a','agent-a','queued','harness_chat',2)")
     await provider_epochs.claim_provider_lineage(conn, scope=scope, run_id="next-run")

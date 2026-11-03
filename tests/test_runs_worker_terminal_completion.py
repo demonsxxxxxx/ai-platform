@@ -145,6 +145,33 @@ async def test_operator_outer_transaction_owns_publication_and_rolls_back_origin
 
 
 @pytest.mark.asyncio
+async def test_predispatch_cancel_carries_exact_proof_into_current_terminal_owner():
+    proof = {"stop_evidence": "provider_not_created"}
+    error = WorkerRunCancelled()
+    error.predispatch_continuation_settlement = proof
+    calls = []
+
+    async def cancel(**kwargs):
+        assert kwargs["continuation_settlement"] is proof
+        assert kwargs["payload"].run_id == "run" and kwargs["attempt_id"] == "attempt"
+        calls.append("terminal")
+        return WorkerResultCommitOutcome("cancelled")
+
+    async def publish():
+        calls.append("publish")
+
+    service = WorkerTerminalCompletionService(
+        payload=SimpleNamespace(run_id="run"), attempt_id="attempt",
+        attempt_authority=object(), capabilities=object(), release_runtime_lease=object(),
+        result_commit=object(), execution_terminal=SimpleNamespace(cancel=cancel),
+        normalize_result=object(), build_command=object(), exception_failure=object(),
+        cancelled_error=WorkerRunCancelled, publish=publish, publish_result=object(),
+    )
+    assert await service.cancel(error) == WorkerOutcome("cancelled", "run")
+    assert calls == ["terminal", "publish"]
+
+
+@pytest.mark.asyncio
 async def test_predispatch_failure_carries_exact_continuation_proof_into_current_terminal_owner():
     proof = {"stop_evidence": "provider_not_created"}
     error = RuntimeError("synthetic predispatch failure")
