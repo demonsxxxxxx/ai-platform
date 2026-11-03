@@ -29,6 +29,7 @@ function MarkdownTextContent() {
       imageGallery={imageGallery}
       isStreaming={isStreaming}
       smooth={smooth && (presentation?.isLast ?? true)}
+      streamingCaret={smooth && (presentation?.isLast ?? true)}
       defer
     />
   );
@@ -61,8 +62,11 @@ export function AssistantUiMessageStatus() {
   const { t } = useTranslation();
   const synchronizing = useAuiState((state) => Boolean(state.message.metadata.custom.isSynchronizing));
   const hasText = useAuiState((state) => state.message.parts.some((part) => part.type === "text" && part.text.trim().length > 0));
+  // While text streams, the caret after the text is the visible cue; the
+  // status stays announced for assistive technology without a second row.
   return <AuiIf condition={(state) => state.message.status?.type === "running" || Boolean(state.message.metadata.custom.isSynchronizing)}>
     <GenerationLoader data-assistant-ui-stream-status={synchronizing ? "synchronizing" : hasText ? "streaming" : "waiting"}
+      visuallyHidden={hasText && !synchronizing}
       label={t(synchronizing ? "chat.message.synchronizingResult" : hasText ? "chat.message.generating" : "chat.message.waitingForResponse")} />
   </AuiIf>;
 }

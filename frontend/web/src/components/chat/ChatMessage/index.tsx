@@ -9,32 +9,21 @@ import { AssistantUiMarkdownText, AssistantUiMessagePart, AssistantUiMessageStat
 import { getAssistantUiDisplayParts } from "../assistant-ui/externalStoreRuntime";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys } from "./MessagePartRenderer";
-import { AssistantAvatar } from "./AssistantAvatar";
-import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
-import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
 import { MessageWorkActivity } from "./MessageWorkActivity";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
-import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
+import { formatDateTime } from "../../../utils/datetime";
 import { selectAssistantCopyText } from "../../../types/assistantTextParts";
 import {
   createArtifactDownloadScope,
   type ArtifactDownloadScopeContext,
 } from "./items/artifactDownloadRegistry";
 
-export interface AssistantPublicIdentity {
-  agent_id: string;
-  name: string;
-  avatar_ref?: AgentProfileAvatarRef;
-  avatar_seed?: string;
-}
-
 interface ChatMessageProps {
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
-  assistantIdentity?: AssistantPublicIdentity;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
@@ -50,7 +39,6 @@ function formatDurationMs(durationMs: number): string {
 
 export const ChatMessage = memo(function ChatMessage({
   artifactDownloadScopeContext,
-  assistantIdentity,
   onOpenPreview,
 }: ChatMessageProps) {
   const { t } = useTranslation();
@@ -117,74 +105,42 @@ export const ChatMessage = memo(function ChatMessage({
     );
   };
 
-  // Assistant message: left layout
+  // Assistant message: one reading column with no per-message identity header
+  // (the workspace header names the expert), following the ChatGPT Clone layout.
   return (
     <div
       id={createMessageAnchorId(message.id)}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
-      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] dark:data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] dark:data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
+      className="group w-full scroll-mt-6 rounded-lg py-3 transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
     >
-      <AssistantMessageContent>        {/* Content */}
-        <div className="min-h-0 min-w-0 py-1">
-          {/* Header: Avatar + Role label + Stop button */}
-          <div className="mb-2 flex items-center gap-2">
-            {assistantIdentity ? (
-              <AgentIdentityAvatar
-                agentId={assistantIdentity.agent_id}
-                avatarRef={assistantIdentity.avatar_ref}
-                avatarSeed={assistantIdentity.avatar_seed}
-                name={assistantIdentity.name}
-                size="xs"
-              />
-            ) : (
-              <AssistantAvatar className="size-6 shrink-0 rounded-full" />
-            )}
-            <span
-              className="text-sm font-semibold"
-              style={{ color: "var(--theme-text)" }}
-            >
-              {assistantIdentity?.name ?? t("chat.message.assistant")}
-            </span>
-            {message.timestamp && (
-              <span
-                className="text-xs ml-2 mt-0.5 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                style={{ color: "var(--theme-text-secondary)" }}
-              >
-                {message.timestamp
-                  ? formatDateTimeShort(message.timestamp)
-                  : ""}
-              </span>
-            )}
-          </div>
-
+      <AssistantMessageContent>
+        <div className="min-h-0 min-w-0">
           {hasParts ? (
-            <div className="my-1.5 space-y-2">
-              <MessageWorkActivity
-                messageId={message.id}
-                isStreaming={message.isStreaming}
-                parts={visibleParts}
-                partKeys={visiblePartKeys}
-                renderPart={(part, index, withinWorkDetails) => (
-                  <AssistantUiMessagePart
-                    part={part}
-                    messageId={message.id}
-                    partIndex={index}
-                    isStreaming={message.isStreaming}
-                    isLast={index === visibleParts.length - 1}
-                    onOpenPreview={onOpenPreview}
-                    artifactDownloadScope={artifactDownloadScope}
-                    withinWorkDetails={withinWorkDetails}
-                  />
-                )}
-              />
-            </div>
+            <MessageWorkActivity
+              messageId={message.id}
+              isStreaming={message.isStreaming}
+              parts={visibleParts}
+              partKeys={visiblePartKeys}
+              renderPart={(part, index, withinWorkDetails) => (
+                <AssistantUiMessagePart
+                  part={part}
+                  messageId={message.id}
+                  partIndex={index}
+                  isStreaming={message.isStreaming}
+                  isLast={index === visibleParts.length - 1}
+                  onOpenPreview={onOpenPreview}
+                  artifactDownloadScope={artifactDownloadScope}
+                  withinWorkDetails={withinWorkDetails}
+                />
+              )}
+            />
           ) : (
             <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
           )}
           <AssistantUiMessageStatus />
         </div>
-        {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
+        {/* Actions sit directly under the answer once it has settled. */}
         <AuiIf condition={(state) => state.message.status?.type !== "running" && !state.message.metadata.custom.isSynchronizing}>
           <AssistantUiMessageActions messageId={message.id} text={getAssistantTextContent()}>
             <MessageTiming stats={timingStats} label={t("chat.message.tokenUsage")} />

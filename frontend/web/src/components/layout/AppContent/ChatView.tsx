@@ -36,6 +36,7 @@ import {
   ChatInput,
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
+import type { ChatInputProps } from "../../chat/chatInputTypes";
 import { RunInputHistory } from "../../chat/RunInputHistory";
 import { deriveRunInputSurface } from "../../chat/runInputSurface";
 import { WelcomePage } from "../../chat/WelcomePage";
@@ -344,6 +345,14 @@ export function ChatView({
   );
   const canSendInCurrentView =
     canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
+  // A temporary wait must not read as a missing permission.
+  const sendBlockedReason: ChatInputProps["sendBlockedReason"] = !canSendMessage
+    ? "permission"
+    : isLoadingHistory
+      ? "loadingHistory"
+      : terminalResultSynchronizing
+        ? "synchronizing"
+        : undefined;
   // The authorized pending batch, not a route flag, owns question mode. A closed
   // or accepted batch leaves no pending answer, so the ordinary composer returns
   // with its draft and attachments untouched.
@@ -899,8 +908,6 @@ export function ChatView({
     [showStreamingFooterSkeleton],
   );
 
-  const assistantIdentity = presentation?.identity;
-
   const virtuosoItemContent = useCallback(
     (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
@@ -912,7 +919,6 @@ export function ChatView({
           >
             <ChatMessage
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              assistantIdentity={assistantIdentity}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -926,7 +932,6 @@ export function ChatView({
     ),
     [
       artifactDownloadScopeContext,
-      assistantIdentity,
       sessionId,
       handleOpenPreview,
     ],
@@ -948,6 +953,7 @@ export function ChatView({
     canStop: canStopGeneration && currentRunId !== null,
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
+    sendBlockedReason,
     placeholder: composerPlaceholder,
     modelUnavailableReason,
     acceptedFileTypes: undefined,

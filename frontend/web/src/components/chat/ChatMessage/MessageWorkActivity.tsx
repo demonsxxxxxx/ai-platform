@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { assistantTextPartRole } from "../../../types/assistantTextParts";
 import type { ExecutionTimelinePart, MessagePart } from "../../../types/message";
@@ -210,13 +211,8 @@ export function MessageWorkActivity({
 
   const displayEntries = selectDisplayWorkParts(parts, isStreaming);
   const displayItems = buildWorkActivityDisplayItems(displayEntries);
-  const workActivityCount = displayItems.length;
   const issueCounts = countWorkActivityIssues(parts);
-  const workActivityRegionIds = displayItems.map((item) => {
-    const entries = item.kind === "tool_group" ? item.items : [item.item];
-    return `chat-work-${messageId}-${entries.map(({ index }) => index).join("-")}`;
-  });
-  const controlledWorkActivityIds = workActivityRegionIds.join(" ");
+  const contentId = `chat-work-${messageId}`;
   const activityStatus = isStreaming
     ? "running"
     : issueCounts.failed > 0 || issueCounts.denied > 0
@@ -235,67 +231,53 @@ export function MessageWorkActivity({
   );
   const renderDisplayItem = (item: WorkActivityDisplayItem) => {
     if (item.kind === "part") return renderWorkEntry(item.item);
+    const first = item.items[0];
     return (
-      <details data-tool-group className="my-1 rounded-lg border border-[var(--theme-border)]">
-        <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium marker:content-none">
+      <details key={`group-${first.index}`} data-tool-group className="group/tool-group">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 text-[13px] text-[var(--theme-text-secondary)] marker:content-none hover:text-[var(--theme-text)]">
           {t("chat.workDetails.toolGroup", { count: item.items.length })}
+          <ChevronRight size={13} aria-hidden="true" className="shrink-0 transition-transform group-open/tool-group:rotate-90 motion-reduce:transition-none" />
         </summary>
-        <div className="border-t border-[var(--theme-border)] px-2 py-1">
+        <div className="ml-[6px] border-l border-[var(--theme-border)] pl-3">
           {item.items.map(renderWorkEntry)}
         </div>
       </details>
     );
   };
+  const results = parts.map((part, index) =>
+    isWorkActivityPart(part) ? null : renderResultPart(part, index),
+  );
   if (displayItems.length === 0) {
-    return (
-      <div data-message-work-activity-order="result-first">
-        {parts.map((part, index) =>
-          isWorkActivityPart(part) ? null : renderResultPart(part, index),
-        )}
-      </div>
-    );
+    return <div data-message-work-activity-order="result-first">{results}</div>;
   }
-  // The visible result reads first; the process disclosure follows it so the
-  // user opens an execution trace only after reading the answer.
+  const hasIssues = issueCounts.failed > 0 || issueCounts.denied > 0;
+  // One disclosure above the answer: the streaming answer grows below it.
   return (
-    <div data-message-work-activity-order="result-first">
-      {parts.map((part, index) =>
-        isWorkActivityPart(part) ? null : renderResultPart(part, index),
-      )}
-      {displayItems.map((item, displayIndex) => {
-        const isFirstWorkActivity = displayIndex === 0;
-        const hasIssues = issueCounts.failed > 0 || issueCounts.denied > 0;
-        return (
-          <Fragment key={workActivityRegionIds[displayIndex]}>
-            <RunActivity
-              open={expanded}
-              onOpenChange={setExpanded}
-              status={activityStatus}
-              label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
-              itemCount={t("chat.workDetails.itemCount", { count: workActivityCount })}
-              toggleLabel={t(
-                expanded
-                  ? "chat.workDetails.collapseAll"
-                  : "chat.workDetails.expandAll",
-              )}
-              contentId={workActivityRegionIds[displayIndex]}
-              ariaControls={controlledWorkActivityIds}
-              showTrigger={isFirstWorkActivity}
-              issueSummary={
-                isFirstWorkActivity && hasIssues ? (
-                  <span className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]" data-work-activity-issue-summary>
-                    {issueCounts.failed > 0 ? <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span> : null}
-                    {issueCounts.denied > 0 ? <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span> : null}
-                    <span>查看执行详情</span>
-                  </span>
-                ) : undefined
-              }
-            >
-              {renderDisplayItem(item)}
-            </RunActivity>
-          </Fragment>
-        );
-      })}
+    <div data-message-work-activity-order="process-first" className="flex flex-col gap-2">
+      <RunActivity
+        open={expanded}
+        onOpenChange={setExpanded}
+        status={activityStatus}
+        label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+        itemCount={t("chat.workDetails.itemCount", { count: displayItems.length })}
+        toggleLabel={t(expanded ? "chat.workDetails.collapseAll" : "chat.workDetails.expandAll")}
+        contentId={contentId}
+        issueSummary={
+          hasIssues ? (
+            <span className="inline-flex flex-wrap items-center gap-x-1.5" data-work-activity-issue-summary>
+              {issueCounts.failed > 0 ? (
+                <span className="text-[var(--theme-danger-text)]" data-work-activity-failed-count>· {issueCounts.failed} 项失败</span>
+              ) : null}
+              {issueCounts.denied > 0 ? (
+                <span className="text-[var(--theme-warning-text)]" data-work-activity-denied-count>· {issueCounts.denied} 项未授权</span>
+              ) : null}
+            </span>
+          ) : undefined
+        }
+      >
+        {displayItems.map(renderDisplayItem)}
+      </RunActivity>
+      <div>{results}</div>
     </div>
   );
 }

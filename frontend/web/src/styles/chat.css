@@ -95,3 +95,66 @@
   background: color-mix(in srgb, var(--theme-warning) 10%, transparent);
   color: var(--theme-warning-text);
 }
+
+/* Generation feedback (docs/frontend/visual-guidelines.md section 7.5). */
+.aui-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--theme-text-tertiary) 0%,
+    var(--theme-text) 50%,
+    var(--theme-text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: aui-shimmer 1.8s linear infinite;
+}
+
+@keyframes aui-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* The caret follows the last streamed block; lists place it after the last item. */
+.markdown-streaming > :last-child:not(ul):not(ol):not(pre):not(table):not(div)::after,
+.markdown-streaming > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-inline-start: 0.3em;
+  border-radius: 9999px;
+  background: var(--theme-text);
+  vertical-align: 0.05em;
+  animation: aui-caret 1s ease-in-out infinite;
+}
+
+@keyframes aui-caret {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aui-shimmer {
+    animation: none;
+    background: none;
+    color: var(--theme-text-secondary);
+  }
+
+  .markdown-streaming > :last-child::after,
+  .markdown-streaming > :is(ul, ol):last-child > li:last-child::after {
+    animation: none;
+  }
+}

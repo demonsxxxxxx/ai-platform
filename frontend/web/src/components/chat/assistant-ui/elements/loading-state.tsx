@@ -2,14 +2,13 @@
 import type { ComponentProps } from "react";
 import { clsx } from "clsx";
 
-export function GenerationLoader({ label, className, ...props }: Omit<ComponentProps<"div">, "children"> & { label: string }) {
+/** One generation cue: a shimmering label, or an announced-only status while text streams. */
+export function GenerationLoader({ label, visuallyHidden = false, className, ...props }: Omit<ComponentProps<"div">, "children"> & {
+  label: string;
+  visuallyHidden?: boolean;
+}) {
   return <div data-slot="generation-loader" role="status" aria-live="polite"
-    className={clsx("my-3 flex items-center gap-2 text-xs text-[var(--theme-text-secondary)]", className)} {...props}>
-    <div aria-hidden className="grid grid-cols-3 gap-0.5">
-      {Array.from({ length: 9 }, (_, index) => <span key={index}
-        className="size-1 animate-pulse rounded-full bg-current motion-reduce:animate-none"
-        style={{ animationDelay: `${index * 120}ms` }} />)}
-    </div>
-    <span>{label}</span>
+    className={clsx(visuallyHidden ? "sr-only" : "my-2 text-sm", className)} {...props}>
+    <span className={visuallyHidden ? undefined : "aui-shimmer"}>{label}</span>
   </div>;
 }

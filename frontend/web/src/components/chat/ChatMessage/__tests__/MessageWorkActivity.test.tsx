@@ -57,9 +57,10 @@ test("collapsed work activity keeps failed and denied operation counts visible",
   );
 
   assert.match(markup, /aria-expanded="false"/);
-  assert.match(markup, /data-work-activity-failed-count="true">局部失败 3/);
-  assert.match(markup, /data-work-activity-denied-count="true">未授权 2/);
-  assert.match(markup, /查看执行详情/);
+  assert.match(markup, /data-work-activity-failed-count="true">· 3 项失败/);
+  assert.match(markup, /data-work-activity-denied-count="true">· 2 项未授权/);
+  // The chevron follows the label; there is no separate right-aligned toggle text.
+  assert.doesNotMatch(markup, /查看执行详情|>全部展开<|>全部收起</);
 });
 
 test("streaming hides routine phases and keeps only the latest meaningful phase", async () => {
@@ -158,7 +159,7 @@ test("completed routine phases stay hidden while failed phases and cancelled too
   assert.doesNotMatch(markup, /phase_skill_staging/);
   assert.match(markup, /phase_sandbox_submission/);
   assert.match(markup, /operation-cancelled/);
-  assert.match(markup, /局部失败 1/);
+  assert.match(markup, /1 项失败/);
 });
 
 test("groups only adjacent successful tools and leaves failures as separate visible work", async () => {
@@ -187,7 +188,7 @@ test("groups only adjacent successful tools and leaves failures as separate visi
   assert.match(markup, /operation-3/);
 });
 
-test("work process renders after the visible result, not before it", async () => {
+test("work process disclosure renders above the answer so streaming text grows below it", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const answer = {
     type: "text",
@@ -215,6 +216,7 @@ test("work process renders after the visible result, not before it", async () =>
   const answerIndex = markup.indexOf('data-part="text"');
   const toggleIndex = markup.indexOf("data-message-work-details-toggle");
   assert.ok(answerIndex >= 0, "expected the answer part to render");
-  assert.ok(toggleIndex > answerIndex, "work disclosure must follow the result");
-  assert.match(markup, /data-message-work-activity-order="result-first"/);
+  assert.ok(toggleIndex >= 0 && toggleIndex < answerIndex, "work disclosure must precede the answer");
+  assert.match(markup, /data-message-work-activity-order="process-first"/);
+  assert.doesNotMatch(markup, /result-first/);
 });

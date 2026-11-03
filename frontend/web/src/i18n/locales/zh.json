@@ -387,6 +387,8 @@
     },
     "noPermission": "没有发送消息的权限",
     "noPermissionHint": "您没有发送消息的权限",
+    "sendBlockedLoadingHistory": "正在加载历史记录…",
+    "sendBlockedSynchronizing": "正在同步结果，完成后可继续发送",
     "outline": "大纲",
     "placeholder": "输入 / 选择命令，输入 $ 选择 Skills，或直接描述任务...",
     "placeholderWithHintCtrl": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 换行，Ctrl+Enter 发送",
