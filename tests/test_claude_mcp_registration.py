@@ -368,12 +368,15 @@ async def test_cancel_during_discovery_closes_owner_without_waiting_for_timeout(
 @pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
 async def test_installed_claude_cli_selected_mcp_end_to_end(
     monkeypatch, tmp_path, remote_error, server_name, integration_kind,
-    tool_search=False, tool_result_case=None,
+    tool_search=False, tool_result_case=None, model="claude-sonnet-4-6",
 ):
     from app.executors import claude_agent_sdk_runner as runner
-
+    from app.execution.application.model_control_plane import _runtime_proxy_headers
 
     with local_mcp_peers() as peer:
+        # The real CLI must cross the same protocol gate as a sandbox request.
+        # A permissive fake model alone cannot catch SDK/proxy contract drift.
+        peer.model_header_validator = _runtime_proxy_headers
         peer.is_error = remote_error
         peer.search_tools = tool_search
         if tool_result_case is None:
@@ -423,7 +426,7 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(
         settings = SimpleNamespace(
             claude_agent_sdk_enabled=True, claude_agent_sdk_max_turns=4,
             claude_agent_sdk_timeout_seconds=40, claude_agent_sdk_skills="",
-            claude_agent_permission_mode="dontAsk", claude_agent_model="claude-sonnet-4-6",
+            claude_agent_permission_mode="dontAsk", claude_agent_model=model,
             anthropic_model="", anthropic_base_url=peer.url, anthropic_auth_token="synthetic-model-token",
             openai_api_key="",
         )
@@ -469,8 +472,14 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(
             mcp_credential_resolver=credential_resolver,
         )
         assert credential_reads and set(credential_reads) == {server_name}
+        assert not peer.model_policy_failures, peer.model_policy_failures
         assert result.error is None, result.runtime_diagnostics
-        assert peer.models
+        assert peer.models and peer.model_headers
+        if tool_search:
+            assert any(
+                "advanced-tool-use-2025-11-20" in headers.get("anthropic-beta", "").split(",")
+                for path, headers in peer.model_headers if path == "v1/messages"
+            )
         # Discovery uses catalog-only; invocation uses the bounded session.
         assert sum(method == "initialize" for method, _ in peer.requests) == 2
         if tool_search:
@@ -1193,9 +1202,10 @@ async def test_session_failure_observation_does_not_change_other_outcomes(kind):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("search_mode", [True, "default"])
 @pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
-async def test_installed_claude_cli_discovers_only_selected_mcp_tools(monkeypatch, tmp_path, search_mode, integration_kind):
+@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "DSH-Assistant"])
+async def test_installed_claude_cli_discovers_only_selected_mcp_tools(monkeypatch, tmp_path, search_mode, integration_kind, model):
     await test_installed_claude_cli_selected_mcp_end_to_end(
-        monkeypatch, tmp_path, False, "gateway", integration_kind, tool_search=search_mode,
+        monkeypatch, tmp_path, False, "gateway", integration_kind, tool_search=search_mode, model=model,
     )
 
 

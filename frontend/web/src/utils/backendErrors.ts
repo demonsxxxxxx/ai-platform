@@ -18,6 +18,8 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   api_response_invalid: "backendErrors.apiResponseInvalid",
   agent_profile_revision_stale: "backendErrors.agentProfileRevisionStale",
   session_workspace_mismatch: "backendErrors.sessionWorkspaceMismatch",
+  provider_session_requires_new_conversation:
+    "backendErrors.providerSessionRequiresNewConversation",
   required_capability_unavailable: "chat.runTerminal.requiredCapabilityUnavailable",
   capability_not_authorized: "chat.runTerminal.capabilityNotAuthorized",
   tool_permission_denied: "chat.runTerminal.toolPermissionDenied",

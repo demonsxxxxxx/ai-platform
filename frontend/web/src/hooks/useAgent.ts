@@ -282,6 +282,8 @@ export function buildChatSubmissionFailureGuidance({
     nextAction = "请刷新专家配置并重新选择最新版本后重试。";
   } else if (code === "session_workspace_mismatch") {
     nextAction = "请切换回此会话所属的工作区，或在当前工作区新建会话。";
+  } else if (code === "provider_session_requires_new_conversation") {
+    nextAction = "请新建对话后再发送；此对话的已有消息仍保留。";
   } else if (code === "user_active_run_limit_exceeded") {
     nextAction = "请等待运行中的任务结束或取消旧任务后再发送。";
   } else if (code === "current_request_too_large") {

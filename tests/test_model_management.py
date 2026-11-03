@@ -152,68 +152,75 @@ def test_catalog_capacity_pair_and_anthropic_proxy_contract():
     )
     for invalid in (
         {"anthropic-version": "2024-01-01"},
-        {"anthropic-version": "2023-06-01", "anthropic-beta": "unknown-beta"},
+        {"anthropic-version": "2023-06-01", "anthropic-beta": "invalid beta"},
         {"anthropic-version": "2023-06-01", "anthropic-beta": "claude-code-20250219,"},
-        {"anthropic-version": "2023-06-01", "anthropic-beta": "effort-2025-11-24"},
     ):
         with pytest.raises(PermissionError):
             _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", invalid)
 
 
-_SDK_MESSAGE_BETAS = [
-    "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
-    "context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
-    "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,structured-outputs-2025-12-15",
-    "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
-    "context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
-    "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,thinking-display-updates-2026-08-18",
-]
-
-
-@pytest.mark.parametrize("betas", _SDK_MESSAGE_BETAS)
-def test_anthropic_proxy_accepts_actual_sdk_message_beta_headers(betas):
-    normalized = _runtime_proxy_headers("anthropic", "v1/messages", {
-        "anthropic-version": "2023-06-01", "anthropic-beta": betas,
-    })
-    assert normalized["anthropic-beta"] == ",".join(sorted(betas.split(",")))
-    assert normalized["anthropic-version"] == "2023-06-01"
+@pytest.mark.parametrize("path", ["v1/messages", "v1/messages/count_tokens"])
+@pytest.mark.parametrize("beta", [
+    "advanced-tool-use-2025-11-20", "structured-outputs-2025-12-15",
+    "unknown-feature-2099-01-01", "Future.Feature_v2+preview", "experiment!#$%&'*+-.^_`|~",
+])
+def test_beta_names_are_not_enumerated_or_scoped_by_operation(path, beta):
+    headers = {"anthropic-version": "2023-06-01", "anthropic-beta": f" {beta},\t{beta} "}
+    assert _runtime_proxy_headers("anthropic", path, headers)["anthropic-beta"] == beta
 
 
 @pytest.mark.parametrize("path", ["v1/messages", "v1/messages/count_tokens"])
-@pytest.mark.parametrize("betas", ["unknown-beta", "claude-code-20250219,", ",".join(["claude-code-20250219"] * 17)])
-def test_anthropic_proxy_keeps_beta_membership_empty_item_and_count_limits(path, betas):
-    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
-        _runtime_proxy_headers("anthropic", path, {
-            "anthropic-version": "2023-06-01", "anthropic-beta": betas,
-        })
+def test_beta_protocol_accepts_exact_limits_and_optional_absence(path):
+    base = {"anthropic-version": "2023-06-01"}
+    assert _runtime_proxy_headers("anthropic", path, base) == base
+    token = "x" * 128
+    exact_bytes = " " * (4096 - len(token)) + token
+    assert _runtime_proxy_headers("anthropic", path, {**base, "anthropic-beta": exact_bytes})["anthropic-beta"] == token
+    values = [f"feature-{index}" for index in range(16)]
+    assert _runtime_proxy_headers("anthropic", path, {**base, "anthropic-beta": ",".join(reversed(values))})["anthropic-beta"] == ",".join(sorted(values))
 
 
-@pytest.mark.parametrize("beta", [
-    "mid-conversation-tool-changes-2026-07-01", "structured-outputs-2025-12-15",
-    "thinking-display-updates-2026-08-18",
+@pytest.mark.parametrize("path", ["v1/messages", "v1/messages/count_tokens"])
+@pytest.mark.parametrize("value,reason,rejected_count", [
+    ("PRIVATE beta", "invalid_format", 1),
+    ("claude-code-20250219,", "empty", 1),
+    ("", "empty", 1),
+    (" \t", "empty", 1),
+    (",".join(["claude-code-20250219"] * 17), "too_many", 0),
+    ("x" * 129, "invalid_format", 1),
+    ("valid,\r\nPRIVATE", "invalid_format", 1),
+    ("valid\x00PRIVATE", "invalid_format", 1),
+    ("valid\tPRIVATE", "invalid_format", 1),
+    ("valid/PRIVATE", "invalid_format", 1),
+    ("valid;PRIVATE", "invalid_format", 1),
+    ("valid=PRIVATE", "invalid_format", 1),
+    ("valid\u00e9", "invalid_format", 1),
+    ("\u2003valid", "invalid_format", 1),
 ])
-def test_anthropic_message_betas_do_not_expand_count_tokens_contract(beta):
-    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
-        _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", {
-            "anthropic-version": "2023-06-01", "anthropic-beta": beta,
+def test_beta_denial_keeps_closed_policy_facts_without_untrusted_header(path, value, reason, rejected_count):
+    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed") as caught:
+        _runtime_proxy_headers("anthropic", path, {
+            "anthropic-version": "2023-06-01", "anthropic-beta": value,
         })
-def test_installed_cli_structured_subtask_beta_is_messages_only():
-    headers = {
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": (
-            "claude-code-20250219,interleaved-thinking-2025-05-14,"
-            "thinking-token-count-2026-05-13,context-management-2025-06-27,"
-            "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,"
-            "structured-outputs-2025-12-15"
-        ),
+    assert caught.value.debug == {
+        "component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected",
+        "policy": "anthropic_beta", "beta_count": len(value.split(",")),
+        "beta_policy_revision": 2, "beta_rejection": reason, "rejected_beta_count": rejected_count,
     }
-    normalized = _runtime_proxy_headers("anthropic", "v1/messages", headers)
-    assert set(normalized["anthropic-beta"].split(",")) == set(headers["anthropic-beta"].split(","))
-    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
-        _runtime_proxy_headers("anthropic", "v1/messages/count_tokens", headers)
-    for value in ("unknown-beta", "structured-outputs-2025-12-15,unknown-beta", "structured-outputs-2025-12-15,"):
-        with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed"):
-            _runtime_proxy_headers("anthropic", "v1/messages", {**headers, "anthropic-beta": value})
+    assert "PRIVATE" not in json.dumps(caught.value.debug)
+
+
+@pytest.mark.parametrize("value", ["x" * 4097, "x" * 4096 + "\u00e9"])
+def test_beta_protocol_bounds_raw_header_before_splitting(value):
+    with pytest.raises(PermissionError, match="model_proxy_anthropic_beta_not_allowed") as caught:
+        _runtime_proxy_headers("anthropic", "v1/messages", {
+            "anthropic-version": "2023-06-01", "anthropic-beta": value,
+        })
+    assert caught.value.debug == {
+        "component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected",
+        "policy": "anthropic_beta", "beta_policy_revision": 2,
+        "beta_rejection": "too_large", "rejected_beta_count": 0,
+    }
 
 
 def test_model_transport_maps_missing_write_only_key_to_validation_error() -> None:
@@ -1417,8 +1424,7 @@ async def test_model_proxy_transport_rejects_duplicate_anthropic_headers_before_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("betas", _SDK_MESSAGE_BETAS)
-async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths(betas):
+async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
     captured = {}
 
     @asynccontextmanager
@@ -1465,11 +1471,11 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths(bet
     }
     await service.proxy(
         provider="anthropic", upstream_path="v1/messages", query="beta=true",
-        headers={"anthropic-version": "2023-06-01", "anthropic-beta": betas},
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "future-feature-2099-01-01"},
         **fields,
     )
     assert captured["query"] == "beta=true"
-    assert captured["headers"]["anthropic-beta"] == ",".join(sorted(betas.split(",")))
+    assert captured["headers"]["anthropic-beta"] == "future-feature-2099-01-01"
     assert captured["path"] == "/v1/messages"
     for invalid_query in ("Beta=true", "beta=true&beta=true", "beta%3Dtrue"):
         captured.clear()
@@ -1483,12 +1489,70 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths(bet
     captured.clear()
     count_response = await service.proxy(
         provider="anthropic", upstream_path="v1/messages/count_tokens", query="beta=true",
-        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "token-counting-2024-11-01"},
+        headers={"anthropic-version": "2023-06-01", "anthropic-beta": "future-feature-2099-01-01"},
         **{**fields, "body": b'{"model":"model-a","messages":[]}'},
     )
     assert captured["count"]["path"] == "/v1/messages/count_tokens"
+    assert captured["count"]["headers"]["anthropic-beta"] == "future-feature-2099-01-01"
     assert count_response.status == 200
     assert json.loads(b"".join(count_response.body)) == {"input_tokens": 12}
+
+
+@pytest.mark.parametrize("path,status,expected_status", [
+    ("v1/messages", 200, 200), ("v1/messages", 400, 400),
+    ("v1/messages/count_tokens", 200, 200), ("v1/messages/count_tokens", 400, 502),
+])
+def test_future_beta_crosses_proxy_and_upstream_rejection_is_not_retried(monkeypatch, path, status, expected_status):
+    from app.execution.infrastructure.model_upstream import ModelUpstreamAdapter
+
+    captured = []
+    endpoint = SimpleNamespace(base_url="https://gateway.example", scheme="https",
+        hostname="gateway.example", port=443, ips=("8.8.8.8",))
+    monkeypatch.setattr(client, "validate_endpoint", lambda *_args, **_kwargs: endpoint)
+
+    def send(request):
+        captured.append(request)
+        body = b'{"input_tokens":12}' if status == 200 else b'{"error":"unsupported synthetic beta"}'
+        return httpx.Response(status, headers={"content-type": "application/json"},
+            stream=httpx.ByteStream(body))
+
+    monkeypatch.setattr(client, "_new_client", lambda *_args: httpx.Client(
+        transport=httpx.MockTransport(send), trust_env=False))
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(base_url=endpoint.base_url, api_key="synthetic-provider-key",
+            auto_compact_window=200_000, max_output_tokens=2048, conversation_mode="empty_start")
+
+    service = ModelControlPlaneService(transaction_factory=transaction,
+        settings_provider=lambda: SimpleNamespace(model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-key", model_connection_allowed_internal_hosts=""),
+        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
+        upstream=ModelUpstreamAdapter(), attempt_capability_verifier=lambda **_kwargs: True)
+    monkeypatch.setattr(model_routes, "configured_model_control_plane", lambda: service)
+    app = FastAPI()
+    app.include_router(model_routes.build_model_management_router(principal_dependency=lambda: None, is_admin=lambda _: True))
+    with TestClient(app) as caller:
+        response = caller.post(f"/internal/model-proxy/anthropic/{path}?beta=true", json={
+            "model": "model-a", "max_tokens": 512, "messages": [],
+        }, headers={"anthropic-version": "2023-06-01",
+            "anthropic-beta": "future-feature-2099-01-01, advanced-tool-use-2025-11-20",
+            "x-ai-platform-run-id": "run-a", "x-ai-platform-attempt-id": "attempt-a",
+            "x-ai-platform-internal-token": "synthetic-internal",
+            "x-ai-platform-model-authorization": "Bearer synthetic-capability",
+            "authorization": "Bearer untrusted-client-key"})
+    assert response.status_code == expected_status
+    assert len(captured) == 1
+    assert captured[0].headers["anthropic-beta"] == "advanced-tool-use-2025-11-20,future-feature-2099-01-01"
+    assert captured[0].headers["x-api-key"] == "synthetic-provider-key"
+    assert "authorization" not in captured[0].headers
+    if path == "v1/messages" and status == 400:
+        assert response.json() == {"error": "unsupported synthetic beta"}
+    if path.endswith("count_tokens") and status == 400:
+        assert response.json() == {"detail": "model_proxy_count_tokens_failed"}
 
 
 @pytest.mark.asyncio

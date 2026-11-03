@@ -167,6 +167,7 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
 
 test("the shipped Chinese catalog includes fail-closed governance error copy", () => {
   const requiredKeys = [
+    "providerSessionRequiresNewConversation",
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
     "skillImportNotBacked",
@@ -297,6 +298,7 @@ test("admission and shared HTTP errors preserve actionable allowlisted causes", 
   for (const [code, key] of [
     ["agent_profile_revision_stale", "backendErrors.agentProfileRevisionStale"],
     ["session_workspace_mismatch", "backendErrors.sessionWorkspaceMismatch"],
+    ["provider_session_requires_new_conversation", "backendErrors.providerSessionRequiresNewConversation"],
     ["api_response_invalid", "backendErrors.apiResponseInvalid"],
     ["required_capability_unavailable", "chat.runTerminal.requiredCapabilityUnavailable"],
     ["context_file_storage_unavailable", "chat.runTerminal.contextFileStorageUnavailable"],
