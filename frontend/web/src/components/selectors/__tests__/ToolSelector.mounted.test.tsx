@@ -9,6 +9,8 @@ const initialTools: ToolState[] = [
     name: "alpha_search",
     description: "Find documents",
     category: "mcp",
+    server: "enterprise-gateway",
+    upstream_server: "AlphaServer",
     enabled: true,
     parameters: [
       { name: "query", type: "string", description: "Search text", required: true },
@@ -18,6 +20,8 @@ const initialTools: ToolState[] = [
     name: "beta_read",
     description: "Read a document",
     category: "mcp",
+    server: "enterprise-gateway",
+    upstream_server: "BetaServer",
     enabled: true,
     parameters: [],
   },
@@ -33,7 +37,7 @@ function changeInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-test("ToolSelector preserves its mounted modal across search and selection updates", async (t) => {
+test("ToolSelector defaults source groups to collapsed across opens and preserves search and selection", async (t) => {
   const dom = installSelectTestDom();
   const container = document.createElement("div");
   container.id = "root";
@@ -104,6 +108,21 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           const actions = [...modal.querySelectorAll('button')].map((button) => button.textContent?.trim());
           for (const label of ["全选", "取消全选", "添加"]) assert.equal(actions.includes(label), false);
           assert.equal(modal.querySelectorAll('[data-tool-selector-list]').length, 1);
+          const groups = Array.from(modal.querySelectorAll<HTMLButtonElement>(
+            "[data-composer-mcp-group] button[aria-expanded]",
+          ));
+          assert.equal(groups.length, 2, "MCP category must still show source group headers");
+          assert.ok(groups.every((group) => group.getAttribute("aria-expanded") === "false"));
+          assert.equal(modal.querySelectorAll("[data-composer-mcp-row]").length, 0);
+          const alphaGroup = groups.find((group) => group.textContent?.includes("AlphaServer"));
+          assert.ok(alphaGroup);
+          await act(async () => { alphaGroup.click(); });
+          assert.equal(alphaGroup.getAttribute("aria-expanded"), "true");
+          assert.deepEqual(
+            Array.from(modal.querySelectorAll("[data-composer-mcp-row]"),
+              (row) => row.getAttribute("data-composer-mcp-row")),
+            ["alpha_search"],
+          );
           input.focus();
           for (const value of ["a", "al", "alp"]) {
             await act(async () => { changeInput(input, value); });
@@ -153,6 +172,23 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           assert.ok(reopened);
           assert.ok(reopened !== input, "only closing should unmount the input");
           assert.equal((reopened as HTMLInputElement).value, "alp");
+          assert.ok(document.querySelector('[data-composer-mcp-row="alpha_search"]'), "retained search must still reveal matches");
+          await act(async () => { changeInput(reopened as HTMLInputElement, ""); });
+          const reopenedModal = document.querySelector("[data-composer-mcp-selector]");
+          const reopenedGroups = Array.from(reopenedModal?.querySelectorAll<HTMLButtonElement>(
+            "[data-composer-mcp-group] button[aria-expanded]",
+          ) ?? []);
+          assert.equal(reopenedGroups.length, 2);
+          assert.ok(reopenedGroups.every((group) => group.getAttribute("aria-expanded") === "false"), "reopening must reset source group expansion");
+          assert.equal(reopenedModal?.querySelectorAll("[data-composer-mcp-row]").length, 0);
+          const reopenedAlpha = reopenedGroups.find((group) => group.textContent?.includes("AlphaServer"));
+          assert.ok(reopenedAlpha);
+          await act(async () => { reopenedAlpha.click(); });
+          assert.equal(
+            reopenedModal?.querySelector('[data-composer-mcp-row="alpha_search"]')?.getAttribute("data-composer-mcp-state"),
+            "disabled",
+            "reopening must preserve tool selection",
+          );
         } finally {
           await act(async () => { root.unmount(); });
         }
@@ -226,7 +262,14 @@ test("group controls preserve disabled tools, mixed selection, and connection id
         '[aria-label="切换工具来源 same-project"]',
       );
       assert.ok(groupToggle);
+      assert.equal(document.querySelectorAll("[data-composer-mcp-row]").length, 0);
       await act(async () => { groupToggle.click(); });
+      assert.equal(document.querySelectorAll("[data-composer-mcp-row]").length, 0, "selecting a collapsed group must not expand it");
+      for (const group of groups) {
+        const expand = group.querySelector<HTMLButtonElement>("button[aria-expanded]");
+        assert.ok(expand);
+        await act(async () => { expand.click(); });
+      }
       assert.equal(document.querySelector('[data-composer-mcp-row="a::enabled"]')?.getAttribute("data-composer-mcp-state"), "enabled");
       assert.equal(document.querySelector('[data-composer-mcp-row="a::mixed"]')?.getAttribute("data-composer-mcp-state"), "enabled");
       assert.equal(document.querySelector('[data-composer-mcp-row="a::disabled"]')?.getAttribute("data-composer-mcp-state"), "denied");
@@ -242,6 +285,8 @@ test("group controls preserve disabled tools, mixed selection, and connection id
       assert.ok(input);
       await act(async () => { changeInput(input, "未提供服务来源"); });
       assert.ok(document.querySelector('[data-composer-mcp-row="a::unknown"]'));
+      await act(async () => { changeInput(input, ""); });
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::unknown"]'), null, "clearing search must restore the manual collapsed state");
     } finally {
       await act(async () => { root.unmount(); });
     }
