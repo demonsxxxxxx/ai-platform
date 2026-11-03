@@ -205,11 +205,14 @@ class FakeBridge:
             raise self.resolve_error
         if self.resume is not None:
             return self.resume
+        replay_tail = self.rows[-1].cursor.redis_id if self.rows else None
         last_event_id = kwargs["last_event_id"]
         if last_event_id:
             cursor = StreamCursor.parse(last_event_id, run_id="run-a")
-            return ResumeDecision(cursor.redis_id, None)
-        return ResumeDecision("0-0", None)
+            return ResumeDecision(
+                cursor.redis_id, None, replay_tail_redis_id=replay_tail
+            )
+        return ResumeDecision("0-0", None, replay_tail_redis_id=replay_tail)
 
     async def retained_bounds(self, **kwargs):
         self.calls.append("bounds")
@@ -426,7 +429,7 @@ async def test_v4_retained_cursor_replays_after_trimmed_open(monkeypatch):
             entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
             entry("9-0", "sev-next", "message.delta", {"delta": "new"}),
         ],
-        resume=ResumeDecision("8-0", None),
+        resume=ResumeDecision("8-0", None, replay_tail_redis_id="9-0"),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:8-0")
@@ -459,7 +462,7 @@ async def test_v4_gap_cursor_resumes_after_hydration_with_trimmed_open(monkeypat
             *retained,
             entry("10-0", "sev-after-hydration", "message.delta", {"delta": "after"}),
         ],
-        resume=ResumeDecision("9-0", None),
+        resume=ResumeDecision("9-0", None, replay_tail_redis_id="10-0"),
     )
     _, resumed_body = await connect(
         resumed_bridge,
@@ -488,7 +491,7 @@ async def test_v4_terminal_resume_survives_trimmed_open(monkeypatch):
                 {"terminal_event_id": "sev-terminal"},
             ),
         ],
-        resume=ResumeDecision("8-0", None, "sev-terminal", False),
+        resume=ResumeDecision("8-0", None, "sev-terminal", False, "9-0"),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:8-0")
@@ -803,7 +806,6 @@ async def test_v4_reads_entries_added_after_replay_tail(monkeypatch):
 
     assert bridge.calls[:4] == [
         "resolve",
-        "bounds",
         "replay:0-0:1-0",
         "read:1-0:128:5000",
     ]

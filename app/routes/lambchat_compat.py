@@ -2144,17 +2144,9 @@ async def chat_session_stream(
         )
         restored_terminal_event_id = resume.terminal_event_id
         resume_already_ended = resume.ended
-        replay_tail = resume.after_redis_id or "0-0"
-        if resume.gap is None:
-            bounds = await bridge.retained_bounds(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                stream_incarnation=authority.stream_incarnation,
-            )
-            if bounds is None:
-                raise StreamContractError("stream_replay_bounds_unavailable")
-            replay_tail = bounds[1].cursor.redis_id
+        replay_tail = resume.replay_tail_redis_id
+        if resume.gap is None and not resume_already_ended and replay_tail is None:
+            raise StreamContractError("stream_replay_bounds_unavailable")
     except StreamContractError as exc:
         await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2269,7 +2261,7 @@ async def chat_session_stream(
                 return
             if not await authorize_frame():
                 return
-            while after != replay_tail:
+            while replay_tail is not None and after != replay_tail:
                 previous_after = after
                 try:
                     entries = await bridge.replay_page(

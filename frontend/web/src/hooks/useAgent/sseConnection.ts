@@ -26,7 +26,6 @@ import {
   authoritativeRunStatus,
   isActiveRunStatus,
   terminalRunStatus,
-  terminalRunStatusFromEvent,
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
@@ -626,10 +625,6 @@ export async function recoverReplayGap(
   return promise;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 function isCurrentSSETarget(
   ctx: SSEConnectionContext,
   targetSessionId: string,
@@ -641,15 +636,6 @@ function isCurrentSSETarget(
     ctx.sessionIdRef.current === targetSessionId &&
     ctx.currentRunIdRef.current === targetRunId &&
     (streamVersion === undefined || ctx.streamVersionRef.current === streamVersion)
-  );
-}
-
-export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
-  return Boolean(
-    terminalRunStatusFromEvent(
-      eventType,
-      isRecord(data) ? data : {},
-    ),
   );
 }
 

@@ -1757,7 +1757,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Create event handler context
   const createEventHandlerContext = useCallback(
     (): EventHandlerContext => ({
-      options,
       sessionIdRef,
       currentRunIdRef,
       processedEventIdsRef,
@@ -1788,7 +1787,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       onRunStatusUnavailable: finalizeRunStatusUnavailable,
       publicStreamPresentation: publicStreamPresentationRef.current || undefined,
     }),
-    [options, finalizeRunStatusUnavailable, hydrateTerminalRun],
+    [finalizeRunStatusUnavailable, hydrateTerminalRun],
   );
 
   // Create SSE connection context

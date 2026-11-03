@@ -224,16 +224,6 @@ export function ChatAppContent({
     getDisabledMcpTools: () =>
       sessionConfigRef.current.selectedMcpToolIds as string[],
     getAgentOptions: () => sessionConfigRef.current.agentOptions,
-    onSkillAdded: (
-      skillName: string,
-      _description: string,
-      filesCount: number,
-    ) => {
-      console.log(
-        `[AppContent] Skill added: ${skillName} (${filesCount} files), refreshing skills list`,
-      );
-      setTimeout(() => fetchSkills(), 500);
-    },
   });
 
   const {
