@@ -855,7 +855,8 @@ test("Agent presentation stays with its feature while the shared chat consumes s
   assert.match(chatViewSource, /presentation\.renderOpening\(composer\)/);
   assert.match(chatViewSource, /messages\.length === 0 \? presentation\?\.renderStarterPrompts/);
   assert.match(chatViewSource, /header=\{shellHeader\}/);
-  assert.match(chatViewSource, /assistantIdentity=\{assistantIdentity\}/);
+  // Messages carry no per-message identity header; the workspace header names the expert.
+  assert.doesNotMatch(chatViewSource, /assistantIdentity/);
   assert.doesNotMatch(chatViewSource, /agentEmptyProfile|AgentProfilePublicProjection|AgentIdentityAvatar/);
   assert.match(presentation, /data-agent-chat-opening/);
   assert.match(presentation, /data-expert-workspace-header/);

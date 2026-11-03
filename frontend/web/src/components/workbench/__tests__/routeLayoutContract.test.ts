@@ -25,7 +25,7 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
     chatView,
     /messages\.length > 0 \? "overflow-hidden" : ""/,
   );
-  assert.match(agentPresentation, /className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"/);
+  assert.match(agentPresentation, /className="welcome-root welcome-chat-start chat-entry-root relative flex h-full min-h-0 flex-col overflow-y-auto py-3"/);
   assert.match(chatView, /presentation\.renderOpening\(composer\)/);
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(agentPresentation, /data-agent-chat-opening/);

@@ -108,8 +108,9 @@ export function CodeHeader({ language, code }: { language?: string; code: string
     setTimeout(() => setCopied(false), 2000);
   };
   return (
-    <div className="flex items-center justify-between border-b border-neutral-200 bg-neutral-200/70 px-3 py-2 text-xs dark:border-neutral-700 dark:bg-neutral-800/50">
-      <span className="truncate font-medium text-neutral-500 dark:text-neutral-400">{language || "text"}</span>
+    // Header and code body form one rounded block (ChatGPT Clone code block).
+    <div data-code-block-header className="mt-3 flex items-center justify-between rounded-t-xl border border-b-0 border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] py-1 pl-4 pr-1 text-xs">
+      <span className="truncate font-medium text-[var(--theme-text-secondary)]">{language || "text"}</span>
       <Button
         type="text"
         onClick={handleCopy}
@@ -117,7 +118,7 @@ export function CodeHeader({ language, code }: { language?: string; code: string
           "flex min-h-[32px] min-w-[32px] items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all touch-manipulation",
           copied
             ? "text-[var(--theme-success-text)]"
-            : "text-neutral-500 hover:bg-neutral-300/50 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-700/50 dark:hover:text-neutral-200",
+            : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]",
         )}
         title={copied ? t("chat.message.copied") : t("chat.message.copyCode")}
       >
@@ -130,7 +131,7 @@ export function CodeHeader({ language, code }: { language?: string; code: string
 
 export function CodeSyntaxHighlighter({ language, code }: { language: string; code: string }) {
   return (
-    <div className="my-2 max-w-full overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+    <div data-code-block-body className="mb-3 max-w-full overflow-hidden rounded-b-xl border border-[var(--theme-border)]">
       <DeferredCodeMirrorViewer
         value={code}
         language={language || undefined}
@@ -173,7 +174,7 @@ function CodeBlock({
     );
   }
   return (
-    <div className="my-2 max-w-full overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+    <div className="max-w-full">
       <CodeHeader language={language} code={codeString} />
       <CodeSyntaxHighlighter language={language} code={codeString} />
     </div>

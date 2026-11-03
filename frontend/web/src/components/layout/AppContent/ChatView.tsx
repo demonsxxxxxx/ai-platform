@@ -908,8 +908,6 @@ export function ChatView({
     [showStreamingFooterSkeleton],
   );
 
-  const assistantIdentity = presentation?.identity;
-
   const virtuosoItemContent = useCallback(
     (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
@@ -921,7 +919,6 @@ export function ChatView({
           >
             <ChatMessage
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              assistantIdentity={assistantIdentity}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -935,7 +932,6 @@ export function ChatView({
     ),
     [
       artifactDownloadScopeContext,
-      assistantIdentity,
       sessionId,
       handleOpenPreview,
     ],
