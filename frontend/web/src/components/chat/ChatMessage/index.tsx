@@ -3,7 +3,7 @@ import { memo } from "react";
 import { AssistantMessageContent } from "../assistant-ui/elements/thread";
 import { MessageTiming, type TimingStat } from "../assistant-ui/elements/message-timing";
 import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
-import type { Message } from "../../../types";
+import type { Message, MessagePart } from "../../../types";
 import { useTranslation } from "react-i18next";
 import { AssistantUiMarkdownText, AssistantUiMessagePart, AssistantUiMessageStatus } from "../assistant-ui/MessageParts";
 import { getAssistantUiDisplayParts } from "../assistant-ui/externalStoreRuntime";
@@ -12,6 +12,7 @@ import { createMessagePartRenderKeys } from "./MessagePartRenderer";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
 import { MessageWorkActivity } from "./MessageWorkActivity";
+import { getPublicToolActivityLabel } from "./messagePartVisibility";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
@@ -35,6 +36,17 @@ function formatDurationMs(durationMs: number): string {
   return durationMs < 1000
     ? `${durationMs}毫秒`
     : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
+/** Public name of the latest step still running, for the waiting indicator. */
+function currentActivityLabel(parts: readonly MessagePart[]): string | null {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part.type === "tool" && (part.status === "started" || part.isPending) && !part.cancelled) {
+      return getPublicToolActivityLabel(part.public_category, part.public_display_name);
+    }
+  }
+  return null;
 }
 
 export const ChatMessage = memo(function ChatMessage({
@@ -138,7 +150,7 @@ export const ChatMessage = memo(function ChatMessage({
           ) : (
             <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
           )}
-          <AssistantUiMessageStatus />
+          <AssistantUiMessageStatus activityLabel={currentActivityLabel(visibleParts)} startedAt={message.isStreaming ? message.timestamp : undefined} />
         </div>
         {/* Actions sit directly under the answer once it has settled. */}
         <AuiIf condition={(state) => state.message.status?.type !== "running" && !state.message.metadata.custom.isSynchronizing}>

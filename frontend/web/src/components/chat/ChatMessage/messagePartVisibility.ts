@@ -44,6 +44,32 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+/** Verb-style labels for public tool categories. */
+export const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  skill: "使用 Skill",
+  mcp: "调用 MCP 工具",
+  read: "读取",
+  write: "写入",
+  edit: "编辑",
+  search: "搜索",
+  execute: "执行",
+};
+
+/** "读取", or "使用 Skill：名称" when the category names a specific capability. */
+export function getPublicToolActivityLabel(
+  publicCategory: string | undefined,
+  publicDisplayName?: string,
+): string | null {
+  if (!publicCategory) return null;
+  const verb = PUBLIC_CATEGORY_LABELS[publicCategory];
+  if (!verb) return null;
+  if (publicCategory === "skill") {
+    const name = getPublicToolDisplayName(publicCategory, publicDisplayName);
+    return name ? `${verb}：${name}` : verb;
+  }
+  return verb;
+}
+
 export function getPublicToolDisplayName(
   publicCategory: string | undefined,
   publicDisplayName?: string,

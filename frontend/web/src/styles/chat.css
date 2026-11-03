@@ -158,3 +158,54 @@
     animation: none;
   }
 }
+
+/* Attachment strip: room for the corner badges and a fade where it scrolls on. */
+.composer-attachment-strip {
+  padding-inline-end: 1.5rem;
+  -webkit-mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+}
+
+/* Reply under an anchored, just-sent message (useMessageScroll sets the height). */
+.chat-anchor-reply {
+  display: block;
+  min-height: var(--chat-anchor-min-h, 0px);
+}
+
+/* Thinking indicator: the dot breathes and each new action label fades in. */
+.aui-thinking-dot {
+  animation: aui-caret 1.2s ease-in-out infinite;
+}
+
+.aui-thinking-label {
+  animation:
+    aui-shimmer 1.8s linear infinite,
+    aui-label-in 0.3s ease-out;
+}
+
+@keyframes aui-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aui-thinking-dot,
+  .aui-thinking-label {
+    animation: none;
+  }
+}
+
+/* Stopped answer: a static bar where the text was cut off (stopped-run). */
+.markdown-stopped > :last-child:not(ul):not(ol):not(pre):not(table):not(div)::after,
+.markdown-stopped > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-inline-start: 0.25em;
+  border-radius: 9999px;
+  background: var(--theme-text-tertiary);
+  vertical-align: -0.15em;
+}

@@ -97,7 +97,7 @@ export function ToolSelector({
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<
     Set<ToolCategory>
   >(new Set(["mcp"]));
@@ -106,6 +106,10 @@ export function ToolSelector({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
   });
+
+  useEffect(() => {
+    if (!isOpen) setExpandedGroups(new Set());
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || searchSeed === undefined) return;
@@ -204,7 +208,7 @@ export function ToolSelector({
   };
 
   const toggleGroupExpand = (groupKey: string) => {
-    setCollapsedGroups((previous) => {
+    setExpandedGroups((previous) => {
       const next = new Set(previous);
       if (next.has(groupKey)) next.delete(groupKey);
       else next.add(groupKey);
@@ -342,7 +346,7 @@ export function ToolSelector({
                       {categoryTools.map((tool: ToolState, toolIndex) => {
                         const isToolExpanded = expandedTools.has(tool.name);
                         const groupKey = groupKeyForTool(tool);
-                        const groupCollapsed = collapsedGroups.has(groupKey) && !hasSearchQuery;
+                        const groupCollapsed = !expandedGroups.has(groupKey) && !hasSearchQuery;
                         const previousTool = categoryTools[toolIndex - 1];
                         const isGroupStart = cat === "mcp" && (
                           !previousTool || groupKeyForTool(previousTool) !== groupKey

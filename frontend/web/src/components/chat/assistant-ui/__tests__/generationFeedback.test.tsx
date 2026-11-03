@@ -5,12 +5,40 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { GenerationLoader } from "../elements/loading-state";
+import { getPublicToolActivityLabel } from "../../ChatMessage/messagePartVisibility";
 
-test("waiting feedback is one shimmering label without a dot grid", () => {
-  const markup = renderToStaticMarkup(createElement(GenerationLoader, { label: "正在等待回复…" }));
+test("waiting feedback names the current action and elapsed time without a dot grid", () => {
+  const markup = renderToStaticMarkup(createElement(GenerationLoader, { label: "正在读取", elapsed: "4 秒" }));
   assert.match(markup, /role="status"/);
-  assert.match(markup, /class="aui-shimmer">正在等待回复…</);
+  assert.match(markup, /aui-thinking-dot/);
+  assert.match(markup, /class="aui-shimmer aui-thinking-label[^"]*">正在读取</);
+  assert.match(markup, /data-generation-elapsed="true">4 秒</);
   assert.doesNotMatch(markup, /animate-pulse|grid-cols-3/);
+});
+
+test("the waiting action uses the public category verb, never a raw tool name", () => {
+  assert.equal(getPublicToolActivityLabel("read", "Read"), "读取");
+  assert.equal(getPublicToolActivityLabel("skill", "合同审阅"), "使用 Skill：合同审阅");
+  assert.equal(getPublicToolActivityLabel(undefined, "Read"), null);
+});
+
+test("stopped and failed turns use light states instead of bordered cards", () => {
+  const renderer = readFileSync(new URL("../../ChatMessage/MessagePartRenderer.tsx", import.meta.url), "utf8");
+  assert.match(renderer, /data-message-stopped/);
+  assert.doesNotMatch(renderer, /border-\[var\(--theme-warning-ring\)\]/);
+  assert.match(renderer, /"rounded-2xl bg-\[var\(--theme-danger-soft\)\] px-4 py-3/);
+  const css = readFileSync(new URL("../../../../styles/chat.css", import.meta.url), "utf8");
+  assert.match(css, /\.markdown-stopped > :last-child[^{]*::after/);
+});
+
+test("a sent message is anchored to the top instead of following to the bottom", () => {
+  const hook = readFileSync(new URL("../../../layout/AppContent/useMessageScroll.hook.ts", import.meta.url), "utf8");
+  assert.match(hook, /isLocalSendAppend\(previousMessagesRef\.current, latestMessagesRef\.current, isLoadingHistoryRef\.current\)/);
+  assert.match(hook, /if \(sent && isLocalSendAppend\(previousMessages, messages, isLoadingHistory\)\) anchorSentMessage\(userIndex, sent\.id\)/);
+  assert.match(hook, /request-scroll-to-bottom" && !sendAnchorActiveRef\.current/);
+  const view = readFileSync(new URL("../../../layout/AppContent/ChatView.tsx", import.meta.url), "utf8");
+  assert.match(view, /followOutput=\{followOutput\}/);
+  assert.match(view, /index === anchoredReplyIndex \? "chat-anchor-reply"/);
 });
 
 test("streaming status is announced only; the caret is the visible cue", () => {
@@ -33,4 +61,16 @@ test("temporary send blocks never reuse the permission lock or text", () => {
   assert.match(input, /showPermissionLock=\{!canSend && sendBlockedReason === "permission"\}/);
   assert.match(input, /synchronizing: "chat\.sendBlockedSynchronizing"/);
   assert.match(view, /terminalResultSynchronizing\s*\?\s*"synchronizing"/);
+});
+
+test("only a local send is anchored; a restored history turn keeps the bottom scroll", async () => {
+  const { isLocalSendAppend } = await import("../../../layout/AppContent/useMessageScroll.hook");
+  const user = { role: "user" as const };
+  const streaming = { role: "assistant" as const, isStreaming: true };
+  const settled = { role: "assistant" as const, isStreaming: false };
+  assert.equal(isLocalSendAppend([], [user, streaming], false), true);
+  assert.equal(isLocalSendAppend([user, settled], [user, settled, user], false), true);
+  assert.equal(isLocalSendAppend([], [user, settled], false), false, "history turn");
+  assert.equal(isLocalSendAppend([], [user, streaming], true), false, "while history loads");
+  assert.equal(isLocalSendAppend([], [user], false), false, "a restored single user message");
 });
