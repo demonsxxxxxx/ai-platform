@@ -56,3 +56,38 @@ async def test_terminal_handoff_survives_release_but_rejects_foreign_stale_or_un
             lease_payload_json=jsonb_set(lease_payload_json,'{attempt_id}','\"foreign\"')""",
             (Jsonb({"adapter_name": "claude-agent-worker"}),))
         assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope) is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_forward_lists_only_live_accepted_leases_of_cancel_requested_runs(unclaimed_db):
+    async with unclaimed_db() as conn:
+        await prepare(conn, "target", 1)
+        await extend_lease(conn)
+        await conn.execute("""
+            alter table sandbox_leases add column executor_status text;
+            alter table sandbox_leases add column executor_terminal_json jsonb;
+            alter table sandbox_leases add column executor_terminal_received_at timestamptz;
+            alter table sandbox_leases add column executor_reconciliation_context_json jsonb;
+            alter table sandbox_leases add column executor_reconciled_at timestamptz;
+            alter table sandbox_leases add column executor_heartbeat_at timestamptz;
+            alter table sandbox_leases add column heartbeat_at timestamptz;
+        """)
+        lease = dict(tenant_id="tenant", run_id="target", attempt_id="attempt-target", lease_id="synthetic-lease")
+        await sandbox_leases.record_sandbox_executor_accepted(
+            conn, **lease, reconciliation_context={"adapter_name": "claude-agent-worker"})
+
+        async def listed():
+            rows = await sandbox_leases.list_cancel_requested_executor_leases(conn, limit=10)
+            return [row["id"] for row in rows]
+
+        # A live, heartbeating executor is not selected until its Run requests cancellation.
+        await conn.execute("update sandbox_leases set executor_heartbeat_at=now()")
+        assert await listed() == []
+        await conn.execute("update runs set cancel_requested_at=now() where id='target'")
+        assert await listed() == ["synthetic-lease"]
+        # Once the executor terminal is recorded, settlement owns the lease.
+        await sandbox_leases.record_sandbox_executor_terminal(
+            conn, **lease, executor_status="cancelled",
+            terminal_result=dict(status="cancelled", run_id="target", message="cancelled",
+                                 error_code="executor_cancelled", error_message="Task cancelled"))
+        assert await listed() == []

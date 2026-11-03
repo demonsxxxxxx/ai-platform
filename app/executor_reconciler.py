@@ -66,6 +66,11 @@ _RECONCILIATION_IDLE_SECONDS = 30.0
 _RECONCILIATION_FALLBACK_SECONDS = 2.0
 _RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS = 5.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
+# A cancelled Run stops sending accepted heartbeats, so waiting for the stale
+# probe would delay the executor stop by the full heartbeat window.
+_CANCEL_FORWARD_INTERVAL_SECONDS = 1.0
+_CANCEL_FORWARD_TIMEOUT_SECONDS = 5.0
+_CANCEL_FORWARD_BATCH_SIZE = 20
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
 _TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 _logger = logging.getLogger(__name__)
@@ -1023,6 +1028,53 @@ async def _persist_probe_terminal(
                 )
 
 
+async def forward_requested_executor_cancellations_once(
+    forwarded: set[str],
+    *,
+    limit: int = _CANCEL_FORWARD_BATCH_SIZE,
+) -> int:
+    """Deliver a Run cancel request to its accepted executor without waiting for staleness.
+
+    ``forwarded`` keeps one delivery per lease in this process; the stale-heartbeat
+    probe remains the durable fallback when a delivery is lost.
+    """
+
+    async with transaction() as conn:
+        rows = await sandbox_lease_repository.list_cancel_requested_executor_leases(conn, limit=limit)
+    active = {str(row["id"]) for row in rows}
+    forwarded.intersection_update(active)
+    delivered = 0
+    for lease_row in rows:
+        lease_id = str(lease_row["id"])
+        if lease_id in forwarded:
+            continue
+        try:
+            _context, run_payload = _context_payload(lease_row)
+            request = _reconciliation_request(lease_row, run_payload)
+            lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
+            if lease is None:
+                raise ValueError("executor_reconciliation_runtime_handle_invalid")
+            provider = _container_provider_for_lease(lease)
+            executor_url, executor_headers = await provider.executor_control_endpoint(lease, request)
+            await SandboxExecutorClient(timeout_seconds=_CANCEL_FORWARD_TIMEOUT_SECONDS).cancel(
+                executor_url,
+                run_id=str(lease_row["run_id"]),
+                attempt_id=str(lease_row["attempt_id"]),
+                executor_headers=executor_headers,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the stale probe still owns recovery.
+            _logger.warning(
+                "executor_cancel_forward_failed",
+                extra={"lease_id": lease_id, "error_type": type(exc).__name__},
+            )
+            continue
+        forwarded.add(lease_id)
+        delivered += 1
+    return delivered
+
+
 async def probe_suspect_executor_tasks_once(
     *,
     run_diagnostics: RunDiagnosticsService | None = None,
@@ -1480,6 +1532,11 @@ async def run_executor_terminal_reconciler(
             except TimeoutError:
                 pass
 
+    cancel_forwarded: set[str] = set()
+
+    async def forward_cancellations() -> int:
+        return await forward_requested_executor_cancellations_once(cancel_forwarded)
+
     async def probe() -> int:
         probe_kwargs = ({"run_diagnostics": run_diagnostics} if run_diagnostics is not None else {})
         probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
@@ -1490,6 +1547,10 @@ async def run_executor_terminal_reconciler(
     owned = [
         asyncio.create_task(read_signals(), name="executor-terminal-signals"),
         asyncio.create_task(cleanup(), name="executor-reconciliation-cleanup"),
+        asyncio.create_task(maintenance_phase_until_done(
+            "executor-cancel-forward", forward_cancellations, _CANCEL_FORWARD_INTERVAL_SECONDS,
+            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
+        ), name="executor-cancel-forward"),
         asyncio.create_task(maintenance_phase_until_done(
             "executor-suspect-probe", probe, _RECONCILIATION_IDLE_SECONDS,
             _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,

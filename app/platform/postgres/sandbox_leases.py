@@ -552,6 +552,36 @@ async def record_sandbox_executor_terminal_diagnostics(
     return await cursor.fetchone() is not None
 
 
+async def list_cancel_requested_executor_leases(
+    connection: Any,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Accepted executor tasks whose Run already requested cancellation.
+
+    Read-only: forwarding a cancel is idempotent at the executor, and terminal
+    settlement still belongs to the claimed reconciliation path.
+    """
+
+    cursor = await connection.execute(
+        """
+        select lease.*
+        from sandbox_leases as lease
+        join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+        where lease.status = 'active'
+          and lease.executor_terminal_json is null
+          and lease.executor_reconciliation_context_json is not null
+          and lease.executor_reconciliation_status in ('waiting_terminal', 'claimed')
+          and runs.cancel_requested_at is not null
+        order by runs.cancel_requested_at, lease.id
+        limit %s
+        """,
+        (max(1, int(limit)),),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def claim_sandbox_executor_suspects(
     connection: Any,
     *,
