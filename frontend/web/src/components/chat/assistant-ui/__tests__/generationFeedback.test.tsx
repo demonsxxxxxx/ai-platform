@@ -72,4 +72,5 @@ test("only a local send is anchored; a restored history turn keeps the bottom sc
   assert.equal(isLocalSendAppend([user, settled], [user, settled, user], false), true);
   assert.equal(isLocalSendAppend([], [user, settled], false), false, "history turn");
   assert.equal(isLocalSendAppend([], [user, streaming], true), false, "while history loads");
+  assert.equal(isLocalSendAppend([], [user], false), false, "a restored single user message");
 });

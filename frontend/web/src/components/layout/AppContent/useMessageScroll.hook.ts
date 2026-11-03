@@ -62,14 +62,19 @@ const SEND_ANCHOR_TOP_GAP_PX = 24;
 type AnchorMessage = Pick<Message, "role" | "isStreaming">;
 
 /**
- * A local send appends one user message, optionally followed by the streaming
- * reply placeholder. A restored history turn has a settled reply and must keep
- * the ordinary bottom scroll instead of being anchored.
+ * A local send appends one user message followed by the streaming reply
+ * placeholder, or a lone user message to an existing conversation. A restored
+ * history turn (settled reply, or a list starting from empty) keeps the
+ * ordinary bottom scroll instead of being anchored.
  */
 export function isLocalSendAppend(previous: readonly AnchorMessage[], next: readonly AnchorMessage[], loadingHistory: boolean): boolean {
   if (loadingHistory || next.length <= previous.length || next.length - previous.length > 2) return false;
   const [sent, reply] = next.slice(previous.length);
-  return sent?.role === "user" && (reply === undefined || (reply.role === "assistant" && reply.isStreaming === true));
+  if (sent?.role !== "user") return false;
+  if (reply) return reply.role === "assistant" && reply.isStreaming === true;
+  // A lone user message counts only inside an existing conversation: a list
+  // that starts from empty is a session open or restore, not a send.
+  return previous.length > 0;
 }
 const SEND_ANCHOR_SETTLE_MS = 120;
 
