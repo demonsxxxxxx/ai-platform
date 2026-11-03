@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -33,31 +34,24 @@ _ALLOWED_RUNTIME_PATHS = {
     "openai": frozenset({"v1/chat/completions", "v1/responses"}),
     "anthropic": frozenset({"v1/messages", "v1/messages/count_tokens"}),
 }
-_ANTHROPIC_BETA_ALLOWLIST = {
-    "v1/messages": frozenset({
-        "claude-code-20250219",
-        "interleaved-thinking-2025-05-14",
-        "thinking-token-count-2026-05-13",
-        "context-management-2025-06-27",
-        "prompt-caching-scope-2026-01-05",
-        "mid-conversation-system-2026-04-07",
-        "mid-conversation-tool-changes-2026-07-01",
-        "effort-2025-11-24",
-        "thinking-display-updates-2026-08-18",
-        "structured-outputs-2025-12-15",
-    }),
-    "v1/messages/count_tokens": frozenset({
-        "claude-code-20250219",
-        "interleaved-thinking-2025-05-14",
-        "context-management-2025-06-27",
-        "token-counting-2024-11-01",
-    }),
-}
+# Beta names are upstream-owned. Only bound and validate their HTTP wire form.
+_ANTHROPIC_BETA_POLICY_REVISION = 2
+_ANTHROPIC_BETA_MAX_HEADER_BYTES = 4096
+_ANTHROPIC_BETA_MAX_ITEMS = 16
+_ANTHROPIC_BETA_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}")
 
 
-def _policy_error(code: str, *, policy: str, beta_count: int = 0) -> PermissionError:
+def _policy_error(
+    code: str, *, policy: str, beta_count: int | None = 0,
+    beta_rejection: str | None = None, rejected_beta_count: int = 0,
+) -> PermissionError:
     error = PermissionError(code)
-    error.debug = {"component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected", "policy": policy, "beta_count": beta_count}
+    error.debug = {"component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected", "policy": policy}
+    if beta_count is not None:
+        error.debug["beta_count"] = beta_count
+    if policy == "anthropic_beta":
+        error.debug.update(beta_policy_revision=_ANTHROPIC_BETA_POLICY_REVISION,
+                           beta_rejection=beta_rejection, rejected_beta_count=rejected_beta_count)
     return error
 
 
@@ -70,15 +64,29 @@ def _runtime_proxy_headers(
     version = outbound.get("anthropic-version")
     if version != "2023-06-01":
         raise _policy_error("model_proxy_anthropic_version_not_allowed", policy="anthropic_version")
-    betas = outbound.get("anthropic-beta", "")
-    if betas:
-        values = [item.strip() for item in betas.split(",")]
-        if (
-            len(values) > 16
-            or any(not item for item in values)
-            or any(item not in _ANTHROPIC_BETA_ALLOWLIST[upstream_path] for item in values)
-        ):
-            raise _policy_error("model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta", beta_count=len(values))
+    betas = outbound.get("anthropic-beta")
+    if betas is not None:
+        # Accepted values are ASCII, so character and wire-byte lengths agree.
+        # Bound before splitting; an oversized field has no inspected item count.
+        if len(betas) > _ANTHROPIC_BETA_MAX_HEADER_BYTES:
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=None, beta_rejection="too_large",
+            )
+        values = [item.strip(" \t") for item in betas.split(",")]
+        if len(values) > _ANTHROPIC_BETA_MAX_ITEMS:
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=len(values), beta_rejection="too_many",
+            )
+        invalid = {item for item in values if _ANTHROPIC_BETA_TOKEN.fullmatch(item) is None}
+        if invalid:
+            # Never echo an untrusted header into logs or private diagnostics.
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=len(values), beta_rejection="empty" if "" in invalid else "invalid_format",
+                rejected_beta_count=len(invalid),
+            )
         outbound["anthropic-beta"] = ",".join(sorted(set(values)))
     return outbound
 

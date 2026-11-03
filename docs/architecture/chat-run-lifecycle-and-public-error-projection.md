@@ -378,8 +378,14 @@ file-service failures suggest waiting or contacting an administrator, not
 correcting input or uploading the same file again. Current-request limits ask
 the user to shorten the request; model-context limits may also require fewer
 attachments or a new conversation. Profile-revision and workspace conflicts
-keep their fixed refresh/reselection or workspace-switch instructions. A
-malformed HTTP success response is outcome-unknown: preserve the submission
+keep their fixed refresh/reselection or workspace-switch instructions.
+`provider_session_requires_new_conversation` explains that the model context
+cannot continue and asks the user to create a new conversation; existing messages
+remain available. It replaces the generic wait-and-retry guidance only when
+admission is confirmed rejected. An uncertain submission still keeps the
+history/status confirmation fence. This display does not clear a dirty provider
+epoch, rotate it to empty-start, retry the task or change the session automatically.
+A malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
 

@@ -63,12 +63,78 @@ empty or exact `beta=true` on the two Anthropic paths. It strips sandbox
 authorization and API-key headers, injects `MODEL_PROXY_INTERNAL_TOKEN`, and
 adds the Run and Attempt headers. The existing `model_control_plane.py` then
 validates the binding, decrypts the pinned model connection, and forwards the
-request. Anthropic version and beta headers are restricted to the installed
-CLI's fixed per-path allowlist; `structured-outputs-2025-12-15` is accepted only
-on `messages` for the installed CLI's structured subtask requests. It is not
-accepted on `count_tokens`; unknown/empty beta values and duplicate protocol
-headers remain rejected. Other upstream headers remain filtered. The proxy
-does not implement OpenSandbox lifecycle or capability admission.
+request. Anthropic version and beta headers pass protocol validation; beta
+names are not enumerated or scoped by operation. Other upstream header names
+remain filtered. The proxy does not implement OpenSandbox lifecycle or
+capability admission.
+
+### Anthropic beta protocol boundary
+
+Execution validates the wire form of `anthropic-beta`, not a list of known
+feature names. Both `v1/messages` and `v1/messages/count_tokens` accept unknown,
+well-formed beta tokens and pass them to the configured upstream. The platform
+has no separate requirement to prohibit named experimental model features;
+duplicating the SDK's feature directory here blocked supported ToolSearch
+requests when the CLI changed its gateway defaults. The name allowlist and
+operation-specific beta sets are therefore retired rather than expanded.
+
+The current qualification target remains SDK `0.2.174` / CLI `2.1.310`. CLI
+versions from `2.1.304` enable tool search through an `ANTHROPIC_BASE_URL`
+gateway by default ([SDK tool-search documentation](https://code.claude.com/docs/en/agent-sdk/tool-search)).
+Selected-MCP activation adds `ToolSearch` after successful discovery. New beta
+names from this path no longer require a platform policy update. This permits
+new upstream feature behavior; locking the SDK and exercising its real requests
+remain necessary, and forwarding a token does not prove upstream support.
+
+The retained protocol checks are:
+
+- `anthropic-version` must be exactly `2023-06-01`.
+- Duplicate `anthropic-version` or `anthropic-beta` header fields are rejected.
+- An absent beta header is allowed. A present field must be nonempty and at
+  most 4096 bytes, with at most 16 comma-separated items before deduplication.
+- Each item is 1–128 ASCII HTTP token characters (RFC 9110 `tchar`); only
+  surrounding SP/HTAB is trimmed. Empty items, other whitespace, control
+  characters, non-ASCII data and HTTP separators are rejected.
+- Accepted items retain their case and spelling and are forwarded sorted and
+  deduplicated. No date suffix, feature-name pattern or per-operation set is
+  required. Rejected input is neither stripped nor retried.
+
+Internal-token and Run/Attempt capability checks, allowed methods/paths/query,
+frozen model binding, capacity, credential replacement, endpoint security and
+MCP per-call authorization remain unchanged. An upstream rejection is not a
+local protocol rejection. Messages preserve upstream HTTP status and body;
+count-token errors retain their existing bounded error mapping (for example,
+400 becomes `model_proxy_count_tokens_failed` / HTTP 502). Only an explicit
+count-token 404 permits the existing local count fallback. No feature-stripping
+retry or alternate model dispatch is introduced.
+
+Installed-CLI MCP regressions run discovery, ToolSearch and synthetic tool calls
+against a loopback model using the production `_runtime_proxy_headers` validator.
+They cover explicit/default search, ordinary/enterprise-gateway registration
+and compatible model aliases. Model-proxy regressions also send a synthetic
+future token through both HTTP operations and the real upstream adapter, verify
+credential isolation, and prove upstream 400 gets one dispatch, not a retry.
+Malformed, oversized, empty and over-count fields remain negative controls.
+No new dependency updater, runtime toggle or CI lane is introduced.
+
+Private rejection evidence retains Run/Attempt correlation and protocol policy
+revision 2. `beta_rejection` is `too_large`, `too_many`, `empty` or
+`invalid_format`; `beta_count` is present only when items were inspected.
+`rejected_beta_count` counts distinct invalid/empty items and is zero when the
+size/count guard stops before item validation. Raw beta/header values are never
+retained in logs, diagnostics or ordinary-user errors.
+
+Retirement and compatibility disposition: `_ANTHROPIC_BETA_ALLOWLIST` and its
+messages-only/count-token name-rejection assertions are removed, with no runtime
+compatibility switch or fallback. The existing error code
+`model_proxy_anthropic_beta_not_allowed` remains the protocol rejection code so
+current transport, public projections and historical Run readers stay compatible.
+Kernel diagnostic normalization retains revision-1 `not_allowed` as read-only
+compatibility for persisted evidence until that diagnostics schema is retired;
+new protocol validation never emits it. The owning tests explicitly cover both
+historical and revision-2 facts. The fixed allowlist table and maintenance
+instructions are replaced by this boundary. SDK upgrades still run the installed
+CLI regressions, but do not add beta names to a platform registry.
 
 The pinned HTTP model transport uses the locked HTTPX/HTTPCore implementation
 for HTTP framing, socket operations and TLS. The platform validates every DNS
