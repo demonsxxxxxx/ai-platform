@@ -74,6 +74,7 @@ export function ToolCallItem({
       publicCategory,
       lifecycleStatus,
       durationMs,
+      publicDisplayName,
     )
   ) {
     return null;

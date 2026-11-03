@@ -113,9 +113,9 @@ def _gate(**kwargs):
     )
 
 
-def test_skill_identity_is_replaced_with_a_fixed_label_across_chunk_boundaries():
-    identity = "reference-search"
-    replacement = "【技能】"
+def test_known_private_token_is_replaced_across_chunk_boundaries():
+    identity = "mcp__tenant-server__search"
+    replacement = "█"
     text = f"Using {identity}. "
     for split in range(1, len(text)):
         gate = PublicAnswerStreamGate(
@@ -1197,13 +1197,12 @@ def test_quoted_secret_rewrite_across_sources_remains_fail_closed_after_registry
 
 
 @pytest.mark.parametrize("quote", ['"', "'"])
-def test_fixed_skill_replacement_cannot_change_raw_secret_quote_grammar(quote):
-    label = "【技能】"
-    body = f"Using synthetic-skill. password={quote}alpha synthetic-skill bravo charlie{quote} after"
-    expected = f"Using {label}. password=[redacted-secret] after"
+def test_exact_replacement_cannot_change_raw_secret_quote_grammar(quote):
+    body = f"Using synthetic-private-token. password={quote}alpha synthetic-private-token bravo charlie{quote} after"
+    expected = "Using █. password=[redacted-secret] after"
     for split in range(1, len(body)):
         gate = PublicAnswerStreamGate(
-            private_replacements={"synthetic-skill": label},
+            private_replacements={"synthetic-private-token": "█"},
             sanitizer=sanitize_public_text,
         )
         routed = [
