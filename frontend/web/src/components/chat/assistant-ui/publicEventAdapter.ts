@@ -41,20 +41,27 @@ type V4AssistantTextPartPayload =
       role: "answer" | "work";
     };
 
-interface V4AssistantTextPartEvent {
+type V4AssistantTextPartEvent = {
   schema: "ai-platform.public-run-stream-event.v4";
   event_id: string;
   run_id: string;
   message_id: string;
   seq: number;
-  event_type: AssistantTextPartEventType;
   stream_incarnation: number;
   replayable: true;
   trace_ref: string | null;
   causation_event_id: string | null;
   emitted_at: string;
-  payload: V4AssistantTextPartPayload;
-}
+} & (
+  | {
+      event_type: "message.part.delta";
+      payload: Extract<V4AssistantTextPartPayload, { delta: string }>;
+    }
+  | {
+      event_type: "message.part.classified";
+      payload: Extract<V4AssistantTextPartPayload, { role: "answer" | "work" }>;
+    }
+);
 
 export interface V4SseFrame {
   eventHeader: string;

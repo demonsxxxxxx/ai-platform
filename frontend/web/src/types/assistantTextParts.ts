@@ -14,6 +14,25 @@ export type AssistantTextPartEventType =
   | "message.part.delta"
   | "message.part.classified";
 
+export type AssistantTextPartDeltaPayload = {
+  schema_version: typeof ASSISTANT_TEXT_PART_SCHEMA_VERSION;
+  part_id: string;
+  delta: string;
+};
+
+export type AssistantTextPartClassifiedPayload = {
+  schema_version: typeof ASSISTANT_TEXT_PART_SCHEMA_VERSION;
+  part_id: string;
+  role: "answer" | "work";
+};
+
+export type ValidatedAssistantTextPartEvent =
+  | { eventType: "message.part.delta"; payload: AssistantTextPartDeltaPayload }
+  | {
+      eventType: "message.part.classified";
+      payload: AssistantTextPartClassifiedPayload;
+    };
+
 export function isAssistantTextPartEventType(
   eventType: string,
 ): eventType is AssistantTextPartEventType {
@@ -43,37 +62,65 @@ export function isValidAssistantTextPartPayload(
   eventType: string,
   payload: unknown,
 ): payload is Record<string, unknown> {
+  return validateAssistantTextPartPayload(eventType, payload) !== null;
+}
+
+/** Validate the exact wire payload and return its closed event variant. */
+export function validateAssistantTextPartPayload(
+  eventType: string,
+  payload: unknown,
+): ValidatedAssistantTextPartEvent | null {
   if (
     !isAssistantTextPartEventType(eventType) ||
     !payload ||
     typeof payload !== "object" ||
     Array.isArray(payload)
   ) {
-    return false;
+    return null;
   }
   const record = payload as Record<string, unknown>;
   if (
     record.schema_version !== ASSISTANT_TEXT_PART_SCHEMA_VERSION ||
     !isSafeAssistantTextPartId(record.part_id)
   ) {
-    return false;
+    return null;
   }
   if (eventType === "message.part.delta") {
-    return (
+    if (
       Object.keys(record).length === 3 &&
       Object.hasOwn(record, "delta") &&
       Object.hasOwn(record, "schema_version") &&
       Object.hasOwn(record, "part_id") &&
       isValidAssistantTextPartDelta(record.delta)
-    );
+    ) {
+      return {
+        eventType,
+        payload: {
+          schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+          part_id: record.part_id,
+          delta: record.delta,
+        },
+      };
+    }
+    return null;
   }
-  return (
+  if (
     Object.keys(record).length === 3 &&
     Object.hasOwn(record, "role") &&
     Object.hasOwn(record, "schema_version") &&
     Object.hasOwn(record, "part_id") &&
     (record.role === "answer" || record.role === "work")
-  );
+  ) {
+    return {
+      eventType,
+      payload: {
+        schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+        part_id: record.part_id,
+        role: record.role,
+      },
+    };
+  }
+  return null;
 }
 
 function isAssistantTextRole(value: unknown): value is AssistantTextRole {
@@ -231,8 +278,7 @@ function allPublicPartOccurrences(
 
 /** Apply a closed v1 text-source event to its exact message-local part. */
 export function reduceAssistantTextPartEvent(
-  eventType: string,
-  data: Record<string, unknown>,
+  event: ValidatedAssistantTextPartEvent,
   parts: MessagePart[],
 ): AssistantTextPartReduction {
   const rejected = (): AssistantTextPartReduction => ({
@@ -240,17 +286,11 @@ export function reduceAssistantTextPartEvent(
     parts,
     content: composeAssistantPreviewText(parts),
   });
-  if (
-    !isAssistantTextPartEventType(eventType) ||
-    data.schema_version !== ASSISTANT_TEXT_PART_SCHEMA_VERSION ||
-    !isSafeAssistantTextPartId(data.part_id) ||
-    !messageHasStarted(parts) ||
-    messageTextPartsAreClosed(parts)
-  ) {
+  if (!messageHasStarted(parts) || messageTextPartsAreClosed(parts)) {
     return rejected();
   }
 
-  const partId = data.part_id;
+  const partId = event.payload.part_id;
   const occurrences = allPublicPartOccurrences(parts, partId);
   const rootIndexes = parts.flatMap((part, index) =>
     part.type === "text" && part.public_part_id === partId ? [index] : [],
@@ -259,9 +299,8 @@ export function reduceAssistantTextPartEvent(
     return rejected();
   }
 
-  if (eventType === "message.part.delta") {
+  if (event.eventType === "message.part.delta") {
     if (
-      !isValidAssistantTextPartDelta(data.delta) ||
       parts.some(
         (part) => part.type === "text" && !isMarkedAssistantTextPart(part),
       )
@@ -273,7 +312,7 @@ export function reduceAssistantTextPartEvent(
         ...parts,
         {
           type: "text",
-          content: data.delta,
+          content: event.payload.delta,
           logical_id: partId,
           public_part_id: partId,
           text_role: "pending",
@@ -291,7 +330,10 @@ export function reduceAssistantTextPartEvent(
       return rejected();
     }
     const nextParts = [...parts];
-    nextParts[index] = { ...existing, content: existing.content + data.delta };
+    nextParts[index] = {
+      ...existing,
+      content: existing.content + event.payload.delta,
+    };
     return {
       accepted: true,
       parts: nextParts,
@@ -301,7 +343,7 @@ export function reduceAssistantTextPartEvent(
 
   if (
     rootIndexes.length !== 1 ||
-    (data.role !== "answer" && data.role !== "work")
+    (event.payload.role !== "answer" && event.payload.role !== "work")
   ) {
     return rejected();
   }
@@ -310,7 +352,7 @@ export function reduceAssistantTextPartEvent(
   if (existing?.type !== "text" || !isValidAssistantTextPart(existing)) {
     return rejected();
   }
-  if (existing.text_role === data.role) {
+  if (existing.text_role === event.payload.role) {
     return { accepted: true, parts, content: composeAssistantPreviewText(parts) };
   }
   // Classification is monotonic: an answer may later be recognized as work,
@@ -322,7 +364,7 @@ export function reduceAssistantTextPartEvent(
     return rejected();
   }
   const nextParts = [...parts];
-  nextParts[index] = { ...existing, text_role: data.role };
+  nextParts[index] = { ...existing, text_role: event.payload.role };
   return {
     accepted: true,
     parts: nextParts,
