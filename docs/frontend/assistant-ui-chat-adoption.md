@@ -84,7 +84,7 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 
 | 事实 | 展示与操作 |
 | --- | --- |
-| 等待首段 / 正在追加 | 一处 GenerationLoader；只有当前追加且未收敛的 assistant 正文允许平滑 |
+| 等待首段 / 正在追加 | 一处 GenerationLoader：等待首段为微光文字；正文追加时改为正文末尾的流式圆点，状态仅对读屏播报（视觉约束第 7.5 节）。只有当前追加且未收敛的 assistant 正文允许平滑 |
 | Run 仍运行而连接中断 | 保留正文，使用原 reconnect；不映射为 message reload/regenerate |
 | 取消请求 acknowledged | 表示请求已受理；等待权威取消终态，保留确认框与 RunControlLifecycle |
 | Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示，暂不显示复制 |

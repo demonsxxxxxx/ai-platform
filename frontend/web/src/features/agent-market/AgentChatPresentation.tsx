@@ -31,18 +31,29 @@ export function AgentChatHeader({ profile }: { profile: AgentProfilePublicProjec
 export function AgentChatOpening({ profile, composer }: { profile: AgentProfilePublicProjection; composer: ReactNode }) {
   return (
     <div
-      className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"
+      className="welcome-root welcome-chat-start chat-entry-root relative flex h-full min-h-0 flex-col overflow-y-auto py-3"
       data-agent-chat-opening
       data-workbench-empty-state="agent-chat"
     >
-      <section className="chat-start-surface flex w-full max-w-[var(--chat-column-max)] flex-1 flex-col items-center gap-4">
-        {/* Published copy is presentation only, never a synthetic runtime message. */}
-        {profile.description ? (
-          <p className="max-w-2xl whitespace-pre-wrap text-center text-sm leading-7 text-[var(--theme-text-secondary)]" data-agent-opening data-agent-opening-message>
-            {profile.description}
-          </p>
-        ) : <div data-agent-opening />}
-        <div className="mt-auto w-full pt-8">{composer}</div>
+      {/* Opening and composer sit together in the upper middle (visual guidelines 7.3). */}
+      <section className="chat-start-surface flex w-full max-w-[var(--chat-column-max)] flex-col items-center gap-6">
+        <div className="flex flex-col items-center gap-3 px-3 text-center" data-agent-opening-identity>
+          <AgentIdentityAvatar
+            agentId={profile.agent_id}
+            avatarRef={profile.avatar_ref}
+            avatarSeed={profile.avatar_seed}
+            name={profile.name}
+            size="md"
+          />
+          <h2 className="text-2xl font-semibold leading-8 text-[var(--theme-text)]">{profile.name}</h2>
+          {/* Published copy is presentation only, never a synthetic runtime message. */}
+          {profile.description ? (
+            <p className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-[var(--theme-text-secondary)]" data-agent-opening data-agent-opening-message>
+              {profile.description}
+            </p>
+          ) : <div data-agent-opening />}
+        </div>
+        <div className="w-full">{composer}</div>
       </section>
     </div>
   );

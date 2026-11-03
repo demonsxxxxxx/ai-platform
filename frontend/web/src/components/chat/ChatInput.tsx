@@ -66,6 +66,13 @@ import {
 } from "../workbench/profileDriveDrag";
 import { Composer, ComposerBar, ComposerInput } from "./assistant-ui/elements/composer";
 
+
+const SEND_BLOCKED_PLACEHOLDER = {
+  permission: "chat.noPermission",
+  loadingHistory: "chat.sendBlockedLoadingHistory",
+  synchronizing: "chat.sendBlockedSynchronizing",
+} as const;
+
 export type {
   ChatInputDraftSnapshot,
   ChatInputProps,
@@ -87,6 +94,7 @@ export const ChatInput = memo(function ChatInput({
   runControlKey,
   disabled,
   canSend = true,
+  sendBlockedReason = "permission",
   placeholder,
   modelUnavailableReason,
   acceptedFileTypes,
@@ -1054,7 +1062,7 @@ export const ChatInput = memo(function ChatInput({
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
-                    : placeholder ?? t("chat.noPermission")
+                    : placeholder ?? t(SEND_BLOCKED_PLACEHOLDER[sendBlockedReason])
                 }
                 disabled={questionMode || disabled || !canSend}
                 rows={1}
@@ -1065,7 +1073,7 @@ export const ChatInput = memo(function ChatInput({
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
-                canSend={canSend}
+                showPermissionLock={!canSend && sendBlockedReason === "permission"}
                 isLoading={isLoading}
                 canStop={canStop}
                 canSubmit={canSubmit}

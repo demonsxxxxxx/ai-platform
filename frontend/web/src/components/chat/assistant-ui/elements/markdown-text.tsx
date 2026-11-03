@@ -21,12 +21,15 @@ export interface AssistantMarkdownTextProps
   extends Omit<MarkdownComponentsOptions, "primitive"> {
   smooth?: boolean;
   defer?: boolean;
+  /** Show the streaming caret after the last rendered block. */
+  streamingCaret?: boolean;
   containerProps?: MarkdownTextPrimitiveProps["containerProps"];
 }
 
 export function AssistantMarkdownText({
   smooth = false,
   defer = true,
+  streamingCaret = false,
   headingAnchorContext,
   imageGallery,
   isStreaming,
@@ -76,7 +79,7 @@ export function AssistantMarkdownText({
             SyntaxHighlighter: mermaidSyntaxHighlighter,
           },
         }}
-        className="markdown-preview my-1 block"
+        className={streamingCaret ? "markdown-preview markdown-streaming my-1 block" : "markdown-preview my-1 block"}
         containerProps={containerProps}
         smooth={smooth}
         defer={defer}

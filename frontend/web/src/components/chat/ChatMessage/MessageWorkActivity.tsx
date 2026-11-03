@@ -255,13 +255,10 @@ export function MessageWorkActivity({
       </div>
     );
   }
-  // The visible result reads first; the process disclosure follows it so the
-  // user opens an execution trace only after reading the answer.
+  // The process disclosure sits above the answer as one stable row, so the
+  // streaming answer grows below it instead of pushing it down the page.
   return (
-    <div data-message-work-activity-order="result-first">
-      {parts.map((part, index) =>
-        isWorkActivityPart(part) ? null : renderResultPart(part, index),
-      )}
+    <div data-message-work-activity-order="process-first">
       {displayItems.map((item, displayIndex) => {
         const isFirstWorkActivity = displayIndex === 0;
         const hasIssues = issueCounts.failed > 0 || issueCounts.denied > 0;
@@ -296,6 +293,9 @@ export function MessageWorkActivity({
           </Fragment>
         );
       })}
+      {parts.map((part, index) =>
+        isWorkActivityPart(part) ? null : renderResultPart(part, index),
+      )}
     </div>
   );
 }

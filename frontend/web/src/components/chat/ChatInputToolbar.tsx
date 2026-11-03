@@ -17,7 +17,7 @@ import type { AgentOption, FileCategory } from "../../types";
 export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
   onActivePanelChange: (panel: FeaturePanel) => void;
-  canSend: boolean;
+  showPermissionLock: boolean;
   isLoading: boolean;
   canStop: boolean;
   canSubmit: boolean;
@@ -50,7 +50,7 @@ const FILE_CATEGORY_ACCEPT: Record<FileCategory, string> = {
 export function ChatInputToolbar({
   activePanel,
   onActivePanelChange,
-  canSend,
+  showPermissionLock,
   isLoading,
   canStop,
   canSubmit,
@@ -175,7 +175,7 @@ export function ChatInputToolbar({
           />
         ) : null}
 
-        {!canSend ? (
+        {showPermissionLock ? (
           <Button type="text" shape="circle" size="large" htmlType="button"
             onClick={(event) => { event.preventDefault(); event.stopPropagation(); onNoPermissionClick(); }}
             aria-label={t("chat.noPermission")} title={t("chat.noPermission")} icon={<Lock size={18} />}

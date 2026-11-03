@@ -187,7 +187,7 @@ test("groups only adjacent successful tools and leaves failures as separate visi
   assert.match(markup, /operation-3/);
 });
 
-test("work process renders after the visible result, not before it", async () => {
+test("work process disclosure renders above the answer so streaming text grows below it", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const answer = {
     type: "text",
@@ -215,6 +215,7 @@ test("work process renders after the visible result, not before it", async () =>
   const answerIndex = markup.indexOf('data-part="text"');
   const toggleIndex = markup.indexOf("data-message-work-details-toggle");
   assert.ok(answerIndex >= 0, "expected the answer part to render");
-  assert.ok(toggleIndex > answerIndex, "work disclosure must follow the result");
-  assert.match(markup, /data-message-work-activity-order="result-first"/);
+  assert.ok(toggleIndex >= 0 && toggleIndex < answerIndex, "work disclosure must precede the answer");
+  assert.match(markup, /data-message-work-activity-order="process-first"/);
+  assert.doesNotMatch(markup, /result-first/);
 });
