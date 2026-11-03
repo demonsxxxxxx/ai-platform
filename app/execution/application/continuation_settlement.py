@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
+
+
+@contextmanager
+def undispatched_cancellation_proof(request: Any, *, enabled: bool = True) -> Iterator[None]:
+    """Attach the closing proof to a cancellation raised before any provider call.
+
+    Only wrap work that precedes SandboxRuntime/provider creation; the proof
+    asserts that no provider writer could exist for this Attempt.
+    """
+    try:
+        yield
+    except asyncio.CancelledError as exc:
+        if enabled:
+            exc.predispatch_continuation_settlement = undispatched_continuation_settlement(
+                request, stop_evidence="provider_not_created",
+            )
+        raise
 
 
 def undispatched_continuation_settlement(
