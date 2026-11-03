@@ -27,6 +27,7 @@ from app.streaming.redis import (
     SseAuthorityConflictError,
     StreamAuthority,
     StreamContractError,
+    StreamTransportUnavailable,
     create_or_get_stream_admission_v4,
 )
 from app.streaming.infrastructure.v4 import V4RedisStreamBridge
@@ -283,6 +284,102 @@ async def test_v4_read_stream_uses_exclusive_xread_and_shared_authority_decode()
     assert client.calls[1] == (
         streaming_v4._V4_REPLAY_PAGE_LUA, 1, key, "(0-0", "1-0", 128, ""
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hint_payload", ["invalid-json", "foreign-attempt"])
+async def test_v4_read_stream_revalidates_payload_from_atomic_replay_not_xread_hint(
+    hint_payload,
+) -> None:
+    class HintRedis(FakeRedis):
+        async def xread(self, streams, *, count, block):
+            result = await super().xread(streams, count=count, block=block)
+            key, rows = result[0]
+            redis_id, fields = rows[-1]
+            if hint_payload == "invalid-json":
+                hinted_envelope = "{"
+            else:
+                foreign = json.loads(fields["envelope"])
+                foreign["attempt_id"] = "attempt-foreign"
+                hinted_envelope = canonical_json_bytes(foreign).decode()
+            return [(key, [(redis_id, {"envelope": hinted_envelope})])]
+
+    client = HintRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    envelope = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    client.rows.append(("1-0", {"envelope": canonical_json_bytes(envelope).decode()}))
+
+    entries = await bridge.read_stream(
+        tenant_scope_value="scope-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        stream_incarnation=2,
+        after_redis_id="0-0",
+    )
+
+    assert [entry.envelope for entry in entries] == [envelope]
+    assert client.calls[1][0] == streaming_v4._V4_REPLAY_PAGE_LUA
+
+
+@pytest.mark.asyncio
+async def test_v4_read_stream_rejects_foreign_stream_key_in_xread_result() -> None:
+    class ForeignKeyRedis(FakeRedis):
+        async def xread(self, streams, *, count, block):
+            result = await super().xread(streams, count=count, block=block)
+            return [("foreign-stream-key", result[0][1])]
+
+    client = ForeignKeyRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    envelope = control(
+        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
+    )
+    client.rows.append(("1-0", {"envelope": canonical_json_bytes(envelope).decode()}))
+
+    with pytest.raises(StreamContractError, match="v4_stream_authority_mismatch"):
+        await bridge.read_stream(
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            after_redis_id="0-0",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rows", "count", "error"),
+    [
+        ([("1-0",)], 1, "v4_stream_row_invalid"),
+        ([("not-a-redis-id", {})], 1, "stream_redis_id_invalid"),
+        ([("1-0", {}), ("2-0", {})], 1, "v4_stream_read_result_invalid"),
+    ],
+)
+async def test_v4_read_stream_validates_xread_row_shape_count_and_ids(
+    rows, count, error
+) -> None:
+    class InvalidHintRedis(FakeRedis):
+        async def xread(self, streams, *, count, block):
+            self.calls.append(("xread", streams, count, block))
+            key = next(iter(streams))
+            return [(key, rows)]
+
+    bridge = V4RedisStreamBridge(
+        RedisStreamBridge(publish_client=InvalidHintRedis())
+    )
+
+    with pytest.raises(
+        (StreamContractError, StreamTransportUnavailable), match=error
+    ):
+        await bridge.read_stream(
+            tenant_scope_value="scope-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            stream_incarnation=2,
+            after_redis_id="0-0",
+            count=count,
+        )
 
 
 @pytest.mark.asyncio
@@ -605,7 +702,7 @@ def test_v4_decode_rejects_foreign_tenant_and_attempt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v4_heartbeat_and_gap_use_real_retained_cursor_bounds() -> None:
+async def test_v4_gap_uses_real_retained_cursor_bounds() -> None:
     client = FakeRedis()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     await bridge.append(
@@ -613,14 +710,6 @@ async def test_v4_heartbeat_and_gap_use_real_retained_cursor_bounds() -> None:
             "stream.open",
             {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
         )
-    )
-    heartbeat, heartbeat_cursor = await bridge.build_heartbeat(
-        event_id="hb4_a",
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=2,
-        status="running",
     )
     gap, gap_cursor = await bridge.build_gap(
         event_id="gap4_a",
@@ -632,9 +721,7 @@ async def test_v4_heartbeat_and_gap_use_real_retained_cursor_bounds() -> None:
         current_stream_incarnation=2,
         reason="retained_history_unavailable",
     )
-    assert heartbeat_cursor == "run-a:2:1-0"
-    assert gap_cursor == heartbeat_cursor
-    assert heartbeat["payload"] == {"status": "running"}
+    assert gap_cursor == "run-a:2:1-0"
     assert gap["payload"]["earliest_available_event_id"] == "1-0"
     assert gap["payload"]["latest_available_event_id"] == "1-0"
     assert gap["payload"]["requested_event_id"] == "1-0"
@@ -770,7 +857,7 @@ async def test_v4_resume_accepts_exact_retained_cursor_after_open_is_trimmed():
         last_event_id="run-a:2:9-0",
     )
 
-    assert resume == ResumeDecision("9-0", None, "terminal-a", True)
+    assert resume == ResumeDecision("9-0", None, "terminal-a", True, "9-0")
 
 
 
@@ -798,6 +885,7 @@ async def test_initial_replay_proves_origin_in_the_actual_page_after_trim():
         current_stream_incarnation=2, last_event_id=None,
     )
     assert resume.after_redis_id == "0-0" and resume.gap is None
+    assert resume.replay_tail_redis_id == "50-9"
     removed = client.rows.pop(0)
     assert removed[0] == "1-0"
     with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):

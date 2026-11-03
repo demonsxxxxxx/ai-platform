@@ -2,8 +2,7 @@ import type { MessagePart } from "../../../types";
 import { PUBLIC_TOOL_CATEGORIES } from "../../../generated/publicRunStreamV4";
 import { groupPublicExecutionStepsForDisplay } from "../../../hooks/useAgent/publicStreamPresentation";
 
-const PUBLIC_TOOL_DISPLAY_NAMES: Readonly<Record<(typeof PUBLIC_TOOL_CATEGORIES)[number], string>> = {
-  skill: "Skill",
+const PUBLIC_TOOL_DISPLAY_NAMES: Readonly<Partial<Record<(typeof PUBLIC_TOOL_CATEGORIES)[number], string>>> = {
   mcp: "MCP",
   read: "Read",
   write: "Write",
@@ -44,6 +43,32 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+/** Verb-style labels for public tool categories. */
+export const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  skill: "使用 Skill",
+  mcp: "调用 MCP 工具",
+  read: "读取",
+  write: "写入",
+  edit: "编辑",
+  search: "搜索",
+  execute: "执行",
+};
+
+/** "读取", or "使用 Skill：名称" when the category names a specific capability. */
+export function getPublicToolActivityLabel(
+  publicCategory: string | undefined,
+  publicDisplayName?: string,
+): string | null {
+  if (!publicCategory) return null;
+  const verb = PUBLIC_CATEGORY_LABELS[publicCategory];
+  if (!verb) return null;
+  if (publicCategory === "skill") {
+    const name = getPublicToolDisplayName(publicCategory, publicDisplayName);
+    return name ? `${verb}：${name}` : verb;
+  }
+  return verb;
+}
+
 export function getPublicToolDisplayName(
   publicCategory: string | undefined,
   publicDisplayName?: string,
@@ -58,6 +83,7 @@ export function getPublicToolDisplayName(
   ) {
     return publicDisplayName;
   }
+  if (publicCategory === "skill") return null;
   return PUBLIC_TOOL_DISPLAY_NAMES[
     publicCategory as (typeof PUBLIC_TOOL_CATEGORIES)[number]
   ] ?? null;
@@ -68,12 +94,13 @@ export function isPublicToolPresentation(
   publicCategory: string | undefined,
   status: string | undefined,
   durationMs?: number,
+  publicDisplayName?: string,
 ): boolean {
   return Boolean(
     publicOperationId &&
     PUBLIC_SAFE_REF_PATTERN.test(publicOperationId) &&
     publicCategory &&
-    getPublicToolDisplayName(publicCategory) !== null &&
+    getPublicToolDisplayName(publicCategory, publicDisplayName) !== null &&
     status &&
     PUBLIC_TOOL_STATUSES.has(status) &&
     (durationMs === undefined ||
@@ -118,6 +145,7 @@ export function isVisibleMessagePart(part: MessagePart): boolean {
       part.public_category,
       part.status,
       part.duration_ms,
+      part.public_display_name,
     );
   }
   if (part.type === "subagent") {

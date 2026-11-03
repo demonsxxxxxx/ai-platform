@@ -5,17 +5,9 @@ import type { ToolErrorKind } from "./elements/ToolError";
 import {
   getPublicToolDisplayName,
   isPublicToolPresentation,
+  PUBLIC_CATEGORY_LABELS,
 } from "./messagePartVisibility";
 
-const PUBLIC_CATEGORY_LABELS: Readonly<Record<string, string>> = {
-  skill: "使用 Skill",
-  mcp: "调用 MCP 工具",
-  read: "读取",
-  write: "写入",
-  edit: "编辑",
-  search: "搜索",
-  execute: "执行",
-};
 
 function formatDurationMs(durationMs: number | undefined): string | null {
   if (
@@ -82,6 +74,7 @@ export function ToolCallItem({
       publicCategory,
       lifecycleStatus,
       durationMs,
+      publicDisplayName,
     )
   ) {
     return null;

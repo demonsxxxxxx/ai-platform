@@ -1,21 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message } from "../../../types";
 import {
   handlePublicRunStreamEventV4Result,
-  handleStreamEvent,
   rebindV4MessageOwner,
   setMessageSnapshot,
 } from "../eventHandlers.ts";
-import { PublicStreamPresentation } from "../publicStreamPresentation.ts";
 import type { EventHandlerContext } from "../eventHandlers.ts";
-import type { HistoryEvent, StreamEvent } from "../types.ts";
 import { adaptPublicRunStreamEventV4 } from "../../../components/chat/assistant-ui/publicEventAdapter.ts";
-import {
-  prepareMessagesForRunningRun,
-  reconstructMessagesFromEvents,
-} from "../historyLoader.ts";
+import { prepareMessagesForRunningRun } from "../historyLoader.ts";
 
 const adaptV4Frame = (
   frame: Parameters<typeof adaptPublicRunStreamEventV4>[0],
@@ -80,269 +73,6 @@ function createContext(
   };
 }
 
-test("terminal stream events dismiss a queued admission toast", () => {
-  for (const terminalEvent of [
-    "complete",
-    "done",
-    "user:cancel",
-    "error",
-  ] as const) {
-    let dismissCalls = 0;
-    const ctx = createContext([], null, () => {
-      dismissCalls += 1;
-    });
-    ctx.currentRunIdRef.current = "run-active";
-
-    handleStreamEvent(
-      {
-        event: terminalEvent,
-        data: JSON.stringify({
-          run_id: "run-active",
-          ...(terminalEvent === "error" ? { error: "run_failed" } : {}),
-        }),
-      },
-      "assistant-1",
-      `terminal-${terminalEvent}`,
-      "2026-07-11T01:02:03.000Z",
-      ctx,
-    );
-
-    assert.equal(dismissCalls, 1, `${terminalEvent} must clear chat-queue`);
-  }
-});
-
-test("accepted current-run stream_open clears the queue toast without mutating messages", () => {
-  let dismissCalls = 0;
-  const commits: boolean[] = [];
-  const ctx = createContext([], null, () => {
-    dismissCalls += 1;
-  });
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.streamVersionRef.current = 2;
-  ctx.acceptedStreamCursorRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    eventId: "run-active:2:1-0",
-  };
-
-  const accepted = handleStreamEvent(
-    {
-      event: "stream_open",
-      data: JSON.stringify({
-        event_id: "stream-open-active",
-        run_id: "run-active",
-      }),
-    },
-    "assistant-1",
-    "run-active:2:2-0",
-    "2026-07-11T01:02:03.000Z",
-    ctx,
-    { sessionId: "session-1", runId: "run-active", streamVersion: 2 },
-    (semanticApplied) => commits.push(semanticApplied),
-  );
-
-  assert.equal(accepted, true);
-  assert.equal(dismissCalls, 1);
-  assert.equal(ctx.setMessagesCalls(), 0);
-  assert.deepEqual(commits, [true]);
-});
-
-test("stale session, run, generation, and cursor stream_open cannot clear a newer queue toast", () => {
-  let dismissCalls = 0;
-  const ctx = createContext([], null, () => {
-    dismissCalls += 1;
-  });
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.streamVersionRef.current = 2;
-  ctx.acceptedStreamCursorRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    eventId: "run-active:2:10-0",
-  };
-  const event = {
-    event: "stream_open",
-    data: JSON.stringify({
-      event_id: "stream-open-stale",
-      run_id: "run-active",
-    }),
-  } as StreamEvent;
-
-  assert.equal(
-    handleStreamEvent(
-      event,
-      "assistant-1",
-      "run-active:2:11-0",
-      undefined,
-      ctx,
-      { sessionId: "session-old", runId: "run-active", streamVersion: 2 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      event,
-      "assistant-1",
-      "run-active:2:11-0",
-      undefined,
-      ctx,
-      { sessionId: "session-1", runId: "run-old", streamVersion: 2 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      event,
-      "assistant-1",
-      "run-active:2:11-0",
-      undefined,
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 1 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      event,
-      "assistant-1",
-      "run-active:2:9-0",
-      undefined,
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 2 },
-    ),
-    false,
-  );
-
-  assert.equal(dismissCalls, 0);
-  assert.equal(ctx.setMessagesCalls(), 0);
-});
-
-test("does not let a stale run terminal event finalize the active run", () => {
-  const ctx = createContext([], null);
-  ctx.currentRunIdRef.current = "run-new";
-  const terminalCalls: Array<[string, string, string]> = [];
-  ctx.onRunTerminal = (runId, status, messageId) => {
-    terminalCalls.push([runId, status, messageId]);
-    return true;
-  };
-
-  handleStreamEvent(
-    {
-      event: "run_event",
-      data: JSON.stringify({
-        run_id: "run-old",
-        event_type: "run_failed",
-      }),
-    } as StreamEvent,
-    "assistant-old",
-    "evt-old-terminal",
-    "2026-07-14T02:00:00.000Z",
-    ctx,
-  );
-
-  assert.deepEqual(terminalCalls, []);
-  assert.equal(ctx.setMessagesCalls(), 0);
-});
-
-test("rejects a stale cursor before terminal callbacks or reducer mutation", () => {
-  const ctx = createContext([], null);
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.acceptedStreamCursorRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    eventId: "run-active:1:2-0",
-  };
-  const terminalCalls: string[] = [];
-  ctx.onRunTerminal = () => {
-    terminalCalls.push("terminal");
-    return true;
-  };
-
-  const accepted = handleStreamEvent(
-    {
-      event: "run_event",
-      data: JSON.stringify({
-        run_id: "run-active",
-        event_type: "run_failed",
-      }),
-    } as StreamEvent,
-    "assistant-active",
-    "run-active:1:1-0",
-    "2026-07-14T02:00:00.000Z",
-    ctx,
-  );
-
-  assert.equal(accepted, false);
-  assert.deepEqual(terminalCalls, []);
-  assert.equal(ctx.setMessagesCalls(), 0);
-});
-
-test("delegates an active run terminal event once to the lifecycle owner", () => {
-  const ctx = createContext([], null);
-  ctx.currentRunIdRef.current = "run-active";
-  let terminalCalls = 0;
-  ctx.onRunTerminal = (runId, status, messageId) => {
-    terminalCalls += 1;
-    assert.deepEqual([runId, status, messageId], [
-      "run-active",
-      "failed",
-      "assistant-active",
-    ]);
-    ctx.currentRunIdRef.current = null;
-    return true;
-  };
-
-  const terminalEvent = {
-    event: "run_event",
-    data: JSON.stringify({
-      run_id: "run-active",
-      event_type: "run_failed",
-    }),
-  } as StreamEvent;
-  handleStreamEvent(
-    terminalEvent,
-    "assistant-active",
-    "evt-terminal-1",
-    "2026-07-14T02:00:00.000Z",
-    ctx,
-  );
-  handleStreamEvent(
-    { ...terminalEvent, data: terminalEvent.data },
-    "assistant-active",
-    "evt-terminal-2",
-    "2026-07-14T02:00:01.000Z",
-    ctx,
-  );
-
-  assert.equal(terminalCalls, 1);
-  assert.equal(ctx.setMessagesCalls(), 0);
-});
-
-test("skips replayed SSE events at the history timestamp boundary", () => {
-  const timestamp = "2026-04-19T01:02:03.456Z";
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(timestamp),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    new Date(timestamp),
-  );
-
-  const event: StreamEvent = {
-    event: "message:chunk",
-    data: JSON.stringify({ content: "duplicate", _timestamp: timestamp }),
-  };
-
-  handleStreamEvent(event, "assistant-1", "redis-event-1", timestamp, ctx);
-
-  assert.equal(ctx.setMessagesCalls(), 0);
-});
-
 test("v4 control ordering ignores wall-clock history timestamps", () => {
   const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
   ctx.currentRunIdRef.current = "run-active";
@@ -390,179 +120,6 @@ test("v4 control ordering ignores wall-clock history timestamps", () => {
   assert.deepEqual(commits, [true]);
 });
 
-test("reports acceptance only after current-run validation and deduplication", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    new Date("2026-04-19T01:02:03.456Z"),
-  );
-  ctx.currentRunIdRef.current = "run-active";
-
-  const accepted = handleStreamEvent(
-    {
-      event: "run_event",
-      data: JSON.stringify({
-        run_id: "run-active",
-        sequence: 4,
-        event_type: "worker_started",
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "evt-current",
-    "2026-04-19T01:02:04.000Z",
-    ctx,
-    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-  );
-  assert.equal(accepted, true);
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "run_event",
-        data: JSON.stringify({
-          run_id: "run-active",
-          sequence: 5,
-          event_type: "worker_started",
-        }),
-      } as StreamEvent,
-      "assistant-1",
-      "evt-current",
-      "2026-04-19T01:02:05.000Z",
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "run_event",
-        data: JSON.stringify({
-          run_id: "run-foreign",
-          sequence: 6,
-          event_type: "worker_started",
-        }),
-      } as StreamEvent,
-      "assistant-1",
-      "evt-foreign",
-      "2026-04-19T01:02:06.000Z",
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      { event: "run_event", data: "not-json" } as StreamEvent,
-      "assistant-1",
-      "evt-invalid",
-      "2026-04-19T01:02:07.000Z",
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    ),
-    false,
-  );
-  assert.equal(
-    handleStreamEvent(
-      { event: "done", data: JSON.stringify({ status: "failed" }) },
-      "assistant-1",
-      "evt-runless-terminal",
-      "2026-04-19T01:02:08.000Z",
-      ctx,
-    ),
-    false,
-  );
-});
-
-test("commits protocol refs before publishing a value-only React snapshot", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  const commits: boolean[] = [];
-  let published: React.SetStateAction<Message[]> | null = null;
-  let publicationCount = 0;
-  ctx.setMessages = (snapshot) => {
-    publicationCount += 1;
-    published = snapshot;
-    assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 4);
-    assert.equal(ctx.processedEventIdsRef.current.has("semantic-delta-1"), true);
-  };
-
-  const accepted = handleStreamEvent(
-    {
-      event: "message:chunk",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_delta",
-        run_id: "run-active",
-        event_id: "semantic-delta-1",
-        sequence: 4,
-        content: "committed now",
-      }),
-    },
-    "assistant-1",
-    "run-active:1:1-0",
-    undefined,
-    ctx,
-    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    (semanticApplied) => commits.push(semanticApplied),
-  );
-
-  assert.equal(accepted, true);
-  assert.deepEqual(commits, [true]);
-  assert.equal(Array.isArray(published), true);
-  ctx.sessionIdRef.current = "session-new";
-  ctx.currentRunIdRef.current = "run-new";
-  ctx.messagesRef.current = [{
-    id: "new-session-message",
-    role: "user",
-    content: "new session",
-    timestamp: new Date(),
-  }];
-  assert.equal(typeof published, "object");
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "message:chunk",
-        data: JSON.stringify({
-          projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "assistant_delta",
-          run_id: "run-active",
-          event_id: "semantic-delta-stale",
-          sequence: 5,
-          content: "must not publish",
-        }),
-      },
-      "assistant-1",
-      "run-active:1:2-0",
-      undefined,
-      ctx,
-      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    ),
-    false,
-  );
-  assert.equal(publicationCount, 1);
-  assert.equal(ctx.messagesRef.current[0]?.id, "new-session-message");
-});
-
 test("preserves a terminal card across consecutive value snapshot publications", () => {
   const published: React.SetStateAction<Message[]>[] = [];
   const ctx = createContext(
@@ -603,734 +160,6 @@ test("preserves a terminal card across consecutive value snapshot publications",
   assert.equal(published.every((snapshot) => Array.isArray(snapshot)), true);
   assert.equal(ctx.messagesRef.current[0]?.isStreaming, false);
   assert.equal(ctx.messagesRef.current[0]?.parts?.[0]?.type, "run_status");
-});
-
-test("advances only transport for a newer cursor with an equal semantic sequence", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  const commits: boolean[] = [];
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-active",
-    streamVersion: 0,
-  };
-  const makeEvent = (): StreamEvent => ({
-    event: "message:chunk",
-    data: JSON.stringify({
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_delta",
-      run_id: "run-active",
-      event_id: "semantic-delta-race",
-      sequence: 4,
-      content: "duplicate body",
-    }),
-  });
-  const accept = (cursor: string) =>
-    handleStreamEvent(
-      makeEvent(),
-      "assistant-1",
-      cursor,
-      undefined,
-      ctx,
-      binding,
-      (semanticApplied) => {
-        commits.push(semanticApplied);
-        ctx.acceptedStreamCursorRef!.current.eventId = cursor;
-      },
-    );
-
-  assert.equal(accept("run-active:1:1-0"), true);
-  assert.equal(accept("run-active:1:2-0"), false);
-  assert.deepEqual(commits, [true, false]);
-  assert.equal(ctx.messages()[0]?.content, "duplicate body");
-  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-active:1:2-0");
-  assert.equal(ctx.setMessagesCalls(), 1);
-});
-
-test("advances only transport for an immediate equal semantic sequence", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "unchanged",
-        timestamp: new Date(),
-        parts: [{ type: "text", content: "unchanged" }],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.acceptedRunEventSequenceRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    sequence: 9,
-  };
-  ctx.acceptedStreamCursorRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    eventId: "run-active:1:1-0",
-  };
-  const commits: boolean[] = [];
-  const nextCursor = "run-active:1:2-0";
-  const before = ctx.messages()[0];
-
-  const accepted = handleStreamEvent(
-    {
-      event: "execution_progress",
-      data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v2",
-        event_id: "semantic-equal-immediate",
-        run_id: "run-active",
-        sequence: 9,
-        step_id: "step-prepare-report",
-        presentation_kind: "processing",
-        safe_label: "Data processing",
-        kind: "processing",
-        stage: "data",
-        status: "running",
-
-
-        progress: { current: 0, total: 1 },
-
-
-        created_at: null,
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    nextCursor,
-    undefined,
-    ctx,
-    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
-    (semanticApplied) => {
-      commits.push(semanticApplied);
-      ctx.acceptedStreamCursorRef!.current.eventId = nextCursor;
-    },
-  );
-
-  assert.equal(accepted, false);
-  assert.deepEqual(commits, [false]);
-  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, nextCursor);
-  assert.equal(ctx.setMessagesCalls(), 0);
-  assert.deepEqual(ctx.messages()[0], before);
-  assert.equal(
-    ctx.processedEventIdsRef.current.has("semantic-equal-immediate"),
-    false,
-  );
-});
-
-test("retains the run-event sequence replay guard after the event-id cap", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.acceptedRunEventSequenceRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    sequence: 8,
-  };
-  ctx.processedEventIdsRef.current = new Set(
-    Array.from({ length: 10_000 }, (_, index) => `history-${index}`),
-  );
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-active",
-    streamVersion: 0,
-  };
-
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "run_event",
-        data: JSON.stringify({
-          run_id: "run-active",
-          sequence: 9,
-          event_type: "worker_progress",
-        }),
-      } as StreamEvent,
-      "assistant-1",
-      "evt-new-after-cap",
-      undefined,
-      ctx,
-      binding,
-    ),
-    true,
-  );
-  assert.equal(ctx.processedEventIdsRef.current.size, 1);
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "run_event",
-        data: JSON.stringify({
-          run_id: "run-active",
-          sequence: 8,
-          event_type: "worker_started",
-        }),
-      } as StreamEvent,
-      "assistant-1",
-      "evt-old-replay-after-cap",
-      undefined,
-      ctx,
-      binding,
-    ),
-    false,
-  );
-  assert.equal(ctx.setMessagesCalls(), 1);
-});
-
-test("uses the existing cursor and event-id guard for public execution steps", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-active",
-    streamVersion: 0,
-  };
-
-  const accepted = handleStreamEvent(
-    {
-      event: "execution_step",
-      data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v2",
-        event_id: "evt-execution-started",
-        run_id: "run-active",
-        sequence: 9,
-        step_id: "step-prepare-report",
-        presentation_kind: "processing",
-        safe_label: "Data processing",
-        kind: "processing",
-        stage: "data",
-        status: "running",
-
-
-        progress: { current: 0, total: 1 },
-
-
-        created_at: null,
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "evt-execution-started",
-    undefined,
-    ctx,
-    binding,
-  );
-  const duplicateEventId = handleStreamEvent(
-    {
-      event: "execution_progress",
-      data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v2",
-        event_id: "evt-execution-started",
-        run_id: "run-active",
-        sequence: 10,
-        step_id: "step-prepare-report",
-        presentation_kind: "processing",
-        safe_label: "Data processing",
-        kind: "processing",
-        stage: "data",
-        status: "running",
-
-
-        progress: { current: 0, total: 1 },
-
-
-        created_at: null,
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "evt-execution-started",
-    undefined,
-    ctx,
-    binding,
-  );
-  const staleSequence = handleStreamEvent(
-    {
-      event: "execution_progress",
-      data: JSON.stringify({
-        schema_version: "ai-platform.public-execution-event.v2",
-        event_id: "evt-execution-stale",
-        run_id: "run-active",
-        sequence: 8,
-        step_id: "step-prepare-report",
-        presentation_kind: "processing",
-        safe_label: "Data processing",
-        kind: "processing",
-        stage: "data",
-        status: "running",
-
-
-        progress: { current: 0, total: 1 },
-
-
-        created_at: null,
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "evt-execution-stale",
-    undefined,
-    ctx,
-    binding,
-  );
-
-  assert.equal(accepted, true);
-  assert.equal(duplicateEventId, false);
-  assert.equal(staleSequence, false);
-  assert.deepEqual(ctx.acceptedRunEventSequenceRef?.current, {
-    sessionId: "session-1",
-    runId: "run-active",
-    sequence: 9,
-  });
-  assert.equal(ctx.setMessagesCalls(), 1);
-});
-
-test("commits execution protocol state before a throttled React publication", () => {
-  let now = 0;
-  let deferredCommit: (() => void) | null = null;
-  const presentation = new PublicStreamPresentation({
-    now: () => now,
-    setTimeout: (callback) => {
-      deferredCommit = callback;
-      return 1 as unknown as ReturnType<typeof setTimeout>;
-    },
-    clearTimeout: () => {
-      deferredCommit = null;
-    },
-  });
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.publicStreamPresentation = presentation;
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-active",
-    streamVersion: 0,
-  };
-  presentation.activate({ ...binding, assistantMessageId: "assistant-1" });
-  const progress = (sequence: number) =>
-    handleStreamEvent(
-      {
-        event: "execution_progress",
-        data: JSON.stringify({
-          schema_version: "ai-platform.public-execution-event.v2",
-          event_id: `evt-progress-${sequence}`,
-          run_id: "run-active",
-          sequence,
-          step_id: "step-1",
-          presentation_kind: "processing",
-          safe_label: "Data processing",
-          kind: "processing",
-          stage: "data",
-          status: "running",
-
-
-          progress: { current: 0, total: 1 },
-
-
-          created_at: null,
-        }),
-      } as StreamEvent,
-      "assistant-1",
-      `run-active:1:${sequence}-0`,
-      undefined,
-      ctx,
-      binding,
-    );
-
-  assert.equal(progress(1), true);
-  assert.equal(progress(2), true);
-  assert.equal(ctx.setMessagesCalls(), 1);
-  assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 2);
-  assert.equal(ctx.messagesRef.current[0]?.parts?.[0]?.type, "execution_step");
-  assert.equal(
-    ctx.messagesRef.current[0]?.parts?.[0]?.type === "execution_step"
-      ? ctx.messagesRef.current[0].parts[0].sequence
-      : null,
-    2,
-  );
-
-  now = 250;
-  assert.notEqual(deferredCommit, null);
-  (deferredCommit as unknown as () => void)();
-  assert.equal(ctx.setMessagesCalls(), 2);
-});
-
-test("uses the durable sequence for assistant deltas", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-active";
-  ctx.acceptedRunEventSequenceRef!.current = {
-    sessionId: "session-1",
-    runId: "run-active",
-    sequence: 7,
-  };
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-active",
-    streamVersion: 0,
-  };
-
-  const acceptedDelta = handleStreamEvent(
-    {
-      event: "message:chunk",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_delta",
-        run_id: "run-active",
-        event_id: "evt-delta-8",
-        sequence: 8,
-        content: "A",
-      }),
-    },
-    "assistant-1",
-    "evt-delta-8",
-    undefined,
-    ctx,
-    binding,
-  );
-  const rejectedReplay = handleStreamEvent(
-    {
-      event: "message:chunk",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_delta",
-        run_id: "run-active",
-        event_id: "evt-delta-8-replayed",
-        sequence: 8,
-        content: "A",
-      }),
-    },
-    "assistant-1",
-    "evt-delta-8-replayed",
-    undefined,
-    ctx,
-    binding,
-  );
-  const acceptedArtifact = handleStreamEvent(
-    {
-      event: "artifact_card",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        event_id: "evt-artifact-9",
-        sequence: 9,
-        run_id: "run-active",
-        artifact_id: "artifact-9",
-        artifact_type: "document",
-        label: "report.txt",
-        content_type: "text/plain",
-        size_bytes: 12,
-        status: "ready",
-      }),
-    },
-    "assistant-1",
-    "evt-artifact-9",
-    undefined,
-    ctx,
-    binding,
-  );
-  const acceptedContinuation = handleStreamEvent(
-    {
-      event: "message:chunk",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        projection_kind: "assistant_delta",
-        run_id: "run-active",
-        event_id: "evt-delta-10",
-        sequence: 10,
-        content: "B",
-      }),
-    },
-    "assistant-1",
-    "evt-delta-10",
-    undefined,
-    ctx,
-    binding,
-  );
-
-  assert.equal(acceptedDelta, true);
-  assert.equal(rejectedReplay, false);
-  assert.equal(acceptedArtifact, true);
-  assert.equal(acceptedContinuation, true);
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 10);
-  assert.equal(ctx.messages()[0]?.content, "AB");
-  assert.deepEqual(ctx.messages()[0]?.parts, [
-    {
-      type: "text",
-      content: "A",
-      logical_id: "assistant-1:text:0:0:root",
-    },
-    {
-      type: "artifact",
-      artifact_id: "artifact-9",
-      artifact_type: "document",
-      label: "report.txt",
-      content_type: "text/plain",
-      size_bytes: 12,
-      download_url: undefined,
-      preview_url: undefined,
-      status: "ready",
-      created_at: undefined,
-    },
-    {
-      type: "text",
-      content: "B",
-      logical_id: "assistant-1:text:1:0:root",
-    },
-  ]);
-  assert.equal(ctx.setMessagesCalls(), 3);
-});
-
-test("commits a public delta before a later execution state and keeps history semantically coherent", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-ordered",
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-ordered";
-  ctx.acceptedRunEventSequenceRef!.current = {
-    sessionId: "session-1",
-    runId: "run-ordered",
-    sequence: 7,
-  };
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-ordered",
-    streamVersion: 0,
-  };
-  const snapshots: Array<{ content: string; partTypes: string[] }> = [];
-  const commit = ctx.setMessages;
-  ctx.setMessages = (updater) => {
-    commit(updater);
-    const assistant = ctx.messages()[0];
-    snapshots.push({
-      content: assistant?.content || "",
-      partTypes: (assistant?.parts || []).map((part) => part.type),
-    });
-  };
-  const delta = {
-    event: "message:chunk",
-    data: JSON.stringify({
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_delta",
-      run_id: "run-ordered",
-      event_id: "evt-delta-8",
-      sequence: 8,
-      content: "B",
-    }),
-  } as StreamEvent;
-  const started = {
-    event: "execution_step",
-    data: JSON.stringify({
-      schema_version: "ai-platform.public-execution-event.v2",
-      event_id: "evt-step-9",
-      run_id: "run-ordered",
-      sequence: 9,
-      step_id: "step-1",
-      presentation_kind: "processing",
-      safe_label: "Data processing",
-      kind: "processing",
-      stage: "data",
-      status: "running",
-
-
-      progress: { current: 0, total: 1 },
-
-
-      created_at: "2026-07-31T01:00:00.000Z",
-    }),
-  } as StreamEvent;
-
-  assert.equal(
-    handleStreamEvent(delta, "assistant-ordered", "evt-delta-8", undefined, ctx, binding),
-    true,
-  );
-  assert.equal(
-    handleStreamEvent(started, "assistant-ordered", "evt-step-9", undefined, ctx, binding),
-    true,
-  );
-  assert.deepEqual(snapshots, [
-    { content: "B", partTypes: ["text"] },
-    { content: "B", partTypes: ["text", "execution_step"] },
-  ]);
-
-  const history = reconstructMessagesFromEvents(
-    [
-      {
-        id: "evt-delta-8",
-        event_type: "message:chunk",
-        run_id: "run-ordered",
-        sequence: 8,
-        timestamp: "2026-07-31T01:00:00.000Z",
-        data: JSON.parse(delta.data),
-      },
-      {
-        id: "evt-step-9",
-        event_type: "execution_step",
-        run_id: "run-ordered",
-        sequence: 9,
-        timestamp: "2026-07-31T01:00:01.000Z",
-        data: JSON.parse(started.data),
-      },
-    ] satisfies HistoryEvent[],
-    new Set<string>(),
-    { activeSubagentStack: [] },
-  )[0];
-  const liveStep = ctx.messages()[0]?.parts?.find(
-    (part) => part.type === "execution_step",
-  );
-  const historyProcess = getVisibleMessageParts(history?.parts || []).find(
-    (part) => part.type === "execution_process",
-  );
-  assert.equal(ctx.messages()[0]?.content, "B");
-  assert.equal(history?.content, "B");
-  assert.equal(liveStep?.type, "execution_step");
-  assert.equal(historyProcess?.type, "execution_process");
-  if (liveStep?.type !== "execution_step" || historyProcess?.type !== "execution_process") {
-    throw new Error("expected public execution steps");
-  }
-  assert.deepEqual(historyProcess.steps, [liveStep]);
-});
-
-test("commits public text before a later generic tool event", () => {
-  const ctx = createContext(
-    [{
-      id: "assistant-fallback-order",
-      role: "assistant",
-      content: "",
-      timestamp: new Date(),
-      parts: [],
-      isStreaming: true,
-    }],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-fallback-order";
-  ctx.acceptedRunEventSequenceRef!.current = {
-    sessionId: "session-1",
-    runId: "run-fallback-order",
-    sequence: 7,
-  };
-  const binding = {
-    sessionId: "session-1",
-    runId: "run-fallback-order",
-    streamVersion: 0,
-  };
-
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "message:chunk",
-        data: JSON.stringify({
-          projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "assistant_delta",
-          run_id: binding.runId,
-          event_id: "evt-delta-8",
-          sequence: 8,
-          content: "正文",
-        }),
-      },
-      "assistant-fallback-order",
-      "evt-delta-8",
-      undefined,
-      ctx,
-      binding,
-    ),
-    true,
-  );
-  assert.equal(
-    handleStreamEvent(
-      {
-        event: "run_event",
-        data: JSON.stringify({
-          projection_version: "ai-platform.chat-public-projection.v1",
-          projection_kind: "public_event",
-          event_id: "evt-tool-9",
-          run_id: binding.runId,
-          sequence: 9,
-          event_type: "public_tool_activity",
-          operation_id: "operation-1",
-          category: "read",
-          display_name: "Read project file",
-          status: "started",
-        }),
-      },
-      "assistant-fallback-order",
-      "evt-tool-9",
-      undefined,
-      ctx,
-      binding,
-    ),
-    true,
-  );
-
-  assert.equal(ctx.messages()[0]?.content, "正文");
-  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 9);
-  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), [
-    "text",
-    "tool",
-  ]);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {
@@ -1380,292 +209,6 @@ test("creates a new streaming assistant for a running run after the latest user 
       ["assistant-latest", "assistant", "run-latest", true],
     ],
   );
-});
-
-test("user cancel marks message cancelled without closing the SSE connection", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date("2026-04-19T01:02:03.456Z"),
-        parts: [{ type: "text", content: "partial" }],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-1";
-
-  handleStreamEvent(
-    {
-      event: "user:cancel",
-      data: JSON.stringify({ run_id: "run-1" }),
-    },
-    "assistant-1",
-    "redis-event-cancel",
-    "2026-04-19T01:02:04.000Z",
-    ctx,
-  );
-
-  assert.equal(ctx.messages()[0]?.cancelled, true);
-  assert.equal(ctx.messages()[0]?.isStreaming, false);
-  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), [
-    "text",
-    "cancelled",
-  ]);
-  assert.deepEqual(ctx.connectionStatuses, []);
-});
-
-test("streams ai-platform run event and artifact card into message parts", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        content: "",
-        timestamp: new Date("2026-06-02T01:02:03.456Z"),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-
-  handleStreamEvent(
-    {
-      event: "run_event",
-      data: JSON.stringify({
-        projection_version: "ai-platform.chat-public-projection.v1",
-        event_id: "evt-tool",
-        sequence: 4,
-        event_type: "agent_step_blocked",
-        stage: "wait",
-        message: "当前处理步骤未获授权，正在等待权限调整",
-        severity: "warning",
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "evt-tool",
-    "2026-06-02T01:02:04.000Z",
-    ctx,
-  );
-  handleStreamEvent(
-    {
-      event: "artifact_card",
-      data: JSON.stringify({
-        artifact_id: "art-reviewed",
-        artifact_type: "reviewed_docx",
-        label: "审核 Word",
-        size_bytes: 123,
-        download_url: "/api/ai/artifacts/art-reviewed/download",
-        status: "available",
-      }),
-    } as StreamEvent,
-    "assistant-1",
-    "art-reviewed:artifact",
-    "2026-06-02T01:02:05.000Z",
-    ctx,
-  );
-
-  assert.deepEqual(
-    ctx.messages()[0]?.parts?.map((part) => part.type),
-    ["run_status", "artifact"],
-  );
-  assert.equal(ctx.setMessagesCalls(), 2);
-});
-
-test("keeps an actionable PDF-password detail before exactly-once terminal convergence", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-final",
-        role: "assistant",
-        content: "",
-        timestamp: new Date("2026-07-15T01:00:00.000Z"),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-  ctx.currentRunIdRef.current = "run-final";
-  let terminalCalls = 0;
-  ctx.onRunTerminal = () => {
-    terminalCalls += 1;
-    ctx.currentRunIdRef.current = null;
-    return true;
-  };
-
-  const acceptedDetail = handleStreamEvent(
-    {
-      event: "final_detail",
-      data: JSON.stringify({
-        run_id: "run-final",
-        projection_version: "ai-platform.chat-public-projection.v1",
-        detail_kind: "failed",
-        detail_code: "context_file_pdf_password_required",
-        message: "Executor failed at C:\\private\\encrypted.pdf?token=secret",
-      }),
-    } as StreamEvent,
-    "assistant-final",
-    "run-final:final",
-    "2026-07-15T01:00:01.000Z",
-    ctx,
-  );
-  const acceptedTerminal = handleStreamEvent(
-    {
-      event: "run_event",
-      data: JSON.stringify({
-        run_id: "run-final",
-        event_type: "run_failed",
-      }),
-    } as StreamEvent,
-    "assistant-final",
-    "evt-final-failed",
-    "2026-07-15T01:00:02.000Z",
-    ctx,
-  );
-
-  assert.equal(acceptedDetail, true);
-  assert.equal(acceptedTerminal, true);
-  assert.equal(terminalCalls, 1);
-  assert.match(
-    ctx.messages()[0]?.content || "",
-    /PDF 文件需要密码。请先解除密码保护后重新上传。/,
-  );
-  assert.equal(ctx.messages()[0]?.isStreaming, true);
-  assert.doesNotMatch(
-    JSON.stringify(ctx.messages()[0]),
-    /Executor|private|token=secret/,
-  );
-});
-
-test("stream error handler never renders unknown backend diagnostics", () => {
-  const ctx = createContext(
-    [
-      {
-        id: "assistant-error",
-        role: "assistant",
-        content: "",
-        timestamp: new Date("2026-07-15T01:00:00.000Z"),
-        parts: [],
-        isStreaming: true,
-      },
-    ],
-    null,
-  );
-
-  handleStreamEvent(
-    {
-      event: "error",
-      data: JSON.stringify({
-        error: "C:\\private\\executor.log?token=secret <html>proxy</html>",
-      }),
-    },
-    "assistant-error",
-    "evt-safe-error",
-    "2026-07-15T01:00:01.000Z",
-    ctx,
-  );
-
-  const content = ctx.messages()[0]?.content || "";
-  assert.ok(content.length > 0);
-  assert.doesNotMatch(content, /private|token|proxy|html|executor\.log/i);
-});
-
-test("sandbox error side effects never expose unknown backend diagnostics", () => {
-  const ctx = createContext([], null);
-  const sandboxErrors: Array<string | null> = [];
-  ctx.currentRunIdRef.current = "run-sandbox-error";
-  ctx.setSandboxError = (value) => sandboxErrors.push(value);
-
-  handleStreamEvent(
-    {
-      event: "sandbox:error",
-      data: JSON.stringify({
-        run_id: "run-sandbox-error",
-        error: "C:\\private\\sandbox.log?token=secret <html>proxy</html>",
-      }),
-    },
-    "assistant-sandbox-error",
-    "evt-sandbox-error",
-    "2026-07-15T01:00:00.000Z",
-    ctx,
-  );
-
-  assert.equal(sandboxErrors.length, 1);
-  assert.ok(sandboxErrors[0]);
-  assert.doesNotMatch(
-    String(sandboxErrors[0]),
-    /private|token|secret|proxy|html|sandbox\.log/i,
-  );
-});
-
-test("v4 assistant deltas and artifact events share the run-local sequence fence", () => {
-  const ctx = createContext([
-    {
-      id: "assistant-sequence",
-      role: "assistant",
-      content: "",
-      timestamp: new Date("2026-07-15T01:00:00.000Z"),
-      parts: [],
-      isStreaming: true,
-    },
-  ], null);
-  ctx.currentRunIdRef.current = "run-sequence";
-
-  assert.equal(handleStreamEvent({
-    event: "message:chunk",
-    data: JSON.stringify({
-      run_id: "run-sequence",
-      sequence: 20,
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_delta",
-      event_id: "evt-sequence-20",
-      content: "accepted answer",
-    }),
-  } as StreamEvent, "assistant-sequence", "cursor-20", undefined, ctx), true);
-  assert.equal(handleStreamEvent({
-    event: "artifact_card",
-    data: JSON.stringify({
-      run_id: "run-sequence",
-      sequence: 21,
-      artifact_id: "artifact-sequence",
-      artifact_type: "document",
-      label: "Accepted artifact",
-      size_bytes: 1,
-      download_url: "/api/ai/artifacts/artifact-sequence/download",
-      status: "available",
-    }),
-  } as StreamEvent, "assistant-sequence", "cursor-21", undefined, ctx), true);
-  assert.equal(handleStreamEvent({
-    event: "message:chunk",
-    data: JSON.stringify({
-      run_id: "run-sequence",
-      sequence: 19,
-      projection_version: "ai-platform.chat-public-projection.v1",
-      projection_kind: "assistant_delta",
-      event_id: "evt-sequence-19",
-      content: "stale answer",
-    }),
-  } as StreamEvent, "assistant-sequence", "cursor-22", undefined, ctx), false);
-  assert.equal(handleStreamEvent({
-    event: "artifact_card",
-    data: JSON.stringify({
-      run_id: "run-sequence",
-      sequence: 20,
-      artifact_id: "stale-artifact",
-      artifact_type: "document",
-      label: "Stale artifact",
-      size_bytes: 1,
-      download_url: "/api/ai/artifacts/stale-artifact/download",
-      status: "available",
-    }),
-  } as StreamEvent, "assistant-sequence", "cursor-23", undefined, ctx), false);
-  assert.match(ctx.messages()[0]?.content || "", /accepted answer/);
-  assert.deepEqual(ctx.messages()[0]?.parts?.map((part) => part.type), ["text", "artifact"]);
 });
 
 test("v4 accepts correlated activity before message owner is declared", () => {
@@ -2288,6 +831,123 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
   assert.equal(ctx.v4TerminalReservationsRef!.current.size, 0);
 });
 
+test("v4 admission rejects an application frame from another incarnation before effects", () => {
+  let dismissCalls = 0;
+  const ctx = createContext([], null, () => {
+    dismissCalls += 1;
+  });
+  ctx.currentRunIdRef.current = "run-authority";
+  const frame = {
+    eventHeader: "stream.open",
+    transportCursor: "run-authority:3:1-0",
+    generation: 4,
+    value: {
+      schema: "ai-platform.public-run-stream-control.v4",
+      event_id: "open-incarnation-3",
+      run_id: "run-authority",
+      message_id: null,
+      seq: null,
+      event_type: "stream.open",
+      stream_incarnation: 3,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: {
+        design_id: "ai-platform.redis-streams-sse-event-channel.v4",
+      },
+    },
+  } as const;
+  const event = adaptV4Frame(frame, {
+    runId: "run-authority",
+    streamIncarnation: 3,
+    generation: 4,
+  });
+
+  const result = handlePublicRunStreamEventV4Result({
+    event,
+    messageId: "assistant-authority",
+    ctx,
+    binding: {
+      sessionId: "session-1",
+      runId: "run-authority",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      generation: 4,
+    },
+    currentGeneration: 4,
+  });
+
+  assert.deepEqual(result, { kind: "invalid" });
+  assert.equal(dismissCalls, 0);
+  assert.equal(ctx.processedEventIdsRef.current.size, 0);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("v4 admission retains the gap exception for a replacement incarnation", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-authority";
+  ctx.acceptedStreamCursorRef!.current = {
+    sessionId: "session-1",
+    runId: "run-authority",
+    eventId: "run-authority:2:0-1",
+    streamIncarnation: 2,
+  };
+  const frame = {
+    eventHeader: "stream.gap",
+    transportCursor: "run-authority:3:0-2",
+    generation: 4,
+    value: {
+      schema: "ai-platform.public-run-stream-control.v4",
+      event_id: "gap-incarnation-3",
+      run_id: "run-authority",
+      message_id: null,
+      seq: null,
+      event_type: "stream.gap",
+      stream_incarnation: 3,
+      replayable: false,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: {
+        reason: "stream_incarnation_mismatch",
+        requested_event_id: "0-1",
+        requested_stream_incarnation: 2,
+        earliest_available_event_id: "0-2",
+        latest_available_event_id: "0-3",
+        current_stream_incarnation: 3,
+        recovery: "reload_durable_state",
+      },
+    },
+  } as const;
+  let gapCalls = 0;
+
+  const result = handlePublicRunStreamEventV4Result({
+    event: adaptV4Frame(frame, {
+      runId: "run-authority",
+      streamIncarnation: 2,
+      generation: 4,
+    }),
+    messageId: "assistant-authority",
+    ctx,
+    binding: {
+      sessionId: "session-1",
+      runId: "run-authority",
+      streamVersion: 0,
+      streamIncarnation: 2,
+      generation: 4,
+    },
+    currentGeneration: 4,
+    onGap: () => {
+      gapCalls += 1;
+    },
+  });
+
+  assert.deepEqual(result, { kind: "invalid" });
+  assert.equal(gapCalls, 1);
+  assert.equal(ctx.processedEventIdsRef.current.size, 0);
+});
+
 test("v4 frames fail closed without exact session, incarnation, and generation authority", () => {
   const ctx = createContext([], null);
   ctx.currentRunIdRef.current = "run-authority";
@@ -2428,38 +1088,4 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     binding,
     currentGeneration: 4,
   }), false);
-});
-
-test("accepted completion preserves terminal presentation and the completion callback", () => {
-  let dismissed = 0;
-  let completed = 0;
-  const ctx = createContext([{
-    id: "assistant-read-free",
-    role: "assistant",
-    content: "Retained answer",
-    timestamp: new Date("2026-10-11T00:00:00Z"),
-    isStreaming: true,
-    parts: [],
-  }], null, () => { dismissed += 1; });
-  ctx.currentRunIdRef.current = "run-read-free";
-  ctx.options = { onStreamDone: () => {
-    completed += 1;
-  } };
-  const committed: boolean[] = [];
-
-  assert.equal(handleStreamEvent(
-    { event: "done", data: JSON.stringify({ run_id: "run-read-free" }) },
-    "assistant-read-free",
-    "evt-read-free-done",
-    "2026-10-11T00:00:00Z",
-    ctx,
-    undefined,
-    (semanticApplied) => committed.push(semanticApplied),
-  ), true);
-  assert.equal(dismissed, 1);
-  assert.equal(completed, 1);
-  assert.equal(ctx.messages()[0].content, "Retained answer");
-  assert.equal(ctx.messages()[0].isStreaming, false);
-  assert.deepEqual(ctx.connectionStatuses, ["disconnected"]);
-  assert.deepEqual(committed, [true]);
 });

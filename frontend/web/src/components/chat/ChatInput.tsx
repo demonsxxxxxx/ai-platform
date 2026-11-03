@@ -66,6 +66,14 @@ import {
 } from "../workbench/profileDriveDrag";
 import { Composer, ComposerBar, ComposerInput } from "./assistant-ui/elements/composer";
 
+
+const SEND_BLOCKED_PLACEHOLDER = {
+  permission: "chat.noPermission",
+  loadingHistory: "chat.sendBlockedLoadingHistory",
+  synchronizing: "chat.sendBlockedSynchronizing",
+  continuation: "chat.continuation.checking",
+} as const;
+
 export type {
   ChatInputDraftSnapshot,
   ChatInputProps,
@@ -87,8 +95,8 @@ export const ChatInput = memo(function ChatInput({
   runControlKey,
   disabled,
   canSend = true,
+  sendBlockedReason = "permission",
   placeholder,
-  unavailableReason,
   modelUnavailableReason,
   acceptedFileTypes,
   disableSlashCommands = false,
@@ -957,7 +965,7 @@ export const ChatInput = memo(function ChatInput({
           if (!canSubmitOrdinary || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
         }}
         className={
-          className ?? "mx-auto max-w-[76rem] px-2"
+          className ?? "mx-auto max-w-[var(--chat-column-max)] px-2"
         }
       >
         <div
@@ -1055,7 +1063,7 @@ export const ChatInput = memo(function ChatInput({
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
-                    : placeholder ?? t("chat.noPermission")
+                    : placeholder ?? t(SEND_BLOCKED_PLACEHOLDER[sendBlockedReason])
                 }
                 disabled={questionMode || disabled || !canSend}
                 rows={1}
@@ -1066,8 +1074,7 @@ export const ChatInput = memo(function ChatInput({
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
-                canSend={canSend}
-          unavailableReason={unavailableReason}
+                showPermissionLock={!canSend && sendBlockedReason === "permission"}
                 isLoading={isLoading}
                 canStop={canStop}
                 canSubmit={canSubmit}

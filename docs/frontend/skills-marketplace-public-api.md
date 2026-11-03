@@ -254,6 +254,12 @@ do not perform this anonymous read and retain connection-based grouping.
 Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
+The Chat tool selector shows MCP source-group headers with their tools collapsed
+by default, and clears manual group expansion when the dialog closes. A nonempty
+search reveals matching tools without changing manual expansion; clearing search
+restores that state. Search text and tool selection keep their existing owners
+and are not reset by closing the selector.
+
 Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
 usable. Public reasons stay simple: `discovery_failed`, `unsupported_transport`,
 and, for bulk principal-credential lookup, `authorization_required` only for

@@ -124,6 +124,12 @@ select:-webkit-autofill:active {
 :root {
   --font-ui: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   font-family: var(--font-ui);
+  /* Geometry owned by docs/frontend/visual-guidelines.md sections 4 and 7. */
+  --radius-control: 8px;
+  --radius-block: 12px;
+  --radius-user-bubble: 22px;
+  --radius-composer: 28px;
+  --chat-column-max: 56rem;
   /* LibreChat-style post-login shell tokens */
   --theme-primary: #222222;
   --theme-primary-hover: #333333;
@@ -477,17 +483,39 @@ html[data-mobile-keyboard="true"] #root {
 }
 
 /* Composer-only attachment framing; message previews keep their own presentation. */
+/* Composer attachment chip (ChatGPT Clone): equal-height rounded tile, the
+   remove control as a corner badge and upload progress along the bottom edge. */
 .composer-attachment-card {
+  position: relative;
   display: flex;
   align-items: center;
-  width: 280px;
+  width: 240px;
+  height: 56px;
   max-width: calc(100vw - 112px);
-  padding-right: 4px;
   border: 1px solid var(--theme-border);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--theme-bg-sidebar);
 }
 
 .composer-attachment-tile {
   overflow: hidden;
+  border-radius: 16px;
+}
+
+.dark .composer-attachment-card {
+  background: var(--theme-sidebar-panel-muted);
+}
+
+.composer-attachment-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  z-index: 1;
+}
+
+.composer-attachment-progress {
+  position: absolute;
+  inset: auto 12px 0 12px;
+  height: 2px;
+  border-radius: 9999px;
 }

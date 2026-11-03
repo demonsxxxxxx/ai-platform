@@ -90,7 +90,7 @@ test("keeps only schema-shaped public tool lifecycle visible", () => {
   assert.doesNotMatch(JSON.stringify(visible), /command|result|private/);
 });
 
-test("shows only the bounded v4 Skill display name", () => {
+test("shows the supplied v4 Skill name and omits malformed names", () => {
   const visible = getVisibleMessageParts([
     {
       type: "tool",
@@ -121,6 +121,7 @@ test("shows only the bounded v4 Skill display name", () => {
     },
   ]);
 
+  assert.equal(visible.length, 2);
   assert.equal(visible[0]?.type, "tool");
   assert.equal(visible[0]?.type === "tool" ? visible[0].name : null, "QA Review");
   assert.equal(
@@ -132,7 +133,6 @@ test("shows only the bounded v4 Skill display name", () => {
     visible[1]?.type === "tool" ? visible[1].public_display_name : undefined,
     undefined,
   );
-  assert.equal(visible[2]?.type === "tool" ? visible[2].name : null, "Skill");
   assert.doesNotMatch(JSON.stringify(visible), /workspace|private-token|raw-/);
 });
 

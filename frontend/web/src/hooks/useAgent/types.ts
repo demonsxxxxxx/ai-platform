@@ -139,41 +139,6 @@ export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
 export type AssistantTextProjectionKind =
   | "assistant_delta";
 
-// Event types from backend
-export type EventType =
-  | "metadata"
-  | "stream_open"
-  | "message:chunk"
-  | "final_detail"
-  | "user:message"
-  | "user:cancel"
-  | "thinking"
-  | "todo:updated"
-  | "summary"
-  | "run_event"
-  | "execution_step"
-  | "execution_progress"
-  | "execution_step_completed"
-  | "execution_step_failed"
-  | "artifact_card"
-  | "agent:call"
-  | "agent:result"
-  | "sandbox:starting"
-  | "sandbox:ready"
-  | "sandbox:error"
-  | "token:usage"
-  | "skills:changed"
-  | "heartbeat"
-  | "complete"
-  | "done"
-  | "end"
-  | "error";
-
-export interface StreamEvent {
-  event: EventType;
-  data: string;
-}
-
 export interface EventData {
   session_id?: string;
   agent_id?: string;
@@ -224,10 +189,6 @@ export interface EventData {
   // user:cancel event fields
   user_id?: string;
   run_id?: string;
-  // skills:changed event fields
-  action?: string;
-  skill_name?: string;
-  files_count?: number;
   // Public terminal and transport status fields
   status?: string;
   trace_ref?: string | null;
@@ -512,36 +473,11 @@ export function isPublicAgentProgressEvent(data: EventData): boolean {
 }
 
 /** A persisted sequence that proves new public progress on this run. */
-export function isSequencedPublicChatEvent(
-  eventType: string,
-  data: EventData,
-): boolean {
-  const hasSequence =
-    typeof data.sequence === "number" &&
-    Number.isSafeInteger(data.sequence) &&
-    data.sequence >= 0;
-  return (
-    hasSequence &&
-    (PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as PublicExecutionEventType)
-      ? isPublicExecutionEvent(eventType, data)
-      : eventType === "run_event" ||
-        eventType === "artifact_card" ||
-        (eventType === "message:chunk" &&
-          isAssistantTextProjection(data)))
-  );
-}
-
 export interface UseAgentOptions {
   getEnabledTools?: () => string[];
   getDisabledSkills?: () => string[];
   getDisabledMcpTools?: () => string[];
   getAgentOptions?: () => Record<string, boolean | string | number>;
-  onSkillAdded?: (
-    skillName: string,
-    description: string,
-    filesCount: number,
-  ) => void;
-  onStreamDone?: () => void;
 }
 
 // Subagent tracking item

@@ -1,6 +1,6 @@
 # Lobe UI 组件接入与迁移合同
 
-状态：生产调用方已接入 Lobe UI，通用控件迁移及本地回归已完成；6 个无消费者旧模块和 2 个旧直接依赖已退役，选择器测试已按当前组件重命名。组件接入和自动化检查不代表页面视觉验收；页面样式遵守 [LobeHub 视觉约束](lobehub-visual-guidelines.md)，具体样稿须经用户验收。控件源码合同以本文和[表格与选择器说明](shared-table-select-components.md)为准，验收结果须对应实际运行的候选。
+状态：生产调用方已接入 Lobe UI，通用控件迁移及本地回归已完成；6 个无消费者旧模块和 2 个旧直接依赖已退役，选择器测试已按当前组件重命名。组件接入和自动化检查不代表页面视觉验收；页面样式遵守 [视觉约束](visual-guidelines.md)，具体样稿须经用户验收。控件源码合同以本文和[表格与选择器说明](shared-table-select-components.md)为准，验收结果须对应实际运行的候选。
 
 ## 采用成品组件库，减少项目维护的基础控件
 
@@ -45,7 +45,7 @@ Root barrel 中部分组件仍然存在，但旧 Button、Modal 已标记 `@depr
 
 `App.tsx` 在现有 `ThemeProvider` 内挂载 `contexts/LobeUiProvider.tsx`。该组合读取 `useTheme()` 和当前 i18n 语言，向 Lobe `ConfigProvider -> ThemeProvider` 传入受控明暗状态、中文/英文资源及 motion；路由、认证和模型 Provider 保留原有职责。
 
-Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts={false}`、`enableGlobalStyle={false}` 保留项目字体及 reset；字体通过 `--font-ui` 和公开 theme token 对齐，圆角 token 为 8。普通控件采用库的主题，业务 CSS 负责布局、响应式、品牌导航及专业内容。
+Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts={false}`、`enableGlobalStyle={false}` 保留项目字体及 reset。传给 Lobe 的 token 覆盖（字体 `var(--font-ui)`、圆角 8）只在 `src/styles/themeContract.ts` 定义；Lobe 默认颜色与 `base.css` 变量的对应由同文件列出，并由 `themeContract.test.ts` 用 Lobe 实际算法逐项检查，规则见[视觉约束](visual-guidelines.md)第 3 节。普通控件采用库的主题，业务 CSS 负责布局、响应式、品牌导航及专业内容。
 
 使用中需要保留的库合同：
 

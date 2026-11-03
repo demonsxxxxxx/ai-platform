@@ -79,37 +79,39 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       const { publicContinuationMessage } = await import("../../../hooks/useAgent/publicTerminalPresentation");
       await type("停止后的新消息草稿");
       const continuation = parsePublicContinuation({ state: "settling", action: "wait", reason_code: "settling", workspace_saved: false });
-      await render({ canSend: canContinueConversation(continuation), placeholder: publicContinuationMessage(continuation), unavailableReason: publicContinuationMessage(continuation) });
+      await render({ canSend: canContinueConversation(continuation), placeholder: publicContinuationMessage(continuation), sendBlockedReason: "continuation" });
       assert.equal(textarea().disabled, true);
       const sendButton = container.querySelector<HTMLButtonElement>('button[type="submit"]');
       assert.ok(sendButton === null || sendButton.disabled);
       await act(async () => sendButton?.click());
       assert.match(textarea().placeholder, /正在收尾/);
-      assert.equal(container.querySelector<HTMLButtonElement>(`button[title="${publicContinuationMessage(continuation)}"]`)?.disabled, true);
+      // A temporary continuation wait never reuses the permission lock.
+      const { default: lockI18n } = await import("../../../i18n");
+      assert.equal(container.querySelector(`button[title="${lockI18n.t("chat.noPermission")}"]`), null);
       await key("Enter");
       assert.equal(sends.length, 0);
       assert.equal(textarea().value, "停止后的新消息草稿");
-      await render({ canSend: false, placeholder: publicContinuationMessage(undefined, true), unavailableReason: publicContinuationMessage(undefined, true) });
+      await render({ canSend: false, placeholder: publicContinuationMessage(undefined, true), sendBlockedReason: "continuation" });
       assert.equal(textarea().disabled, true);
       assert.match(textarea().placeholder, /恢复状态/);
       await key("Enter");
       assert.equal(sends.length, 0);
       assert.equal(textarea().value, "停止后的新消息草稿");
       const ready = parsePublicContinuation({ state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true });
-      await render({ canSend: canContinueConversation(ready), placeholder: undefined, unavailableReason: undefined });
+      await render({ canSend: canContinueConversation(ready), placeholder: undefined, sendBlockedReason: undefined });
       assert.equal(textarea().disabled, false);
       assert.equal(container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')!.disabled, false);
       assert.equal(textarea().value, "停止后的新消息草稿");
       await type("");
     });
     await t.test("ordinary placeholder does not replace the permission reason or administrator action", async () => {
-      await render({ canSend: false, placeholder: "向专家描述要完成的任务", unavailableReason: undefined });
+      await render({ canSend: false, placeholder: "向专家描述要完成的任务", sendBlockedReason: "permission" });
       const { default: i18n } = await import("../../../i18n");
       const permissionButton = container.querySelector<HTMLButtonElement>(`button[title="${i18n.t("chat.noPermission")}"]`);
       assert.ok(permissionButton);
       assert.equal(permissionButton.disabled, false);
       assert.equal(textarea().disabled, true);
-      await render({ canSend: true, placeholder: undefined });
+      await render({ canSend: true, placeholder: undefined, sendBlockedReason: undefined });
     });
     await t.test("IME Enter stays native for composing and legacy 229 signals", async () => {
       await type("中文候选");

@@ -855,12 +855,7 @@ def _public_capability_label(
         )
         if skill_subject is None:
             return ""
-        public_labels = skill_subject.get("public_skill_labels")
-        if isinstance(public_labels, dict):
-            label = public_labels.get(canonical_identity)
-            if isinstance(label, str) and label.strip():
-                return label.strip()[:120]
-        return "Skill"
+        return canonical_identity
     if capability_kind == "mcp":
         matching = [
             subject
