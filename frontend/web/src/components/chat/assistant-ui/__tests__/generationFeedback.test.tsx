@@ -33,8 +33,8 @@ test("stopped and failed turns use light states instead of bordered cards", () =
 
 test("a sent message is anchored to the top instead of following to the bottom", () => {
   const hook = readFileSync(new URL("../../../layout/AppContent/useMessageScroll.hook.ts", import.meta.url), "utf8");
-  assert.match(hook, /hasNewOutgoingMessage\(previousMessagesRef\.current, latestMessagesRef\.current\)/);
-  assert.match(hook, /if \(sent\?\.role === "user"\) anchorSentMessage\(userIndex, sent\.id\)/);
+  assert.match(hook, /isLocalSendAppend\(previousMessagesRef\.current, latestMessagesRef\.current, isLoadingHistoryRef\.current\)/);
+  assert.match(hook, /if \(sent && isLocalSendAppend\(previousMessages, messages, isLoadingHistory\)\) anchorSentMessage\(userIndex, sent\.id\)/);
   assert.match(hook, /request-scroll-to-bottom" && !sendAnchorActiveRef\.current/);
   const view = readFileSync(new URL("../../../layout/AppContent/ChatView.tsx", import.meta.url), "utf8");
   assert.match(view, /followOutput=\{followOutput\}/);
@@ -61,4 +61,15 @@ test("temporary send blocks never reuse the permission lock or text", () => {
   assert.match(input, /showPermissionLock=\{!canSend && sendBlockedReason === "permission"\}/);
   assert.match(input, /synchronizing: "chat\.sendBlockedSynchronizing"/);
   assert.match(view, /terminalResultSynchronizing\s*\?\s*"synchronizing"/);
+});
+
+test("only a local send is anchored; a restored history turn keeps the bottom scroll", async () => {
+  const { isLocalSendAppend } = await import("../../../layout/AppContent/useMessageScroll.hook");
+  const user = { role: "user" as const };
+  const streaming = { role: "assistant" as const, isStreaming: true };
+  const settled = { role: "assistant" as const, isStreaming: false };
+  assert.equal(isLocalSendAppend([], [user, streaming], false), true);
+  assert.equal(isLocalSendAppend([user, settled], [user, settled, user], false), true);
+  assert.equal(isLocalSendAppend([], [user, settled], false), false, "history turn");
+  assert.equal(isLocalSendAppend([], [user, streaming], true), false, "while history loads");
 });

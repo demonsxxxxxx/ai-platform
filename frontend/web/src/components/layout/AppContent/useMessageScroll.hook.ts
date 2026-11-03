@@ -3,7 +3,6 @@ import type { VirtuosoHandle } from "react-virtuoso";
 import type { Message } from "../../../types";
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import {
-  hasNewOutgoingMessage,
   forceScrollerToPhysicalBottom,
   getAutoScrollResumeThresholdPx,
   getAwayFromBottomThresholdPx,
@@ -59,6 +58,19 @@ interface UseMessageScrollReturn {
 type AutoScrollMode = "default" | "history-finalize";
 
 const SEND_ANCHOR_TOP_GAP_PX = 24;
+
+type AnchorMessage = Pick<Message, "role" | "isStreaming">;
+
+/**
+ * A local send appends one user message, optionally followed by the streaming
+ * reply placeholder. A restored history turn has a settled reply and must keep
+ * the ordinary bottom scroll instead of being anchored.
+ */
+export function isLocalSendAppend(previous: readonly AnchorMessage[], next: readonly AnchorMessage[], loadingHistory: boolean): boolean {
+  if (loadingHistory || next.length <= previous.length || next.length - previous.length > 2) return false;
+  const [sent, reply] = next.slice(previous.length);
+  return sent?.role === "user" && (reply === undefined || (reply.role === "assistant" && reply.isStreaming === true));
+}
 const SEND_ANCHOR_SETTLE_MS = 120;
 
 export function useMessageScroll(
@@ -363,7 +375,7 @@ export function useMessageScroll(
     (isAtBottom: boolean) => (
       sendAnchorActiveRef.current
       || !isAtBottom
-      || hasNewOutgoingMessage(previousMessagesRef.current, latestMessagesRef.current)
+      || isLocalSendAppend(previousMessagesRef.current, latestMessagesRef.current, isLoadingHistoryRef.current)
         ? false
         : "smooth" as const
     ),
@@ -744,7 +756,7 @@ export function useMessageScroll(
     if (messageUpdateAction === "scroll-to-bottom") {
       const userIndex = previousMessages.length;
       const sent = messages[userIndex];
-      if (sent?.role === "user") anchorSentMessage(userIndex, sent.id);
+      if (sent && isLocalSendAppend(previousMessages, messages, isLoadingHistory)) anchorSentMessage(userIndex, sent.id);
       else scrollToBottom();
     } else if (messageUpdateAction === "request-scroll-to-bottom" && !sendAnchorActiveRef.current) {
       requestScrollToBottom("default");
