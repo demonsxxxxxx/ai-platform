@@ -21,6 +21,7 @@
 `Claude SDK / SessionStore → 平台公开事件 → SSE v4 / 历史恢复 → useAgent → ExternalStoreRuntime → Elements`。
 
 - `useAgent` 和原 Run 控制器拥有身份、权限、Run/Attempt/lease、游标、重连、回放、取消及终态。UI 不凭 SSE EOF、Promise fulfilled 或动画结束判断任务成功。
+- 生产实时事件只走 `connectToSSE → adaptPublicRunStreamEventV4 → handlePublicRunStreamEventV4Result`。通用 `handleStreamEvent`、旧 `skills:changed` 与 `complete`/`done` 事件处理、`isTerminalSSEEvent` 分类器和对应的 hook 事件类型已退役；连接只根据已受理的 V4 终态关闭。`eventProcessor` 与 `historyLoader` 仍处理 V4 归一化事件及既有历史记录，历史数据兼容不依赖旧实时入口。
 - `ChatView` 将合并授权附件后的 `displayMessages` 同时交给 runtime、图库和 Virtuoso。消息通过公开 `getExternalStoreMessages` 读取 runtime 绑定快照；布局与 part 投影共用 `getAssistantUiDisplayParts` 的顺序。
 - `PlatformComposerBinding` 连接实际输入器、完整提交事务和附件 adapter。无输入器、无权限、上传中或重复提交时，原生 Send 同样受平台条件约束。
 - `SessionSidebar` 从原 session source 派生 `ExternalStoreThreadListAdapter`，经 `ChatAppContent → ChatView` 接入同一 runtime。专家分组、分页、未读、路由和修改回执保留原 owner，没有第二次拉取或第二个会话缓存。

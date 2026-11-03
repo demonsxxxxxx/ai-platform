@@ -199,8 +199,9 @@ Callback delivery uses the existing bounded executor buffer and exact-batch
 acknowledgement. Redis retains at most the configured approximate Stream length
 and expires its data and receipt state together. The API replays retained
 records and then uses exclusive `XREAD BLOCK` on a separate bounded read pool;
-each read returns at most 128 events and blocks for at most five seconds.
-Heartbeat and gap controls are emitted by the authorized SSE connection.
+each read returns at most 128 events and blocks for at most five seconds. The
+route emits lease-checked heartbeat comments; gap controls use the public v4
+control envelope.
 
 Redis Stream is the sole live/replay transport. There is no Pub/Sub producer,
 shared subscriber hub, or PostgreSQL-to-browser polling path. Committed callback
