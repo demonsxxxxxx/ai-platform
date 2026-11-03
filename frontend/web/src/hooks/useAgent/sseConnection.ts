@@ -241,7 +241,11 @@ class SSEReplayGapError extends Error {
   }
 }
 
-interface PendingV4TerminalHydration {
+/**
+ * Waits for the local terminal acceptance/receipt callback to settle before
+ * closing transport. This receipt does not wait for history hydration.
+ */
+interface PendingV4TerminalReceipt {
   semanticEventId: string;
   terminalEventId: string;
   promise: Promise<void>;
@@ -755,7 +759,7 @@ export async function connectToSSE(
 
   let receivedTerminalEvent = false;
   let receivedNonTerminalApplicationError = false;
-  let pendingTerminalHydration: PendingV4TerminalHydration | null = null;
+  let pendingTerminalReceipt: PendingV4TerminalReceipt | null = null;
   let startupRetryCount = 0;
   const startupRetryStartedAt = now();
   let startupDeadlineTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -956,20 +960,20 @@ export async function connectToSSE(
           const provesRunProgress =
             typeof eventType === "string" &&
             !eventType.startsWith("stream.");
-          const pendingBeforeFrame = pendingTerminalHydration;
-          let createdPendingTerminal = false;
+          const pendingBeforeFrame = pendingTerminalReceipt;
+          let createdPendingReceipt = false;
           if (
             isRunTerminalEvent &&
             typeof semanticEventId === "string" &&
             terminalEventId &&
             ctx.v4TerminalFenceRef &&
-            !pendingTerminalHydration
+            !pendingTerminalReceipt
           ) {
             let resolvePending!: () => void;
             const promise = new Promise<void>((resolve) => {
               resolvePending = resolve;
             });
-            pendingTerminalHydration = {
+            pendingTerminalReceipt = {
               semanticEventId,
               terminalEventId,
               promise,
@@ -977,7 +981,7 @@ export async function connectToSSE(
               duplicateTerminalCommits: [],
               pendingEndCommits: [],
             };
-            createdPendingTerminal = true;
+            createdPendingReceipt = true;
           }
           let transportCommitted = false;
           const commitTransportCursor = (semanticApplied: boolean) => {
@@ -987,7 +991,7 @@ export async function connectToSSE(
             }
             const terminalSettlementCurrent =
               (isRunTerminalEvent || isStreamEndEvent) &&
-              pendingTerminalHydration !== null &&
+              pendingTerminalReceipt !== null &&
               abortControllerRef.current === streamAbortController &&
               isCurrentSSETarget(
                 ctx,
@@ -1028,13 +1032,13 @@ export async function connectToSSE(
           };
           const commitAcceptedStreamEvent = (semanticApplied: boolean) => {
             commitTransportCursor(semanticApplied);
-            if (!isRunTerminalEvent || !pendingTerminalHydration) return;
-            const pending = pendingTerminalHydration;
+            if (!isRunTerminalEvent || !pendingTerminalReceipt) return;
+            const pending = pendingTerminalReceipt;
             for (const commit of pending.duplicateTerminalCommits) commit();
             for (const commit of pending.pendingEndCommits) commit();
             // Keep the terminal receipt/fence until the run/session owner is
             // replaced. Late duplicate terminal/end frames remain transport-only.
-            pendingTerminalHydration = null;
+            pendingTerminalReceipt = null;
             pending.resolve();
           };
           const handlingResult = handlePublicRunStreamEventV4Result({
@@ -1049,9 +1053,9 @@ export async function connectToSSE(
             },
             onCommitted: commitAcceptedStreamEvent,
             onTerminalSettled: (accepted) => {
-              if (accepted || !pendingTerminalHydration) return;
-              const pending = pendingTerminalHydration;
-              pendingTerminalHydration = null;
+              if (accepted || !pendingTerminalReceipt) return;
+              const pending = pendingTerminalReceipt;
+              pendingTerminalReceipt = null;
               pending.resolve();
             },
           });
@@ -1087,7 +1091,7 @@ export async function connectToSSE(
               );
               return;
             }
-            if (createdPendingTerminal) pendingTerminalHydration = null;
+            if (createdPendingReceipt) pendingTerminalReceipt = null;
             if (transportCommitted) return;
             throw new NonRetryableSSEConnectionError("sse_event_contract_invalid");
           }
@@ -1134,8 +1138,8 @@ export async function connectToSSE(
           console.log("[SSE] Connection closed");
           const closeAction = getSSECloseAction({ receivedTerminalEvent });
           if (closeAction === "retry") {
-            if (pendingTerminalHydration) {
-              const pending = pendingTerminalHydration;
+            if (pendingTerminalReceipt) {
+              const pending = pendingTerminalReceipt;
               void pending.promise.then(() => finalizeTerminalClose());
               return;
             }

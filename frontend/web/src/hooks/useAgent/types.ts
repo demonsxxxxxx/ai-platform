@@ -381,7 +381,7 @@ export function isPublicExecutionEvent(
   );
 }
 
-const PUBLIC_AGENT_PROGRESS_MESSAGES: Record<string, Record<string, string>> = {
+const PUBLIC_AGENT_PROGRESS_MESSAGES = {
   attachment_materialization: {
     started: "Preparing authorized attachments",
     progress: "Preparing authorized attachments",
@@ -424,12 +424,39 @@ const PUBLIC_AGENT_PROGRESS_MESSAGES: Record<string, Record<string, string>> = {
     completed: "Result recovery is ready",
     failed: "Result recovery did not complete",
   },
-};
+} as const;
+
+export type PublicAgentProgressPhase = keyof typeof PUBLIC_AGENT_PROGRESS_MESSAGES;
+export type PublicAgentProgressLifecycle =
+  | "started"
+  | "progress"
+  | "completed"
+  | "failed";
+
+function isPublicAgentProgressLifecycle(
+  value: string,
+): value is PublicAgentProgressLifecycle {
+  return ["started", "progress", "completed", "failed"].includes(value);
+}
+
+export interface PublicAgentProgressPayload {
+  schema_version: typeof PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION;
+  phase: PublicAgentProgressPhase;
+  lifecycle: PublicAgentProgressLifecycle;
+  step_id: string;
+  message: string;
+}
+
+function isPublicAgentProgressPhase(
+  value: string,
+): value is PublicAgentProgressPhase {
+  return Object.hasOwn(PUBLIC_AGENT_PROGRESS_MESSAGES, value);
+}
 
 /** Accept only a fixed server-owned public phase payload. */
 export function isPublicAgentProgressPayload(
   value: unknown,
-): value is Record<string, unknown> {
+): value is PublicAgentProgressPayload {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -442,7 +469,9 @@ export function isPublicAgentProgressPayload(
     Object.keys(payload).length !== 5 ||
     payload.schema_version !== PUBLIC_AGENT_PROGRESS_SCHEMA_VERSION ||
     typeof payload.phase !== "string" ||
+    !isPublicAgentProgressPhase(payload.phase) ||
     typeof payload.lifecycle !== "string" ||
+    !isPublicAgentProgressLifecycle(payload.lifecycle) ||
     typeof payload.step_id !== "string" ||
     typeof payload.message !== "string" ||
     payload.step_id !== `phase_${payload.phase}`
@@ -457,6 +486,13 @@ export function isPublicAgentProgressPayload(
 
 /** Accept only a fixed server-owned public phase message. */
 export function isPublicAgentProgressEvent(data: EventData): boolean {
+  return validatedPublicAgentProgressPayload(data) !== null;
+}
+
+/** Validate a legacy/history progress envelope and return its typed payload. */
+export function validatedPublicAgentProgressPayload(
+  data: EventData,
+): PublicAgentProgressPayload | null {
   const payload = data.payload;
   if (
     data.projection_version !== CHAT_PUBLIC_PROJECTION_VERSION ||
@@ -467,9 +503,9 @@ export function isPublicAgentProgressEvent(data: EventData): boolean {
     payload.message !== data.message ||
     payload.phase !== data.stage
   ) {
-    return false;
+    return null;
   }
-  return true;
+  return payload;
 }
 
 /** A persisted sequence that proves new public progress on this run. */

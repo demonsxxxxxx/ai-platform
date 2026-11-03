@@ -685,6 +685,58 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   assert.equal(terminalCalls, 1);
 });
 
+test("terminal receipt deferral keeps the terminal_hydration reason until the owner settles", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-terminal-receipt";
+  ctx.v4TerminalFenceRef = { current: null };
+  let settleTerminal: ((accepted: boolean) => boolean) | undefined;
+  ctx.onRunTerminal = (_runId, _status, _messageId, onSettled) => {
+    settleTerminal = onSettled;
+    return true;
+  };
+  const frame = {
+    eventHeader: "run.succeeded",
+    transportCursor: "run-terminal-receipt:2:1-0",
+    generation: 7,
+    value: {
+      schema: "ai-platform.public-run-stream-event.v4",
+      event_id: "event-terminal-receipt",
+      run_id: "run-terminal-receipt",
+      message_id: null,
+      seq: 1,
+      event_type: "run.succeeded",
+      stream_incarnation: 2,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-01-01T00:00:00Z",
+      payload: { terminal_event_id: "terminal-receipt", hydrate_required: true },
+    },
+  } as const;
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-terminal-receipt",
+    streamVersion: 0,
+    streamIncarnation: 2,
+    generation: 7,
+  } as const;
+
+  const result = handlePublicRunStreamEventV4Result({
+    event: adaptV4Frame(frame, {
+      runId: binding.runId,
+      streamIncarnation: binding.streamIncarnation,
+      generation: binding.generation,
+    }),
+    messageId: "assistant-terminal-receipt",
+    ctx,
+    binding,
+    currentGeneration: binding.generation,
+  });
+
+  assert.deepEqual(result, { kind: "deferred", reason: "terminal_hydration" });
+  assert.equal(settleTerminal?.(true), true);
+});
+
 test("v4 terminal waits for committed text before sequence and cursor acceptance", () => {
   const ctx = createContext(
     [{

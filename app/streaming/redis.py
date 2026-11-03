@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from psycopg import AsyncConnection
 from redis.asyncio import Redis
@@ -444,6 +444,67 @@ async def acquire_sse_authority_lease(
     authority = await get_stream_authority(
         conn, tenant_id=tenant_id, run_id=run_id, for_update=True
     )
+    return await _issue_sse_authority_lease(
+        conn,
+        authority=authority,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        api_instance_id=api_instance_id,
+        connection_id=connection_id,
+        lease_seconds=lease_seconds,
+    )
+
+
+async def acquire_sse_admission_lease(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    tenant_id: str,
+    run_id: str,
+    api_instance_id: str,
+    connection_id: str,
+    lease_seconds: int,
+    on_authority_observed: Callable[[StreamAuthority | None], None] | None = None,
+) -> tuple[StreamAuthority | None, SseAuthorityLease | None]:
+    """Read locked admission authority once and issue a lease when confirmed.
+
+    Call within the caller's short transaction. Pending and missing authority
+    return without issuing a lease so the caller can release the transaction
+    before polling. The callback records the observed phase for timeout
+    classification while the existing strict lease API remains available to
+    renewal callers.
+    """
+
+    if isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 15:
+        raise ValueError("sse_authority_lease_seconds_invalid")
+    authority = await get_stream_authority(
+        conn, tenant_id=tenant_id, run_id=run_id, for_update=True
+    )
+    if on_authority_observed is not None:
+        on_authority_observed(authority)
+    if authority is None or authority.state == "admission_pending":
+        return authority, None
+    lease = await _issue_sse_authority_lease(
+        conn,
+        authority=authority,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        api_instance_id=api_instance_id,
+        connection_id=connection_id,
+        lease_seconds=lease_seconds,
+    )
+    return authority, lease
+
+
+async def _issue_sse_authority_lease(
+    conn: AsyncConnection[dict[str, object]],
+    *,
+    authority: StreamAuthority | None,
+    tenant_id: str,
+    run_id: str,
+    api_instance_id: str,
+    connection_id: str,
+    lease_seconds: int,
+) -> SseAuthorityLease:
     if authority is None or authority.state not in {
         "confirmed",
         "degraded",

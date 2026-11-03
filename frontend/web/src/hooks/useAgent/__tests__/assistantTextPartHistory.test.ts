@@ -7,7 +7,12 @@ import {
   mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader";
-import { selectAssistantCopyText } from "../../../types/assistantTextParts";
+import { processMessageEvent } from "../eventProcessor";
+import { adaptPublicRunStreamEventV4 } from "../../../components/chat/assistant-ui/publicEventAdapter";
+import {
+  ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+  selectAssistantCopyText,
+} from "../../../types/assistantTextParts";
 
 const runId = "run-history";
 const protocolMessageId = "protocol-history";
@@ -119,6 +124,91 @@ test("history applies part events in sequence, preserves IDs and roles, and clos
   assert.equal(selectAssistantCopyText(assistant.parts), "Answer part");
   assert.equal(processedEventIds.has("event-b-2"), true);
   assert.equal(processedEventIds.has("event-completed"), true);
+});
+
+test("live adapter and history payload extraction share the typed part reducer", () => {
+  const partId = "part_live_history_shared";
+  const events = [
+    ...baseEvents(),
+    partEvent("message.part.delta", "event-shared-delta", 2, {
+      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+      part_id: partId,
+      delta: "Shared result",
+    }),
+    partEvent("message.part.classified", "event-shared-classified", 3, {
+      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+      part_id: partId,
+      role: "answer",
+    }),
+  ];
+  const history = reconstruct(events).messages.find(
+    (message) => message.role === "assistant",
+  );
+  assert.ok(history);
+
+  let parts = processMessageEvent(
+    "message.started",
+    {
+      event_id: "event-started",
+      message_id: protocolMessageId,
+      sequence: 1,
+      timestamp: "2026-10-09T00:00:01Z",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "assistant-live",
+  ).parts;
+  let content = "";
+  for (const event of events.slice(1)) {
+    const eventType = event.event_type;
+    const data = event.data as Record<string, unknown>;
+    const payload = data.payload as Record<string, unknown>;
+    const sequence = event.sequence || 1;
+    const frame = {
+      eventHeader: eventType,
+      transportCursor: `${runId}:4:${sequence}-0`,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: data.event_id,
+        run_id: runId,
+        message_id: protocolMessageId,
+        seq: sequence,
+        event_type: eventType,
+        stream_incarnation: streamIncarnation,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: event.timestamp,
+        payload,
+      },
+    };
+    const adapted = adaptPublicRunStreamEventV4(frame, {
+      runId,
+      streamIncarnation,
+    });
+    assert.ok(adapted);
+    const reduced = processMessageEvent(
+      adapted,
+      undefined,
+      parts,
+      content,
+      [],
+      0,
+      [],
+      true,
+      "assistant-live",
+    );
+    assert.equal(reduced.accepted, true);
+    parts = reduced.parts;
+    content = reduced.content;
+  }
+
+  assert.equal(content, history.content);
+  assert.deepEqual(parts, history.parts);
 });
 
 test("partial history keeps an unclassified public preview visible but out of copy", () => {

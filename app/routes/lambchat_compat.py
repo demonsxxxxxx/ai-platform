@@ -82,8 +82,8 @@ from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,
     acquire_sse_authority_lease,
+    acquire_sse_admission_lease,
     close_sse_authority_lease,
-    get_stream_authority,
 )
 
 
@@ -186,20 +186,27 @@ async def _await_sse_admission(
                         run_id=run_id,
                     )
                     if initial_run is not None and initial_run.get("session_id") == session_id:
-                        authority = await get_stream_authority(
-                            conn, tenant_id=principal.tenant_id, run_id=run_id
+                        def observe_authority(value: Any) -> None:
+                            nonlocal authority, startup_code
+                            authority = value
+                            if value is not None:
+                                startup_code = "sse_stream_not_confirmed"
+
+                        # The locked lookup may wait before it can return an
+                        # existing authority. Preserve the retryable
+                        # confirmation-timeout classification for that wait;
+                        # a completed lookup that finds no authority resets it
+                        # to not_admitted below.
+                        startup_code = "sse_stream_not_confirmed"
+                        authority, lease = await acquire_sse_admission_lease(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            run_id=run_id,
+                            api_instance_id=api_instance_id,
+                            connection_id=connection_id,
+                            lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                            on_authority_observed=observe_authority,
                         )
-                        if authority is not None:
-                            startup_code = "sse_stream_not_confirmed"
-                        if authority is not None and authority.state != "admission_pending":
-                            lease = await acquire_sse_authority_lease(
-                                conn,
-                                tenant_id=principal.tenant_id,
-                                run_id=run_id,
-                                api_instance_id=api_instance_id,
-                                connection_id=connection_id,
-                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                            )
         except TimeoutError:
             raise _sse_admission_timeout(
                 startup_code,

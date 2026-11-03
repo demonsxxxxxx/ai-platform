@@ -25,9 +25,11 @@ import type { ExecutionTimelinePart } from "../../types/message";
 import {
   projectPublicAgentProgress,
   projectPublicThinkingActivity,
+  projectValidatedPublicAgentProgress,
   upsertPublicExecutionStep,
   upsertPublicThinkingActivity,
   validPublicExecutionTimestamp,
+  type ValidatedPublicAgentProgressEvent,
 } from "./publicStreamPresentation";
 import {
   publicTerminalPresentation,
@@ -57,6 +59,8 @@ import type { V4PublicEvent } from "../../components/chat/assistant-ui/publicEve
 import {
   hasMarkedAssistantTextParts,
   reduceAssistantTextPartEvent,
+  validateAssistantTextPartPayload,
+  type ValidatedAssistantTextPartEvent,
 } from "../../types/assistantTextParts";
 
 function normalizeV4Event(event: V4PublicEvent): {
@@ -133,19 +137,6 @@ function normalizeV4Event(event: V4PublicEvent): {
             ? payload.delta
             : "",
       );
-    case "agent.progress":
-      return {
-        eventType: "run_event",
-        data: {
-          ...base,
-          event_type: "agent_public_progress",
-          projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
-          stage: String(payload.phase),
-          status: String(payload.lifecycle),
-          message: String(payload.message),
-          payload,
-        },
-      };
     case "model.completed":
       return { eventType: "model.completed", data: base };
     case "tool.started":
@@ -198,6 +189,36 @@ function normalizeV4Event(event: V4PublicEvent): {
       return activity("cancel_requested", "Cancellation requested", "warning");
     default:
       return { eventType: event.eventType, data: base };
+  }
+}
+
+type ValidatedPublicReducerEvent =
+  | ValidatedAssistantTextPartEvent
+  | ValidatedPublicAgentProgressEvent;
+
+function validatedPublicReducerEvent(
+  event: V4PublicEvent,
+): ValidatedPublicReducerEvent | null {
+  switch (event.event.event_type) {
+    case "message.part.delta":
+      return {
+        eventType: "message.part.delta",
+        payload: event.event.payload,
+      };
+    case "message.part.classified":
+      return {
+        eventType: "message.part.classified",
+        payload: event.event.payload,
+      };
+    case "agent.progress":
+      return {
+        eventType: "agent.progress",
+        payload: event.event.payload,
+        sequence: event.event.seq,
+        timestamp: event.event.emitted_at,
+      };
+    default:
+      return null;
   }
 }
 
@@ -358,14 +379,27 @@ export function processMessageEvent(
   subagentStack: SubagentStackItem[],
   isStreaming: boolean,
   messageId?: string,
+  validatedPublicEvent?: ValidatedPublicReducerEvent,
 ): ProcessMessageEventResult {
+  const adapterValidatedEvent =
+    validatedPublicEvent ||
+    (typeof eventType === "string"
+      ? null
+      : validatedPublicReducerEvent(eventType));
+  const result: ProcessMessageEventResult = { parts, content, toolCalls };
+  if (adapterValidatedEvent?.eventType === "agent.progress") {
+    const progress = projectValidatedPublicAgentProgress(adapterValidatedEvent);
+    if (progress) result.parts = upsertPublicExecutionStep(parts, progress);
+    return result;
+  }
   const normalizedEvent =
     typeof eventType === "string"
       ? { eventType, data: eventData ?? {} }
-      : normalizeV4Event(eventType);
+      : adapterValidatedEvent
+        ? { eventType: adapterValidatedEvent.eventType, data: {} }
+        : normalizeV4Event(eventType);
   const eventName = normalizedEvent.eventType;
   const data = normalizedEvent.data;
-  const result: ProcessMessageEventResult = { parts, content, toolCalls };
   const agentId = data.agent_id;
 
   switch (eventName) {
@@ -394,11 +428,15 @@ export function processMessageEvent(
 
     case "message.part.delta":
     case "message.part.classified": {
-      const reduction = reduceAssistantTextPartEvent(
-        eventName,
-        data as Record<string, unknown>,
-        parts,
-      );
+      const validatedEvent = adapterValidatedEvent ||
+        (typeof eventType === "string"
+          ? validateAssistantTextPartPayload(eventName, data)
+          : null);
+      if (!validatedEvent || validatedEvent.eventType !== eventName) {
+        result.accepted = false;
+        break;
+      }
+      const reduction = reduceAssistantTextPartEvent(validatedEvent, parts);
       result.accepted = reduction.accepted;
       result.parts = reduction.parts;
       result.content = reduction.content;
