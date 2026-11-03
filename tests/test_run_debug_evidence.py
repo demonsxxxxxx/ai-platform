@@ -51,6 +51,10 @@ def test_debug_projection_boundaries_revalidate_the_same_policy_at_each_trust_bo
         "headers": "PRIVATE",
         "url": "https://PRIVATE",
         "count": True,
+        "beta_policy_revision": 1,
+        "beta_rejection": "not_allowed",
+        "rejected_beta_count": 1,
+        "rejected_beta_names": "PRIVATE",
     }
     expected = {
         "component": "provider_session",
@@ -59,6 +63,9 @@ def test_debug_projection_boundaries_revalidate_the_same_policy_at_each_trust_bo
         "http_status": 599,
         "sdk_version": "0.2.165",
         "executor_runtime_commit": "a" * 40,
+        "beta_policy_revision": 1,
+        "beta_rejection": "not_allowed",
+        "rejected_beta_count": 1,
     }
 
     assert normalize_execution_debug(facts) == expected
@@ -207,7 +214,8 @@ class DebugPersistence:
 
 
 @pytest.mark.asyncio
-async def test_capture_to_export_keeps_attempt_facts_timeline_usage_and_one_connection():
+@pytest.mark.parametrize("beta_revision,beta_rejection", [(1, "not_allowed"), (2, "invalid_format")])
+async def test_capture_to_export_keeps_attempt_facts_timeline_usage_and_one_connection(beta_revision, beta_rejection):
     persistence = DebugPersistence()
     async def runtime(conn, **kwargs):
         persistence.connections.append(conn)
@@ -217,7 +225,8 @@ async def test_capture_to_export_keeps_attempt_facts_timeline_usage_and_one_conn
         runtime_debug_reader=runtime, query_runtime_commit="b" * 40, clock=lambda: NOW + timedelta(seconds=3))
     conn = object()
     await service.capture_execution_debug(conn, run_id="run-a", attempt_id="attempt-a", error_code="model_upstream_unavailable",
-        debug={"component": "model_proxy", "phase": "connect", "failure_class": "connect_error", "attempt_count": 2, "request": "PRIVATE"})
+        debug={"component": "model_proxy", "phase": "connect", "failure_class": "connect_error", "attempt_count": 2,
+               "beta_policy_revision": beta_revision, "beta_rejection": beta_rejection, "rejected_beta_count": 1, "request": "PRIVATE"})
     projection = await service.read_admin_debug(conn, tenant_id="tenant-a", run_id="run-a")
     assert all(observed is conn for observed in persistence.connections)
     assert projection["root"]["attempt_id"] == "attempt-a"
@@ -229,6 +238,9 @@ async def test_capture_to_export_keeps_attempt_facts_timeline_usage_and_one_conn
     package = build_admin_diagnostic_export(diagnostics=projection, export_id="export-a", generated_at=NOW)
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
         exported = json.loads(archive.read("diagnostics.json"))
+        assert exported["details"]["sdk"]["debug"]["beta_policy_revision"] == beta_revision
+        assert exported["details"]["sdk"]["debug"]["beta_rejection"] == beta_rejection
+        assert exported["details"]["sdk"]["debug"]["rejected_beta_count"] == 1
         assert exported["debug"]["query_component"] == {"api_runtime_commit": "b" * 40}
         assert exported["debug"]["skill_snapshots"][0]["skill_version"] == "2"
         assert "comparison" not in exported["debug"]["investigation"]
@@ -290,6 +302,9 @@ def test_model_proxy_route_persists_safe_facts_at_each_failure_boundary(monkeypa
     if mode == "policy":
         assert response.status_code == 403
         assert facts["policy"] == "anthropic_beta" and facts["beta_count"] == 1
+        assert facts["beta_rejection"] == "invalid_format" and facts["rejected_beta_count"] == 1
+        assert facts["beta_policy_revision"] == 2
+        assert response.json() == {"detail": "model_proxy_anthropic_beta_not_allowed"}
     elif mode == "http":
         assert response.status_code == 502 and facts["http_status"] == 502
     else:

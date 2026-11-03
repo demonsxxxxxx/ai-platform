@@ -197,6 +197,7 @@
     "apiResponseInvalid": "服务响应异常，请先确认操作结果后再重试。",
     "agentProfileRevisionStale": "专家配置已更新。请刷新并重新选择最新版本后重试。",
     "sessionWorkspaceMismatch": "当前工作区与会话不一致。请切换回会话所属工作区，或在当前工作区新建会话。",
+    "providerSessionRequiresNewConversation": "此对话的模型上下文已无法继续。已有消息仍保留，请新建对话后再发送。",
     "fileUploadNoPermission": "没有上传 {{category}} 文件的权限",
     "fileUrlFailed": "生成文件链接失败",
     "instanceNameRequired": "实例名称为必填项",

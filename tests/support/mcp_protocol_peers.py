@@ -17,7 +17,8 @@ def local_mcp_peers(*, protocol="legacy"):
     state = SimpleNamespace(
         tools=[{"name": RAW_TOOL, "description": "Synthetic sequence lookup", "inputSchema": SCHEMA},
                {"name": "unselected_sibling", "inputSchema": {"type": "object"}}],
-        models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
+        models=[], model_headers=[], model_header_validator=None, model_policy_failures=[],
+        calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
         tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
         call_error=None, input_required=False, tool_result=None, tool_response_content_type="application/json", model_reply=None,
@@ -88,6 +89,16 @@ def local_mcp_peers(*, protocol="legacy"):
             if "session_id=" in self.path:
                 session_id = self.path.split("session_id=", 1)[1].split("&", 1)[0]
                 replies = state.reply_queues[int(session_id.rsplit("-", 1)[1]) - 1]
+            if self.path.startswith("/v1/messages"):
+                headers = {name.lower(): value for name, value in self.headers.items()}
+                state.model_headers.append((self.path.split("?", 1)[0].lstrip("/"), headers))
+                if state.model_header_validator is not None:
+                    try:
+                        state.model_header_validator("anthropic", state.model_headers[-1][0], headers)
+                    except PermissionError as error:
+                        state.model_policy_failures.append(str(error))
+                        self.respond({"detail": str(error)}, 403)
+                        return
             if self.path.startswith("/v1/messages/count_tokens"):
                 self.respond({"input_tokens": 100})
                 return
