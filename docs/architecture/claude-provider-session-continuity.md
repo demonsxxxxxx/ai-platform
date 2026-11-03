@@ -211,6 +211,17 @@ Attempt stopped before its first callback may close only with explicit undispatc
 input/no-unknown-ACK evidence and a verified unchanged target/source; no writer,
 turn or append receipt is fabricated.
 
+Cancellation during local preparation also carries `provider_not_created` because
+that owner has not entered any provider call. Cancellation after exact-container
+stop but before dispatch preserves its private undispatched receipt through the
+adapter Task and Worker cancel path. The original queue worker may bind its frozen
+generation only to its own next `cancel_requested` generation; takeover, terminal
+state, missing intent and other generations remain fenced. Context closure and
+Run/Attempt cancellation then share the terminal CAS transaction. Missing leases
+alone are never undispatched proof. Creation is shielded through its existing bounded
+cleanup deadline so a returned exact provider identity can be stopped before closing
+the unused target. Unknown or timed-out creation/dispatch still keeps the gate.
+
 A runtime failure before the first provider call carries `provider_not_created`,
 which is distinct from a provider 404. A failure after creation but before dispatch
 carries stopped/not-found evidence only after stopping the exact container. The

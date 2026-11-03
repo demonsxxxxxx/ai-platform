@@ -14,6 +14,7 @@ from app.execution.domain.recovery_operations import (
 )
 from app.execution.application.continuation_settlement import (
     ContinuationSettlementPorts as ContinuationSettlementPorts,
+    undispatched_continuation_settlement as undispatched_continuation_settlement,
 )
 from app.execution.domain.document_plugin import (
     DOCUMENT_PLUGIN_INPUT_KEY as DOCUMENT_PLUGIN_INPUT_KEY,

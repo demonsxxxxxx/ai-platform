@@ -10,6 +10,29 @@ from app.execution.application.worker_attempt_lifecycle import (
 from app.runs.api import RunTerminalizationProgress
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", [None, "terminal", "no_cancel", "running", "stale_generation"])
+async def test_undispatched_cancel_only_rebinds_exact_original_worker_generation(fault):
+    async def lock_run(conn, **kwargs):
+        return {"status": "cancelled" if fault == "terminal" else "running",
+                "cancel_requested_at": None if fault == "no_cancel" else "synthetic"}
+
+    async def current(conn, **kwargs):
+        return {"status": "running" if fault == "running" else "cancel_requested",
+                "owner_generation": 6 if fault == "stale_generation" else 5}
+
+    attempt = WorkerAttemptLifecycle.from_leased_attempt(
+        tenant_id="tenant-a", run_id="run-a", leased_attempt_id="queue-a", worker_id="worker-a",
+        is_reconciliation=False,
+        ports=_lifecycle_ports(lock_run=lock_run, assert_current_attempt=current),
+    )
+    if fault:
+        with pytest.raises(ValueError, match="cancel_continuation_stale"):
+            await attempt.bind_undispatched_cancel_generation(object(), owner_generation=4)
+    else:
+        assert await attempt.bind_undispatched_cancel_generation(object(), owner_generation=4) == 5
+
+
 def _lifecycle_ports(**overrides):
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("unexpected lifecycle port")

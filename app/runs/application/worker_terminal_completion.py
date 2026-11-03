@@ -56,12 +56,14 @@ class WorkerTerminalCompletionService:
             terminal.error_code, terminal.error_message,
         )
 
-    async def cancel(self) -> WorkerOutcome:
+    async def cancel(self, exc: BaseException | None = None) -> WorkerOutcome:
         if self._outer_terminal_transaction or not self._terminal_fallback_allowed:
             raise self._cancelled_error()
         terminal = await self._execution_terminal.cancel(
+            payload=self._payload, attempt_id=self._attempt_id,
             attempt=self._attempt, capabilities=self._capabilities,
             release_runtime_lease=self._release,
+            continuation_settlement=getattr(exc, "predispatch_continuation_settlement", None),
         )
         self.runtime_lease_released = terminal.status == "cancelled"
         await self._publish()
@@ -85,8 +87,8 @@ class WorkerTerminalCompletionService:
     async def complete(self, result: Any, *, latency_ms: int | None) -> WorkerOutcome:
         try:
             result = self._normalize_result(result)
-        except self._cancelled_error:
-            return await self.cancel()
+        except self._cancelled_error as exc:
+            return await self.cancel(exc)
         except Exception as exc:  # noqa: BLE001 - executor result boundary.
             return await self.fail(exc)
         # Projection/persistence/publication errors propagate to the caller.

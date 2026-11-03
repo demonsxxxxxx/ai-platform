@@ -1099,11 +1099,22 @@ function isReplaceableInformationalStatusPart(
   );
 }
 
-/** Replace an existing platform run event projection by event id. */
+const TRANSIENT_RUN_STATUS_EVENTS = new Set(["queued", "run_started", "cancel_requested"]);
+
+/** Terminal receipts replace lifecycle notices, never operation outcomes. */
 function upsertRunStatusPart(
   parts: MessagePart[],
   runStatusPart: RunStatusPart,
 ): MessagePart[] {
+  if (runStatusPart.event_type === "run_cancelled") {
+    return [...parts.filter((part) => part.type !== "cancelled" && (
+      part.type !== "run_status" || (!TRANSIENT_RUN_STATUS_EVENTS.has(part.event_type) &&
+        !publicTerminalPresentation(part.event_type))
+    )), runStatusPart];
+  }
+  if (TRANSIENT_RUN_STATUS_EVENTS.has(runStatusPart.event_type) && parts.some(
+    (part) => part.type === "run_status" && part.event_type === "run_cancelled",
+  )) return parts;
   if (
     parts.some(
       (part) =>

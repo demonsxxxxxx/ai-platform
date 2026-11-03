@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import threading
 from dataclasses import dataclass, field
@@ -852,12 +853,19 @@ class ClaudeAgentWorkerAdapter:
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 
-        await _emit_public_progress_event(
-            event_sink,
-            event_type="run_started",
-            stage="runtime",
-            message="Sandbox runtime dispatch is active",
-        )
+        try:
+            await _emit_public_progress_event(
+                event_sink,
+                event_type="run_started",
+                stage="runtime",
+                message="Sandbox runtime dispatch is active",
+            )
+        except asyncio.CancelledError as exc:
+            # Publishing preparation progress still precedes every provider call.
+            exc.predispatch_continuation_settlement = execution_api.undispatched_continuation_settlement(
+                payload, stop_evidence="provider_not_created",
+            )
+            raise
         runtime_result = await _submit_sandbox_runtime(
             runtime,
             request,
@@ -1236,18 +1244,26 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
             return None
-        await _emit_public_progress_event(
-            event_sink,
-            event_type="intent_detected",
-            stage="planning",
-            message="Run preparation started",
-        )
-        prepared, preflight_failure = await self._prepare_sdk_run(
-            payload,
-            event_sink=event_sink,
-            workspace=_sandbox_workspace(settings, payload),
-            workspace_root=settings.sandbox_workspace_root,
-        )
+        try:
+            await _emit_public_progress_event(
+                event_sink,
+                event_type="intent_detected",
+                stage="planning",
+                message="Run preparation started",
+            )
+            prepared, preflight_failure = await self._prepare_sdk_run(
+                payload,
+                event_sink=event_sink,
+                workspace=_sandbox_workspace(settings, payload),
+                workspace_root=settings.sandbox_workspace_root,
+            )
+        except asyncio.CancelledError as exc:
+            if payload.context_pack.get("conversation_context", {}).get("provider_epoch_id"):
+                # No SandboxRuntime/provider call is possible before preparation returns.
+                exc.predispatch_continuation_settlement = execution_api.undispatched_continuation_settlement(
+                    payload, stop_evidence="provider_not_created",
+                )
+            raise
         if preflight_failure is not None:
             return preflight_failure
         if prepared is None:
