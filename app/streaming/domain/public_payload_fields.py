@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from typing import TypeGuard
 
 
 _SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
@@ -24,7 +25,9 @@ def safe_public_ref(value: object) -> bool:
     return isinstance(value, str) and _SAFE_REF_PATTERN.fullmatch(value) is not None
 
 
-def bounded_public_string(value: object, *, minimum: int, maximum: int) -> bool:
+def bounded_public_string(
+    value: object, *, minimum: int, maximum: int
+) -> TypeGuard[str]:
     return isinstance(value, str) and minimum <= len(value) <= maximum
 
 
@@ -39,13 +42,12 @@ def bounded_public_integer(
     )
 
 
-def safe_public_filename(value: object) -> bool:
-    return (
-        bounded_public_string(value, minimum=1, maximum=255)
-        and not any(
-            ord(character) < 32
-            or ord(character) == 127
-            or character in "/\\"
-            for character in value
-        )
+def safe_public_filename_characters(value: str) -> bool:
+    """Check filename characters after the caller's context-specific bounds."""
+
+    return not any(
+        ord(character) < 32
+        or ord(character) == 127
+        or character in "/\\"
+        for character in value
     )

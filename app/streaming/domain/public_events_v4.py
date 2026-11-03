@@ -32,7 +32,7 @@ from app.streaming.domain.public_payload_fields import (
     bounded_public_integer,
     bounded_public_string,
     exact_enum_member,
-    safe_public_filename,
+    safe_public_filename_characters,
     safe_public_ref,
 )
 
@@ -422,7 +422,8 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             _validate_ref_array(value, name=key)
             continue
         if key == "filename":
-            if not safe_public_filename(value):
+            filename = _bounded_string(value, name=key, maximum=255, minimum=1)
+            if not safe_public_filename_characters(filename):
                 raise V4ProjectionError("v4_filename_invalid")
             continue
         if key == "detail" and value is None:

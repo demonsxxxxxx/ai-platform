@@ -161,6 +161,13 @@ def test_shared_field_predicates_preserve_delta_and_filename_bounds():
     with pytest.raises(V4ProjectionError, match="v4_filename_invalid"):
         validate_public_application_payload_v4("artifact.ready", filename_payload)
 
+    for invalid_filename in ("", "x" * 256):
+        out_of_bounds = {**filename_payload, "filename": invalid_filename}
+        with pytest.raises(ValueError, match="invalid filename bound"):
+            _candidate("artifact.ready", out_of_bounds)
+        with pytest.raises(V4ProjectionError, match="v4_filename_invalid"):
+            validate_public_application_payload_v4("artifact.ready", out_of_bounds)
+
 
 def test_candidate_completion_counter_resource_limit_is_unchanged():
     payload = {"delta_count": 2**63 - 1, "text_length": 1}
