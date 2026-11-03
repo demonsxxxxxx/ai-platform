@@ -195,6 +195,7 @@ _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
 _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS = 2_000
 _SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
+_SDK_STOP_TASK_TIMEOUT_SECONDS = 2.0
 _logger = logging.getLogger(__name__)
 
 
@@ -3644,11 +3645,12 @@ async def run_claude_agent_sdk(
     receiving_started = False
     prompt_dispatched = False
     stop_requested = False
+    # Background agents outlive interrupt(); stop needs their IDs to end the run.
+    pending_tasks: set[str] = set()
 
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
         nonlocal continuation_usage, continuation_turns, terminal_stream_error, receive_stream_closed
         nonlocal terminal_result_message, provider_mirror_error_observed
-        pending_tasks: set[str] = set()
         final_result = None
         mirror_error = None
         final_flush_timing: TerminalStageTiming | None = None
@@ -4413,6 +4415,23 @@ async def run_claude_agent_sdk(
                 await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
             except Exception:  # noqa: BLE001 - cancellation still closes the client.
                 pass
+            await stop_background_tasks(active_client)
+
+    async def stop_background_tasks(client: Any) -> None:
+        # interrupt() ends only the foreground turn. A live background agent keeps
+        # the SDK run (and stdin) open, so public EOF and the final mirror flush
+        # would otherwise wait for the cleanup deadline and a forced disconnect.
+        stop_task = getattr(client, "stop_task", None)
+        if stop_task is None:
+            return
+
+        async def stop_one(task_id: str) -> None:
+            try:
+                await asyncio.wait_for(stop_task(task_id), timeout=_SDK_STOP_TASK_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 - the cleanup deadline still bounds stop.
+                pass
+
+        await asyncio.gather(*(stop_one(task_id) for task_id in sorted(pending_tasks)))
 
     async def protocol_closed(mirror_failed: bool) -> None:
         nonlocal cleanup_deadline

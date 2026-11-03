@@ -23,7 +23,8 @@ async def test_database_lease_expiry_during_principal_lookup_rolls_back_grants(o
     from app.mcp import api as mcp_api
     connect, original, inputs, source, current, key = operation_db
     subject = dict(identity=current.tool_identity, mcp_server="vendor", mcp_tool="write",
-                   capability_id="vendor::write", write_capable=True, public_operation_summary=DECLARATION)
+                   capability_id="vendor::write", write_capable=True, public_operation_summary=DECLARATION,
+                   registered=True, declared=True, active=True, distributed=True)
     recovery = dict(state="recovery_candidate", source_run_id=source.run_id,
                     source_attempt_id=source.attempt_id, provider_epoch_id="epoch", final_sequence=1)
     question_id = None
