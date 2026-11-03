@@ -7,6 +7,7 @@ import {
   composeAssistantPreviewText,
   reduceAssistantTextPartEvent,
   selectAssistantCopyText,
+  validateAssistantTextPartPayload,
 } from "../../../types/assistantTextParts";
 
 const messageId = "protocol-message-1";
@@ -25,29 +26,28 @@ function startedParts(): MessagePart[] {
   ).parts;
 }
 
-function delta(parts: MessagePart[], partId: string, text: string, sequence: number) {
+function delta(parts: MessagePart[], partId: string, text: string, _sequence: number) {
+  const event = validateAssistantTextPartPayload("message.part.delta", {
+    schema_version: "ai-platform.assistant-text-part.v1",
+    part_id: partId,
+    delta: text,
+  });
+  if (!event) throw new Error("test payload is invalid");
   return reduceAssistantTextPartEvent(
-    "message.part.delta",
-    {
-      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
-      part_id: partId,
-      delta: text,
-      event_id: `event-${sequence}`,
-      message_id: messageId,
-      sequence,
-    },
+    event,
     parts,
   );
 }
 
 function classify(parts: MessagePart[], partId: string, role: "answer" | "work") {
+  const event = validateAssistantTextPartPayload("message.part.classified", {
+    schema_version: "ai-platform.assistant-text-part.v1",
+    part_id: partId,
+    role,
+  });
+  if (!event) throw new Error("test payload is invalid");
   return reduceAssistantTextPartEvent(
-    "message.part.classified",
-    {
-      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
-      part_id: partId,
-      role,
-    },
+    event,
     parts,
   );
 }
@@ -119,8 +119,19 @@ test("orphan, malformed, unknown, legacy-mixed, and post-completion mutations ar
     ["message.part.delta", { schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION, part_id: "part-a", delta: "" }],
     ["message.part.unknown", { schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION, part_id: "part-a", delta: "x" }],
   ] as const) {
-    assert.equal(reduceAssistantTextPartEvent(eventType, data, started).accepted, false);
+    assert.equal(validateAssistantTextPartPayload(eventType, data), null);
   }
+
+  assert.ok(validateAssistantTextPartPayload("message.part.delta", {
+    schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+    part_id: "part_boundary",
+    delta: "x".repeat(8192),
+  }));
+  assert.equal(validateAssistantTextPartPayload("message.part.delta", {
+    schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+    part_id: "part_too_long",
+    delta: "x".repeat(8193),
+  }), null);
 
   const legacy = processMessageEvent(
     "message:chunk",

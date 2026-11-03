@@ -2,7 +2,9 @@ from __future__ import annotations
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
+import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -31,7 +33,16 @@ from app.runtime.sandbox.contracts import ExecutorCallbackEvent
 from app.runs.api import cancel_run_with_v4, complete_run_with_v4, fail_run_with_v4
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities, admit_v4_stream, publish_run_event
 from app.streaming.api import build_v4_control, stream_key
-from app.streaming.redis import RedisStreamBridge, StreamAuthority, StreamTransportUnavailable
+from app.streaming.redis import (
+    RedisStreamBridge,
+    SseAuthorityConflictError,
+    StreamAuthority,
+    StreamTransportUnavailable,
+    acquire_sse_admission_lease,
+    commit_sse_revocation,
+    confirm_stream_admission,
+    get_stream_authority,
+)
 from app.streaming.infrastructure.v4 import (
     V4CallbackItem,
     V4ProjectionError,
@@ -419,6 +430,249 @@ def _authority(tenant: str, run: str, attempt: str, *, incarnation: int = 2) -> 
         authorization_epoch=4,
         revocation_state="active",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_lock", ["admission", "confirmation"])
+async def test_admission_lease_serializes_with_worker_confirmation(first_lock):
+    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
+        async with _connection_factory(dsn, schema_name) as setup_conn:
+            pending = await get_stream_authority(
+                setup_conn, tenant_id=tenant, run_id=run
+            )
+            assert pending is not None
+            await setup_conn.execute(
+                "update sse_stream_authorities set state='admission_pending', admission_confirmed_at=null where tenant_id=%s and run_id=%s",
+                (tenant, run),
+            )
+            pending = replace(pending, state="admission_pending")
+
+        first = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        second = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        try:
+            if first_lock == "admission":
+                async with first.transaction():
+                    observed, lease = await acquire_sse_admission_lease(
+                        first,
+                        tenant_id=tenant,
+                        run_id=run,
+                        api_instance_id="api_test",
+                        connection_id="connection_test",
+                        lease_seconds=15,
+                    )
+                    assert observed is not None and observed.state == "admission_pending"
+                    assert lease is None
+                    waiting = asyncio.create_task(
+                        _confirm_on_connection(second, pending)
+                    )
+                    await asyncio.sleep(0.05)
+                    assert not waiting.done()
+                confirmed = await asyncio.wait_for(waiting, timeout=2)
+                assert confirmed.state == "confirmed"
+            else:
+                async with first.transaction():
+                    confirmed = await confirm_stream_admission(first, authority=pending)
+                    waiting = asyncio.create_task(
+                        _admit_on_connection(
+                            second,
+                            tenant_id=tenant,
+                            run_id=run,
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    assert not waiting.done()
+                observed, lease = await asyncio.wait_for(waiting, timeout=2)
+                assert confirmed.state == observed.state == "confirmed"
+                assert lease is not None
+                assert lease.authorization_epoch == observed.authorization_epoch
+        finally:
+            await first.close()
+            await second.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_lock", ["admission", "revocation"])
+async def test_admission_lease_serializes_with_authority_revocation(first_lock):
+    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
+        first = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        second = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        try:
+            if first_lock == "admission":
+                async with first.transaction():
+                    observed, lease = await _admit_on_connection(
+                        first, tenant_id=tenant, run_id=run
+                    )
+                    assert lease is not None
+                    waiting = asyncio.create_task(
+                        _revoke_on_connection(second, tenant_id=tenant, run_id=run)
+                    )
+                    await asyncio.sleep(0.05)
+                    assert not waiting.done()
+                revoked = await asyncio.wait_for(waiting, timeout=2)
+                assert revoked.authorization_epoch == lease.authorization_epoch + 1
+            else:
+                async with first.transaction():
+                    revoked = await commit_sse_revocation(
+                        first, tenant_id=tenant, run_id=run
+                    )
+                    waiting = asyncio.create_task(
+                        _admit_on_connection(second, tenant_id=tenant, run_id=run)
+                    )
+                    await asyncio.sleep(0.05)
+                    assert not waiting.done()
+                with pytest.raises(
+                    SseAuthorityConflictError, match="sse_authority_revoked"
+                ):
+                    await asyncio.wait_for(waiting, timeout=2)
+                assert revoked.revocation_state == "committed"
+        finally:
+            await first.close()
+            await second.close()
+
+
+@pytest.mark.asyncio
+async def test_admission_lock_wait_timeout_rolls_back_before_retry():
+    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
+        first = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        second = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        try:
+            async with first.transaction():
+                authority_value, initial_lease = await acquire_sse_admission_lease(
+                    first,
+                    tenant_id=tenant,
+                    run_id=run,
+                    api_instance_id="api_test",
+                    connection_id="connection_test",
+                    lease_seconds=15,
+                )
+                assert authority_value is not None and initial_lease is not None
+                with pytest.raises(TimeoutError):
+                    async with asyncio.timeout(0.05):
+                        async with second.transaction():
+                            await acquire_sse_admission_lease(
+                                second,
+                                tenant_id=tenant,
+                                run_id=run,
+                                api_instance_id="api_test",
+                                connection_id="connection_test",
+                                lease_seconds=15,
+                            )
+
+            async with second.transaction():
+                retried_authority, retried_lease = await acquire_sse_admission_lease(
+                    second,
+                    tenant_id=tenant,
+                    run_id=run,
+                    api_instance_id="api_test",
+                    connection_id="connection_test",
+                    lease_seconds=15,
+                )
+            assert retried_authority is not None and retried_lease is not None
+            assert retried_lease.authorization_epoch == retried_authority.authorization_epoch
+        finally:
+            await first.close()
+            await second.close()
+
+
+@pytest.mark.asyncio
+async def test_route_locked_authority_wait_keeps_confirmation_timeout_classification(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.auth import AuthPrincipal
+    from app.routes import lambchat_compat as route
+
+    async with _schema() as (dsn, schema_name, (tenant, run, _attempt)):
+        holder = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+        route_conn = await psycopg.AsyncConnection.connect(
+            dsn, options=f"-c search_path={schema_name}", row_factory=dict_row
+        )
+
+        @asynccontextmanager
+        async def route_transaction():
+            async with route_conn.transaction():
+                yield route_conn
+
+        async def authorized_run(conn, *, tenant_id, user_id, run_id):
+            assert (tenant_id, user_id, run_id) == (tenant, f"u_{run[2:]}", run)
+            return {"id": run, "session_id": f"s_{run[2:]}", "status": "running"}
+
+        monkeypatch.setattr(route, "transaction", route_transaction)
+        monkeypatch.setattr(
+            route.runs_creation, "get_authorized_run", authorized_run
+        )
+        monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.05)
+
+        try:
+            async with holder.transaction():
+                await holder.execute(
+                    "update sse_stream_authorities set authorization_epoch=authorization_epoch where tenant_id=%s and run_id=%s",
+                    (tenant, run),
+                )
+                with pytest.raises(HTTPException) as exc_info:
+                    await route._await_sse_admission(
+                        session_id=f"s_{run[2:]}",
+                        run_id=run,
+                        principal=AuthPrincipal(
+                            user_id=f"u_{run[2:]}",
+                            display_name="Test",
+                            tenant_id=tenant,
+                        ),
+                        api_instance_id="api_lock_wait_test",
+                        connection_id="connection_lock_wait_test",
+                    )
+                assert getattr(exc_info.value, "detail", {}).get("code") == (
+                    "sse_stream_not_confirmed"
+                )
+
+            async with route_conn.transaction():
+                observed, lease = await acquire_sse_admission_lease(
+                    route_conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    api_instance_id="api_lock_wait_test",
+                    connection_id="connection_lock_wait_test",
+                    lease_seconds=15,
+                )
+            assert observed is not None and lease is not None
+        finally:
+            await holder.close()
+            await route_conn.close()
+
+
+async def _admit_on_connection(conn, *, tenant_id: str, run_id: str):
+    async with conn.transaction():
+        return await acquire_sse_admission_lease(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            api_instance_id="api_test",
+            connection_id="connection_test",
+            lease_seconds=15,
+        )
+
+
+async def _confirm_on_connection(conn, authority: StreamAuthority):
+    async with conn.transaction():
+        return await confirm_stream_admission(conn, authority=authority)
+
+
+async def _revoke_on_connection(conn, *, tenant_id: str, run_id: str):
+    async with conn.transaction():
+        return await commit_sse_revocation(conn, tenant_id=tenant_id, run_id=run_id)
 
 
 @pytest.mark.asyncio

@@ -226,3 +226,60 @@ async def test_stale_lease_generation_cannot_close_a_renewed_connection_lease():
             connection_id="connection-b",
             lease_seconds=15,
         )
+
+
+@pytest.mark.asyncio
+async def test_admission_lease_uses_one_locked_authority_read_and_matching_epoch():
+    confirmed = authority_row(state="confirmed", authorization_epoch=9)
+    lease_deadline = datetime.now(timezone.utc) + timedelta(seconds=15)
+    lease_row = {
+        "id": "lease-a",
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "api_instance_id": "api-a",
+        "connection_id": "connection-a",
+        "authorization_epoch": 9,
+        "lease_not_after": lease_deadline,
+    }
+    conn = ScriptedConnection([confirmed, lease_row])
+    observed = []
+
+    observed_authority, lease = await control.acquire_sse_admission_lease(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        api_instance_id="api-a",
+        connection_id="connection-a",
+        lease_seconds=15,
+        on_authority_observed=observed.append,
+    )
+
+    select_statement = " ".join(conn.calls[0][0].lower().split())
+    assert select_statement.endswith("for update")
+    assert len(conn.calls) == 2
+    assert "select * from sse_stream_authorities" in select_statement
+    assert observed == [observed_authority]
+    assert observed_authority.authorization_epoch == lease.authorization_epoch == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [None, "pending"])
+async def test_admission_lease_missing_or_pending_returns_without_lease_write(row):
+    authority_value = None if row is None else authority_row(state="admission_pending")
+    conn = ScriptedConnection([authority_value])
+    observed = []
+
+    authority_result, lease = await control.acquire_sse_admission_lease(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        api_instance_id="api-a",
+        connection_id="connection-a",
+        lease_seconds=15,
+        on_authority_observed=observed.append,
+    )
+
+    assert authority_result is observed[0]
+    assert lease is None
+    assert len(conn.calls) == 1
+    assert "for update" in conn.calls[0][0].lower()

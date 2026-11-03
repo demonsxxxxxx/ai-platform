@@ -28,6 +28,13 @@ from app.streaming.domain.protocol_v4 import (
     PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS,
 )
 from app.streaming.domain.transport import StreamCursor, canonical_json_bytes
+from app.streaming.domain.public_payload_fields import (
+    bounded_public_integer,
+    bounded_public_string,
+    exact_enum_member,
+    safe_public_filename_characters,
+    safe_public_ref,
+)
 
 
 V4_METADATA_KEY = "__stream_v4"
@@ -151,10 +158,8 @@ _CONTROL_REPLAYABLE = {
     "stream.gap": False,
     "stream.end": True,
 }
-_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _TRACE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
-_FILENAME_RE = re.compile(r"^[^/\\\\\x00-\x1f\x7f]+$")
 _AGENT_PROGRESS_SCHEMA = "ai-platform.public-agent-progress.v1"
 _AGENT_PROGRESS_MESSAGES = {
     "attachment_materialization": {
@@ -218,9 +223,7 @@ def _validate_control_payload(event_type: str, payload: object) -> dict[str, obj
         raise V4ProjectionError("v4_control_payload_invalid")
     for key, value in result.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
-        if enum_values is not None and not any(
-            type(value) is type(option) and value == option for option in enum_values
-        ):
+        if enum_values is not None and not exact_enum_member(value, enum_values):
             raise V4ProjectionError(f"v4_{key}_invalid")
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
             _safe_ref(value, name=key)
@@ -317,13 +320,13 @@ def stream_end_event_id(terminal_event_id: str) -> str:
 
 
 def _bounded_string(value: object, *, name: str, maximum: int, minimum: int = 0) -> str:
-    if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+    if not bounded_public_string(value, minimum=minimum, maximum=maximum):
         raise V4ProjectionError(f"v4_{name}_invalid")
     return value
 
 
 def _safe_ref(value: object, *, name: str = "ref") -> str:
-    if not isinstance(value, str) or not _SAFE_REF_RE.fullmatch(value):
+    if not safe_public_ref(value):
         raise V4ProjectionError(f"v4_{name}_invalid")
     return value
 
@@ -406,7 +409,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
     for key, value in result.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if not any(type(value) is type(option) and value == option for option in enum_values):
+            if not exact_enum_member(value, enum_values):
                 raise V4ProjectionError(f"v4_{key}_invalid")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
@@ -420,7 +423,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
             continue
         if key == "filename":
             filename = _bounded_string(value, name=key, maximum=255, minimum=1)
-            if not _FILENAME_RE.fullmatch(filename):
+            if not safe_public_filename_characters(filename):
                 raise V4ProjectionError("v4_filename_invalid")
             continue
         if key == "detail" and value is None:
@@ -433,12 +436,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
         integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
         if integer_bounds is not None:
             minimum, maximum = integer_bounds
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < minimum
-                or (maximum is not None and value > maximum)
-            ):
+            if not bounded_public_integer(value, minimum=minimum, maximum=maximum):
                 raise V4ProjectionError(f"v4_{key}_invalid")
             continue
         raise V4ProjectionError("v4_payload_key_unimplemented")
