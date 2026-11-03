@@ -236,6 +236,29 @@ async def test_v2_receipt_selects_final_answer_parts_from_current_attempt_rows()
 
 
 @pytest.mark.asyncio
+async def test_receipt_versions_share_the_same_locked_source_query():
+    legacy_rows, legacy_receipt = _answer_fixture()
+    parts_rows, parts_receipt = _part_answer_fixture()
+    legacy_connection = _connection(legacy_rows)
+    parts_connection = _connection(parts_rows)
+
+    for connection, receipt in (
+        (legacy_connection, legacy_receipt),
+        (parts_connection, parts_receipt),
+    ):
+        await load_answer_by_receipt(
+            connection,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            attempt_id="attempt-a",
+            receipt=receipt,
+        )
+
+    assert legacy_connection.statements[1] == parts_connection.statements[1]
+    assert "for update" in legacy_connection.statements[1][0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation",
     [
