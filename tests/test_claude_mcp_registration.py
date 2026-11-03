@@ -582,7 +582,7 @@ async def test_installed_cli_document_plugin_invokes_skill_and_reads_image_resou
         assert "SYNTHETIC_DOCUMENT_INSTRUCTIONS" in str(tool_results)
         assert result.used_skills == ["document-skills:docx"]
         assert {value.event_type for value in events} >= {"policy.allowed", "tool.started", "tool.completed"}
-        assert "document-skills:docx" not in str([value.payload for value in events])
+        assert "document-skills:docx" in str([value.payload for value in events])
         public_answer = result.message + "".join(deltas) + str([value.payload for value in events])
         assert str(image_plugin) not in public_answer
         assert DOCUMENT_PLUGIN_REVISION not in public_answer

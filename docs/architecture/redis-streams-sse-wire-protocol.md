@@ -219,10 +219,13 @@ The closed transport controls are `stream.open`, `stream.heartbeat`,
 `reload_durable_state`, and `stream.end` references the observed terminal event.
 
 Provider-internal reasoning, raw SDK objects, execution commands, tool arguments
-and outputs, credentials, private runtime paths, storage keys, private trace
-values, and unclassified objects are prohibited. Intentional non-sensitive
-code, JSON examples and task-file references in Assistant prose follow the
-Chat content policy; their spelling alone does not make them tool data.
+and outputs, credentials, private runtime paths embedded in tool/provider data,
+storage keys, private trace values, and unclassified objects are prohibited.
+The current workspace cwd may appear literally when the Assistant includes it
+in ordinary prose under the Chat content policy; it is not normalized or aliased.
+Intentional non-sensitive code, JSON examples and task-file references in
+Assistant prose follow the Chat content policy; their spelling alone does not
+make them tool data.
 The Claude SDK is configured with
 `thinking.display = omitted`, and the Runner excludes `ThinkingBlock` content
 from both the answer and callback projections. The current Runner does not emit

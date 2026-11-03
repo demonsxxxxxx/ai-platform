@@ -4217,7 +4217,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "Reference Search",
-            "【技能】",
+            "reference-search",
             "",
         ),
         (
@@ -4226,7 +4226,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "capability",
             "Reference Search",
-            "【技能】",
+            "capability",
             "",
         ),
         (
@@ -4235,7 +4235,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "tool",
             "Reference Search",
-            "【技能】",
+            "tool",
             "",
         ),
         (
@@ -4244,7 +4244,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             True,
             "mcp__tenant-server__search",
             "Reference Search",
-            "【技能】",
+            "█",
             "",
         ),
         (
@@ -4253,7 +4253,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-private",
             None,
-            "【技能】",
+            "internal-reference-helper",
             "",
         ),
         (
@@ -4262,7 +4262,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能】",
+            "input-tax-reconciliation",
             "",
         ),
         (
@@ -4271,7 +4271,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "reference-search V8",
-            "【技能】",
+            "reference-search",
             "",
         ),
         (
@@ -4280,7 +4280,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "进项税核对 V8",
-            "【技能】",
+            "reference-search",
             "",
         ),
         (
@@ -4289,7 +4289,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能】",
+            "█",
             "input-tax-reconciliation",
         ),
         (
@@ -4298,12 +4298,12 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能】",
+            "input-█-reconciliation",
             "tax",
         ),
     ],
 )
-async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
+async def test_sdk_shows_authorized_skill_identity_unless_private_value(
     monkeypatch,
     tmp_path,
     optional_skill,
@@ -4383,11 +4383,65 @@ async def test_sdk_redacts_optional_skill_identity_before_failed_receipt(
     assert result.message == public_text
 
 
+@pytest.mark.asyncio
+async def test_skill_name_matching_configured_credential_stays_private_in_live_and_events(
+    monkeypatch, tmp_path
+):
+    credential = "synthetic-anthropic-secret-token"
+    call_id = "skill-call-sensitive"
+    skill_input = {
+        "tool_name": "Skill",
+        "tool_use_id": call_id,
+        "tool_input": {"skill": credential},
+    }
+    events, deltas = [], []
+    settings = _sandbox_brokered_settings()
+    settings.anthropic_auth_token = credential
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            {},
+            [
+                *_completed_text_steps(f"Using {credential}. "),
+                ("hook", ("PreToolUse", skill_input, call_id)),
+                ("hook", ("PostToolUseFailure", skill_input, call_id)),
+            ],
+            result_text="",
+        ),
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", credential],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", credential]}
+        ],
+        run_id="run-private-skill-name",
+        attempt_id="attempt-private-skill-name",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: events.extend(batch) or True,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    answer_events = _assistant_text_part_deltas(events, role="answer")
+    event_history_text = "".join(event.payload["delta"] for event in answer_events)
+    assert result.error is None
+    assert "".join(deltas) == event_history_text == "Using █. "
+    assert credential not in repr(events)
+
+
 
 
 
 @pytest.mark.asyncio
-async def test_sdk_skill_identity_and_dynamic_hook_id_stay_redacted_across_chunks(
+async def test_sdk_preserves_skill_identity_and_call_id_across_chunks(
     monkeypatch, tmp_path
 ):
     identity = "reference-search"
@@ -4402,23 +4456,21 @@ async def test_sdk_skill_identity_and_dynamic_hook_id_stay_redacted_across_chunk
         "tool_use_id": dynamic_call_id,
         "tool_input": {"skill": identity},
     }
-    deltas = []
+    deltas, candidates = [], []
+    steps = [
+        ("completed_text", "Using reference-"),
+        ("completed_text", "search. "),
+        ("hook", ("PreToolUse", identity_hook_input, identity)),
+        ("hook", ("PostToolUseFailure", identity_hook_input, identity)),
+        ("hook", ("PreToolUse", dynamic_hook_input, dynamic_call_id)),
+        ("hook", ("PostToolUseFailure", dynamic_hook_input, dynamic_call_id)),
+        ("completed_text", "After hook ID hook-only-"),
+        ("completed_text", "private-call. "),
+    ]
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
-        _scripted_sdk(
-            {},
-            [
-                ("completed_text", "Using reference-"),
-                ("completed_text", "search. "),
-                ("hook", ("PreToolUse", identity_hook_input, identity)),
-                ("hook", ("PostToolUseFailure", identity_hook_input, identity)),
-                ("hook", ("PreToolUse", dynamic_hook_input, dynamic_call_id)),
-                ("hook", ("PostToolUseFailure", dynamic_hook_input, dynamic_call_id)),
-                ("completed_text", f"After hook ID {dynamic_call_id}. "),
-            ],
-            result_text="",
-        ),
+        _scripted_sdk({}, steps, result_text=""),
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
@@ -4431,13 +4483,87 @@ async def test_sdk_skill_identity_and_dynamic_hook_id_stay_redacted_across_chunk
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_skill_subject(identity)],
         on_text=deltas.append,
+        run_id="run-visible-skill",
+        attempt_id="attempt-visible-skill",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
         on_capability_evidence=_acknowledge_capability_evidence,
     )
     assert result.error is None
-    assert result.message == "Using 【技能】. After hook ID █. "
-    assert "".join(deltas) == result.message
-    assert identity not in result.message
-    assert dynamic_call_id not in result.message
+    expected_answer = "Using reference-search. After hook ID hook-only-private-call. "
+    event_history_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="answer")
+    )
+    assert "".join(deltas) == event_history_text == expected_answer
+    assert identity in event_history_text
+    assert dynamic_call_id in event_history_text
+    skill_events = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type in {"tool.started", "tool.failed"}
+        and candidate.payload["category"] == "skill"
+    ]
+    assert skill_events
+    assert all(event.payload["display_name"] == identity for event in skill_events)
+
+
+@pytest.mark.asyncio
+async def test_sdk_tool_block_does_not_register_skill_call_id_for_answer_redaction(
+    monkeypatch, tmp_path
+):
+    call_id = "assistant-block-skill-call"
+    captured, candidates, deltas = {}, [], []
+    steps = []
+    sdk = _scripted_sdk(captured, steps, result_text="Final answer")
+    steps.extend(
+        [
+            (
+                "assistant_blocks",
+                [
+                    sdk.TextBlock("Skill invocation ID assistant-block-"),
+                    sdk.TextBlock("skill-call is visible."),
+                    sdk.ToolUseBlock(
+                        id=call_id,
+                        name="Skill",
+                        input={"skill": "reference-search"},
+                    ),
+                ],
+            ),
+            ("assistant", "Final answer"),
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="reference-search",
+        skills=["reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject("reference-search")],
+        on_text=deltas.append,
+        run_id="run-skill-tool-block",
+        attempt_id="attempt-skill-tool-block",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    work_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="work")
+    )
+    answer_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="answer")
+    )
+    assert result.error is None
+    assert work_text == "Skill invocation ID assistant-block-skill-call is visible."
+    assert call_id in work_text
+    assert "".join(deltas) == answer_text == "Final answer"
 
 
 @pytest.mark.asyncio
@@ -5625,12 +5751,97 @@ async def test_sdk_tool_turn_omits_unsafe_work_trace_before_result(
     work = _assistant_text_part_deltas(candidates, role="work")
     assert "message.part.delta" in observed_before_result
     assert not any(candidate.event_type == "commentary.delta" for candidate in candidates)
-    assert "Checking █ in █ before the next step." == "".join(
+    assert f"Checking █ in {tmp_path} before the next step." == "".join(
         candidate.payload["delta"] for candidate in work
     )
     assert "".join(deltas) == "Final user answer"
     assert result.error is None
     assert result.message == "Final user answer"
+
+
+@pytest.mark.asyncio
+async def test_sdk_answer_and_question_preserve_cwd_and_keep_secret_redaction(
+    monkeypatch, tmp_path
+):
+    cwd = tmp_path / "inputs" / "output"
+    cwd.mkdir(parents=True)
+    path = str(cwd)
+    credential = "synthetic-anthropic-secret-token"
+    answer = f"Workspace path: {path}/report.docx; configured credential {credential}. Done."
+    path_start = answer.index(path)
+    path_split = path_start + len(path) // 2
+    credential_start = answer.index(credential)
+    credential_split = credential_start + len(credential) // 2
+    chunks = (
+        answer[:path_split],
+        answer[path_split:credential_split],
+        answer[credential_split:],
+    )
+    live_chunks, candidates = [], []
+    settings = _settings()
+    settings.anthropic_auth_token = credential
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            {},
+            [("completed_text", chunk) for chunk in chunks],
+            result_text="",
+        ),
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="show the workspace reference",
+        cwd=cwd,
+        skill_id=None,
+        run_id="run-cwd-visible",
+        attempt_id="attempt-cwd-visible",
+        on_text=live_chunks.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+    )
+
+    expected = answer.replace(credential, "█")
+    question_sanitizers = []
+
+    def capture_question_sanitizer(_client, *, sanitize_text, **_kwargs):
+        question_sanitizers.append(sanitize_text)
+        return None
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.prepare_claude_run_interaction",
+        capture_question_sanitizer,
+    )
+    answer_deltas = _assistant_text_part_deltas(candidates, role="answer")
+    event_history_text = "".join(event.payload["delta"] for event in answer_deltas)
+    assert result.error is None
+    assert cwd.parts[-2:] == ("inputs", "output")
+    assert path in expected
+    assert credential not in expected
+    assert "".join(live_chunks) == result.message == event_history_text == expected
+
+    # Structured clarification questions use the same path/secret policy as
+    # answers: the active workspace root is visible, other private paths and
+    # configured credentials are still filtered.
+    question_result = await run_claude_agent_sdk(
+        prompt="show the workspace reference",
+        cwd=cwd,
+        skill_id=None,
+        run_id="run-cwd-question",
+        attempt_id="attempt-cwd-question",
+        interaction_client=object(),
+    )
+    assert question_result.error is None
+    assert len(question_sanitizers) == 1
+    question = question_sanitizers[0](
+        f"Workspace: {path}; credential {credential}; unrelated /var/private/file."
+    )
+    assert question == f"Workspace: {path}"
+    assert credential not in question
+    assert "/var/private/file" not in question
+    assert question_sanitizers[0](f"password={path}") == "password=[redacted-secret]"
 
 
 
