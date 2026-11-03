@@ -397,6 +397,8 @@ export function ChatView({
     handleVirtuosoAtBottomChange,
     scrollToBottom,
     scrollToTop,
+    followOutput,
+    anchoredReplyIndex,
   } = useMessageScroll(
     messages,
     sessionId,
@@ -909,11 +911,13 @@ export function ChatView({
   );
 
   const virtuosoItemContent = useCallback(
-    (_index: number, message: (typeof messages)[number]) => (
+    (index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
           <div
-            className="contents"
+            // The reply to a just-sent message keeps the viewport height so the
+            // sent message can stay at the top while the answer grows below.
+            className={index === anchoredReplyIndex ? "chat-anchor-reply" : "contents"}
             data-browser-run-id={message.role === "assistant" ? message.runId : undefined}
             data-browser-session-id={sessionId ?? undefined}
           >
@@ -931,6 +935,7 @@ export function ChatView({
       </AssistantUiMessageContentContext.Provider>
     ),
     [
+      anchoredReplyIndex,
       artifactDownloadScopeContext,
       sessionId,
       handleOpenPreview,
@@ -1189,7 +1194,7 @@ export function ChatView({
             computeItemKey={(_, message) => message.id}
             atBottomStateChange={handleVirtuosoAtBottomChange}
             atBottomThreshold={getAtBottomThresholdPx(isMobileViewport)}
-            followOutput={"smooth"}
+            followOutput={followOutput}
             rangeChanged={handleVirtuosoRangeChanged}
             components={virtuosoComponents}
             itemContent={virtuosoItemContent}

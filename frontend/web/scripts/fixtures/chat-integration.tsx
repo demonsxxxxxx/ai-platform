@@ -205,7 +205,7 @@ export function Fixture() {
         setQuestionProjection(null);
         setMessages((current) => [...current,
           { id: `user-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "user", content, attachments: sentAttachments, timestamp: new Date(turn * 1000) },
-          { id: `assistant-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "assistant", content: "", timestamp: new Date(turn * 1000 + 1), isStreaming: true, parts: [...toolParts, ...(turn === 2 ? [nestedSubagentParts, todoPart, artifactPart] : [])] },
+          { id: `assistant-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "assistant", content: "", timestamp: new Date(), isStreaming: true, parts: [...toolParts, ...(turn === 2 ? [nestedSubagentParts, todoPart, artifactPart] : [])] },
         ]);
         setSettling(false);
         setRunning(true);
