@@ -82,6 +82,13 @@ Chat and SSE contracts until explicitly replaced.
 
 ## Delivery and operations
 
+[Frontend page and component architecture](frontend/frontend-page-component-architecture.md)
+defines page composition, shared chat capabilities, application-local components
+and incremental retirement, prioritizing the Agent chat page. It identifies the
+first source slice's Agent binding/first-send hooks and presentation slots separately
+from the remaining proposed slices. Lobe, assistant-ui, visual and platform-state
+contracts remain authoritative; source migration does not establish deployment.
+
 [Agent 流式消息与最终交付方案](implementation/streaming-message-parts-design.md)
 records the accepted #1651 source contract for incremental public text parts,
 final-answer receipt selection, history and frontend consumers, optional attachments,

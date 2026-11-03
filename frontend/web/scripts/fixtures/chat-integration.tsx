@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { ToastHost } from "@lobehub/ui/base-ui";
 import { ChatView } from "../../src/components/layout/AppContent/ChatView";
+import { useAgentChatPresentation } from "../../src/features/agent-market/useAgentChatPresentation";
 import { WorkbenchShell } from "../../src/components/workbench/WorkbenchShell";
 import { ThemeProvider } from "../../src/contexts/ThemeContext";
 import { LobeUiProvider } from "../../src/contexts/LobeUiProvider";
@@ -107,6 +108,7 @@ export function Fixture() {
   const [settling, setSettling] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [generic, setGeneric] = useState(false);
+  const presentation = useAgentChatPresentation(generic ? undefined : { agent_id: "agt_fixture", name: "文件整理专家", description: "整理授权文件并汇总结果。", starter_prompts: ["请整理这批文件"], avatar_ref: "builtin:assistant", avatar_seed: "fixture", market_tags: [], completed_tasks: 0, is_favorite: false, published_at: "2026-01-01T00:00:00Z" });
   const [model, setModel] = useState("model-a");
   const [questionProjection, setQuestionProjection] = useState<RunInputsProjection | null>(null);
   const [historyProjections, setHistoryProjections] = useState<RunInputsProjection[]>([]);
@@ -192,7 +194,7 @@ export function Fixture() {
     {performanceMode ? <span data-performance-ready aria-hidden="true" /> : null}
     <ChatView key={historyRevision} messages={messages} sessionId={performanceMode ? null : "session-synthetic"} conversationIdentityKey="synthetic-chat" currentRunId={running ? `run-synthetic-${fixtureState.sends}` : null}
       canStopGeneration={running && !settling} isLoading={running} isLoadingHistory={false} canSendMessage
-      agentEmptyProfile={generic ? undefined : { agent_id: "agt_fixture", expected_revision: 1, name: "文件整理专家", description: "整理授权文件并汇总结果。", starter_prompts: ["请整理这批文件"], avatar_ref: "builtin:assistant", avatar_seed: "fixture", market_tags: [], completed_tasks: 0, is_favorite: false, published_at: "2026-01-01T00:00:00Z" }}
+      presentation={presentation}
       tools={[]} onToggleTool={noop} onToggleCategory={noop} onToggleAll={noop} enabledToolsCount={0} totalToolsCount={0}
       skills={[]} taskSkills={[]} selectedSkillState={createSelectedSkillTaskState()} onSelectSkill={noop} onClearSelectedSkill={noop}
       onSelectedSkillRecoverable={ready} onSelectedSkillFilesReady={noop} skillsLoading={false} enabledSkillsCount={0} totalSkillsCount={0} enableSkills={false}
