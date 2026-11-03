@@ -1,6 +1,7 @@
 """JSON enum identity at independently validated public-event boundaries."""
 
 import pytest
+from types import MappingProxyType
 
 from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
@@ -80,6 +81,85 @@ def test_shape_correction_preserves_streaming_specific_disclosure_policy():
             message_id="message1", causation_event_id=None, payload=payload,
             payload_sanitizer=lambda _value: {},
         )
+
+
+def test_producer_and_projection_keep_their_closed_context_shape_contracts():
+    payload = {"delta": "safe"}
+    candidate = _candidate("message.delta", payload)
+    assert candidate.payload is payload
+    projected = validate_public_application_payload_v4(
+        "message.delta", MappingProxyType(payload)
+    )
+    assert projected == payload
+    assert projected is not payload
+    with pytest.raises(ValueError, match="event payload must be an object"):
+        ClaudeAgentEventCandidate(
+            run_id="run1", event_id="event1", event_type="message.delta",
+            message_id="message1", causation_event_id=None,
+            payload=MappingProxyType(payload),
+            payload_sanitizer=_without_none_public_values,
+        )
+
+
+def test_payload_context_differences_remain_explicit_at_semantic_edges():
+    progress = {
+        "schema_version": "ai-platform.public-agent-progress.v1",
+        "step_id": "phase_model_wait",
+        "phase": "model_wait",
+        "lifecycle": "started",
+        "message": "Loading authorized Skills",
+    }
+    _candidate("agent.progress", progress)
+    with pytest.raises(V4ProjectionError, match="v4_agent_progress_payload_invalid"):
+        validate_public_application_payload_v4("agent.progress", progress)
+
+    malformed_refs = {
+        "operation_id": "operation1",
+        "category": "read",
+        "display_name": "Read",
+        "evidence_refs": [{}],
+    }
+    with pytest.raises(TypeError):
+        _candidate("tool.started", malformed_refs)
+    with pytest.raises(V4ProjectionError, match="v4_evidence_refs_invalid"):
+        validate_public_application_payload_v4("tool.started", malformed_refs)
+
+    duplicate_refs = {
+        "operation_id": "operation1",
+        "category": "read",
+        "display_name": "Read",
+        "evidence_refs": ["ref1", "ref1"],
+    }
+    with pytest.raises(ValueError, match="invalid evidence_refs"):
+        _candidate("tool.started", duplicate_refs)
+    with pytest.raises(V4ProjectionError, match="v4_evidence_refs_invalid"):
+        validate_public_application_payload_v4("tool.started", duplicate_refs)
+
+    private_extra = {"delta": "safe", "__private": "SENTINEL"}
+    with pytest.raises(ValueError, match="event payload fields do not match schema"):
+        _candidate("message.delta", private_extra)
+    with pytest.raises(V4ProjectionError, match="v4_payload_keys_invalid"):
+        validate_public_application_payload_v4("message.delta", private_extra)
+
+
+def test_shared_field_predicates_preserve_delta_and_filename_bounds():
+    maximum_delta = {"delta": "x" * 8_192}
+    assert _candidate("message.delta", maximum_delta).payload is maximum_delta
+    assert validate_public_application_payload_v4("message.delta", maximum_delta) == maximum_delta
+    too_long = {"delta": "x" * 8_193}
+    with pytest.raises(ValueError, match="invalid delta bound"):
+        _candidate("message.delta", too_long)
+    with pytest.raises(V4ProjectionError, match="v4_delta_invalid"):
+        validate_public_application_payload_v4("message.delta", too_long)
+
+    filename_payload = {
+        "artifact_id": "artifact1", "filename": "bad\x00name",
+        "media_type": "text/plain", "size_bytes": 1, "status": "ready",
+    }
+    with pytest.raises(ValueError, match="invalid filename"):
+        _candidate("artifact.ready", filename_payload)
+    with pytest.raises(V4ProjectionError, match="v4_filename_invalid"):
+        validate_public_application_payload_v4("artifact.ready", filename_payload)
 
 
 def test_candidate_completion_counter_resource_limit_is_unchanged():

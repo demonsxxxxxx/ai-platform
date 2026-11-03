@@ -30,6 +30,13 @@ from app.streaming.domain.protocol_v4 import (
     PUBLIC_REQUIRED_PAYLOAD_FIELDS,
     PUBLIC_TOOL_CATEGORIES,
 )
+from app.streaming.domain.public_payload_fields import (
+    bounded_public_integer,
+    bounded_public_string,
+    exact_enum_member,
+    safe_public_filename,
+    safe_public_ref,
+)
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
 _BUILTIN_TOOL_CATEGORIES = {
@@ -114,7 +121,7 @@ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def _assert_safe_ref(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or _SAFE_REF_PATTERN.fullmatch(value) is None:
+    if not safe_public_ref(value):
         raise ValueError(f"{field_name} is not a safe reference")
     return value
 
@@ -358,7 +365,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     for key, value in payload.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if not any(type(value) is type(option) and value == option for option in enum_values):
+            if not exact_enum_member(value, enum_values):
                 raise ValueError(f"invalid {key}")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
@@ -383,12 +390,9 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         string_bounds = PUBLIC_PAYLOAD_STRING_BOUNDS.get((event_type, key))
         if string_bounds is not None:
             minimum, maximum = string_bounds
-            if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+            if not bounded_public_string(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
-            if key == "filename" and any(
-                ord(char) < 32 or ord(char) == 127 or char in "/\\\\"
-                for char in value
-            ):
+            if key == "filename" and not safe_public_filename(value):
                 raise ValueError("invalid filename")
             continue
         integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
@@ -396,12 +400,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
             minimum, maximum = integer_bounds
             if maximum is None and key in {"delta_count", "text_length"}:
                 maximum = 2**63 - 1
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < minimum
-                or (maximum is not None and value > maximum)
-            ):
+            if not bounded_public_integer(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
             continue
         raise ValueError(f"unsupported schema field: {key}")
