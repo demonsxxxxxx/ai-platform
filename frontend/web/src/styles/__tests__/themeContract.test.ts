@@ -64,7 +64,7 @@ test("base.css geometry and font equal the Lobe token overrides", () => {
 });
 
 test("chat geometry has one definition", () => {
-  assert.equal(lightCss.get("--chat-column-max"), "48rem");
+  assert.equal(lightCss.get("--chat-column-max"), "56rem");
   assert.equal(lightCss.get("--radius-composer"), "28px");
   assert.equal(lightCss.get("--radius-user-bubble"), "22px");
   const chatCss = readFileSync(new URL("../chat.css", import.meta.url), "utf8");
