@@ -855,7 +855,7 @@ def _public_capability_label(
         )
         if skill_subject is None:
             return ""
-        return "Skill"
+        return canonical_identity
     if capability_kind == "mcp":
         matching = [
             subject

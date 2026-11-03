@@ -1854,13 +1854,13 @@ test("projects v4 tool lifecycle into stable typed statuses", () => {
 
   const skill = processMessageEvent(
     "run_event",
-    { event_type: "public_tool_activity", operation_id: "op-skill-1", category: "skill", display_name: "QA Review", status: "started" },
+    { event_type: "public_tool_activity", operation_id: "op-skill-1", category: "skill", display_name: "qa-review", status: "started" },
     [], "", [], 0, [], true, "message-1",
   );
   assert.equal(skill.parts[0]?.type, "tool");
   assert.equal(
     skill.parts[0]?.type === "tool" ? skill.parts[0].public_display_name : null,
-    "QA Review",
+    "qa-review",
   );
 
   const completed = processMessageEvent(

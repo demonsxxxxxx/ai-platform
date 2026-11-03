@@ -2296,20 +2296,7 @@ async def run_claude_agent_sdk(
         )
         if isinstance(value, str) and value
     )
-    non_skill_private_tokens = private_capability_tokens.copy()
-    skill_identity_tokens = {
-        identity for kind, identity in capability_plan.available if kind == "skill"
-    }
-    private_capability_tokens.update(skill_identity_tokens)
-    skill_subject = authorized_subjects.get("Skill")
-    if isinstance(skill_subject, dict):
-        private_capability_tokens.update(
-            name
-            for name in skill_subject.get("allowed_skill_names", [])
-            if isinstance(name, str)
-        )
     private_replacement = "\u2588"
-    private_skill_replacement = "【技能】"
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
@@ -2317,21 +2304,6 @@ async def run_claude_agent_sdk(
     if document_plugin_revision is not None:
         private_replacements[document_plugin_revision] = private_replacement
     workspace_token = str(cwd)
-    if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
-        private_replacements[workspace_token] = private_replacement
-    for identity in skill_identity_tokens:
-        replacement = private_skill_replacement
-        if (
-            any(token in replacement for token in non_skill_private_tokens)
-            or any(
-                token in replacement
-                for token in private_replacements
-                if token != identity
-            )
-            or identity == workspace_token
-        ):
-            continue
-        private_replacements[identity] = replacement
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_replacements,
         sanitizer=sanitize_public_answer_text,
@@ -2341,7 +2313,22 @@ async def run_claude_agent_sdk(
         text = str(value)
         for token, replacement in private_replacements.items():
             text = text.replace(token, replacement)
+        text = sanitize_public_answer_text(text)
+        if cwd.is_absolute() and workspace_token:
+            return workspace_token.join(
+                sanitize_public_text(fragment)
+                for fragment in text.split(workspace_token)
+            )
         return sanitize_public_text(text)
+
+    def sanitize_public_skill_name(value: object) -> str:
+        text = str(value)
+        sanitized = sanitize_public_answer_text(text)
+        if sanitized != text:
+            return sanitized
+        if any(token and token in text for token in private_replacements):
+            return ""
+        return text
 
     if interaction_client is not None:
         interaction_actor = prepare_claude_run_interaction(
@@ -2352,7 +2339,11 @@ async def run_claude_agent_sdk(
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
 
-    def register_dynamic_tool_call_id(value: object) -> None:
+    def register_dynamic_tool_call_id(
+        value: object, *, skill_call: bool = False
+    ) -> None:
+        if skill_call:
+            return
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
             replacement = replacement_for_private_token(call_id)
@@ -2370,6 +2361,7 @@ async def run_claude_agent_sdk(
             attempt_id=attempt_id,
             tool_policy_subjects=[*(tool_policy_subjects or []), *plugin_subjects],
             sanitizer=sanitize_public_answer_text,
+            skill_name_sanitizer=sanitize_public_skill_name,
             payload_sanitizer=sanitize_public_event_candidate,
             tool_identity_resolver=mcp_registration.canonical_identity,
         )
@@ -2466,11 +2458,14 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
             return reject_capability_evidence()
         if lifecycle_phase == "invocation_requested":
-            register_dynamic_tool_call_id(tool_call_id)
-            lifecycle_replacements = {
-                tool_call_id: replacement_for_private_token(tool_call_id)
-            }
-            if capability_kind in {"mcp", "skill"}:
+            if capability_kind != "skill":
+                register_dynamic_tool_call_id(tool_call_id)
+            lifecycle_replacements: dict[str, str] = {}
+            if capability_kind != "skill":
+                lifecycle_replacements[tool_call_id] = replacement_for_private_token(
+                    tool_call_id
+                )
+            if capability_kind == "mcp":
                 lifecycle_replacements[canonical_identity] = (
                     replacement_for_private_token(canonical_identity)
                 )
@@ -3947,7 +3942,10 @@ async def run_claude_agent_sdk(
                 content = getattr(message, "content", None)
                 for block in content if isinstance(content, list) else ():
                     if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
-                        register_dynamic_tool_call_id(getattr(block, "id", None))
+                        register_dynamic_tool_call_id(
+                            getattr(block, "id", None),
+                            skill_call=getattr(block, "name", None) == "Skill",
+                        )
                 if getattr(message, "parent_tool_use_id", None) is not None:
                     continue
                 # Tool evidence has its own authority. Even rejected text or

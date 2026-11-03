@@ -1315,7 +1315,7 @@ test("failed history retains canonical public execution activity through termina
   assert.match(terminal.event_type, /failed/);
 });
 
-test("history retains only the authorized Skill display name", () => {
+test("history retains only the authorized Skill identity", () => {
   const messages = reconstructMessagesFromEvents(
     [{
       id: "skill-history-completed",
@@ -1328,7 +1328,7 @@ test("history retains only the authorized Skill display name", () => {
         event_type: "public_tool_activity",
         operation_id: "operation-skill-history",
         category: "skill",
-        display_name: "QA Review",
+        display_name: "qa-review",
         status: "completed",
         result_summary: "private result must not survive",
       },
@@ -1340,10 +1340,10 @@ test("history retains only the authorized Skill display name", () => {
   const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
   const tool = visibleParts[0];
   assert.equal(tool?.type, "tool");
-  assert.equal(tool?.type === "tool" ? tool.name : null, "QA Review");
+  assert.equal(tool?.type === "tool" ? tool.name : null, "qa-review");
   assert.equal(
     tool?.type === "tool" ? tool.public_display_name : null,
-    "QA Review",
+    "qa-review",
   );
   assert.doesNotMatch(JSON.stringify(visibleParts), /private result/);
 });

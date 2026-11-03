@@ -2,8 +2,7 @@ import type { MessagePart } from "../../../types";
 import { PUBLIC_TOOL_CATEGORIES } from "../../../generated/publicRunStreamV4";
 import { groupPublicExecutionStepsForDisplay } from "../../../hooks/useAgent/publicStreamPresentation";
 
-const PUBLIC_TOOL_DISPLAY_NAMES: Readonly<Record<(typeof PUBLIC_TOOL_CATEGORIES)[number], string>> = {
-  skill: "Skill",
+const PUBLIC_TOOL_DISPLAY_NAMES: Readonly<Partial<Record<(typeof PUBLIC_TOOL_CATEGORIES)[number], string>>> = {
   mcp: "MCP",
   read: "Read",
   write: "Write",
@@ -58,6 +57,7 @@ export function getPublicToolDisplayName(
   ) {
     return publicDisplayName;
   }
+  if (publicCategory === "skill") return null;
   return PUBLIC_TOOL_DISPLAY_NAMES[
     publicCategory as (typeof PUBLIC_TOOL_CATEGORIES)[number]
   ] ?? null;
@@ -68,12 +68,13 @@ export function isPublicToolPresentation(
   publicCategory: string | undefined,
   status: string | undefined,
   durationMs?: number,
+  publicDisplayName?: string,
 ): boolean {
   return Boolean(
     publicOperationId &&
     PUBLIC_SAFE_REF_PATTERN.test(publicOperationId) &&
     publicCategory &&
-    getPublicToolDisplayName(publicCategory) !== null &&
+    getPublicToolDisplayName(publicCategory, publicDisplayName) !== null &&
     status &&
     PUBLIC_TOOL_STATUSES.has(status) &&
     (durationMs === undefined ||
@@ -118,6 +119,7 @@ export function isVisibleMessagePart(part: MessagePart): boolean {
       part.public_category,
       part.status,
       part.duration_ms,
+      part.public_display_name,
     );
   }
   if (part.type === "subagent") {

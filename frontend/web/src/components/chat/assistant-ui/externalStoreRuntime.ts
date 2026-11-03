@@ -70,6 +70,7 @@ function convertPart(
           part.public_category,
           part.status,
           part.duration_ms,
+          part.public_display_name,
         )
       ) {
         return null;

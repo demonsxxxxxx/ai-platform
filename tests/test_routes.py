@@ -4326,6 +4326,32 @@ async def test_get_run_denied_does_not_list_artifacts_or_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_run_events_denies_other_user_before_history_read(monkeypatch):
+    async def other_user_cannot_read_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-b", "run-a")
+        return None
+
+    async def forbidden_list_run_events(*args, **kwargs):
+        raise AssertionError("history must not be read before Run ownership is checked")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.runs.infrastructure.creation_postgres.get_authorized_run",
+        other_user_cannot_read_run,
+    )
+    monkeypatch.setattr(
+        "app.streaming.infrastructure.run_events_postgres.list_run_events",
+        forbidden_list_run_events,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_run_events("run-a", principal=principal(user_id="user-b"))
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "run_not_found"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "route",
     [get_run, get_run_playback, get_run_provenance, get_run_events, get_run_steps],
