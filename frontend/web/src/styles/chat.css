@@ -158,3 +158,10 @@
     animation: none;
   }
 }
+
+/* Attachment strip: room for the corner badges and a fade where it scrolls on. */
+.composer-attachment-strip {
+  padding-inline-end: 1.5rem;
+  -webkit-mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+}

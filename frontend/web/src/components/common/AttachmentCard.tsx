@@ -72,8 +72,9 @@ export const AttachmentCard = memo(function AttachmentCard({
   const isCompact = size === "compact";
   const isQueued = attachment.uploadStatus === "queued";
   const isRetrying = attachment.uploadStatus === "retrying";
+  // Corner badge in the ChatGPT Clone attachment style.
   const removeButtonClass =
-    "shrink-0 flex size-6 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] opacity-100 transition-colors duration-150 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]";
+    "composer-attachment-remove flex items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text-secondary)] transition-colors duration-150 hover:text-[var(--theme-text)]";
 
   const handleClick = () => {
     onClick?.(imageSrc);
@@ -114,7 +115,7 @@ export const AttachmentCard = memo(function AttachmentCard({
             height: "auto",
             minWidth: 0,
             width: "100%",
-            padding: "8px",
+            padding: "8px 12px 8px 8px",
             background: "transparent",
             border: "none",
             boxShadow: "none",
@@ -128,7 +129,7 @@ export const AttachmentCard = memo(function AttachmentCard({
               "shrink-0 flex items-center justify-center rounded-lg overflow-hidden",
               "transition-transform duration-200",
               !isUploading && "group-hover:scale-105",
-              isImage ? "size-10" : "size-10 bg-[var(--theme-hover)]",
+              isImage ? "size-10" : "size-10 bg-[var(--theme-bg-card)]",
             )}
           >
             {isUploading ? (
@@ -168,7 +169,7 @@ export const AttachmentCard = memo(function AttachmentCard({
             </span>
             {isUploading && !isQueued && !isRetrying && (
               <div
-                className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[var(--theme-border)]"
+                className="composer-attachment-progress overflow-hidden bg-[var(--theme-border)]"
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={100}
@@ -193,7 +194,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 event.stopPropagation();
                 onCancel();
               }}
-              style={{ height: 32, width: 32, padding: 0 }}
+              style={{ height: 22, width: 22, minWidth: 22, padding: 0 }}
               className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
               aria-label={t("fileUpload.cancelUpload")}
@@ -206,7 +207,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 type="text"
                 htmlType="button"
                 onClick={handleRemove}
-                style={{ height: 32, width: 32, padding: 0 }}
+                style={{ height: 22, width: 22, minWidth: 22, padding: 0 }}
                 className={removeButtonClass}
                 aria-label={`${t("fileUpload.removeAttachment")} ${attachment.name}`}
               >

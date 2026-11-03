@@ -20,7 +20,7 @@ export function ChatInputAttachments({
   return (
     <div
       data-slot="composer-attachments"
-      className="mx-3 mt-3 flex min-w-0 gap-2 overflow-x-auto attachment-scroll pb-2"
+      className="composer-attachment-strip flex min-w-0 gap-3 overflow-x-auto attachment-scroll px-1.5 pb-1 pt-2"
       data-composer-file-reference-list
     >
       {attachments.map((attachment) => {
