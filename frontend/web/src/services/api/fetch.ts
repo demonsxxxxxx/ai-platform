@@ -243,9 +243,11 @@ export async function cookieSessionRequest(
     signal?.throwIfAborted();
     if ((marker === getAccessToken() || hasRecoveredSession(marker))
       && conflict.code === "auth_context_stale") {
+      const sessionError = new ApiRequestError(conflict.message, 401, conflict.code);
+      publicApiErrors.add(sessionError);
       return recoverExpiredSessionAndReplay(
         input, requestOptions, replayRequest, marker, signal, method, body,
-        response, conflict, new ApiRequestError(conflict.message, 401, conflict.code),
+        response, conflict, sessionError,
       );
     }
   }

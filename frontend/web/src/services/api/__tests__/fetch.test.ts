@@ -798,7 +798,12 @@ test("an expired platform context signals login recovery without refreshing or r
     fetchImpl: async () => { calls++; return new Response(JSON.stringify({ detail: "auth_context_stale" }), { status: 409 }); },
   });
   try {
-    await assert.rejects(authFetch("/api/read"), (error: unknown) => error instanceof ApiRequestError && error.status === 401);
+    await assert.rejects(authFetch("/api/read"), (error: unknown) => {
+      assert.ok(error instanceof ApiRequestError);
+      assert.equal(error.status, 401);
+      assert.equal(publicApiErrorMessage(error, "untrusted fallback"), error.message);
+      return true;
+    });
     assert.equal(calls, 1);
     assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
   } finally { stubs.restore(); }
