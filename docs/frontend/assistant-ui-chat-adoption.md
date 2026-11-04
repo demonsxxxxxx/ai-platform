@@ -92,7 +92,9 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
 
-普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调，不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
+普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调；`remark-cjk-friendly-gfm-strikethrough/parseOnly` 放在 GFM 后，补齐 `~~旧方案：~~新方案` 的中文删除线解析。不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
+
+只有当前 assistant 正文仍在追加、未同步且未取消时，`MarkdownTextPrimitive.preprocess` 才使用固定版本 Remend 补齐显示前缀中的粗体、斜体、组合强调和删除线。预处理在 smooth 揭示后执行，减少动态效果时仍可补齐；消息、历史、runtime 快照和复制源保持原文。完成、失败、取消、同步及历史恢复不补齐，未闭合的终态文本按真实内容显示。Remend 的链接、图片、行内代码、数学、HTML、Setext 标题、单波浪号及比较符改写全部关闭，保留已有解析与安全策略；代码/公式中的星号及转义标记不当作正文强调补齐。原流式强调不补齐的显示路径由该公开预处理入口替换，无兼容开关或第二套 renderer。
 
 Virtuoso/useMessageScroll 保持大历史、返回底部、Run/文件深链和大纲定位；没有第二个 Viewport 滚动写入者，也不引入 TanStack 虚拟器。
 
