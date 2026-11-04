@@ -430,7 +430,78 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`Boolean(document.querySelector('[data-composer-model-option="model-b"]'))`, "chat:model-reopen");
   await client.evaluate(`document.querySelector('[data-composer-model-option="model-b"]').click()`);
   await client.waitFor(`document.querySelector('[data-composer-model-trigger]')?.textContent.includes('合成模型乙') && !document.querySelector('[data-composer-model-panel]')`, "chat:model-selected");
-  return { geometry, attachmentLayout, attachmentsScreenshot, activity, reveal, entryClearOfMessage, unifiedSurface, collapsedHistoryScreenshot, longQuestion, longQuestionScreenshot, coexistence, receiptScroll: scrolled, historyOnlyLayout, coexistenceScreenshot, historyOnlyScreenshot, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, questionScreenshots,
+  const composerCommands = await checkComposerCommands(client, viewport, { theme, evidenceDir });
+  return { composerCommands, geometry, attachmentLayout, attachmentsScreenshot, activity, reveal, entryClearOfMessage, unifiedSurface, collapsedHistoryScreenshot, longQuestion, longQuestionScreenshot, coexistence, receiptScroll: scrolled, historyOnlyLayout, coexistenceScreenshot, historyOnlyScreenshot, filesScreenshot, waitingScreenshot, stoppedScreenshot, messagesScreenshot, failureScreenshot, modelScreenshot, questionScreenshots,
     modelSelected: true, modelFocusReturn: true, suggestionDraft: true, hydratedAttachment: true, questionAnswers: true, mermaid: true, waitingPainted: true, richTextReachable: true,
     sendOnce: true, streamUpdated: true, stopConfirmed: true, cancellationRetainsText: true, synchronized: true, richText: true, safeFailure: true, copyVerified: true };
+}
+
+/** Real composer/selector interaction over the existing synthetic ChatView fixture. */
+export async function checkComposerCommands(client, viewport, { theme, evidenceDir }) {
+  const input = "document.querySelector('textarea')";
+  const menu = "document.querySelector('[data-composer-command-menu]')";
+  const type = async (text) => {
+    await client.evaluate(`(() => { const el = ${input}; el.focus(); el.select(); })()`);
+    await client.send("Input.insertText", { text });
+    await client.waitFor(`${input}.value === ${JSON.stringify(text)}`, "composer:draft");
+  };
+  const click = async (selector) => {
+    await client.waitFor(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight + 1; })()`, "composer:pointer-target-contained");
+    const box = await client.evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, right: r.right, bottom: r.bottom }; })()`);
+    assert.ok(box.x > 0 && box.right <= viewport.width + 1 && box.y > 0 && box.bottom <= viewport.height + 1, JSON.stringify(box));
+    for (const type of ["mousePressed", "mouseReleased"]) await client.send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 });
+  };
+  await client.evaluate("window.__chatIntegration.showGeneric()");
+  await client.waitFor("Boolean(document.querySelector('[data-composer-model-trigger]'))", "composer:generic");
+  const sent = [];
+  for (const text of ["/workspace/.home/Desktop/diagnostic.xlsx在哪？我指的是我的桌面", "/unknown", "$100", "/model is failing in production", "/m"]) {
+    await type(text);
+    if (text !== "/m") assert.equal(await client.evaluate(`Boolean(${menu})`), false);
+    const turn = await client.evaluate("window.__chatIntegration.sends + 1");
+    await click('[data-slot="composer-send"]');
+    await client.waitFor(`window.__chatIntegration.sends === ${turn}`, "composer:literal-send");
+    assert.equal(await client.evaluate("window.__chatIntegration.lastSubmission.content"), text);
+    await client.waitFor(`${input}.value === ''`, "composer:accepted-clear");
+    await client.evaluate("window.__chatIntegration.finish()");
+    await client.waitFor("Boolean(document.querySelector('[data-slot=composer-send]'))", "composer:idle");
+    sent.push(text);
+  }
+  await type("/m");
+  await client.waitFor(`Boolean(${menu})`, "composer:menu");
+  const menuLayout = await client.evaluate(`(() => { const r = ${menu}.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }; })()`);
+  assert.ok(menuLayout.x >= 0 && menuLayout.y >= 0 && menuLayout.right <= viewport.width + 1 && menuLayout.bottom <= viewport.height + 1, JSON.stringify(menuLayout));
+  const screenshot = await captureScreenshot(client, evidenceDir, `${theme}-${viewport.name}-composer-commands-menu`);
+  const ime = await client.evaluate(`(() => { const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }); ${input}.dispatchEvent(event); return { prevented: event.defaultPrevented, value: ${input}.value, menu: Boolean(${menu}) }; })()`);
+  assert.deepEqual(ime, { prevented: false, value: "/m", menu: true });
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 8, text: "\r" });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 8 });
+  await client.waitFor(`${input}.value.includes('\\n')`, "composer:newline-before-completion");
+  await type("/m");
+  await key(client, "Escape", "Escape", 27);
+  await client.waitFor(`!${menu}`, "composer:escape-close");
+  assert.equal(await client.evaluate(`${input}.value`), "/m");
+  const turn = await client.evaluate("window.__chatIntegration.sends + 1");
+  await key(client, "Enter", "Enter", 13);
+  await client.waitFor(`window.__chatIntegration.sends === ${turn}`, "composer:escape-then-send");
+  await client.evaluate("window.__chatIntegration.finish(); window.__chatIntegration.attach()");
+  await client.waitFor("Boolean(document.querySelector('[data-composer-file-reference]'))", "composer:attachment");
+  await type("保留正文 /model 后续内容");
+  await client.evaluate(`(() => { const el = ${input}; el.setSelectionRange(11, 11); el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); })()`);
+  await client.waitFor("Boolean(document.querySelector('[data-composer-command-item=model]'))", "composer:middle-token");
+  await key(client, "Tab", "Tab", 9);
+  await client.waitFor("Boolean(document.querySelector('[data-composer-model-panel]'))", "composer:explicit-model");
+  assert.equal(await client.evaluate(`${input}.value`), "保留正文  后续内容");
+  await click('[data-composer-model-option="model-a"]');
+  await client.waitFor("!document.querySelector('[data-composer-model-panel]')", "composer:model-chosen");
+  assert.equal(await client.evaluate(`${input}.value`), "保留正文  后续内容");
+  assert.ok(await client.evaluate("Boolean(document.querySelector('[data-composer-file-reference]'))"));
+  await type("保留正文 /skill");
+  await click('[data-composer-command-item="skill"]');
+  await client.waitFor("Boolean(document.querySelector('[data-composer-chip-state=unavailable]'))", "composer:unavailable");
+  await client.waitFor(`document.activeElement === ${input}`, "composer:unavailable-focus-return");
+  assert.equal(await client.evaluate(`${input}.value`), "保留正文 /skill");
+  await client.send("Input.insertText", { text: " 继续说明" });
+  await client.waitFor(`${input}.value === '保留正文 /skill 继续说明'`, "composer:continue-after-unavailable");
+  assert.ok(await client.evaluate("Boolean(document.querySelector('[data-composer-file-reference]'))"));
+  return { sent, menuLayout, screenshot, ime, newline: true, escapeThenSend: true, partialTokenOnly: true, unavailableFocusReturn: true, unavailableRetainsDraftAndAttachment: true };
 }

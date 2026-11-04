@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { captureScreenshot, startBrowser } from "./browser-smoke-harness.mjs";
-import { checkChatIntegration } from "./chat-integration-browser-checks.mjs";
+import { checkChatIntegration, checkComposerCommands } from "./chat-integration-browser-checks.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
 const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
@@ -333,6 +333,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
 }
 
 const cases = [
+  { path: "/scripts/fixtures/chat-integration.html", selector: "textarea", name: "composer-commands", requiredSelectors: ["textarea"] },
   { path: "/scripts/fixtures/chat-integration.html", selector: "[data-agent-starter-prompts] button", name: "chat-integration", requiredSelectors: ["textarea", "[data-librechat-context-toggle]"] },
   { path: "/ai-apps/sop-assistant", selector: "textarea[aria-label=\"制度或流程问题\"]", name: "sop", scroller: "[data-ai-application-scroller]" },
   { path: "/ai-apps/word-review", selector: ".review-upload", name: "word", scroller: "[data-ai-application-scroller]", requiredRequests: ["/api/review/history", "/api/review/stats/documents"] },
@@ -472,7 +473,7 @@ if (selectedCases.length === 0 || selectedViewports.length === 0) {
 async function runCase(viewport, scenario) {
   const browser = await startBrowser({ viewport, profilePrefix: `route-layout-${viewport.name}-` });
   try {
-    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading, ["chat-integration", "market-workspace"].includes(scenario.name)) });
+    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading, ["chat-integration", "market-workspace", "composer-commands"].includes(scenario.name)) });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
     try {
       await browser.client.waitFor(
@@ -1248,8 +1249,10 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor("!document.querySelector('[role=dialog]') && document.activeElement?.textContent.trim() === '管理工具'", "builder:mcp-focus-restored");
       await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
     }
-    const chatIntegration = ["chat-integration", "market-workspace"].includes(scenario.name)
-      ? await checkChatIntegration(browser.client, viewport, scenario.name, { theme, evidenceDir }) : null;
+    const chatIntegration = scenario.name === "composer-commands"
+      ? await checkComposerCommands(browser.client, viewport, { theme, evidenceDir })
+      : ["chat-integration", "market-workspace"].includes(scenario.name)
+        ? await checkChatIntegration(browser.client, viewport, scenario.name, { theme, evidenceDir }) : null;
     const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");
     if (finalErrors.length) throw new Error(`interaction_failed:${viewport.name}:${scenario.name}:${JSON.stringify(finalErrors)}`);
     let loadingLayout = null;

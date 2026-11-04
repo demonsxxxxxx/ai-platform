@@ -89,7 +89,7 @@ function longHistoryProjection(index: number): RunInputsProjection {
     ],
   };
 }
-const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
+const fixtureState = { sends: 0, stops: 0, lastSubmission: { content: "", attachmentCount: 0 }, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -201,6 +201,7 @@ export function Fixture() {
       agentOptions={{}} agentOptionValues={{}} onToggleAgentOption={noop} availableModels={generic ? [{ id: "model-a", value: "model-a", label: "合成模型甲" }, { id: "model-b", value: "model-b", label: "合成模型乙" }] : []} currentModelId={model} onSelectModel={setModel}
       onSendMessage={async (content, _options, sentAttachments) => {
         fixtureState.sends += 1;
+        fixtureState.lastSubmission = { content, attachmentCount: sentAttachments?.length ?? 0 };
         const turn = fixtureState.sends;
         setQuestionProjection(null);
         setMessages((current) => [...current,

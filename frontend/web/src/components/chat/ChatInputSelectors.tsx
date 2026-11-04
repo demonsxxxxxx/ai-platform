@@ -16,7 +16,6 @@ import {
 export interface ChatInputSelectorsProps {
   activePanel: FeaturePanel;
   onActivePanelChange: (panel: FeaturePanel) => void;
-  commandSearchSeed?: { panel: FeaturePanel; query: string } | null;
   // Tools
   tools?: ToolState[];
   onToggleTool?: (toolName: string) => void;
@@ -39,7 +38,6 @@ export interface ChatInputSelectorsProps {
 export function ChatInputSelectors({
   activePanel,
   onActivePanelChange,
-  commandSearchSeed,
   tools = [],
   onToggleTool,
   onToggleCategory,
@@ -67,11 +65,6 @@ export function ChatInputSelectors({
             totalCount={totalToolsCount}
             isOpen={activePanel === "tools"}
             onOpenChange={(open) => onActivePanelChange(open ? "tools" : null)}
-            searchSeed={
-              commandSearchSeed?.panel === "tools"
-                ? commandSearchSeed.query
-                : undefined
-            }
           />
         </LibreChatSelectorModal>
       )}
@@ -84,11 +77,6 @@ export function ChatInputSelectors({
               isLoading={skillsLoading}
               isOpen={activePanel === "skills"}
               onOpenChange={(open) => onActivePanelChange(open ? "skills" : null)}
-              searchSeed={
-                commandSearchSeed?.panel === "skills"
-                  ? commandSearchSeed.query
-                  : undefined
-              }
             />
           </LibreChatSelectorModal>
         )}
@@ -100,11 +88,6 @@ export function ChatInputSelectors({
             isOpen={activePanel === "model"}
             onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
             onSelectModel={onSelectModel}
-            searchSeed={
-              commandSearchSeed?.panel === "model"
-                ? commandSearchSeed.query
-                : undefined
-            }
           />
         </LibreChatSelectorModal>
       )}

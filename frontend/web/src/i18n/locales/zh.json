@@ -292,7 +292,7 @@
     "dropFilesHere": "拖放文件到此处上传",
     "enterToSend": "发送",
     "errorPrefix": "错误：{{error}}",
-    "commandTrigger": "打开命令：/ 或 $ 选择 Skills，/mcp 选择 MCP 工具",
+    "commandTrigger": "添加技能或工具",
     "connectionStatus": {
       "connecting": "正在连接任务更新…",
       "disconnected": "实时更新已断开，请重新连接以继续接收任务进度。",
@@ -395,9 +395,9 @@
     "sendBlockedLoadingHistory": "正在加载历史记录…",
     "sendBlockedSynchronizing": "正在同步结果，完成后可继续发送",
     "outline": "大纲",
-    "placeholder": "输入 / 选择命令，输入 $ 选择 Skills，或直接描述任务...",
-    "placeholderWithHintCtrl": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 换行，Ctrl+Enter 发送",
-    "placeholderWithHintShift": "输入 / 选择命令，输入 $ 选择 Skills…  Enter 发送，Shift+Enter 换行",
+    "placeholder": "描述你想完成的事，也可以输入 / 查找快捷入口…",
+    "placeholderWithHintCtrl": "描述你想完成的事…  Enter 换行，Ctrl+Enter 发送",
+    "placeholderWithHintShift": "描述你想完成的事…  Enter 发送，Shift+Enter 换行",
     "queueFull": "排队已满，请稍后再试",
     "queueStart": "任务开始处理",
     "queued": "排队中 (第 {{position}} 位)...",
@@ -2092,7 +2092,7 @@
   },
   "skillsHub": {
     "composerEntry": {
-      "description": "在聊天里用 / 打开命令，用 $ 选择 Skills；不可用能力会变成 chip，不会静默消失。",
+      "description": "通过添加菜单选择技能或工具，也可输入 / 查找快捷入口；选择后打开对应功能，正文和附件会保留。",
       "title": "输入框优先入口"
     },
     "featureDisabled": {
