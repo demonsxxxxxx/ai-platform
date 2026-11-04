@@ -16,6 +16,7 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
+import { publicApiErrorMessage } from "../../services/api/fetch";
 import {
   ModelAdminControl,
   type ModelAdminControlState,
@@ -139,9 +140,7 @@ export function ModelCatalogPanel() {
         if (cancelled) return;
         setState(null);
         setLoadError(
-          err instanceof Error
-            ? err.message
-            : t("models.catalogLoadFailed", "模型目录暂不可用"),
+          publicApiErrorMessage(err, t("models.catalogLoadFailed", "模型目录暂不可用")),
         );
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -224,10 +223,7 @@ export function ModelCatalogPanel() {
             state="degraded"
             surface="model-public-projection"
             title={t("models.catalogUnavailable", "模型目录暂不可用")}
-            description={t(
-              "models.catalogUnavailableDescription",
-              "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
-            )}
+            description={loadError}
           />
         </div>
       </div>

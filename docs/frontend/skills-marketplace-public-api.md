@@ -270,6 +270,24 @@ retains its existing typed credential HTTP errors and force-relogin rules. The
 payload-free diagnostic reason/stage logging; those fields never enter these
 catalog responses.
 
+The Chat tool selector presents partial discovery as a compact, counted notice,
+not a blocking empty-state card. Details show only the authorized registration's
+bounded connection label and a fixed localized reason; Gateway upstream labels,
+endpoints and raw diagnostic text are not failure identities. Invalid label
+shapes use an unnamed-service fallback. Compatibility `no_tools` entries mean
+no selectable tools, not a failed connection, and use neutral summary copy.
+The notice keeps healthy tools selectable and offers explicit read-only retry.
+While a read is pending, the existing loading fence disables selection; the
+local selection draft survives and is reconciled against the returned catalog.
+No automatic retry, tool invocation or new authorization is introduced.
+
+This replaces the former centered degraded card and reason-key-only frontend
+projection. The HTTP response and string reason protocol are unchanged; the
+frontend retains bounded label/reason records for its existing selector consumer.
+The selector's source/mounted regressions cover count, disclosure, expand/collapse,
+read-only retry and selection reconciliation. Existing generation, authentication
+and conversation-control fences remain in force.
+
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,
 credential state, bounded metadata, and a credential fingerprint. Endpoint and

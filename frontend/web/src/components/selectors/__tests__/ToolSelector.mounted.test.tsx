@@ -195,6 +195,84 @@ test("ToolSelector defaults source groups to collapsed across opens and preserve
         assert.equal(document.body.style.overflow, "");
       });
     }
+    await t.test("partial failures show counted details and retry reads without losing local choices", async () => {
+      const { useTools, reconcileChatMcpToolSelection } = await import("../../../hooks/useTools");
+      const oldFetch = globalThis.fetch;
+      let resolveRetry!: (response: Response) => void;
+      const retry = new Promise<Response>((resolve) => { resolveRetry = resolve; });
+      const requests: RequestInit[] = [];
+      const toolResponse = (unavailable: unknown[]) => new Response(JSON.stringify({
+        tools: initialTools.map((tool) => ({ tool_id: tool.name, label: tool.name,
+          description: tool.description, category: tool.category, server: tool.server,
+          upstream_server: tool.upstream_server, cached: false })),
+        count: initialTools.length, unavailable,
+      }), { status: 200 });
+      globalThis.fetch = (async (_input, init = {}) => {
+        requests.push(init);
+        return requests.length === 1 ? toolResponse([
+          { label: "missing-a", reason: "discovery_failed", message: "private-secret" },
+          { label: "missing-b", reason: "no_tools" },
+          { label: "https://private.invalid/?token=secret", reason: "private-secret" },
+        ]) : retry;
+      }) as typeof fetch;
+      const root = await createLobeTestRoot(container);
+      let current!: ReturnType<typeof useTools>;
+      function Harness() {
+        const catalog = useTools();
+        current = catalog;
+        const [selected, setSelected] = useState(initialTools.map((tool) => tool.name));
+        const selectedNow = reconcileChatMcpToolSelection(selected, catalog.tools, catalog.catalogState.status);
+        return createElement(MemoryRouter, null, createElement(ChatMcpCatalogContext.Provider, {
+          value: { catalogState: catalog.catalogState, retryTools: () => { void catalog.refreshTools(); } },
+        }, createElement(ToolSelector, {
+          tools: catalog.tools.map((tool) => ({ ...tool, enabled: selectedNow.includes(tool.name) })),
+          enabledCount: selectedNow.length, totalCount: catalog.totalCount,
+          onToggleTool: (name: string) => setSelected((previous) => previous.includes(name)
+            ? previous.filter((id) => id !== name) : [...previous, name]),
+          onToggleCategory: () => {}, isOpen: true, onOpenChange: () => {},
+        })));
+      }
+      try {
+        await act(async () => root.render(createElement(Harness)));
+        const modal = document.querySelector<HTMLElement>("[data-composer-mcp-selector]")!;
+        const notice = modal.querySelector('[data-mcp-catalog-status="degraded"]')!;
+        assert.match(notice.textContent!, /有 3 个 MCP 服务未提供可用工具/);
+        assert.match(notice.textContent!, /其他工具可正常选择/);
+        const details = notice.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+        assert.equal(details.getAttribute("aria-expanded"), "false");
+        const controlledDetails = document.getElementById(details.getAttribute("aria-controls")!);
+        assert.ok(controlledDetails);
+        assert.equal(controlledDetails.hidden, true);
+        await act(async () => details.click());
+        assert.equal(controlledDetails.hidden, false);
+        assert.equal(details.getAttribute("aria-expanded"), "true");
+        assert.equal(notice.querySelectorAll("li").length, 3);
+        assert.match(notice.textContent!, /missing-a.*目录加载失败/);
+        assert.match(notice.textContent!, /missing-b.*未返回可选择/);
+        assert.match(notice.textContent!, /MCP 服务 3/);
+        assert.doesNotMatch(modal.textContent!, /private|token|secret/);
+        const group = [...modal.querySelectorAll<HTMLButtonElement>("[data-composer-mcp-group] button[aria-expanded]")]
+          .find((button) => button.textContent?.includes("AlphaServer"))!;
+        await act(async () => group.click());
+        await act(async () => modal.querySelector<HTMLElement>('[data-composer-mcp-row="alpha_search"]')!.click());
+        assert.match(modal.textContent!, /已选择 1\/2/);
+        const retryButton = [...notice.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试")!;
+        await act(async () => retryButton.click());
+        assert.equal(current.catalogState.status, "loading");
+        assert.equal(document.querySelector("[data-composer-mcp-selector]"), modal);
+        assert.equal(modal.querySelectorAll("[data-composer-mcp-row]").length, 0);
+        assert.equal(modal.querySelector('[data-mcp-catalog-status="loading"]')!.querySelector("button"), null);
+        await act(async () => { resolveRetry(toolResponse([])); });
+        assert.equal(current.catalogState.status, "ready");
+        assert.equal(modal.querySelector('[data-mcp-catalog-status]'), null);
+        assert.match(modal.textContent!, /已选择 1\/2/);
+        assert.equal(requests.length, 2);
+        assert.ok(requests.every((request) => !request.method || request.method === "GET"));
+      } finally {
+        await act(async () => root.unmount());
+        globalThis.fetch = oldFetch;
+      }
+    });
   } finally {
     dom.close();
   }

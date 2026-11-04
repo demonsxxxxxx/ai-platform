@@ -21,6 +21,13 @@ interface FetchOptions extends RequestInit {
 /** A sanitized server status/code pair for callers that need safe recovery. */
 export const FORCE_RELOGIN_EVENT = "auth:force-relogin";
 
+const publicApiErrors = new WeakSet<Error>();
+
+/** Only responses normalized at this boundary may supply public error text. */
+export function publicApiErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && publicApiErrors.has(error) ? error.message : fallback;
+}
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -44,6 +51,7 @@ export class ApiProtocolError extends ApiRequestError {
     );
     super(projection.message, status, projection.code);
     this.name = "ApiProtocolError";
+    publicApiErrors.add(this);
   }
 }
 
@@ -98,13 +106,15 @@ export async function apiRequestErrorFromResponse(
     )
       ? (detail as { diagnostic_id: string }).diagnostic_id
       : undefined;
-  return new ApiRequestError(
+  const error = new ApiRequestError(
     projection.message,
     status,
     projection.code,
     submissionDisposition,
     diagnosticId,
   );
+  publicApiErrors.add(error);
+  return error;
 }
 
 /**

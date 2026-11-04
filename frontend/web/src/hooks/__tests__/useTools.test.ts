@@ -56,15 +56,15 @@ test("validates ready, empty, and degraded Chat MCP catalogs without retaining p
   const degraded = parseChatMcpCatalogResponse({
     tools: [],
     unavailable: [
-      { label: "已配置 MCP 服务", reason: "discovery_failed" },
-      { label: "已配置 MCP 服务", reason: "private_reason=discarded" },
+      { label: "gateway-a", reason: "discovery_failed" },
+      { label: "gateway-b", reason: "private_reason=discarded" },
     ],
     count: 0,
   });
   assert.equal(classifyChatMcpCatalog(degraded), "degraded");
   assert.deepEqual(degraded.unavailable, [
-    "tools.catalog.unavailable.discoveryFailed",
-    "tools.catalog.unavailable.generic",
+    { label: "gateway-a", reasonKey: "tools.catalog.unavailable.discoveryFailed" },
+    { label: "gateway-b", reasonKey: "tools.catalog.unavailable.generic" },
   ]);
 });
 
@@ -100,6 +100,22 @@ test("projects optional Gateway upstream source metadata without exposing extra 
     })),
     /chat_mcp_catalog_tool_invalid/,
   );
+});
+
+test("unavailable services retain only authorized connection labels and fixed reasons", () => {
+  const catalog = parseChatMcpCatalogResponse(response({ unavailable: [
+    { label: "gateway-a", reason: "authorization_required", message: "private-secret" },
+    { label: "gateway-b", reason: "no_tools" },
+    { label: "https://private.example/?token=secret", reason: "private-secret" },
+    { label: "gateway\n", reason: "private-secret" },
+  ] }));
+  assert.deepEqual(catalog.unavailable, [
+    { label: "gateway-a", reasonKey: "tools.catalog.unavailable.authorizationRequired" },
+    { label: "gateway-b", reasonKey: "tools.catalog.unavailable.noTools" },
+    { reasonKey: "tools.catalog.unavailable.generic" },
+    { reasonKey: "tools.catalog.unavailable.generic" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(catalog), /private|token|secret/);
 });
 
 test("rejects malformed responses instead of treating them as an empty catalog", () => {
@@ -167,6 +183,6 @@ test("MCP operational unavailability remains degraded with localized discovery c
     unavailable: [{ label: "gateway", reason: "discovery_failed" }],
   });
   assert.equal(classifyChatMcpCatalog(catalog), "degraded");
-  assert.deepEqual(catalog.unavailable, ["tools.catalog.unavailable.discoveryFailed"]);
+  assert.deepEqual(catalog.unavailable, [{ label: "gateway", reasonKey: "tools.catalog.unavailable.discoveryFailed" }]);
   assert.deepEqual(reconcileChatMcpToolSelection(["gateway::stale"], catalog.tools, "degraded"), []);
 });

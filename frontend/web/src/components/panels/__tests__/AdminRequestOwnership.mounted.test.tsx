@@ -83,6 +83,19 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
     async close() { if (closed) return; closed = true; await act(async () => root.unmount()); container.remove(); Object.assign(authApi, { bootstrapAuthContext: old.bootstrap, getCurrentUser: old.user }); roleApi.list = old.roles; globalThis.fetch = old.fetch; toast.success = old.success; toast.error = old.error; },
   };
 }
+test("role overview retains safe API failure reasons", async () => {
+  const { RolesPanel } = await import("../RolesPanel");
+  for (const child of [createElement(RolesPanel)]) {
+    const view = await harness(null, () => json({ detail: "auth_refresh_unavailable" }, 503));
+    try {
+      await view.setUser(principal("ordinary", ["user"]));
+      await view.render(child);
+      assert.match(view.container.textContent!, /认证服务暂时不可用/);
+      assert.doesNotMatch(view.container.textContent!, /role-governance-projection-unavailable/);
+    } finally { await view.close(); }
+  }
+});
+
 const acl = (id: string) => createElement(SkillDistributionGovernancePanel, { selectedSkillId: id, selectedSkill: null });
 async function withAcl(run: (view: Awaited<ReturnType<typeof harness>>) => Promise<void>, overrides: Partial<typeof capabilityDistributionApi> = {}) {
   const old = { ...capabilityDistributionApi };

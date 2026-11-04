@@ -23,10 +23,12 @@ test("admin lifecycle contract errors render a user-facing catalog message", asy
 
 test("Skill ZIP preview keeps safe backend reasons and translates unknown failures", async () => {
   const { resolveSkillPreviewError } = await import("../useSkills.ts");
+  const { apiRequestErrorFromResponse } = await import("../../services/api/fetch.ts");
+  const error = await apiRequestErrorFromResponse(new Response(JSON.stringify({ detail: "skill_package_skill_md_required" }), { status: 400 }));
 
   assert.equal(
-    resolveSkillPreviewError(new ApiRequestError("ZIP 中未找到 SKILL.md。", 400)),
-    "ZIP 中未找到 SKILL.md。",
+    resolveSkillPreviewError(error),
+    "ZIP 中未找到 SKILL.md。请上传 Skill 文件夹本身的 ZIP，或将 SKILL.md 放在包根目录。",
   );
   assert.equal(
     resolveSkillPreviewError(new ApiRequestError("private-details", 403)),

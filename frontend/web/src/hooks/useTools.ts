@@ -13,11 +13,18 @@ export type ChatMcpCatalogStatus = "loading" | "ready" | "empty" | "degraded" | 
 export type ChatMcpUnavailableMessageKey =
   | "tools.catalog.unavailable.discoveryFailed"
   | "tools.catalog.unavailable.noTools"
+  | "tools.catalog.unavailable.authorizationRequired"
+  | "tools.catalog.unavailable.unsupportedTransport"
   | "tools.catalog.unavailable.generic";
+
+export interface ChatMcpUnavailableService {
+  label?: string;
+  reasonKey: ChatMcpUnavailableMessageKey;
+}
 
 interface ParsedChatMcpCatalog {
   tools: ChatMcpToolState[];
-  unavailable: ChatMcpUnavailableMessageKey[];
+  unavailable: ChatMcpUnavailableService[];
   selectedMcpToolIds: string[] | undefined;
 }
 
@@ -28,7 +35,7 @@ interface ChatMcpCatalogSnapshot extends ParsedChatMcpCatalog {
 
 export interface ChatMcpCatalogState {
   status: ChatMcpCatalogStatus;
-  unavailable: ChatMcpUnavailableMessageKey[];
+  unavailable: ChatMcpUnavailableService[];
 }
 
 export interface ChatMcpCatalogContextValue {
@@ -79,6 +86,10 @@ function unavailableMessageKey(reason: string): ChatMcpUnavailableMessageKey {
       return "tools.catalog.unavailable.discoveryFailed";
     case "no_tools":
       return "tools.catalog.unavailable.noTools";
+    case "authorization_required":
+      return "tools.catalog.unavailable.authorizationRequired";
+    case "unsupported_transport":
+      return "tools.catalog.unavailable.unsupportedTransport";
     default:
       return "tools.catalog.unavailable.generic";
   }
@@ -144,7 +155,15 @@ export function parseChatMcpCatalogResponse(raw: unknown): ParsedChatMcpCatalog 
     if (!isRecord(item) || !isNonEmptyString(item.label) || !isNonEmptyString(item.reason)) {
       throw new Error("chat_mcp_catalog_unavailable_invalid");
     }
-    return unavailableMessageKey(item.reason);
+    // The API already scopes labels to authorized registrations. Accept only
+    // their bounded identifier grammar, never arbitrary diagnostic text/URLs.
+    const label = item.label.trim() === item.label &&
+      /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(item.label)
+      ? item.label : undefined;
+    return {
+      ...(label ? { label } : {}),
+      reasonKey: unavailableMessageKey(item.reason),
+    };
   });
 
   if (
