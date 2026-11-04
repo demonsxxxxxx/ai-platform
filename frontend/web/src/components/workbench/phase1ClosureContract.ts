@@ -7,7 +7,6 @@ export const PHASE1_CLOSURE_ROUTES = [
 
 export const PHASE1_COMPOSER_COMMANDS = [
   "/skill",
-  "$",
   "/mcp",
   "/model",
   "/file",
@@ -18,7 +17,7 @@ export const PHASE1_CLOSURE_SCREENSHOTS = [
   "apps.png",
   "chat-empty.png",
   "chat-slash-menu.png",
-  "chat-dollar-skills.png",
+  "chat-skill-selector.png",
   "chat-selected-skill-chip.png",
   "chat-model-selector.png",
   "chat-file-chip.png",

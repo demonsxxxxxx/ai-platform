@@ -607,8 +607,9 @@ async function collectComposerEvidence(client, baseUrl, timeoutMs, screenshotDir
   const commandItems = await client.evaluate(`Array.from(document.querySelectorAll("${COMMAND_ITEM_SELECTOR}")).map((node) => node.getAttribute("data-composer-command-item")).filter(Boolean)`);
   const slashScreenshot = await captureScreenshot(client, screenshotDir, "composer-slash-menu");
 
-  await setComposerText(client, "$ ");
-  await client.waitFor(`Boolean(document.querySelector("${SKILL_SELECTOR}"))`, timeoutMs, "dollar_skill_selector");
+  await setComposerText(client, "/skill");
+  await clickSelector(client, '[data-composer-command-item="skill"]');
+  await client.waitFor(`Boolean(document.querySelector("${SKILL_SELECTOR}"))`, timeoutMs, "explicit_skill_selector");
   const skillRows = await client.evaluate(`Array.from(document.querySelectorAll("${SKILL_ROW_SELECTOR}")).map((node) => ({
     name: node.getAttribute("data-composer-skill-row"),
     state: node.getAttribute("data-composer-skill-state")
@@ -628,10 +629,11 @@ async function collectComposerEvidence(client, baseUrl, timeoutMs, screenshotDir
       "selected_skill_chip",
     );
   }
-  const skillScreenshot = await captureScreenshot(client, screenshotDir, "composer-dollar-skills");
+  const skillScreenshot = await captureScreenshot(client, screenshotDir, "composer-skill-selector");
   await closePortal(client);
 
-  await setComposerText(client, "/mcp ");
+  await setComposerText(client, "/mcp");
+  await clickSelector(client, '[data-composer-command-item="mcp"]');
   await client.waitFor(`Boolean(document.querySelector("${MCP_SELECTOR}"))`, timeoutMs, "mcp_selector");
   const mcpRows = await client.evaluate(`Array.from(document.querySelectorAll("${MCP_ROW_SELECTOR}")).map((node) => ({
     name: node.getAttribute("data-composer-mcp-row"),
@@ -664,7 +666,8 @@ async function collectComposerEvidence(client, baseUrl, timeoutMs, screenshotDir
   const mcpScreenshot = await captureScreenshot(client, screenshotDir, "composer-mcp");
   await closePortal(client);
 
-  await setComposerText(client, "/file ");
+  await setComposerText(client, "/file");
+  await clickSelector(client, '[data-composer-command-item="file"]');
   await delay(500);
   const fileEvidence = await client.evaluate(`(() => {
     const refs = Array.from(document.querySelectorAll("${FILE_REFERENCE_SELECTOR}")).map((node) => ({

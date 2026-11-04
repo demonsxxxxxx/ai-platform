@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { resolveCommandPrefixPanel } from "../chatInputCommands";
+import { resolveSlashCommandMenu } from "../chatInputCommands";
 import {
   getWorkbenchNavItemFromPathname,
   getWorkbenchNavPath,
@@ -36,36 +36,19 @@ const sessionSidebarSource = readFileSync(
 );
 const zhSource = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
 
-test("slash and dollar command prefixes open Skills-first selectors", () => {
-  assert.match(commandSource, /COMMAND_PREFIX_PANEL/);
-  assert.match(commandSource, /"\/":\s*"skills"/);
-  assert.match(commandSource, /"\$":\s*"skills"/);
+test("slash completion does not reserve dollar or unknown message prefixes", () => {
+  assert.doesNotMatch(commandSource, /COMMAND_PREFIX_PANEL|parseComposerCommand/);
   assert.match(chatInputSource, /resolveComposerCommandDraft/);
-  assert.match(chatInputSource, /setCommandSearchSeed/);
   assert.match(chatInputSource, /setInput\(nextValue\)/);
+  for (const text of ["$", "$100", "/unknown", "/workspace/report.xlsx"]) {
+    assert.deepEqual(resolveSlashCommandMenu(text, { skills: true, tools: true }), []);
+  }
 });
 
-test("command prefixes respect selector availability", () => {
-  assert.equal(
-    resolveCommandPrefixPanel("/", { skills: false, tools: true }),
-    null,
-  );
-  assert.equal(
-    resolveCommandPrefixPanel("$", { skills: true, tools: false }),
-    "skills",
-  );
-  assert.equal(
-    resolveCommandPrefixPanel("/", { skills: true, tools: false }),
-    "skills",
-  );
-  assert.equal(
-    resolveCommandPrefixPanel("$", { skills: false, tools: true }),
-    null,
-  );
-  assert.equal(
-    resolveCommandPrefixPanel("normal input", { skills: true, tools: true }),
-    null,
-  );
+test("explicit command choices reflect selector availability", () => {
+  const items = resolveSlashCommandMenu("/", { skills: false, tools: true });
+  assert.equal(items.find((item) => item.command === "skill")?.unavailable, true);
+  assert.equal(items.find((item) => item.command === "mcp")?.unavailable, false);
 });
 
 test("composer exposes first-phase command, file, and Thinking affordances", () => {
@@ -79,7 +62,7 @@ test("composer exposes first-phase command, file, and Thinking affordances", () 
 test("feature menu exposes file and enhancement capabilities without redundant settings", () => {
   assert.match(featureMenuSource, /featureMenu\.skillsMarketplace/);
   assert.match(featureMenuSource, /featureMenu\.mcpTools/);
-  assert.match(featureMenuSource, /featureMenu\.fileReference/);
+  assert.match(toolbarSource, /<Paperclip/);
   assert.doesNotMatch(featureMenuSource, /featureMenu\.settings/);
   assert.doesNotMatch(featureMenuSource, /featureMenu\.model/);
   assert.doesNotMatch(featureMenuSource, /chat\.thinkingIntensity/);

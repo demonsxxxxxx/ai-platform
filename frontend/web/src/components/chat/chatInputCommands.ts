@@ -1,45 +1,5 @@
-import type { FeaturePanel } from "../selectors/FeatureMenu";
-
-export type ComposerCommandName =
-  | "menu"
-  | "skill"
-  | "mcp"
-  | "model"
-  | "file";
-
-export type ComposerCommandPanel =
-  | Exclude<FeaturePanel, null>
-  | "command-menu"
-  | "model"
-  | "file";
-
-export interface ComposerCommandAvailability {
-  skills: boolean;
-  tools: boolean;
-  models: boolean;
-  files: boolean;
-}
-
-export interface ParsedComposerCommand {
-  trigger: "/" | "$";
-  command: ComposerCommandName;
-  panel: ComposerCommandPanel;
-  query: string;
-  unavailable: boolean;
-}
-
-export interface ComposerCommandDraft {
-  command: ParsedComposerCommand;
-  panel: FeaturePanel | "command-menu";
-  selectorQuery: string;
-  shouldExecute: boolean;
-}
-
-export const COMMAND_PREFIX_PANEL: Record<string, Exclude<FeaturePanel, null>> =
-  {
-    "/": "skills",
-    "$": "skills",
-  };
+export type ComposerCommandName = "skill" | "mcp" | "model" | "file";
+export type ComposerCommandPanel = "skills" | "tools" | "model" | "file";
 
 export interface CommandPanelAvailability {
   skills: boolean;
@@ -48,42 +8,29 @@ export interface CommandPanelAvailability {
   files?: boolean;
 }
 
-const commandPanelByName: Record<ComposerCommandName, ComposerCommandPanel> = {
-  menu: "command-menu",
-  skill: "skills",
-  mcp: "tools",
-  model: "model",
-  file: "file",
-};
-
-const commandAvailabilityKey: Record<
-  Exclude<ComposerCommandName, "menu">,
-  keyof ComposerCommandAvailability
-> = {
-  skill: "skills",
-  mcp: "tools",
-  model: "models",
-  file: "files",
-};
-
-const panelCommandNames = new Set<ComposerCommandName>([
-  "skill",
-  "mcp",
-  "model",
-]);
+/** Only the slash token immediately before the caret belongs to completion. */
+export interface ComposerCommandDraft {
+  start: number;
+  end: number;
+  query: string;
+}
 
 export interface SlashCommandMenuItem {
-  command: Exclude<ComposerCommandName, "menu">;
-  panel: Exclude<ComposerCommandPanel, "command-menu">;
-  query: string;
+  command: ComposerCommandName;
+  panel: ComposerCommandPanel;
   unavailable: boolean;
   labelKey: string;
   descriptionKey: string;
 }
 
-const slashCommandItems: Array<
-  Pick<SlashCommandMenuItem, "command" | "panel" | "labelKey" | "descriptionKey">
-> = [
+const commandAvailabilityKey = {
+  skill: "skills",
+  mcp: "tools",
+  model: "models",
+  file: "files",
+} as const;
+
+const slashCommandItems: Omit<SlashCommandMenuItem, "unavailable">[] = [
   {
     command: "skill",
     panel: "skills",
@@ -110,159 +57,35 @@ const slashCommandItems: Array<
   },
 ];
 
-/** Resolve a typed command prefix only when its target selector is available. */
-export function resolveCommandPrefixPanel(
+export function resolveComposerCommandDraft(
   input: string,
-  availability: CommandPanelAvailability,
-): FeaturePanel {
-  const commandPanel = COMMAND_PREFIX_PANEL[input];
-  if (!commandPanel) return null;
-  if (commandPanel === "skills" && !availability.skills) return null;
-  if (commandPanel === "tools" && !availability.tools) return null;
-  return commandPanel;
+  cursor = input.length,
+): ComposerCommandDraft | null {
+  const before = input.slice(0, cursor);
+  const match = /(?:^|\s)\/([a-z]*)$/i.exec(before);
+  if (!match) return null;
+  return { start: before.length - match[1].length - 1, end: before.length, query: match[1].toLowerCase() };
 }
 
-function normalizeAvailability(
-  availability: CommandPanelAvailability,
-): ComposerCommandAvailability {
-  return {
-    skills: availability.skills,
-    tools: availability.tools,
-    models: availability.models ?? false,
-    files: availability.files ?? false,
-  };
-}
-
-function isComposerCommandName(
-  value: string,
-): value is Exclude<ComposerCommandName, "menu"> {
-  return value in commandAvailabilityKey;
-}
-
-function shouldShowSlashMenu(input: string): boolean {
-  const body = input.trimStart().slice(1);
-  if (!body.trim()) return true;
-  const firstToken = body.trimStart().split(/\s+/)[0] ?? "";
-  return !isComposerCommandName(firstToken);
-}
-
-/** Build the visible `/` command choices without opening any backend surface. */
+/** Suggestions never classify a message or decide whether it may be sent. */
 export function resolveSlashCommandMenu(
   input: string,
   availability: CommandPanelAvailability,
+  cursor = input.length,
 ): SlashCommandMenuItem[] {
-  const trimmedStart = input.trimStart();
-  if (!trimmedStart.startsWith("/")) return [];
-  const normalizedAvailability = normalizeAvailability(availability);
-  const body = trimmedStart.slice(1);
-  const query = body.trimStart().split(/\s+/)[0]?.toLowerCase() ?? "";
-
+  const draft = resolveComposerCommandDraft(input, cursor);
+  if (!draft) return [];
   return slashCommandItems
-    .filter((item) => item.command.includes(query))
+    .filter((item) => item.command.startsWith(draft.query))
     .map((item) => ({
       ...item,
-      query: "",
-      unavailable: !normalizedAvailability[commandAvailabilityKey[item.command]],
+      unavailable: !availability[commandAvailabilityKey[item.command]],
     }));
 }
 
-export function parseComposerCommand(
+export function removeComposerCommandDraft(
   input: string,
-  availability: CommandPanelAvailability,
-): ParsedComposerCommand | null {
-  const trimmedStart = input.trimStart();
-  const trigger = trimmedStart[0];
-  if (trigger !== "/" && trigger !== "$") return null;
-
-  const normalizedAvailability = normalizeAvailability(availability);
-
-  if (trigger === "$") {
-    const query = trimmedStart.slice(1).trimStart();
-    return {
-      trigger,
-      command: "skill",
-      panel: "skills",
-      query,
-      unavailable: !normalizedAvailability.skills,
-    };
-  }
-
-  const body = trimmedStart.slice(1);
-  if (shouldShowSlashMenu(trimmedStart)) {
-    return {
-      trigger,
-      command: "menu",
-      panel: "command-menu",
-      query: body.trimStart(),
-      unavailable: false,
-    };
-  }
-
-  const [rawCommand = "", ...queryParts] = body.trimStart().split(/\s+/);
-  const command = rawCommand as Exclude<ComposerCommandName, "menu">;
-  const query = queryParts.join(" ");
-
-  const availabilityKey = commandAvailabilityKey[command];
-  const unavailable =
-    command === "file" && query.trim()
-      ? true
-      : !normalizedAvailability[availabilityKey];
-
-  return {
-    trigger,
-    command,
-    panel: commandPanelByName[command],
-    query,
-    unavailable,
-  };
-}
-
-function isCompleteCommandWord(
-  input: string,
-  command: ComposerCommandName,
-): boolean {
-  const trimmedStart = input.trimStart();
-  const body = trimmedStart.slice(1);
-  const firstToken = body.trimStart().split(/\s+/)[0] ?? "";
-  return firstToken === command;
-}
-
-export function clearModelCommandDraft(
-  input: string,
-  availability: CommandPanelAvailability,
-  commandsEnabled: boolean,
+  draft: ComposerCommandDraft,
 ): string {
-  if (!commandsEnabled) return input;
-  return parseComposerCommand(input, availability)?.command === "model"
-    ? ""
-    : input;
-}
-
-export function resolveComposerCommandDraft(
-  input: string,
-  availability: CommandPanelAvailability,
-): ComposerCommandDraft | null {
-  const command = parseComposerCommand(input, availability);
-  if (!command) return null;
-
-  const panel =
-    command.panel === "command-menu"
-      ? "command-menu"
-      : command.panel === "skills" ||
-          command.panel === "tools" ||
-          command.panel === "model"
-        ? command.panel
-        : null;
-  const shouldExecute =
-    command.panel !== "command-menu" &&
-    (command.unavailable ||
-      (!panelCommandNames.has(command.command) &&
-        isCompleteCommandWord(input, command.command)));
-
-  return {
-    command,
-    panel,
-    selectorQuery: command.query,
-    shouldExecute,
-  };
+  return input.slice(0, draft.start) + input.slice(draft.end);
 }

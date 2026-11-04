@@ -7,11 +7,9 @@ import {
   type ComposerSelection,
 } from "../composerSelections";
 import {
-  clearModelCommandDraft,
-  parseComposerCommand,
+  removeComposerCommandDraft,
   resolveComposerCommandDraft,
   resolveSlashCommandMenu,
-  resolveCommandPrefixPanel,
 } from "../chatInputCommands";
 
 const root = process.cwd();
@@ -23,191 +21,22 @@ const allAvailable = {
   files: true,
 };
 
-test("slash command parser maps command words to governed panels", () => {
-  assert.deepEqual(parseComposerCommand("/", allAvailable), {
-    trigger: "/",
-    command: "menu",
-    panel: "command-menu",
-    query: "",
-    unavailable: false,
-  });
-  assert.deepEqual(parseComposerCommand("/skill qa", allAvailable), {
-    trigger: "/",
-    command: "skill",
-    panel: "skills",
-    query: "qa",
-    unavailable: false,
-  });
-  assert.deepEqual(parseComposerCommand("/mcp fetch", allAvailable), {
-    trigger: "/",
-    command: "mcp",
-    panel: "tools",
-    query: "fetch",
-    unavailable: false,
-  });
-  assert.deepEqual(parseComposerCommand("/model gpt", allAvailable), {
-    trigger: "/",
-    command: "model",
-    panel: "model",
-    query: "gpt",
-    unavailable: false,
-  });
-  assert.deepEqual(parseComposerCommand("/file report", allAvailable), {
-    trigger: "/",
-    command: "file",
-    panel: "file",
-    query: "report",
-    unavailable: true,
-  });
-  assert.deepEqual(parseComposerCommand("/file", allAvailable), {
-    trigger: "/",
-    command: "file",
-    panel: "file",
-    query: "",
-    unavailable: false,
-  });
-});
-
-test("model selection clears only an active model command draft", () => {
-  assert.equal(
-    clearModelCommandDraft(
-      "Draft a validation report",
-      allAvailable,
-      true,
-    ),
-    "Draft a validation report",
-  );
-  assert.equal(clearModelCommandDraft("/model gpt", allAvailable, true), "");
-  assert.equal(clearModelCommandDraft("  /model qwen", allAvailable, true), "");
-  assert.equal(
-    clearModelCommandDraft(
-      "/model is failing in production",
-      allAvailable,
-      false,
-    ),
-    "/model is failing in production",
-  );
-});
-
-test("context is not a supported composer command", () => {
-  assert.deepEqual(parseComposerCommand("/context memory", allAvailable), {
-    trigger: "/",
-    command: "menu",
-    panel: "command-menu",
-    query: "context memory",
-    unavailable: false,
-  });
+test("completion is limited to the current slash token, not paths, currency or sentence arguments", () => {
+  assert.deepEqual(resolveComposerCommandDraft("/"), { start: 0, end: 1, query: "" });
+  assert.deepEqual(resolveComposerCommandDraft("正文 /mo"), { start: 3, end: 6, query: "mo" });
+  for (const input of ["/workspace/.home/Desktop/report.xlsx在哪？", "/api/v1", "$", "$100", "$ qa", "https://example.test/model", "/model is failing", "/skill qa", "/mcp fetch", "/file report"]) {
+    assert.deepEqual(resolveSlashCommandMenu(input, allAvailable), [], input);
+  }
+  assert.deepEqual(resolveSlashCommandMenu("/unknown", allAvailable), []);
   assert.deepEqual(resolveSlashCommandMenu("/context", allAvailable), []);
 });
 
-test("dollar command is Skills-first and never maps to tools", () => {
-  assert.deepEqual(parseComposerCommand("$ qa", allAvailable), {
-    trigger: "$",
-    command: "skill",
-    panel: "skills",
-    query: "qa",
-    unavailable: false,
-  });
-  assert.equal(resolveCommandPrefixPanel("$", allAvailable), "skills");
-});
-
-test("dollar command fails closed as a Skill chip when Skills are unavailable", () => {
-  const unavailableSkills = {
-    ...allAvailable,
-    skills: false,
-  };
-
-  assert.deepEqual(parseComposerCommand("$", unavailableSkills), {
-    trigger: "$",
-    command: "skill",
-    panel: "skills",
-    query: "",
-    unavailable: true,
-  });
-  assert.deepEqual(resolveComposerCommandDraft("$", unavailableSkills), {
-    command: {
-      trigger: "$",
-      command: "skill",
-      panel: "skills",
-      query: "",
-      unavailable: true,
-    },
-    panel: "skills",
-    selectorQuery: "",
-    shouldExecute: true,
-  });
-});
-
-test("composer command drafts preserve multi-character typing and seed selector queries", () => {
-  assert.deepEqual(resolveComposerCommandDraft("/", allAvailable), {
-    command: {
-      trigger: "/",
-      command: "menu",
-      panel: "command-menu",
-      query: "",
-      unavailable: false,
-    },
-    panel: "command-menu",
-    selectorQuery: "",
-    shouldExecute: false,
-  });
-  assert.deepEqual(resolveComposerCommandDraft("/m", allAvailable), {
-    command: {
-      trigger: "/",
-      command: "menu",
-      panel: "command-menu",
-      query: "m",
-      unavailable: false,
-    },
-    panel: "command-menu",
-    selectorQuery: "m",
-    shouldExecute: false,
-  });
-  assert.deepEqual(resolveComposerCommandDraft("/mcp fetch", allAvailable), {
-    command: {
-      trigger: "/",
-      command: "mcp",
-      panel: "tools",
-      query: "fetch",
-      unavailable: false,
-    },
-    panel: "tools",
-    selectorQuery: "fetch",
-    shouldExecute: false,
-  });
-  assert.deepEqual(resolveComposerCommandDraft("$ qa", allAvailable), {
-    command: {
-      trigger: "$",
-      command: "skill",
-      panel: "skills",
-      query: "qa",
-      unavailable: false,
-    },
-    panel: "skills",
-    selectorQuery: "qa",
-    shouldExecute: false,
-  });
-});
-
-test("file and unavailable commands execute only when the command word is complete", () => {
-  assert.equal(resolveComposerCommandDraft("/f", allAvailable)?.shouldExecute, false);
-  assert.equal(resolveComposerCommandDraft("/file", allAvailable)?.shouldExecute, true);
-  assert.equal(
-    resolveComposerCommandDraft("/file", allAvailable)?.command.unavailable,
-    false,
-  );
-  assert.equal(
-    resolveComposerCommandDraft("/file report", allAvailable)?.command
-      .unavailable,
-    true,
-  );
-  assert.equal(
-    resolveComposerCommandDraft("/model opus", {
-      ...allAvailable,
-      models: false,
-    })?.shouldExecute,
-    true,
-  );
+test("confirmed completion removes only the token before the caret and preserves the full task", () => {
+  const input = "正文 /model 后续正文";
+  const draft = resolveComposerCommandDraft(input, 9);
+  assert.deepEqual(draft, { start: 3, end: 9, query: "model" });
+  assert.equal(removeComposerCommandDraft(input, draft!), "正文  后续正文");
+  assert.deepEqual(resolveSlashCommandMenu(input, allAvailable, 9).map((item) => item.command), ["model"]);
 });
 
 test("slash command menu exposes the Phase 1B command groups", () => {
@@ -230,17 +59,9 @@ test("slash command menu exposes the Phase 1B command groups", () => {
   );
 });
 
-test("missing backend authority returns explicit unavailable command state", () => {
-  assert.deepEqual(
-    parseComposerCommand("/model opus", { ...allAvailable, models: false }),
-    {
-      trigger: "/",
-      command: "model",
-      panel: "model",
-      query: "opus",
-      unavailable: true,
-    },
-  );
+test("unavailable surfaces stay visible as explicit choices, without executing on typing", () => {
+  assert.equal(resolveSlashCommandMenu("/model", { ...allAvailable, models: false })[0].unavailable, true);
+  assert.equal(resolveSlashCommandMenu("/skill", { ...allAvailable, skills: false })[0].unavailable, true);
 });
 
 test("composer selections are durable and removable by stable id", () => {
@@ -318,7 +139,7 @@ test("chat input renders composer chips and expanded command groups", () => {
   assert.match(chatInput, /<ComposerChips/);
   assert.match(chatInput, /composerSelectionReducer/);
   assert.match(chatInput, /resolveSlashCommandMenu/);
-  assert.match(chatInput, /command-menu/);
+  assert.match(chatInput, /removeComposerCommandDraft/);
   assert.match(toolbar, /data-composer-model-trigger/);
   assert.match(toolbar, /<Paperclip size=\{19\}/);
   assert.doesNotMatch(featureMenu, /featureMenu\.model/);
@@ -341,7 +162,7 @@ test("chat input routes the available /file command to the safe upload picker", 
   );
 });
 
-test("composer first screen keeps slash and dollar commands typed-first", () => {
+test("composer keeps explicit slash suggestions without dollar aliases or prefix hints", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),
     "utf8",
@@ -364,11 +185,9 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
   assert.match(slashMenu, /<ComposerMenu/);
   assert.match(commandMenu, /data-composer-command-menu/);
   assert.match(commandMenu, /data-slot="composer-menu"/);
-  assert.match(slashMenu, /commandAlias/);
-  assert.match(slashMenu, /\$/);
-  assert.match(zh, /输入 \//);
-  assert.match(zh, /输入 \$/);
-  assert.match(zh, /Skills/);
+  assert.doesNotMatch(slashMenu, /commandAlias/);
+  assert.doesNotMatch(zh, /输入 \$/);
+  assert.match(zh, /技能/);
 });
 
 test("Agent workspaces disable composer commands without changing ordinary Chat", () => {
@@ -382,38 +201,21 @@ test("Agent workspaces disable composer commands without changing ordinary Chat"
   );
 
   assert.match(chatInput, /disableSlashCommands = false/);
-  assert.match(
-    chatInput,
-    /!disableSlashCommands && handleComposerCommandSubmit\(input\)/,
-  );
-  assert.match(chatInput, /if \(disableSlashCommands\) return false/);
+  assert.match(chatInput, /!disableSlashCommands && slashMenuOpen/);
+  assert.doesNotMatch(chatInput, /handleComposerCommandSubmit|openCommandPanel/);
   assert.match(
     chatView,
     /disableSlashCommands: presentation\?\.disableSlashCommands \?\? false/,
   );
 });
 
-test("composer commands fail closed when a governed surface is unavailable", () => {
-  const chatInput = readFileSync(
-    join(root, "src/components/chat/ChatInput.tsx"),
-    "utf8",
-  );
-
-  assert.doesNotMatch(chatInput, /shortcutAvailabilityByCommand/);
-  assert.match(chatInput, /draft\.command\.unavailable/);
-  assert.match(chatInput, /upsertUnavailableCommandChip/);
-  assert.match(chatInput, /setInput\(""\)/);
-});
-
-test("typed unavailable commands fail closed before opening missing selectors", () => {
-  const chatInput = readFileSync(
-    join(root, "src/components/chat/ChatInput.tsx"),
-    "utf8",
-  );
-
-  assert.match(chatInput, /draft\.command\.unavailable/);
-  assert.match(chatInput, /upsertUnavailableCommandChip\(draft\.command\)/);
-  assert.match(chatInput, /setInput\(""\)/);
+test("unavailable command choices preserve the draft instead of opening missing selectors", () => {
+  const chatInput = readFileSync(join(root, "src/components/chat/ChatInput.tsx"), "utf8");
+  const branch = chatInput.match(/if \(item\.unavailable\) \{[\s\S]*?return;\n\s*\}/)?.[0];
+  assert.ok(branch);
+  assert.match(branch, /upsertUnavailableCommandChip/);
+  assert.match(branch, /setActivePanel\(null\)/);
+  assert.doesNotMatch(branch, /setInput/);
 });
 
 test("slash menu unavailable commands clear stale selector state", () => {
@@ -428,7 +230,7 @@ test("slash menu unavailable commands clear stale selector state", () => {
   assert.ok(unavailableBranch);
   assert.match(unavailableBranch, /upsertUnavailableCommandChip/);
   assert.match(unavailableBranch, /setActivePanel\(null\)/);
-  assert.match(unavailableBranch, /setCommandSearchSeed\(null\)/);
+  assert.doesNotMatch(unavailableBranch, /setInput/);
 });
 
 test("slash command menu is anchored outside the clipped textarea region", () => {
@@ -557,13 +359,13 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
   assert.match(composerPrimitive, /data-slot="composer-bar"/);
 });
 
-test("Chinese placeholders expose slash and dollar entry points", () => {
+test("Chinese placeholders prioritize messages instead of reserving dollar prefixes", () => {
   const locale = "zh";
   const source = readFileSync(
     join(root, "src/i18n/locales/zh.json"),
     "utf8",
   );
 
-  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\//, locale);
-  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*\$/, locale);
+  assert.match(source, /"\s*placeholder"\s*:\s*"[^"]*描述/, locale);
+  assert.doesNotMatch(source, /输入 \$/, locale);
 });

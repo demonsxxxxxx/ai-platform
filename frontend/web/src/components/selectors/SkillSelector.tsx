@@ -1,5 +1,5 @@
 import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -24,7 +24,6 @@ interface SkillSelectorProps {
   isLoading?: boolean;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
-  searchSeed?: string;
 }
 
 export function SkillSelector({
@@ -34,7 +33,6 @@ export function SkillSelector({
   isLoading = false,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
-  searchSeed,
 }: SkillSelectorProps) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -50,10 +48,6 @@ export function SkillSelector({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
   });
-
-  useEffect(() => {
-    if (isOpen && searchSeed !== undefined) setSearchQuery(searchSeed);
-  }, [isOpen, searchSeed]);
 
   const filteredSkills = useMemo(
     () => skills.filter((skill) => skillMatchesQuery(skill, searchQuery)),

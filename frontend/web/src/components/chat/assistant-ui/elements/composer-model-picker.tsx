@@ -6,18 +6,17 @@ import { useTranslation } from "react-i18next";
 import type { ModelOption } from "../../../../services/api/modelPublic";
 import { ComposerMenuItem } from "./composer";
 
-export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel, searchSeed }: {
+export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel }: {
   models: ModelOption[];
   currentModelId?: string;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectModel: (id: string, value: string) => void;
-  searchSeed?: string;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 640);
-  useEffect(() => { if (isOpen) setQuery(searchSeed ?? ""); }, [isOpen, searchSeed]);
+  useEffect(() => { if (isOpen) setQuery(""); }, [isOpen]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 639px)");
     const change = () => setIsMobile(media.matches);

@@ -33,7 +33,6 @@ interface ToolSelectorProps {
   totalCount: number;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
-  searchSeed?: string;
 }
 
 type LabeledToolState = ToolState & { label?: string };
@@ -85,7 +84,6 @@ export function ToolSelector({
   totalCount,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
-  searchSeed,
 }: ToolSelectorProps) {
   const { t } = useTranslation();
   const { catalogState, retryTools } = useContext(ChatMcpCatalogContext);
@@ -114,11 +112,6 @@ export function ToolSelector({
       setUnavailableDetailsOpen(false);
     }
   }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen || searchSeed === undefined) return;
-    setSearchQuery(searchSeed);
-  }, [isOpen, searchSeed]);
 
   // Search the translated unknown-source label as well as the public tool fields.
   const filteredTools = useMemo(() => {
