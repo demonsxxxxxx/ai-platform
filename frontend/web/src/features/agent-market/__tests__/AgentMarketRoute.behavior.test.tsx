@@ -1652,7 +1652,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
     const statusOnlyAlert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(statusOnlyAlert);
     assert.match((statusOnlyAlert.textContent ?? ""), /历史消息暂时无法读取/);
-    assert.match((statusOnlyAlert.textContent ?? ""), /加载会话失败/);
+    assert.match((statusOnlyAlert.textContent ?? ""), /请求未完成，请稍后重试/);
     assert.match((statusOnlyAlert.textContent ?? ""), /HTTP 503/);
     assert.doesNotMatch((statusOnlyAlert.textContent ?? ""), /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
     assert.equal(calls.events, statusOnlyReadCount + 1);

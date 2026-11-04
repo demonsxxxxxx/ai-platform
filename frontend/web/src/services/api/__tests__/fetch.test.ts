@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiProtocolError, ApiRequestError, authFetch, FORCE_RELOGIN_EVENT } from "../fetch.ts";
-import { apiRequestErrorFromResponse } from "../fetch.ts";
+import { apiRequestErrorFromResponse, publicApiErrorMessage } from "../fetch.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { parseSessionRunInputs, sessionApi } from "../session.ts";
 
@@ -125,6 +125,20 @@ test("retains only server-controlled submission recovery fields", async () => {
   assert.equal(error.code, "session_workspace_mismatch");
   assert.equal(error.submissionDisposition, "rejected_before_persist");
   assert.equal(error.diagnosticId, "diag_0123456789abcdef");
+});
+
+test("HTTP validation errors retain safe actionable copy and only projected errors supply public messages", async () => {
+  const detail = [{ type: "value_error", loc: ["name"], msg: "Value error, mcp_server_name contains unsupported characters", input: "private-secret" }];
+  const error = await apiRequestErrorFromResponse(new Response(JSON.stringify({ detail }), { status: 422 }));
+  assert.equal(error.code, "mcp_server_name_invalid");
+  assert.match(error.message, /1–128.*英文字母/);
+  assert.equal(publicApiErrorMessage(error, "fallback"), error.message);
+  for (const untrusted of [new Error("private-secret"), new ApiRequestError("private-secret", 422), null]) {
+    assert.equal(publicApiErrorMessage(untrusted, "fallback"), "fallback");
+  }
+  const generic = await apiRequestErrorFromResponse(new Response(JSON.stringify({ detail: [{ type: "missing", loc: ["body", "private-secret"], msg: "private-secret" }] }), { status: 422 }));
+  assert.equal(generic.message, "提交的信息不符合要求，请检查表单内容后重试。");
+  assert.doesNotMatch(JSON.stringify([error, generic]), /private-secret/);
 });
 
 test("rejects malformed diagnostic identifiers", async () => {
@@ -784,7 +798,12 @@ test("an expired platform context signals login recovery without refreshing or r
     fetchImpl: async () => { calls++; return new Response(JSON.stringify({ detail: "auth_context_stale" }), { status: 409 }); },
   });
   try {
-    await assert.rejects(authFetch("/api/read"), (error: unknown) => error instanceof ApiRequestError && error.status === 401);
+    await assert.rejects(authFetch("/api/read"), (error: unknown) => {
+      assert.ok(error instanceof ApiRequestError);
+      assert.equal(error.status, 401);
+      assert.equal(publicApiErrorMessage(error, "untrusted fallback"), error.message);
+      return true;
+    });
     assert.equal(calls, 1);
     assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
   } finally { stubs.restore(); }

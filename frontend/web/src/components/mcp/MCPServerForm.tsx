@@ -1,6 +1,6 @@
 import { Checkbox } from "@lobehub/ui/base-ui";
 import { Button, Input } from "@lobehub/ui/base-ui";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Permission } from "../../types";
@@ -24,6 +24,7 @@ interface MCPServerFormProps {
   isLoading?: boolean;
   allowedTransports?: Permission[];
   isSystemServer?: boolean;
+  submitError?: string | null;
 }
 
 interface KeyValuePair {
@@ -87,9 +88,19 @@ export function MCPServerForm({
     Permission.MCP_WRITE_HTTP,
   ],
   isSystemServer = false,
+  submitError,
 }: MCPServerFormProps) {
   const { t } = useTranslation();
   const isEditing = !!server;
+  const nameId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+  const submitErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (submitError) {
+      submitErrorRef.current?.focus();
+      submitErrorRef.current?.scrollIntoView?.({ block: "center" });
+    }
+  }, [submitError]);
 
   const allTransports: {
     value: MCPServerCreate["transport"];
@@ -216,6 +227,8 @@ export function MCPServerForm({
 
     if (!name.trim()) {
       newErrors.name = t("mcp.form.validation.nameRequired");
+    } else if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(name.trim())) {
+      newErrors.name = t("mcp.form.validation.nameInvalid");
     }
 
     if (!url.trim()) {
@@ -243,6 +256,7 @@ export function MCPServerForm({
       newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
     }
     setErrors(newErrors);
+    if (newErrors.name) nameRef.current?.focus();
     return Object.keys(newErrors).length === 0;
   };
 
@@ -298,8 +312,12 @@ export function MCPServerForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* Name */}
       <div className="es-field">
-        <label className="es-label">{t("mcp.form.serverName")}</label>
+        <label htmlFor={nameId} className="es-label">{t("mcp.form.serverName")}</label>
         <Input
+          id={nameId}
+          ref={nameRef}
+          aria-invalid={Boolean(errors.name)}
+          aria-describedby={`${nameId}-hint`}
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -309,11 +327,10 @@ export function MCPServerForm({
             errors.name ? "!border-[var(--theme-danger-ring)] dark:!border-[var(--theme-danger)]" : ""
           }`}
         />
-        {errors.name && (
-          <p className="es-hint text-[var(--theme-danger-text)]">
-            {errors.name}
-          </p>
-        )}
+        <p id={`${nameId}-hint`} role={errors.name ? "alert" : undefined}
+          className={`es-hint ${errors.name ? "text-[var(--theme-danger-text)]" : ""}`}>
+          {errors.name || t("mcp.form.validation.nameInvalid")}
+        </p>
         {isEditing && (
           <p className="es-hint">{t("mcp.form.serverNameUneditable")}</p>
         )}
@@ -550,6 +567,10 @@ export function MCPServerForm({
         <Button htmlType="button" type="default" onClick={() => setPublicOperations((rows) => [...rows, { tool: '', action: '', object: '', path: '' }])}>{t("mcp.form.publicSummaryAdd")}</Button>
       </fieldset>
 
+      {submitError ? <p ref={submitErrorRef} role="alert" tabIndex={-1}
+        className="rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)]">
+        {submitError}
+      </p> : null}
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
         <Button type="default"

@@ -246,6 +246,40 @@ test("safe error projection translates only allowlisted exact detail or code", (
   );
 });
 
+test("projects structured validation failures without exposing backend messages or input", () => {
+  const nameError = { type: "value_error", loc: ["name"], msg: "Value error, mcp_server_name contains unsupported characters" };
+  for (const loc of [["name"], ["body", "name"]]) {
+    assert.deepEqual(projectSafeBackendError([{ ...nameError, loc, input: "private-secret" }], 422, t), {
+      code: "mcp_server_name_invalid",
+      message: "translated:mcp.form.validation.nameInvalid",
+    });
+  }
+  for (const detail of [
+    [{ ...nameError, loc: ["headers", "private-secret"] }],
+    [{ ...nameError, msg: "Value error, private-secret" }],
+    [{ type: "missing", loc: ["body", "private-secret"], msg: "private-secret", input: "private-secret" }],
+    { code: "unrecognized_validation_error", message: "private-secret" },
+  ]) {
+    const result = projectSafeBackendError(detail, 422, t);
+    assert.equal(result.message, "translated:backendErrors.validationFailed");
+    assert.doesNotMatch(JSON.stringify(result), /private-secret/);
+  }
+  assert.equal(projectSafeBackendError([nameError], 500, t).message, "translated:chat.requestFailed");
+});
+
+test("projects MCP lifecycle codes to actionable public copy", () => {
+  for (const [code, key] of [
+    ["mcp_server_name_invalid", "mcp.form.validation.nameInvalid"],
+    ["mcp_server_name_required", "mcp.form.validation.nameRequired"],
+    ["mcp_header_duplicate", "mcp.form.validation.duplicateHeader"],
+    ["mcp_header_conflict", "mcp.form.validation.headerConflict"],
+    ["mcp_header_invalid", "mcp.form.validation.invalidHeader"],
+    ["mcp_server_conflict", "mcp.form.validation.serverConflict"],
+  ]) {
+    assert.equal(projectSafeBackendError(code, 400, t).message, `translated:${key}`);
+  }
+});
+
 test("projects company auth rejection to specific safe Chinese guidance", () => {
   const message =
     "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。";

@@ -100,6 +100,7 @@ export function MCPPanel() {
     total,
     isLoading,
     error,
+    clearOperationError,
     catalogError,
     permissionDenied,
     isAvailable,
@@ -156,6 +157,7 @@ export function MCPPanel() {
 
   const openEditor = async (server: MCPServerResponse | null) => {
     if (!canManageMcpUi) return;
+    clearOperationError();
     editorPreviousFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -320,10 +322,10 @@ export function MCPPanel() {
           </div> : null}
         </>}
       />
-      {error && (
-        <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)] ring-1 ring-[var(--theme-danger-ring)]">
+      {error && !editorOpen && !deleteTarget && (
+        <div role="alert" className="mx-4 mt-4 flex items-start gap-2 rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)] ring-1 ring-[var(--theme-danger-ring)]">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
-          <span>{t("mcp.admin.operationFailed")}</span>
+          <span>{error}</span>
         </div>
       )}
       {mcpGovernance.pageState === "degraded" ? (
@@ -426,7 +428,7 @@ render: (_value, server) => (<>
                           <Button type="text" htmlType="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}
                             icon={<Edit3 size={18} />}
                           />
-                          <Button type="text" htmlType="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}
+                          <Button type="text" htmlType="button" data-mcp-admin-delete onClick={() => { clearOperationError(); setToolTarget(null); setDeleteTarget(server); }} className="min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger-text)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}
                             icon={<Trash2 size={18} />}
                           />
                         </div> : null}
@@ -460,8 +462,7 @@ render: (_value, server) => (<>
                 <Button type="text" data-mcp-editor-initial-focus autoFocus onClick={closeEditor} aria-label={t("common.close")} disabled={isLoading}><X size={18} /></Button>
               </ModalHeader>
               <ModalContent>
-                {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger-text)]">{t("mcp.admin.operationFailed")}</p> : null}
-                <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} isSystemServer />
+                <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} submitError={error} isSystemServer />
               </ModalContent>
             </ModalPopup>
           </ModalPortal>
@@ -475,6 +476,7 @@ render: (_value, server) => (<>
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}
         loading={isLoading}
+        error={error}
       />
     </div>
   );

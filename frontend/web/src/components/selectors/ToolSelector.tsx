@@ -1,7 +1,7 @@
 import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
 import { Table } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Wrench,
@@ -52,7 +52,6 @@ const categoryIcons: Record<ToolCategory, typeof Bot> = {
 
 export interface ChatMcpCatalogNotice {
   titleKey: string;
-  detailKeys: string[];
   retryable: boolean;
 }
 
@@ -62,17 +61,17 @@ export function getChatMcpCatalogNotice(
 ): ChatMcpCatalogNotice | null {
   switch (catalogState.status) {
     case "loading":
-      return { titleKey: "tools.catalog.loading", detailKeys: [], retryable: false };
+      return { titleKey: "tools.catalog.loading", retryable: false };
     case "empty":
-      return { titleKey: "tools.catalog.empty", detailKeys: [], retryable: false };
+      return { titleKey: "tools.catalog.empty", retryable: false };
     case "degraded":
       return {
-        titleKey: "tools.catalog.degraded",
-        detailKeys: [...new Set(catalogState.unavailable)].slice(0, 3),
-        retryable: false,
+        titleKey: catalogState.unavailable.some((service) => service.reasonKey === "tools.catalog.unavailable.noTools")
+          ? "tools.catalog.unavailableSummary" : "tools.catalog.degraded",
+        retryable: true,
       };
     case "error":
-      return { titleKey: "tools.catalog.error", detailKeys: [], retryable: true };
+      return { titleKey: "tools.catalog.error", retryable: true };
     case "ready":
       return null;
   }
@@ -93,6 +92,8 @@ export function ToolSelector({
   const catalogNotice = getChatMcpCatalogNotice(catalogState);
   const catalogAllowsSelection = canSelectChatMcpTools(catalogState.status);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const unavailableDetailsId = useId();
+  const [unavailableDetailsOpen, setUnavailableDetailsOpen] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
@@ -108,7 +109,10 @@ export function ToolSelector({
   });
 
   useEffect(() => {
-    if (!isOpen) setExpandedGroups(new Set());
+    if (!isOpen) {
+      setExpandedGroups(new Set());
+      setUnavailableDetailsOpen(false);
+    }
   }, [isOpen]);
 
   useEffect(() => {
@@ -264,28 +268,33 @@ export function ToolSelector({
         {catalogNotice && (
           <div
             aria-live="polite"
-            className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center"
+            className="px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
             data-mcp-catalog-status={catalogState.status}
           >
-            <p className="text-sm font-medium text-[var(--theme-text)]">
-              {t(catalogNotice.titleKey)}
-            </p>
-            {catalogNotice.detailKeys.map((detailKey) => (
-              <p
-                key={detailKey}
-                className="mt-1 text-xs text-[var(--theme-text-secondary)]"
-              >
-                {t(detailKey)}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <p className="min-w-0 flex-1">
+                {t(catalogNotice.titleKey, { count: catalogState.unavailable.length })}
+                {catalogState.status === "degraded" && totalCount > 0 ? ` ${t("tools.catalog.othersAvailable")}` : ""}
               </p>
-            ))}
-            {catalogNotice.retryable && retryTools ? (
-              <Button type="text"
-                htmlType="button"
-                onClick={retryTools}
-                className="mt-3 px-3 py-2 text-xs font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
-              >
-                {t("tools.catalog.retry")}
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {catalogState.status === "degraded" ? <Button type="text" size="small"
+                  htmlType="button" aria-expanded={unavailableDetailsOpen} aria-controls={unavailableDetailsId}
+                  onClick={() => setUnavailableDetailsOpen((open) => !open)}>
+                  {t(unavailableDetailsOpen ? "tools.catalog.hideDetails" : "tools.catalog.showDetails")}
+                </Button> : null}
+                {catalogNotice.retryable && retryTools ? <Button type="text" size="small"
+                  htmlType="button" onClick={retryTools}>
+                  {t("tools.catalog.retry")}
+                </Button> : null}
+              </div>
+            </div>
+            {catalogState.status === "degraded" ? (
+              <ul id={unavailableDetailsId} hidden={!unavailableDetailsOpen} aria-label={t("tools.catalog.detailsLabel")} className="mt-2 space-y-2 border-t border-[var(--theme-border)] pt-2">
+                {catalogState.unavailable.map((service, index) => <li key={index} className="break-words">
+                  <span className="font-medium text-[var(--theme-text)]">{service.label ?? t("tools.catalog.unnamedService", { index: index + 1 })}</span>
+                  <span>：{t(service.reasonKey)}</span>
+                </li>)}
+              </ul>
             ) : null}
           </div>
         )}

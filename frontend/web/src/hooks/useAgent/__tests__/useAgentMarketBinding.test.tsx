@@ -474,7 +474,7 @@ test("required session projection failures remain fail-closed with bounded diagn
         assert.equal(await harness.hook.loadHistory(`session-${failingRead}`), null);
       });
       await settle(harness.act);
-      assert.equal(harness.hook.error, "加载会话失败");
+      assert.equal(harness.hook.error, "请求未完成，请稍后重试。");
       await harness.act(async () => {
         assert.deepEqual(await harness.hook.sendMessage("不得提交"), {
           status: "failed",

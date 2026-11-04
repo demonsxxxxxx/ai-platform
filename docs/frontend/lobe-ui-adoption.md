@@ -58,6 +58,18 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 - assistant-ui 的 `asChild` 仅组合能转发 DOM ref、事件和原生属性的 Lobe 控件；聊天语义由 assistant-ui 拥有，外观由 Lobe 公开 API 设置。禁止靠保留 Tailwind `className` 假定覆盖库根样式：定位/Grid 分区放在业务容器，颜色/尺寸使用公开 `style`、`styles`、`size`、`icon`。实际检查 computed style 和几何。
 - `ToastHost` 是统一通知宿主。队列通知维持稳定 ID `chat-queue` 和持续显示，关闭/更新使用 Lobe toast 合同。
 
+## 表单失败必须留在当前操作内
+
+HTTP 错误继续由 `services/api/fetch.ts` 调用 `projectSafeBackendError`，只把允许列表中的代码或固定状态文案转成中文。Pydantic `detail` 数组不直接显示 `msg`、`input`、`loc` 或 `url`；已部署 MCP 名称校验的精确形状映射为固定名称规则，其余 422 显示输入校验失败。未知错误使用“请求未完成”，不再错误地称为“加载会话失败”；历史读取仍保留独立的会话文案。
+
+`publicApiErrorMessage` 只保留本 HTTP 边界创建的安全提示，任意网络异常或手工构造的 `ApiRequestError` 使用调用方固定 fallback。MCP、Skill、最近聊天、模型目录、角色目录和用量页复用该边界。页面不得仅以 error 的布尔值覆盖已有安全提示。
+
+MCP 创建/编辑的错误显示在提交按钮前并聚焦，外层不再重复显示被弹窗遮住的操作错误；名称输入使用同一 1–128 字符规则，校验失败保留草稿并关联字段说明。新的编辑操作清除上次操作错误，权限拒绝仍关闭编辑器并经过原有身份刷新恢复。MCP 删除和 Skill 归档通过 `ConfirmDialog.error` 将失败留在确认框内，不改变确认、加载或取消语义。
+
+Skill 编辑器（含全屏）和 ZIP 面板也在自己的显示区域内保留请求错误。最近聊天读取失败不再伪装为空目录，显式重试只重读列表；关闭后的旧读取不能发布到下一次打开。模型、角色、用量读取与会话重命名保留受控失败原因，401/403 的原有专用恢复提示不变。
+
+**变更合同与退役：** 前端 HTTP 投影和各业务表单拥有错误显示，后端校验、授权、身份和写入语义不变。替换的是 MCP 固定错误覆盖、数组无语义降级、最近聊天 console-only 路径以及上述消费者的外层/固定提示；不新增 API、持久化状态、自动提交或重试。现有字符串/code 接口保持兼容；MCP 数组识别是当前部署返回形状的受限读取，不授权渲染任意消息。验收覆盖脱敏、字段校验、失败草稿、弹窗内部提示、重复操作和关闭后的旧请求，以及桌面、窄屏、低高度下错误可见。回滚前端改动无需数据迁移。
+
 ## 完成范围与退役条件
 
 管理表格已由 MCP、模型、运行监控、运行性能、Skill 管理、工具参数及专家发布历史 7 个实际调用方直接使用 Lobe Table。普通单选通过 Lobe Select 接入；部门/角色、市场标签及聊天目录选择保留业务数据 owner，使用库 Select/Popover/AutoComplete/Modal 交互。

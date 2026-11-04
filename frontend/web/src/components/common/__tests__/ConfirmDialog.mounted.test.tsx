@@ -8,6 +8,18 @@ test.after(() => dom.close());
 const { act, createElement, useState } = await import("react");
 const { ConfirmDialog } = await import("../ConfirmDialog");
 
+test("confirmation renders a persistent operation error inside its dialog", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    await act(async () => root.render(createElement(ConfirmDialog, {
+      isOpen: true, title: "Synthetic confirmation", message: "Synthetic action",
+      error: "操作失败，请重试。", onConfirm: () => {}, onCancel: () => {},
+    })));
+    assert.equal(container.querySelector('[role="dialog"] [role="alert"]')!.textContent, "操作失败，请重试。");
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 test("confirmation locks dismissal while busy and restores the external trigger after Escape", async () => {
   const container = document.createElement("div");
   document.body.append(container);
