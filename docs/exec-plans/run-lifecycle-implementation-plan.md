@@ -135,11 +135,11 @@ Harness 前置复核：当前 [计划 §5.6](completed/harness-migration-2026-10
 | C：CI 控制链 | 隔离 Linux Docker；真实 PG/Redis/MinIO；实际 API、Worker、callback、结算和清理编排；确定性测试执行器经实际传输接入 | 事务、重复交付、并发、进程崩溃与可控故障恢复 | 测试执行器不是实际 Claude/OpenSandbox；不得声称证明 SDK 工具、gVisor、真实模型或 provider 停止 |
 | L：真实执行链 | 维护者提供的独立测试栈；候选镜像、实际 provider、实际 SDK/受管工具及授权模型代理 | 真正的接受执行、回调、停止、文件下载、跨沙箱 native_resume；必要时浏览器验证 | 记录实际 provider/安全 profile；Docker 验收不能代表 OpenSandbox/gVisor，不扩大网络隔离承诺 |
 
-C 层新增套件走现有 run_test_stage.py、明确 selectors、零跳过和现有证据格式。整链路测试（`tests/test_run_execution_lifecycle_integration.py`，随 C 层测试 PR 加入） 由 `lifecycle-control-chain` shard 全文件拥有。正常答案、选中文件、交付后 Worker 重启、终态落库后 ACK 丢失四个场景均通过生产提交 API 创建 Run，再经过实际 Worker、Docker executor、callback、结算、MinIO 下载和资源回收。准入前仅构造合成身份与已发布模型；session、Run、Attempt、lease、会话回执和答案均由生产路径创建。
+C 层新增套件走现有 run_test_stage.py、明确 selectors、零跳过和现有证据格式。[整链路测试](../../tests/test_run_execution_lifecycle_integration.py) 由 `lifecycle-control-chain` shard 全文件拥有。正常答案、选中文件、交付后 Worker 重启、终态落库后 ACK 丢失四个场景均通过生产提交 API 创建 Run，再经过实际 Worker、Docker executor、callback、结算、MinIO 下载和资源回收。准入前仅构造合成身份与已发布模型；session、Run、Attempt、lease、会话回执和答案均由生产路径创建。
 
 N02 首批在同一夹具增加两个 C 层切片。R02 的 queued 取消在 Worker 启动前走真实 owner API，检查跨用户拒绝、唯一取消事实、队列及索引清理，以及没有 Attempt、沙箱或业务结果。R05 持续在真实终态 callback 写库前返回 503；先证明答案与原生会话追加已落库、终态回执尚未存在，且执行器状态接口保留结果，再由重启后的 Worker 按现行心跳过期与探测规则恢复同一回执并完成文件交付和回收。该场景保留生产 callback 重试和 probe 时限。交付后停止 Worker 的屏障同时要求 runner 已进入且 reconciliation context 已持久化。
 
-Docker 夹具（`tests/support/run_lifecycle_docker.py`，随 C 层测试 PR 加入） 为每场景创建独立 PG/Redis/MinIO、网络、工作区卷和 API/Worker；使用候选源码构建镜像，确定性 runner 替代 SDK query，并显式记录 `sdk_used=false`。Worker 与 API 共用网络 namespace，以访问只包含 API 和 executor 的 owned internal bridge；这与可选 Docker Compose overlay 的控制拓扑一致。终态 ACK 故障在真实 API 成功响应后截断 HTTP body，保存指定 batch 的故障与去重重试证据。资源不存在断言在 fixture teardown 前执行，清理器按精确测试标签删除残留，保存独立清理清单。
+[Docker 夹具](../../tests/support/run_lifecycle_docker.py) 为每场景创建独立 PG/Redis/MinIO、网络、工作区卷和 API/Worker；使用候选源码构建镜像，确定性 runner 替代 SDK query，并显式记录 `sdk_used=false`。Worker 与 API 共用网络 namespace，以访问只包含 API 和 executor 的 owned internal bridge；这与可选 Docker Compose overlay 的控制拓扑一致。终态 ACK 故障在真实 API 成功响应后截断 HTTP body，保存指定 batch 的故障与去重重试证据。资源不存在断言在 fixture teardown 前执行，清理器按精确测试标签删除残留，保存独立清理清单。
 
 同文件保留两个接收边界场景，从合法的 seeded running Attempt 验证旧代际拒绝、重复终态和 callback 屏障处退出。该层需要 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 指向专用测试数据库，并为每场景创建独占 Redis，因为 callback 还写固定 reconciliation signal key；仅 queue prefix 不足以隔离。CI 提供 PG/Redis 镜像，完整 Docker 栈复用现有 CI 的 `bitnamilegacy/minio:2025.4.22-debian-12-r1`，按需拉取并使用镜像默认初始化入口。Docker、依赖缺失直接失败。
 
