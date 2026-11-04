@@ -4,6 +4,7 @@ import {
   type MarkdownTextPrimitiveProps,
 } from "@assistant-ui/react-markdown";
 import { useMemo, useState } from "react";
+import remend from "remend";
 import {
   CodeHeader,
   CodeSyntaxHighlighter,
@@ -16,6 +17,26 @@ import {
 } from "../../ChatMessage/MarkdownRenderer";
 import { ImageViewer } from "../../../common";
 import { MermaidDiagram } from "../../ChatMessage/MermaidDiagram";
+
+// Complete only emphasis in the displayed prefix. Links, images, code, math
+// and raw HTML keep their existing parsing and authorization behavior.
+function completeStreamingEmphasis(text: string): string {
+  return remend(text, {
+    bold: true,
+    italic: true,
+    boldItalic: true,
+    strikethrough: true,
+    links: false,
+    images: false,
+    inlineCode: false,
+    katex: false,
+    inlineKatex: false,
+    setextHeadings: false,
+    singleTilde: false,
+    comparisonOperators: false,
+    htmlTags: false,
+  });
+}
 
 export interface AssistantMarkdownTextProps
   extends Omit<MarkdownComponentsOptions, "primitive"> {
@@ -71,6 +92,7 @@ export function AssistantMarkdownText({
       <MarkdownTextPrimitive
         remarkPlugins={MARKDOWN_REMARK_PLUGINS}
         rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        preprocess={smooth ? completeStreamingEmphasis : undefined}
         components={{
           ...components,
           CodeHeader,

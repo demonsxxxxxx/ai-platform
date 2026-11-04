@@ -350,6 +350,7 @@ export function ChatView({
     (message) => message.role === "assistant" && message.isSynchronizing,
   );
   const continuationBlocksSend = continuationPending || !canContinueConversation(continuation);
+  const continuationMessage = publicContinuationMessage(continuation, continuationPending);
   const canSendInCurrentView =
     canSendMessage && !isLoadingHistory && !terminalResultSynchronizing && !continuationBlocksSend;
   // A temporary wait must not read as a missing permission.
@@ -1035,14 +1036,14 @@ export function ChatView({
 
   const composer = (
     <div className="relative" data-chat-shell-composer>
-      {sessionId && (continuation || continuationPending || !sessionRunning) ? (
+      {sessionId && continuationMessage && (continuation || continuationPending || !sessionRunning) ? (
         <div
           role="status"
           aria-live="polite"
           data-chat-continuation={continuationPending ? "checking" : continuation?.state ?? "unavailable"}
           className="mx-auto mb-2 max-w-[var(--chat-column-max)] px-2 text-sm text-[var(--theme-text-secondary)]"
         >
-          {publicContinuationMessage(continuation, continuationPending)}
+          {continuationMessage}
           {continuationPending && !sessionRunning ? (
             <button type="button" className="ml-2 underline" onClick={() => void onLoadHistory()}>
               {t("chat.continuation.refresh")}
