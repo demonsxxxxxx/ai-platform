@@ -58,7 +58,7 @@ export interface ChatInputProps {
   disabled?: boolean;
   canSend?: boolean;
   /** Why sending is blocked when `canSend` is false; only "permission" shows the lock. */
-  sendBlockedReason?: "permission" | "loadingHistory" | "synchronizing";
+  sendBlockedReason?: "permission" | "loadingHistory" | "synchronizing" | "continuation";
   /** Optional product-specific prompt for a locked composer surface. */
   placeholder?: string;
   /** Model readiness blocks sending, not editing or attachment drafts. */

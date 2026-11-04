@@ -15,6 +15,7 @@ import type { FailureGuidance } from "../../types/failureGuidance";
 import type {
   RunInputAnswer,
   RunInputsProjection,
+  PublicContinuation,
 } from "../../services/api/session";
 
 export interface RunInputPendingSubmission {
@@ -623,6 +624,8 @@ export interface UseAgentReturn {
   /** Latest Run selected for supplementary text and question recovery. */
   runInputsRunId: string | null;
   runInputs: RunInputsController;
+  continuation?: PublicContinuation;
+  continuationPending: boolean;
   canStopGeneration: boolean;
   isReconnecting: boolean;
   connectionStatus: ConnectionStatus;

@@ -9,6 +9,8 @@ from typing import Callable
 
 import httpx
 
+from app.execution.domain.recovery_operations import validate_recovery_operation_facts
+
 from app.execution.application.run_interaction import (
     RunInputCommand,
     RunInputSnapshot,
@@ -184,7 +186,16 @@ class RunInputCallbackClient:
         error_code = value.get("error_code")
         if error_code not in {None, "run_question_needs_input"} or (error_code is not None and inputs):
             raise RunInputCallbackError("run_input_response_invalid")
+        recovery_pending = value.get("recovery_confirmation_pending", False)
+        if type(recovery_pending) is not bool:
+            raise RunInputCallbackError("run_input_response_invalid")
+        try:
+            facts = validate_recovery_operation_facts(value.get("recovery_operation_facts", []))
+        except ValueError as exc:
+            raise RunInputCallbackError("run_input_response_invalid") from exc
         return RunInputSnapshot(
+            recovery_operation_facts=facts,
+            recovery_confirmation_pending=recovery_pending,
             state=state, inputs=inputs, error_code=error_code,
             questions=tuple(questions) if questions is not None else None,
         )  # type: ignore[arg-type]

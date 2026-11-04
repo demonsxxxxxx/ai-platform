@@ -45,7 +45,7 @@ from app.models import (
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.platform.postgres.errors import RepositoryConflictError
-from app.runs.api import RunTerminalizationProgress
+from app.runs.api import RunTerminalizationProgress, compile_execution_spec_for_dispatch
 from app.routes.chat import (
     _admit_chat_submission as _route_admit_chat_submission,
     _audit_capability_denial,
@@ -767,35 +767,46 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
 
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
 @pytest.mark.parametrize(
-    ("message", "selected_tools", "expected_authorizations"),
+    ("message", "selected_tools", "continuation", "expected_tools"),
     [
-        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], 0),
-        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], 1),
+        ("调用 MCP create_test_object，不要调用 Bash", [" lifecycle-recovery::create_test_object ", "lifecycle-recovery::delete_test_object"], False,
+         ["lifecycle-recovery::create_test_object", "lifecycle-recovery::delete_test_object"]),
+        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], False, ["gateway::qa-search"]),
+        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], False, ["gateway::qa-search"]),
+        ("不要调用 MCP，只解释它是什么", [], True, []),
+        ("不要调用 MCP，只解释它是什么", None, True, None),
+        ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"]),
     ],
-    ids=["negative-veto", "affirmative"],
+    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative"],
 )
 @pytest.mark.asyncio
-async def test_chat_stream_current_turn_controls_selected_mcp_before_authorization(
-    monkeypatch, roles, message, selected_tools, expected_authorizations
+async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_polarity(
+    monkeypatch, roles, message, selected_tools, continuation, expected_tools
 ):
-    calls = {"authorization": 0}
+    calls = {"authorization": []}
+    request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
 
-    async def authorize_run(*_args, **_kwargs):
-        return {
-            "executor_type": "claude-agent-worker",
-            "skill_version": "hash-general-chat",
-            "input_modes": ["chat"],
-        }
+    async def authorize_tools(*_args, **kwargs):
+        calls["authorization"].append(kwargs)
+        return [{"tool_id": tool_id} for tool_id in kwargs["tool_ids"]]
 
-    async def authorize_tools(*_args, **_kwargs):
-        calls["authorization"] += 1
-        return [{"tool_id": "gateway::qa-search"}]
+    async def owned_session(*_args, **kwargs):
+        assert kwargs["tenant_id"] == request_principal.tenant_id
+        assert kwargs["user_id"] == request_principal.user_id
+        return {"id": "ses-polarity", "workspace_id": "default", "agent_id": "general-agent"}
+
+    async def latest_input(*_args, **_kwargs):
+        return {"input": {"mcp_tool_ids": ["gateway::prior-search"]}}
+
+    async def prior_runs(*_args, **_kwargs):
+        return []
 
     async def create_session(*_args, **_kwargs):
         return "ses-polarity"
 
     async def create_run(*_args, **kwargs):
         calls["run_input"] = kwargs["input_json"]["input"]
+        calls["intent"] = kwargs["input_json"]["intent"]
         return "run-polarity"
 
     async def append_message(*_args, **_kwargs):
@@ -803,6 +814,21 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def enqueue(payload):
         calls["queue_input"] = payload["input"]
+        calls["frozen_input"] = compile_execution_spec_for_dispatch(
+            run_identity=payload,
+            queue_payload=QueueRunPayload.model_validate(payload),
+            trace_id="trace-polarity",
+            context_snapshot_id=payload["context_snapshot_id"],
+            context_snapshot=payload["context_snapshot"],
+            context_pack={},
+            run_model_snapshot={
+                "model_id": payload["model_id"],
+                "model_value": payload["model_value"],
+                "model_gateway_revision": 1,
+                "auto_compact_window": 100000,
+                "max_output_tokens": 2048,
+            },
+        ).to_mapping()["input"]
         return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     async def manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
@@ -821,7 +847,9 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
-    monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize_run)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', latest_input)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'list_authorized_session_runs', prior_runs)
     monkeypatch.setattr(
         "app.routes.chat.authorize_selected_chat_mcp_tools",
         authorize_tools,
@@ -836,15 +864,31 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
 
     response = await chat_stream(
-        ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
-        principal=principal(roles=roles),
+        ChatStreamRequest(
+            message=message,
+            selected_mcp_tool_ids=selected_tools,
+            session_id="ses-polarity" if continuation else None,
+        ),
+        principal=request_principal,
     )
 
     assert response.status == "queued"
-    assert calls["authorization"] == expected_authorizations
-    expected_tools = selected_tools if expected_authorizations else None
+    assert calls["authorization"] == ([{
+        "tenant_id": request_principal.tenant_id,
+        "tool_ids": expected_tools,
+        "principal_department_id": request_principal.department_id,
+        "principal_department_ids": request_principal.department_ids,
+        "principal_roles": request_principal.roles,
+        "is_admin": "admin" in roles,
+        "permissions": request_principal.permissions,
+    }] if expected_tools is not None else [])
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert calls["frozen_input"] == calls["run_input"]
+    assert calls["run_input"]["message"] == message
+    assert "required_tool" not in calls["run_input"]
+    assert calls["intent"]["selected_capability"] == "general_chat"
+    assert calls["intent"]["confirmed_by_user"] is False
 
 
 @pytest.mark.parametrize(
@@ -3281,7 +3325,8 @@ async def test_chat_stream_legacy_nested_mcp_selector_returns_controlled_400_bef
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch):
+@pytest.mark.parametrize("message", ["run", "调用 MCP，不要调用 Bash", "不要调用 MCP，只解释"])
+async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_create(monkeypatch, message):
     calls = []
 
     async def deny_selection(*_args, **kwargs):
@@ -3301,7 +3346,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(
-                message="run",
+                message=message,
                 selected_mcp_tool_ids=["gateway::tenant-search"],
             ),
             principal=principal(),

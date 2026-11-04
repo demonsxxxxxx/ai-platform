@@ -27,6 +27,14 @@ test("translates shared backend error codes", () => {
   );
 });
 
+test("continuation admission errors use fixed reason-specific guidance without private detail", () => {
+  for (const code of ["writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted"]) {
+    const message = translateChatAdmissionError({ status: 409, code, message: "private /runtime/workspace?token=secret" }, t);
+    assert.match(message, new RegExp(`chat\\.continuation\\.${code}$`));
+    assert.doesNotMatch(message, /private|runtime|token|secret/);
+  }
+});
+
 test("chat admission maps only the typed active-run 409 to actionable guidance", () => {
   assert.equal(
     translateChatAdmissionError(

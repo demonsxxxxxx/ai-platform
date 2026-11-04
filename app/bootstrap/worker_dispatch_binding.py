@@ -1,6 +1,8 @@
 """Bind the Runs Worker dispatch transaction to Context, MCP and Execution."""
 
 from typing import Any
+from functools import partial
+from app.context.api import provider_session_verification_scope
 
 from app.bootstrap.context import (
     materialize_queued_worker_context_snapshot,
@@ -74,6 +76,7 @@ def build_worker_dispatch_binding_service(
             materialize=materialize_queued_worker_context_snapshot,
             project=worker_context_snapshot_ref_from_row,
             execution_pack=executor_context_pack_from_snapshot,
+            verification_scope=partial(provider_session_verification_scope, transaction_factory),
         ),
         execution=runs_api.WorkerDispatchExecutionPorts(
             project_spec=project_execution_spec_to_run_payload,

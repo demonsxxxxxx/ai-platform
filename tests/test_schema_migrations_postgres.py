@@ -243,14 +243,16 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("base_commit,base_version", [
+    (ORIGIN_MAIN_MODEL_GROUPS_COMMIT, "2026.10.26.2"),
+    ("97c7443011b2baae3784a90909649aefbd576716", "2026.10.29.2"),
+])
 async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and_provider_history(
-    tmp_path: Path,
+    tmp_path: Path, base_commit: str, base_version: str,
 ):
     dsn = _postgres_dsn()
     schema_name = f"schema_main_to_provider_canonical_{uuid.uuid4().hex}"
-    previous = _load_schema_migrations_at_commit(
-        tmp_path, ORIGIN_MAIN_MODEL_GROUPS_COMMIT
-    )
+    previous = _load_schema_migrations_at_commit(tmp_path, base_commit)
     admin = await psycopg.AsyncConnection.connect(
         dsn, autocommit=True, row_factory=dict_row
     )
@@ -267,7 +269,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
     ).encode("utf-8")
     batch_digest = hashlib.sha256(batch_bytes).hexdigest()
     try:
-        assert previous.TARGET_SCHEMA_VERSION == "2026.10.26.2"
+        assert previous.TARGET_SCHEMA_VERSION == base_version
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
@@ -404,7 +406,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
         )
         assert result == {
             "status": "applied",
-            "version": "2026.10.29.2",
+            "version": schema_migrations.TARGET_SCHEMA_VERSION,
             "checksum_sha256": schema_migrations.schema_checksum(),
         }
         async with factory() as conn:
@@ -569,7 +571,7 @@ async def test_real_postgres_enabled_default_step_follows_provider_version_and_r
         enabled_default_result = await schema_migrations.apply_migrations(
             transaction_factory=factory, index_connection_factory=index_factory,
         )
-        assert enabled_default_result["version"] == schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
+        assert enabled_default_result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
         rows = await (await admin.execute(
             "select id, default_model_id, revision from model_groups order by id"
         )).fetchall()
@@ -584,14 +586,13 @@ async def test_real_postgres_enabled_default_step_follows_provider_version_and_r
         assert ledger_rows == [
             {"version": schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION,
              "checksum_sha256": previous.schema_checksum()},
-            {"version": schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION,
+            {"version": schema_migrations.TARGET_SCHEMA_VERSION,
              "checksum_sha256": schema_migrations.schema_checksum()},
         ]
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
-            # Additive schema readiness is not a binary-version fence. The rollout
-            # contract must stop old writers before admitting explicit-only traffic.
-            assert (await previous.schema_status(conn))["ready"] is True
+            # Per-Attempt UUID reuse retires the old global-uniqueness contract.
+            assert (await previous.schema_status(conn))["ready"] is False
     finally:
         sys.modules.pop(previous.__name__, None)
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))

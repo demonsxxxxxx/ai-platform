@@ -32,6 +32,14 @@ interface KeyValuePair {
   value: string;
 }
 
+type PublicOperationDraft = { tool: string; action: string; object: string; path: string };
+
+function publicOperationDrafts(server?: MCPServerResponse | null): PublicOperationDraft[] {
+  return Object.entries(server?.public_operation_summaries ?? {}).map(([tool, value]) => ({
+    tool, action: value.action_label, object: value.object_label, path: value.object_path.join("."),
+  }));
+}
+
 type RoleQuotaDraft = {
   daily_limit: number | "";
   weekly_limit: number | "";
@@ -132,6 +140,8 @@ export function MCPServerForm({
     () => toQuotaDrafts(server?.role_quotas ?? {}),
   );
 
+  const [publicOperations, setPublicOperations] = useState(() => publicOperationDrafts(server));
+
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -168,6 +178,7 @@ export function MCPServerForm({
       setAllowedDepartments([]);
       setRoleQuotas({});
     }
+    setPublicOperations(publicOperationDrafts(server));
     setErrors({});
   }, [server, defaultTransport]);
 
@@ -218,6 +229,16 @@ export function MCPServerForm({
       newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
 
+    const tools = new Set<string>();
+    if (publicOperations.length > 100 || publicOperations.some((row) => {
+      const parts = row.path.split(".");
+      const invalid = !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,383}$/.test(row.tool) || tools.has(row.tool)
+        || !row.action.trim() || row.action.length > 80 || !row.object.trim() || row.object.length > 80
+        || parts.length > 8 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(part)
+          || /account|username|userid|email|phone|credential|password|secret|token|path|directory|filename|storage/i.test(part.replaceAll("_", "")));
+      tools.add(row.tool);
+      return invalid;
+    })) newErrors.publicOperations = t("mcp.form.publicSummaryInvalid");
     if (!departmentSelection.authoritative || allowedDepartments.length > 128) {
       newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
     }
@@ -235,6 +256,9 @@ export function MCPServerForm({
       transport,
       integration_kind: integrationKind,
       enabled,
+      public_operation_summaries: Object.fromEntries(publicOperations.map((row) => [row.tool, {
+        action_label: row.action.trim(), object_label: row.object.trim(), object_path: row.path.split("."),
+      }])),
       allowed_roles: isSystemServer ? allowedRoles : undefined,
       role_quotas: isSystemServer
         ? serializeRoleQuotas(allowedRoles, roleQuotas)
@@ -506,6 +530,25 @@ export function MCPServerForm({
             </div>
           </div>
       </>
+
+      <fieldset className="es-section" data-public-operation-summaries>
+        <legend className="es-label">{t("mcp.form.publicSummaryTitle")}</legend>
+        <p className="es-hint">{t("mcp.form.publicSummaryDescription")}</p>
+        {publicOperations.map((row, index) => (
+          <div className="es-row" key={index}>
+            {([['tool', t('mcp.form.publicSummaryTool')], ['action', t('mcp.form.publicSummaryAction')], ['object', t('mcp.form.publicSummaryObject')], ['path', t('mcp.form.publicSummaryPath')]] as const).map(([field, label]) => (
+              <label className="es-field" key={field}>{label}
+                <Input aria-label={`${label} ${index + 1}`} className="enterprise-field-control es-input"
+                  value={row[field]} onChange={(event) => setPublicOperations((rows) => rows.map((item, i) => i === index ? { ...item, [field]: event.target.value } : item))} />
+              </label>
+            ))}
+            <Button htmlType="button" type="default" aria-label={`${t("mcp.form.publicSummaryRemove")} ${index + 1}`}
+              onClick={() => setPublicOperations((rows) => rows.filter((_, i) => i !== index))}>{t("mcp.form.publicSummaryRemove")}</Button>
+          </div>
+        ))}
+        {errors.publicOperations && <p className="es-hint" role="alert">{errors.publicOperations}</p>}
+        <Button htmlType="button" type="default" onClick={() => setPublicOperations((rows) => [...rows, { tool: '', action: '', object: '', path: '' }])}>{t("mcp.form.publicSummaryAdd")}</Button>
+      </fieldset>
 
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">

@@ -106,17 +106,18 @@ class RunCancellationPostProcessor:
                 await self._queue_cleanup(tenant_id=tenant_id, run_id=cancellation.run_id)
             except Exception as exc:  # noqa: BLE001 - report after sandbox cleanup
                 queue_cleanup_failures.append(exc)
-        await self._sandbox_cleanup.cleanup_cancelled_run_leases(
-            result.get("active_sandbox_leases"),
-            tenant_id=tenant_id,
-            run_id=cancellation.run_id,
-            user_id=user_id,
-            requested_by_role=requested_by_role,
-            reason=reason,
-            trace_id=result.get("trace_id"),
-            provider_factory=self._provider_factory,
-            transaction_factory=self._transaction_factory,
-        )
+        if result["status"] == "cancelled":
+            await self._sandbox_cleanup.cleanup_cancelled_run_leases(
+                result.get("active_sandbox_leases"),
+                tenant_id=tenant_id,
+                run_id=cancellation.run_id,
+                user_id=user_id,
+                requested_by_role=requested_by_role,
+                reason=reason,
+                trace_id=result.get("trace_id"),
+                provider_factory=self._provider_factory,
+                transaction_factory=self._transaction_factory,
+            )
         if queue_cleanup_failures:
             raise RunCancellationQueueCleanupError(queue_cleanup_failures)
         return result
@@ -322,11 +323,14 @@ class RunCancellationUseCase:
                 source=authority.source,
                 trace_ref=authority.trace_ref,
             )
-        progress = await self._progress_terminalization(
-            conn,
-            tenant_id=tenant_id,
-            run_id=authority.run_id,
-        )
+        progress = None
+        # An admitted Attempt owns SDK drain and settlement; intent is not EOF.
+        if authority.prior_status == "queued" and authority.attempt_id is None:
+            progress = await self._progress_terminalization(
+                conn,
+                tenant_id=tenant_id,
+                run_id=authority.run_id,
+            )
         if progress is not None and progress.did_transition:
             await self._event_writer.append_terminal(
                 conn,

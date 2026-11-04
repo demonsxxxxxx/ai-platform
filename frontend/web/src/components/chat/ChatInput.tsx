@@ -71,6 +71,7 @@ const SEND_BLOCKED_PLACEHOLDER = {
   permission: "chat.noPermission",
   loadingHistory: "chat.sendBlockedLoadingHistory",
   synchronizing: "chat.sendBlockedSynchronizing",
+  continuation: "chat.continuation.checking",
 } as const;
 
 export type {

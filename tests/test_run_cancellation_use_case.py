@@ -118,7 +118,7 @@ def _authority(
 async def test_cancel_request_commits_authoritative_order_and_source(role, expected_source):
     order: list[str] = []
     transaction_factory = _TransactionFactory(order)
-    persistence = _Persistence(order, _authority(role=role))
+    persistence = _Persistence(order, _authority(role=role, attempt_id=None))
     event_writer = _EventWriter(order)
     progressor = _Progressor(order)
     use_case = RunCancellationUseCase(
@@ -142,7 +142,6 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
-        "v4.admission_pending",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
         "v4.run.terminal",
@@ -152,7 +151,7 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
 
 
 @pytest.mark.asyncio
-async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminalization():
+async def test_repeat_active_request_preserves_attempt_settlement_owner():
     order: list[str] = []
     progressor = _Progressor(order)
     use_case = RunCancellationUseCase(
@@ -166,14 +165,12 @@ async def test_repeat_request_skips_duplicate_v4_but_progresses_pending_terminal
         tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a"
     )
 
-    assert result is not None and result.status == "cancelled"
-    assert progressor.calls == 1
+    assert result is not None and result.status == "cancel_requested"
+    assert progressor.calls == 0
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
         "v4.admission_pending",
-        "v4.run.cancelled",
-        "v4.run.terminal",
         "audit",
         "transaction.commit",
     ]
@@ -255,6 +252,27 @@ async def test_queued_legacy_cancel_without_attempt_skips_attempt_stream_admissi
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("prior_status", ["running", "queued"])
+async def test_new_cancel_with_admitted_attempt_only_records_intent(role, prior_status):
+    order = []
+    progressor = _Progressor(order)
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(role=role, prior_status=prior_status)),
+        event_writer=_EventWriter(order), progress_terminalization=progressor,
+    )
+    if role == "owner":
+        result = await use_case.request_owner_cancel(tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a")
+    else:
+        result = await use_case.request_admin_cancel(tenant_id="tenant-a", run_id="run-a", admin_user_id="admin-a")
+    assert result.status == "cancel_requested"
+    assert progressor.calls == 0
+    assert "v4.run.cancel_requested" in order and "v4.admission_pending" in order
+    assert "v4.run.terminal" not in order
+
+
 def _post_processor(order, *, failures=None):
     failures = failures or {}
     captured = {}
@@ -300,6 +318,11 @@ async def test_post_cancel_is_after_commit_and_preserves_actor_scope(role):
             tenant_id="tenant-a", run_id="run-a", admin_user_id=actor,
         )
     assert order[-1] == "transaction.commit"
+    cancellation = CancelRequestResult(
+        cancellation.run_id, "cancelled", cancellation.trace_ref,
+        cancellation.active_sandbox_leases, cancellation.initial_terminalization_progress,
+        cancellation.attempt_id,
+    )
     result = await use_case.post_cancel(
         cancellation, tenant_id="tenant-a", user_id=actor,
         requested_by_role=role, reason=reason, worker_capabilities=object(),
@@ -324,7 +347,7 @@ async def test_missing_attempt_skips_publication_and_only_cancelled_status_remov
     assert order == []
     receipt = CancelRequestResult("run-a", status, None, (), None)
     assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
-    assert order == (["queue", "sandbox"] if status == "cancelled" else ["sandbox"])
+    assert order == (["queue", "sandbox"] if status == "cancelled" else [])
 
 
 @pytest.mark.asyncio

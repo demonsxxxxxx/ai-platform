@@ -1,4 +1,15 @@
 import i18n from "../../i18n";
+import type { PublicContinuation } from "../../services/api/session";
+
+export function publicContinuationMessage(
+  continuation: PublicContinuation | undefined,
+  pending = false,
+): string {
+  const key = pending ? "checking" :
+    continuation?.state === "blocked" && ["writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted"].includes(continuation.reason_code)
+      ? continuation.reason_code : continuation?.state ?? "unavailable";
+  return i18n.t(`chat.continuation.${key}`);
+}
 
 export interface PublicTerminalPresentationDefinition {
   detailKind: "failed" | "cancelled" | "result_unavailable";

@@ -602,6 +602,14 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
             REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
         ),
         (
+            schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION,
+            "synthetic-pre-source-confirmation-checksum",
+        ),
+        (
+            schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION,
+            "synthetic-latest-main-checksum",
+        ),
+        (
             schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION,
             REMOTE_SANDBOX_PROVIDER_RENEWAL_CHECKSUM,
         ),
@@ -699,6 +707,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
     assert schema_migrations.MODEL_USER_ACCESS_SCHEMA_VERSION == "2026.10.20.1"
     assert schema_migrations.MODEL_TOKEN_USAGE_SCHEMA_VERSION == "2026.10.20.2"
+    assert schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION == "2026.10.22.2"
+    assert schema_migrations.CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION == "2026.11.02.1"
+    assert schema_migrations.RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION == "2026.10.23.1"
     assert schema_migrations.MODEL_GROUPS_SCHEMA_VERSION == "2026.10.26.1"
     assert schema_migrations.MODEL_GROUPS_LEGACY_DEFAULT_RETIREMENT_SCHEMA_VERSION == "2026.10.26.2"
     assert schema_migrations.PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION == "2026.10.27.1"
@@ -707,7 +718,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION == "2026.10.28.2"
     assert schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION == "2026.10.29.1"
     assert schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION == "2026.10.29.2"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -723,6 +734,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "execution_recovery_operations",
+        "execution_recovery_invocations",
         "users",
         "runs",
         "run_diagnostics",

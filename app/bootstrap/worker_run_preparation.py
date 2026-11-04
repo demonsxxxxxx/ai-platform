@@ -45,7 +45,7 @@ async def prepare_worker_run(
     registry: AdapterRegistry | None, worker_id: str | None,
     reconciliation: Any, queue_lease: Any, transaction_factory: Any,
     v4_capabilities: Any, run_attempt_lifecycle: Any, run_lifecycle: Any,
-    publish_run_event: Any,
+    publish_run_event: Any, outer_terminal_transaction: bool = False,
 ) -> PreparedWorkerRun | WorkerOutcome:
     if v4_capabilities is None:
         raise RuntimeError("worker_v4_capabilities_unavailable")
@@ -138,7 +138,7 @@ async def prepare_worker_run(
             binding.runtime_sandbox_lease,
         )
     finally:
-        if terminal_after_transaction is not None:
+        if terminal_after_transaction is not None and not outer_terminal_transaction:
             await admit_v4_stream(
                 v4_capabilities,
                 tenant_id=terminal_after_transaction.payload.tenant_id,

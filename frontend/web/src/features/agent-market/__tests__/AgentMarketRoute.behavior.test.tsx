@@ -634,7 +634,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
       category: profile.category,
     },
   });
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async (sessionId) => ({ session_id: sessionId, current_run_id: null, events: [] });
   const submissions: unknown[][] = [];
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);

@@ -72,6 +72,10 @@ async def test_worker_dispatch_fence_relocks_exact_queued_run_and_fails_closed()
     assert await worker_dispatch_fence(conn, **kwargs) == "stale"
     conn.value = {**row, "status": "running"}
     assert await worker_dispatch_fence(conn, **{**kwargs, "reconciliation": True}) == "ready"
+    conn.value = {**row, "status": "running", "cancel_requested_at": "requested"}
+    assert await worker_dispatch_fence(conn, **{**kwargs, "reconciliation": True}) == "ready"
+    conn.value["context_snapshot_id"] = "foreign"
+    assert await worker_dispatch_fence(conn, **{**kwargs, "reconciliation": True}) == "invalid"
 
 
 EXECUTION_SPEC_ARCHITECTURE = (

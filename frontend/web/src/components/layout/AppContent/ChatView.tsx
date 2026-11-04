@@ -139,6 +139,8 @@ import {
   sessionInputFileToAttachment,
 } from "./sessionInputFiles";
 import type { FileUploadControls } from "../../../hooks/useFileUpload";
+import { canContinueConversation, type PublicContinuation } from "../../../services/api/session";
+import { publicContinuationMessage } from "../../../hooks/useAgent/publicTerminalPresentation";
 import { uuid } from "../../../utils/uuid";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
@@ -161,6 +163,8 @@ interface ChatViewProps {
   conversationIdentityKey: string;
   currentRunId: string | null;
   runInputs?: RunInputsController;
+  continuation?: PublicContinuation;
+  continuationPending?: boolean;
   canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -237,6 +241,8 @@ export function ChatView({
   conversationIdentityKey,
   currentRunId,
   runInputs,
+  continuation,
+  continuationPending = false,
   canStopGeneration,
   isLoading,
   isLoadingHistory,
@@ -343,8 +349,9 @@ export function ChatView({
   const terminalResultSynchronizing = messages.some(
     (message) => message.role === "assistant" && message.isSynchronizing,
   );
+  const continuationBlocksSend = continuationPending || !canContinueConversation(continuation);
   const canSendInCurrentView =
-    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
+    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing && !continuationBlocksSend;
   // A temporary wait must not read as a missing permission.
   const sendBlockedReason: ChatInputProps["sendBlockedReason"] = !canSendMessage
     ? "permission"
@@ -352,7 +359,9 @@ export function ChatView({
       ? "loadingHistory"
       : terminalResultSynchronizing
         ? "synchronizing"
-        : undefined;
+        : continuationBlocksSend
+          ? "continuation"
+          : undefined;
   // The authorized pending batch, not a route flag, owns question mode. A closed
   // or accepted batch leaves no pending answer, so the ordinary composer returns
   // with its draft and attachments untouched.
@@ -959,7 +968,8 @@ export function ChatView({
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
     sendBlockedReason,
-    placeholder: composerPlaceholder,
+    placeholder: canSendMessage && continuationBlocksSend
+      ? publicContinuationMessage(continuation, continuationPending) : composerPlaceholder,
     modelUnavailableReason,
     acceptedFileTypes: undefined,
     disableSlashCommands: presentation?.disableSlashCommands ?? false,
@@ -1025,6 +1035,21 @@ export function ChatView({
 
   const composer = (
     <div className="relative" data-chat-shell-composer>
+      {sessionId && (continuation || continuationPending || !sessionRunning) ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-chat-continuation={continuationPending ? "checking" : continuation?.state ?? "unavailable"}
+          className="mx-auto mb-2 max-w-[var(--chat-column-max)] px-2 text-sm text-[var(--theme-text-secondary)]"
+        >
+          {publicContinuationMessage(continuation, continuationPending)}
+          {continuationPending && !sessionRunning ? (
+            <button type="button" className="ml-2 underline" onClick={() => void onLoadHistory()}>
+              {t("chat.continuation.refresh")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {messages.length > 0 && showScrollTop && (
         <div
           className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}

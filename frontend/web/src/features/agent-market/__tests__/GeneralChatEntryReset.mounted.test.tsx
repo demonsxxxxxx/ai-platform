@@ -151,9 +151,17 @@ async function expectGeneralResetToBlank(params: {
     }),
     getEvents: async (id: string) => {
       loads.push(id);
-      return { events: [{ id: `event-${id}`, event_type: "user:message",
-        timestamp: "2026-10-01T00:00:00Z", data: { content: `Transcript ${id}` } }] };
+      return { session_id: id, current_run_id: `run-${id}`,
+        terminal_run_statuses: { [`run-${id}`]: "succeeded" },
+        events: [
+          { id: `event-${id}`, run_id: `run-${id}`, event_type: "user:message",
+            timestamp: "2026-10-01T00:00:00Z", data: { content: `Transcript ${id}` } },
+          { id: `answer-${id}`, run_id: `run-${id}`, event_type: "message:chunk",
+            timestamp: "2026-10-01T00:00:01Z", data: { content: `Answer ${id}` } },
+        ] };
     },
+    getStatus: async (id: string, runId?: string) => ({ session_id: id,
+      run_id: runId ?? `run-${id}`, status: "completed", raw_status: "succeeded" }),
     getRunInputHistory: async (id: string) => ({ session_id: id, runs: [], has_more: false, next_before_run_id: null }),
     getInputFiles: async (id: string) => ({ session_id: id, files: [] }),
     delete: async () => ({}),
@@ -189,6 +197,7 @@ async function expectGeneralResetToBlank(params: {
     await settle();
 
     assert.equal(currentPath, params.fromApps ? "/apps" : `/chat/${GENERIC_SESSION_ID}`);
+    assert.equal(loads.filter((id) => id === GENERIC_SESSION_ID).length, params.fromApps ? 0 : 1);
     await params.verifyNavigation?.(container);
 
     // The primary 对话 entry is a general new-conversation entry, not a raw push
@@ -204,7 +213,6 @@ async function expectGeneralResetToBlank(params: {
     // rehydrated. Both the route and the read count must settle on a blank entry.
     assert.equal(currentPath, "/chat");
     assert.equal(loads.length, loadsBeforeReset, "reset must not re-read the old Session");
-    assert.equal(loads.filter((id) => id === GENERIC_SESSION_ID).length, params.fromApps ? 0 : 1);
   } finally {
     await React.act(async () => root.unmount());
     container.remove();

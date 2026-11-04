@@ -200,6 +200,8 @@ export function ChatAppContent({
     sessionId,
     currentRunId,
     runInputs,
+    continuation,
+    continuationPending,
     canStopGeneration,
     isLoading,
     isLoadingHistory,
@@ -954,6 +956,8 @@ export function ChatAppContent({
             onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            continuation={agentWorkspaceTranscriptReady ? continuation : undefined}
+            continuationPending={agentWorkspaceTranscriptReady && continuationPending}
             modelUnavailableReason={modelsLoading && !currentModelId ? "正在加载模型…" : modelSelectionError
               ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
                 ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError

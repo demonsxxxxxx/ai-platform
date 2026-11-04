@@ -211,7 +211,7 @@ test("a recovered Agent Conversation keeps composer models and omits client capa
         : null,
     };
   };
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async () => ({ current_run_id: null, events: [] });
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     return {
@@ -501,7 +501,7 @@ test("required session projection failures remain fail-closed with bounded diagn
   }
 });
 
-test("event history failure keeps verified generic authority for explicit retry", async () => {
+test("event history failure preserves generic identity but requires confirmed history before continuation", async () => {
   const harness = await loadHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -537,7 +537,7 @@ test("event history failure keeps verified generic authority for explicit retry"
         "history_events_unavailable",
       );
     }
-    return { events: [] };
+    return { current_run_id: null, events: [] };
   };
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
@@ -551,11 +551,11 @@ test("event history failure keeps verified generic authority for explicit retry"
     await settle(harness.act);
     await harness.act(async () => {
       assert.deepEqual(await harness.hook.sendMessage("继续同一会话"), {
-        status: "accepted",
+        status: "failed",
       });
     });
-    assert.equal(submissions[0]?.[1], "session-history-retry");
-    assert.equal(submissions[0]?.[10], null);
+    assert.equal(submissions.length, 0);
+    assert.equal(harness.hook.continuationPending, true);
     assert.deepEqual(diagnostics, [
       [
         "[loadHistory] failed",
@@ -576,6 +576,12 @@ test("event history failure keeps verified generic authority for explicit retry"
     });
     await settle(harness.act);
     assert.equal(harness.hook.error, null);
+    assert.equal(harness.hook.continuationPending, false);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("继续同一会话"), { status: "accepted" });
+    });
+    assert.equal(submissions[0]?.[1], "session-history-retry");
+    assert.equal(submissions[0]?.[10], null);
   } finally {
     console.error = originalConsoleError;
     sessionApi.get = originalGet;

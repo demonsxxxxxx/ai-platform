@@ -37,6 +37,7 @@ from app.platform.public_payload import (
 )
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
+    RecoveryToolGate,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
     _SDK_INTERNAL_CONTEXT_TOOLS,
     _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
@@ -51,6 +52,7 @@ from app.executors.claude.capability_policy import (
 from app.executors.claude.prompts import (
     FILE_TASK_SYSTEM_PROMPT,
     compose_system_prompt,
+    recovery_operation_facts_section,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
 )
@@ -63,8 +65,10 @@ from app.bootstrap.claude_client import (
     prepare_claude_result_usage,
 )
 from app.execution.api import (
+    RECOVERY_CONFIRMATION_TIMEOUT_SECONDS,
     AUTO_COMPACT_WINDOW_MAX_TOKENS,
     AUTO_COMPACT_WINDOW_MIN_TOKENS,
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
@@ -191,6 +195,7 @@ _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
 _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS = 2_000
 _SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
+_SDK_STOP_TASK_TIMEOUT_SECONDS = 2.0
 _logger = logging.getLogger(__name__)
 
 
@@ -232,6 +237,7 @@ class ClaudeAgentSdkRunResult:
     response_files: list[str] = field(default_factory=list)
     response_file_descriptors: list[dict[str, str]] = field(default_factory=list)
     provider_final_sequence: int | None = None
+    sdk_settlement: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1560,8 +1566,11 @@ async def run_claude_agent_sdk(
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     thinking_effort: str = "auto",
     cleanup_tasks: set[asyncio.Task[Any]] | None = None,
+    recovery_tool_gate: dict[str, Any] | None = None,
+    recovery_tool_gate_query: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
+    recovery_gate = RecoveryToolGate.from_mapping(recovery_tool_gate)
     callback_tracker = prepare_claude_callback_tracker()
     interaction_actor = None
     if interaction_client is not None and not (run_id and attempt_id):
@@ -2789,7 +2798,54 @@ async def run_claude_agent_sdk(
             }
         )
 
+    async def recovery_gate_denial(tool_name: str, tool_input: object, invocation_id: object) -> str | None:
+        if stop_requested:
+            return "run_stop_requested"
+        if recovery_gate is None:
+            return None
+        identity = adapter_identity(tool_name)
+        subject = internal_platform_subjects.get(identity) or authorized_subjects.get(identity)
+        reason = recovery_gate.denial(identity, subject)
+        if reason != "recovery_effect_unconfirmed" or recovery_tool_gate_query is None:
+            return reason
+        call_id = canonical_tool_call_id(invocation_id)
+        if not call_id or not run_id or not attempt_id:
+            return reason
+        identity_fields = dict(run_id=run_id, attempt_id=attempt_id, tool_identity=identity, invocation_id=call_id)
+        deadline = asyncio.get_running_loop().time() + RECOVERY_CONFIRMATION_TIMEOUT_SECONDS
+        while not stop_requested:
+            try:
+                evidence = await asyncio.wait_for(recovery_tool_gate_query(
+                    **identity_fields, tool_input=tool_input,
+                ), timeout=5.0)
+            except Exception:
+                return reason
+            if stop_requested:
+                return "run_stop_requested"
+            if (recovery_gate.evidence_identity_matches(evidence, **identity_fields)
+                and evidence.get("decision") == "deny"
+                and evidence.get("reason_code") == "recovery_operation_public_object_metadata_missing"):
+                return "recovery_operation_public_object_metadata_missing：缺少可安全展示的操作对象摘要，无法请求人工确认；可继续只读检查。"
+            if recovery_gate.evidence_allows(evidence, **identity_fields):
+                return None
+            if not recovery_gate.evidence_matches(evidence, **identity_fields):
+                return reason
+            if evidence.get("decision") != "wait":
+                return ("原操作已确认完成，不会重复执行；可以继续只读检查。"
+                        if evidence.get("reason_code") == "operation_already_completed" else reason)
+            if not isinstance(evidence.get("question_id"), str):
+                return reason
+            if asyncio.get_running_loop().time() >= deadline:
+                return "operation_confirmation_expired"
+            await asyncio.sleep(0.25)
+        return "run_stop_requested"
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        gate_reason = await recovery_gate_denial(
+            tool_name, tool_input, permission_context_tool_use_id(_context),
+        )
+        if gate_reason is not None:
+            return PermissionResultDeny(message=gate_reason)
         decision = policy_for_tool(tool_name, tool_input)
         context_tool_use_id = permission_context_tool_use_id(_context)
         record_runtime_tool_stage(
@@ -2837,7 +2893,15 @@ async def run_claude_agent_sdk(
         nonlocal mcp_execution_conflicted
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
-        tool_name = ""
+        tool_name = str(hook_input.get("tool_name") or "")
+        gate_reason = await recovery_gate_denial(
+            tool_name, hook_input.get("tool_input"), exact_hook_tool_call_id(hook_input, tool_use_id),
+        )
+        if gate_reason is not None:
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": gate_reason,
+            }}
         if (
             interaction_actor is not None
             and hook_input_is_mapping
@@ -3413,6 +3477,7 @@ async def run_claude_agent_sdk(
     last_assistant_error_text = ""
     terminal_stream_error: Exception | None = None
     terminal_result_message: object | None = None
+    provider_mirror_error_observed = False
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
@@ -3458,6 +3523,10 @@ async def run_claude_agent_sdk(
     ) -> ClaudeAgentSdkRunResult:
         """Snapshot the shared observations after the caller has closed its terminal."""
         successful_terminal = error is None and include_terminal_files
+        if terminal_reason is None and provider_mirror_error_observed:
+            terminal_reason = getattr(terminal_result_message, "terminal_reason", None)
+            if terminal_reason is None and not getattr(terminal_result_message, "is_error", True):
+                terminal_reason = getattr(terminal_result_message, "stop_reason", None)
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message=message,
@@ -3476,7 +3545,27 @@ async def run_claude_agent_sdk(
             response_files=list(response_files) if successful_terminal else [],
             response_file_descriptors=list(response_file_descriptors) if successful_terminal else [],
             provider_final_sequence=(provider_session_store.final_sequence
-                                     if successful_terminal and provider_session_store is not None else None),
+                                     if provider_session_store is not None else None),
+            sdk_settlement={
+                "schema_version": "ai-platform.sdk-settlement.v1",
+                "received_result": terminal_result_message is not None,
+                "input_accepted": prompt_dispatched,
+                "ack_unknown": (provider_session_store.ack_unknown
+                                if provider_session_store is not None else prompt_dispatched),
+                "terminal_reason": terminal_reason,
+                "error_code": _SDK_PROVIDER_SESSION_FAILED if provider_mirror_error_observed else error,
+                "mirror_complete": bool(
+                    provider_session_store is not None and receive_stream_closed
+                    and not provider_mirror_error_observed
+                    and not provider_session_store.failed
+                    and provider_session_store.main_append_acknowledged
+                    and provider_session_store.final_sequence is not None
+                ),
+                "external_effect_unknown": (
+                    error in {MCP_EXECUTION_OUTCOME_UNKNOWN, MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE}
+                    or external_write_outcome_unconfirmed()
+                ),
+            },
         )
 
     def close_failed_terminal(reason: str) -> None:
@@ -3554,11 +3643,14 @@ async def run_claude_agent_sdk(
 
     receive_stream_closed = False
     receiving_started = False
+    prompt_dispatched = False
     stop_requested = False
+    # Background agents outlive interrupt(); stop needs their IDs to end the run.
+    pending_tasks: set[str] = set()
 
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
         nonlocal continuation_usage, continuation_turns, terminal_stream_error, receive_stream_closed
-        pending_tasks: set[str] = set()
+        nonlocal terminal_result_message, provider_mirror_error_observed
         final_result = None
         mirror_error = None
         final_flush_timing: TerminalStageTiming | None = None
@@ -3594,9 +3686,16 @@ async def run_claude_agent_sdk(
                 async for message in responses:
                     if provider_session_store is not None:
                         provider_session_store.observe_public_message(is_result=isinstance(message, ResultMessage))
-                    if stop_requested:
-                        # Drain the public stream through its final mirror flush,
-                        # without processing more output or supplementary inputs.
+                    if isinstance(message, TaskStartedMessage):
+                        if message.task_type in {"local_agent", "local_workflow"}:
+                            pending_tasks.add(message.task_id)
+                    elif isinstance(message, TaskNotificationMessage):
+                        pending_tasks.discard(message.task_id)
+                    elif isinstance(message, TaskUpdatedMessage):
+                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+                            pending_tasks.discard(message.task_id)
+                    if stop_requested and not isinstance(message, (ResultMessage, MirrorErrorMessage)):
+                        # Drain terminal evidence, never supplementary inputs or public output.
                         continue
                     if isinstance(message, ResultMessage):
                         result_usage.observe_result(message)
@@ -3611,25 +3710,18 @@ async def run_claude_agent_sdk(
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)
                             for denial in permission_denials:
                                 await reconcile_sdk_permission_denial(denial)
-                    if isinstance(message, TaskStartedMessage):
-                        if message.task_type in {"local_agent", "local_workflow"}:
-                            pending_tasks.add(message.task_id)
-                    elif isinstance(message, TaskNotificationMessage):
-                        pending_tasks.discard(message.task_id)
-                    elif isinstance(message, TaskUpdatedMessage):
-                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
-                            pending_tasks.discard(message.task_id)
-                    elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
+                    if isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
                         # A background agent may wake a follow-up turn. Its first
                         # Result is not the completion of the platform Run.
                         continue
                     if isinstance(message, MirrorErrorMessage):
                         mirror_error = message
+                        provider_mirror_error_observed = True
                         if interaction_actor is not None:
                             await interaction_actor.cancel()
                         continue
                     if isinstance(message, ResultMessage):
-                        if interaction_actor is not None and not message.is_error and mirror_error is None:
+                        if interaction_actor is not None and not stop_requested and not message.is_error and mirror_error is None:
                             command = await interaction_actor.settle_at_result()
                             if command is not None:
                                 continuation_usage = _merge_sdk_usage(
@@ -3666,8 +3758,9 @@ async def run_claude_agent_sdk(
             if final_flush_timing is not None:
                 final_flush_timing.finish(sys.exception())
         if mirror_error is not None:
+            terminal_result_message = final_result
             yield mirror_error
-        elif final_result is not None and not stop_requested:
+        elif final_result is not None:
             yield final_result
 
     async def observed_model_messages(messages: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -4210,7 +4303,7 @@ async def run_claude_agent_sdk(
             if answer_stream_gate.private_token_exposed:
                 terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
-        if not answer_stream_gate.failed and isinstance(
+        if not stop_requested and not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
         ):
             for source_key, public_text in routed_final_chunks:
@@ -4225,7 +4318,8 @@ async def run_claude_agent_sdk(
                     )
                     break
         public_terminal_allowed = (
-            terminal_error is None
+            not stop_requested
+            and terminal_error is None
             and not answer_stream_gate.failed
             and capability_completion_error() is None
             and not mcp_execution_conflict_observed()
@@ -4321,6 +4415,23 @@ async def run_claude_agent_sdk(
                 await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
             except Exception:  # noqa: BLE001 - cancellation still closes the client.
                 pass
+            await stop_background_tasks(active_client)
+
+    async def stop_background_tasks(client: Any) -> None:
+        # interrupt() ends only the foreground turn. A live background agent keeps
+        # the SDK run (and stdin) open, so public EOF and the final mirror flush
+        # would otherwise wait for the cleanup deadline and a forced disconnect.
+        stop_task = getattr(client, "stop_task", None)
+        if stop_task is None:
+            return
+
+        async def stop_one(task_id: str) -> None:
+            try:
+                await asyncio.wait_for(stop_task(task_id), timeout=_SDK_STOP_TASK_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 - the cleanup deadline still bounds stop.
+                pass
+
+        await asyncio.gather(*(stop_one(task_id) for task_id in sorted(pending_tasks)))
 
     async def protocol_closed(mirror_failed: bool) -> None:
         nonlocal cleanup_deadline
@@ -4374,22 +4485,58 @@ async def run_claude_agent_sdk(
                     provider_session_store.final_sequence if provider_session_store is not None else None
                 ),
             )
+        result = replace(result, sdk_settlement=assemble_run_result(
+            error=error, terminal_reason=result.terminal_reason,
+            received_structured_terminal=result.received_structured_terminal,
+        ).sdk_settlement)
+        if mirror_failed or error == _SDK_PROVIDER_SESSION_FAILED:
+            result = replace(result, sdk_settlement={**result.sdk_settlement, "mirror_complete": False})
         result_ready.set_result(result)
         cleanup_deadline = asyncio.get_running_loop().call_later(
             _SDK_CLEANUP_TIMEOUT_SECONDS, consume_task.cancel
         )
 
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
-        nonlocal consume_cancellation, pending_result, active_client, receiving_started
+        nonlocal consume_cancellation, pending_result, active_client, receiving_started, prompt_dispatched
         try:
             async with mcp_registration.activate(options):
-                client = client_factory(options)
+                try:
+                    composed_prompt = sdk_system_prompt["prompt"]
+                    if interaction_actor is not None:
+                        snapshot = await interaction_actor.open()
+                        facts_section = recovery_operation_facts_section(snapshot.recovery_operation_facts)
+                        if facts_section:
+                            composed_prompt = compose_system_prompt(composed_prompt, facts_section)
+                            options.system_prompt = {**sdk_system_prompt, "prompt": composed_prompt}
+                    if len(composed_prompt) > MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS:
+                        if interaction_actor is not None:
+                            await interaction_actor.cancel()
+                        await callback_tracker.seal_and_wait()
+                        seal_agent_candidates(_SDK_INPUT_CONTEXT_TOO_LARGE)
+                        result = assemble_run_result(
+                            error=_SDK_INPUT_CONTEXT_TOO_LARGE,
+                            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                                _SDK_INPUT_CONTEXT_TOO_LARGE,
+                                failure_source="recovery_facts_prompt_limit",
+                                sdk_errors="composed_system_prompt_too_large",
+                            ),
+                        )
+                        if not result_ready.done():
+                            result_ready.set_result(result)
+                        if not protocol_settled.done():
+                            protocol_settled.set_result(None)
+                        return result
+                    client = client_factory(options)
+                except BaseException:
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    await callback_tracker.seal_and_wait()
+                    raise
                 active_client = client
                 close_boundary = prepare_claude_client_close(client)
                 disconnected = False
                 try:
                     if interaction_actor is not None:
-                        await interaction_actor.open()
                         initial_prompt = interaction_actor.initial_prompt_stream({
                             "type": "user",
                             "message": {"role": "user", "content": sdk_prompt},
@@ -4398,6 +4545,16 @@ async def run_claude_agent_sdk(
                         })
                     else:
                         initial_prompt = _sdk_user_prompt_stream(sdk_prompt, session_id=session_id)
+                    prompt_source = initial_prompt
+
+                    async def observed_prompt():
+                        nonlocal prompt_dispatched
+                        async for item in prompt_source:
+                            # Once handed to the SDK, never claim the input was not accepted.
+                            prompt_dispatched = True
+                            yield item
+
+                    initial_prompt = observed_prompt()
                     # connect(stream) owns the SDK input producer and closes
                     # stdin when the stream ends. query(stream) alone does not.
                     await client.connect(initial_prompt)
@@ -4508,14 +4665,41 @@ async def run_claude_agent_sdk(
             # resource teardown to their application lifespan.
             await asyncio.wait({consume_task})
         return result
-    except asyncio.CancelledError:
-        result_ready.cancel()
-        await stop_execution()
+    except asyncio.CancelledError as exc:
+        cleanup_failed = False
+        try:
+            await stop_execution()
+        except Exception:  # A cleanup failure cannot erase the cancellation receipt.
+            cleanup_failed = True
         seal_agent_candidates("cancelled")
+        settlement = (
+            result_ready.result()
+            if result_ready.done() and not result_ready.cancelled() and result_ready.exception() is None
+            else assemble_run_result(
+                message="", error=_SDK_CANCELLED,
+                runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                    _SDK_CANCELLED, failure_source="sdk_cancelled", terminal_reason=terminal_reason,
+                ),
+            )
+        )
+        if provider_session_store is not None and provider_session_store.failed:
+            settlement = replace(
+                settlement, error=_SDK_PROVIDER_SESSION_FAILED,
+                sdk_settlement={**settlement.sdk_settlement, "mirror_complete": False,
+                                "error_code": _SDK_PROVIDER_SESSION_FAILED},
+            )
+        if cleanup_failed:
+            settlement = replace(settlement, sdk_settlement={
+                **settlement.sdk_settlement, "mirror_complete": False,
+                "cleanup_error_code": "sdk_cleanup_failed",
+            })
+        exc.sdk_settlement = settlement
+        result_ready.cancel()
         if (
             consume_cancellation is not None
             and type(consume_cancellation) is not asyncio.CancelledError
         ):
+            consume_cancellation.sdk_settlement = settlement
             raise consume_cancellation
         raise
     except RunQuestionNeedsInput:
