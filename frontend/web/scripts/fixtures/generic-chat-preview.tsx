@@ -21,7 +21,16 @@ import "../../src/styles/utilities.css";
 import { AuthProvider } from "../../src/hooks/useAuth";
 import { ModelCatalogProvider } from "../../src/contexts/ModelCatalogContext";
 
-const theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+const previewParams = new URLSearchParams(location.search);
+const theme = previewParams.get("theme") === "dark" ? "dark" : "light";
+const cjkMarkdownPreview = previewParams.has("cjk-markdown");
+const savedContinuation = { state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true };
+const markdownAnswer = "有，主要有以下几类：\n\n"
+  + "- **共享盘访问失败：**多次返回 `reauth_required`，无法读取相关资料。\n"
+  + "- **查询结果超过工具输出上限：**项目登记、项目概览及序列参数查询的结果过长。\n"
+  + "- **一次路径未找到：**有一次共享盘路径查询返回 `path_not_found`。\n"
+  + "- **文件保存与附件的首次尝试未成功：**写入临时目录被权限拦截，随后改用交付目录成功保存。\n\n"
+  + "最终交付的 Excel 已通过公式重算检查，结果为 **0 个公式错误**。";
 localStorage.setItem("ai-platform-theme", theme);
 localStorage.setItem("ai-platform-sidebar-collapsed", "false");
 localStorage.setItem("language", "zh");
@@ -58,7 +67,7 @@ const turns: PreviewTurn[] = [];
 // requests follow-up questions — only a reply that settles here does.
 addTurn(
   "帮我把这段需求整理成任务清单",
-  "收到，我来帮你整理。\n\n**任务清单**\n\n1. 明确目标与验收标准\n2. 拆解为可执行步骤\n3. 标注负责人与截止时间",
+  cjkMarkdownPreview ? markdownAnswer : "收到，我来帮你整理。\n\n**任务清单**\n\n1. 明确目标与验收标准\n2. 拆解为可执行步骤\n3. 标注负责人与截止时间",
 );
 
 function addTurn(question: string, answer: string, suggestions?: string[]): PreviewTurn {
@@ -217,6 +226,9 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === "/api/ai/auth/bootstrap" && method === "POST") {
     return json({ status: "ready", protocol_version: 2, generation: 1 });
   }
+  if (cjkMarkdownPreview && url.pathname === "/api/ai/models/groups") {
+    return json({ groups: [{ id: "cjk-preview-group", name: "合成业务组", type: "business", enabled: true }] });
+  }
   if (url.pathname === "/api/agent/models/available") {
     return json({
       models: [
@@ -261,6 +273,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return json({
       session_id: SESSION_ID,
       run_id: lastTurn()?.runId ?? null,
+      ...(cjkMarkdownPreview ? { continuation: savedContinuation } : {}),
       events: historyEvents(),
       next_cursor: null,
       terminal_run_statuses: Object.fromEntries(turns.map((turn) => [turn.runId, "succeeded"])),
@@ -271,7 +284,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   }
   if (url.pathname === `/api/ai/chat/sessions/${SESSION_ID}/files`) return json({ session_id: SESSION_ID, files: [] });
   if (url.pathname === `/api/chat/sessions/${SESSION_ID}/status`) {
-    return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: "succeeded", raw_status: "succeeded" });
+    return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: "succeeded", raw_status: "succeeded", ...(cjkMarkdownPreview ? { continuation: savedContinuation } : {}) });
   }
   if (url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/inputs")) {
     return json({ run_id: url.pathname.split("/")[4], state: "inactive", inputs: [], questions: [] });

@@ -92,11 +92,13 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
 
-普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
+普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调，不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
 
 Virtuoso/useMessageScroll 保持大历史、返回底部、Run/文件深链和大纲定位；没有第二个 Viewport 滚动写入者，也不引入 TanStack 虚拟器。
 
 ## 会话与问答
+
+正常 `resumable` 会话不显示底部“已保存／可继续”说明，也不保留空状态行；检查中、收尾中、恢复受限和阻塞状态仍显示原指导及刷新入口，发送准入与后端状态合同不变。原 `chat.continuation.resumable` 文案退出，无兼容消费者。
 
 会话 adapter 仅派生列表并委托原操作，身份/source 失效后的回调不能更新新 owner。改名复用原 API，删除仍先确认；消息历史与会话列表分别分页，已加载项过滤不称作全量搜索。
 

@@ -100,6 +100,54 @@ test("native parts keep one snapshot through streaming, classification, synchron
   }
 });
 
+test("native and explicit Markdown render CJK punctuation emphasis without rewriting source or code", async () => {
+  const environment = installSelectTestDom();
+  const { createLobeTestRoot } = await import("../../../common/__tests__/lobeUiTestRoot");
+  const { AssistantUiTestProvider } = await import("./assistantUiTestProvider");
+  const { AssistantUiMarkdownText } = await import("../MessageParts");
+  const { MarkdownRenderer } = await import("../../ChatMessage/MarkdownRenderer");
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const labels = ["共享盘访问失败：", "查询结果超过工具输出上限：", "一次路径未找到：", "文件保存与附件的首次尝试未成功："];
+  const content = labels.map((label) => `- **${label}**后续说明 \`reauth_required\``).join("\n")
+    + "\n\n最终结果为 **0 个公式错误**。"
+    + "\n\n`**代码：**保持原样` 与 \\*\\*转义：\\*\\*保持原样。"
+    + "\n\n[安全参考](https://example.com/**reference**)";
+  function Presentation() {
+    return <MessagePrimitive.Root><div data-native-cjk>
+      <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+    </div></MessagePrimitive.Root>;
+  }
+  const render = async (text: string, streaming = false) => {
+    const message: Message = { id: "cjk-message", role: "assistant", content: text, timestamp: new Date(0), isStreaming: streaming };
+    await act(async () => root.render(<>
+      <AssistantUiTestProvider messages={[message]} isRunning={streaming}>
+        <ThreadPrimitive.Unstable_MessageById messageId={message.id} components={{ Message: Presentation }} />
+      </AssistantUiTestProvider>
+      <div data-explicit-cjk><MarkdownRenderer content={text} /></div>
+    </>));
+  };
+  try {
+    window.matchMedia = (media) => ({ matches: media === "(prefers-reduced-motion: reduce)", media, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; } });
+    await render("- **共享盘访问失败：*", true);
+    await render(content, true);
+    await render(content);
+    for (const selector of ["[data-native-cjk]", "[data-explicit-cjk]"]) {
+      const body = container.querySelector(selector)!;
+      assert.deepEqual([...body.querySelectorAll("li strong")].map((node) => node.textContent), labels);
+      assert.equal(body.querySelectorAll("strong").length, 5);
+      assert.equal(body.querySelectorAll("li").length, 4);
+      assert.equal(body.querySelectorAll("code")[4]?.textContent, "**代码：**保持原样");
+      assert.match(body.textContent!, /\*\*转义：\*\*保持原样/);
+      assert.equal(body.querySelector("a")?.getAttribute("href"), "https://example.com/**reference**");
+    }
+    assert.equal(selectAssistantCopyText(undefined, content), content);
+  } finally {
+    await act(async () => root.unmount());
+    environment.close();
+  }
+});
+
 test("public tool keys survive sanitized object replacement", () => {
   const message: Message = { id: "tool-owner", role: "assistant", content: "", timestamp: new Date(0), parts: [{
     type: "tool", name: "private-name", args: { private: "ignored" }, public_operation_id: "operation-stable", public_category: "read", status: "started",

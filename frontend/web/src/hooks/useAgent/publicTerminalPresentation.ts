@@ -5,6 +5,7 @@ export function publicContinuationMessage(
   continuation: PublicContinuation | undefined,
   pending = false,
 ): string {
+  if (!pending && continuation?.state === "resumable") return "";
   const key = pending ? "checking" :
     continuation?.state === "blocked" && ["writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted"].includes(continuation.reason_code)
       ? continuation.reason_code : continuation?.state ?? "unavailable";

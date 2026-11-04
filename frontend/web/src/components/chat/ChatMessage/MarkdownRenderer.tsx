@@ -5,6 +5,7 @@ import React, { memo, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
+import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { useTranslation } from "react-i18next";
@@ -25,7 +26,7 @@ import { MermaidDiagram } from "./MermaidDiagram";
 import { resolveSafeSessionImageSrc } from "./sessionImageSafety";
 import { useSafeAttachmentImageSrc } from "../../common/attachmentImageSafety";
 
-export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkBreaks, remarkMath];
+export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkBreaks, remarkMath, remarkCjkFriendly];
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
 export interface MarkdownImageGallery {

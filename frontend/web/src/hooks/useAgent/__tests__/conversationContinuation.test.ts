@@ -45,7 +45,8 @@ test("continuation provides specific fixed guidance and fail-closed sending for 
   assert.equal(canContinueConversation(candidate), true);
   assert.match(publicContinuationMessage(candidate), /检查现场、核实操作/);
   assert.match(publicContinuationMessage(candidate), /文件修改和其他执行能力仍受限制/);
-  assert.match(publicContinuationMessage(parsePublicContinuation(saved)), /不会自动重发/);
+  assert.equal(publicContinuationMessage(parsePublicContinuation(saved)), "", "a ready conversation must not show the saved-files footer");
+  assert.match(publicContinuationMessage(parsePublicContinuation(saved), true), /正在检查/);
   const source = readFileSync(new URL("../../../components/layout/AppContent/ChatView.tsx", import.meta.url), "utf8");
   assert.match(source, /!terminalResultSynchronizing && !continuationBlocksSend/);
   assert.match(source, /canSend: canSendInCurrentView/);
