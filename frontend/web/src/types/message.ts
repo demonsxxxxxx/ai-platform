@@ -204,7 +204,10 @@ export interface ToolPart {
   agent_id?: string;
   /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
   public_operation_id?: string;
-  /** Sanitized v4 display name retained only for public Skill presentation. */
+  /**
+   * Presentation-only Skill label. Current v4 events use the fixed "Skill"
+   * label; retained history may keep earlier labels.
+   */
   public_display_name?: string;
   public_category?: string;
   duration_ms?: number;

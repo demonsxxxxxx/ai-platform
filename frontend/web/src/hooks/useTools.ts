@@ -13,11 +13,18 @@ export type ChatMcpCatalogStatus = "loading" | "ready" | "empty" | "degraded" | 
 export type ChatMcpUnavailableMessageKey =
   | "tools.catalog.unavailable.discoveryFailed"
   | "tools.catalog.unavailable.noTools"
+  | "tools.catalog.unavailable.authorizationRequired"
+  | "tools.catalog.unavailable.unsupportedTransport"
   | "tools.catalog.unavailable.generic";
+
+export interface ChatMcpUnavailableService {
+  label?: string;
+  reasonKey: ChatMcpUnavailableMessageKey;
+}
 
 interface ParsedChatMcpCatalog {
   tools: ChatMcpToolState[];
-  unavailable: ChatMcpUnavailableMessageKey[];
+  unavailable: ChatMcpUnavailableService[];
   selectedMcpToolIds: string[] | undefined;
 }
 
@@ -28,7 +35,7 @@ interface ChatMcpCatalogSnapshot extends ParsedChatMcpCatalog {
 
 export interface ChatMcpCatalogState {
   status: ChatMcpCatalogStatus;
-  unavailable: ChatMcpUnavailableMessageKey[];
+  unavailable: ChatMcpUnavailableService[];
 }
 
 export interface ChatMcpCatalogContextValue {
@@ -57,12 +64,32 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function normalizeUpstreamServer(value: unknown): string | null {
+  if (!isNonEmptyString(value)) return null;
+  const label = value.trim();
+  if (
+    label.length > 128 ||
+    new TextEncoder().encode(label).length > 128 ||
+    Array.from(label).some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code < 32 || code === 127;
+    })
+  ) {
+    return null;
+  }
+  return label;
+}
+
 function unavailableMessageKey(reason: string): ChatMcpUnavailableMessageKey {
   switch (reason) {
     case "discovery_failed":
       return "tools.catalog.unavailable.discoveryFailed";
     case "no_tools":
       return "tools.catalog.unavailable.noTools";
+    case "authorization_required":
+      return "tools.catalog.unavailable.authorizationRequired";
+    case "unsupported_transport":
+      return "tools.catalog.unavailable.unsupportedTransport";
     default:
       return "tools.catalog.unavailable.generic";
   }
@@ -80,6 +107,9 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
   ) {
     return null;
   }
+  const upstreamServer = value.upstream_server;
+  const normalizedUpstreamServer =
+    upstreamServer === undefined ? undefined : normalizeUpstreamServer(upstreamServer);
 
   return {
     name: value.tool_id,
@@ -87,6 +117,9 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
     description: value.description,
     category: "mcp",
     server: value.server,
+    ...(normalizedUpstreamServer !== undefined
+      ? { upstream_server: normalizedUpstreamServer }
+      : {}),
     parameters: [],
     system_disabled: false,
     user_disabled: false,
@@ -122,7 +155,15 @@ export function parseChatMcpCatalogResponse(raw: unknown): ParsedChatMcpCatalog 
     if (!isRecord(item) || !isNonEmptyString(item.label) || !isNonEmptyString(item.reason)) {
       throw new Error("chat_mcp_catalog_unavailable_invalid");
     }
-    return unavailableMessageKey(item.reason);
+    // The API already scopes labels to authorized registrations. Accept only
+    // their bounded identifier grammar, never arbitrary diagnostic text/URLs.
+    const label = item.label.trim() === item.label &&
+      /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(item.label)
+      ? item.label : undefined;
+    return {
+      ...(label ? { label } : {}),
+      reasonKey: unavailableMessageKey(item.reason),
+    };
   });
 
   if (

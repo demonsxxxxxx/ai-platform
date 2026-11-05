@@ -215,10 +215,25 @@ def _install_test_run_stream_runtime(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _stub_run_model_inheritance_for_route_fakes(monkeypatch):
-    async def inherit_run_model(*_args, **_kwargs):
+    async def replace_run_model_snapshot(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
+    from app.execution.application.model_selection import RunModelSelection
+
+    async def session_for_action(_conn, *, tenant_id, session_id):
+        return {"id": session_id, "tenant_id": tenant_id, "user_id": "user-a", "workspace_id": "default", "status": "active", "purpose": "conversation"}
+
+    async def resolve_model(_conn, *, selection, **_kwargs):
+        if selection["id"] == "model-revoked":
+            raise ValueError("model_not_available")
+        return RunModelSelection(
+            selection["id"], selection["value"], 1, 100000, 2048,
+            "group-test", "test", "business", 1, "explicit", "expert", "model-groups.v1",
+        )
+
+    monkeypatch.setattr("app.routes.runs.replace_run_model_snapshot", replace_run_model_snapshot)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.get_session_for_action", session_for_action)
+    monkeypatch.setattr("app.execution.api.resolve_chat_model_selection", resolve_model)
 
 
 @pytest.fixture(autouse=True)
@@ -1148,7 +1163,11 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode, delivery_ena
         }
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    async def allow_legacy_snapshot(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs._require_inherited_model_access", allow_legacy_snapshot)
     monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", EmptyBuiltinRegistry, raising=False)
     monkeypatch.setattr(
         'app.runs.infrastructure.postgres.enforce_user_active_run_admission',
@@ -1307,7 +1326,7 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 
 
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
-    calls = {"retry": [], "inherit": [], "enqueue": [], "step": [], "execution_snapshot": []}
+    calls = {"retry": [], "reauthorize": [], "enqueue": [], "step": [], "execution_snapshot": []}
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls["retry_conn"] = conn
@@ -1348,8 +1367,8 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
             "model_value": "provider-model-retry",
         }
 
-    async def fake_inherit_run_model(conn, **kwargs):
-        calls["inherit"].append((conn, kwargs))
+    async def fake_replace_run_model_snapshot(conn, **kwargs):
+        calls["reauthorize"].append((conn, kwargs))
 
 
     async def fake_record_initial_context_snapshot(conn, **kwargs):
@@ -1382,7 +1401,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.retry_run_as_new_task', fake_retry_run_as_new_task, raising=False)
-    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
+    monkeypatch.setattr("app.routes.runs.replace_run_model_snapshot", fake_replace_run_model_snapshot)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
@@ -1405,16 +1424,10 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert response.json()["operation_id"] == RUN_CONTROL_OPERATION_ID
     assert response.json()["queue_position"] == 3
     assert calls["retry"] == [("default", "user-a", "run-failed")]
-    assert calls["inherit"] == [
-        (
-            calls["retry_conn"],
-            {
-                "tenant_id": "default",
-                "source_run_id": "run-failed",
-                "child_run_id": "run-retry",
-            },
-        )
-    ]
+    assert len(calls["reauthorize"]) == 1
+    assert calls["reauthorize"][0][1]["group_id"] == "group-test"
+    assert calls["reauthorize"][0][1]["selection_mode"] == "explicit"
+    assert calls["enqueue"][0]["model_group_id"] == "group-test"
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
@@ -1452,21 +1465,12 @@ def test_revoked_model_access_blocks_the_child_run_before_queue_admission(monkey
             "model_value": "provider-model-revoked",
         }
 
-    async def empty_catalog_access(conn, *, model_id, user_id):
-        # The saved restriction now excludes the caller.
-        assert model_id == "model-revoked"
-        assert user_id == "user-a"
-        return True
-
     async def enqueue(payload):
         enqueued.append(payload)
         return 1
 
     async def admit(conn, **kwargs):
         return 0
-
-    async def inherit_run_model(*_args, **_kwargs):
-        return None
 
     async def noop(*_args, **_kwargs):
         return None
@@ -1480,8 +1484,6 @@ def test_revoked_model_access_blocks_the_child_run_before_queue_admission(monkey
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.enqueue_run", enqueue)
-    monkeypatch.setattr("app.routes.runs.inherit_run_model", inherit_run_model)
-    monkeypatch.setattr("app.routes.runs.model_access_excludes_user", empty_catalog_access)
     monkeypatch.setattr(
         "app.runs.infrastructure.postgres.enforce_user_active_run_admission", admit, raising=False
     )
@@ -2302,7 +2304,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "context": [],
         "step": [],
         "execution_snapshot": [],
-        "inherit": [],
+        "reauthorize": [],
         "order": [],
     }
 
@@ -2346,8 +2348,8 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
             "model_value": "provider-model-resume",
         }
 
-    async def fake_inherit_run_model(conn, **kwargs):
-        calls["inherit"].append((conn, kwargs))
+    async def fake_replace_run_model_snapshot(conn, **kwargs):
+        calls["reauthorize"].append((conn, kwargs))
 
 
     async def fake_update_run_input_execution_snapshot(conn, **kwargs):
@@ -2395,7 +2397,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.resume_run_as_new_task', fake_resume_run_as_new_task, raising=False)
-    monkeypatch.setattr("app.routes.runs.inherit_run_model", fake_inherit_run_model)
+    monkeypatch.setattr("app.routes.runs.replace_run_model_snapshot", fake_replace_run_model_snapshot)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,
@@ -2422,16 +2424,10 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "queue_insight": {"tenant_id": "default", "reason": "workers_busy"},
     }
     assert calls["resume"] == [("default", "user-a", "run-failed")]
-    assert calls["inherit"] == [
-        (
-            calls["resume_conn"],
-            {
-                "tenant_id": "default",
-                "source_run_id": "run-failed",
-                "child_run_id": "run-resume-new",
-            },
-        )
-    ]
+    assert len(calls["reauthorize"]) == 1
+    assert calls["reauthorize"][0][1]["group_id"] == "group-test"
+    assert calls["reauthorize"][0][1]["selection_mode"] == "explicit"
+    assert calls["enqueue"][0]["model_group_id"] == "group-test"
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["order"] == [
         "user_lock",
@@ -4910,7 +4906,14 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
     assert response.json()["status"] == "cancel_requested"
 
 
-def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
+@pytest.fixture
+def cancelled_cleanup_queue(monkeypatch):
+    async def remove(*args, **kwargs):
+        return 0
+    monkeypatch.setattr(route_cancellation_handlers, "remove_queued_run", remove)
+
+
+def test_cancelled_run_cleanup_stops_sandbox_runtime_before_db_release(monkeypatch, cancelled_cleanup_queue):
     calls = []
     release_calls = []
     cleanup_outcomes = []
@@ -4918,7 +4921,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id)],
         }
 
@@ -4966,7 +4969,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancel_requested"}
+    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancelled"}
     assert len(calls) == 1
     _, lease, reason = calls[0]
     assert lease.container_id == "exec-run_active"
@@ -4999,13 +5002,13 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     ]
 
 
-def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatch):
+def test_cancelled_run_cleanup_ignores_user_controlled_sandbox_container_payload(monkeypatch, cancelled_cleanup_queue):
     calls = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [
                 sandbox_lease_row(
                     run_id=run_id,
@@ -5047,13 +5050,13 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
     assert lease.labels == {}
 
 
-def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monkeypatch):
+def test_cancelled_run_cleanup_uses_platform_verified_runtime_handle_not_user_payload(monkeypatch, cancelled_cleanup_queue):
     calls = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [
                 sandbox_lease_row(
                     run_id=run_id,
@@ -5098,7 +5101,7 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
     assert lease.labels == {}
 
 
-def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handle(monkeypatch):
+def test_cancelled_run_cleanup_rejects_lease_without_platform_verified_runtime_handle(monkeypatch, cancelled_cleanup_queue):
     calls = []
     release_calls = []
     cleanup_outcomes = []
@@ -5122,7 +5125,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
         forged_row.pop(key, None)
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
-        return {"run_id": run_id, "status": "cancel_requested", "active_sandbox_leases": [forged_row]}
+        return {"run_id": run_id, "status": "cancelled", "active_sandbox_leases": [forged_row]}
 
     async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
         release_calls.append(kwargs)
@@ -5168,13 +5171,13 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
     ]
 
 
-def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
+def test_cancelled_run_cleanup_surfaces_sandbox_runtime_stop_failure(monkeypatch, cancelled_cleanup_queue):
     release_calls = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id, lease_payload_json={})],
         }
 
@@ -5200,13 +5203,13 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     assert release_calls == []
 
 
-def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(monkeypatch):
+def test_cancelled_run_cleanup_surfaces_unsupported_sandbox_provider_without_db_release(monkeypatch, cancelled_cleanup_queue):
     release_calls = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id=user_id, provider="podman")],
         }
 
@@ -5232,7 +5235,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
     assert release_calls == []
 
 
-def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
+def test_cancelled_run_cleanup_releases_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch, cancelled_cleanup_queue):
     calls = []
     release_calls = []
     cleanup_outcomes = []
@@ -5240,7 +5243,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [
                 sandbox_lease_row(run_id=run_id, lease_id="lease-stopped", user_id=user_id),
                 sandbox_lease_row(run_id=run_id, lease_id="lease-failed", user_id=user_id, provider="docker"),
@@ -5311,14 +5314,14 @@ def test_cancel_queued_run_removes_queued_payload(monkeypatch):
 
 
 
-def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
+def test_admin_cancelled_run_cleanup_stops_sandbox_runtime_before_db_release(monkeypatch, cancelled_cleanup_queue):
     calls = []
     release_calls = []
 
     async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user")],
         }
 
@@ -5362,7 +5365,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
     response = client.post("/api/ai/admin/runs/run_active/cancel", headers=admin_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancel_requested"}
+    assert response.json() == {"run_id": "run_active", "session_id": None, "status": "cancelled"}
     assert len(calls) == 1
     _, lease, reason = calls[0]
     assert lease.container_id == "exec-run_active"
@@ -5381,14 +5384,14 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
 
 
 
-def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
+def test_admin_cancelled_run_cleanup_surfaces_sandbox_runtime_stop_failure(monkeypatch, cancelled_cleanup_queue):
     release_calls = []
     cleanup_outcomes = []
 
     async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user", lease_payload_json={})],
         }
 
@@ -5428,11 +5431,11 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     assert cleanup_outcomes[0]["lease_ids"] == ["lease-run_active"]
 
 
-def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
+def test_admin_cancelled_run_cleanup_surfaces_cleanup_persistence_outage(monkeypatch, cancelled_cleanup_queue):
     async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [sandbox_lease_row(run_id=run_id, user_id="target-user")],
         }
 
@@ -5467,14 +5470,14 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
     assert response.json()["detail"] == "sandbox_cleanup_persistence_unavailable"
 
 
-def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch):
+def test_admin_cancelled_run_cleanup_releases_stopped_leases_before_reporting_mixed_cleanup_failure(monkeypatch, cancelled_cleanup_queue):
     calls = []
     release_calls = []
 
     async def fake_request_admin_run_cancel(conn, *, tenant_id, admin_user_id, run_id):
         return {
             "run_id": run_id,
-            "status": "cancel_requested",
+            "status": "cancelled",
             "active_sandbox_leases": [
                 sandbox_lease_row(run_id=run_id, lease_id="lease-admin-stopped", user_id="target-user"),
                 sandbox_lease_row(run_id=run_id, lease_id="lease-admin-unsupported", user_id="target-user", provider="podman"),

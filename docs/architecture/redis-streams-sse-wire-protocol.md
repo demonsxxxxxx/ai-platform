@@ -219,10 +219,13 @@ The closed transport controls are `stream.open`, `stream.heartbeat`,
 `reload_durable_state`, and `stream.end` references the observed terminal event.
 
 Provider-internal reasoning, raw SDK objects, execution commands, tool arguments
-and outputs, credentials, private runtime paths, storage keys, private trace
-values, and unclassified objects are prohibited. Intentional non-sensitive
-code, JSON examples and task-file references in Assistant prose follow the
-Chat content policy; their spelling alone does not make them tool data.
+and outputs, credentials, private runtime paths embedded in tool/provider data,
+storage keys, private trace values, and unclassified objects are prohibited.
+The current workspace cwd may appear literally when the Assistant includes it
+in ordinary prose under the Chat content policy; it is not normalized or aliased.
+Intentional non-sensitive code, JSON examples and task-file references in
+Assistant prose follow the Chat content policy; their spelling alone does not
+make them tool data.
 The Claude SDK is configured with
 `thinking.display = omitted`, and the Runner excludes `ThinkingBlock` content
 from both the answer and callback projections. The current Runner does not emit
@@ -284,21 +287,25 @@ redis_bytes ~= retained_runs * min(MAXLEN, event_rate * ttl_seconds)
 
 ## Replay and blocking reads
 
-The API validates retained bounds and the accepted cursor, then replays through
-a captured tail. The replay Lua operation checks that a nonzero predecessor
-still exists before removing it from the returned page. An initial `0-0` read
-uses the legal exclusive range `(0-0` and verifies `stream.open` in that same
-returned page; an earlier bounds observation cannot prove its origin survived.
-A missing Stream or lost predecessor produces a gap.
+Resume resolution validates retained bounds and the accepted cursor and carries
+the observed tail into the route, so setup does not read those bounds twice. The
+route replays through that captured tail. The replay Lua operation checks that a
+nonzero predecessor still exists before removing it from the returned page. An
+initial `0-0` read uses the legal exclusive range `(0-0` and verifies
+`stream.open` in that same returned page; an earlier bounds observation cannot
+prove its origin survived. A missing Stream or lost predecessor produces a gap.
 
 After replay, exclusive `XREAD` waits from that tail and captures the bounded
-candidate page's last ID. Before delivery, the same atomic replay operation
-re-reads through that ID and proves the retained predecessor. Only that verified
-page reaches the existing decoder/public projector and SSE delivery. This may
-conservatively gap if trimming occurs after XREAD returns. It never infers
-continuity from adjacent Redis IDs or application sequences, and the accepted
-cursor advances only through delivered rows. A retained nonzero cursor remains
-valid when the original open was trimmed.
+candidate page's Redis IDs and last ID. Its event payloads are only hints and are
+not decoded or delivered. Before delivery, the same atomic replay operation
+re-reads through that ID, validates the complete entries, and proves the
+retained predecessor. Only that verified page reaches SSE delivery. A malformed
+or foreign payload in the XREAD hint therefore has no effect when the
+authoritative replay read is valid; a malformed or foreign entry in that read
+fails closed. This may conservatively gap if trimming or deletion occurs after
+XREAD returns. The API never infers continuity from adjacent Redis IDs or
+application sequences, and the accepted cursor advances only through delivered
+rows. A retained nonzero cursor remains valid when the original open was trimmed.
 
 Each read returns at most 128 entries and blocks at most five seconds. An empty
 XREAD verifies the retained predecessor with an empty atomic page before it can

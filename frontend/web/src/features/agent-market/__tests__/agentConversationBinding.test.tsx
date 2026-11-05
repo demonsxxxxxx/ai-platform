@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import type { AgentConversationIdentity } from "../../../../types/agentProfile.ts";
+import type { AgentConversationIdentity } from "../../../types/agentProfile.ts";
 
 register(
-  new URL("../../../../features/agent-market/__tests__/frontendAssetLoader.mjs", import.meta.url),
+  new URL("./frontendAssetLoader.mjs", import.meta.url),
   import.meta.url,
 );
 await new Promise<void>((resolve) => setImmediate(resolve));
@@ -15,15 +15,21 @@ const {
   areAgentConversationControlsLocked,
   exposeGenericChatControl,
   getChatToolAccess,
+  isExactAgentWorkspaceBinding,
+  recoverAgentConversationIdentity,
+} = await import("../useAgentConversationBinding");
+const {
   getOrCreateAgentConversationOperationId,
   clearAgentConversationOperationId,
   ensureAgentConversationForFirstSend,
   submitAgentFirstMessageSingleFlight,
-  isExactAgentWorkspaceBinding,
-  recoverAgentConversationIdentity,
-} = await import("../ChatAppContent.tsx");
-const { agentProfileApi } = await import("../../../../services/api/agentProfile.ts");
-const { sessionApi } = await import("../../../../services/api/session.ts");
+} = await import("../useAgentFirstSend");
+const { reconcileCurrentModelSelection } = await import("../../../components/layout/AppContent/modelSelection.ts");
+const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+const { sessionApi } = await import("../../../services/api/session.ts");
+const readChatApp = () => readFileSync(new URL("../../../components/layout/AppContent/ChatAppContent.tsx", import.meta.url), "utf8");
+const readFirstSend = () => readFileSync(new URL("../useAgentFirstSend.ts", import.meta.url), "utf8");
+const readBinding = () => readFileSync(new URL("../useAgentConversationBinding.ts", import.meta.url), "utf8");
 
 const safeIdentity: AgentConversationIdentity = {
   agent_id: "agt_support",
@@ -41,7 +47,7 @@ const safeWorkspace = {
 } as const;
 
 test("Agent workspace selection commits the route before identity or history recovery", () => {
-  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const source = readChatApp();
   const handler = source.slice(source.indexOf("const handleSelectSessionAndClose"), source.indexOf("const handleNewSessionAndClose"));
   assert.match(handler, /navigate\(buildAgentMarketWorkspacePath\(agentWorkspace, id\)\)/);
   assert.doesNotMatch(handler.slice(0, handler.indexOf("} else {")), /recoverAgentConversationIdentity|clearMessages|setAgentConversationState/);
@@ -49,38 +55,49 @@ test("Agent workspace selection commits the route before identity or history rec
 });
 
 test("Agent first send leaves route mutation to the shared session synchronizer", () => {
-  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
-  const handlerStart = source.indexOf("submitMessage: async (createdSessionId");
+  const source = readFirstSend();
+  const handlerStart = source.indexOf("submitMessage: async (sessionId");
   const handlerEnd = source.indexOf("return submission;", handlerStart);
   assert.notEqual(handlerStart, -1);
   assert.notEqual(handlerEnd, -1);
-
   const handler = source.slice(handlerStart, handlerEnd);
   assert.match(handler, /const submission = sendMessage\(/);
   assert.doesNotMatch(handler, /navigate\(/);
-  assert.match(
-    source,
-    /useSessionSync\(\{[\s\S]*?sessionRouteBasePath: agentWorkspaceRouteBasePath/,
-  );
+  assert.match(readChatApp(), /useSessionSync\(\{[\s\S]*?sessionRouteBasePath: agentWorkspaceRouteBasePath/);
 });
 
-test("explicit Agent new-task reset clears the pinned operation id", () => {
-  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
-  const handlerStart = source.indexOf("const handleNewSessionWithReset");
-  const handlerEnd = source.indexOf("const handleNewSessionAndClose", handlerStart);
-  assert.notEqual(handlerStart, -1);
-  assert.notEqual(handlerEnd, -1);
-  const handler = source.slice(handlerStart, handlerEnd);
-  assert.match(handler, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id/);
-  assert.match(handler, /clearAgentConversationOperationId[\s\S]*invalidateAgentWorkspaceFirstSend/);
+test("explicit Agent new-task reset delegates operation cleanup and generation reset to the feature", () => {
+  const source = readChatApp();
+  const handler = source.slice(source.indexOf("const handleNewSessionWithReset"), source.indexOf("const handleSendMessage"));
+  assert.match(handler, /resetAgentFirstSendTask\(\)/);
+  const firstSend = readFirstSend();
+  const reset = firstSend.slice(firstSend.indexOf("const resetForNewTask"), firstSend.indexOf("const sendFirstMessage"));
+  assert.match(reset, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id/);
+  assert.match(reset, /clearAgentConversationOperationId[\s\S]*invalidate\(\)/);
+});
+
+test("the configured group default wins over display order and manual selection is retained", () => {
+  const availableModels = [{ id: "a", value: "provider/a" }, { id: "b", value: "provider/b" }];
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultValue: "provider/b" }), { modelId: "b", modelValue: "provider/b" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelId: "a", storedDefaultValue: "provider/b" }), { modelId: "a", modelValue: "provider/a" });
+});
+
+test("supplier-scoped default selects the exact model ID when upstream names repeat", () => {
+  const availableModels = [{ id: "supplier-a-model", value: "shared" }, { id: "supplier-b-model", value: "shared" }];
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultId: "supplier-b-model", storedDefaultValue: "shared" }), { modelId: "supplier-b-model", modelValue: "shared" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelId: "supplier-a-model", storedDefaultId: "supplier-b-model" }), { modelId: "supplier-a-model", modelValue: "shared" });
+  assert.deepEqual(reconcileCurrentModelSelection({ availableModels, currentModelValue: "shared" }), { modelId: "", modelValue: "" });
 });
 
 test("stale model selection is cleared and blocks send until explicit selection", () => {
-  const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
+  const source = readChatApp();
   assert.match(source, /hasPriorSelection && !stillAvailable[\s\S]*?setCurrentModelId\(""\)[\s\S]*?请重新选择模型/);
-  assert.match(source, /availableModels\?\.some\(\(model\) => model\.id === currentModelId[\s\S]*?return \{ status: "failed" \}/);
+  assert.match(source, /if \(!availableModels\.some\(\(model\) => model\.id === currentModelId && model\.value === currentModelValue\)\)[\s\S]*?return \{ status: "failed" \}/);
+  assert.doesNotMatch(source, /modelSelectionMode|selection_mode:\s*"auto"/);
   assert.match(source, /handleSelectModel[\s\S]*?setModelSelectionError\(null\)/);
   assert.doesNotMatch(source, /localStorage\.getItem\("defaultModel/);
+  assert.match(source, /if \(!availableModels \|\| catalogSelectionError\) return;/,
+    "group authorization errors must not be replaced by a model-removal message");
 });
 
 test("recovers an exact current Agent Conversation and keeps ordinary sessions generic", async () => {
@@ -831,59 +848,39 @@ test("locks Agent-only controls while generic Chat controls remain available", (
   assert.equal(exposeGenericChatControl("bound", retryMcpCatalog), undefined);
 });
 
-test("projects public Agent identity in the header and starter prompts only in empty Chat", () => {
-  const chatViewSource = readFileSync(new URL("../ChatView.tsx", import.meta.url), "utf8");
-  const appContentSource = readFileSync(
-    new URL("../ChatAppContent.tsx", import.meta.url),
-    "utf8",
-  );
-
-  assert.doesNotMatch(appContentSource, /chatIdentity|AgentConversationHeaderIdentity/);
-  assert.doesNotMatch(appContentSource, /data-agent-conversation-profile/);
-  assert.match(chatViewSource, /messages\.length === 0[\s\S]*agentEmptyProfile/);
-  assert.match(chatViewSource, /data-agent-chat-opening/);
-  assert.match(chatViewSource, /data-expert-workspace-header/);
+test("Agent presentation stays with its feature while the shared chat consumes slots", () => {
+  const chatViewSource = readFileSync(new URL("../../../components/layout/AppContent/ChatView.tsx", import.meta.url), "utf8");
+  const presentation = readFileSync(new URL("../AgentChatPresentation.tsx", import.meta.url), "utf8");
+  const appContent = readChatApp();
+  assert.match(chatViewSource, /presentation\.renderOpening\(composer\)/);
+  assert.match(chatViewSource, /messages\.length === 0 \? presentation\?\.renderStarterPrompts/);
   assert.match(chatViewSource, /header=\{shellHeader\}/);
-  assert.match(chatViewSource, /assistantIdentity=\{assistantIdentity\}/);
-  assert.match(chatViewSource, /<AgentIdentityAvatar/);
-  assert.match(chatViewSource, /avatarRef=\{agentEmptyProfile\.avatar_ref\}/);
-  assert.match(chatViewSource, /avatarSeed=\{agentEmptyProfile\.avatar_seed\}/);
-  assert.doesNotMatch(chatViewSource, /<Bot\b/);
-  assert.match(chatViewSource, /agentEmptyProfile\.description/);
-  assert.match(chatViewSource, /data-agent-starter-prompts/);
-  assert.match(chatViewSource, /<ThreadPrimitive\.Suggestion[^>]*prompt=\{prompt\}[^>]*send=\{false\}/);
-  assert.doesNotMatch(chatViewSource, /setComposerInput/);
-  assert.match(
-    appContentSource,
-    /onConversationCreated:\s*\(createdSessionId\)\s*=>\s*\{[\s\S]*?setAgentWorkspaceDraftHandoffKey\(createdSessionId\)/,
-  );
-  assert.match(
-    appContentSource,
-    /composerDraftHandoffKey=\{[\s\S]*?agentWorkspaceDraftHandoffKey/,
-  );
-  assert.doesNotMatch(chatViewSource, /onSendMessage\(prompt\)/);
-  assert.doesNotMatch(appContentSource, /data-agent-workspace-welcome/);
-  assert.doesNotMatch(appContentSource, /data-agent-workspace-start/);
+  // Messages carry no per-message identity header; the workspace header names the expert.
+  assert.doesNotMatch(chatViewSource, /assistantIdentity/);
+  assert.doesNotMatch(chatViewSource, /agentEmptyProfile|AgentProfilePublicProjection|AgentIdentityAvatar/);
+  assert.match(presentation, /data-agent-chat-opening/);
+  assert.match(presentation, /data-expert-workspace-header/);
+  assert.match(presentation, /<AgentIdentityAvatar/);
+  assert.match(presentation, /avatarRef=\{profile\.avatar_ref\}/);
+  assert.match(presentation, /avatarSeed=\{profile\.avatar_seed\}/);
+  assert.match(presentation, /<ThreadPrimitive\.Suggestion[^>]*prompt=\{prompt\}[^>]*send=\{false\}/);
+  assert.doesNotMatch(presentation, /onSendMessage\(prompt\)|setComposerInput/);
+  assert.match(readFirstSend(), /onConversationCreated:[\s\S]*setDraftHandoffKey\(sessionId\)/);
+  assert.match(appContent, /composerDraftHandoffKey=\{[\s\S]*agentWorkspaceDraftHandoffKey/);
+  assert.doesNotMatch(appContent, /data-agent-workspace-welcome|data-agent-workspace-start/);
 });
 
 test("Agent workspace sidebar consumes the server-paginated session source", () => {
-  const source = readFileSync(
-    new URL("../ChatAppContent.tsx", import.meta.url),
-    "utf8",
-  );
-
+  const source = readChatApp();
   assert.match(source, /agentWorkspaceSessionSource\?: SessionSidebarSessionSource/);
   assert.match(source, /sessionSource=\{agentWorkspaceSessionSource\}/);
   assert.match(source, /agentWorkspace && !agentWorkspaceSessionSource[\s\S]*\? \(\) => false/);
-  assert.match(source, /onAgentWorkspaceSessionCreated\?\.\(createdSessionId\)/);
+  assert.match(readFirstSend(), /onSessionCreated\?\.\(sessionId\)/);
   assert.match(source, /composerPlaceholder=\{[\s\S]*agentWorkspace\.name/);
 });
 
 test("Agent workspaces preserve the shared model and Thinking selectors", () => {
-  const source = readFileSync(
-    new URL("../ChatAppContent.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readChatApp();
 
   assert.match(source, /const filteredModels = availableModels \?\? null;/);
   assert.match(source, /availableModels=\{filteredModels \?\? \[\]\}/);
@@ -910,12 +907,34 @@ test("Agent workspaces preserve the shared model and Thinking selectors", () => 
 });
 
 test("legacy generic Agent sessions redirect to the canonical dedicated route", () => {
-  const source = readFileSync(
-    new URL("../ChatAppContent.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readBinding();
 
   assert.match(source, /if \(!agentWorkspace && identity\)/);
   assert.match(source, /buildAgentMarketWorkspacePath\([\s\S]*identity\.agent_id/);
   assert.match(source, /navigate\([\s\S]*\{ replace: true \}/);
+});
+
+test("chat group selection is retired across the ordinary and expert composer chain", () => {
+  for (const path of ["../../../components/layout/AppContent/ChatAppContent.tsx", "../../../components/layout/AppContent/ChatView.tsx", "../../../components/chat/ChatInput.tsx", "../../../components/chat/chatInputTypes.ts", "../../../components/chat/ChatInputToolbar.tsx"]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /onSelectGroup|selectGroup|modelGroups|选择模型分组/);
+  }
+  const source = readChatApp();
+  assert.match(source, /group_id: selectedGroupId/);
+  assert.match(source, /model_id: currentModelId/);
+  assert.match(source, /model: currentModelValue/);
+});
+
+test("only a temporarily missing initial default may recover automatically", () => {
+  const source = readChatApp();
+  assert.match(source, /if \(modelSelectionError\) \{\s*if \(modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"\s*&& !hasPriorSelection && defaultModel\) setModelSelectionError\(null\);\s*return;/);
+  assert.doesNotMatch(source, /onConfigureModels|配置模型组/);
+  assert.doesNotMatch(source, /\{modelSelectionError \? \(\s*<p/);
+});
+
+test("missing designated defaults never fall back to the first catalog model", () => {
+  const availableModels = [{ id: "a", value: "provider/a" }];
+  for (const storedDefaultValue of ["", "provider/removed"]) {
+    assert.deepEqual(reconcileCurrentModelSelection({ availableModels, storedDefaultValue }), { modelId: "", modelValue: "" });
+  }
 });

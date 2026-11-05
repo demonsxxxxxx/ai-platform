@@ -497,6 +497,53 @@ test("ordinary operation errors keep the actual editor draft and safe error visi
   }
 });
 
+test("MCP validation failure is focused inside the editor, not behind it, and clears for a new editor", async () => {
+  const view = await harness(createElement(MCPPanel), ({ url, init }) => {
+    if (url.pathname.endsWith("department-directory")) return json({ departments: [] });
+    return init.method === "POST"
+      ? json({ detail: [{ type: "value_error", loc: ["name"], msg: "Value error, mcp_server_name contains unsupported characters", input: "private-secret" }] }, 422)
+      : empty();
+  });
+  try {
+    const open = () => click(view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-controls] button")!);
+    await open();
+    await act(async () => {
+      changeInput(document.querySelector<HTMLInputElement>('form input[type="text"]')!, "kept-draft");
+      changeInput(document.querySelector<HTMLInputElement>('form input[type="url"]')!, "https://example.invalid/mcp");
+    });
+    await act(async () => { document.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const alert = dialog.querySelector('[role="alert"]')!;
+    assert.match(alert.textContent!, /1–128.*英文字母/);
+    assert.equal(document.activeElement, alert);
+    assert.equal(view.container.querySelectorAll('[role="alert"]').length, 1);
+    assert.doesNotMatch(document.body.textContent!, /private-secret|加载会话失败|操作未完成/);
+    assert.equal(document.querySelector<HTMLInputElement>('form input[type="text"]')!.value, "kept-draft");
+    await click(dialog.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+    await open();
+    assert.equal(document.querySelector('[role="dialog"] [role="alert"]'), null);
+  } finally { await view.close(); }
+});
+
+test("MCP delete failure remains visible inside its confirmation and allows retry", async () => {
+  let writes = 0;
+  const view = await harness(createElement(MCPPanel), ({ init }) => {
+    if (init.method === "DELETE") { writes++; return json({ detail: "mcp_server_conflict" }, 409); }
+    return page();
+  });
+  try {
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-delete]")!);
+    const confirm = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === "删除 MCP 服务器")!;
+    await click(confirm());
+    assert.match(document.querySelector('[role="dialog"] [role="alert"]')!.textContent!, /配置存在冲突/);
+    assert.equal(confirm().disabled, false);
+    await click(confirm());
+    assert.equal(writes, 2);
+    assert.equal(view.notices.length, 0);
+  } finally { await view.close(); }
+});
+
 test("ordinary identity hook cannot issue detail or lifecycle mutations even with a backed catalog", async () => {
   const view = await harness(createElement(HookProbe), () => empty());
   try {

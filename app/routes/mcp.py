@@ -89,6 +89,12 @@ class McpServerLifecycleRequest(BaseModel):
     allowed_roles: list[str] = Field(default_factory=list)
     role_quotas: dict[str, McpRoleQuota] = Field(default_factory=dict)
     department_ids: list[str] = Field(default_factory=list)
+    public_operation_summaries: dict[str, dict[str, Any]] | None = None
+
+    @field_validator("public_operation_summaries", mode="before")
+    @classmethod
+    def validate_public_operation_summaries(cls, value):
+        return None if value is None else mcp_repository.validate_public_operation_summaries(value)
 
     @field_validator("name")
     @classmethod
@@ -240,6 +246,7 @@ def _server_response(
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
+        "public_operation_summaries": dict(((distribution or {}).get("metadata_json") or {}).get("public_operation_summaries") or {}),
     }
     if credentials is not None:
         response["url"] = credentials[0]
@@ -650,6 +657,10 @@ async def _write_server(
                 credential_fingerprint=fingerprint,
                 updated_by=principal.user_id,
             )
+            distribution_metadata = dict((existing_distribution or {}).get("metadata_json") or {})
+            distribution_metadata.pop("public_operation_summaries", None)
+            if request.public_operation_summaries is not None:
+                distribution_metadata["public_operation_summaries"] = request.public_operation_summaries
             distribution = await mcp_repository.upsert_mcp_server_distribution(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -667,11 +678,7 @@ async def _write_server(
                 ),
                 department_ids=department_ids,
                 allowed_roles=request.allowed_roles,
-                metadata_json=dict(
-                    existing_distribution.get("metadata_json") or {}
-                    if existing_distribution is not None
-                    else {}
-                ),
+                metadata_json=distribution_metadata,
                 updated_by=principal.user_id,
             )
             await mcp_repository.record_mcp_server_credential(
@@ -789,6 +796,7 @@ async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depen
     return {
         "server_name": safe_name,
         "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
+                   **({"upstream_server": tool.upstream_server} if tool.gateway_source else {}),
                    "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
                    "available": tool.available is not False} for tool in result.tools],
         "count": sum(tool.available is not False for tool in result.tools),

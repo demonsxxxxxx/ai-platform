@@ -30,6 +30,12 @@ from app.sandbox.infrastructure.executor_reconciliation_postgres import (
     release_failed_sandbox_executor_reconciliation_cleanup_claim as release_failed_sandbox_executor_reconciliation_cleanup_claim,
     release_sandbox_executor_probe_claim as release_sandbox_executor_probe_claim,
     retry_sandbox_executor_reconciliation as retry_sandbox_executor_reconciliation,
+    claim_quarantined_checkpoint_for_repair as claim_quarantined_checkpoint_for_repair,
+    finalize_stopped_executor_checkpoint as finalize_stopped_executor_checkpoint,
+    get_quarantined_checkpoint_for_repair as get_quarantined_checkpoint_for_repair,
+    get_sandbox_executor_terminal_handoff as get_sandbox_executor_terminal_handoff,
+    list_cancel_requested_executor_leases as list_cancel_requested_executor_leases,
+    record_sandbox_reconciliation_stage as record_sandbox_reconciliation_stage,
 )
 from app.sandbox.infrastructure.lease_runtime_postgres import (
     cleanup_expired_sandbox_leases as cleanup_expired_sandbox_leases,

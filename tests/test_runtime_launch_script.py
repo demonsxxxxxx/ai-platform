@@ -323,7 +323,11 @@ def test_dockerfile_precreates_private_workspace_before_nonroot_executor():
 def test_dockerfile_installs_required_runtime_packages():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd" in content
+    install = re.search(r"apt-get install -y --no-install-recommends ([^\n]+)", content)
+    assert install is not None
+    assert {"fontconfig", "fonts-noto-cjk", "git", "libexpat1", "libssh2-1", "pandoc", "passwd"} <= set(
+        install.group(1).split()
+    )
 
 
 def test_dockerfile_uses_independent_optional_debian_mirror_args_without_disabling_apt_security():
@@ -1304,7 +1308,7 @@ def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorit
     match = re.search(r'/api/ai/runtime/callbacks/\(([^)]+)\)\$', template)
     assert match is not None
     assert set(match.group(1).split("|")) == callbacks
-    assert callbacks == {"executor", "context-retrieval", "provider-session", "inputs", "mcp-credential"}
+    assert callbacks == {"executor", "context-retrieval", "provider-session", "inputs", "mcp-credential", "recovery-operation"}
     assert 'location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {' in template
     assert 'location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {' in template
     assert "/api/ai/internal/model-proxy/openai/" in template

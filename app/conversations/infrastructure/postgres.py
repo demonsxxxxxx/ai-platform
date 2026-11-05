@@ -265,7 +265,12 @@ async def get_authorized_lambchat_session(
         select sessions.id, sessions.workspace_id, sessions.agent_id, sessions.title,
                sessions.title_source, sessions.status, sessions.created_at, sessions.updated_at,
                session_agent.default_skill_id as agent_default_skill_id,
-               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill
+               (profile.skill_set @> '[{"skill_id": "baoyu-translate"}]'::jsonb) as agent_profile_has_retired_skill,
+               (select jsonb_build_object('model_id', r.model_id, 'model', r.model_value,
+                                          'group_id', r.model_group_id)
+                from runs r where r.tenant_id = sessions.tenant_id and r.workspace_id = sessions.workspace_id
+                  and r.user_id = sessions.user_id and r.session_id = sessions.id and r.model_id is not null
+                order by r.session_generation desc nulls last, r.created_at desc, r.id desc limit 1) as latest_model_selection
         from sessions
         left join agents session_agent
           on session_agent.tenant_id = sessions.tenant_id
@@ -295,7 +300,7 @@ async def get_session_for_action(
 
     cursor = await conn.execute(
         """
-        select id, tenant_id, workspace_id, user_id, agent_id, title, title_source, status, created_at, updated_at
+        select id, tenant_id, workspace_id, user_id, agent_id, title, title_source, status, purpose, created_at, updated_at
         from sessions
         where tenant_id = %s and id = %s
         for update

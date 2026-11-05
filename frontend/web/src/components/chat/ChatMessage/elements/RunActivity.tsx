@@ -1,5 +1,5 @@
 import { Button } from "@lobehub/ui/base-ui";
-import { ChevronDown, ListTree } from "lucide-react";
+import { ChevronRight, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { clsx } from "clsx";
 
@@ -19,7 +19,11 @@ export interface RunActivityProps {
   showTrigger?: boolean;
 }
 
-/** Public work disclosure adapted from assistant-ui's RunActivity structure. */
+/**
+ * Public work disclosure in the ghost style of assistant-ui's ToolGroup
+ * (727a02dc): one inline muted trigger whose chevron follows the label, and an
+ * indented trace under a hairline. No separate right-aligned toggle text.
+ */
 export function RunActivity({
   open,
   onOpenChange,
@@ -33,6 +37,7 @@ export function RunActivity({
   children,
   showTrigger = true,
 }: RunActivityProps) {
+  const running = status === "running";
   return (
     <div data-slot="run-activity" data-status={status}>
       {showTrigger && (
@@ -42,23 +47,32 @@ export function RunActivity({
           data-message-work-details-toggle
           aria-expanded={open}
           aria-controls={ariaControls ?? contentId}
+          title={toggleLabel}
           onClick={() => onOpenChange(!open)}
-          className="flex h-8 w-full max-w-2xl items-center gap-2 text-left text-sm font-medium text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] focus-visible:ring-offset-2"
-          style={{ color: "var(--theme-text-secondary)", background: "transparent", height: 32, padding: "0 8px" }}
+          className="run-activity-trigger"
+          style={{ height: "auto", padding: "4px 0", background: "transparent", color: "var(--theme-text-secondary)" }}
         >
-          <ListTree size={15} aria-hidden="true" />
-          <span>{label}</span>
-          <span className="text-xs font-normal opacity-70">{itemCount}</span>
-          {issueSummary}
-          <span className="ml-auto text-xs font-normal">{toggleLabel}</span>
-          <ChevronDown
-            size={15}
-            aria-hidden="true"
-            className={clsx("shrink-0 transition-transform duration-200", open && "rotate-180")}
-          />
+          <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-left text-sm">
+            {running ? (
+              <LoaderCircle size={13} aria-hidden="true" className="shrink-0 animate-spin motion-reduce:animate-none" />
+            ) : null}
+            <span className={clsx("font-medium", running && "aui-shimmer")}>{label}</span>
+            <span className="text-[var(--theme-text-tertiary)]" aria-hidden="true">·</span>
+            <span>{itemCount}</span>
+            {issueSummary}
+            <ChevronRight
+              size={14}
+              aria-hidden="true"
+              className={clsx("shrink-0 transition-transform duration-200 motion-reduce:transition-none", open && "rotate-90")}
+            />
+          </span>
         </Button>
       )}
-      <div id={contentId} hidden={!open}>
+      <div
+        id={contentId}
+        hidden={!open}
+        className="ml-[6px] mt-1 border-l border-[var(--theme-border)] pl-4"
+      >
         {children}
       </div>
     </div>

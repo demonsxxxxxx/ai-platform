@@ -1212,7 +1212,7 @@ def test_collect_workspace_artifacts_enforces_delivery_limits_before_storage(
         )
 
 
-def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, tmp_path):
+def test_collect_workspace_artifacts_preserves_selected_docx_bytes(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
@@ -1241,157 +1241,71 @@ def test_collect_workspace_artifacts_validates_docx_before_upload(monkeypatch, t
     assert stored[0][1] == content
 
 
-def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    (output / "document.docx").write_bytes(b"not-a-docx")
-
-    storage_calls = []
-
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("invalid required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="synthetic-document-skill", agent_id="synthetic-document-agent"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize(
-    ("content_types_xml", "relationships_xml"),
-    [
-        (
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types" />',
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" />',
-        ),
-        (
-            (
-                '<?xml version="1.0" encoding="UTF-16"?>'
-                '<!DOCTYPE Types [<!ENTITY main "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">]>'
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" ContentType="&main;" />'
-                "</Types>"
-            ).encode("utf-16"),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="//word/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-        (
-            (
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" />'
-                "<Override PartName=\"/word/document.xml\" ContentType=\"text/plain\" />"
-                "</Types>"
-            ),
-            (
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="word/document.xml" />'
-                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
-                'Target="other/document.xml" />'
-                "</Relationships>"
-            ),
-        ),
-    ],
-    ids=(
-        "missing-opc-references",
-        "utf16-internal-entity",
-        "noncanonical-target",
-        "ambiguous-main-declarations",
-    ),
-)
-def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
-    monkeypatch,
-    tmp_path,
-    content_types_xml,
-    relationships_xml,
+def test_collect_workspace_artifacts_delivers_opaque_docx_bytes_with_mixed_files(
+    monkeypatch, tmp_path
 ):
     workspace = tmp_path / "workspace"
     output = workspace / "output"
     output.mkdir(parents=True)
-    with zipfile.ZipFile(output / "document.docx", "w") as archive:
-        archive.writestr("[Content_Types].xml", content_types_xml)
-        archive.writestr("_rels/.rels", relationships_xml)
-        archive.writestr(
-            "word/document.xml",
-            '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
-        )
+    opaque_docx = b"original selected docx bytes"
+    (output / "nonstandard.docx").write_bytes(opaque_docx)
 
-    storage_calls = []
+    malformed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(malformed_docx_stream, "w") as archive:
+        archive.writestr("word/document.xml", b"<broken")
+    malformed_docx = malformed_docx_stream.getvalue()
+    (output / "malformed.docx").write_bytes(malformed_docx)
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("malformed required artifacts must not be uploaded")
-
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
-
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id="qa-file-reviewer"),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
-
-
-@pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
-def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_upload(
-    monkeypatch,
-    tmp_path,
-    skill_id,
-):
-    workspace = tmp_path / "workspace"
-    output = workspace / "output"
-    output.mkdir(parents=True)
-    document_path = output / "document.docx"
-    with zipfile.ZipFile(document_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    compressed_docx_stream = io.BytesIO()
+    with zipfile.ZipFile(
+        compressed_docx_stream, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         archive.writestr("word/document.xml", b"A" * 1025)
-
-    monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
-
+    compressed_docx = compressed_docx_stream.getvalue()
+    assert len(compressed_docx) < 1025
+    (output / "compressed.docx").write_bytes(compressed_docx)
+    (output / "notes.txt").write_bytes(b"selected alongside DOCX")
     storage_calls = []
 
-    class FailIfStored:
-        def put_bytes(self, **kwargs):
-            storage_calls.append(kwargs)
-            raise AssertionError("oversized required artifacts must not be uploaded")
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            storage_calls.append((content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FakeStorage)
 
-    with pytest.raises(ValueError, match="response DOCX file is invalid"):
-        ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
-            payload(skill_id=skill_id),
-            workspace,
-            response_files=["output/document.docx"],
-        )
-    assert storage_calls == []
+    artifacts = ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"),
+        workspace,
+        response_files=[
+            "output/nonstandard.docx",
+            "output/malformed.docx",
+            "output/compressed.docx",
+            "output/notes.txt",
+        ],
+    )
+
+    assert [artifact.artifact_type for artifact in artifacts] == [
+        "result_docx",
+        "result_docx",
+        "result_docx",
+        "report_txt",
+    ]
+    assert storage_calls == [
+        (
+            opaque_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            malformed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            compressed_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (b"selected alongside DOCX", "text/plain; charset=utf-8"),
+    ]
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
@@ -2578,6 +2492,31 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         evidence,
         available_skill_identities=[skill_id],
     ) == expected_error
+
+
+@pytest.mark.parametrize("granted", [False, True])
+def test_document_plugin_worker_evidence_requires_frozen_grant(granted):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    current_payload = payload(
+        execution_kind="harness_chat", skill_id=None, skill_manifests=[],
+        input={DOCUMENT_PLUGIN_INPUT_KEY: DOCUMENT_PLUGIN_REVISION} if granted else {},
+    )
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill", canonical_identity="document-skills:docx",
+    )
+    binding = {key: getattr(current_payload, key) for key in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id"
+    )}
+    evidence = [RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration, binding=binding, tool_call_id="document-call",
+        lifecycle_phase=phase,
+    ).__dict__ for phase in ("invocation_requested", "completed")]
+    from app.execution.api import sandbox_reconciliation_payload, restored_sandbox_run_payload
+    restored = restored_sandbox_run_payload(sandbox_reconciliation_payload(current_payload), RunPayload, {})
+    assert restored.input.get(DOCUMENT_PLUGIN_INPUT_KEY) == (DOCUMENT_PLUGIN_REVISION if granted else None)
+    assert claude_agent_worker._capability_execution_error(restored, evidence) == (
+        None if granted else "required_tool_completion_evidence_mismatch"
+    )
 
 
 def test_agent_profile_capability_plan_accepts_only_server_authorized_skill_evidence():
@@ -4338,55 +4277,6 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
     ]
 
 
-def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging():
-    profile_drive_read = {
-        "identity": "mcp__ProfileDriveMCPServer__read_text_file",
-        "mcp_server": "ProfileDriveMCPServer",
-        "mcp_tool": "read_text_file",
-        "registered": True,
-        "declared": True,
-        "active": True,
-        "distributed": True,
-        "identity_authorized": True,
-        "object_authorized": True,
-        "parameters_authorized": True,
-        "risk_level": "low",
-        "write_capable": False,
-        "parameter_delegation": "external_mcp",
-    }
-    payload = types.SimpleNamespace(
-        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
-    )
-
-    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
-        payload,
-        sandbox_provider="opensandbox",
-    )
-
-    assert [subject["identity"] for subject in subjects] == [
-        "mcp__ai-platform-response__attach_file",
-        "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
-    ]
-    assert subjects[1]["allowed_parameter_keys"] == ["path"]
-    assert subjects[1]["required_parameter_keys"] == ["path"]
-    assert subjects[1]["public_tool_label"] == "准备共享文件"
-
-    profile_drive_read["parameters_authorized"] = False
-    denied_payload = types.SimpleNamespace(
-        input={"_runtime_tool_policy_subjects": [profile_drive_read]}
-    )
-    denied_subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
-        denied_payload,
-        sandbox_provider="opensandbox",
-    )
-
-    assert all(
-        subject["identity"]
-        != "mcp__ai-platform-context__stage_profile_drive_file_to_workspace"
-        for subject in denied_subjects
-    )
-
-
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
     payload = types.SimpleNamespace(
         input={
@@ -5790,11 +5680,42 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
 # ruff: noqa: RUF012
 
 
+@pytest.fixture
+def stopped_continuation_ports(monkeypatch):
+    from app import executor_reconciler
+    from app.execution.api import ContinuationSettlementPorts
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def claimed(*args, **kwargs):
+        return True
+
+    async def save(**kwargs):
+        assert kwargs["stop_evidence"] == "provider_stopped"
+        return {"state": "saved", "version_id": "synthetic-workspace-version"}
+
+    async def unexpected_settlement(*args, **kwargs):
+        raise AssertionError("conversion must not publish Context settlement")
+
+    async def checkpoint(row, *, stage, **kwargs):
+        row.setdefault("lease_payload_json", {}).update(
+            owner_generation=stage["owner_generation"], terminal_reconciliation=stage,
+        )
+        row["runtime_container_id"] = stage["container_id"]
+
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction)
+    monkeypatch.setattr(executor_reconciler, "_record_reconciliation_stage", checkpoint)
+    monkeypatch.setattr(sandbox_lease_port, "has_sandbox_executor_reconciliation_claim", claimed)
+    return ContinuationSettlementPorts(save, unexpected_settlement)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_upload", [False, True])
 @pytest.mark.usefixtures("terminal_stage_logs")
 async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_semantics(
-    monkeypatch, tmp_path, caplog, fail_upload,
+    monkeypatch, tmp_path, caplog, fail_upload, stopped_continuation_ports,
 ):
     from app import executor_reconciler
     from app.platform import tracing
@@ -5815,10 +5736,15 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
     class Lease:
+        container_id = "synthetic-container"
+
         def model_copy(self, *, update):
             return self
 
     class Provider:
+        async def stop(self, lease, **kwargs):
+            return types.SimpleNamespace(status="stopped", container_id=lease.container_id)
+
         async def collect_workspace(self, _lease, _request, _workspace, response_files):
             assert response_files == [selected.name]
             return tmp_path
@@ -5837,9 +5763,9 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
         "staged_skill_names": ["general-chat"], "skill_manifests": [],
     }}
     monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
-    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: current)
     monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
-        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path / "workspace"))))
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
     monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
     monkeypatch.setattr(executor_reconciler, "_reserve_reconciliation_artifact_cleanup", reserve_cleanup)
@@ -5847,15 +5773,12 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     row = {"id": "lease-a", "tenant_id": current.tenant_id, "run_id": current.run_id, "provider": "docker"}
     if fail_upload:
         with pytest.raises(RuntimeError) as caught:
-            await executor_reconciler._collect_workspace_and_convert_result(
-                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
-            )
+            await executor_reconciler._collect_workspace_and_convert_result(row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports)
         assert caught.value is failure
         assert stored == []
     else:
         result, _provider, _lease = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port
-        )
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports)
         assert result.status == "succeeded", result.result
         assert result.result["message"] == "private answer"
         assert result.result["artifact_count"] == 1
@@ -5879,7 +5802,7 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
 @pytest.mark.parametrize("with_primary_diagnostics", [False, True])
 @pytest.mark.parametrize("collection_mode", ["error", "ok", "cancel", "diagnostics_unavailable", "log_only", "transaction_enter_error", "transaction_exit_error", "transaction_enter_cancel", "transaction_exit_cancel"])
 async def test_reconciler_collection_failure_preserves_primary_and_retry_authority(
-    monkeypatch, tmp_path, caplog, status, error_code, with_primary_diagnostics, collection_mode,
+    monkeypatch, tmp_path, caplog, status, error_code, with_primary_diagnostics, collection_mode, stopped_continuation_ports,
 ):
     from copy import deepcopy
     from app import executor_reconciler
@@ -5905,16 +5828,24 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         "staged_skill_names": ["general-chat"], "skill_manifests": [],
     }}
     calls = []
+    diagnostic_transaction_pending = False
 
     class Provider:
+        async def stop(self, lease, **kwargs):
+            return types.SimpleNamespace(status="stopped", container_id=lease.container_id)
+
         async def collect_workspace(self, _lease, _request, _workspace, response_files):
+            nonlocal diagnostic_transaction_pending
             # OpenSandbox resolves its host binding before the empty-file return.
             assert response_files == []
             calls.append("collect")
             if collection_mode == "ok":
-                return tmp_path
+                snapshot = tmp_path / ".ai-platform-artifact-snapshot-v1"
+                snapshot.mkdir(exist_ok=True)
+                return snapshot
             if collection_mode == "cancel":
                 raise asyncio.CancelledError()
+            diagnostic_transaction_pending = status != "succeeded" and collection_mode != "log_only"
             from app.platform.sandbox.errors import ContainerStartFailedError
             try:
                 raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer")
@@ -5922,6 +5853,8 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
                 raise ContainerStartFailedError("workspace unavailable") from cause
 
     class Lease:
+        container_id = "synthetic-container"
+
         def model_copy(self, *, update):
             return self
 
@@ -5944,14 +5877,17 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
 
     @asynccontextmanager
     async def transaction():
-        if collection_mode == "transaction_enter_cancel":
+        nonlocal diagnostic_transaction_pending
+        diagnostic = diagnostic_transaction_pending
+        diagnostic_transaction_pending = False
+        if diagnostic and collection_mode == "transaction_enter_cancel":
             raise asyncio.CancelledError()
-        if collection_mode == "transaction_enter_error":
+        if diagnostic and collection_mode == "transaction_enter_error":
             raise RuntimeError("private diagnostic transaction enter failure")
         yield object()
-        if collection_mode == "transaction_exit_cancel":
+        if diagnostic and collection_mode == "transaction_exit_cancel":
             raise asyncio.CancelledError()
-        if collection_mode == "transaction_exit_error":
+        if diagnostic and collection_mode == "transaction_exit_error":
             raise RuntimeError("private diagnostic transaction commit failure")
 
     persistence = Persistence()
@@ -5969,9 +5905,9 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         )
     monkeypatch.setattr(executor_reconciler, "transaction", transaction)
     monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
-    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: current)
     monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
-        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path / "workspace"))))
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
     monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
     registry = AdapterRegistry({"claude-agent-worker": ClaudeAgentWorkerAdapter()})
@@ -5981,16 +5917,14 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
     ):
         with pytest.raises(asyncio.CancelledError):
             await executor_reconciler._collect_workspace_and_convert_result(
-                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
-                run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert terminal == original
         if collection_mode != "transaction_exit_cancel":
             assert persistence.value is None
         return
     for _ in range(2):
         result, _, _ = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port,
-            run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert result.status == ("succeeded" if status == "succeeded" and collection_mode == "ok" else "failed")
         assert result.artifacts == []
         assert terminal == original
@@ -6010,7 +5944,7 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
             normalized = normalize_sandbox_reported_failure(result)
             assert run_retry_block_reason(normalized.status, normalized.result["error_code"]) == expected_block
             assert sandbox_failure_prefers_cancelled(normalized) is (status == "cancelled")
-    assert calls == ["collect", "collect"]
+    assert calls == ["collect"]  # The durable checkpoint owns retries after provider stop.
     if status != "succeeded" and collection_mode == "error":
         admin = await diagnostics.read_admin(None, tenant_id=current.tenant_id, run_id=current.run_id)
         assert admin["root"]["error_code"] == error_code
@@ -6029,10 +5963,10 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         assert "synthetic-token" not in repr(persistence.value)
         assert "/private/workspace" in repr(persistence.value)  # admin diagnostics keep paths
     logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
-    assert len(logs) == (0 if collection_mode == "ok" else 2)
+    assert len(logs) == (0 if collection_mode == "ok" else 1)
     assert "synthetic-token" not in repr(logs)
     assert "/private/workspace" not in repr(logs)
     if status != "succeeded" and collection_mode.startswith("transaction_"):
         degraded = [vars(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
-        assert len(degraded) == 2
+        assert len(degraded) == 1
         assert "private diagnostic transaction" not in repr(degraded)

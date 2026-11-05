@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 
+from app.execution.domain.recovery_operations import RecoveryOperationFact
+
+
 RunInputState = Literal["open", "sealed", "inactive"]
 RunInputKind = Literal["text", "answer"]
 
@@ -28,6 +31,8 @@ class RunInputCommand:
 class RunInputSnapshot:
     state: RunInputState
     inputs: tuple[RunInputCommand, ...] = ()
+    recovery_confirmation_pending: bool = False
+    recovery_operation_facts: tuple[RecoveryOperationFact, ...] = ()
     questions: tuple[Mapping[str, object], ...] | None = None
     error_code: Literal["run_question_needs_input"] | None = None
 

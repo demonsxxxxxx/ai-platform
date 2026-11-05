@@ -1,5 +1,4 @@
 import inspect
-import shutil
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +50,7 @@ from app.execution.api import (
     collect_workspace_artifacts,
     runtime_terminal_payload,
 )
-from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.path_safety import ensure_path_inside
 from app.required_tool_contract import (
     capability_invocation_completion_decision,
     validate_runtime_tool_evidence,
@@ -73,6 +72,10 @@ from app.runtime.sandbox.contracts import (
     SandboxRuntimeRequest,
 )
 from app.bootstrap.sandbox_runtime import SandboxRuntime
+from app.bootstrap.conversation_continuation import (
+    build_continuation_settlement_ports, runtime_continuation_fields,
+    prepare_worker_workspace_restore, finish_worker_workspace_restore,
+)
 from app.settings import get_settings
 from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
 from app.skills.api import (
@@ -112,13 +115,11 @@ async def _emit_public_progress_event(
 
 
 def _capability_execution_error(
-    payload: RunPayload,
-    evidence: object,
-    *,
+    payload: RunPayload, evidence: object, *,
     available_skill_identities: object = (),
 ) -> str | None:
     """Validate only the authorized capability invocations that actually occurred."""
-
+    available_skill_identities = [*available_skill_identities, *execution_api.document_plugin_skill_names(payload.input.get(execution_api.DOCUMENT_PLUGIN_INPUT_KEY))]
     plan = CapabilityExecutionPlan.from_tool_policy_subjects(
         payload.input.get("_runtime_tool_policy_subjects"),
         available_skill_identities=available_skill_identities,
@@ -412,7 +413,7 @@ class ClaudeAgentWorkerAdapter:
             )
         if not bool(getattr(settings, "claude_agent_sdk_enabled", False)):
             return self._sdk_required_result(payload, sdk_result=None)
-        sandbox_runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        sandbox_runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root, continuation_ports=build_continuation_settlement_ports())
         actual_provider = _sandbox_runtime_provider(sandbox_runtime)
         if actual_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
@@ -541,7 +542,15 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         resolved_workspace = workspace or _run_workspace(settings, payload)
         resolved_workspace_root = workspace_root or settings.claude_agent_workspace_root
-        _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
+        context_pack = self._executor_context_pack(payload)
+        restore_binding = await prepare_worker_workspace_restore(
+            payload=payload, context_pack=context_pack,
+            tool_policy_subjects=sandbox_runtime_tool_policy_subjects(
+                payload, _context_manifest_from_pack(context_pack),
+                sandbox_provider=str(settings.sandbox_container_provider),
+            ), workspace_root=resolved_workspace_root,
+            workspace=resolved_workspace, enabled=workspace is not None,
+        )
         materialized_file_names = await self._materialize_files(payload, resolved_workspace)
         file_names = list(materialized_file_names)
         raw_attachment_metadata = getattr(materialized_file_names, "attachment_metadata", [])
@@ -659,6 +668,10 @@ class ClaudeAgentWorkerAdapter:
                 workspace=resolved_workspace,
                 skills=selected_skills,
             )
+        )
+        await finish_worker_workspace_restore(
+            restore_binding, context_pack=context_pack, staged_names=staged_skill_names,
+            workspace_root=resolved_workspace_root,
         )
         if selected_skills:
             await _emit_public_progress_event(
@@ -783,6 +796,7 @@ class ClaudeAgentWorkerAdapter:
             attempt_id=payload.attempt_id,
             agent_id=payload.agent_id,
             skill_ids=runtime_skill_ids,
+            document_plugin_revision=payload.input.get(execution_api.DOCUMENT_PLUGIN_INPUT_KEY),
             public_skill_metadata={
                 skill_id: dict(prepared.public_skill_metadata[skill_id])
                 for skill_id in runtime_skill_ids
@@ -825,22 +839,24 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             **execution_api.claude_provider_session_dispatch(payload, context_pack),
+            **runtime_continuation_fields(context_pack, sandbox_runtime_tool_policy_subjects(
+                payload, runtime_context_manifest, sandbox_provider=str(settings.sandbox_container_provider),
+            )),
             governed_permission_wait=False,
             reconciliation_context=reconciliation_context,
         )
-        runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root, continuation_ports=build_continuation_settlement_ports())
         runtime_event_sink = None
         if event_sink is not None:
 
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 
-        await _emit_public_progress_event(
-            event_sink,
-            event_type="run_started",
-            stage="runtime",
-            message="Sandbox runtime dispatch is active",
-        )
+        with execution_api.undispatched_cancellation_proof(payload):
+            await _emit_public_progress_event(
+                event_sink, event_type="run_started", stage="runtime",
+                message="Sandbox runtime dispatch is active",
+            )
         runtime_result = await _submit_sandbox_runtime(
             runtime,
             request,
@@ -1219,18 +1235,17 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
             return None
-        await _emit_public_progress_event(
-            event_sink,
-            event_type="intent_detected",
-            stage="planning",
-            message="Run preparation started",
-        )
-        prepared, preflight_failure = await self._prepare_sdk_run(
-            payload,
-            event_sink=event_sink,
-            workspace=_sandbox_workspace(settings, payload),
-            workspace_root=settings.sandbox_workspace_root,
-        )
+        with execution_api.undispatched_cancellation_proof(payload, enabled=bool(
+            payload.context_pack.get("conversation_context", {}).get("provider_epoch_id"))):
+            await _emit_public_progress_event(
+                event_sink, event_type="intent_detected", stage="planning",
+                message="Run preparation started",
+            )
+            prepared, preflight_failure = await self._prepare_sdk_run(
+                payload, event_sink=event_sink,
+                workspace=_sandbox_workspace(settings, payload),
+                workspace_root=settings.sandbox_workspace_root,
+            )
         if preflight_failure is not None:
             return preflight_failure
         if prepared is None:
@@ -1282,7 +1297,6 @@ class ClaudeAgentWorkerAdapter:
             response_files=response_files,
             response_file_descriptors=response_file_descriptors,
             allowed_skill_names=allowed_skill_names,
-            required_artifact_types=(),
             artifact_factory=ArtifactManifest,
             storage_factory=ObjectStorage,
             ensure_inside=ensure_path_inside,
@@ -1300,24 +1314,6 @@ def _string_list(value: object) -> list[str]:
 
 def _run_workspace(settings: object, payload: RunPayload) -> Path:
     return Path(settings.claude_agent_workspace_root) / payload.tenant_id / payload.run_id
-
-
-def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
-    ensure_creatable_inside(
-        workspace_root,
-        workspace,
-        "run workspace must stay inside the configured workspace root",
-    )
-    if workspace.exists():
-        if workspace.is_symlink() or not workspace.is_dir():
-            raise ValueError("run workspace must stay inside the configured workspace root")
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True, exist_ok=False)
-    ensure_creatable_inside(
-        workspace_root,
-        workspace,
-        "run workspace must stay inside the configured workspace root",
-    )
 
 
 def _sdk_used_skill_names(

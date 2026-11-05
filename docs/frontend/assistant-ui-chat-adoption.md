@@ -10,6 +10,7 @@
 | Markdown primitive | `@assistant-ui/react-markdown@0.14.23` |
 | 锁文件中的 core / store / tap | `0.3.29 / 0.3.21 / 0.9.23`，由 runtime 传递引入 |
 | Elements 源码 | assistant-ui `727a02dc3fe5286ded479cb792f48acbff336cd7` |
+| 对话视觉参照 | 同一提交的 ChatGPT Clone `apps/docs/components/pages/examples/chatgpt.tsx`；尺寸规格归[视觉约束](visual-guidelines.md)第 7 节 |
 | 通用控件与工具链 | Lobe `5.61.0`、React `19.2.5`、Tailwind 3、TS 5.6、Vite 6 保持 |
 | 显式 content Markdown | 直接依赖解析为 react-markdown `9.1.0`；primitive 使用 `10.1.0` |
 
@@ -20,12 +21,14 @@
 `Claude SDK / SessionStore → 平台公开事件 → SSE v4 / 历史恢复 → useAgent → ExternalStoreRuntime → Elements`。
 
 - `useAgent` 和原 Run 控制器拥有身份、权限、Run/Attempt/lease、游标、重连、回放、取消及终态。UI 不凭 SSE EOF、Promise fulfilled 或动画结束判断任务成功。
+- 生产实时事件只走 `connectToSSE → adaptPublicRunStreamEventV4 → handlePublicRunStreamEventV4Result`。通用 `handleStreamEvent`、旧 `skills:changed` 与 `complete`/`done` 事件处理、`isTerminalSSEEvent` 分类器和对应的 hook 事件类型已退役；连接只根据已受理的 V4 终态关闭。`eventProcessor` 与 `historyLoader` 仍处理 V4 归一化事件及既有历史记录，历史数据兼容不依赖旧实时入口。
 - `ChatView` 将合并授权附件后的 `displayMessages` 同时交给 runtime、图库和 Virtuoso。消息通过公开 `getExternalStoreMessages` 读取 runtime 绑定快照；布局与 part 投影共用 `getAssistantUiDisplayParts` 的顺序。
 - `PlatformComposerBinding` 连接实际输入器、完整提交事务和附件 adapter。无输入器、无权限、上传中或重复提交时，原生 Send 同样受平台条件约束。
 - `SessionSidebar` 从原 session source 派生 `ExternalStoreThreadListAdapter`，经 `ChatAppContent → ChatView` 接入同一 runtime。专家分组、分页、未读、路由和修改回执保留原 owner，没有第二次拉取或第二个会话缓存。
+- Agent 专属绑定与首发由 `features/agent-market/useAgentConversationBinding.ts`、`useAgentFirstSend.ts` 维护；`AgentChatPresentation.tsx` 和 `useAgentChatPresentation.tsx` 经共享 `ChatPresentation` slots 提供标题、公开身份、开场和草稿建议。`ChatView` 不接收完整 Profile，也不反向导入 Agent feature；普通聊天继续使用原标题与 WelcomePage。页面调用顺序、权威身份校验、single-flight、generation、accepted-only 清理及 Composer 草稿/附件 handoff 保留，消息/历史/SSE 仍只有 `useAgent` 一个 owner。
 - 原生 tool/data parts 只含获准字段或空占位。业务活动从同一公开快照取 props，禁止客户端 tool execute/addToolResult、原始 args/result、私有命令/路径和隐藏思考。安全正文中用户需要的代码、JSON 和项目路径正常显示。
 
-平台合同见[聊天终态与公开投影](../architecture/chat-run-lifecycle-and-public-error-projection.md)、[SSE wire](../architecture/redis-streams-sse-wire-protocol.md)、[文本 part](../implementation/streaming-message-parts-design.md)和[Claude 连续性](../architecture/claude-provider-session-continuity.md)。Claude Clone 是视觉示例；Managed Agents 的托管 session/sandbox 不替代本项目 Python SDK 与平台执行链。
+平台合同见[聊天终态与公开投影](../architecture/chat-run-lifecycle-and-public-error-projection.md)、[SSE wire](../architecture/redis-streams-sse-wire-protocol.md)、[文本 part](../implementation/streaming-message-parts-design.md)和[Claude 连续性](../architecture/claude-provider-session-continuity.md)。ChatGPT Clone 只提供布局与外观：它的 AI SDK、Assistant Cloud、云端附件和语音接线不进入本项目，示例中没有平台协议的操作（语音、分享、反馈、重新生成、编辑、分支）不显示。Managed Agents 的托管 session/sandbox 同样不替代本项目 Python SDK 与平台执行链。
 
 ## 源码与生产消费者对应
 
@@ -38,7 +41,7 @@
 | `empty-state.tsx`、`loading-state.tsx`、`connection-state.tsx` | 同名 Elements；WelcomePage、MessageParts、ChatConnectionStatus | 单一等待/生成/同步反馈，重连保持原入口；不添加无接口的 Retry/Continue |
 | `markdown-text.tsx` | `assistant-ui/elements/markdown-text.tsx`、`ChatMessage/MarkdownRenderer.tsx` | primitive、memoized slots、CodeHeader；共享 GFM/breaks/math/KaTeX、安全链接/图片、CodeMirror/Mermaid、表格导出和标题锚点 |
 | `attachment.aui.tsx`、`message-attachment.tsx`、`file.tsx` | `components/common/AttachmentCard.tsx`、`ChatInputAttachments.tsx`、`assistant-ui/MessageAttachments.tsx` | 上传卡和已发送文件展示；安全图片 URL、取消/删除、专业预览；上传只由 useFileUpload 执行 |
-| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；无 raw request/result fallback |
+| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，连续成功工具合并为可展开记录且默认隐藏耗时；无 raw request/result fallback |
 | `subagent-list.tsx`、`task-card.tsx`、`todo-list.tsx` | `ChatMessage/elements/TaskCard.tsx`、`SubagentList.tsx`、`TodoList.tsx`；SubagentBlocks、TodoBlock | 公开父子关系、三级递归与持久面板导航；只显示真实进度，Todo 保留平台三种状态 |
 | `artifact-card.tsx` | `ChatMessage/elements/ArtifactCard.tsx`；MessagePartRenderer | 已登记公开产物和原授权下载/预览；不发明 registered/delivery_scope 字段或新准入条件 |
 | `thread-list.tsx` | `components/panels/SidebarParts/ThreadList.tsx`、`components/panels/SidebarParts/sessionThreadListAdapter.ts`；SessionListContent、SessionItem | 受控行、Lobe 按钮、可访问未读；原专家/时间分组、loadMore、迟到改名删除隔离 |
@@ -60,7 +63,23 @@
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
-专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
+## 开场布局与模型就绪状态
+
+普通新对话的欢迎语、快捷任务和输入框沿用同一条阅读列（`--chat-column-max`，宽度见视觉约束第 7 节），快捷任务与输入框对齐，输入框紧随任务入口，不再靠 `mt-auto` 分离到页面底部。有消息时仍使用原底部 Composer slot，桌面底部留 24px，手机保留安全区；专家开场、历史加载及待答任务表面保持各自原有入口。布局不增加第二个 Composer 或草稿 owner。
+
+模型就绪提示由 ChatAppContent 的当前目录/选择状态派生，随 ChatView → ChatInput 进入工具栏，在模型选择器旁使用 `--theme-danger-text` 显示提示；无可用模型时提示“当前没有可用模型，请联系管理员申请。”，不再在页面底部另放模型错误。未选可用模型时输入和附件草稿仍保留，发送按钮、Enter 与原生 Composer 注册共同阻止发送。聊天输入区不提供模型组配置入口，所有用户都只看到状态提示。加载、读取失败、授权失效和默认模型失效保留各自原因，不自动切组或用第一项回退。服务器模型准入、自动唯一组绑定与冻结 Run 快照未变。
+
+工具选择弹层的标题、已选数量与搜索框共用固定头部；搜索位于标题下方，工具目录单独滚动，底部“完成”保持可见。顶部全选、取消全选、添加操作行及大扳手图标已移除，无兼容入口；分类/上游服务组勾选、名称/描述/服务来源搜索、系统禁用项、目录错误与重试、关闭和焦点恢复保持原业务语义。`ToolSelector` 不再接收顶部批量操作的 `onToggleAll`，聊天控制器其他既有工具状态合同不变。
+
+## 输入补全与功能选择
+
+输入框默认编辑普通消息。`ChatInput` 只在光标前的独立 `/` 命令片段能匹配现有 `skill`、`mcp`、`model`、`file` 时展示建议；路径、未知命令、`$` 金额/变量和命令后的整句正文不被当作功能参数。输入不会自动打开选择器、清空草稿或创建不可用 chip。模型、添加菜单、回形针和思考按钮保留既有入口，快捷建议只打开同一套受控选择器，不执行工具或授予权限。
+
+有实际候选时，上下键移动高亮，普通 Enter/Tab 确认候选；用户配置的换行组合键、IME（含 229）和 Shift+Tab 保持编辑行为。Esc 只关闭菜单，不删除触发符或草稿。点击发送始终提交原文，不确认高亮候选；无候选或关闭菜单后的 Enter 走同一平台提交事务，不重新解析命令。专家工作区的 `disableSlashCommands` 继续禁用建议。
+
+明确选择可用候选后，只移除该触发片段，保留前后正文、附件和已选能力，再打开原功能；选择或取消功能不再按消息前缀清空整稿。选择不可用候选仅显示可移除的不可用 chip，保留原文和附件，不打开缺失的功能。文件候选仍经现有安全上传控件，所选 Skill、MCP、模型和附件继续受原准入、权限与回执约束。
+
+退役与兼容：移除旧的任意前导 `/` / `$` 命令分类、表单命令拦截、`$` Skill 别名、命令参数注入选择器搜索、模型/技能选择清空整稿和输入即创建不可用 chip 的路径；没有兼容消费者。原 `parseComposerCommand`、`resolveCommandPrefixPanel`、`clearModelCommandDraft` 和 `commandSearchSeed` 不再保留。对应 parser/source/挂载回归及 PRD 浏览器脚本改为明确选择；`chat-dollar-skills.png` 由 `chat-skill-selector.png` 取代。保留现有菜单、行、模型、附件和 chip 选择器，浏览器 `composer-commands` 场景复用合成 ChatView fixture，验证原文投递、键盘、局部移除和附件保留。
 
 ## 提交、附件与迟到回执
 
@@ -76,18 +95,22 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 
 | 事实 | 展示与操作 |
 | --- | --- |
-| 等待首段 / 正在追加 | 一处 GenerationLoader；只有当前追加且未收敛的 assistant 正文允许平滑 |
+| 等待首段 / 正在追加 | 一处 GenerationLoader：等待首段为微光文字；正文追加时改为正文末尾的流式圆点，状态仅对读屏播报（视觉约束第 7.5 节）。只有当前追加且未收敛的 assistant 正文允许平滑 |
 | Run 仍运行而连接中断 | 保留正文，使用原 reconnect；不映射为 message reload/regenerate |
 | 取消请求 acknowledged | 表示请求已受理；等待权威取消终态，保留确认框与 RunControlLifecycle |
 | Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示，暂不显示复制 |
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
 
-普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
+普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调；`remark-cjk-friendly-gfm-strikethrough/parseOnly` 放在 GFM 后，补齐 `~~旧方案：~~新方案` 的中文删除线解析。不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
+
+只有当前 assistant 正文仍在追加、未同步且未取消时，`MarkdownTextPrimitive.preprocess` 才使用固定版本 Remend 补齐显示前缀中的粗体、斜体、组合强调和删除线。预处理在 smooth 揭示后执行，减少动态效果时仍可补齐；消息、历史、runtime 快照和复制源保持原文。完成、失败、取消、同步及历史恢复不补齐，未闭合的终态文本按真实内容显示。Remend 的链接、图片、行内代码、数学、HTML、Setext 标题、单波浪号及比较符改写全部关闭，保留已有解析与安全策略；代码/公式中的星号及转义标记不当作正文强调补齐。原流式强调不补齐的显示路径由该公开预处理入口替换，无兼容开关或第二套 renderer。
 
 Virtuoso/useMessageScroll 保持大历史、返回底部、Run/文件深链和大纲定位；没有第二个 Viewport 滚动写入者，也不引入 TanStack 虚拟器。
 
 ## 会话与问答
+
+正常 `resumable` 会话不显示底部“已保存／可继续”说明，也不保留空状态行；检查中、收尾中、恢复受限和阻塞状态仍显示原指导及刷新入口，发送准入与后端状态合同不变。原 `chat.continuation.resumable` 文案退出，无兼容消费者。
 
 会话 adapter 仅派生列表并委托原操作，身份/source 失效后的回调不能更新新 owner。改名复用原 API，删除仍先确认；消息历史与会话列表分别分页，已加载项过滤不称作全量搜索。
 
@@ -104,11 +127,14 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 ## 退役与具名保留
 
 - LibreChat Composer/CommandMenu/Chips、ComposerModelPanel、MessageFrame 旧入口和 exports/对应 selectors 已替换，旧专用 CSS 清退。业务控制器继续在 ChatInput，不增加第二 form、上传器或提交路径。
-- Composer 上传附件只由 `ChatInputAttachments` 展示；逐附件镜像 `file` chip 及其专用删除分支、文案已退役，无兼容消费者。已发送文件和正文归入同一用户消息容器，继续沿用原文件预览和授权入口。
+- 普通 chat 与 expert 的模型组选择入口及其 props/callback 已移除，无兼容消费者。ModelCatalogProvider 每次刷新只接受服务器返回的唯一启用归属组；默认组仅在可信专家入口可用，普通 chat 仍拒绝；多组、禁用或未授权均拒绝猜测/回退，归属仅由管理员修改。focus/visibility 与模型菜单刷新重新加载当前归属；历史 Session 的 group_id 不再重定向当前归属，Run 的冻结快照不变。保留同组模型选择和显式 group_id/model_id/model 提交；默认模型按服务器指定 ID 解析，缺失时不选第一项。
+- Composer 附件使用等高中性圆角卡片（视觉约束第 7.3 节）、完整文件名提示及常显的右上角移除/取消角标，长名省略、多文件横向滚动并在右缘渐隐。消息附件、授权、上传状态及唯一上传控制器不变。
+- Composer 上传附件只由 `ChatInputAttachments` 展示；逐附件镜像 `file` chip 及其专用删除分支、文案已退役，无兼容消费者。已发送文件作为独立一行放在用户文字气泡上方、靠右排列（不再与正文同处一个气泡），继续沿用原文件预览和授权入口。
 - 旧 token 明细手写点击外部监听及 guard 退役，由 MessageTiming + Lobe Popover 承担。
 - 活动旧展示壳由 Elements 接管；公开分类、顺序、折叠、面板导航、下载与预览 controller 保留。
 - MarkdownContent 保留显式业务内容/图库适配；独立文档直接走共享 renderer，主消息正文不再使用旧直接 parser。
-- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。历史 release evidence 和来源许可不改写。
+- LibreChatShell/SidePanel 继续拥有桌面聊天列/文件栏和移动 Lobe Drawer；桌面文件栏默认360px，可拖宽或用分隔线方向键调整到280–520px，宽度仅保存在浏览器。ProfileDriveWorkspaceBrowser 保留双盘、懒加载、导入、拖放。聊天区与文件区共用 Shell 的单条竖向分隔线，文件浏览器不再套圆角边框卡片和整栏内缩，分隔线继续支持拖动/键盘调宽；桌面聊天标题栏与文件盘工具栏共享56px高度，底部分隔线贯通并与竖线接齐，搜索位于下一行；移动端沿用 Drawer。顶部仅两行：Lobe 原生 rounded Tabs 与右侧刷新、下一行单个 Lobe Input 搜索（prefix 图标和 allowClear，不额外套带边框容器）。Tabs 拥有选中块、键盘和焦点交互，双盘内容常驻并保留各自目录/筛选状态，沿用原 panel ID 与 aria-controls 关联；手拼按钮页签、方格分隔样式均已退役。盘名称只显示在页签中，不在搜索框下重复；聚焦后的根返回使用带可访问名称的图标按钮；标题装饰、条目计数、目录合并开关及根目录重复路径已退役，无兼容消费者。单分支目录链自动紧凑显示，仅合并已展开、已加载且未截断的完整列表，不新增盘遍历；聚焦目录后才显示返回路径，回到根目录时将键盘焦点还给搜索框。文件名完整保留，极长名称仅在树区横向滚动；文件行只保留回形针，大小移入完整路径提示，不增加底部已选文件信息区。回形针状态来自当前Composer附件，取消复用原上传控制器的移除入口；客户端来源标记不写入消息、历史或服务端授权。旧行内大小和预览/下载图标、无路径导航断言、固定20rem栏宽及外层目录滚动已退役，无兼容消费者。历史 release evidence 和来源许可不改写。
+- `ChatAppContent` 原内嵌 Agent 绑定/首发 helpers、refs 与旧导出迁入 Agent feature，`ChatView.agentEmptyProfile` 和内嵌 Agent 标题/开场被 presentation slots 替换。页面和 `scripts/fixtures/chat-integration.tsx` 均已迁移，无兼容转发；DOM selectors 和交互保持。原 `ChatAppContent.test.tsx` 回归迁入 `agent-market/__tests__/agentConversationBinding.test.tsx`，与新 mounted 首发回归一起进入既有 `test:agent-market` 阶段。完整边界见[页面与组件架构](frontend-page-component-architecture.md#第一切片agent-专属协调与展示归位)。
 - 升级检查真实消费者、旧入口/export、静态断言、脚本、依赖和文档；不得为旧 source regex 恢复被替换代码。
 - Run 问答逐题化替换了旧的独立问答区与“全题同表”卡片：独立区总标题 `当前任务输入`、卡片外框/阴影、内层 `<form>` 及其 submit 按钮不再存在，历史分组标题仍保留在共享滚动区内，生产消费者只剩 `ChatInput` 的 `taskSurface` slot（由 `ChatView` 传入 `RunInputHistory`）。`data-question-mode`、`composer-ordinary-controls`、`data-run-question-card`/`-index`/`-marker`/`-progress`/`-advance`/`-previous`/`-other-toggle`/`-other-clear`/`-batch-note`/`-stop` 是当前模式与问题选择器；旧 `data-run-question-filled` 双重进度、始终展开的其他答案输入、问答与普通输入同时显示的布局已退役，无兼容消费者。`data-run-input-history-disclosure`/`-toggle`/`-panel` 拥有默认折叠和唯一历史滚动，`data-run-input-receipts` 只作内容分组；`data-run-input-history`/`data-run-input-history-run`/`data-run-input-entry` 保留原记录范围与历史含义。`fieldset:last-child textarea`、`button[type="submit"]` 和 `data-run-input-history` 上的 30dvh 上限已无消费者，浏览器脚本与回归已改用上述新选择器。服务器合同、存储、超时默认答案与 provider 交互未变，因此没有旧的兼容分支需要保留。
 
@@ -121,5 +147,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `route-layout-browser-smoke.mjs` 的 `chat-integration` 场景检查文件抽屉、问答回执、Mermaid、工具/子代理/产物和模型选择器；设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite，分别以 `AI_PLATFORM_ROUTE_LAYOUT_THEME=light`、`dark` 运行，默认覆盖四种宽度。
 
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
+
+`node scripts/composer-trigger-browser-check.mjs` 复用合成聊天 fixture，以真实鼠标按下/抬起事件验证桌面模型按钮、桌面及窄屏设置齿轮的再次点击关闭、重新打开、Escape 和外部点击关闭。独立按钮的开关不再被库的 `outside-press` 抢先处理，其他外部点击仍由库关闭。手机模型选择器保留模态 Drawer 的关闭入口。脚本通过 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite；仅 DOM `.click()` 不覆盖该指针事件时序。
 
 `node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

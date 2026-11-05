@@ -6,7 +6,8 @@ import type {
 } from "../../types/message";
 import {
   CHAT_PUBLIC_PROJECTION_VERSION,
-  isPublicAgentProgressEvent,
+  validatedPublicAgentProgressPayload,
+  type PublicAgentProgressPayload,
   type EventData,
 } from "./types";
 
@@ -20,13 +21,6 @@ export function validPublicExecutionTimestamp(value: unknown): string | undefine
   return Number.isFinite(Date.parse(value)) ? value : undefined;
 }
 
-function executionEventTimestamp(data: EventData): string | undefined {
-  return (
-    validPublicExecutionTimestamp(data.created_at) ||
-    validPublicExecutionTimestamp(data.timestamp)
-  );
-}
-
 const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind>> = {
   attachment_materialization: "file_read",
   skill_staging: "capability",
@@ -36,6 +30,13 @@ const PUBLIC_AGENT_PROGRESS_KINDS: Readonly<Record<string, ExecutionTimelineKind
   artifact_validation: "verification",
   artifact_recovery: "artifact",
 };
+
+export interface ValidatedPublicAgentProgressEvent {
+  eventType: "agent.progress";
+  payload: PublicAgentProgressPayload;
+  sequence: number;
+  timestamp?: string;
+}
 
 const LEGACY_PUBLIC_THINKING_SUMMARIES = {
   started: "Analyzing the request",
@@ -51,17 +52,31 @@ const PUBLIC_THINKING_DISPLAY = {
 export function projectPublicAgentProgress(
   data: EventData,
 ): ExecutionTimelinePart | null {
+  const payload = validatedPublicAgentProgressPayload(data);
   if (
-    !isPublicAgentProgressEvent(data) ||
+    !payload ||
     typeof data.sequence !== "number" ||
     !Number.isSafeInteger(data.sequence) ||
     data.sequence < 0
   ) {
     return null;
   }
-  const payload = data.payload as Record<string, unknown>;
-  const phase = String(payload.phase);
-  const lifecycle = String(payload.lifecycle);
+  return projectValidatedPublicAgentProgress({
+    eventType: "agent.progress",
+    payload,
+    sequence: data.sequence,
+    timestamp:
+      validPublicExecutionTimestamp(data.created_at) ||
+      validPublicExecutionTimestamp(data.timestamp),
+  });
+}
+
+/** Reduce an adapter-validated progress event without rechecking its payload. */
+export function projectValidatedPublicAgentProgress(
+  event: ValidatedPublicAgentProgressEvent,
+): ExecutionTimelinePart | null {
+  if (!Number.isSafeInteger(event.sequence) || event.sequence < 0) return null;
+  const { phase, lifecycle, step_id: stepId, message } = event.payload;
   const kind = PUBLIC_AGENT_PROGRESS_KINDS[phase];
   if (!kind) return null;
   const status =
@@ -70,14 +85,14 @@ export function projectPublicAgentProgress(
       : lifecycle === "failed"
         ? "failed"
         : "running";
-  const timestamp = executionEventTimestamp(data);
+  const timestamp = validPublicExecutionTimestamp(event.timestamp);
   return {
     type: "execution_step",
-    sequence: data.sequence,
-    step_id: String(payload.step_id),
+    sequence: event.sequence,
+    step_id: stepId,
     kind,
     stage: phase,
-    title: String(payload.message),
+    title: message,
     status,
     progress: {
       current: status === "completed" ? 1 : 0,

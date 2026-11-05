@@ -500,6 +500,26 @@ class AttemptSettlementShadowLeaseRepository:
         )
         return changed
 
+    async def finalize_stopped_executor_checkpoint(
+        self, conn: Any, *, scope: Mapping[str, str], **kwargs: Any
+    ) -> bool:
+        """Finalize a stop/save continuation checkpoint under the legacy settlement writer.
+
+        The Runs-owned ``attempt.v1`` writer settles through its own claim/settled
+        phases, which this checkpoint finalizer does not participate in yet. Fail
+        closed there so the receipt stays quarantined instead of bypassing it.
+        """
+        settlement_scope = self._scope(scope)
+        write_detail = await self._write_enabled(conn, settlement_scope)
+        if await self._writer_active(conn):
+            raise RuntimeError("attempt_settlement_continuation_checkpoint_unsupported")
+        finalized = await self._repository.finalize_stopped_executor_checkpoint(
+            conn, scope=scope, **kwargs,
+        )
+        if finalized and write_detail:
+            await self._refresh(conn, settlement_scope)
+        return finalized
+
     async def read_unknown_receipt_probe_recovery_facts(
         self, conn: Any, **kwargs: Any
     ) -> dict[str, Any] | None:

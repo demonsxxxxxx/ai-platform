@@ -264,6 +264,7 @@ def test_v2_projector_fails_closed_for_malformed_raw_fact_types(field, value):
     "fact",
     [
         _v2_fact(invocation_id=" private-call-1"),
+        _v2_fact(tool_name="Skill"),
         _v2_fact(
             tool_name="Skill",
             safe_label=" Document review",

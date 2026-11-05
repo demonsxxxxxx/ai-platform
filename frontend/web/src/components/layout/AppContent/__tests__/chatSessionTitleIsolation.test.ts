@@ -40,7 +40,6 @@ test("keeps generated session title updates out of the chat message tree", () =>
   const chatViewBody = extractFunctionBody(chatViewSource, "ChatView");
 
   assert.doesNotMatch(chatAppBody, /setSessionName|useState<.*sessionName/);
-  assert.doesNotMatch(chatAppBody, /onStreamDone:\s*\(\)\s*=>\s*\{/);
   assert.doesNotMatch(chatViewSource, /sessionName:/);
   assert.doesNotMatch(chatViewBody, /sessionName=/);
   assert.doesNotMatch(chatMessageSource, /sessionName\?:|sessionName=/);

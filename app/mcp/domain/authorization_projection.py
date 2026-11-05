@@ -1,6 +1,7 @@
 """Project the authorized MCP registration into the current run input."""
 
 from typing import Any, Callable
+from copy import deepcopy
 
 from app.mcp.domain.tool_references import mcp_runtime_metadata_usable
 
@@ -47,6 +48,8 @@ def mcp_capability_subject(
         "write_capable": bool(tool.get("write_capable")),
         "parameter_delegation": "external_mcp",
     }
+    if tool.get("public_operation_summary") is not None:
+        subject["public_operation_summary"] = deepcopy(tool["public_operation_summary"])
     subject.update(capability_id=tool_id)
     return subject
 

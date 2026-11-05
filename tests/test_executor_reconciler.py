@@ -19,11 +19,13 @@ from app.executor_reconciler import (
     _finish_terminal_reconciliation_failure as _finish_terminal_reconciliation_failure_impl,
     _persist_probe_terminal as _persist_probe_terminal_impl,
     _terminalize_reconciliation_failure as _terminalize_reconciliation_failure_impl,
+    forward_requested_executor_cancellations_once,
     probe_suspect_executor_tasks_once as probe_suspect_executor_tasks_once_impl,
     reconcile_pending_executor_terminals_once as reconcile_pending_executor_terminals_once_impl,
     run_executor_terminal_reconciler as run_executor_terminal_reconciler_impl,
 )
-from app.executors.base import ExecutorResult
+from app.executors.base import ExecutorResult, RunPayload
+from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
 from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
@@ -203,6 +205,50 @@ def _lease_row() -> dict[str, object]:
 
 
 
+def _generation_bound_lease_row(*, legacy_snapshot=False):
+    row = _lease_row()
+    payload = RunPayload(
+        **{key: row[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        )},
+        agent_id="agent-a", skill_id=None, file_ids=[], input={}, owner_generation=4,
+        execution_kind="harness_chat", schema_version="ai-platform.run-payload.v2",
+    )
+    snapshot = sandbox_reconciliation_payload(payload)
+    if legacy_snapshot:
+        snapshot["execution_payload"].pop("owner_generation", None)
+    row["lease_payload_json"] = {"attempt_id": payload.attempt_id, "owner_generation": 4}
+    row["executor_reconciliation_context_json"] = {
+        "adapter_name": "claude-agent-worker", "adapter_context": {}, "run_payload": snapshot,
+    }
+    return row
+
+
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
+def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legacy_snapshot):
+    row = _generation_bound_lease_row(legacy_snapshot=legacy_snapshot)
+    if not legacy_snapshot:
+        assert row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
+    _, payload = _context_payload(row)
+    assert payload.owner_generation == 4
+    assert _reconciliation_request(row, payload).owner_generation == 4
+
+
+@pytest.mark.parametrize("defect", ["snapshot_generation", "lease_attempt", "string_generation", "bool_generation", "zero_generation"])
+def test_reconciler_rejects_invalid_or_conflicting_lease_generation(defect):
+    row = _generation_bound_lease_row()
+    if defect == "snapshot_generation":
+        row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
+    elif defect == "lease_attempt":
+        row["lease_payload_json"]["attempt_id"] = "other-attempt"
+    else:
+        row["lease_payload_json"]["owner_generation"] = {
+            "string_generation": "4", "bool_generation": True, "zero_generation": 0,
+        }[defect]
+    with pytest.raises(ReconciliationAuthorityError, match="executor_reconciliation_owner_generation_mismatch"):
+        _context_payload(row)
+
+
 def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
     subject = {
         "identity": "Skill",
@@ -221,6 +267,7 @@ def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
         session_id="session-a",
         run_id="run-a",
         attempt_id="attempt-a",
+        owner_generation=1,
         agent_id="agent-a",
         skill_id="qa-file-reviewer",
         model_value="model-a",
@@ -345,6 +392,7 @@ async def test_reconciler_uses_spare_capacity_while_first_completion_is_blocked(
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", _no_cancel_forward)
     task = asyncio.create_task(run_executor_terminal_reconciler(stop))
     try:
         await asyncio.wait_for(second_finished.wait(), timeout=0.5)
@@ -383,6 +431,7 @@ async def test_reconciler_scans_while_signal_initialization_is_blocked(monkeypat
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", _no_cancel_forward)
     await asyncio.wait_for(run_executor_terminal_reconciler(stop), timeout=0.5)
     assert initialization_finished.is_set()
 
@@ -418,6 +467,7 @@ async def test_reconciler_holds_bounded_slots_until_claimed_work_finishes_on_shu
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", _no_cancel_forward)
     task = asyncio.create_task(run_executor_terminal_reconciler(stop, concurrency=concurrency))
     try:
         await asyncio.wait_for(started.wait(), 0.5)
@@ -463,6 +513,7 @@ async def test_reconciler_retries_at_due_time_without_notification_or_fallback_d
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", _no_cancel_forward)
     await asyncio.wait_for(run_executor_terminal_reconciler(stop, concurrency=1), 0.5)
     assert 0.02 <= scans[1] - scans[0] <= 0.25
 
@@ -536,6 +587,7 @@ async def test_reconciler_signal_failure_retains_bounded_polling_fallback(monkey
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", _no_cancel_forward)
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", unavailable)
     await asyncio.wait_for(run_executor_terminal_reconciler(stop_event, concurrency=1), timeout=1)
     assert 2 <= scans <= 3
@@ -994,6 +1046,10 @@ def _result() -> ExecutorResult:
         result={"message": "done"},
         executor_payload={},
     )
+
+
+async def _no_cancel_forward(*_args, **_kwargs):
+    return 0
 
 
 def _suspect_lease_row() -> dict[str, object]:
@@ -3181,7 +3237,6 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     )
 
     assert calls == [
-        ("terminalize", "lease-a"),
         (
             "quarantine",
             {
@@ -3540,3 +3595,93 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
                 else "executor_reconciliation_run_not_terminal"
             ),
         })]
+
+
+@pytest.mark.asyncio
+async def test_cancel_forward_delivers_once_per_lease_and_retries_failed_delivery(monkeypatch):
+    """A cancelled Run must reach its executor without waiting for heartbeat staleness."""
+    rows = [_suspect_lease_row()]
+    cancels = []
+    fail_next = {"value": True}
+
+    async def list_rows(_conn, *, limit):
+        assert limit == 20
+        return list(rows)
+
+    class Provider:
+        async def executor_control_endpoint(self, _lease, _request):
+            return "http://executor", {"Authorization": "Bearer control"}
+
+    class Client:
+        def __init__(self, *, timeout_seconds):
+            assert timeout_seconds == 5.0
+
+        async def cancel(self, executor_url, *, run_id, attempt_id, executor_headers):
+            if fail_next["value"]:
+                fail_next["value"] = False
+                raise RuntimeError("executor unreachable")
+            cancels.append((executor_url, run_id, attempt_id, executor_headers))
+            return {"status": "cancel_requested"}
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
+    monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
+        lambda _row: SimpleNamespace(provider="fake"),
+    )
+    monkeypatch.setattr("app.executor_reconciler.create_container_provider", lambda _name: Provider())
+    monkeypatch.setattr("app.executor_reconciler.SandboxExecutorClient", Client)
+
+    forwarded: set[str] = set()
+    # A failed delivery is not remembered, so the next tick retries it.
+    assert await forward_requested_executor_cancellations_once(forwarded, lease_port=SimpleNamespace(list_cancel_requested_executor_leases=list_rows)) == 0
+    assert forwarded == set()
+    assert await forward_requested_executor_cancellations_once(forwarded, lease_port=SimpleNamespace(list_cancel_requested_executor_leases=list_rows)) == 1
+    assert cancels == [("http://executor", "run-a", "attempt-a", {"Authorization": "Bearer control"})]
+    # Delivered once; later ticks do not repeat it while the lease awaits its terminal.
+    assert await forward_requested_executor_cancellations_once(forwarded, lease_port=SimpleNamespace(list_cancel_requested_executor_leases=list_rows)) == 0
+    assert len(cancels) == 1
+    # A settled lease leaves the listing and its memo.
+    rows.clear()
+    assert await forward_requested_executor_cancellations_once(forwarded, lease_port=SimpleNamespace(list_cancel_requested_executor_leases=list_rows)) == 0
+    assert forwarded == set()
+
+
+@pytest.mark.asyncio
+async def test_reconciler_forwards_cancellations_on_a_short_cadence_not_the_stale_probe(monkeypatch):
+    """The stale-heartbeat probe waits 45s; cancel forwarding must not."""
+    from app import executor_reconciler
+
+    stop = asyncio.Event()
+    ticks = []
+    memos = set()
+
+    async def forward(forwarded):
+        memos.add(id(forwarded))
+        ticks.append(asyncio.get_running_loop().time())
+        if len(ticks) == 2:
+            stop.set()
+        return 0
+
+    async def no_work(**_kwargs):
+        return 0
+
+    async def idle_signal(**_kwargs):
+        await asyncio.sleep(10)
+        return False
+
+    async def cursor():
+        return object()
+
+    monkeypatch.setattr(executor_reconciler, "_CANCEL_FORWARD_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(executor_reconciler, "initialize_executor_reconciliation_signal_cursor", cursor)
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", idle_signal)
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", no_work)
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
+    monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", forward)
+    await asyncio.wait_for(run_executor_terminal_reconciler(stop), timeout=2)
+    assert len(ticks) >= 2
+    # One per-process memo keeps each lease to a single delivery.
+    assert len(memos) == 1

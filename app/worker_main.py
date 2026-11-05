@@ -27,6 +27,7 @@ from app.files.api import (
 from app.bootstrap.agent_profiles import configure_agent_profile_runtime
 from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.context import configure_context_services
+from app.bootstrap.conversation_continuation import build_continuation_settlement_ports
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.skills import configure_skill_markdown
@@ -1075,6 +1076,7 @@ async def _run_worker_process(
                     lifecycle=lifecycle,
                     run_diagnostics=build_run_diagnostics_service(),
                     concurrency=getattr(settings, "worker_finalizer_concurrency", 2),
+                    continuation_ports=build_continuation_settlement_ports(),
                 ),
                 name="ai-platform-executor-terminal-reconciler",
             ))

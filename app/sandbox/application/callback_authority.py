@@ -20,8 +20,18 @@ class SandboxCallbackIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderSessionAppendIdentity(SandboxCallbackIdentity):
+class ProviderTailDrainIdentity(SandboxCallbackIdentity):
+    """An identity that may still reach its stopped Attempt during provider tail drain."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSessionAppendIdentity(ProviderTailDrainIdentity):
     """Identity for the one SessionStore append allowed during provider tail drain."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutorTerminalTailIdentity(ProviderTailDrainIdentity):
+    """Identity for the executor terminal receipt that closes a stopped Attempt's drain."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +57,7 @@ class SandboxCallbackAuthority:
         identity: ProviderSessionAppendIdentity,
     ) -> dict[str, Any]:
         """Recheck the narrowly typed SessionStore append tail writer."""
-        if not isinstance(identity, ProviderSessionAppendIdentity):
+        if not isinstance(identity, ProviderTailDrainIdentity):
             raise SandboxCallbackAuthorityError("provider_session_append_identity_required")
         return await self._recheck_attempt(
             conn, tenant_id=tenant_id, identity=identity, allow_provider_tail=True,
@@ -97,7 +107,7 @@ class SandboxCallbackAuthority:
         identity: ProviderSessionAppendIdentity,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Lock a SessionStore append identity with its explicit tail-drain scope."""
-        if not isinstance(identity, ProviderSessionAppendIdentity):
+        if not isinstance(identity, ProviderTailDrainIdentity):
             raise SandboxCallbackAuthorityError("provider_session_append_identity_required")
         return await self._lock_run_then_attempt(
             conn, identity=identity, allow_provider_tail=True,

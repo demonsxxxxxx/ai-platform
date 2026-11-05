@@ -1330,3 +1330,160 @@ async def get_sandbox_resource_cleanup_summary(
         "cleanup_pending_receipt_count": int(row.get("cleanup_pending_count") or 0),
         "quarantined_receipt_count": int(row.get("quarantined_count") or 0),
     }
+
+
+# Stop-snapshot continuation checkpoints and prompt cancel delivery (#1899).
+
+
+async def get_sandbox_executor_terminal_handoff(
+    connection: Any, *, tenant_id: str, workspace_id: str, user_id: str,
+    session_id: str, run_id: str, attempt_id: str, lease_id: str,
+    owner_generation: int,
+) -> dict[str, Any] | None:
+    """Observe existing settlement responsibility; this grants no execution authority."""
+    cursor = await connection.execute(
+        """
+        select * from sandbox_leases
+        where id = %s and tenant_id = %s and workspace_id = %s and user_id = %s
+          and session_id = %s and run_id = %s and attempt_id = %s
+          and lease_payload_json->'owner_generation' = %s::jsonb
+          and lease_payload_json->>'attempt_id' = attempt_id
+          and executor_terminal_json is not null and executor_terminal_received_at is not null
+          and executor_status in ('completed', 'failed', 'cancelled')
+          and executor_reconciliation_context_json->>'adapter_name' <> ''
+          and (
+            (status = 'active' and released_at is null
+             and executor_reconciliation_status in ('pending', 'claimed', 'retry', 'failed'))
+            or (status = 'released' and released_at is not null
+                and executor_reconciliation_status = 'finalized' and executor_reconciled_at is not null)
+          )
+        """,
+        (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+         json.dumps(owner_generation)),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def list_cancel_requested_executor_leases(
+    connection: Any,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Accepted executor tasks whose Run already requested cancellation.
+
+    Read-only: forwarding a cancel is idempotent at the executor, and terminal
+    settlement still belongs to the claimed reconciliation path.
+    """
+
+    cursor = await connection.execute(
+        """
+        select lease.*
+        from sandbox_leases as lease
+        join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
+        where lease.status = 'active'
+          and lease.executor_terminal_json is null
+          and lease.executor_reconciliation_context_json is not null
+          and lease.executor_reconciliation_status in ('waiting_terminal', 'claimed')
+          and runs.cancel_requested_at is not null
+        order by runs.cancel_requested_at, lease.id
+        limit %s
+        """,
+        (max(1, int(limit)),),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_quarantined_checkpoint_for_repair(
+    connection: Any, *, scope: dict[str, str], lease_id: str,
+) -> dict[str, Any] | None:
+    cursor = await connection.execute(
+        """select * from sandbox_leases where id=%s and tenant_id=%s and workspace_id=%s
+             and user_id=%s and session_id=%s and run_id=%s and attempt_id=%s
+             and status='quarantined' and executor_reconciliation_status='failed'
+             and executor_reconciliation_error='executor_reconciliation_runtime_handle_invalid'
+             and executor_reconciliation_claim_token is null
+             and not (lease_payload_json ? 'checkpoint_repair') for update""",
+        (lease_id, *(scope[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        ))),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def claim_quarantined_checkpoint_for_repair(
+    connection: Any, *, scope: dict[str, str], lease_id: str, invocation_id: str,
+    claim_token: str, expected_updated_at: Any, expected_stage: dict[str, Any],
+    writer_generation: int, cancellation_generation: int,
+) -> dict[str, Any] | None:
+    """Explicit operator-only CAS; never included in automatic claim scanning."""
+    cursor = await connection.execute(
+        """update sandbox_leases set status='released',released_at=coalesce(released_at,now()),
+             release_reason='verified_checkpoint_operator_repair',executor_reconciliation_status='claimed',
+             executor_reconciliation_claim_token=%s,executor_reconciliation_claimed_at=now(),
+             executor_terminal_reconciliation_attempt_count=executor_terminal_reconciliation_attempt_count+1,
+             lease_payload_json=jsonb_set(lease_payload_json,'{checkpoint_repair}',jsonb_build_object(
+               'schema_version','ai-platform.checkpoint-repair.v1','invocation_id',%s::text,
+               'source_status',status,'source_reconciliation_status',executor_reconciliation_status,
+               'source_error',executor_reconciliation_error,'source_quarantined_at',updated_at,
+               'writer_generation',%s::bigint,'cancellation_generation',%s::bigint,
+               'claim_token',%s::text,'authorized_at',now())),updated_at=now()
+           where id=%s and tenant_id=%s and workspace_id=%s and user_id=%s and session_id=%s
+             and run_id=%s and attempt_id=%s and status='quarantined'
+             and executor_reconciliation_status='failed'
+             and executor_reconciliation_error='executor_reconciliation_runtime_handle_invalid'
+             and executor_reconciliation_claim_token is null and updated_at=%s
+             and not (lease_payload_json ? 'checkpoint_repair')
+             and lease_payload_json->'terminal_reconciliation'=%s::jsonb returning *""",
+        (claim_token, invocation_id, writer_generation, cancellation_generation, claim_token,
+         lease_id, *(scope[key] for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id")),
+         expected_updated_at, json.dumps(expected_stage)),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def record_sandbox_reconciliation_stage(
+    connection: Any, *, lease_id: str, claim_token: str, stage: dict[str, Any],
+) -> bool:
+    """Host-only bounded checkpoint; executor callbacks cannot write this field."""
+    ensure_json_size(stage, max_bytes=RUN_RESULT_MAX_BYTES, code="sandbox_reconciliation_stage_too_large")
+    cursor = await connection.execute(
+        """update sandbox_leases set lease_payload_json = jsonb_set(
+             lease_payload_json, '{terminal_reconciliation}', %s::jsonb), updated_at=now()
+           where id=%s and executor_reconciliation_claim_token=%s
+             and executor_reconciliation_status='claimed' and status in ('active','released')
+             and tenant_id=%s and run_id=%s and attempt_id=%s
+             and lease_payload_json->>'owner_generation'=%s
+             and runtime_container_id=%s returning id""",
+        (json.dumps(stage), lease_id, claim_token, stage["scope"]["tenant_id"],
+         stage["scope"]["run_id"], stage["scope"]["attempt_id"],
+         str(stage["owner_generation"]), stage["container_id"]),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def finalize_stopped_executor_checkpoint(
+    connection: Any, *, scope: dict[str, str], lease_id: str, claim_token: str,
+    expected_stage: dict[str, Any],
+) -> bool:
+    """Finalize only the exact host stop/save checkpoint under its current claim."""
+    cursor = await connection.execute(
+        """update sandbox_leases set status='released', released_at=coalesce(released_at,now()),
+             release_reason='executor_reconciled', executor_reconciliation_status='finalized',
+             executor_reconciliation_retry_not_before=null, executor_reconciliation_claim_token=null,
+             executor_reconciliation_claimed_at=null, executor_reconciliation_error='',
+             executor_reconciled_at=now(), updated_at=now()
+           where id=%s and tenant_id=%s and workspace_id=%s and user_id=%s and session_id=%s
+             and run_id=%s and attempt_id=%s and status in ('active','released')
+             and executor_reconciliation_status='claimed' and executor_reconciliation_claim_token=%s
+             and lease_payload_json->'terminal_reconciliation'=%s::jsonb
+             and lease_payload_json->>'owner_generation'=%s and runtime_container_id=%s
+             and executor_terminal_json is not null returning id""",
+        (lease_id, *(scope[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "attempt_id",
+        )), claim_token, json.dumps(expected_stage), str(expected_stage["owner_generation"]), expected_stage["container_id"]),
+    )
+    return await cursor.fetchone() is not None

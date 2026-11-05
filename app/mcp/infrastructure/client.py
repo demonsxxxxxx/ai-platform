@@ -6,22 +6,25 @@ import asyncio
 import re
 from builtins import ExceptionGroup
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import partial
 from typing import Any, Mapping
 
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 
 import httpx2 as httpx
 from mcp import Client, MCPError
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import ListToolsResult
+from mcp_types import ListToolsResult, Tool
 from pydantic import ValidationError
 
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.domain.headers import mcp_user_jwt_header, normalize_static_mcp_headers
+from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
+    MCP_TOOL_DESCRIPTION_MAX_LENGTH,
     _canonical_live_definition,
     _ValidatedDiscoveryTarget,
     _validated_discovery_target,
@@ -121,7 +124,35 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
         await self._stream.aclose()
 
 
+
+def _sse_client_with_event_limit(max_event_size: int):
+    """Bind MCP 2.3's inner SSE event budget without changing its shared globals."""
+    # MCP 2.3's public sse_client signature has no max_event_size argument. Its
+    # async generator resolves sse_within_origin from module globals, so copy
+    # that function's globals and bind the helper for this session only.
+    sdk_sse_generator = sse_client.__wrapped__
+    session_globals = dict(sdk_sse_generator.__globals__)
+    session_globals["sse_within_origin"] = partial(
+        session_globals["sse_within_origin"], max_event_size=max_event_size,
+    )
+    session_sse_generator = FunctionType(
+        sdk_sse_generator.__code__,
+        session_globals,
+        name=sdk_sse_generator.__name__,
+        argdefs=sdk_sse_generator.__defaults__,
+        closure=sdk_sse_generator.__closure__,
+    )
+    session_sse_generator.__kwdefaults__ = sdk_sse_generator.__kwdefaults__
+    return asynccontextmanager(session_sse_generator)
+
+
 class _SingleDispatchMcpClient(Client):
+    def seed_tool_definition(self, tool: Tool) -> None:
+        """Seed native result/header validation from the authorized live listing."""
+        self.session._absorb_tool_listing(
+            ListToolsResult(tools=[tool], nextCursor=None), complete=False
+        )
+
     async def call_tool(self, name, arguments=None):
         # A native admission authorizes one dispatch. Keep v1's explicit-call
         # semantics instead of v2 Client's schema-refresh or input-required replay.
@@ -135,6 +166,17 @@ async def open_mcp_session(
 ):
     """Keep credentials on one approved origin, including SSE message endpoints."""
     transport = config.get("type")
+    configured_response_bytes = config.get("max_response_bytes", max_response_bytes)
+    configured_total_bytes = config.get("max_response_total_bytes", max_response_total_bytes)
+    max_response_bytes = configured_response_bytes
+    max_response_total_bytes = configured_total_bytes
+    if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 16 * 1024 * 1024:
+        raise McpToolDiscoveryError("response_limit_invalid")
+    if max_response_total_bytes is not None and (
+        type(max_response_total_bytes) is not int
+        or not 1 <= max_response_total_bytes <= 16 * 1024 * 1024
+    ):
+        raise McpToolDiscoveryError("response_limit_invalid")
     if transport not in {"http", "sse"}:
         raise McpToolDiscoveryError("unsupported_transport")
     try:
@@ -238,19 +280,25 @@ async def open_mcp_session(
             # endpoint forever after its reader rejects an early malformed frame.
             async with asyncio.timeout(timeout_seconds):
                 if transport == "sse":
-                    protocol_transport = sse_client(
+                    protocol_transport = _sse_client_with_event_limit(max_response_bytes)(
                         target.endpoint, headers=headers, timeout=timeout_seconds,
-                        sse_read_timeout=timeout_seconds, httpx_client_factory=client_factory,
+                        sse_read_timeout=timeout_seconds,
+                        httpx_client_factory=client_factory,
                     )
+                    session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                        protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                        message_handler=validate_message, cache=None,
+                    ))
                 else:
                     http_client = await stack.enter_async_context(client_factory(headers=headers, timeout=timeout_seconds))
                     protocol_transport = streamable_http_client(
                         target.endpoint, http_client=http_client, terminate_on_close=terminate_on_close,
+                        max_sse_event_size=max_response_bytes,
                     )
-                session = await stack.enter_async_context(_SingleDispatchMcpClient(
-                    protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
-                    message_handler=validate_message, cache=None,
-                ))
+                    session = await stack.enter_async_context(_SingleDispatchMcpClient(
+                        protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
+                        message_handler=validate_message, cache=None,
+                    ))
             _install_strict_tool_list_validation(session)
             if guard_failure:
                 raise McpToolDiscoveryError(guard_failure)
@@ -274,17 +322,26 @@ async def list_mcp_tools(session):
     for _ in range(MCP_DISCOVERY_PAGE_LIMIT):
         page = await session.list_tools(cursor=cursor, cache_mode="bypass")
         for tool in page.tools:
-            definition = _canonical_live_definition(
-                tool.model_dump(by_alias=True, exclude_none=True)
-            )
+            if (
+                not isinstance(tool.name, str)
+                or not MCP_PUBLIC_TOOL_NAME_PATTERN.fullmatch(tool.name)
+            ):
+                raise McpToolDiscoveryError("protocol_error")
+            description = tool.description
+            if description is None:
+                description = ""
+            elif not isinstance(description, str):
+                raise McpToolDiscoveryError("protocol_error")
             if tool.name in names:
                 raise McpToolDiscoveryError("protocol_error")
             names.add(tool.name)
-            tools.append(tool.model_copy(update={"description": definition["description"]}))
+            tools.append(tool.model_copy(update={
+                "description": description[:MCP_TOOL_DESCRIPTION_MAX_LENGTH],
+            }))
         cursor = page.next_cursor
         if cursor is None:
             return tools
-        if not cursor or cursor in cursors:
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
             raise McpToolDiscoveryError("protocol_error")
         cursors.add(cursor)
     raise McpToolDiscoveryError("page_limit_exceeded")

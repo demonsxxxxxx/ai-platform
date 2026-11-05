@@ -262,12 +262,16 @@ class FakeSchemaStatusConnection:
                 "legacy_constraint_count": 1,
             })
         if "from jsonb_array_elements_text" in normalized:
+            if "indexes.oid is null" in normalized:
+                return FakeCursor({"current": True})
             if "to_regclass(relation_name) is null" in normalized:
                 return FakeCursor(
                     {"current": self.missing_retired_relation is None}
                 )
             return FakeCursor({"current": self.missing_relation is None})
         if "attributes.attname is not null" in normalized:
+            return FakeCursor({"current": True})
+        if "constraints.oid is null" in normalized:
             return FakeCursor({"current": True})
         if "constraints.contype::text = expected.constraint_type" in normalized:
             return FakeCursor({"current": self.constraint_definitions_current})
@@ -636,19 +640,13 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
     assert status["model_index_definitions_current"] is True
     assert schema_migrations.CRITICAL_INDEX_DEFINITIONS == (
         (
-            "uq_model_gateway_active",
+            "uq_model_gateway_provider_active",
             "model_gateway_revisions",
-            ("active",),
+            ("provider_id",),
             "active = true",
             True,
         ),
-        (
-            "uq_model_catalog_default",
-            "model_catalog_entries",
-            ("is_default",),
-            "is_default = true",
-            True,
-        ),
+        ("uq_model_catalog_provider_upstream", "model_catalog_entries", ("provider_id", "upstream_model_id"), None, True),
     )
 
 
@@ -695,6 +693,14 @@ async def test_schema_status_uses_exact_model_index_relation_keys_and_predicates
         (
             schema_migrations.RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_SCHEMA_VERSION,
             REMOTE_RUN_ATTEMPT_HEARTBEAT_MONOTONICITY_CHECKSUM,
+        ),
+        (
+            schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION,
+            "synthetic-pre-source-confirmation-checksum",
+        ),
+        (
+            schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION,
+            "synthetic-latest-main-checksum",
         ),
         (
             schema_migrations.SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION,
@@ -805,7 +811,6 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION == "2026.10.25.9"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION == "2026.10.25.10"
     assert schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION == "2026.10.25.11"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
     assert ("run_attempt_settlements", "receipt_recorded_at", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert schema_migrations.SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION == "2026.10.25.3"
     assert ("run_delivery_intents", "queue_payload_json", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -838,6 +843,19 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert ("run_stale_reconciliation_claims", "chk_run_stale_reconciliation_claims_generation") in schema_migrations.CRITICAL_CONSTRAINTS
     assert ("idx_run_stale_reconciliation_claims_deadline", False) in schema_migrations.CRITICAL_INDEXES
     assert schema_migrations.RUN_STATUS_SCHEMA_VERSION == "2026.10.25.1"
+    assert schema_migrations.CONVERSATION_RECOVERY_SCHEMA_VERSION == "2026.10.22.2"
+    assert schema_migrations.CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION == "2026.11.02.1"
+    assert schema_migrations.RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION == "2026.10.23.1"
+    assert schema_migrations.MODEL_GROUPS_SCHEMA_VERSION == "2026.10.26.1"
+    assert schema_migrations.MODEL_GROUPS_LEGACY_DEFAULT_RETIREMENT_SCHEMA_VERSION == "2026.10.26.2"
+    assert schema_migrations.PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION == "2026.10.27.1"
+    assert schema_migrations.MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION == "2026.10.27.2"
+    assert schema_migrations.MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION == "2026.10.28.1"
+    assert schema_migrations.MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION == "2026.10.28.2"
+    assert schema_migrations.MODEL_PROVIDERS_SCHEMA_VERSION == "2026.10.29.1"
+    assert schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION == "2026.10.29.2"
+    assert schema_migrations.LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION == "2026.11.05.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_intent_context_json", "jsonb", False) in schema_migrations.CRITICAL_COLUMNS
@@ -856,6 +874,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.CRITICAL_RELATIONS == (
         "schema_migrations",
         "schema_index_migrations",
+        "execution_recovery_operations",
+        "execution_recovery_invocations",
         "users",
         "runs",
         "run_diagnostics",
@@ -864,7 +884,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_token_usage_coverage",
         "model_token_usage_deltas",
         "model_gateway_revisions",
+        "model_providers",
         "model_catalog_entries",
+        "model_groups",
+        "model_group_members",
+        "model_group_models",
         "run_attempts",
         "run_attempt_settlements",
         "run_attempt_settlement_storage",
@@ -924,6 +948,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
                                     ("coverage_source_sha256", "text", False)),
         "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True),
+                                     ("entry_json", "jsonb", False),
                                      ("entry_canonical_json", "json", False)),
         "provider_session_append_receipts": (("expected_sequence", "int8", True),
                                              ("batch_sha256", "text", True)),
@@ -962,6 +987,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("provider_session_epochs", "fk_provider_epoch_head"),
         ("provider_session_entries", "fk_provider_entry_epoch"),
         ("provider_session_entries", "uq_provider_entry_global_sequence"),
+        ("provider_session_entries", "chk_provider_entry_representation"),
         ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
         ("provider_turn_receipts", "fk_provider_turn_epoch"),
         ("run_input_sessions", "fk_run_input_sessions_run"),
@@ -1081,14 +1107,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("model_catalog_entries", "chk_model_catalog_id"),
         ("model_catalog_entries", "chk_model_catalog_upstream_id"),
         ("model_catalog_entries", "chk_model_catalog_display_name"),
-        ("model_catalog_entries", "chk_model_catalog_default_enabled"),
         ("model_catalog_entries", "chk_model_catalog_access_mode"),
         ("model_catalog_entries", "chk_model_catalog_access_users_array"),
         ("model_catalog_entries", "chk_model_catalog_selected_users_present"),
     ):
         assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
-    assert ("uq_model_gateway_active", True) in schema_migrations.CRITICAL_INDEXES
-    assert ("uq_model_catalog_default", True) in schema_migrations.CRITICAL_INDEXES
+    assert ("uq_model_gateway_provider_active", True) in schema_migrations.CRITICAL_INDEXES
     assert (
         "sessions",
         "chk_sessions_title_source",
@@ -1247,6 +1271,12 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'succeeded'::text, 'failed'::text, 'cancelled'::text, "
             "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, "
             "'dead-lettered'::text])))",
+        ),
+        (
+            "provider_session_entries",
+            "chk_provider_entry_representation",
+            "c",
+            "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)",
         ),
         (
             "users",

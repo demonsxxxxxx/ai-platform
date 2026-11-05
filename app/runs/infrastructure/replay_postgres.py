@@ -27,6 +27,7 @@ from app.projection_redaction import sanitize_user_control_input
 from app.runs.infrastructure.capability_admission_postgres import authorize_replay_run_capabilities
 from app.runs.infrastructure.capability_admission_postgres import extract_run_mcp_tool_ids
 from app.runs.infrastructure.capability_admission_postgres import normalize_run_input_for_enqueue
+from app.execution.api import DOCUMENT_PLUGIN_INPUT_KEY, document_plugin_skill_names
 from app.runs.infrastructure.capability_admission_postgres import require_replay_source_identity
 from app.runs.infrastructure.capability_admission_postgres import strip_caller_run_auth_snapshot_fields
 from app.runs.domain.retry import RUN_RETRYABLE_STATUSES
@@ -71,7 +72,11 @@ async def copy_run_as_new_task(
         else source_input
     )
     if isinstance(source_execution_input, dict):
+        document_revision = source_execution_input.get(DOCUMENT_PLUGIN_INPUT_KEY)
+        document_plugin_skill_names(document_revision)
         source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
+        if document_revision is not None:
+            source_execution_input[DOCUMENT_PLUGIN_INPUT_KEY] = document_revision
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
@@ -197,6 +202,7 @@ async def copy_run_as_new_task(
         **sanitized_source_input,
         "input": copied_execution_input,
         "copied_from_run_id": run_id,
+        "session_id": str(source["session_id"]),
     }
     copied_input_json.update(
         execution_kind=execution_kind,
@@ -464,6 +470,15 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
     context_snapshot_id = source.get("context_snapshot_id")
     model_id = source.get("model_id")
     model_value = source.get("model_value")
+    model_group_fields = {
+        key: source.get(key)
+        for key in (
+            "model_group_id", "model_group_code", "model_group_type",
+            "model_group_revision", "model_selection_mode", "usage_scene",
+            "model_policy_version",
+        )
+        if source.get(key) is not None
+    }
     agent_profile = source.get("agent_profile")
     schema_version = source.get("schema_version")
     execution_kind = source.get("execution_kind")
@@ -491,6 +506,7 @@ def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
         "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
         "model_id": model_id if isinstance(model_id, str) else None,
         "model_value": model_value if isinstance(model_value, str) else None,
+        **model_group_fields,
         "schema_version": schema_version
         if isinstance(schema_version, str) and schema_version
         else RUN_PAYLOAD_SCHEMA_VERSION,
@@ -506,6 +522,15 @@ def preserved_server_owned_execution_snapshot(source_snapshot: dict[str, Any]) -
     preserved = {
         "model_id": source_snapshot.get("model_id"),
         "model_value": source_snapshot.get("model_value"),
+        **{
+            key: source_snapshot.get(key)
+            for key in (
+                "model_group_id", "model_group_code", "model_group_type",
+                "model_group_revision", "model_selection_mode", "usage_scene",
+                "model_policy_version",
+            )
+            if source_snapshot.get(key) is not None
+        },
     }
     agent_profile = source_snapshot.get("agent_profile")
     if isinstance(agent_profile, dict):

@@ -43,8 +43,13 @@ Do not weaken required checks to make a candidate pass.
 - Platform admission, authorization, context binding, persistence, and public
   projections remain platform-owned; SDK-specific types stay in the adapter.
 - Preserve tenant, workspace, user, Run/Attempt, and lease boundaries.
-- Ordinary-user projections exclude raw Skill identifiers, storage keys,
-  runtime paths, command fingerprints, private executor payloads, and secrets.
+- Ordinary-user projections exclude unauthorized or unselected Skill
+  identifiers, storage keys, tool/provider runtime paths, command fingerprints,
+  private executor payloads, and secrets. An authorized Skill name or active
+  Skill call ID may appear in Assistant prose; a Skill lifecycle label may use
+  only a name from the current Run's authorized `allowed_skill_names`. Ordinary
+  public prose and clarification questions may include the active workspace cwd
+  verbatim.
 - Never copy, print, or commit real environment files, credentials, account
   identifiers, or private prompts. Use synthetic or authorized redacted data.
 - Do not mount the Docker socket in default Compose.

@@ -12,10 +12,14 @@ def install_mcp_sessions(monkeypatch):
     def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         @asynccontextmanager
         async def session_factory(config, *, credential_resolver=None):
+            connection = {
+                key: value for key, value in config.items()
+                if key not in {"max_response_bytes", "max_response_total_bytes"}
+            }
             names = [
                 subject["mcp_tool"] for subject in subjects.values()
                 if subject.get("mcp_server") in configs
-                and configs[subject["mcp_server"]] == config
+                and configs[subject["mcp_server"]] == connection
             ]
 
             async def call_tool(name, arguments):

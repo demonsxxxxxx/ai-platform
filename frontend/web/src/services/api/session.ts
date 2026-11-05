@@ -34,6 +34,7 @@ export interface BackendSession {
   unread_count?: number;
   purpose?: "conversation" | "builder_test";
   agent_conversation?: AgentConversationIdentity | null;
+  continuation?: PublicContinuation | null;
 }
 
 // Session list response type
@@ -279,12 +280,54 @@ export type ChatSubmissionResolution =
   | DurableChatSubmissionResolution
   | ChatSubmissionPreLedgerAbsenceResolution;
 
+/** The only conversation recovery facts admitted to ordinary chat. */
+export interface PublicContinuation {
+  state: "settling" | "resumable" | "recovery_candidate" | "blocked" | "capacity_exhausted" | "unavailable";
+  action: "wait" | "continue" | "new_conversation";
+  reason_code: string;
+  workspace_saved: boolean;
+}
+
+export const CONTINUATION_REASON_CODES = [
+  "writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted",
+] as const;
+
+/** Copy only public fields; unknown reason text never becomes display copy. */
+export function parsePublicContinuation(value: unknown): PublicContinuation | undefined {
+  if (value == null) return undefined;
+  const block = value as Partial<PublicContinuation>;
+  if (
+    !["settling", "resumable", "recovery_candidate", "blocked", "capacity_exhausted", "unavailable"].includes(block.state ?? "") ||
+    !["wait", "continue", "new_conversation"].includes(block.action ?? "") ||
+    typeof block.workspace_saved !== "boolean" ||
+    (["resumable", "recovery_candidate"].includes(block.state ?? "") && block.action !== "continue") ||
+    (block.state === "settling" && block.action !== "wait")
+  ) return { state: "unavailable", action: "new_conversation", reason_code: "unavailable", workspace_saved: false };
+  if (["resumable", "recovery_candidate"].includes(block.state!) && !block.workspace_saved) {
+    return { state: "blocked", action: "new_conversation", reason_code: "workspace_unsaved", workspace_saved: false };
+  }
+  return {
+    state: block.state!, action: block.action!, workspace_saved: block.workspace_saved,
+    reason_code: CONTINUATION_REASON_CODES.some((code) => code === block.reason_code)
+      ? block.reason_code! : "unavailable",
+  };
+}
+
+export function canContinueConversation(continuation: PublicContinuation | undefined): boolean {
+  // Older servers did not project recovery facts; preserve their existing admission path.
+  return continuation === undefined || (
+    ["resumable", "recovery_candidate"].includes(continuation.state) &&
+    continuation.action === "continue" && continuation.workspace_saved
+  );
+}
+
 /** Compatibility status projection with its authoritative platform value. */
 export interface ChatRunStatusResponse {
   session_id: string;
   run_id?: string;
   status?: string | null;
   raw_status?: string | null;
+  continuation?: PublicContinuation | null;
   error?: string;
 }
 
@@ -346,11 +389,16 @@ export function buildSubmitChatBody({
   selectedAgentProfile?: SelectedAgentProfileRequest | null;
   submissionId?: string;
 }): Record<string, unknown> {
+  const serializedAgentOptions = serializeChatAgentOptions(agentOptions);
   const body: Record<string, unknown> = {
     message,
     session_id: sessionId,
-    agent_options: agentOptions,
-    attachments,
+    agent_options: serializedAgentOptions,
+    attachments: attachments?.map((attachment) => {
+      const projected = { ...attachment };
+      delete projected.profileDriveReference;
+      return projected;
+    }),
     disabled_skills: selectedSkill ? undefined : disabledSkills,
     enabled_skills: selectedSkill ? undefined : enabledSkills,
     disabled_mcp_tools: disabledMcpTools,
@@ -376,6 +424,21 @@ export function buildSubmitChatBody({
     body.user_timezone = userTimezone;
   }
   return body;
+}
+
+function serializeChatAgentOptions(
+  agentOptions?: Record<string, boolean | string | number>,
+): Record<string, boolean | string | number> | undefined {
+  if (!agentOptions) return agentOptions;
+  const selectionMode = agentOptions.selection_mode;
+  if (selectionMode !== undefined && selectionMode !== "explicit") {
+    throw new Error("unsupported_model_selection_mode");
+  }
+  const hasConcreteModel =
+    (typeof agentOptions.model_id === "string" && agentOptions.model_id.trim().length > 0) ||
+    (typeof agentOptions.model === "string" && agentOptions.model.trim().length > 0);
+  if (!hasConcreteModel && selectionMode !== "explicit") return agentOptions;
+  return { ...agentOptions, selection_mode: "explicit" };
 }
 
 export function buildSessionRunsUrl(
@@ -486,6 +549,8 @@ export interface AgentAppRunRequest {
   thinking_effort: AgentThinkingEffort;
   model_id?: string;
   model?: string;
+  group_id?: string;
+  selection_mode?: "explicit";
   user_timezone?: string;
 }
 
@@ -511,22 +576,35 @@ export function buildAgentAppRunBody({
         .filter((key) => key.length > 0),
     ),
   ];
+  return {
+    message, submission_id: submissionId, file_ids: fileIds, thinking_effort: thinkingEffort,
+    ...agentRunModelOptions(agentOptions),
+    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+  };
+}
+
+export function agentRunModelOptions(agentOptions?: Record<string, boolean | string | number>): Pick<AgentAppRunRequest, "model_id" | "model" | "group_id" | "selection_mode"> {
+  const serializedAgentOptions = serializeChatAgentOptions(agentOptions);
   const modelId =
-    typeof agentOptions?.model_id === "string" && agentOptions.model_id.trim()
-      ? agentOptions.model_id
+    typeof serializedAgentOptions?.model_id === "string" && serializedAgentOptions.model_id.trim()
+      ? serializedAgentOptions.model_id
       : undefined;
   const model =
-    typeof agentOptions?.model === "string" && agentOptions.model.trim()
-      ? agentOptions.model
+    typeof serializedAgentOptions?.model === "string" && serializedAgentOptions.model.trim()
+      ? serializedAgentOptions.model
       : undefined;
+  const groupId =
+    typeof serializedAgentOptions?.group_id === "string" && serializedAgentOptions.group_id.trim()
+      ? serializedAgentOptions.group_id
+      : undefined;
+  const selectionMode = serializedAgentOptions?.selection_mode === "explicit" || modelId || model
+    ? "explicit"
+    : undefined;
   return {
-    message,
-    submission_id: submissionId,
-    file_ids: fileIds,
-    thinking_effort: thinkingEffort,
     ...(modelId ? { model_id: modelId } : {}),
     ...(model ? { model } : {}),
-    ...(userTimezone ? { user_timezone: userTimezone } : {}),
+    ...(groupId ? { group_id: groupId } : {}),
+    ...(selectionMode ? { selection_mode: selectionMode } : {}),
   };
 }
 
@@ -799,7 +877,7 @@ export const sessionApi = {
     const params = runId ? `?run_id=${runId}` : "";
     return authFetch(
       `${API_BASE}/api/chat/sessions/${sessionId}/status${params}`,
-      { signal: options.signal },
+      { signal: options.signal, cache: "no-store" },
     );
   },
 

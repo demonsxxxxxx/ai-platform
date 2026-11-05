@@ -82,6 +82,34 @@ test("MCP directory outage retains the unresolved grant and blocks nonempty subm
   }
 });
 
+test("MCP form rejects unsupported names, links the field error and preserves the draft", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const saved: MCPServerCreate[] = [];
+  try {
+    await act(async () => root.render(createElement(MCPServerForm, {
+      onSave: async data => { saved.push(data); return true; }, onCancel: () => {},
+    })));
+    const name = container.querySelector<HTMLInputElement>('input[type="text"]')!;
+    const url = container.querySelector<HTMLInputElement>('input[type="url"]')!;
+    await act(async () => change(url, "https://example.invalid/mcp"));
+    for (const value of ["中文网关", "gateway name", "gateway/1", "_gateway", "a".repeat(129)]) {
+      await act(async () => change(name, value));
+      await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+      assert.equal(saved.length, 0);
+      assert.equal(name.value, value);
+      assert.equal(name.getAttribute("aria-invalid"), "true");
+      assert.equal(document.activeElement, name);
+      assert.match(document.getElementById(name.getAttribute("aria-describedby")!)!.textContent!, /1–128.*英文字母/);
+    }
+    await act(async () => change(name, " gateway_75.v1:test-01 "));
+    await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    assert.equal(saved[0].name, "gateway_75.v1:test-01");
+    assert.equal(saved[0].url, url.value);
+    assert.equal(name.getAttribute("aria-invalid"), "false");
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 function change(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));

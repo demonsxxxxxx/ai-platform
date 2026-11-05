@@ -9,6 +9,7 @@ import { MoreHorizontal } from "lucide-react";
 import { toast } from "@lobehub/ui/base-ui";
 import type { BackendSession } from "../../services/api/session";
 import { sessionApi } from "../../services/api";
+import { publicApiErrorMessage } from "../../services/api/fetch";
 import { SessionMenu } from "./SessionMenu";
 import { ThreadListRow } from "../panels/SidebarParts/ThreadList";
 import { toSessionThreadListItem } from "../panels/SidebarParts/sessionThreadListAdapter";
@@ -105,8 +106,7 @@ export function SessionItem({
       }
     } catch (error) {
       if (updateOwnerRef.current !== onSessionUpdate) return;
-      console.error("Failed to update session title:", error);
-      toast.error(t("sidebar.renameFailed"));
+      toast.error(publicApiErrorMessage(error, t("sidebar.renameFailed")));
     } finally {
       if (updateOwnerRef.current === onSessionUpdate) {
         setIsSaving(false);

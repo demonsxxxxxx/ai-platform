@@ -66,6 +66,7 @@ def _settlement_scenario(
             )
         },
         attempt_id="attempt-a",
+        owner_generation=4,
         trace_id="trace-a",
         skill_version="",
         context_snapshot_id=payload.context_snapshot_id or "",
@@ -81,8 +82,8 @@ def _settlement_scenario(
         "executor_reconciliation_status": "pending",
         "executor_terminal_json": {
             "run_id": "run-a",
-            "status": "succeeded",
-            "message": "done",
+            "status": "cancelled",
+            "message": "cancelled",
         },
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
@@ -236,13 +237,13 @@ def _settlement_scenario(
         # Retain context/Run/Attempt identity reconstruction and result validation.
         r._context_and_payload(lease_row)
         result = ExecutorResult(
-            status="succeeded",
+            status="failed",
             adapter_version="probe/1",
             executor_type="claude_agent_sdk",
             executor_version="1",
             capabilities={},
-            result={"message": "done"},
-            executor_payload={},
+            result={"message": "cancelled", "error_code": "executor_cancelled"},
+            executor_payload={"sandbox_provider": "opensandbox", "runtime_terminal_status": "cancelled"},
         )
         result.validate()
         return result, Provider(), object()
@@ -375,27 +376,14 @@ def _settlement_scenario(
 
 
 @pytest.mark.asyncio
-async def test_binding_cancel_retries_then_settles_original_attempt(monkeypatch):
+async def test_binding_cancel_settles_original_cancelled_receipt_before_cleanup(monkeypatch):
     state = _settlement_scenario(monkeypatch)
     assert await state.run_once() == 1
     assert "full_receipt_scope_checked" in state.calls
-    assert ("fence", "stale") in state.calls
-    assert ("outcome", "skipped", "stale_terminal_state") in state.calls
-    assert ("retry", "executor_reconciliation_run_not_terminal") in state.calls
-    assert state.run["status"] == "running"
-    assert state.attempt["status"] == "cancel_requested"
-    assert state.receipt["status"] == "active"
-    assert state.receipt["executor_reconciliation_status"] == "retry"
-    assert not any(
-        call[0] in {"stop", "finalize"}
-        for call in state.calls
-        if isinstance(call, tuple)
-    )
-
-    # A later eligible claim must execute the real admission cancellation flow;
-    # merely changing the Run status in a stub would miss the responsibility handoff.
-    assert await state.run_once() == 1
-    assert len(set(state.claimed_tokens)) == 2
+    assert ("fence", "ready") in state.calls
+    assert ("outcome", "cancelled", None) in state.calls
+    assert not any(call[0] == "retry" for call in state.calls if isinstance(call, tuple))
+    assert len(set(state.claimed_tokens)) == 1
     assert state.attempt["id"] == "attempt-a"
     assert state.run["status"] == state.attempt["status"] == "cancelled"
     assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
@@ -413,7 +401,7 @@ async def test_binding_cancel_retries_then_settles_original_attempt(monkeypatch)
         ("finalize", "cancelled", "cancelled"),
     ]
     assert [call for call in state.calls if call in expected] == expected
-    assert state.calls.count("full_receipt_scope_checked") >= 3
+    assert state.calls.count("full_receipt_scope_checked") == 3
 
 
 @pytest.mark.asyncio
@@ -451,11 +439,13 @@ async def test_receipt_scope_or_owner_mismatch_never_releases(monkeypatch, corru
 async def test_nonterminal_outcome_cannot_release_or_retry_replacement_claim(
     monkeypatch,
 ):
-    state = _settlement_scenario(monkeypatch, lose_retry_claim=True)
+    state = _settlement_scenario(monkeypatch, cancel_at="terminal_after_collection", lose_retry_claim=True)
     assert await state.run_once() == 1
     assert state.receipt["executor_reconciliation_claim_token"] == "replacement-claim"
     assert state.receipt["executor_reconciliation_status"] == "claimed"
     assert state.receipt["status"] == "active"
+    assert ("outcome", "skipped", "stale_terminal_state") in state.calls
+    assert ("retry", "executor_reconciliation_run_not_terminal") in state.calls
     assert not any(
         call[0] in {"stop", "finalize"}
         for call in state.calls
@@ -479,6 +469,7 @@ async def test_skipped_terminal_race_retries_then_uses_existing_terminal_branch(
 
     monkeypatch.setattr(r, "_collect_workspace_and_convert_result", unexpected_collection)
     assert await state.run_once() == 1
+    assert len(set(state.claimed_tokens)) == 2
     assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
     assert state.receipt["status"] == "active"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))

@@ -82,8 +82,13 @@ Rules:
    forbidden.
 6. A test appears in one required lane unless another lane verifies an
    independent subject.
-7. Integration lanes run `tools/run_test_stage.py --require-zero-skips`, which
-   fails the stage on any skipped test in its exact JUnit report.
+7. Required PostgreSQL/Redis integration lanes and the Windows runtime shard run
+   `tools/run_test_stage.py --require-zero-skips`, which fails the stage on any
+   skipped test in its exact JUnit report. The `sandbox-runtime` and
+   `release-governance-authority` shards may report tests for another platform
+   as skipped, as documented in [CI](../CI.md); they still participate in the
+   required aggregate. This does not permit missing required services to become
+   skips or make an unexecuted external acceptance check pass.
 8. Image jobs retain a stable successful result when an exact diff is
    `not_affected`; they do not disappear from branch protection.
 9. CI success is CI evidence only.

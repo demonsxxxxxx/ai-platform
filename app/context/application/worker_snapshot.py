@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.context.domain.conversation import empty_executor_conversation_context
-from app.context.domain.conversation_authority import validate_authority_receipt
+from app.context.domain.conversation_recovery import validate_provider_authority_receipt
 from app.context.domain.provider_sessions import (
     PROVIDER_SESSION_RESUME_CONTEXT_KEY,
     ProviderSessionContinuityError,
@@ -62,7 +62,7 @@ async def materialize_worker_context_snapshot(
         if not isinstance(raw_receipt, dict):
             return None
         try:
-            receipt = validate_authority_receipt(raw_receipt)
+            receipt = validate_provider_authority_receipt(raw_receipt)
         except (ValueError, TypeError):
             return None
         expected_scope = {
@@ -80,6 +80,7 @@ async def materialize_worker_context_snapshot(
             "through_session_generation": receipt["through_session_generation"],
             "current_message_id": current_message_id,
             "message_count": receipt["message_count"],
+            "authority_schema_version": receipt["schema_version"],
         })
 
     context_ref = context_projector(scoped_snapshot)

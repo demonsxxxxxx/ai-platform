@@ -1,6 +1,6 @@
 import { Checkbox } from "@lobehub/ui/base-ui";
 import { Button, Input } from "@lobehub/ui/base-ui";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Permission } from "../../types";
@@ -24,12 +24,21 @@ interface MCPServerFormProps {
   isLoading?: boolean;
   allowedTransports?: Permission[];
   isSystemServer?: boolean;
+  submitError?: string | null;
 }
 
 interface KeyValuePair {
   id: string;
   key: string;
   value: string;
+}
+
+type PublicOperationDraft = { tool: string; action: string; object: string; path: string };
+
+function publicOperationDrafts(server?: MCPServerResponse | null): PublicOperationDraft[] {
+  return Object.entries(server?.public_operation_summaries ?? {}).map(([tool, value]) => ({
+    tool, action: value.action_label, object: value.object_label, path: value.object_path.join("."),
+  }));
 }
 
 type RoleQuotaDraft = {
@@ -79,9 +88,19 @@ export function MCPServerForm({
     Permission.MCP_WRITE_HTTP,
   ],
   isSystemServer = false,
+  submitError,
 }: MCPServerFormProps) {
   const { t } = useTranslation();
   const isEditing = !!server;
+  const nameId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
+  const submitErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (submitError) {
+      submitErrorRef.current?.focus();
+      submitErrorRef.current?.scrollIntoView?.({ block: "center" });
+    }
+  }, [submitError]);
 
   const allTransports: {
     value: MCPServerCreate["transport"];
@@ -132,6 +151,8 @@ export function MCPServerForm({
     () => toQuotaDrafts(server?.role_quotas ?? {}),
   );
 
+  const [publicOperations, setPublicOperations] = useState(() => publicOperationDrafts(server));
+
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -168,6 +189,7 @@ export function MCPServerForm({
       setAllowedDepartments([]);
       setRoleQuotas({});
     }
+    setPublicOperations(publicOperationDrafts(server));
     setErrors({});
   }, [server, defaultTransport]);
 
@@ -205,6 +227,8 @@ export function MCPServerForm({
 
     if (!name.trim()) {
       newErrors.name = t("mcp.form.validation.nameRequired");
+    } else if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(name.trim())) {
+      newErrors.name = t("mcp.form.validation.nameInvalid");
     }
 
     if (!url.trim()) {
@@ -218,10 +242,21 @@ export function MCPServerForm({
       newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
 
+    const tools = new Set<string>();
+    if (publicOperations.length > 100 || publicOperations.some((row) => {
+      const parts = row.path.split(".");
+      const invalid = !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,383}$/.test(row.tool) || tools.has(row.tool)
+        || !row.action.trim() || row.action.length > 80 || !row.object.trim() || row.object.length > 80
+        || parts.length > 8 || parts.some((part) => !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(part)
+          || /account|username|userid|email|phone|credential|password|secret|token|path|directory|filename|storage/i.test(part.replaceAll("_", "")));
+      tools.add(row.tool);
+      return invalid;
+    })) newErrors.publicOperations = t("mcp.form.publicSummaryInvalid");
     if (!departmentSelection.authoritative || allowedDepartments.length > 128) {
       newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
     }
     setErrors(newErrors);
+    if (newErrors.name) nameRef.current?.focus();
     return Object.keys(newErrors).length === 0;
   };
 
@@ -235,6 +270,9 @@ export function MCPServerForm({
       transport,
       integration_kind: integrationKind,
       enabled,
+      public_operation_summaries: Object.fromEntries(publicOperations.map((row) => [row.tool, {
+        action_label: row.action.trim(), object_label: row.object.trim(), object_path: row.path.split("."),
+      }])),
       allowed_roles: isSystemServer ? allowedRoles : undefined,
       role_quotas: isSystemServer
         ? serializeRoleQuotas(allowedRoles, roleQuotas)
@@ -274,8 +312,12 @@ export function MCPServerForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* Name */}
       <div className="es-field">
-        <label className="es-label">{t("mcp.form.serverName")}</label>
+        <label htmlFor={nameId} className="es-label">{t("mcp.form.serverName")}</label>
         <Input
+          id={nameId}
+          ref={nameRef}
+          aria-invalid={Boolean(errors.name)}
+          aria-describedby={`${nameId}-hint`}
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -285,11 +327,10 @@ export function MCPServerForm({
             errors.name ? "!border-[var(--theme-danger-ring)] dark:!border-[var(--theme-danger)]" : ""
           }`}
         />
-        {errors.name && (
-          <p className="es-hint text-[var(--theme-danger-text)]">
-            {errors.name}
-          </p>
-        )}
+        <p id={`${nameId}-hint`} role={errors.name ? "alert" : undefined}
+          className={`es-hint ${errors.name ? "text-[var(--theme-danger-text)]" : ""}`}>
+          {errors.name || t("mcp.form.validation.nameInvalid")}
+        </p>
         {isEditing && (
           <p className="es-hint">{t("mcp.form.serverNameUneditable")}</p>
         )}
@@ -507,6 +548,29 @@ export function MCPServerForm({
           </div>
       </>
 
+      <fieldset className="es-section" data-public-operation-summaries>
+        <legend className="es-label">{t("mcp.form.publicSummaryTitle")}</legend>
+        <p className="es-hint">{t("mcp.form.publicSummaryDescription")}</p>
+        {publicOperations.map((row, index) => (
+          <div className="es-row" key={index}>
+            {([['tool', t('mcp.form.publicSummaryTool')], ['action', t('mcp.form.publicSummaryAction')], ['object', t('mcp.form.publicSummaryObject')], ['path', t('mcp.form.publicSummaryPath')]] as const).map(([field, label]) => (
+              <label className="es-field" key={field}>{label}
+                <Input aria-label={`${label} ${index + 1}`} className="enterprise-field-control es-input"
+                  value={row[field]} onChange={(event) => setPublicOperations((rows) => rows.map((item, i) => i === index ? { ...item, [field]: event.target.value } : item))} />
+              </label>
+            ))}
+            <Button htmlType="button" type="default" aria-label={`${t("mcp.form.publicSummaryRemove")} ${index + 1}`}
+              onClick={() => setPublicOperations((rows) => rows.filter((_, i) => i !== index))}>{t("mcp.form.publicSummaryRemove")}</Button>
+          </div>
+        ))}
+        {errors.publicOperations && <p className="es-hint" role="alert">{errors.publicOperations}</p>}
+        <Button htmlType="button" type="default" onClick={() => setPublicOperations((rows) => [...rows, { tool: '', action: '', object: '', path: '' }])}>{t("mcp.form.publicSummaryAdd")}</Button>
+      </fieldset>
+
+      {submitError ? <p ref={submitErrorRef} role="alert" tabIndex={-1}
+        className="rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)]">
+        {submitError}
+      </p> : null}
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
         <Button type="default"

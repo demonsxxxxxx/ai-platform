@@ -1,9 +1,7 @@
 import type { ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { Button } from "@lobehub/ui/base-ui";
-/* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
@@ -41,10 +39,7 @@ import {
   getExternalNavigationTargetFile,
   shouldScrollToBottomAfterExternalNavigation,
 } from "./externalNavigationState";
-import {
-  reconcileCurrentModelSelection,
-  resolveDefaultModelSelection,
-} from "./modelSelection";
+import { reconcileCurrentModelSelection } from "./modelSelection";
 import { getRestoredModelSelection } from "./sessionState";
 import {
   buildEffectiveSkills,
@@ -59,278 +54,25 @@ import { shouldShowMessageOutline } from "./messageOutline";
 import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { FailureGuidanceCard } from "../../common/FailureGuidanceCard";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
-import { agentProfileApi } from "../../../services/api/agentProfile";
-import { sessionApi } from "../../../services/api/session";
 import type { BackendSession } from "../../../services/api";
-import { uuid } from "../../../utils/uuid";
-import type {
-  AgentConversationIdentity,
-  AgentProfilePublicProjection,
-} from "../../../types/agentProfile";
+import type { AgentProfilePublicProjection } from "../../../types/agentProfile";
+import { useAgentFirstSend } from "../../../features/agent-market/useAgentFirstSend";
+import { useAgentChatPresentation } from "../../../features/agent-market/useAgentChatPresentation";
 import {
-  buildAgentMarketDetailPath,
+  exposeGenericChatControl,
+  getChatToolAccess,
+  isExactAgentWorkspaceBinding,
+  projectAgentWorkspaceTranscript,
+  useAgentConversationBinding,
+} from "../../../features/agent-market/useAgentConversationBinding";
+import {
   buildAgentMarketWorkspacePath,
   buildSessionHistoryPath,
 } from "../../../features/agent-market/agentMarketSelection";
 
-export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
-
-export interface AgentConversationRecoveryState {
-  phase: AgentConversationRecoveryPhase;
-  targetSessionId: string | null;
-  identity: AgentConversationIdentity | null;
-}
-
-function conversationState(
-  phase: AgentConversationRecoveryPhase,
-  targetSessionId: string | null,
-  identity: AgentConversationIdentity | null = null,
-): AgentConversationRecoveryState {
-  return { phase, targetSessionId, identity };
-}
-
-const AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX = "agent-conversation-operation:";
-const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function agentConversationOperationStorageKey(agentId: string): string {
-  return `${AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX}${agentId}`;
-}
-
-function browserSessionStorage(): Storage | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
-
-/** Keep a caller operation stable across response-loss retries and reloads. */
-export function getOrCreateAgentConversationOperationId({
-  agentId,
-  storage,
-  createId,
-}: {
-  agentId: string;
-  storage: Pick<Storage, "getItem" | "setItem"> | null;
-  createId: () => string;
-}): string | null {
-  const key = agentConversationOperationStorageKey(agentId);
-  if (!storage) return null;
-  try {
-    const existing = storage.getItem(key);
-    if (existing && UUID_V4_PATTERN.test(existing)) return existing;
-    const operationId = createId();
-    if (!UUID_V4_PATTERN.test(operationId)) return null;
-    storage.setItem(key, operationId);
-    return storage.getItem(key) === operationId ? operationId : null;
-  } catch {
-    return null;
-  }
-}
-
-export function clearAgentConversationOperationId({
-  agentId,
-  storage,
-}: {
-  agentId: string;
-  storage: Pick<Storage, "removeItem"> | null;
-}): void {
-  if (!storage) return;
-  try {
-    storage.removeItem(agentConversationOperationStorageKey(agentId));
-  } catch {
-    // Session reset remains best-effort when browser storage is unavailable.
-  }
-}
-
-interface AgentFirstSendCoordinator {
-  current: Promise<string> | null;
-}
-
-interface AgentFirstSubmissionCoordinator {
-  current: {
-    submissionKey: string;
-    promise: Promise<SubmissionOutcome>;
-  } | null;
-}
-
-/** Single-flight pinned creation; the caller may submit only after bind succeeds. */
-export async function ensureAgentConversationForFirstSend({
-  coordinator,
-  profile,
-  createConversation,
-  isCurrent,
-  onConversationCreated,
-  bindConversation,
-}: {
-  coordinator: AgentFirstSendCoordinator;
-  profile: Pick<AgentProfilePublicProjection, "agent_id">;
-  createConversation: () => ReturnType<typeof agentProfileApi.createConversation>;
-  isCurrent?: () => boolean;
-  onConversationCreated?: (sessionId: string) => void;
-  bindConversation: (sessionId: string) => Promise<boolean>;
-}): Promise<string> {
-  if (!coordinator.current) {
-    coordinator.current = (async () => {
-      const created = await createConversation();
-      const identity = created.agent_conversation;
-      if (
-        !created.session_id ||
-        created.agent_id !== profile.agent_id ||
-        !identity ||
-        identity.agent_id !== profile.agent_id
-      ) {
-        throw new Error("agent_workspace_identity_mismatch");
-      }
-      if (isCurrent && !isCurrent()) {
-        throw new Error("agent_workspace_creation_cancelled");
-      }
-      onConversationCreated?.(created.session_id);
-      if (!(await bindConversation(created.session_id))) {
-        throw new Error("agent_conversation_history_unavailable");
-      }
-      if (isCurrent && !isCurrent()) {
-        throw new Error("agent_workspace_creation_cancelled");
-      }
-      return created.session_id;
-    })();
-  }
-  const flight = coordinator.current;
-  try {
-    return await flight;
-  } catch (error) {
-    if (coordinator.current === flight) coordinator.current = null;
-    throw error;
-  }
-}
-
-/** Share the entire first-send result so click/keyboard races submit once. */
-export async function submitAgentFirstMessageSingleFlight({
-  coordinator,
-  submissionKey,
-  ensureConversation,
-  isCurrent,
-  agentOptions,
-  submitMessage,
-}: {
-  coordinator: AgentFirstSubmissionCoordinator;
-  submissionKey: string;
-  ensureConversation: () => Promise<string>;
-  isCurrent?: () => boolean;
-  agentOptions?: Record<string, boolean | string | number>;
-  submitMessage: (
-    sessionId: string,
-    agentOptions?: Record<string, boolean | string | number>,
-  ) => Promise<SubmissionOutcome>;
-}): Promise<SubmissionOutcome> {
-  const active = coordinator.current;
-  if (active && active.submissionKey !== submissionKey) {
-    return { status: "failed" };
-  }
-  let flight = active?.promise;
-  if (!active) {
-    flight = (async () => {
-      let createdSessionId: string;
-      try {
-        createdSessionId = await ensureConversation();
-      } catch (error) {
-        if (isCurrent && !isCurrent()) return { status: "failed" };
-        throw error;
-      }
-      if (isCurrent && !isCurrent()) return { status: "failed" };
-      return submitMessage(createdSessionId, agentOptions);
-    })();
-    coordinator.current = { submissionKey, promise: flight };
-  }
-  try {
-    if (!flight) return { status: "failed" };
-    return await flight;
-  } finally {
-    if (coordinator.current?.promise === flight) {
-      coordinator.current = null;
-    }
-  }
-}
-
 const LOCKED_SELECTED_SKILL_STATE: SelectedSkillTaskState = {
   selectedSkill: null, status: "idle", recoveryCode: null, requiresReconfirmation: false,
 };
-
-/** A bound or unresolved Session must not expose client capability controls. */
-export function areAgentConversationControlsLocked(
-  phase: AgentConversationRecoveryPhase,
-): boolean {
-  return phase !== "generic";
-}
-
-/** Remove a client capability control until the Session is proven generic. */
-export function exposeGenericChatControl<T>(
-  phase: AgentConversationRecoveryPhase,
-  control: T,
-): T | undefined {
-  return areAgentConversationControlsLocked(phase) ? undefined : control;
-}
-
-interface AgentWorkspaceBindingInput {
-  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id">;
-  state: AgentConversationRecoveryState;
-  sessionId: string | null | undefined;
-}
-
-/** Accept Agent transcript data only after its Session and Agent identity agree. */
-export function isExactAgentWorkspaceBinding({
-  agentWorkspace,
-  state,
-  sessionId,
-}: AgentWorkspaceBindingInput): boolean {
-  if (!agentWorkspace) {
-    return true;
-  }
-
-  return Boolean(
-    sessionId &&
-      state.phase === "bound" &&
-      state.targetSessionId === sessionId &&
-      state.identity?.agent_id === agentWorkspace.agent_id,
-  );
-}
-
-/** Keep a prior Session transcript out of an Agent workspace until its binding is exact. */
-export function projectAgentWorkspaceTranscript<T>({
-  messages,
-  ...binding
-}: AgentWorkspaceBindingInput & { messages: T[] }): T[] {
-  return isExactAgentWorkspaceBinding(binding) ? messages : [];
-}
-
-/** Generic Chat retains tool selection; an Agent workspace never receives it. */
-export function getChatToolAccess({
-  agentWorkspace,
-  phase,
-  sessionId,
-}: {
-  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id">;
-  phase: AgentConversationRecoveryPhase;
-  sessionId: string | null;
-}): { enabled: boolean; sessionId: string | null } {
-  const locked = Boolean(agentWorkspace) || areAgentConversationControlsLocked(phase);
-  return { enabled: !locked, sessionId: locked ? null : sessionId };
-}
-
-/** Recover and revalidate one server-owned Agent Conversation identity. */
-export async function recoverAgentConversationIdentity(
-  sessionId: string,
-): Promise<AgentConversationIdentity | null> {
-  const session = await sessionApi.getAuthoritative(sessionId);
-  const identity = session.agent_conversation;
-  if (session.session_id !== sessionId)
-    throw new Error("agent_conversation_identity_mismatch");
-  if (identity === null) return null;
-  if (session.agent_id !== identity.agent_id)
-    throw new Error("agent_conversation_identity_mismatch");
-  return identity;
-}
 
 export interface ChatAppContentProps {
   sidebarCollapsed: boolean;
@@ -362,42 +104,20 @@ export function ChatAppContent({
   onAgentWorkspaceSessionCreated,
 }: ChatAppContentProps) {
   const { t } = useTranslation();
+  const agentChatPresentation = useAgentChatPresentation(agentWorkspace);
   const location = useLocation();
   const navigate = useNavigate();
   const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
-  const [agentConversationState, setAgentConversationState] = useState(() =>
-    conversationState(
-      agentWorkspace && routeSessionId ? "loading" : "generic",
-      routeSessionId ?? null,
-    ),
-  );
-  const agentWorkspaceCreationRef = useRef<Promise<string> | null>(null);
-  const agentWorkspaceFirstSubmissionRef =
-    useRef<AgentFirstSubmissionCoordinator["current"]>(null);
-  const agentWorkspaceFirstSendGenerationRef = useRef(0);
-  const agentWorkspaceDraftHandoffIdentityRef = useRef<string | null>(null);
-  const [agentWorkspaceDraftHandoffKey, setAgentWorkspaceDraftHandoffKey] =
-    useState<string | null>(null);
-  const invalidateAgentWorkspaceFirstSend = useCallback(() => {
-    agentWorkspaceFirstSendGenerationRef.current += 1;
-    agentWorkspaceCreationRef.current = null;
-    agentWorkspaceFirstSubmissionRef.current = null;
-    agentWorkspaceDraftHandoffIdentityRef.current = null;
-    setAgentWorkspaceDraftHandoffKey(null);
-  }, []);
-  useEffect(
-    () => () => {
-      agentWorkspaceFirstSendGenerationRef.current += 1;
-    },
-    [],
-  );
-  const [agentWorkspaceError, setAgentWorkspaceError] = useState<string | null>(null);
+  const {
+    state: agentConversationState,
+    resetForIdentity: resetConversationBinding,
+    resetForNewTask: resetConversationForNewTask,
+    beginSelection: beginConversationSelection,
+    recover: recoverConversationBinding,
+  } = useAgentConversationBinding({ agentWorkspace, routeSessionId, navigate });
   const agentWorkspaceRouteBasePath = agentWorkspace
     ? buildAgentMarketWorkspacePath(agentWorkspace)
     : "/chat";
-  const agentWorkspaceDetailPath = agentWorkspace
-    ? buildAgentMarketDetailPath(agentWorkspace)
-    : "/agent-market";
   const agentWorkspaceStarterDraft = useMemo(() => {
     if (!agentWorkspace) return "";
     const routeState = location.state as { agentStarterPrompt?: unknown } | null;
@@ -412,7 +132,16 @@ export function ChatAppContent({
     sessionId: null,
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
-  const { availableModels, defaultModel } = useModelCatalogContext();
+  const {
+    availableModels,
+    defaultModel,
+    defaultModelId,
+    refreshModels,
+    selectedGroupId,
+    selectedGroup,
+    selectionError: catalogSelectionError,
+    isLoading: modelsLoading,
+  } = useModelCatalogContext();
   const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
@@ -471,6 +200,8 @@ export function ChatAppContent({
     sessionId,
     currentRunId,
     runInputs,
+    continuation,
+    continuationPending,
     canStopGeneration,
     isLoading,
     isLoadingHistory,
@@ -495,16 +226,23 @@ export function ChatAppContent({
     getDisabledMcpTools: () =>
       sessionConfigRef.current.selectedMcpToolIds as string[],
     getAgentOptions: () => sessionConfigRef.current.agentOptions,
-    onSkillAdded: (
-      skillName: string,
-      _description: string,
-      filesCount: number,
-    ) => {
-      console.log(
-        `[AppContent] Skill added: ${skillName} (${filesCount} files), refreshing skills list`,
-      );
-      setTimeout(() => fetchSkills(), 500);
-    },
+  });
+
+  const {
+    draftHandoffKey: agentWorkspaceDraftHandoffKey,
+    error: agentWorkspaceError,
+    clearError: clearAgentWorkspaceError,
+    resetForIdentity: resetAgentFirstSendIdentity,
+    resetForNewTask: resetAgentFirstSendTask,
+    sendFirstMessage: sendAgentFirstMessage,
+  } = useAgentFirstSend({
+    agentWorkspace,
+    startProfile: agentWorkspaceStartProfile,
+    readOnly: agentWorkspaceReadOnly,
+    loadHistory,
+    sendMessage,
+    navigate,
+    onSessionCreated: onAgentWorkspaceSessionCreated,
   });
 
   const sessionToolAccess = getChatToolAccess({
@@ -526,79 +264,20 @@ export function ChatAppContent({
     routeSessionId,
     sessionId,
     onIdentityChange: () => {
-      if (
-        agentWorkspaceDraftHandoffIdentityRef.current !== conversationIdentityKey
-      ) {
-        invalidateAgentWorkspaceFirstSend();
-      }
-      setAgentWorkspaceError(null);
+      resetAgentFirstSendIdentity(conversationIdentityKey);
       clearMessages();
       clearPageDragAttachments();
       // A task Skill is scoped to the composer that selected it. A route or
       // workspace identity change clears the session, so it must also clear the
       // local selector before a later submit can create an unbound conversation.
       clearSelectedSkill();
-      setAgentConversationState(
-        agentWorkspace && routeSessionId
-          ? conversationState("loading", routeSessionId)
-          : conversationState("generic", null),
-      );
+      resetConversationBinding();
     },
   });
 
-  useEffect(() => {
-    if (!agentConversationTargetSessionId) {
-      setAgentConversationState(conversationState("generic", null));
-      return;
-    }
-
-    let active = true;
-    setAgentConversationState(conversationState("loading", agentConversationTargetSessionId));
-    void recoverAgentConversationIdentity(agentConversationTargetSessionId)
-      .then((identity) => {
-        if (!active) return;
-        if (
-          agentWorkspace &&
-          (!identity ||
-            identity.agent_id !== agentWorkspace.agent_id)
-        ) {
-          throw new Error("agent_workspace_identity_mismatch");
-        }
-        setAgentConversationState(
-          conversationState(
-            identity ? "bound" : "generic",
-            agentConversationTargetSessionId,
-            identity,
-          ),
-        );
-        if (!agentWorkspace && identity) {
-          navigate(
-            buildAgentMarketWorkspacePath(
-              {
-                agent_id: identity.agent_id,
-              },
-              agentConversationTargetSessionId,
-            ),
-            { replace: true },
-          );
-        }
-      })
-      .catch(() => {
-        if (!active) return;
-        setAgentConversationState(
-          conversationState("blocked", agentConversationTargetSessionId),
-        );
-        if (agentWorkspace) toast.error("该历史对话暂时无法打开，请重新选择或重试。");
-        navigate(agentWorkspaceDetailPath, { replace: true });
-      });
-    return () => {
-      active = false;
-    };
-  }, [
+  useEffect(() => recoverConversationBinding(agentConversationTargetSessionId), [
     agentConversationTargetSessionId,
-    agentWorkspace,
-    agentWorkspaceDetailPath,
-    navigate,
+    recoverConversationBinding,
   ]);
 
   const {
@@ -711,24 +390,52 @@ export function ChatAppContent({
   const [currentModelValue, setCurrentModelValue] = useState("");
   const [modelSelectionError, setModelSelectionError] = useState<string | null>(null);
 
+  const modelGroupRef = useRef(selectedGroupId || null);
+
   useEffect(() => {
-    if (!availableModels) return;
+    if (catalogSelectionError) {
+      setCurrentModelId("");
+      setCurrentModelValue("");
+      setModelSelectionError(catalogSelectionError);
+    }
+  }, [catalogSelectionError]);
+
+  useEffect(() => {
+    const priorGroupId = modelGroupRef.current;
+    if (selectedGroupId) modelGroupRef.current = selectedGroupId;
+    if (priorGroupId && selectedGroupId && priorGroupId !== selectedGroupId) {
+      const groupDefault = availableModels?.find((model) => model.id === defaultModelId);
+      setCurrentModelId(groupDefault?.id ?? "");
+      setCurrentModelValue(groupDefault?.value ?? "");
+      setModelSelectionError(catalogSelectionError);
+      return;
+    }
+    if (!availableModels || catalogSelectionError) return;
     const hasPriorSelection = Boolean(currentModelId || currentModelValue);
-    const stillAvailable = availableModels.some((model) =>
+    const stillAvailable = availableModels.filter((model) =>
       (currentModelId && model.id === currentModelId)
-      || (!currentModelId && currentModelValue && model.value === currentModelValue));
+      || (!currentModelId && currentModelValue && model.value === currentModelValue)).length === 1;
     if (hasPriorSelection && !stillAvailable) {
       setCurrentModelId("");
       setCurrentModelValue("");
       setModelSelectionError("之前选择的模型已不可用，请重新选择模型。");
       return;
     }
-    if (modelSelectionError) return;
+    if (modelSelectionError) {
+      if (modelSelectionError === "默认模型暂不可用，请手动选择同组模型。"
+        && !hasPriorSelection && defaultModel) setModelSelectionError(null);
+      return;
+    }
+    if (!currentModelId && !currentModelValue && !defaultModel) {
+      setModelSelectionError("默认模型暂不可用，请手动选择同组模型。");
+      return;
+    }
     const nextSelection = reconcileCurrentModelSelection({
       availableModels,
       currentModelId,
       currentModelValue,
-      fallbackDefaultValue: defaultModel,
+      storedDefaultId: defaultModelId,
+      storedDefaultValue: defaultModel,
     });
 
     if (nextSelection.modelId !== currentModelId) {
@@ -737,7 +444,7 @@ export function ChatAppContent({
     if (nextSelection.modelValue !== currentModelValue) {
       setCurrentModelValue(nextSelection.modelValue);
     }
-  }, [availableModels, currentModelId, currentModelValue, defaultModel, modelSelectionError]);
+  }, [availableModels, catalogSelectionError, currentModelId, currentModelValue, defaultModel, defaultModelId, modelSelectionError, selectedGroupId]);
 
   useEffect(() => {
     handleToggleAgentOption("model", currentModelValue);
@@ -777,6 +484,8 @@ export function ChatAppContent({
         selectedMcpToolIds: undefined,
         agentOptions: {
           ...lockedAgentOptionValues,
+          ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
+          selection_mode: "explicit",
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
@@ -786,6 +495,8 @@ export function ChatAppContent({
         selectedMcpToolIds: sessionConfig.selectedMcpToolIds,
         agentOptions: {
           ...agentOptionValues,
+          ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
+          selection_mode: "explicit",
           ...(currentModelValue ? { model: currentModelValue } : {}),
           ...(currentModelId ? { model_id: currentModelId } : {}),
         },
@@ -982,7 +693,12 @@ export function ChatAppContent({
       restoreSessionConfig(config);
 
       if (config.agent_options) {
-        restoreAgentOptions(config.agent_options);
+        const restoredAgentOptions = { ...config.agent_options };
+        delete restoredAgentOptions.model_id;
+        delete restoredAgentOptions.model;
+        delete restoredAgentOptions.group_id;
+        delete restoredAgentOptions.selection_mode;
+        restoreAgentOptions(restoredAgentOptions);
 
         const restoredModelSelection = getRestoredModelSelection(config);
         setModelSelectionError(null);
@@ -1010,35 +726,22 @@ export function ChatAppContent({
 
   const handleNewSessionWithReset = useCallback(() => {
     if (agentWorkspace) {
-      clearAgentConversationOperationId({
-        agentId: agentWorkspace.agent_id,
-        storage: browserSessionStorage(),
-      });
-      invalidateAgentWorkspaceFirstSend();
-      setAgentWorkspaceError(null);
+      resetAgentFirstSendTask();
       clearMessages();
-      setAgentConversationState(conversationState("generic", null));
+      resetConversationForNewTask();
       navigate(agentWorkspaceRouteBasePath);
       return;
     }
-    const nextSelection = resolveDefaultModelSelection({
-      availableModels,
-      fallbackDefaultValue: defaultModel,
-    });
-
-    setAgentConversationState(conversationState("generic", null));
+    resetConversationForNewTask();
     handleNewSession();
     clearSelectedSkill();
     resetToDefaults();
-
     resetAgentOptionDefaults();
 
-    setCurrentModelId(nextSelection.modelId);
-    setCurrentModelValue(nextSelection.modelValue);
+    setCurrentModelId("");
+    setCurrentModelValue("");
     setModelSelectionError(null);
   }, [
-    availableModels,
-    defaultModel,
     handleNewSession,
     clearSelectedSkill,
     resetToDefaults,
@@ -1046,7 +749,8 @@ export function ChatAppContent({
     agentWorkspace,
     agentWorkspaceRouteBasePath,
     clearMessages,
-    invalidateAgentWorkspaceFirstSend,
+    resetAgentFirstSendTask,
+    resetConversationForNewTask,
     navigate,
   ]);
 
@@ -1057,124 +761,30 @@ export function ChatAppContent({
       attachments?: MessageAttachment[],
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
-      setAgentWorkspaceError(null);
-      if (!availableModels?.some((model) => model.id === currentModelId
-        && model.value === currentModelValue)) {
-        setModelSelectionError(availableModels?.length
-          ? "请先选择当前可用的模型。" : "当前没有可用模型，请联系管理员。");
+      clearAgentWorkspaceError();
+      if (!selectedGroup || !availableModels?.length) {
+        setModelSelectionError("当前没有可用业务组或模型，请联系管理员配置业务组。");
+        return { status: "failed" };
+      }
+      if (!availableModels.some((model) => model.id === currentModelId && model.value === currentModelValue)) {
+        setModelSelectionError("请先选择当前可用的模型。");
         return { status: "failed" };
       }
       if (!agentWorkspace || sessionId) {
         return sendMessage(content, options, attachments, selectedSkill);
       }
-      const startProfile = agentWorkspaceStartProfile;
-      if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该专家已撤回或当前账号无权使用，历史会话仅供查看。");
-        return { status: "failed" };
-      }
-      if (
-        startProfile.agent_id !== agentWorkspace.agent_id
-      ) {
-        navigate(
-          buildAgentMarketWorkspacePath(startProfile),
-          { replace: true },
-        );
-        return { status: "failed" };
-      }
-
-      const firstSendGeneration = agentWorkspaceFirstSendGenerationRef.current;
-      const isCurrentFirstSend = () =>
-        agentWorkspaceFirstSendGenerationRef.current === firstSendGeneration;
-      try {
-        const outcome = await submitAgentFirstMessageSingleFlight({
-          coordinator: agentWorkspaceFirstSubmissionRef,
-          submissionKey: JSON.stringify({
-            content,
-            fileIds: (attachments ?? []).map((attachment) => attachment.key),
-          }),
-          isCurrent: isCurrentFirstSend,
-          ensureConversation: () =>
-            ensureAgentConversationForFirstSend({
-              coordinator: agentWorkspaceCreationRef,
-              profile: startProfile,
-              createConversation: () => {
-                const operationId = getOrCreateAgentConversationOperationId({
-                  agentId: startProfile.agent_id,
-                  storage: browserSessionStorage(),
-                  createId: uuid,
-                });
-                if (!operationId) {
-                  return Promise.reject(
-                    new Error("agent_conversation_operation_storage_unavailable"),
-                  );
-                }
-                return agentProfileApi.createConversation(
-                  {
-                    agent_id: startProfile.agent_id,
-                  },
-                  operationId,
-                );
-              },
-              isCurrent: isCurrentFirstSend,
-              onConversationCreated: (createdSessionId) => {
-                agentWorkspaceDraftHandoffIdentityRef.current =
-                  `${startProfile.agent_id}:${createdSessionId}`;
-                setAgentWorkspaceDraftHandoffKey(createdSessionId);
-              },
-              bindConversation: async (createdSessionId) =>
-                Boolean(await loadHistory(createdSessionId)),
-            }),
-          agentOptions: options,
-          submitMessage: async (createdSessionId, firstSendOptions) => {
-            setAgentWorkspaceError(null);
-            const submission = sendMessage(content, firstSendOptions, attachments, null);
-            onAgentWorkspaceSessionCreated?.(createdSessionId);
-            return submission;
-          },
-        });
-        if (!isCurrentFirstSend()) return { status: "failed" };
-        if (outcome.status === "accepted") {
-          clearAgentConversationOperationId({
-            agentId: startProfile.agent_id,
-            storage: browserSessionStorage(),
-          });
-        }
-        return outcome;
-      } catch (error) {
-        if (!isCurrentFirstSend()) {
-          return { status: "failed" };
-        }
-        invalidateAgentWorkspaceFirstSend();
-        const status =
-          error !== null && typeof error === "object"
-            ? (error as { status?: number }).status
-            : undefined;
-        setAgentWorkspaceError(
-          error instanceof Error &&
-            error.message === "agent_conversation_operation_storage_unavailable"
-            ? "浏览器无法安全保存本次创建标识，请启用会话存储后重试。"
-            : status === 403
-              ? "当前账号无权使用该专家。"
-            : status === 404 || status === 409
-                ? "该专家已撤回或当前版本不可用，请返回市场重新选择。"
-                : "暂时无法创建专家对话，请稍后重试。",
-        );
-        return { status: "failed" };
-      }
+      return sendAgentFirstMessage(content, options, attachments);
     },
     [
       agentWorkspace,
-      agentWorkspaceReadOnly,
-      agentWorkspaceStartProfile,
-      loadHistory,
-      invalidateAgentWorkspaceFirstSend,
-      navigate,
-      onAgentWorkspaceSessionCreated,
+      clearAgentWorkspaceError,
+      sendAgentFirstMessage,
       sendMessage,
       sessionId,
       availableModels,
       currentModelId,
       currentModelValue,
+      selectedGroup,
     ],
   );
 
@@ -1196,14 +806,14 @@ export function ChatAppContent({
         // transcript loading, including a return to the previously open task.
         navigate(buildAgentMarketWorkspacePath(agentWorkspace, id));
       } else {
-        setAgentConversationState(conversationState("loading", id));
+        beginConversationSelection(id);
         clearMessages();
         clearSelectedSkill();
         await handleSelectSession(id);
       }
       setMobileSidebarOpen(false);
     },
-    [agentWorkspace, clearMessages, clearSelectedSkill, handleSelectSession, navigate, setMobileSidebarOpen],
+    [agentWorkspace, beginConversationSelection, clearMessages, clearSelectedSkill, handleSelectSession, navigate, setMobileSidebarOpen],
   );
   const handleNewSessionAndClose = useCallback(() => {
     handleNewSessionWithReset();
@@ -1346,6 +956,12 @@ export function ChatAppContent({
             onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
+            continuation={agentWorkspaceTranscriptReady ? continuation : undefined}
+            continuationPending={agentWorkspaceTranscriptReady && continuationPending}
+            modelUnavailableReason={modelsLoading && !currentModelId ? "正在加载模型…" : modelSelectionError
+              ? modelSelectionError === "所属模型组不可用或归属异常，请联系管理员。"
+                ? "当前没有可用模型，请联系管理员申请。" : modelSelectionError
+              : !currentModelId ? "暂时无法读取可用模型，请重试。" : undefined}
             initialComposerDraft={agentWorkspaceStarterDraft}
             initialComposerDraftKey={location.key}
             composerDraftHandoffKey={
@@ -1353,7 +969,7 @@ export function ChatAppContent({
                 ? agentWorkspaceDraftHandoffKey
                 : newlyCreatedSession?.id ?? null
             }
-            agentEmptyProfile={agentWorkspace}
+            presentation={agentChatPresentation}
             composerPlaceholder={
               agentWorkspaceReadOnly
                 ? "该历史会话为只读状态"
@@ -1405,6 +1021,7 @@ export function ChatAppContent({
             availableModels={filteredModels ?? []}
             currentModelId={currentModelId}
             onSelectModel={handleSelectModel}
+            onModelSelectorOpen={refreshModels}
             onSendMessage={handleSendMessage}
             canRetryPendingSubmission={canRetryPendingSubmission}
             onRetryPendingSubmission={retryPendingSubmission}
@@ -1427,11 +1044,6 @@ export function ChatAppContent({
             WorkbenchShellComponent={WorkbenchShell}
             />
           </ChatMcpCatalogContext.Provider>
-        {modelSelectionError ? (
-          <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
-            {modelSelectionError}
-          </p>
-        ) : null}
         {agentWorkspaceError ? (
           <p className="px-4 pb-2 text-center text-sm text-[var(--theme-danger-text)]" role="alert">
             {agentWorkspaceError}

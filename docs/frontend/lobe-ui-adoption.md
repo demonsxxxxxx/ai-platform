@@ -1,6 +1,6 @@
 # Lobe UI 组件接入与迁移合同
 
-状态：生产调用方已接入 Lobe UI，通用控件迁移及本地回归已完成；6 个无消费者旧模块和 2 个旧直接依赖已退役，选择器测试已按当前组件重命名。组件接入和自动化检查不代表页面视觉验收；页面样式遵守 [LobeHub 视觉约束](lobehub-visual-guidelines.md)，具体样稿须经用户验收。控件源码合同以本文和[表格与选择器说明](shared-table-select-components.md)为准，验收结果须对应实际运行的候选。
+状态：生产调用方已接入 Lobe UI，通用控件迁移及本地回归已完成；6 个无消费者旧模块和 2 个旧直接依赖已退役，选择器测试已按当前组件重命名。组件接入和自动化检查不代表页面视觉验收；页面样式遵守 [视觉约束](visual-guidelines.md)，具体样稿须经用户验收。控件源码合同以本文和[表格与选择器说明](shared-table-select-components.md)为准，验收结果须对应实际运行的候选。
 
 ## 采用成品组件库，减少项目维护的基础控件
 
@@ -45,7 +45,7 @@ Root barrel 中部分组件仍然存在，但旧 Button、Modal 已标记 `@depr
 
 `App.tsx` 在现有 `ThemeProvider` 内挂载 `contexts/LobeUiProvider.tsx`。该组合读取 `useTheme()` 和当前 i18n 语言，向 Lobe `ConfigProvider -> ThemeProvider` 传入受控明暗状态、中文/英文资源及 motion；路由、认证和模型 Provider 保留原有职责。
 
-Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts={false}`、`enableGlobalStyle={false}` 保留项目字体及 reset；字体通过 `--font-ui` 和公开 theme token 对齐，圆角 token 为 8。普通控件采用库的主题，业务 CSS 负责布局、响应式、品牌导航及专业内容。
+Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts={false}`、`enableGlobalStyle={false}` 保留项目字体及 reset。传给 Lobe 的 token 覆盖（字体 `var(--font-ui)`、圆角 8）只在 `src/styles/themeContract.ts` 定义；Lobe 默认颜色与 `base.css` 变量的对应由同文件列出，并由 `themeContract.test.ts` 用 Lobe 实际算法逐项检查，规则见[视觉约束](visual-guidelines.md)第 3 节。普通控件采用库的主题，业务 CSS 负责布局、响应式、品牌导航及专业内容。
 
 使用中需要保留的库合同：
 
@@ -57,6 +57,18 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 - 使用库 Portal；插件市场认证使用 `ModalRoot`、`ModalPortal` 与公开 Modal 组合，保持浮层位于主题容器内，密码前后缀通过 Input 的 `prefix/suffix` 组合；不保留手写 `document.body` Portal、遮罩按钮或 Tab/Escape/滚动锁。专业查看器自有 Portal 通过公开 `useAppElement` 接入主题范围。嵌套弹层、全屏和侧栏仍需实际检验定位与焦点。
 - assistant-ui 的 `asChild` 仅组合能转发 DOM ref、事件和原生属性的 Lobe 控件；聊天语义由 assistant-ui 拥有，外观由 Lobe 公开 API 设置。禁止靠保留 Tailwind `className` 假定覆盖库根样式：定位/Grid 分区放在业务容器，颜色/尺寸使用公开 `style`、`styles`、`size`、`icon`。实际检查 computed style 和几何。
 - `ToastHost` 是统一通知宿主。队列通知维持稳定 ID `chat-queue` 和持续显示，关闭/更新使用 Lobe toast 合同。
+
+## 表单失败必须留在当前操作内
+
+HTTP 错误继续由 `services/api/fetch.ts` 调用 `projectSafeBackendError`，只把允许列表中的代码或固定状态文案转成中文。Pydantic `detail` 数组不直接显示 `msg`、`input`、`loc` 或 `url`；已部署 MCP 名称校验的精确形状映射为固定名称规则，其余 422 显示输入校验失败。未知错误使用“请求未完成”，不再错误地称为“加载会话失败”；历史读取仍保留独立的会话文案。
+
+`publicApiErrorMessage` 只保留本 HTTP 边界创建的安全提示，任意网络异常或手工构造的 `ApiRequestError` 使用调用方固定 fallback。MCP、Skill、最近聊天、模型目录、角色目录和用量页复用该边界。页面不得仅以 error 的布尔值覆盖已有安全提示。
+
+MCP 创建/编辑的错误显示在提交按钮前并聚焦，外层不再重复显示被弹窗遮住的操作错误；名称输入使用同一 1–128 字符规则，校验失败保留草稿并关联字段说明。新的编辑操作清除上次操作错误，权限拒绝仍关闭编辑器并经过原有身份刷新恢复。MCP 删除和 Skill 归档通过 `ConfirmDialog.error` 将失败留在确认框内，不改变确认、加载或取消语义。
+
+Skill 编辑器（含全屏）和 ZIP 面板也在自己的显示区域内保留请求错误。最近聊天读取失败不再伪装为空目录，显式重试只重读列表；关闭后的旧读取不能发布到下一次打开。模型、角色、用量读取与会话重命名保留受控失败原因，401/403 的原有专用恢复提示不变。
+
+**变更合同与退役：** 前端 HTTP 投影和各业务表单拥有错误显示，后端校验、授权、身份和写入语义不变。替换的是 MCP 固定错误覆盖、数组无语义降级、最近聊天 console-only 路径以及上述消费者的外层/固定提示；不新增 API、持久化状态、自动提交或重试。现有字符串/code 接口保持兼容；MCP 数组识别是当前部署返回形状的受限读取，不授权渲染任意消息。验收覆盖脱敏、字段校验、失败草稿、弹窗内部提示、重复操作和关闭后的旧请求，以及桌面、窄屏、低高度下错误可见。回滚前端改动无需数据迁移。
 
 ## 完成范围与退役条件
 

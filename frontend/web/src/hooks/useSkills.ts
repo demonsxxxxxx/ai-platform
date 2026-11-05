@@ -10,7 +10,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import i18n from "../i18n";
 import { skillExportContent } from "../components/skill/skillExport";
-import { ApiRequestError } from "../services/api/fetch";
+import { ApiRequestError, publicApiErrorMessage } from "../services/api/fetch";
 import { skillApi } from "../services/api/skill";
 import type { SkillListParams } from "../services/api/skill";
 import type {
@@ -111,13 +111,10 @@ export function resolveSkillOperationError(
   ) {
     return i18n.t("skills.adminCatalogInvalid");
   }
-  return i18n.t(fallbackKey);
+  return publicApiErrorMessage(error, i18n.t(fallbackKey));
 }
 
 export function resolveSkillPreviewError(error: unknown): string {
-  if (error instanceof ApiRequestError && error.status !== 403) {
-    return error.message;
-  }
   return resolveSkillOperationError(error, "skills.previewFailed");
 }
 
@@ -330,7 +327,7 @@ export function useSkills(options?: {
         resp.filePaths = detail.files || [];
         return resp;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch skill");
+        setError(resolveSkillOperationError(err, "skills.loadFailed"));
         return null;
       }
     },
@@ -360,7 +357,7 @@ export function useSkills(options?: {
         assertCurrent();
         return Object.fromEntries(entries);
       } catch (err) {
-        if (isCurrent()) setError(err instanceof Error ? err.message : "Failed to fetch skill");
+        if (isCurrent()) setError(resolveSkillOperationError(err, "skills.exportFailed"));
         return null;
       }
     },
@@ -508,8 +505,7 @@ export function useSkills(options?: {
         }
         return result.deleted;
       } catch (err) {
-        archiveError =
-          err instanceof Error ? err.message : "Failed to delete skills";
+        archiveError = resolveSkillOperationError(err, "skills.batchDeleteFailed");
         if (identityEpoch === identityRef.current.epoch) setError(archiveError);
         return [];
       } finally {
@@ -554,7 +550,7 @@ export function useSkills(options?: {
           ),
         );
         setError(
-          err instanceof Error ? err.message : "Failed to toggle skills",
+          resolveSkillOperationError(err, "skills.batchToggleFailed"),
         );
         return false;
       }
@@ -634,7 +630,7 @@ export function useSkills(options?: {
         await fetchSkills();
         return result;
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to upload skill");
+        setError(resolveSkillOperationError(err, "skills.importFailed"));
         return null;
       } finally {
         setIsUploading(false);

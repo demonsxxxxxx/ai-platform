@@ -22,6 +22,7 @@ establish implemented or deployed behavior.
 | Product language and Expert Agent experience | [CONTEXT](CONTEXT.md), [Workbench](docs/architecture/expert-agent-service-workbench.md) |
 | Profile publication and authorization | [Profile boundary](docs/architecture/agent-profile-persistence-boundary.md) |
 | Conversation scope and provider continuity | [Conversation context](docs/architecture/agent-conversation-context.md), [provider continuity](docs/architecture/claude-provider-session-continuity.md) |
+| Model selection and groups | [Model group management](docs/architecture/model-group-management.md) |
 | Run outcomes and transaction ordering | [Run lifecycle](docs/architecture/run-lifecycle-boundary.md) |
 | Immutable execution input and attempt ownership | [ExecutionSpec and RunAttempt](docs/architecture/execution-spec-and-attempt-lifecycle.md) |
 | Provider lifecycle, callbacks and resource cleanup | [Sandbox Runtime](docs/architecture/sandbox-runtime-control-layer.md) |

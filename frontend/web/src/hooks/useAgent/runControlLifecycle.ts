@@ -4,6 +4,8 @@ import {
 } from "../../services/api/runPlayback";
 import {
   sessionApi,
+  parsePublicContinuation,
+  type PublicContinuation,
   type ChatRunStatusResponse,
   type RunControlChildResponse,
   type RunControlMutationAction,
@@ -133,6 +135,11 @@ export interface RunControlSnapshot {
   phase: RunControlPhase;
   playback: RunPlaybackResponse | null;
   readiness: ChatRunStatusResponse | null;
+  continuation: PublicContinuation | undefined;
+  continuationLoaded: boolean;
+  continuationCheckRequired: boolean;
+  continuationCheckAutomatic: boolean;
+  continuationTerminal: boolean;
   playbackReadError: RunControlReadError | null;
   readinessReadError: RunControlReadError | null;
   rejectionMessage: string | null;
@@ -150,6 +157,11 @@ const EMPTY_SNAPSHOT: RunControlSnapshot = {
   phase: "idle",
   playback: null,
   readiness: null,
+  continuation: undefined,
+  continuationLoaded: false,
+  continuationCheckRequired: false,
+  continuationCheckAutomatic: false,
+  continuationTerminal: false,
   playbackReadError: null,
   readinessReadError: null,
   rejectionMessage: null,
@@ -405,6 +417,7 @@ export class RunControlLifecycle {
   private pendingOperation: PendingRunControlOperation | null = null;
   private snapshot: RunControlSnapshot = EMPTY_SNAPSHOT;
   private readonly listeners = new Set<() => void>();
+  private continuationReadSequence = 0;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -452,6 +465,11 @@ export class RunControlLifecycle {
       phase: owner.phase,
       playback: null,
       readiness: null,
+      continuation: undefined,
+      continuationLoaded: false,
+      continuationCheckRequired: false,
+      continuationCheckAutomatic: false,
+      continuationTerminal: false,
       playbackReadError: null,
       readinessReadError: null,
       rejectionMessage: null,
@@ -470,6 +488,11 @@ export class RunControlLifecycle {
       phase: "idle",
       playback: null,
       readiness: null,
+      continuation: undefined,
+      continuationLoaded: false,
+      continuationCheckRequired: false,
+      continuationCheckAutomatic: false,
+      continuationTerminal: false,
       playbackReadError: null,
       readinessReadError: null,
       rejectionMessage: null,
@@ -484,6 +507,44 @@ export class RunControlLifecycle {
       parent !== null &&
       ownerIdentityKey(owner) === parentIdentityKey(parent)
     );
+  }
+
+  markContinuationPending(runId: string, { automatic = true }: { automatic?: boolean } = {}): void {
+    const owner = this.owner;
+    if (!owner || owner.runId !== runId || this.snapshot.continuationTerminal) return;
+    this.continuationReadSequence += 1;
+    this.publishForOwner(owner, {
+      continuationLoaded: false, continuationCheckRequired: true,
+      continuationCheckAutomatic: automatic,
+    });
+  }
+
+  /** Reuse the same principal/history/Run fence for composer recovery reads. */
+  observeContinuation(owner: RunControlOwner, response: ChatRunStatusResponse): void {
+    if (!this.isCurrentOwner(owner) || response.session_id !== owner.sessionId ||
+      (response.run_id !== undefined && response.run_id !== owner.runId)) return;
+    this.continuationReadSequence += 1;
+    this.publishForOwner(owner, {
+      continuation: parsePublicContinuation(response.continuation),
+      continuationLoaded: true,
+      continuationCheckRequired: false,
+      continuationCheckAutomatic: false,
+      continuationTerminal: isTerminalPlaybackStatus(normalizedStatus(response.raw_status ?? response.status)),
+    });
+  }
+
+  async refreshContinuation(owner: RunControlOwner): Promise<void> {
+    if (!this.isCurrentOwner(owner)) return;
+    const sequence = ++this.continuationReadSequence;
+    try {
+      const response = await sessionApi.getStatus(owner.sessionId, owner.runId, {
+        signal: owner.abortController.signal,
+      });
+      if (sequence !== this.continuationReadSequence) return;
+      this.observeContinuation(owner, response);
+    } catch {
+      // Keep the draft and the last known gate; a read failure grants no recovery authority.
+    }
   }
 
   /** Start the initial, GET-only playback/readiness read for the current owner. */
@@ -504,6 +565,7 @@ export class RunControlLifecycle {
   async refresh(expectedOwner: RunControlOwner | null = this.owner): Promise<void> {
     if (!expectedOwner || !this.isCurrentOwner(expectedOwner)) return;
     const readSequence = ++expectedOwner.readSequence;
+    const continuationSequence = ++this.continuationReadSequence;
     const preservedPhase =
       expectedOwner.phase === "cancel_requested" ||
       expectedOwner.phase === "unconfirmed"
@@ -544,6 +606,9 @@ export class RunControlLifecycle {
         : playbackIsTerminal
           ? "ready"
           : (preservedPhase ?? (unavailable ? "read_error" : "ready"));
+    if (readiness && continuationSequence === this.continuationReadSequence) {
+      this.observeContinuation(expectedOwner, readiness);
+    }
     this.publishForOwner(expectedOwner, {
       phase: expectedOwner.phase,
       playback: playback ?? this.snapshot.playback,
@@ -652,6 +717,7 @@ export class RunControlLifecycle {
     }
 
     let pending: PendingRunControlOperation | null = null;
+    if (action !== "cancel" && this.snapshot.continuation?.state === "settling") return;
     if (action !== "cancel") {
       try {
         pending = {
@@ -987,6 +1053,7 @@ export class RunControlLifecycle {
   ): Promise<void> {
     if (!this.isCurrentOwner(owner)) return;
     const readSequence = ++owner.readSequence;
+    const continuationSequence = ++this.continuationReadSequence;
     try {
       const readiness = await sessionApi.getStatus(owner.sessionId, owner.runId, {
         signal: owner.abortController.signal,
@@ -997,6 +1064,9 @@ export class RunControlLifecycle {
         owner.phase !== "unconfirmed"
       ) {
         return;
+      }
+      if (continuationSequence === this.continuationReadSequence) {
+        this.observeContinuation(owner, readiness);
       }
       this.publishForOwner(owner, { readiness, readinessReadError: null });
     } catch {
@@ -1037,8 +1107,8 @@ export class RunControlLifecycle {
       revision: this.snapshot.revision + 1,
       isBusy: busy,
       canCancel: mutationAvailable && isActiveStatus(status),
-      canRetry: mutationAvailable && isRetryableStatus(status),
-      canResume: mutationAvailable && isResumableStatus(status),
+      canRetry: mutationAvailable && next.continuation?.state !== "settling" && isRetryableStatus(status),
+      canResume: mutationAvailable && next.continuation?.state !== "settling" && isResumableStatus(status),
       canReconnect: next.owner !== null && isActiveStatus(status) && !busy,
     };
     this.listeners.forEach((listener) => listener());

@@ -1,9 +1,19 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.workspace_versions import (
+    restore_workspace_skill_outputs as restore_workspace_skill_outputs,
+    restore_workspace_version as restore_workspace_version,
+    save_workspace_version as save_workspace_version,
+    verify_workspace_version as verify_workspace_version,
+)
+from app.sandbox.domain.workspace_version import WorkspaceVersionError as WorkspaceVersionError
+
 from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
 
 from app.sandbox.application.callback_authority import (
+    ExecutorTerminalTailIdentity as ExecutorTerminalTailIdentity,
     ProviderSessionAppendIdentity as ProviderSessionAppendIdentity,
+    ProviderTailDrainIdentity as ProviderTailDrainIdentity,
     SandboxCallbackIdentity as SandboxCallbackIdentity,
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
@@ -23,6 +33,7 @@ from app.sandbox.application.dispatch_intent import (
 
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
+    finalize_stopped_executor_checkpoint as finalize_stopped_executor_checkpoint,
 )
 
 from app.sandbox.application.runtime_cleanup import (

@@ -205,11 +205,14 @@ class FakeBridge:
             raise self.resolve_error
         if self.resume is not None:
             return self.resume
+        replay_tail = self.rows[-1].cursor.redis_id if self.rows else None
         last_event_id = kwargs["last_event_id"]
         if last_event_id:
             cursor = StreamCursor.parse(last_event_id, run_id="run-a")
-            return ResumeDecision(cursor.redis_id, None)
-        return ResumeDecision("0-0", None)
+            return ResumeDecision(
+                cursor.redis_id, None, replay_tail_redis_id=replay_tail
+            )
+        return ResumeDecision("0-0", None, replay_tail_redis_id=replay_tail)
 
     async def retained_bounds(self, **kwargs):
         self.calls.append("bounds")
@@ -306,6 +309,12 @@ def patch_authority(monkeypatch, *, run=None, close_result=True, lease_value=Non
     async def get_authority(conn, *, tenant_id, run_id):
         return authority()
 
+    async def admit(conn, *, on_authority_observed=None, **kwargs):
+        current = authority()
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        return current, lease_value or lease()
+
     async def acquire(conn, **kwargs):
         return lease_value or lease()
 
@@ -314,7 +323,7 @@ def patch_authority(monkeypatch, *, run=None, close_result=True, lease_value=Non
 
     monkeypatch.setattr(route, "transaction", transaction)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run)
-    monkeypatch.setattr(route, "get_stream_authority", get_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", admit)
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
 
@@ -363,6 +372,13 @@ async def test_idle_stream_closes_when_authority_refresh_observes_terminal_run(m
         acquired.append(kwargs)
         return gate if len(acquired) == 1 else lease()
 
+    async def admit(conn, *, on_authority_observed=None, **kwargs):
+        current = authority()
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        acquired.append(kwargs)
+        return current, gate
+
     async def close(conn, **kwargs):
         closed.append(kwargs)
         return True
@@ -371,6 +387,7 @@ async def test_idle_stream_closes_when_authority_refresh_observes_terminal_run(m
         run["status"] = terminal_status
         gate.valid = False
 
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", admit)
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
     bridge = FakeBridge([open_entry()], on_read=complete_run)
@@ -426,7 +443,7 @@ async def test_v4_retained_cursor_replays_after_trimmed_open(monkeypatch):
             entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
             entry("9-0", "sev-next", "message.delta", {"delta": "new"}),
         ],
-        resume=ResumeDecision("8-0", None),
+        resume=ResumeDecision("8-0", None, replay_tail_redis_id="9-0"),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:8-0")
@@ -459,7 +476,7 @@ async def test_v4_gap_cursor_resumes_after_hydration_with_trimmed_open(monkeypat
             *retained,
             entry("10-0", "sev-after-hydration", "message.delta", {"delta": "after"}),
         ],
-        resume=ResumeDecision("9-0", None),
+        resume=ResumeDecision("9-0", None, replay_tail_redis_id="10-0"),
     )
     _, resumed_body = await connect(
         resumed_bridge,
@@ -488,7 +505,7 @@ async def test_v4_terminal_resume_survives_trimmed_open(monkeypatch):
                 {"terminal_event_id": "sev-terminal"},
             ),
         ],
-        resume=ResumeDecision("8-0", None, "sev-terminal", False),
+        resume=ResumeDecision("8-0", None, "sev-terminal", False, "9-0"),
     )
 
     _, body = await connect(bridge, last_event_id="run-a:1:8-0")
@@ -547,10 +564,10 @@ async def test_v4_authority_conflict_has_stable_retry_classification(
 ):
     patch_authority(monkeypatch)
 
-    async def conflicting_authority(conn, *, tenant_id, run_id):
+    async def conflicting_authority(conn, **kwargs):
         raise SseAuthorityConflictError(code)
 
-    monkeypatch.setattr(route, "get_stream_authority", conflicting_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", conflicting_authority)
 
     error = await connect_expect_conflict()
 
@@ -579,10 +596,12 @@ async def test_v4_missing_authority_distinguishes_startup_from_terminal_run(
     )
     monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
 
-    async def missing_authority(conn, *, tenant_id, run_id):
-        return None
+    async def missing_authority(conn, *, on_authority_observed=None, **kwargs):
+        if on_authority_observed is not None:
+            on_authority_observed(None)
+        return None, None
 
-    monkeypatch.setattr(route, "get_stream_authority", missing_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", missing_authority)
 
     error = await connect_expect_conflict()
 
@@ -605,18 +624,18 @@ async def test_v4_pending_authority_waits_before_acquiring_lease(monkeypatch):
     observed_states = []
     acquire_calls = []
 
-    async def get_authority(conn, *, tenant_id, run_id):
+    async def admit(conn, *, on_authority_observed=None, **kwargs):
         current = states.pop(0)
         observed_states.append(current.state)
-        return current
-
-    async def acquire(conn, **kwargs):
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        if current.state == "admission_pending":
+            return current, None
         acquire_calls.append(kwargs)
         assert observed_states[-1] == "confirmed"
-        return lease()
+        return current, lease()
 
-    monkeypatch.setattr(route, "get_stream_authority", get_authority)
-    monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", admit)
 
     _, body = await connect(FakeBridge(terminal_rows()))
 
@@ -626,14 +645,66 @@ async def test_v4_pending_authority_waits_before_acquiring_lease(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_v4_pending_admission_releases_transaction_before_poll_sleep(monkeypatch):
+    patch_authority(monkeypatch)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_POLL_SECONDS", 0.001)
+    transaction_active = False
+    states = [authority(state="admission_pending"), authority()]
+    real_sleep = asyncio.sleep
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        nonlocal transaction_active
+        transaction_active = True
+        try:
+            yield object()
+        finally:
+            transaction_active = False
+
+    async def admit(conn, *, on_authority_observed=None, **kwargs):
+        assert transaction_active
+        current = states.pop(0)
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        return current, None if current.state == "admission_pending" else lease()
+
+    async def sleep_after_transaction(delay):
+        assert transaction_active is False
+        await real_sleep(0)
+
+    monkeypatch.setattr(route, "transaction", tracked_transaction)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", admit)
+    monkeypatch.setattr(route.asyncio, "sleep", sleep_after_transaction)
+
+    run, admitted_authority, admitted_lease = await route._await_sse_admission(
+        session_id="session-a",
+        run_id="run-a",
+        principal=AuthPrincipal(
+            user_id="user-a", display_name="User", tenant_id="tenant-a"
+        ),
+        api_instance_id="api-test",
+        connection_id="connection-test",
+    )
+
+    assert run["session_id"] == "session-a"
+    assert admitted_authority.state == "confirmed"
+    assert admitted_lease.lease_id == "lease-a"
+    assert transaction_active is False
+
+
+@pytest.mark.asyncio
 async def test_v4_pending_authority_timeout_is_retryable_with_retry_after(monkeypatch):
     patch_authority(monkeypatch)
     monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
 
-    async def pending_authority(conn, *, tenant_id, run_id):
-        return authority(state="admission_pending")
+    async def pending_authority(conn, *, on_authority_observed=None, **kwargs):
+        current = authority(state="admission_pending")
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        return current, None
 
-    monkeypatch.setattr(route, "get_stream_authority", pending_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", pending_authority)
 
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(
@@ -661,10 +732,13 @@ async def test_v4_terminal_run_with_pending_authority_fails_closed(monkeypatch):
     )
     monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
 
-    async def pending_authority(conn, *, tenant_id, run_id):
-        return authority(state="admission_pending")
+    async def pending_authority(conn, *, on_authority_observed=None, **kwargs):
+        current = authority(state="admission_pending")
+        if on_authority_observed is not None:
+            on_authority_observed(current)
+        return current, None
 
-    monkeypatch.setattr(route, "get_stream_authority", pending_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", pending_authority)
 
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(
@@ -689,17 +763,20 @@ async def test_v4_slow_lease_admission_respects_startup_deadline(monkeypatch):
     cancelled = False
     completed = False
 
-    async def slow_acquire(conn, **kwargs):
+    async def slow_acquire(conn, *, on_authority_observed=None, **kwargs):
         nonlocal cancelled, completed
+        current = authority()
+        if on_authority_observed is not None:
+            on_authority_observed(current)
         try:
             await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             cancelled = True
             raise
         completed = True
-        return lease()
+        return current, lease()
 
-    monkeypatch.setattr(route, "acquire_sse_authority_lease", slow_acquire)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", slow_acquire)
 
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(
@@ -721,6 +798,29 @@ async def test_v4_slow_lease_admission_respects_startup_deadline(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_v4_locked_authority_read_timeout_keeps_confirmation_classification(monkeypatch):
+    patch_authority(monkeypatch)
+    monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 0.001)
+
+    async def locked_read_waits_before_observing_authority(conn, **kwargs):
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(
+        route,
+        "acquire_sse_admission_lease",
+        locked_read_waits_before_observing_authority,
+    )
+
+    error = await connect_expect_conflict()
+
+    assert error.detail == {
+        "code": "sse_stream_not_confirmed",
+        "retryable": True,
+    }
+    assert error.headers["Retry-After"] == "1"
+
+
+@pytest.mark.asyncio
 async def test_v4_missing_authority_terminal_run_does_not_wait(monkeypatch):
     patch_authority(
         monkeypatch,
@@ -728,10 +828,12 @@ async def test_v4_missing_authority_terminal_run_does_not_wait(monkeypatch):
     )
     monkeypatch.setattr(route, "_SSE_STARTUP_ADMISSION_WAIT_SECONDS", 1)
 
-    async def missing_authority(conn, *, tenant_id, run_id):
-        return None
+    async def missing_authority(conn, *, on_authority_observed=None, **kwargs):
+        if on_authority_observed is not None:
+            on_authority_observed(None)
+        return None, None
 
-    monkeypatch.setattr(route, "get_stream_authority", missing_authority)
+    monkeypatch.setattr(route, "acquire_sse_admission_lease", missing_authority)
 
     with pytest.raises(HTTPException) as exc_info:
         await route.chat_session_stream(
@@ -803,7 +905,6 @@ async def test_v4_reads_entries_added_after_replay_tail(monkeypatch):
 
     assert bridge.calls[:4] == [
         "resolve",
-        "bounds",
         "replay:0-0:1-0",
         "read:1-0:128:5000",
     ]

@@ -9,6 +9,8 @@ const initialTools: ToolState[] = [
     name: "alpha_search",
     description: "Find documents",
     category: "mcp",
+    server: "enterprise-gateway",
+    upstream_server: "AlphaServer",
     enabled: true,
     parameters: [
       { name: "query", type: "string", description: "Search text", required: true },
@@ -18,6 +20,8 @@ const initialTools: ToolState[] = [
     name: "beta_read",
     description: "Read a document",
     category: "mcp",
+    server: "enterprise-gateway",
+    upstream_server: "BetaServer",
     enabled: true,
     parameters: [],
   },
@@ -33,7 +37,7 @@ function changeInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-test("ToolSelector preserves its mounted modal across search and selection updates", async (t) => {
+test("ToolSelector defaults source groups to collapsed across opens and preserves search and selection", async (t) => {
   const dom = installSelectTestDom();
   const container = document.createElement("div");
   container.id = "root";
@@ -83,7 +87,6 @@ test("ToolSelector preserves its mounted modal across search and selection updat
                   ));
                 },
                 onToggleCategory: () => {},
-                onToggleAll: () => {},
                 ...(controlled ? { isOpen: open, onOpenChange: setOpen } : {}),
               }),
             ),
@@ -101,6 +104,25 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           const input = modal?.querySelector("input");
           assert.ok(modal);
           assert.ok(input);
+          assert.ok(modal.querySelector('[data-tool-selector-header]')?.contains(input));
+          const actions = [...modal.querySelectorAll('button')].map((button) => button.textContent?.trim());
+          for (const label of ["全选", "取消全选", "添加"]) assert.equal(actions.includes(label), false);
+          assert.equal(modal.querySelectorAll('[data-tool-selector-list]').length, 1);
+          const groups = Array.from(modal.querySelectorAll<HTMLButtonElement>(
+            "[data-composer-mcp-group] button[aria-expanded]",
+          ));
+          assert.equal(groups.length, 2, "MCP category must still show source group headers");
+          assert.ok(groups.every((group) => group.getAttribute("aria-expanded") === "false"));
+          assert.equal(modal.querySelectorAll("[data-composer-mcp-row]").length, 0);
+          const alphaGroup = groups.find((group) => group.textContent?.includes("AlphaServer"));
+          assert.ok(alphaGroup);
+          await act(async () => { alphaGroup.click(); });
+          assert.equal(alphaGroup.getAttribute("aria-expanded"), "true");
+          assert.deepEqual(
+            Array.from(modal.querySelectorAll("[data-composer-mcp-row]"),
+              (row) => row.getAttribute("data-composer-mcp-row")),
+            ["alpha_search"],
+          );
           input.focus();
           for (const value of ["a", "al", "alp"]) {
             await act(async () => { changeInput(input, value); });
@@ -150,11 +172,201 @@ test("ToolSelector preserves its mounted modal across search and selection updat
           assert.ok(reopened);
           assert.ok(reopened !== input, "only closing should unmount the input");
           assert.equal((reopened as HTMLInputElement).value, "alp");
+          assert.ok(document.querySelector('[data-composer-mcp-row="alpha_search"]'), "retained search must still reveal matches");
+          await act(async () => { changeInput(reopened as HTMLInputElement, ""); });
+          const reopenedModal = document.querySelector("[data-composer-mcp-selector]");
+          const reopenedGroups = Array.from(reopenedModal?.querySelectorAll<HTMLButtonElement>(
+            "[data-composer-mcp-group] button[aria-expanded]",
+          ) ?? []);
+          assert.equal(reopenedGroups.length, 2);
+          assert.ok(reopenedGroups.every((group) => group.getAttribute("aria-expanded") === "false"), "reopening must reset source group expansion");
+          assert.equal(reopenedModal?.querySelectorAll("[data-composer-mcp-row]").length, 0);
+          const reopenedAlpha = reopenedGroups.find((group) => group.textContent?.includes("AlphaServer"));
+          assert.ok(reopenedAlpha);
+          await act(async () => { reopenedAlpha.click(); });
+          assert.equal(
+            reopenedModal?.querySelector('[data-composer-mcp-row="alpha_search"]')?.getAttribute("data-composer-mcp-state"),
+            "disabled",
+            "reopening must preserve tool selection",
+          );
         } finally {
           await act(async () => { root.unmount(); });
         }
         assert.equal(document.body.style.overflow, "");
       });
+    }
+    await t.test("partial failures show counted details and retry reads without losing local choices", async () => {
+      const { useTools, reconcileChatMcpToolSelection } = await import("../../../hooks/useTools");
+      const oldFetch = globalThis.fetch;
+      let resolveRetry!: (response: Response) => void;
+      const retry = new Promise<Response>((resolve) => { resolveRetry = resolve; });
+      const requests: RequestInit[] = [];
+      const toolResponse = (unavailable: unknown[]) => new Response(JSON.stringify({
+        tools: initialTools.map((tool) => ({ tool_id: tool.name, label: tool.name,
+          description: tool.description, category: tool.category, server: tool.server,
+          upstream_server: tool.upstream_server, cached: false })),
+        count: initialTools.length, unavailable,
+      }), { status: 200 });
+      globalThis.fetch = (async (_input, init = {}) => {
+        requests.push(init);
+        return requests.length === 1 ? toolResponse([
+          { label: "missing-a", reason: "discovery_failed", message: "private-secret" },
+          { label: "missing-b", reason: "no_tools" },
+          { label: "https://private.invalid/?token=secret", reason: "private-secret" },
+        ]) : retry;
+      }) as typeof fetch;
+      const root = await createLobeTestRoot(container);
+      let current!: ReturnType<typeof useTools>;
+      function Harness() {
+        const catalog = useTools();
+        current = catalog;
+        const [selected, setSelected] = useState(initialTools.map((tool) => tool.name));
+        const selectedNow = reconcileChatMcpToolSelection(selected, catalog.tools, catalog.catalogState.status);
+        return createElement(MemoryRouter, null, createElement(ChatMcpCatalogContext.Provider, {
+          value: { catalogState: catalog.catalogState, retryTools: () => { void catalog.refreshTools(); } },
+        }, createElement(ToolSelector, {
+          tools: catalog.tools.map((tool) => ({ ...tool, enabled: selectedNow.includes(tool.name) })),
+          enabledCount: selectedNow.length, totalCount: catalog.totalCount,
+          onToggleTool: (name: string) => setSelected((previous) => previous.includes(name)
+            ? previous.filter((id) => id !== name) : [...previous, name]),
+          onToggleCategory: () => {}, isOpen: true, onOpenChange: () => {},
+        })));
+      }
+      try {
+        await act(async () => root.render(createElement(Harness)));
+        const modal = document.querySelector<HTMLElement>("[data-composer-mcp-selector]")!;
+        const notice = modal.querySelector('[data-mcp-catalog-status="degraded"]')!;
+        assert.match(notice.textContent!, /有 3 个 MCP 服务未提供可用工具/);
+        assert.match(notice.textContent!, /其他工具可正常选择/);
+        const details = notice.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+        assert.equal(details.getAttribute("aria-expanded"), "false");
+        const controlledDetails = document.getElementById(details.getAttribute("aria-controls")!);
+        assert.ok(controlledDetails);
+        assert.equal(controlledDetails.hidden, true);
+        await act(async () => details.click());
+        assert.equal(controlledDetails.hidden, false);
+        assert.equal(details.getAttribute("aria-expanded"), "true");
+        assert.equal(notice.querySelectorAll("li").length, 3);
+        assert.match(notice.textContent!, /missing-a.*目录加载失败/);
+        assert.match(notice.textContent!, /missing-b.*未返回可选择/);
+        assert.match(notice.textContent!, /MCP 服务 3/);
+        assert.doesNotMatch(modal.textContent!, /private|token|secret/);
+        const group = [...modal.querySelectorAll<HTMLButtonElement>("[data-composer-mcp-group] button[aria-expanded]")]
+          .find((button) => button.textContent?.includes("AlphaServer"))!;
+        await act(async () => group.click());
+        await act(async () => modal.querySelector<HTMLElement>('[data-composer-mcp-row="alpha_search"]')!.click());
+        assert.match(modal.textContent!, /已选择 1\/2/);
+        const retryButton = [...notice.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试")!;
+        await act(async () => retryButton.click());
+        assert.equal(current.catalogState.status, "loading");
+        assert.equal(document.querySelector("[data-composer-mcp-selector]"), modal);
+        assert.equal(modal.querySelectorAll("[data-composer-mcp-row]").length, 0);
+        assert.equal(modal.querySelector('[data-mcp-catalog-status="loading"]')!.querySelector("button"), null);
+        await act(async () => { resolveRetry(toolResponse([])); });
+        assert.equal(current.catalogState.status, "ready");
+        assert.equal(modal.querySelector('[data-mcp-catalog-status]'), null);
+        assert.match(modal.textContent!, /已选择 1\/2/);
+        assert.equal(requests.length, 2);
+        assert.ok(requests.every((request) => !request.method || request.method === "GET"));
+      } finally {
+        await act(async () => root.unmount());
+        globalThis.fetch = oldFetch;
+      }
+    });
+  } finally {
+    dom.close();
+  }
+});
+
+test("group controls preserve disabled tools, mixed selection, and connection identity", async () => {
+  const dom = installSelectTestDom();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  try {
+    const [
+      { act, createElement, useMemo, useState },
+      { createLobeTestRoot },
+      { MemoryRouter },
+      { ToolSelector },
+      { ChatMcpCatalogContext },
+    ] = await Promise.all([
+      import("react"),
+      import("../../common/__tests__/lobeUiTestRoot"),
+      import("react-router-dom"),
+      import("../ToolSelector"),
+      import("../../../hooks/useTools"),
+    ]);
+    const initialTools: ToolState[] = [
+      { name: "a::enabled", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], enabled: true },
+      { name: "a::mixed", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], enabled: false },
+      { name: "a::disabled", description: "", category: "mcp", server: "gateway-a", upstream_server: "same-project", parameters: [], system_disabled: true, enabled: false },
+      { name: "b::same-label", description: "", category: "mcp", server: "gateway-b", upstream_server: "same-project", parameters: [], enabled: false },
+      { name: "a::unknown", description: "", category: "mcp", server: "gateway-a", upstream_server: null, parameters: [], enabled: false },
+    ];
+    const root = await createLobeTestRoot(container);
+    function Harness() {
+      const [tools, setTools] = useState(initialTools);
+      const contextValue = useMemo(() => ({
+        catalogState: { status: "ready" as const, unavailable: [] },
+      }), []);
+      return createElement(
+        MemoryRouter,
+        null,
+        createElement(
+          ChatMcpCatalogContext.Provider,
+          { value: contextValue },
+          createElement(ToolSelector, {
+            tools,
+            enabledCount: tools.filter((tool) => tool.enabled).length,
+            totalCount: tools.length,
+            isOpen: true,
+            onOpenChange: () => {},
+            onToggleTool: (name: string) => setTools((previous) => previous.map((tool) =>
+              tool.name === name ? { ...tool, enabled: !tool.enabled } : tool,
+            )),
+            onToggleCategory: () => {},
+          }),
+        ),
+      );
+    }
+    try {
+      await act(async () => { root.render(createElement(Harness)); });
+      const groups = Array.from(document.querySelectorAll<HTMLElement>("[data-composer-mcp-group]"));
+      assert.equal(groups.length, 3);
+      assert.equal(new Set(groups.map((group) => group.dataset.composerMcpGroup)).size, 3);
+      const sameProjectGroup = groups.find((group) => group.textContent?.includes("same-project"));
+      assert.ok(sameProjectGroup);
+      const groupToggle = sameProjectGroup.querySelector<HTMLElement>(
+        '[aria-label="切换工具来源 same-project"]',
+      );
+      assert.ok(groupToggle);
+      assert.equal(document.querySelectorAll("[data-composer-mcp-row]").length, 0);
+      await act(async () => { groupToggle.click(); });
+      assert.equal(document.querySelectorAll("[data-composer-mcp-row]").length, 0, "selecting a collapsed group must not expand it");
+      for (const group of groups) {
+        const expand = group.querySelector<HTMLButtonElement>("button[aria-expanded]");
+        assert.ok(expand);
+        await act(async () => { expand.click(); });
+      }
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::enabled"]')?.getAttribute("data-composer-mcp-state"), "enabled");
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::mixed"]')?.getAttribute("data-composer-mcp-state"), "enabled");
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::disabled"]')?.getAttribute("data-composer-mcp-state"), "denied");
+      assert.equal(document.querySelector('[data-composer-mcp-row="b::same-label"]')?.getAttribute("data-composer-mcp-state"), "disabled");
+
+      const unknownGroup = groups.find((group) => group.textContent?.includes("未提供服务来源"));
+      assert.ok(unknownGroup);
+      const collapseUnknown = unknownGroup.querySelector<HTMLButtonElement>("button[aria-expanded]");
+      assert.ok(collapseUnknown);
+      await act(async () => { collapseUnknown.click(); });
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::unknown"]'), null);
+      const input = document.querySelector<HTMLInputElement>("[data-composer-mcp-selector] input");
+      assert.ok(input);
+      await act(async () => { changeInput(input, "未提供服务来源"); });
+      assert.ok(document.querySelector('[data-composer-mcp-row="a::unknown"]'));
+      await act(async () => { changeInput(input, ""); });
+      assert.equal(document.querySelector('[data-composer-mcp-row="a::unknown"]'), null, "clearing search must restore the manual collapsed state");
+    } finally {
+      await act(async () => { root.unmount(); });
     }
   } finally {
     dom.close();

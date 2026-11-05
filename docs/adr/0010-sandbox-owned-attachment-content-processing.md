@@ -170,6 +170,18 @@ terminal receipt, Sandbox provider, and artifact collector.
 
 Output: zero or more authorized artifacts marked for assistant-response delivery.
 
+Response-file publication also treats document bytes as opaque. The former DOCX
+package validator and expanded-package limits are retired from the generic
+artifact collector. They bounded Worker decompression and parsing; removing
+those operations removes that resource exposure. Agent/Skill execution owns
+format correctness and quality, including when a task returns an original file.
+The collector retains raw-byte and path limits and publishes a mixed selection
+without a format-specific veto. Any separately authorized preview/parser keeps
+its own decompression and parsing bounds. The collector's unused required-type
+parameter is retired; terminal completion remains the owner of declared required
+artifact checks. No persisted artifact type, MIME mapping or historical record
+is migrated.
+
 ## Removed Responsibilities
 
 The cutover removes these platform behaviors and their contracts from the production
@@ -338,7 +350,6 @@ content-derived admission limits with byte- and structure-derived limits.
 | Declared XLSX archive | 2,000 entries | archive safety validator | zip-bomb and archive-work bound |
 | Declared XLSX compressed entry | 8 MiB | archive safety validator | bounded decompression |
 | Declared XLSX expanded package | 32 MiB | archive safety validator | zip-bomb and memory bound |
-| Required DOCX expanded package | 64 MiB total / 32 MiB per entry / 2,000 entries | artifact collector | zip-bomb and shared-Worker bound |
 | Artifact output file | 64 MiB per file | artifact collector | bounded result transfer |
 | Artifact output set | 256 MiB total / 128 files | artifact collector | bounded result storage |
 

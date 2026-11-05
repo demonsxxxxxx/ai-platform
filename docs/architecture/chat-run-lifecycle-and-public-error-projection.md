@@ -73,18 +73,20 @@ convergence folds work into a summary that the user may reopen. The display cont
 | `message.part.delta` / classification | Pending and answer outside the fold; work inside | Incrementally gated Assistant prose with explicit stable part identity |
 | Retained `commentary.delta` with `worktrace_` summary ID | Visible in work details | Legacy sanitized work narration |
 | Other `commentary.delta` | Visible inline outside the work-details fold | Existing explicit sanitized public summaries and historical events |
-| Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
+| Tool lifecycle | Visible inside work details | Fixed public category label; Skill events may show the exact name admitted by the current Run's `allowed_skill_names`; other tools use the canonical name derived from the allowlisted category (`mcp`, `read`, `write`, `edit`, `search`, or `execute`); lifecycle status; and bounded duration |
 | Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
-| Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, private identifier, storage key, credential, trace, or executor payload |
+| Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, unauthorized or unselected Skill identifier, storage key, credential, trace, or executor payload; an authorized Skill name or active Skill call ID may still appear when included in intentional Assistant prose |
 
 The table describes v4 rendering. Validated Tool-turn work narration is
 visible in message order within work details; final-answer text remains outside
 that fold. The distinction follows explicit provider-bound part classification facts;
 classification updates display grouping while prior delta rows remain immutable. User-requested code,
 JSON examples and non-sensitive task references are ordinary Assistant answer
-content. A script executed internally and the same
-syntax intentionally supplied as an answer have different sources and policies.
+content. The active workspace cwd may also appear literally in Assistant prose;
+the answer stream does not replace it with a mask or alias. A script executed
+internally and the same syntax intentionally supplied as an answer have different
+sources and policies.
 
 Final files are optional ordered parts of the Run's single assistant response.
 The answer remains ordinary text. A file card appears only after the Agent
@@ -111,30 +113,26 @@ minimum file count and do not retry the task or publish unselected files.
 `Bash`/execute and Read therefore remain visible as coarse lifecycle activities,
 but their command, arguments, paths, read query, file body, stdout, stderr, and
 result do not render. The same raw-data prohibition applies to Write, Edit,
-Search, Skill, MCP, browser, and future tool categories; allowing every detail
-except Bash and Read would bypass the public projection boundary. Opaque operation
-identities may support reducer correlation but are not user-facing labels. A
-sanitized `skill` `display_name` sourced from current authorized Skill metadata
-is presentation authority and is retained in a dedicated public field. The same
-authority applies when accepted answer text names an authorized Skill: the answer
-gate substitutes the sanitized public display name, while an authorized internal
-Skill without public metadata receives only the fixed Skill category label. Public
-names retain their original printable characters; ASCII letters, digits, punctuation
-and spaces are not converted to fullwidth. Authorized display names may contain
-their own Skill identity, including an exact match or a version suffix. The adapter
-supplies those approved replacements separately from independent private values;
-the stream gate preserves their characters and applies each replacement idempotently
-through chunk boundaries, source routing and terminal release. This does not exempt
-credentials, private MCP identities, runtime paths or dynamically registered tool-call
-IDs from redaction. All hook and lifecycle call-ID entries use the same dynamic
-classification; a public identity later claimed as a private call ID fails closed
-and records disclosure when it already appeared in accepted text. The former
-fullwidth conversion and its test expectations are retired; already committed
-historical text is not rewritten. Other private capability
-identifiers remain redacted. Other Tool `display_name` values
-and all subagent `display_name` values remain protocol facts but are not
-presentation authority in compatibility-shaped parts; ordinary chat derives their
-fixed labels from the allowlisted category and subagent kind.
+Search, Skill, MCP, browser, and future tool categories. Opaque operation
+identities may support reducer correlation but are not user-facing labels. Skill
+tool events may show only the exact Skill name admitted by the current Run's
+`allowed_skill_names`; accepted answer text may include that same authorized
+identity. Catalog labels, `public_skill_labels`, and other unselected names do
+not grant presentation authority. Skill execution authorization and invocation
+evidence remain tied to the current Run's authorized capability set. The answer
+and question projections preserve the active cwd while filtering configured
+credentials, private MCP identities, and dynamically registered non-Skill
+tool-call IDs. Skill names and call IDs are no longer added to the private-token
+replacement registry solely because they are Skill facts; a value that also
+matches a configured credential or another protected token remains filtered.
+Malformed or missing Skill lifecycle labels are omitted rather than replaced by
+a generic `Skill` label. Historical committed v4 events and answer text are not
+rewritten; valid stored display labels continue to render as recorded. Other
+private capability identifiers remain redacted.
+Other Tool `display_name` values and all subagent `display_name` values remain
+protocol facts but are not presentation authority in compatibility-shaped parts;
+ordinary chat derives their fixed labels from the allowlisted category and
+subagent kind.
 Unknown categories, malformed public identities, unknown lifecycle states, or
 activities without the required public identity fail closed. Current Sandbox
 readiness remains visible through the v4 public execution timeline; legacy
@@ -347,7 +345,7 @@ second projection. A cancelled detail cannot be used for a failed Run; unknown
 codes and arbitrary messages still fail closed. Frontend defaults and the
 shipped locale must change together with the backend allowlist.
 
-Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A recoverable disclosure omission preserves the authoritative execution status and omits the unsafe answer. Invalid SDK framing, source identity or terminal-answer reconciliation instead fails with `claude_agent_sdk_output_validation_failed`, publicly mapped to the neutral `run_failed`; it is not evidence of terminal reconciliation failure or model-service unavailability. `terminal_reconciliation_failed` remains reserved for failures reported by the terminal reconciler. Private diagnostics preserve the first fixed reason, stage and location through later tool events and result normalization. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
+Public-answer and clarification-question projections remain fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer or question text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A recoverable disclosure omission preserves the authoritative execution status and omits the unsafe answer. Invalid SDK framing, source identity or terminal-answer reconciliation instead fails with `claude_agent_sdk_output_validation_failed`, publicly mapped to the neutral `run_failed`; it is not evidence of terminal reconciliation failure or model-service unavailability. `terminal_reconciliation_failed` remains reserved for failures reported by the terminal reconciler. Private diagnostics preserve the first fixed reason, stage and location through later tool events and result normalization. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
 
 Successful history is complete only when the assistant has answer text or a
 usable artifact. A lifecycle-only shell triggers exact Run history recovery;
@@ -390,8 +388,14 @@ file-service failures suggest waiting or contacting an administrator, not
 correcting input or uploading the same file again. Current-request limits ask
 the user to shorten the request; model-context limits may also require fewer
 attachments or a new conversation. Profile-revision and workspace conflicts
-keep their fixed refresh/reselection or workspace-switch instructions. A
-malformed HTTP success response is outcome-unknown: preserve the submission
+keep their fixed refresh/reselection or workspace-switch instructions.
+`provider_session_requires_new_conversation` explains that the model context
+cannot continue and asks the user to create a new conversation; existing messages
+remain available. It replaces the generic wait-and-retry guidance only when
+admission is confirmed rejected. An uncertain submission still keeps the
+history/status confirmation fence. This display does not clear a dirty provider
+epoch, rotate it to empty-start, retry the task or change the session automatically.
+A malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
 

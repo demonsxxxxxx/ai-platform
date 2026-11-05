@@ -9,11 +9,23 @@ const SAFE_BACKEND_ERROR_COPY: Record<string, string> = {
 
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
+  writer_unverified: "chat.continuation.writer_unverified",
+  workspace_unsaved: "chat.continuation.workspace_unsaved",
+  native_unavailable: "chat.continuation.native_unavailable",
+  capacity_exhausted: "chat.continuation.capacity_exhausted",
   invalid_credentials: "backendErrors.invalidCredentials",
   unauthorized: "backendErrors.unauthenticated",
   api_response_invalid: "backendErrors.apiResponseInvalid",
+  mcp_server_name_invalid: "mcp.form.validation.nameInvalid",
+  mcp_server_name_required: "mcp.form.validation.nameRequired",
+  mcp_header_duplicate: "mcp.form.validation.duplicateHeader",
+  mcp_header_conflict: "mcp.form.validation.headerConflict",
+  mcp_header_invalid: "mcp.form.validation.invalidHeader",
+  mcp_server_conflict: "mcp.form.validation.serverConflict",
   agent_profile_revision_stale: "backendErrors.agentProfileRevisionStale",
   session_workspace_mismatch: "backendErrors.sessionWorkspaceMismatch",
+  provider_session_requires_new_conversation:
+    "backendErrors.providerSessionRequiresNewConversation",
   required_capability_unavailable: "chat.runTerminal.requiredCapabilityUnavailable",
   capability_not_authorized: "chat.runTerminal.capabilityNotAuthorized",
   tool_permission_denied: "chat.runTerminal.toolPermissionDenied",
@@ -212,6 +224,7 @@ function statusFallbackKey(
   if (status === 401) return "backendErrors.unauthenticated";
   if (status === 403) return "errors.noPermission";
   if (status === 429) return "backendErrors.tooManyRequests";
+  if (status === 422) return "backendErrors.validationFailed";
   return fallbackKey;
 }
 
@@ -279,13 +292,26 @@ export function translateChatAdmissionError(
   return projectChatAdmissionError(error, t).message;
 }
 
+/** Recognize only the shipped MCP name validator; never render Pydantic text or input. */
+function validationErrorCode(detail: unknown, status: number): string | undefined {
+  if (status !== 422 || !Array.isArray(detail) || detail.length !== 1) return undefined;
+  const error: unknown = detail[0];
+  if (error === null || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const { type, loc, msg } = error as { type?: unknown; loc?: unknown; msg?: unknown };
+  if (type !== "value_error" || msg !== "Value error, mcp_server_name contains unsupported characters") return undefined;
+  return Array.isArray(loc) &&
+    ((loc.length === 1 && loc[0] === "name") ||
+      (loc.length === 2 && loc[0] === "body" && loc[1] === "name"))
+    ? "mcp_server_name_invalid" : undefined;
+}
+
 /** Project untrusted backend detail to an allowlisted translation or safe status copy. */
 export function projectSafeBackendError(
   detail: unknown,
   status: number,
   t: TFunction,
 ): { message: string; code?: string } {
-  const code = safeBackendErrorCode(detail);
+  const code = validationErrorCode(detail, status) ?? safeBackendErrorCode(detail);
   const exactDetail = typeof detail === "string" ? detail : undefined;
   const safeCopy =
     (code ? SAFE_BACKEND_ERROR_COPY[code] : undefined) ??

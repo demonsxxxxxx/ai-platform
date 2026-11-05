@@ -157,8 +157,8 @@ async def process_run_payload(
             if dispatch.outcome is not None:
                 return dispatch.outcome
             result, latency_ms = dispatch.result, dispatch.latency_ms
-        except WorkerRunCancelled:
-            return await completion.cancel()
+        except WorkerRunCancelled as exc:
+            return await completion.cancel(exc)
         except Exception as exc:  # noqa: BLE001 - worker executor boundary.
             return await completion.fail(exc)
         return await completion.complete(result, latency_ms=latency_ms)

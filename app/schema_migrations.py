@@ -56,6 +56,17 @@ MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
 MODEL_USER_ACCESS_SCHEMA_VERSION = "2026.10.20.1"
 MODEL_TOKEN_USAGE_SCHEMA_VERSION = "2026.10.20.2"
 MODEL_AUTO_COMPACT_WINDOW_SCHEMA_VERSION = "2026.10.22.1"
+CONVERSATION_RECOVERY_SCHEMA_VERSION = "2026.10.22.2"
+RECOVERY_SOURCE_CONFIRMATION_SCHEMA_VERSION = "2026.10.23.1"
+MODEL_GROUPS_SCHEMA_VERSION = "2026.10.26.1"
+MODEL_GROUPS_LEGACY_DEFAULT_RETIREMENT_SCHEMA_VERSION = "2026.10.26.2"
+PROVIDER_SESSION_CANONICAL_ENTRY_SCHEMA_VERSION = "2026.10.27.1"
+MODEL_GROUP_DEFAULT_MODEL_SCHEMA_VERSION = "2026.10.27.2"
+MODEL_GROUP_SINGLE_MEMBERSHIP_SCHEMA_VERSION = "2026.10.28.1"
+MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION = "2026.10.28.2"
+MODEL_PROVIDERS_SCHEMA_VERSION = "2026.10.29.1"
+MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION = "2026.10.29.2"
+CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION = "2026.11.02.1"
 RUN_STATUS_SCHEMA_VERSION = "2026.10.25.1"
 RUN_DELIVERY_INTENTS_SCHEMA_VERSION = "2026.10.25.2"
 SANDBOX_EXECUTION_DISPATCHES_SCHEMA_VERSION = "2026.10.25.3"
@@ -68,7 +79,10 @@ RUN_ATTEMPT_SETTLEMENT_STORAGE_SCHEMA_VERSION = "2026.10.25.8"
 N42_REQUIRED_N40_SCHEMA_VERSION = "2026.10.25.8"
 RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 RUN_ATTEMPT_SETTLEMENT_WRITER_SCHEMA_VERSION = "2026.10.25.10"
-TARGET_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
+# Lifecycle Phase 1-4 integrated with native continuation; advances past both
+# the installed main target and the Phase-only labels above.
+LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION = "2026.11.05.1"
+TARGET_SCHEMA_VERSION = LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION
@@ -93,6 +107,8 @@ INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
 CRITICAL_RELATIONS = (
     "schema_migrations",
     "schema_index_migrations",
+    "execution_recovery_operations",
+    "execution_recovery_invocations",
     "users",
     "runs",
     "run_diagnostics",
@@ -101,7 +117,11 @@ CRITICAL_RELATIONS = (
     "model_token_usage_coverage",
     "model_token_usage_deltas",
     "model_gateway_revisions",
+    "model_providers",
     "model_catalog_entries",
+    "model_groups",
+    "model_group_members",
+    "model_group_models",
     "run_attempts",
     "run_attempt_settlements",
     "run_attempt_settlement_storage",
@@ -150,6 +170,8 @@ CRITICAL_COLUMNS = (
     ("run_attempt_settlement_retirement", "updated_at", "timestamptz", True),
     ("mcp_servers", "integration_kind", "text", True),
     ("users", "metadata_json", "jsonb", True),
+    ("users", "auth_source", "text", True),
+    ("users", "model_group_membership_revision", "int8", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),
     ("agent_profile_revisions", "avatar_seed", "text", True),
@@ -162,6 +184,13 @@ CRITICAL_COLUMNS = (
     ("runs", "model_id", "text", False),
     ("runs", "model_value", "text", False),
     ("runs", "model_gateway_revision", "int8", False),
+    ("runs", "model_group_id", "text", False),
+    ("runs", "model_group_code", "text", False),
+    ("runs", "model_group_type", "text", False),
+    ("runs", "model_group_revision", "int8", False),
+    ("runs", "model_selection_mode", "text", False),
+    ("runs", "usage_scene", "text", False),
+    ("runs", "model_policy_version", "text", False),
     ("runs", "auto_compact_window", "int8", False),
     ("runs", "max_output_tokens", "int8", False),
     ("runs", "terminalization_target", "text", False),
@@ -197,6 +226,12 @@ CRITICAL_COLUMNS = (
     ("model_token_usage_deltas", "cache_creation_input_tokens", "int8", True),
     ("model_token_usage_deltas", "output_tokens", "int8", True),
     ("model_token_usage_deltas", "recorded_at", "timestamptz", True),
+    ("model_providers", "id", "text", True),
+    ("model_providers", "name", "text", True),
+    ("model_providers", "archived_at", "timestamptz", False),
+    ("model_gateway_revisions", "provider_id", "text", True),
+    ("model_catalog_entries", "provider_id", "text", True),
+    ("model_catalog_entries", "archived_at", "timestamptz", False),
     ("model_gateway_revisions", "revision", "int8", True),
     ("model_gateway_revisions", "base_url", "text", True),
     ("model_gateway_revisions", "api_key_ciphertext", "bytea", True),
@@ -205,6 +240,22 @@ CRITICAL_COLUMNS = (
     ("model_gateway_revisions", "created_by", "text", True),
     ("model_gateway_revisions", "created_at", "timestamptz", True),
     ("model_catalog_entries", "model_id", "text", True),
+    ("model_groups", "id", "text", True),
+    ("model_groups", "tenant_id", "text", True),
+    ("model_groups", "code", "text", True),
+    ("model_groups", "name", "text", True),
+    ("model_groups", "type", "text", True),
+    ("model_groups", "enabled", "bool", True),
+    ("model_groups", "revision", "int8", True),
+    ("model_groups", "default_model_id", "text", False),
+    ("model_group_members", "tenant_id", "text", True),
+    ("model_group_members", "group_id", "text", True),
+    ("model_group_members", "user_id", "text", True),
+    ("model_group_members", "is_primary", "bool", True),
+    ("model_group_models", "group_id", "text", True),
+    ("model_group_models", "model_id", "text", True),
+    ("model_group_models", "priority", "int4", True),
+    ("model_group_models", "weight", "int4", True),
     ("model_catalog_entries", "upstream_model_id", "text", True),
     ("model_catalog_entries", "display_name", "text", True),
     ("model_catalog_entries", "provider", "text", True),
@@ -415,6 +466,13 @@ CRITICAL_COLUMNS = (
     ("provider_session_heads", "next_epoch_number", "int8", True),
     ("provider_session_heads", "active_run_id", "text", False),
     ("provider_session_heads", "active_attempt_id", "text", False),
+    ("execution_recovery_operations", "operation_key", "text", True),
+    ("execution_recovery_operations", "verified_outcome", "text", True),
+    ("execution_recovery_invocations", "invocation_id", "text", True),
+    ("execution_recovery_invocations", "binding_kind", "text", True),
+    ("execution_recovery_invocations", "owner_generation", "int8", True),
+    ("execution_recovery_invocations", "authorization", "text", True),
+    ("provider_session_heads", "recovery_json", "jsonb", False),
     ("provider_session_epochs", "id", "text", True),
     ("provider_session_epochs", "tenant_id", "text", True),
     ("provider_session_epochs", "session_id", "text", True),
@@ -424,6 +482,10 @@ CRITICAL_COLUMNS = (
     ("provider_session_epochs", "state", "text", True),
     ("provider_session_epochs", "coverage_source_sha256", "text", False),
     ("provider_session_epochs", "writer_owner_generation", "int8", False),
+    ("provider_session_epochs", "source_epoch_id", "text", False),
+    ("provider_session_epochs", "source_final_sequence", "int8", False),
+    ("provider_session_epochs", "coverage_schema_version", "text", True),
+    ("provider_session_epochs", "recovery_json", "jsonb", False),
     ("provider_session_entries", "id", "text", True),
     ("provider_session_entries", "tenant_id", "text", True),
     ("provider_session_entries", "workspace_id", "text", True),
@@ -435,7 +497,7 @@ CRITICAL_COLUMNS = (
     ("provider_session_entries", "subpath", "text", True),
     ("provider_session_entries", "sequence", "int8", True),
     ("provider_session_entries", "sdk_entry_uuid", "text", False),
-    ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "entry_json", "jsonb", False),
     ("provider_session_entries", "entry_canonical_json", "json", False),
     ("provider_session_entries", "image_references", "jsonb", True),
     ("provider_session_entries", "image_format", "text", False),
@@ -494,6 +556,7 @@ CRITICAL_CONSTRAINTS = (
     ("model_token_usage_scopes", "model_token_usage_scopes_pkey"),
     ("model_token_usage_observations", "model_token_usage_observations_pkey"),
     ("model_token_usage_deltas", "model_token_usage_deltas_pkey"),
+    ("provider_session_entries", "chk_provider_entry_representation"),
     ("provider_session_entries", "chk_provider_entry_images"),
     ("provider_session_images", "provider_session_images_pkey"),
     ("provider_session_images", "provider_session_images_storage_key_key"),
@@ -505,12 +568,13 @@ CRITICAL_CONSTRAINTS = (
     ("model_gateway_revisions", "chk_model_gateway_revision_positive"),
     ("model_gateway_revisions", "chk_model_gateway_base_url"),
     ("model_gateway_revisions", "chk_model_gateway_key_fingerprint"),
+    ("model_catalog_entries", "model_catalog_entries_provider_id_fkey"),
+    ("model_gateway_revisions", "model_gateway_revisions_provider_id_fkey"),
     ("model_catalog_entries", "model_catalog_entries_first_seen_revision_fkey"),
     ("model_catalog_entries", "model_catalog_entries_last_seen_revision_fkey"),
     ("model_catalog_entries", "chk_model_catalog_id"),
     ("model_catalog_entries", "chk_model_catalog_upstream_id"),
     ("model_catalog_entries", "chk_model_catalog_display_name"),
-    ("model_catalog_entries", "chk_model_catalog_default_enabled"),
     ("model_catalog_entries", "chk_model_catalog_token_limits"),
     ("model_catalog_entries", "chk_model_catalog_access_mode"),
     ("model_catalog_entries", "chk_model_catalog_access_users_array"),
@@ -626,7 +690,9 @@ CRITICAL_CONSTRAINTS = (
     ("provider_session_epochs", "fk_provider_epoch_head"),
     ("provider_session_epochs", "uq_provider_epoch_scope"),
     ("provider_session_epochs", "uq_provider_epoch_number"),
-    ("provider_session_epochs", "uq_provider_epoch_provider_id"),
+    ("provider_session_epochs", "fk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_source"),
+    ("provider_session_epochs", "chk_provider_epoch_coverage_version"),
     ("provider_session_entries", "provider_session_entries_pkey"),
     ("provider_session_entries", "fk_provider_entry_epoch"),
     ("provider_session_entries", "uq_provider_entry_global_sequence"),
@@ -654,6 +720,25 @@ CRITICAL_TRIGGERS = (
     ),
 )
 MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
+    ("model_group_members", "chk_model_group_member_primary", "c", "CHECK (is_primary)"),
+    (
+        "model_groups",
+        "chk_model_groups_default_identity",
+        "c",
+        "CHECK (type = 'ordinary_default'::text AND code = 'default'::text AND name = '普通默认组'::text AND enabled OR type = 'business'::text)",
+    ),
+    (
+        "model_group_models",
+        "chk_model_group_models_priority",
+        "c",
+        "CHECK (priority >= 0 AND priority <= 1000)",
+    ),
+    (
+        "model_group_models",
+        "chk_model_group_models_weight",
+        "c",
+        "CHECK (weight >= 1 AND weight <= 1000)",
+    ),
     (
         "runs",
         "chk_runs_model_token_limits",
@@ -729,12 +814,6 @@ MODEL_CRITICAL_CONSTRAINT_DEFINITIONS = (
     ),
     (
         "model_catalog_entries",
-        "chk_model_catalog_default_enabled",
-        "c",
-        "CHECK (NOT is_default OR enabled)",
-    ),
-    (
-        "model_catalog_entries",
         "chk_model_catalog_access_mode",
         "c",
         "CHECK (access_mode = 'all'::text OR access_mode = 'selected'::text)",
@@ -789,6 +868,12 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "'succeeded'::text, 'failed'::text, 'cancelled'::text, "
         "'canceled'::text, 'dead-letter'::text, 'dead_letter'::text, "
         "'dead-lettered'::text])))",
+    ),
+    (
+        "provider_session_entries",
+        "chk_provider_entry_representation",
+        "c",
+        "CHECK (entry_json IS NOT NULL OR entry_canonical_json IS NOT NULL)",
     ),
     (
         "users",
@@ -1683,10 +1768,33 @@ STATIC_INDEX_DEFINITIONS = (
         (False, False, False, False, False, False),
         "status = 'queued'",
     ),
+    StaticIndexDefinition(
+        "uq_model_groups_tenant_name",
+        "model_groups",
+        ("tenant_id",),
+        (False, False),
+        "archived_at is null",
+        unique=True,
+        key_expressions=("tenant_id", "lower(btrim(name))"),
+    ),
+    StaticIndexDefinition(
+        "uq_model_group_user_single",
+        "model_group_members",
+        ("tenant_id", "user_id"),
+        (False, False),
+        "",
+        unique=True,
+    ),
 )
+RETIRED_CONSTRAINTS = (
+    ("model_catalog_entries", "model_catalog_entries_upstream_model_id_key"),
+    ("model_catalog_entries", "chk_model_catalog_default_enabled"),
+)
+RETIRED_INDEXES = ("uq_model_catalog_default", "uq_model_group_user_primary", "uq_model_gateway_active")
+
 CRITICAL_INDEXES = (
-    ("uq_model_gateway_active", True),
-    ("uq_model_catalog_default", True),
+    ("uq_model_gateway_provider_active", True),
+    ("uq_model_catalog_provider_upstream", True),
     *((migration.name, migration.unique) for migration in CONCURRENT_INDEX_MIGRATIONS),
     *((definition.name, definition.unique) for definition in STATIC_INDEX_DEFINITIONS),
 )
@@ -1694,19 +1802,13 @@ CRITICAL_INDEXES = (
 
 CRITICAL_INDEX_DEFINITIONS = (
     (
-        "uq_model_gateway_active",
+        "uq_model_gateway_provider_active",
         "model_gateway_revisions",
-        ("active",),
+        ("provider_id",),
         "active = true",
         True,
     ),
-    (
-        "uq_model_catalog_default",
-        "model_catalog_entries",
-        ("is_default",),
-        "is_default = true",
-        True,
-    ),
+    ("uq_model_catalog_provider_upstream", "model_catalog_entries", ("provider_id", "upstream_model_id"), None, True),
 )
 
 
@@ -1715,7 +1817,14 @@ class SchemaMigrationError(RuntimeError):
 
 
 def schema_sql() -> str:
-    return SCHEMA_PATH.read_text(encoding="utf-8")
+    core = SCHEMA_PATH.read_text(encoding="utf-8")
+    fragments = (
+        "context/infrastructure/conversation_recovery_schema.sql",
+        "execution/infrastructure/recovery_operations_schema.sql",
+    )
+    return core + "\n" + "\n".join(
+        (SCHEMA_PATH.parent / fragment).read_text(encoding="utf-8") for fragment in fragments
+    )
 
 
 def schema_checksum(sql: str | None = None) -> str:
@@ -2320,6 +2429,25 @@ async def schema_status(conn: Any) -> dict[str, object]:
         """,
         (json.dumps(RETIRED_RELATIONS),),
     )
+    retired_constraint_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(constraints.oid is null), true) as current
+        from jsonb_to_recordset(%s::jsonb)
+          as expected(relation_name text, constraint_name text)
+        left join pg_constraint constraints
+          on constraints.conrelid = to_regclass(expected.relation_name)
+         and constraints.conname = expected.constraint_name
+        """,
+        (_json_contract(RETIRED_CONSTRAINTS, ("relation_name", "constraint_name")),),
+    )
+    retired_index_cursor = await conn.execute(
+        """
+        select coalesce(bool_and(indexes.oid is null), true) as current
+        from jsonb_array_elements_text(%s::jsonb) as expected(index_name)
+        left join pg_class indexes on indexes.oid = to_regclass(expected.index_name)
+        """,
+        (json.dumps(RETIRED_INDEXES),),
+    )
     column_cursor = await conn.execute(
         """
         select coalesce(bool_and(
@@ -2532,6 +2660,8 @@ async def schema_status(conn: Any) -> dict[str, object]:
     )
     relation_row = await relation_cursor.fetchone() or {}
     retired_relation_row = await retired_relation_cursor.fetchone() or {}
+    retired_constraint_row = await retired_constraint_cursor.fetchone() or {}
+    retired_index_row = await retired_index_cursor.fetchone() or {}
     column_row = await column_cursor.fetchone() or {}
     constraint_row = await constraint_cursor.fetchone() or {}
     constraint_definition_row = await constraint_definition_cursor.fetchone() or {}
@@ -2545,6 +2675,8 @@ async def schema_status(conn: Any) -> dict[str, object]:
     )
     relations_current = bool(relation_row.get("current"))
     retired_relations_current = bool(retired_relation_row.get("current"))
+    retired_constraints_current = bool(retired_constraint_row.get("current"))
+    retired_indexes_current = bool(retired_index_row.get("current"))
     columns_current = bool(column_row.get("current"))
     constraints_current = bool(constraint_row.get("current"))
     constraint_definitions_current = bool(constraint_definition_row.get("current"))
@@ -2561,6 +2693,8 @@ async def schema_status(conn: Any) -> dict[str, object]:
         (
             relations_current,
             retired_relations_current,
+            retired_constraints_current,
+            retired_indexes_current,
             columns_current,
             constraints_current,
             constraint_definitions_current,
@@ -2587,6 +2721,8 @@ async def schema_status(conn: Any) -> dict[str, object]:
         "contracts_current": contracts_current,
         "relations_current": relations_current,
         "retired_relations_current": retired_relations_current,
+        "retired_constraints_current": retired_constraints_current,
+        "retired_indexes_current": retired_indexes_current,
         "columns_current": columns_current,
         "constraints_current": constraints_current,
         "constraint_definitions_current": constraint_definitions_current,

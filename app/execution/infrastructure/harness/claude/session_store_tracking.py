@@ -52,6 +52,13 @@ class SessionStoreAppendTracker:
     def failed(self) -> bool:
         return bool(self._failed_calls)
 
+    @property
+    def ack_unknown(self) -> bool:
+        receipt = getattr(self._store, "continuation_receipt", None)
+        if isinstance(receipt, dict):
+            return receipt.get("ack_unknown") is not False
+        return self.failed or bool(self._active_append_starts)
+
     async def wait_idle(self) -> None:
         await self._idle.wait()
 

@@ -432,7 +432,9 @@ async def require_principal(request: Request) -> AuthPrincipal:
         principal = await _require_principal(request)
         return await bind_department_authority(principal, settings=get_settings())
     except HTTPException as exc:
-        if exc.status_code == 401:
+        if exc.status_code == 401 or (
+            exc.status_code == 409 and exc.detail == "auth_context_stale"
+        ):
             exc.headers = {**(exc.headers or {}), AUTH_REJECTED_HEADER: "true"}
         raise
 

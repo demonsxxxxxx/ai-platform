@@ -109,15 +109,14 @@ an Agent, Skill, file, model, tool, or policy not present in the admitted facts.
 
 ### 2.3 Model-capacity expansion
 
-The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes,
-the frozen `ai-platform.execution-spec.v2` mapping, and an exact-field
-`ai-platform.execution-spec.v3` mapping. Both model-bearing versions freeze the
-`model_gateway_revision` and `model_max_output_tokens`; v3 freezes
-`model_auto_compact_window` while v2 keeps its original
-`model_max_input_tokens`. The dispatcher can compile v3 only from an
-independently locked Runs-owned model snapshot matching its model identity, not
-from Redis queue fields. Worker dispatch writes v3 and rejects a missing or
-mismatched durable model snapshot. The sandbox transport carries the paired
+The codec accepts historical `ai-platform.execution-spec.v1` canonical bytes
+and the frozen v2/v3 mappings. Grouped executions use the exact-field
+`ai-platform.execution-spec.v4` mapping. All model-bearing versions freeze
+`model_gateway_revision` and `model_max_output_tokens`; v3/v4 freeze
+`model_auto_compact_window` while v2 keeps its original `model_max_input_tokens`.
+The dispatcher compiles from an independently locked Runs-owned model snapshot,
+not Redis queue fields. It writes v4 for grouped Runs and v3 for historical
+ungrouped Runs, rejecting missing or mismatched durable model facts. The sandbox transport carries the paired
 `model_token_limits` projection; the Run/Attempt-bound proxy verifies the
 binding and output limit. The compaction window configures SDK-owned automatic
 compaction, not an additional proxy input recount. The detailed enforcement
@@ -132,14 +131,17 @@ the engine window maps their `model_max_input_tokens` through the clamp the
 runner applied (`min(1M, max(100k, value))`). That mapping lives with the model
 catalog policy and has no new writers; the Runs application-layer projection
 calls it through Execution's public API, while the domain codec preserves the
-original v2 values. v3 is the only version the dispatcher compiles.
+original v2 values.
 
-Every other Run/Attempt-bound reader that gates on the specification version
-accepts both model-bearing versions rather than v2 alone, so a v3 Attempt keeps
-the same Context and terminal authority. Provider-session epoch, lineage and
-turn-commit lookups therefore match `v2` and `v3` while keeping their existing
-tenant, workspace, user, Run, Attempt, owner-generation and lease checks. The
-stored `execution_spec_schema_version` is never rewritten to imitate v2.
+v4 additionally freezes group identity/type/revision, selection mode, trusted
+usage scene and policy version under the [model-group contract](model-group-management.md).
+Reconciliation snapshots and their restored queue payloads retain these fields;
+they do not authorize a new choice. Gateway access compares them with the Run.
+
+Run/Attempt-bound readers accept all model-bearing versions. Provider-session
+epoch, lineage and turn-commit lookups match `v2`, `v3` and `v4` while retaining
+their tenant, workspace, user, Run, Attempt, owner-generation and lease checks.
+Stored specifications and their schema versions are never rewritten.
 
 ## 3. Durable attempt state machine
 
@@ -547,6 +549,52 @@ Only the original queue-worker Attempt at that generation, or its explicit
 `cancel_requested` state exactly one generation later with a Run cancellation,
 is eligible. A later owner/generation is never adopted by rereading current rows.
 Cancellation retains the existing terminal policy and native append-tail limits.
+Reconciliation with cancellation intent continues through the frozen binding into
+result commit; the ordinary queued predispatch cancellation shortcut and its
+cancel-intent fence apply only to new execution. The result transaction settles
+Context before its actual terminal CAS, preserving the distinct original writer
+and current cancellation generations. An exact persisted stop/save checkpoint
+also completes lease finalization without reconnecting the destroyed Sandbox.
+Unknown or mismatched checkpoint scope, generation or container identity cannot
+supply stop proof.
+A complete stopped/saved checkpoint is validated against the frozen scope,
+lease generation and persisted container before restoring its handle. For this
+read-only consumption only, immutable historical OpenSandbox identity labels may
+outlive the currently configured executor image; the existing static label/image
+binding checks still apply. This grants no spawn, probe, stop or credential
+capability. Without that checkpoint, current-image live-handle authorization
+remains required. Quarantined receipts are not automatically reactivated.
+
+An explicitly authorized operator may invoke
+`repair_quarantined_executor_checkpoint` for one exact scope, Run, Attempt,
+lease, original owner generation and invocation ID. Eligibility is restricted to
+this stopped/saved failed-receipt case, quarantined solely for
+`executor_reconciliation_runtime_handle_invalid`, with a running Run whose
+cancellation target remains latched and no later Attempt or other writer. The
+operation checks canonical frozen authority, original SDK/checkpoint agreement,
+immutable handle labels, the actual saved workspace manifest and the complete
+native ACK prefix before writing a fresh repair claim. Empty saved workspaces
+are valid. It records one bounded `checkpoint_repair` mark retaining the original
+quarantine reason/time and the new invocation/claim authority; it never rewrites
+the original terminal or checkpoint receipt.
+
+That claim, Context/diagnostics settlement, legal cancellation terminal CAS and
+lease finalization share one outer transaction. Failure rolls back the repair
+mark and leaves quarantine intact. Publication follows the outer commit; no
+producer, model or MCP operation runs. Replay is rejected. This is an internal
+operator invocation, not an automatic scan, UI/HTTP endpoint, generic retry or
+permission to repair any other historical Run.
+
+A failed executor receipt may complete the cancelled lifecycle only when the
+Run's cancellation target is already latched and the current claimed
+reconciliation supplies stopped/not-found evidence with a saved workspace.
+Context validates that receipt before the unchanged terminal CAS. The cancelled
+Run retains the original executor failure in its result and private diagnostics;
+SDK settlement error and external-effect uncertainty remain private facts. An
+unknown external effect still produces `recovery_candidate` and the next native
+Attempt's inspection gate, never an automatic resumable/unlocked state. Ordinary
+failures without cancellation and successful-result arbitration keep their
+existing policies.
 
 The result-commit service still checks the claim before writing result facts,
 then rechecks Attempt authority at terminalization; a failed terminal CAS rolls
@@ -560,6 +608,17 @@ contexts no longer write the redundant `adapter_context.run_payload`; the outer
 `run_payload` remains the actual recovery consumer. Historical inner keys remain
 ignored by finalization, with no data migration. Native transcripts, append/turn
 receipts, old snapshot readers and legacy canonical spec fields are preserved.
+The reconciliation-only early cancellation shortcut and cancel-intent dispatch
+rejection are retired; ordinary queued dispatch keeps both checks. Owning
+regressions include `test_runs_worker_dispatch_admission.py`,
+`test_execution_spec.py` and `test_reconciled_cancel_commit*.py`.
+The old runtime-status-only selection for a latched, stopped failed receipt is
+replaced at the shared result-commit owner. Existing runtime-cancelled receipts
+and ordinary predispatch/failed-result behavior remain compatible; no claim,
+Attempt generation or Context verification path is retired or weakened.
+Checkpoint consumption no longer requires the destroyed producer to match the
+new deployment's executor image. Live-provider and new-dispatch current-image
+checks retain their original owners and are not compatibility bypasses.
 
 Source regressions cover pure frozen restoration, invalid/stale fences, current
 revocation, exact scope/claim/owner, cancellation generation, canonical drift,
