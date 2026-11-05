@@ -220,7 +220,7 @@ async def test_stopped_retry_reuses_durable_pg_snapshot_and_linux_workspace(uncl
             return await (await conn.execute("select * from sandbox_leases where id='synthetic-lease'")).fetchone()
 
     async def collect():
-        return await reconciler._collect_workspace_and_convert_result(await row(),
+        return await reconciler._collect_workspace_and_convert_result(await row(), lease_port=sandbox_leases,
             registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
             claim_token="synthetic-claim", continuation_ports=ContinuationSettlementPorts(save, unused))
 

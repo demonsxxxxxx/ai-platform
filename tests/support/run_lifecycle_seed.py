@@ -107,6 +107,26 @@ async def seed_admission(
             }
         ],
     )
+    # Model-group admission (#1938) resolves the governed model through the
+    # principal's group; seed one group that grants the synthetic model.
+    await conn.execute(
+        """
+        insert into model_groups(id, tenant_id, code, name, type, default_model_id)
+          values ('lifecycle-group', %s, 'lifecycle', 'Lifecycle', 'business', %s)
+          on conflict do nothing;
+        """,
+        (TENANT_ID, SYNTHETIC_MODEL_NAME),
+    )
+    await conn.execute(
+        "insert into model_group_members(tenant_id, group_id, user_id, is_primary) "
+        "values (%s, 'lifecycle-group', %s, true) on conflict do nothing",
+        (TENANT_ID, user_id),
+    )
+    await conn.execute(
+        "insert into model_group_models(group_id, model_id) "
+        "values ('lifecycle-group', %s) on conflict do nothing",
+        (SYNTHETIC_MODEL_NAME,),
+    )
 
 
 __all__ = [
