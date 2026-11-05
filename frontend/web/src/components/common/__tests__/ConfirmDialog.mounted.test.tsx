@@ -49,7 +49,12 @@ test("confirmation locks dismissal while busy and restores the external trigger 
     await act(async () => { trigger.focus(); trigger.click(); });
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
     assert.ok(dialog, "library portal stays inside the theme host");
-    assert.ok(dialog.contains(document.activeElement));
+    // The dialog library moves focus asynchronously after mount; slower runners
+    // observe the opener still focused on the first tick. Bound the wait.
+    for (let waited = 0; !dialog.contains(document.activeElement) && waited < 1000; waited += 20) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    }
+    assert.ok(dialog.contains(document.activeElement), "opening moves focus into the dialog");
     const buttons = dialog.querySelectorAll<HTMLButtonElement>("button");
     await act(async () => buttons[1].click());
     assert.equal(confirmed, 1);

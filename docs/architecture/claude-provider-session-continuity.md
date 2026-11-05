@@ -544,6 +544,11 @@ live endpoint disappears or reconciliation releases it. Missing, foreign or
 unowned receipts retain observation responsibility. No observation reauthorizes
 execution or resubmits input. Before actual SDK entry, preparation cancellation
 carries explicit undispatched/no-ACK evidence; after entry the SDK owns those facts.
+An executor terminal that carries no SDK settlement is inferred as unaccepted
+with no unknown ACK only while the target epoch writer was never claimed and no
+append receipt exists: every provider callback, including the SDK's pre-spawn
+session load, claims that writer. A claimed writer without an acknowledged main
+append stays ACK-unknown.
 
 Artifact collection is checkpointed in the existing host-only lease payload before
 stop. The private save receipt is checkpointed before terminal conversion. A

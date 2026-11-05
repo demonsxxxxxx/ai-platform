@@ -231,3 +231,46 @@ async def test_unclaimed_terminal_release_requires_current_proof_for_every_start
         await conn.execute("update run_attempts set status='failed' where id='attempt-target'")
         await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="target")
         assert (await (await conn.execute("select active_run_id from provider_session_heads")).fetchone())["active_run_id"] == "target"
+
+
+def _executor_terminal_without_sdk_settlement(name):
+    """Continuation receipt prepared from an executor terminal that never reached the SDK runner."""
+    return dict(tenant_id="tenant", run_id=name, attempt_id="attempt-" + name, final_sequence=None,
+                workspace_receipt={"state": "unsaved", "reason_code": "workspace_unsaved"},
+                stop_evidence="provider_stopped",
+                sdk_settlement={"status": "failed", "mirror_complete": False, "received_result": False},
+                external_effect_unknown=False)
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+async def test_cancel_right_after_lease_without_sdk_settlement_converges(unclaimed_db, claimed):
+    """#1953: cancelling as soon as the lease exists must not quarantine the Run forever.
+
+    Every provider callback (including the SDK's pre-spawn load) claims the epoch
+    writer, so an unclaimed epoch proves no input reached the CLI. A claimed writer
+    without an acknowledged main append stays conservative (ack unknown).
+    """
+    from app.bootstrap.conversation_continuation import _settle_stopped_continuation
+    from app.context.application.provider_sessions import (
+        ProviderSessionUseCases, configure_provider_session_use_cases,
+    )
+
+    configure_provider_session_use_cases(ProviderSessionUseCases(provider_epochs.PostgresProviderEpochRepository()))
+    async with unclaimed_db() as conn:
+        frozen = await prepare(conn, "target", 1)
+        if claimed:
+            await callback(conn, "target", frozen, "load")
+        await conn.execute("update runs set cancel_requested_at=now() where id='target'")
+        await conn.execute("update run_attempts set status='cancel_requested',owner_generation=3 where id='attempt-target'")
+        recovery = await _settle_stopped_continuation(conn, **_executor_terminal_without_sdk_settlement("target"))
+        epoch = await (await conn.execute("select state,recovery_json from provider_session_epochs where id=%s",
+                                          (frozen["provider_epoch_id"],))).fetchone()
+    assert recovery["state"] == "blocked"
+    if claimed:
+        # The claimed writer cannot prove the CLI never accepted input.
+        assert recovery.get("settlement_kind") != "unclaimed_unaccepted"
+        assert epoch["state"] != "closed"
+    else:
+        assert recovery["settlement_kind"] == "unclaimed_unaccepted"
+        assert recovery["input_accepted"] is False and recovery["ack_unknown"] is False
+        assert epoch["state"] == "closed" and epoch["recovery_json"] == recovery

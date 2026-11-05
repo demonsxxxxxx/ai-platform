@@ -3119,3 +3119,57 @@ async def test_worker_bootstrap_injects_sandbox_executor_reconciliation_port(mon
         "worker_id": "worker-a",
         "concurrency": 1,
     }
+
+
+_SIGTERM_PROBE = r'''
+import asyncio, sys, types
+from app import worker_main
+
+CLEANUP_SECONDS = float(sys.argv[1])
+
+async def pool(*, worker_count, poll_timeout_seconds=5):
+    try:
+        print("READY", flush=True)
+        await asyncio.Event().wait()
+    finally:
+        print("CLEANUP_STARTED", flush=True)
+        await asyncio.sleep(CLEANUP_SECONDS)
+        print("CLEANUP_DONE", flush=True)
+
+worker_main.get_settings = lambda: types.SimpleNamespace(worker_concurrency=1)
+worker_main.run_worker_pool = pool
+sys.argv = ["worker"]
+worker_main.main()
+print("EXITED_NORMALLY", flush=True)
+'''
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery")
+@pytest.mark.parametrize("repeat_during_cleanup", [False, True])
+def test_worker_process_sigterm_runs_cooperative_cleanup_and_exits_zero(repeat_during_cleanup):
+    """docker stop sends SIGTERM to PID 1; it must not wait for SIGKILL (exit 137)."""
+    import signal
+    import subprocess
+    import time
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", _SIGTERM_PROBE, "0.3"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+    )
+    try:
+        assert process.stdout.readline().strip() == "READY"
+        started = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        if repeat_during_cleanup:
+            assert process.stdout.readline().strip() == "CLEANUP_STARTED"
+            process.send_signal(signal.SIGTERM)
+        output, _ = process.communicate(timeout=10)
+        elapsed = time.monotonic() - started
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert process.returncode == 0, output
+    assert "CLEANUP_DONE" in output and "EXITED_NORMALLY" in output, output
+    assert elapsed < 5
