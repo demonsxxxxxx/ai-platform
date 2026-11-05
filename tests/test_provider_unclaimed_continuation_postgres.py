@@ -10,6 +10,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 import pytest
 
+from tests.support.settlement_authority_schema import settlement_authority_sql
+
 from app.context.domain.conversation_recovery import make_provider_coverage_authority_receipt
 from app.context.domain.provider_sessions import ProviderSessionConflictError, ProviderSessionScope
 from app.context.infrastructure import provider_epochs
@@ -53,7 +55,7 @@ async def unclaimed_db():
                 create table run_context_snapshots(id text, tenant_id text, workspace_id text, user_id text,
                   session_id text, run_id text, context_kind text, conversation_authority_json jsonb);
                 create table messages(id text, tenant_id text, session_id text, run_id text, role text, content text);
-                create table sandbox_leases(tenant_id text, run_id text, attempt_id text, status text,
+                create table sandbox_leases(id text default gen_random_uuid()::text, tenant_id text, run_id text, attempt_id text, status text,
                   released_at timestamptz, expires_at timestamptz, lease_payload_json jsonb);
                 insert into sessions(tenant_id,workspace_id,user_id,id,agent_id)
                   values('tenant','workspace','user','session','agent');
@@ -61,6 +63,7 @@ async def unclaimed_db():
             source = Path("app/schema.sql").read_text()
             await conn.execute(source[source.index("create table if not exists provider_session_heads"):source.index("-- A populated pre-#511")])
             await conn.execute(Path("app/context/infrastructure/conversation_recovery_schema.sql").read_text())
+            await conn.execute(settlement_authority_sql())
         yield connect
     finally:
         await admin.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema)))
@@ -83,7 +86,7 @@ async def prepare(conn, name, generation):
         ),
     )
     await conn.execute("insert into run_attempts(tenant_id,id,run_id,status,owner_kind,owner_generation,execution_spec_sha256,execution_spec_schema_version,execution_spec_json) values('tenant',%s,%s,'running','queue_worker',2,%s,'ai-platform.execution-spec.v2',%s)", ("attempt-" + name, name, "d" * 64, Jsonb({"context_pack": {"conversation_context": frozen}})))
-    await conn.execute("insert into sandbox_leases values('tenant',%s,%s,'active',null,now()+interval '5 minutes',%s)", (name, "attempt-" + name, Jsonb(dict(owner_generation=2))))
+    await conn.execute("insert into sandbox_leases(tenant_id,run_id,attempt_id,status,released_at,expires_at,lease_payload_json) values('tenant',%s,%s,'active',null,now()+interval '5 minutes',%s)", (name, "attempt-" + name, Jsonb(dict(owner_generation=2))))
     return frozen
 
 

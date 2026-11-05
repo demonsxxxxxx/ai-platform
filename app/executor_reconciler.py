@@ -1021,7 +1021,7 @@ async def repair_quarantined_executor_checkpoint(
             if claimed is None:
                 raise ReconciliationAuthorityError("checkpoint_repair_claim_lost")
             result, provider, lease = await _collect_workspace_and_convert_result(
-                claimed, registry=adapters, claim_token=claim_token, continuation_ports=ports,
+                claimed, registry=adapters, claim_token=claim_token, lease_port=lease_port, continuation_ports=ports,
                 transaction_factory=bound_transaction,
             )
             outcome = await reconcile_executor_terminal_result(

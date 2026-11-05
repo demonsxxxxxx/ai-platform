@@ -21,6 +21,9 @@ async def test_terminal_handoff_survives_release_but_rejects_foreign_stale_or_un
             alter table sandbox_leases add column executor_reconciled_at timestamptz;
             alter table sandbox_leases add column executor_heartbeat_at timestamptz;
             alter table sandbox_leases add column heartbeat_at timestamptz;
+            alter table sandbox_leases add column if not exists executor_probe_claim_token text;
+            alter table sandbox_leases add column if not exists executor_probe_claimed_at timestamptz;
+            alter table sandbox_leases add column if not exists executor_cleanup_status text;
         """)
         scope = dict(tenant_id="tenant", workspace_id="workspace", user_id="user", session_id="session",
                      run_id="target", attempt_id="attempt-target", lease_id="synthetic-lease", owner_generation=2)
@@ -71,6 +74,9 @@ async def test_cancel_forward_lists_only_live_accepted_leases_of_cancel_requeste
             alter table sandbox_leases add column executor_reconciled_at timestamptz;
             alter table sandbox_leases add column executor_heartbeat_at timestamptz;
             alter table sandbox_leases add column heartbeat_at timestamptz;
+            alter table sandbox_leases add column if not exists executor_probe_claim_token text;
+            alter table sandbox_leases add column if not exists executor_probe_claimed_at timestamptz;
+            alter table sandbox_leases add column if not exists executor_cleanup_status text;
         """)
         lease = dict(tenant_id="tenant", run_id="target", attempt_id="attempt-target", lease_id="synthetic-lease")
         await sandbox_leases.record_sandbox_executor_accepted(

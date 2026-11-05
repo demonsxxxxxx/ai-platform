@@ -30,6 +30,7 @@ from app.executors.base import project_execution_spec_to_run_payload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.runs.application.worker_dispatch_admission import WorkerAuthorizedDispatchCandidate
 from app.runs.application.worker_capability_admission import WorkerCapabilityAuthorization
 from app.runs.api import RunTerminalizationProgress
@@ -77,9 +78,11 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         model_max_input_tokens=100000,model_max_output_tokens=8192,context_pack={"conversation_context":frozen})
     attempts = build_run_attempt_lifecycle_service()
     now = datetime.now(timezone.utc)
-    started = await attempts.start_worker(conn, tenant_id="tenant-a",run_id="run-a",queue_attempt_id="queue-a",
-        worker_id="worker-a",execution_spec=spec,queue_message_id="a"*64,
-        last_heartbeat_at=now,lease_expires_at=now+timedelta(minutes=10))
+    async with conn.transaction():
+        # The settlement writer fence requires the caller's transaction.
+        started = await attempts.start_worker(conn, tenant_id="tenant-a",run_id="run-a",queue_attempt_id="queue-a",
+            worker_id="worker-a",execution_spec=spec,queue_message_id="a"*64,
+            last_heartbeat_at=now,lease_expires_at=now+timedelta(minutes=10))
     assert started["owner_generation"] == 4
     payload = replace(project_execution_spec_to_run_payload(spec, attempt_id=started["id"]), owner_generation=4)
     historical_request = SimpleNamespace(**{key:getattr(payload,key) for key in (
@@ -126,7 +129,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     if requested_cancel:
         cancel = runs_postgres.PostgresRunCancellationPersistence(attempt_lifecycle=attempts,append_event=append_event,
             append_audit_log=append_audit_log,list_active_sandbox_leases=lambda *args,**kwargs: None)
-        intent = await cancel.begin_owner_request(conn,tenant_id="tenant-a",run_id="run-a",owner_user_id="user-a")
+        async with conn.transaction():
+            intent = await cancel.begin_owner_request(conn,tenant_id="tenant-a",run_id="run-a",owner_user_id="user-a")
         assert intent is not None
         assert (await attempts.get(conn,tenant_id="tenant-a",run_id="run-a",attempt_id=started["id"]))["owner_generation"] == 5
     unknown_effect = terminal_kind == "mcp_unknown"
@@ -193,7 +197,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     await reconciler._record_reconciliation_stage(row,claim_token="claim-a",stage=stage)
     registry = AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()})
     if operator_fault is None:
-        result, provider, handle = await reconciler._collect_workspace_and_convert_result(row,registry=registry,
+        result, provider, handle = await reconciler._collect_workspace_and_convert_result(row,lease_port=build_sandbox_executor_reconciliation_port(),registry=registry,
             claim_token="claim-a",continuation_ports=build_continuation_settlement_ports())
         assert result.executor_payload["continuation_settlement"] == continuation
         assert result.status == ("succeeded" if terminal_kind == "succeeded" else "failed"), {
@@ -344,7 +348,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         monkeypatch.setattr(sandbox_leases, "finalize_stopped_executor_checkpoint", observe_finalize)
         # Hand the existing checkpoint to the real scanner's fresh claim, not a helper-only commit.
         await conn.execute("update sandbox_leases set executor_reconciliation_status='pending',executor_reconciliation_claim_token=null,executor_reconciliation_claimed_at=null where id='runtime-lease'")
-        assert await reconciler.reconcile_pending_executor_terminals_once(
+        assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
             registry=registry, worker_id="reconciler-a", v4_capabilities=capabilities,
             attempt_lifecycle=attempts, lifecycle=lifecycle,
             continuation_ports=build_continuation_settlement_ports(),
@@ -390,7 +394,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     assert persisted == dict(status="released",executor_reconciliation_status="finalized")
     if operator_fault is None:
         # A completed checkpoint is no longer claimable and cannot revisit its provider.
-        assert await reconciler.reconcile_pending_executor_terminals_once(
+        assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
             registry=registry, worker_id="reconciler-a", v4_capabilities=capabilities,
             attempt_lifecycle=attempts, lifecycle=lifecycle,
         ) == 0
@@ -399,7 +403,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         def forbidden_provider(*args, **kwargs):
             raise AssertionError("terminal checkpoint recovery must not create a provider client")
         monkeypatch.setattr(reconciler, "_container_provider_for_lease", forbidden_provider)
-        assert await reconciler.reconcile_pending_executor_terminals_once(
+        assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
             registry=registry, worker_id="reconciler-a", v4_capabilities=capabilities,
             attempt_lifecycle=attempts, lifecycle=lifecycle,
         ) == 1

@@ -138,7 +138,7 @@ async def test_actual_lease_terminal_claim_records_generation_bound_stage(
 async def extend_lease(conn):
     # prepare() inserts the minimal owning fixture before its lease table is extended.
     await conn.execute("""
-        alter table sandbox_leases add column id text;
+        alter table sandbox_leases add column if not exists id text;
         alter table sandbox_leases add column workspace_id text default 'workspace';
         alter table sandbox_leases add column user_id text default 'user';
         alter table sandbox_leases add column session_id text default 'session';

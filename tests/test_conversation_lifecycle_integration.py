@@ -134,7 +134,7 @@ async def test_actual_host_recovery_callback_blocks_ambiguous_confirmation_witho
     monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: SimpleNamespace(sandbox_callback_token=secret))
     async with unclaimed_db() as conn:
         await conn.execute("""
-            alter table sandbox_leases add column id text;
+            alter table sandbox_leases add column if not exists id text;
             alter table sandbox_leases add column created_at timestamptz default now();
             alter table sandbox_leases add column executor_terminal_json jsonb;
             alter table run_attempts add constraint uq_test_attempt_id unique(id);

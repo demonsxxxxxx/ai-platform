@@ -233,7 +233,7 @@ async def test_checkpoint_consumer_restores_only_verified_historical_image_ident
             raise AssertionError("checkpoint cannot contact provider: "+name)
     monkeypatch.setattr(owner,"_container_provider_for_lease",lambda _:GoneProvider())
     async def consume():
-        return await owner._collect_workspace_and_convert_result(row,registry=AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()}),claim_token="claim-a")
+        return await owner._collect_workspace_and_convert_result(row,registry=AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()}),claim_token="claim-a",lease_port=owner._default_reconciliation_port())
     if fault:
         with pytest.raises((RuntimeError,ValueError)):
             await consume()
