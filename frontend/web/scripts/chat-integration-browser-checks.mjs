@@ -132,6 +132,20 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   }
   assert.notEqual(activity.find(item => item.status === "success").color, activity.find(item => item.status === "error").color);
   assert.equal(await client.evaluate(`document.querySelector('textarea').value`), "");
+  await client.evaluate(`window.__chatIntegration.nativeTokens('首个 token')`);
+  await client.waitFor(`document.querySelectorAll('[data-message-id="assistant-synthetic-1"] [data-message-work-details-toggle]').length === 1`, "chat:one-process");
+  const nativeOrder = await client.evaluate(`(() => {
+    const message = document.querySelector('[data-message-id="assistant-synthetic-1"]');
+    const process = message.querySelector('[data-slot="run-activity"]');
+    const result = message.querySelector('[data-message-result]');
+    return { narrationInProcess: process.textContent.includes('前置公开正文'), result: result.textContent, resultFollowsProcess: !!(process.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING) };
+  })()`);
+  assert.ok(nativeOrder.narrationInProcess && nativeOrder.result.includes('首个 token') && nativeOrder.resultFollowsProcess, JSON.stringify(nativeOrder));
+  await client.evaluate(`document.querySelector('[data-message-id="assistant-synthetic-1"] [aria-label="复制"]').click()`);
+  await client.waitFor(`window.__chatCopies.at(-1)?.includes('首个 token')`, "chat:streaming-copy");
+  await client.evaluate(`document.querySelector('[data-message-id="assistant-synthetic-1"] [data-message-work-details-toggle]').click()`);
+  await client.evaluate(`window.__chatIntegration.nativeTokens('首个 token 和第二个 token')`);
+  await client.waitFor(`(() => { const nodes = [...document.querySelectorAll('[data-message-id="assistant-synthetic-1"] [data-message-work-details-toggle]')]; return nodes.length === 1 && nodes[0]?.getAttribute('aria-expanded') === 'false' && document.querySelector('[data-message-id="assistant-synthetic-1"] [data-message-result]').textContent.includes('第二个 token'); })()`, "chat:manual-fold-survives-token");
   await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
   const reveal = await client.evaluate(`(async () => {
     const text = '平滑显示公开正文。'.repeat(300);
@@ -386,7 +400,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.waitFor(`Boolean(document.querySelector('[data-message-id="assistant-synthetic-2"] strong'))`, "chat:streaming-rich-text");
   await client.evaluate(`window.__chatIntegration.synchronize()`);
   await client.waitFor(`Boolean(document.querySelector('[data-assistant-ui-stream-status="synchronizing"]'))`, "chat:terminal-sync");
-  assert.equal(await client.evaluate(`Boolean(document.querySelector('[data-message-id="assistant-synthetic-2"] [data-assistant-ui-message-actions]'))`), false);
+  assert.equal(await client.evaluate(`Boolean(document.querySelector('[data-message-id="assistant-synthetic-2"] [aria-label="复制"]'))`), true);
   assert.equal(await client.evaluate(`Boolean(document.querySelector('button[aria-label="停止生成"]'))`), false);
   await client.evaluate(`window.__chatIntegration.finish()`);
   await client.waitFor(`!document.querySelector('[data-assistant-ui-stream-status]') && Boolean(document.querySelector('[data-message-id="assistant-synthetic-2"] [aria-label="复制"]'))`, "chat:terminal-complete");
@@ -400,7 +414,7 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   assert.ok(publicSurface.math && publicSurface.longArtifactLabel?.length > 40 && publicSurface.subagent?.includes('子代理') && publicSurface.longToolText.includes('公开工具名称'), JSON.stringify(publicSurface));
   await client.evaluate(`document.querySelector('[data-message-id="assistant-synthetic-2"] [data-assistant-ui-message-actions] button[aria-label="复制"]').click()`);
   await client.waitFor(`window.__chatCopies.at(-1) === window.__chatIntegration.finalText && Boolean(document.querySelector('[data-copied=true]'))`, "chat:native-copy");
-  await client.evaluate(`document.querySelector('[data-message-id="assistant-synthetic-2"] [data-message-work-details-toggle]').click()`);
+  await client.evaluate(`document.querySelectorAll('[data-message-id="assistant-synthetic-2"] [data-message-work-details-toggle][aria-expanded="false"]').forEach(node => node.click())`);
   await client.waitFor(`([...document.querySelectorAll('[data-message-id="assistant-synthetic-2"] [data-chat-activity-status]')]).every(node => node.getBoundingClientRect().height > 0)`, "chat:activity-expanded");
   await client.evaluate(`(() => { const view = document.querySelector('[data-virtuoso-scroller]'); view.scrollTop = view.scrollHeight; })()`);
   await client.waitFor(`(() => { const view = document.querySelector('[data-virtuoso-scroller]'); const code = document.querySelector('[data-message-id="assistant-synthetic-2"] .cm-editor').getBoundingClientRect(); return code.bottom <= view.getBoundingClientRect().bottom && code.height > 0; })()`, "chat:rich-text-reachable");

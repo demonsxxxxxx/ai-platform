@@ -18,8 +18,10 @@ export interface Message {
   parts?: MessagePart[];
   // Token 使用统计
   tokenUsage?: TokenUsagePart;
-  // 对话耗时（毫秒）
+  // SDK/model-reported duration (milliseconds), not the whole Run.
   duration?: number;
+  /** Server run_started to finished_at span, restored by terminal history hydration. */
+  runDurationMs?: number;
   // 用户消息附件
   attachments?: MessageAttachment[];
   // 运行 ID - 用于反馈
