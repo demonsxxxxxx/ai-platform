@@ -1647,7 +1647,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 (tenant, run),
             )).fetchone()
             assert pending["status"] == "queued" and pending["cancel_requested_at"] is not None
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
                 result_json={"message": "任务已取消"},
@@ -1741,7 +1741,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
             )
             assert result is not None
             assert result["status"] == "cancel_requested"
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
                 result_json={"message": "任务已取消"},

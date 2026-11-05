@@ -103,7 +103,7 @@ async def test_admission_worker_cli_cancel_terminal_and_new_run_native_resume(pl
     from app.bootstrap import conversation_continuation as continuation, run_lifecycle
     from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreAdapter
     from app.routes import runtime_callbacks
-    from app.runs.api import cancel_run_with_v4, WorkerResultCommitCommand
+    from app.runs.api import cancel_run_terminalization, WorkerResultCommitCommand
     from app.executors.base import ExecutorResult
     from app.execution.api import bind_worker_attempt_lifecycle, project_worker_terminal_result
     from app.bootstrap.worker_attempt_lifecycle import build_worker_attempt_lifecycle_ports
@@ -224,7 +224,7 @@ async def test_admission_worker_cli_cancel_terminal_and_new_run_native_resume(pl
                             stop_evidence="provider_stopped", sdk_settlement=dict(input_accepted=True,
                             ack_unknown=False, mirror_complete=True), external_effect_unknown=False)
                         assert settled["state"] == "resumable"
-                        progress = await cancel_run_with_v4(
+                        progress = await cancel_run_terminalization(
                             conn, lifecycle=platform.lifecycle, capabilities=platform.capabilities,
                             tenant_id=payload.tenant_id, run_id=payload.run_id, result_json={"message": "cancelled"})
                         assert progress.did_transition and progress.status == "cancelled"
