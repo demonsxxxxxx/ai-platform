@@ -743,7 +743,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert facts["assistant_messages"] == 0
                 assert facts["committed_turns"] == 0
                 assert facts["artifacts"] == 0
-                assert facts["cleanup_failures"] == (1 if fault == "stop_retry" else 0)
+                assert facts["cleanup_failures"] == 0
                 assert facts["cleanup_successes"] == expected_cleanup_successes
 
                 repeated = await http.post(f"/api/ai/runs/{run_id}/cancel")
@@ -835,7 +835,10 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert after_owner_cancel["attempt_id"] == running["attempt_id"]
                 assert after_owner_cancel["cancel_requested_at"] is not None
                 assert after_owner_cancel["cancel_requested_by"] == stack.user_id
-                assert after_owner_cancel["lease_status"] == "released"
+                # An admitted Attempt keeps its sandbox: the executor drains and the
+                # reconciler releases it after the terminal receipt (#1899). The
+                # completion helper polls for cancelled-and-released.
+                assert after_owner_cancel["lease_status"] == "active"
                 await complete_cancellation_case(
                     fault_evidence={
                         "foreign_cancel_http_status": foreign_cancel.status_code,
@@ -844,56 +847,48 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "owner_cancel_state": after_owner_cancel,
                     },
                     expected_answer_events=0,
+                    # The reconciler releases the drained lease; the request path
+                    # performs no cleanup and records no cleanup outcome.
+                    expected_cleanup_successes=0,
                 )
                 return
 
             if fault == "stop_retry":
+                # The cancel request no longer stops the sandbox inline (#1899): an
+                # admitted Attempt drains through its executor. A provider outage
+                # therefore cannot fail the request; prompt cancel delivery retries
+                # until the provider returns, without a second user cancel.
                 stopped_proxy_id = await asyncio.to_thread(stack.stop_docker_proxy)
                 try:
                     first_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
-                    assert first_cancel.status_code == 502, first_cancel.text
-                    assert first_cancel.json() == {
-                        "detail": "sandbox_runtime_cleanup_failed",
-                    }
-                    after_failed_stop = await state()
-                    assert after_failed_stop["run_status"] == "running"
-                    assert after_failed_stop["attempt_status"] == "cancel_requested"
-                    assert after_failed_stop["attempt_id"] == running["attempt_id"]
-                    assert after_failed_stop["cancel_requested_at"] is not None
-                    assert after_failed_stop["cancel_requested_by"] == stack.user_id
-                    assert after_failed_stop["lease_status"] == "active"
-                    assert after_failed_stop["executor_terminal_json"] is None
-                    assert after_failed_stop["executor_status"] == "running"
-                    failed_stop_counts = await outcome_facts()
-                    assert failed_stop_counts["cancel_requests"] == 1
-                    assert failed_stop_counts["cleanup_failures"] == 1
-                    assert failed_stop_counts["answer_deltas"] == 0
-                    executor.reload()
-                    assert executor.status == "running"
+                    assert first_cancel.status_code == 200, first_cancel.text
+                    assert first_cancel.json()["status"] == "cancel_requested"
+                    during_outage = await state()
+                    assert during_outage["run_status"] == "running"
+                    assert during_outage["attempt_status"] == "cancel_requested"
+                    assert during_outage["attempt_id"] == running["attempt_id"]
+                    assert during_outage["cancel_requested_at"] is not None
+                    assert during_outage["cancel_requested_by"] == stack.user_id
+                    assert during_outage["lease_status"] == "active"
+                    outage_counts = await outcome_facts()
+                    assert outage_counts["cancel_requests"] == 1
+                    assert outage_counts["cleanup_failures"] == 0
+                    assert outage_counts["answer_deltas"] == 0
                 finally:
                     restored_proxy_id = await asyncio.to_thread(
                         stack.start_docker_proxy,
                     )
                 assert restored_proxy_id == stopped_proxy_id
-
-                retry_cancel = await http.post(f"/api/ai/runs/{run_id}/cancel")
-                assert retry_cancel.status_code == 200, retry_cancel.text
-                assert retry_cancel.json()["status"] == "cancel_requested"
-                after_retry = await state()
-                assert after_retry["attempt_id"] == running["attempt_id"]
-                assert after_retry["lease_status"] == "released"
-                assert after_retry["cancel_requested_by"] == stack.user_id
                 await complete_cancellation_case(
                     fault_evidence={
                         "docker_proxy_container_id": stopped_proxy_id,
                         "first_cancel_http_status": first_cancel.status_code,
-                        "first_cancel_state": after_failed_stop,
-                        "counts_after_failed_stop": failed_stop_counts,
+                        "state_during_outage": during_outage,
+                        "counts_during_outage": outage_counts,
                         "provider_restored": True,
-                        "retry_cancel_http_status": retry_cancel.status_code,
-                        "state_after_retry": after_retry,
                     },
                     expected_answer_events=0,
+                    expected_cleanup_successes=0,
                 )
                 return
 

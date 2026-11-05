@@ -277,3 +277,38 @@ async def test_cancel_right_after_lease_without_sdk_settlement_converges(unclaim
         assert recovery["settlement_kind"] == "unclaimed_unaccepted"
         assert recovery["input_accepted"] is False and recovery["ack_unknown"] is False
         assert epoch["state"] == "closed" and epoch["recovery_json"] == recovery
+
+
+@pytest.mark.parametrize("case", ["completed_before_cancel", "generation_jump", "terminal_run"])
+async def test_completion_commit_after_late_cancel_request(unclaimed_db, case):
+    """Completion wins a cancel request that arrived after the executor finished.
+
+    The cancel request bumps the Attempt generation by exactly one; the writer
+    fenced at the prior generation may still commit its completed turn while the
+    Run is not terminal. Any other generation gap or a terminal Run stays rejected.
+    """
+    async with unclaimed_db() as conn:
+        await conn.execute("alter table messages add column if not exists created_at timestamptz default now()")
+        frozen = await prepare(conn, "target", 1)
+        await callback(conn, "target", frozen, "load")
+        await callback(conn, "target", frozen, "append", [{"type": "user", "uuid": "target-user"}], 1)
+        await conn.execute("insert into messages(id,tenant_id,session_id,run_id,role,content,created_at) "
+                           "values('assistant-target','tenant','session','target','assistant','done',now()+interval '1 second')")
+        bump = 2 if case == "generation_jump" else 1
+        await conn.execute("update runs set cancel_requested_at=now() where id='target'")
+        await conn.execute("update run_attempts set status='cancel_requested',owner_generation=owner_generation+%s "
+                           "where id='attempt-target'", (bump,))
+        if case == "terminal_run":
+            await conn.execute("update runs set status='cancelled' where id='target'")
+        commit = provider_epochs.commit_provider_turn(
+            conn, tenant_id="tenant", run_id="target", attempt_id="attempt-target",
+            assistant_message_id="assistant-target", final_sequence=1,
+        )
+        if case == "completed_before_cancel":
+            await commit
+            turn = await (await conn.execute(
+                "select state, assistant_message_id from provider_turn_receipts where run_id='target'")).fetchone()
+            assert turn == {"state": "committed", "assistant_message_id": "assistant-target"}
+        else:
+            with pytest.raises(ProviderSessionConflictError):
+                await commit

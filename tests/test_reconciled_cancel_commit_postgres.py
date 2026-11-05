@@ -45,7 +45,7 @@ from tests.test_reconciled_cancel_commit import historical_image_lease_binding
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lose_terminal_cas", [False, True])
-@pytest.mark.parametrize("terminal_kind", ["cancelled", "mcp_unknown", "succeeded", "failed"])
+@pytest.mark.parametrize("terminal_kind", ["cancelled", "mcp_unknown", "succeeded", "failed", "succeeded_after_cancel"])
 async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_native_admission(
     executor_acceptance_database, monkeypatch, tmp_path, lose_terminal_cas, terminal_kind, operator_fault=None, with_image=False, lose_checkpoint_claim=False,
 ):
@@ -123,7 +123,12 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             await image_service.execute_callback(conn, **request, media=media)
     else:
         await provider_epochs.callback_provider_epoch(conn, **callback_scope,action="append",entries=entries,expected_sequence=1)
-    requested_cancel = terminal_kind in {"cancelled", "mcp_unknown"}
+    # succeeded_after_cancel: the executor completed before the owner's latched
+    # cancel request was settled. The completed turn may commit (no provider
+    # conflict), but the latched cancel blocks the success CAS, so the existing
+    # fallback cancels the Run instead of quarantining it.
+    completed = terminal_kind in {"succeeded", "succeeded_after_cancel"}
+    requested_cancel = terminal_kind in {"cancelled", "mcp_unknown", "succeeded_after_cancel"}
     expected_status = "cancelled" if requested_cancel else terminal_kind
     pending_generation = 5 if requested_cancel else 4
     if requested_cancel:
@@ -138,11 +143,11 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     terminal = dict(run_id="run-a",status="cancelled",message="cancelled",error_code="executor_cancelled",error_message="Task cancelled",sdk_used=True,
         provider_session_final_sequence=2,response_files=[],sdk_settlement=dict(owner_generation=4,mirror_complete=True,
             input_accepted=True,received_result=True,ack_unknown=False,external_effect_unknown=False))
-    if not requested_cancel:
-        terminal.update(status="completed" if terminal_kind == "succeeded" else terminal_kind,
-                        message="Synthetic answer" if terminal_kind == "succeeded" else "Failed",
+    if not requested_cancel or completed:
+        terminal.update(status="completed" if completed else terminal_kind,
+                        message="Synthetic answer" if completed else "Failed",
                         error_code="synthetic_failure" if terminal_kind == "failed" else "")
-    if terminal_kind == "succeeded":
+    if completed:
         terminal[TOOL_INVOCATION_EVIDENCE_KEY] = []
     if unknown_effect:
         terminal.update(status="failed",error_code="stream_delivery_rejected",error_message="Execution delivery failed",
@@ -200,7 +205,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         result, provider, handle = await reconciler._collect_workspace_and_convert_result(row,lease_port=build_sandbox_executor_reconciliation_port(),registry=registry,
             claim_token="claim-a",continuation_ports=build_continuation_settlement_ports())
         assert result.executor_payload["continuation_settlement"] == continuation
-        assert result.status == ("succeeded" if terminal_kind == "succeeded" else "failed"), {
+        assert result.status == ("succeeded" if completed else "failed"), {
             "status": result.status, "error_code": result.result.get("error_code"),
         }
         assert sandbox_failure_prefers_cancelled(result) is (terminal_kind == "cancelled"), {
@@ -216,6 +221,10 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
 
     async def observe_settlement(actual, **kwargs):
         # Observe the real Context write; do not replace its claim, prefix or generation checks.
+        if terminal_kind == "succeeded_after_cancel" and kwargs["sdk_settlement"]["status"] == "succeeded":
+            # The success transaction settles first, then rolls back when the
+            # latched cancel blocks the success CAS; only the cancel settlement commits.
+            return await original_settle(actual, **kwargs)
         assert kwargs["sdk_settlement"]["status"] == expected_status
         recovery = await original_settle(actual, **kwargs)
         assert recovery["state"] == expected_recovery and recovery["owner_generation"] == pending_generation
@@ -368,7 +377,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         assert len(outcomes) == 1
         outcome = outcomes[0]
     diagnostic = f"outcome={outcome!r}; Context settlements={len(settlement_visits)}; cancel CAS calls={len(cancel_cas_visits)}"
-    assert len(settlement_visits) == 1 and len(cancel_cas_visits) == int(requested_cancel), diagnostic
+    assert len(settlement_visits) == 1 and len(cancel_cas_visits) == int(expected_status == "cancelled"), diagnostic
     epoch = await (await conn.execute("select * from provider_session_epochs where id=%s",(frozen["provider_epoch_id"],))).fetchone()
     attempt = await attempts.get(conn,tenant_id="tenant-a",run_id="run-a",attempt_id=started["id"])
     if lose_terminal_cas:
