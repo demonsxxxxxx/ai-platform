@@ -428,7 +428,7 @@ async def test_resource_lease_reader_does_not_require_attempt_settlement_detail(
 
 @pytest.mark.asyncio
 async def test_attempt_settlement_activation_requires_explicit_operator_acceptance():
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
         activate_attempt_settlement_storage,
     )
 
@@ -769,7 +769,7 @@ async def test_real_postgres_cutover_waits_for_writer_refresh_and_uses_fresh_sna
         async with connect_schema() as conn, conn.transaction():
             activation_pid.append(conn.pgconn.backend_pid)
             activation_started.set()
-            return await settlement_store.activate_attempt_settlement_storage(
+            return await __import__('app.runs.infrastructure.attempt_settlement_cutover_postgres', fromlist=['x']).activate_attempt_settlement_storage(
                 conn,
                 operator_confirmations=confirmations,
                 lock_timeout_seconds=8,
@@ -2906,7 +2906,7 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
         SandboxReconciliationReceiptAuthority,
     )
     from app.sandbox.infrastructure import leases_postgres
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
         activate_attempt_settlement_storage,
     )
 
@@ -3056,7 +3056,7 @@ async def test_real_postgres_attempt_reader_drives_diagnostics_and_finalizer_aut
 
 @pytest.mark.asyncio
 async def test_cutover_accounts_for_execution_receipts_without_an_attempt(attempt_settlement_db):
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+    from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
         activate_attempt_settlement_storage,
         prepare_attempt_settlement_storage_cutover,
     )

@@ -29,7 +29,7 @@ from app.platform.tracing import standard_trace_id
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.execution_spec import EXECUTION_SPEC_SCHEMA_VERSION, compile_execution_spec
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
     activate_attempt_settlement_storage,
     prepare_attempt_settlement_storage_cutover,
 )

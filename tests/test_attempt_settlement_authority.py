@@ -11,8 +11,10 @@ from app.bootstrap.attempt_settlement_projection import (
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.runs.infrastructure import lifecycle_postgres
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    activate_attempt_settlement_storage,
     backfill_attempt_settlement_projections,
+)
+from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
+    activate_attempt_settlement_storage,
 )
 from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
 from app.runs.infrastructure import attempt_settlement_writer_cutover_postgres as cutover
