@@ -913,8 +913,10 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
             publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
             handoff_cancelled_attempt=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("handoff interrupted")),
         )
+        # Only an already-cancelled receipt releases resources and hands the Attempt
+        # off; an admitted cancel_requested Attempt is drained by its executor (#1899).
         receipt = CancelRequestResult(
-            run_id, "cancel_requested", None, ({"id": f"lease-{suffix}"},), None,
+            run_id, "cancelled", None, ({"id": f"lease-{suffix}"},), None,
             attempt_id, generation,
         )
         with pytest.raises(RuntimeError, match="handoff interrupted"):
@@ -934,13 +936,13 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
         if rejection == "missing_marker":
             with pytest.raises(RuntimeError, match="marker_invalid"):
                 await repeat_processor.post_cancel(
-                    CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
+                    CancelRequestResult(run_id, "cancelled", None, (), None, attempt_id, generation),
                     tenant_id=tenant_id, user_id=f"user-{suffix}",
                     requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
                 )
         else:
             await repeat_processor.post_cancel(
-                CancelRequestResult(run_id, "cancel_requested", None, (), None, attempt_id, generation),
+                CancelRequestResult(run_id, "cancelled", None, (), None, attempt_id, generation),
                 tenant_id=tenant_id, user_id=f"user-{suffix}",
                 requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
             )

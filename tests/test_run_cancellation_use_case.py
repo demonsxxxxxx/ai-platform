@@ -190,7 +190,8 @@ async def test_cancel_composition_uses_its_independent_terminal_append_once(monk
 
     use_case = RunCancellationUseCase(
         transaction_factory=_TransactionFactory(order),
-        persistence=_Persistence(order, _authority()),
+        # Only a queued Run without an Attempt terminalizes inside the request (#1899).
+        persistence=_Persistence(order, _authority(attempt_id=None)),
         event_writer=_EventWriter(order),
         progress_terminalization=progress_terminalization,
     )
@@ -204,7 +205,6 @@ async def test_cancel_composition_uses_its_independent_terminal_append_once(monk
     assert order == [
         "transaction.begin",
         "legacy.cancel_requested",
-        "v4.admission_pending",
         "v4.run.cancel_requested",
         "run.progress",
         "provider.release",
@@ -438,7 +438,7 @@ async def test_cancel_handoff_runs_after_successful_resource_release_and_not_aft
         handoff_cancelled_attempt=handoff,
     )
     receipt = CancelRequestResult(
-        "run-a", "cancel_requested", None, ({"id": "lease-a"},), None,
+        "run-a", "cancelled", None, ({"id": "lease-a"},), None,
         "attempt-a", 5,
     )
     await processor.post_cancel(
