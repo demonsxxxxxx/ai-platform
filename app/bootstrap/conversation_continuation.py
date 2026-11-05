@@ -82,8 +82,16 @@ async def _settle_stopped_continuation(conn: Any, **settlement: Any) -> dict[str
         raise ValueError("continuation_writer_binding_invalid")
     sdk["owner_generation"] = owner["owner_generation"]
     if type(sdk.get("input_accepted")) is not bool:
-        sdk["input_accepted"] = owner["has_current_main"] is True
-        sdk["ack_unknown"] = owner["has_current_main"] is not True
+        if owner["writer_owner_generation"] is None and owner["recorded_boundary"] is None:
+            # No provider callback ever claimed this epoch. The SDK preloads the
+            # session through that callback before spawning the CLI, so an
+            # executor terminal without SDK settlement here proves no input was
+            # accepted; inferring an unknown ACK would quarantine the Run (#1953).
+            sdk["input_accepted"] = False
+            sdk["ack_unknown"] = False
+        else:
+            sdk["input_accepted"] = owner["has_current_main"] is True
+            sdk["ack_unknown"] = owner["has_current_main"] is not True
     final_sequence = settlement.get("final_sequence")
     if final_sequence is None and owner["has_current_main"] is True:
         # Stop + locked committed append receipts reconcile the host's durable prefix.
