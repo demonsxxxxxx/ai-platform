@@ -555,6 +555,16 @@ return cjson.encode({
 """
 
 
+V2_ORPHANED_COOKIE_PROBE_SCRIPT = """
+-- ai-platform:auth-context-orphaned-cookie:v2
+-- A signed cookie grants no authority when both of its server records are gone.
+if redis.call("EXISTS", KEYS[1], KEYS[2]) ~= 0 then
+  return cjson.encode({status = "stale"})
+end
+return cjson.encode({status = "missing"})
+"""
+
+
 V2_ROTATE_AUTH_CONTEXT_SCRIPT = """
 -- ai-platform:auth-context-rotate:v2
 """ + V2_LUA_HELPERS + """
@@ -1054,10 +1064,11 @@ class AuthBootstrapResult:
 class AuthContextError(RuntimeError):
     """A safe auth-context failure that can be projected to browser clients."""
 
-    def __init__(self, code: str, status_code: int):
+    def __init__(self, code: str, status_code: int, *, discard_orphaned_cookie: bool = False):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+        self.discard_orphaned_cookie = discard_orphaned_cookie
 
 
 def get_redis() -> RedisClientHandle:
@@ -1446,6 +1457,20 @@ async def bootstrap_auth_context_v2(
                 set_cookie=status == "repair",
                 cookie_max_age_seconds=_cookie_max_age_from_result(result),
             )
+        if status == "missing" and supplied_identity is not None:
+            # The browser may already have persisted its fresh replacement
+            # identity after a prior recovery response. Probe the signed
+            # cookie's own records, not the new request's missing identity.
+            orphaned = await _eval(
+                V2_ORPHANED_COOKIE_PROBE_SCRIPT,
+                [_authority_key(supplied_identity.incarnation_digest),
+                 _context_key(supplied_identity.context_handle)],
+                [],
+            )
+            cookie_status = str(orphaned.get("status") or "")
+            if cookie_status != "missing":
+                _raise_for_store_status("bootstrap", cookie_status)
+            raise AuthContextError("auth_context_missing", 401, discard_orphaned_cookie=True)
         _raise_for_store_status("bootstrap", status)
         raise AssertionError("unreachable")
 

@@ -155,12 +155,12 @@ export function assistantTextPartRole(
 
 export function isAssistantTextPartPreviewVisible(part: TextPart): boolean {
   const role = assistantTextPartRole(part);
-  return role === "legacy" || role === "pending" || role === "answer";
+  return role !== null;
 }
 
 export function isAssistantTextPartAnswer(part: TextPart): boolean {
   const role = assistantTextPartRole(part);
-  return role === "legacy" || role === "answer";
+  return role !== null;
 }
 
 export function hasMarkedAssistantTextParts(
@@ -191,7 +191,7 @@ function composeTextPartGroups(parts: readonly TextPart[]): string[] {
   const groups: Array<{ publicPartId: string | null; content: string }> = [];
   for (const part of parts) {
     const role = assistantTextPartRole(part);
-    if (role === null || role === "work" || !part.content) continue;
+    if (role === null || !part.content) continue;
     const publicPartId = role === "legacy" ? null : part.public_part_id!;
     const last = groups[groups.length - 1];
     if (last && last.publicPartId === publicPartId) {
@@ -214,7 +214,7 @@ export function composeAssistantPreviewText(
     : groups.join("");
 }
 
-/** Copy projection: legacy text is retained and versioned text must be an answer. */
+/** Copy the current public body, including in-flight and historical narration. */
 export function selectAssistantCopyText(
   parts: readonly MessagePart[] | undefined,
   fallbackContent = "",

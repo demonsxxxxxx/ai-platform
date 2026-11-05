@@ -28,7 +28,7 @@ function CopyMessageButton() {
   );
 }
 
-/** Scope native copy to the public answer receipt, excluding work and pending previews. */
+/** Scope native copy to the currently accepted public Assistant text. */
 export function AssistantUiMessageActions({
   messageId, text, children,
 }: { messageId: string; text: string; children?: ReactNode }) {
@@ -38,7 +38,7 @@ export function AssistantUiMessageActions({
   }, messageId, { type: "complete", reason: "stop" }), [messageId, text]);
   return (
     <MessageProvider message={message} index={0}>
-      <ActionBarPrimitive.Root hideWhenRunning className="flex items-center gap-1" data-slot="aui-message-actions" data-assistant-ui-message-actions>
+      <ActionBarPrimitive.Root className="flex items-center gap-1" data-slot="aui-message-actions" data-assistant-ui-message-actions>
         {text && <CopyMessageButton />}
         {children}
       </ActionBarPrimitive.Root>
