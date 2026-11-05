@@ -3657,7 +3657,8 @@ async def test_reconciler_forwards_cancellations_on_a_short_cadence_not_the_stal
     ticks = []
     memos = set()
 
-    async def forward(forwarded):
+    async def forward(forwarded, **kwargs):
+        assert kwargs.get("lease_port") is not None
         memos.add(id(forwarded))
         ticks.append(asyncio.get_running_loop().time())
         if len(ticks) == 2:

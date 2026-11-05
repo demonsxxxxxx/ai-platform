@@ -4656,7 +4656,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     class RaisingAdapter:
         async def submit_run(self, payload, event_sink=None):
             if predispatch:
-                from app.runtime.sandbox.runtime import SandboxRuntime
+                from app.bootstrap.sandbox_runtime import SandboxRuntime
                 runtime = SandboxRuntime(workspace_root="unused")
                 def reject(_provider):
                     raise RuntimeError("executor crashed")
