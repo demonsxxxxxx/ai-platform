@@ -1252,6 +1252,11 @@ class SandboxRuntime:
                 collection_succeeded = True
         except BaseException as exc:
             if accepted_dispatch:
+                if observation_handed_off and isinstance(exc, asyncio.CancelledError):
+                    # Stop already observed the same Attempt's terminal and handed it to the
+                    # reconciler; the in-flight POST's cancellation is not a dispatch failure.
+                    return build_runtime_result({"status": "accepted", "run_id": request.run_id,
+                                                 "attempt_id": request.attempt_id})
                 # The committed terminal receipt owns settlement even if its wake is cancelled.
                 raise
             validation_rejected = validation_started and not validation_succeeded

@@ -233,7 +233,7 @@ async def test_checkpoint_consumer_restores_only_verified_historical_image_ident
             raise AssertionError("checkpoint cannot contact provider: "+name)
     monkeypatch.setattr(owner,"_container_provider_for_lease",lambda _:GoneProvider())
     async def consume():
-        return await owner._collect_workspace_and_convert_result(row,registry=AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()}),claim_token="claim-a",lease_port=owner._default_reconciliation_port())
+        return await owner._collect_workspace_and_convert_result(row,registry=AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()}),claim_token="claim-a",lease_port=__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']))
     if fault:
         with pytest.raises((RuntimeError,ValueError)):
             await consume()
@@ -271,7 +271,7 @@ async def test_operator_repair_rejects_sdk_settlement_disagreeing_with_original_
         yield
     monkeypatch.setattr("app.context.api.provider_session_verification_scope", verification)
     monkeypatch.setattr(owner.runs_postgres,"get_run",load_run)
-    monkeypatch.setattr(owner.sandbox_lease_repository,"get_quarantined_checkpoint_for_repair",load_lease)
+    monkeypatch.setattr(__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']),"get_quarantined_checkpoint_for_repair",load_lease)
     monkeypatch.setattr(owner,"_context_and_payload",lambda _:({"adapter_name":"claude-agent-worker"},terminal,payload))
     monkeypatch.setattr(owner,"_reconciliation_runtime_lease",lambda *args,**kwargs:object())
     monkeypatch.setattr("app.bootstrap.conversation_continuation.verify_checkpoint_workspace",forbidden_verify)
@@ -368,7 +368,7 @@ async def test_receipt_ingress_releases_checkpoint_inside_terminal_transaction(m
     monkeypatch.setattr(ingress, "prepare_worker_run", prepare)
     monkeypatch.setattr(ingress, "build_worker_terminal_completion_service", build_completion)
     monkeypatch.setattr(ingress, "restored_executor_reconciliation_queue_payload", lambda *args, **kwargs: ({}, "attempt"))
-    monkeypatch.setattr(ingress.sandbox_leases, "finalize_stopped_executor_checkpoint", finalize)
+    monkeypatch.setattr(ingress, "build_sandbox_executor_reconciliation_port", lambda: SimpleNamespace(finalize_stopped_executor_checkpoint=finalize))
     call = ingress.reconcile_executor_terminal_result(
         lease_row=row, result=SimpleNamespace(result={}), claim_token="claim", transaction_factory=transaction,
         v4_capabilities=object(), run_attempt_lifecycle=object(), run_lifecycle=object(),
@@ -395,7 +395,7 @@ async def test_failed_completed_checkpoint_is_quarantined_without_provider_io(mo
     monkeypatch.setattr(owner, "_quarantine_failed_reconciliation", quarantine)
     monkeypatch.setattr(owner._sandbox_cleanup, "container_lease_from_persisted_row", forbidden)
     await owner._finish_terminal_reconciliation_failure(
-        row, claim_token="claim", error_code="provider_session_integrity_mismatch", logger=object(),
+        row, lease_port=__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']), claim_token="claim", error_code="provider_session_integrity_mismatch", logger=object(),
         v4_capabilities=object(), attempt_lifecycle=object(), lifecycle=object(), run_diagnostics=None,
     )
     assert calls == ["quarantined"]

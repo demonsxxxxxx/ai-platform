@@ -387,13 +387,13 @@ async def test_reconciler_stops_exact_provider_then_saves_before_terminal_conver
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _: lease)
     monkeypatch.setattr(r, "_container_provider_for_lease", lambda _: Provider())
     monkeypatch.setattr(r, "transaction", transaction)
-    monkeypatch.setattr(r.sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", claim)
+    monkeypatch.setattr(__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']), "has_sandbox_executor_reconciliation_claim", claim)
     async def checkpoint(*args, **kwargs): pass
     monkeypatch.setattr(r, "_record_reconciliation_stage", checkpoint)
     monkeypatch.setattr(r, "run_storage_io", storage_io)
     row = {"id": "lease-a", "run_id": "run-a", "provider": "opensandbox"}
     action = r._collect_workspace_and_convert_result(
-        row, registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
+        row, lease_port=__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']), registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
         claim_token="claim-a", continuation_ports=ContinuationSettlementPorts(save, unexpected_settle),
     )
     if stop_status in {"failed", "wrong_identity"}:
@@ -431,7 +431,8 @@ async def test_inline_runtime_stops_and_saves_but_defers_lease_release_to_termin
         return {"state": "saved", "version_id": "private-version"}
     async def unexpected(*args, **kwargs): raise AssertionError("terminal transaction has not started")
     monkeypatch.setattr(owner, "get_settings", lambda: SimpleNamespace(sandbox_callback_base_url="http://platform.test", sandbox_callback_token="synthetic", sandbox_lease_ttl_seconds=1800))
-    runtime = owner.SandboxRuntime(
+    from tests.test_sandbox_runtime import SandboxRuntime as _TestRuntime
+    runtime = _TestRuntime(
         workspace_root=tmp_path.parent / ("r" + mode[0]), provider=Provider(executor_url="http://executor.test"),
         execute_task=execute, callback_token_resolver=lambda _: "synthetic",
         record_lease=lambda *args: "runtime-lease-a", release_lease=unexpected,
