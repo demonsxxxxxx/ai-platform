@@ -123,13 +123,12 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             await image_service.execute_callback(conn, **request, media=media)
     else:
         await provider_epochs.callback_provider_epoch(conn, **callback_scope,action="append",entries=entries,expected_sequence=1)
-    # succeeded_after_cancel: the executor completed before the owner's latched
-    # cancel request was settled. The completed turn may commit (no provider
-    # conflict), but the latched cancel blocks the success CAS, so the existing
-    # fallback cancels the Run instead of quarantining it.
+    # succeeded_after_cancel: the owner requested cancellation, but the executor
+    # still completed without being interrupted. The execution outcome wins, as
+    # in the Claude Agent SDK: the Run succeeds and records the late request.
     completed = terminal_kind in {"succeeded", "succeeded_after_cancel"}
     requested_cancel = terminal_kind in {"cancelled", "mcp_unknown", "succeeded_after_cancel"}
-    expected_status = "cancelled" if requested_cancel else terminal_kind
+    expected_status = "succeeded" if completed else "cancelled" if requested_cancel else terminal_kind
     pending_generation = 5 if requested_cancel else 4
     if requested_cancel:
         cancel = runs_postgres.PostgresRunCancellationPersistence(attempt_lifecycle=attempts,append_event=append_event,
@@ -221,10 +220,6 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
 
     async def observe_settlement(actual, **kwargs):
         # Observe the real Context write; do not replace its claim, prefix or generation checks.
-        if terminal_kind == "succeeded_after_cancel" and kwargs["sdk_settlement"]["status"] == "succeeded":
-            # The success transaction settles first, then rolls back when the
-            # latched cancel blocks the success CAS; only the cancel settlement commits.
-            return await original_settle(actual, **kwargs)
         assert kwargs["sdk_settlement"]["status"] == expected_status
         recovery = await original_settle(actual, **kwargs)
         assert recovery["state"] == expected_recovery and recovery["owner_generation"] == pending_generation

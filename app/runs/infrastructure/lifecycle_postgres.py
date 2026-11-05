@@ -238,11 +238,15 @@ async def complete_run(
         set status = 'succeeded', result_json = %s::jsonb, finished_at = now(),
             error_code = null, error_message = null, latency_ms = %s,
             input_token_count = %s, output_token_count = %s,
-            total_token_count = %s, estimated_cost_minor = %s
+            total_token_count = %s, estimated_cost_minor = %s,
+            terminalization_target = null, terminalization_reason = '',
+            terminalization_result_json = '{}'::jsonb, terminalization_error_code = null,
+            terminalization_error_message = null
         where tenant_id = %s and id = %s
           and status not in ('succeeded', 'failed', 'cancelled')
-          and cancel_requested_at is null
-          and terminalization_target is null
+          -- An executor that reports completion was not interrupted: a pending
+          -- cancel request (not yet a staged terminal) does not override it.
+          and coalesce(terminalization_target, 'cancel_requested') = 'cancel_requested'
         returning id
         """,
         (_json_text(result_json), latency_ms, input_tokens, output_tokens,
@@ -269,7 +273,9 @@ async def classify_success_commit_block(conn: AsyncConnection, *, tenant_id: str
     row = await cursor.fetchone()
     if row is None or is_terminal_run_status(row.get("status")):
         return "stale_terminal_state"
-    if row.get("cancel_requested_at") or str(row.get("terminalization_target") or "") in {"cancel_requested", "cancelled"}:
+    # A pending cancel request no longer blocks an executor-reported success;
+    # only a cancellation already staged as the Run terminal does.
+    if str(row.get("terminalization_target") or "") == "cancelled":
         return "cancel_requested"
     return "stale_terminal_state"
 

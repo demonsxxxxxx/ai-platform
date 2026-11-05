@@ -935,19 +935,62 @@ def test_admission_worker_settlement_delivery_reclamation(
 
                 restarted_worker_id = await asyncio.to_thread(stack.start_worker)
                 assert restarted_worker_id == stopped_worker_id
-                await complete_cancellation_case(
-                    fault_evidence={
-                        "worker_container_id": stopped_worker_id,
-                        "persisted_terminal_receipt_before_cancel": receipt,
-                        "state_before_cancel": before_cancel,
-                        "owner_cancel_http_status": owner_cancel.status_code,
-                        "state_after_cancel": after_cancel,
-                        "worker_restarted": True,
+
+                # The executor had already completed when the cancel arrived: it was
+                # never interrupted, so its outcome wins (as with a late SDK
+                # interrupt). The Run succeeds and records the late request.
+                async def succeeded_and_released(snapshot):
+                    if (
+                        snapshot["run_status"],
+                        snapshot["attempt_status"],
+                        snapshot["lease_status"],
+                    ) != ("succeeded", "succeeded", "released"):
+                        return False
+                    await asyncio.to_thread(stack.assert_no_run_resources, run_id)
+                    return snapshot
+
+                final = await poll(
+                    succeeded_and_released,
+                    timeout=180,
+                    expected_terminal_statuses=("succeeded",),
+                )
+                assert final["attempt_id"] == running["attempt_id"]
+                facts = await outcome_facts()
+                assert facts["attempts"] == 1
+                assert facts["cancel_requests"] == 1
+                assert facts["succeeded_events"] == 1
+                assert facts["cancelled_events"] == 0
+                assert facts["failed_events"] == 0
+                assert facts["answer_completions"] == 1
+                assert facts["assistant_messages"] == 1
+                assert facts["committed_turns"] == 1
+                assert facts["cleanup_failures"] == 0
+                repeated = await http.post(f"/api/ai/runs/{run_id}/cancel")
+                assert repeated.status_code == 404, repeated.text
+                assert await state() == final
+                write_lifecycle_control_evidence(
+                    tmp_path,
+                    image_id=lifecycle_control_image[0],
+                    source_commit=lifecycle_control_image[1],
+                    stack=stack,
+                    scenario={
+                        "run_id": run_id,
+                        "attempt_id": final["attempt_id"],
+                        "provider": "docker",
+                        "fault_scenario": fault,
+                        "intermediate": {
+                            "worker_container_id": stopped_worker_id,
+                            "persisted_terminal_receipt_before_cancel": receipt,
+                            "state_before_cancel": before_cancel,
+                            "owner_cancel_http_status": owner_cancel.status_code,
+                            "state_after_cancel": after_cancel,
+                            "worker_restarted": True,
+                        },
+                        "final_state": final,
+                        "counts": facts,
+                        "repeated_cancel_http_status": repeated.status_code,
+                        "production_resources_absent_before_teardown": True,
                     },
-                    expected_answer_events=1,
-                    # The API defers provider stop while the terminal receipt is
-                    # pending; the reconciler owns physical release after settlement.
-                    expected_cleanup_successes=0,
                 )
                 return
 

@@ -1400,7 +1400,8 @@ begin
       old.status = 'running'
       and new.status in ('cancel_requested', 'succeeded', 'failed', 'expired')
     )
-    or (old.status = 'cancel_requested' and new.status = 'cancelled')
+    -- An executor that completed despite the request was not interrupted.
+    or (old.status = 'cancel_requested' and new.status in ('cancelled', 'succeeded'))
     or (old.status = 'expired' and new.status in ('failed', 'cancelled'))
   ) then
     raise exception 'run_attempt_transition_invalid' using errcode = '23514';

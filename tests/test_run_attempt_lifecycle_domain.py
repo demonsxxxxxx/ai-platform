@@ -84,6 +84,8 @@ def test_run_attempt_database_status_constraint_matches_domain_authority():
         ("running", "failed", "failed"),
         ("running", "cancel_requested", "running"),
         ("cancel_requested", "cancelled", "cancelled"),
+        # The executor completed before the cancel interrupted it.
+        ("cancel_requested", "succeeded", "succeeded"),
         ("running", "expired", "running"),
         ("expired", "failed", "failed"),
     ],
@@ -115,7 +117,6 @@ def test_run_attempt_same_state_is_idempotent_for_current_owner():
     ("current_status", "requested_status", "code"),
     [
         ("queued", "succeeded", "run_attempt_transition_invalid"),
-        ("cancel_requested", "succeeded", "run_attempt_transition_invalid"),
         ("succeeded", "failed", "run_attempt_terminal_immutable"),
         ("cancelled", "running", "run_attempt_terminal_immutable"),
     ],
