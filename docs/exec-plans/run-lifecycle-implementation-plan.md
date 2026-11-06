@@ -1,6 +1,6 @@
 # Run 生命周期节点实施方案
 
-状态：Phase 0 实施中，后续迁移待评审。本文将 [ADR 0016](../adr/0016-run-execution-settlement-and-reclamation.md) 拆成可独立验收的节点。当前开工范围是 N00 库存、N01 测试夹具及 N02 首批故障基线；ADR 仍为提议，运行行为迁移、阶段启用和部署分别验收。节点编号是施工顺序，不是新的运行状态。
+状态：PR #1956 实施中；原分阶段结算兼容方案已由 Attempt-only 收敛要求取代。本文将 [ADR 0016](../adr/0016-run-execution-settlement-and-reclamation.md) 拆成可独立验收的节点。N00–N02 为原始故障基线切片；当前结算迁移覆盖原 N30/N31/N40 的完整收敛。ADR 仍为提议，运行行为迁移、监督域启用和部署分别验收。节点编号是施工顺序，不是新的运行状态。
 
 本次规划核对代码基线为 main 4a9e1d251de9fd2a79140faeb5f0bb3ea9ecd0dd，文档输入为 PR #1879 的 c1032bef0f2037caf4c446cabfd88f4a8eaa1b22。实际开工时重新核对当前源码、调用者和合同；测试结果、人员、制品和部署记录放在实施 PR。
 
@@ -17,7 +17,7 @@
 | Q3 waiting_input | 本轮不加入公开 Run 状态 | 保留现有交互能力；未来单独定义请求持久化、回答关联、授权、超时和恢复 |
 | Q4 回归环境与门禁 | 本地/CI Linux Docker 跑真实依赖控制链；实际 SDK/provider 链路由维护者在真实环境执行 | CI 生命周期套件必须零跳过并进入现有 required 聚合；真实 Sandbox 证据是相关变更和阶段启用条件，缺失不得用 CI 替代 |
 
-以上是后续 ADR 评审的实施选择。Phase 0 使用独立本地测试依赖；新增测试接入现有完整文件 owner，不更改 required 聚合策略。维护者已确认没有 s72，并要求先提交代码和 PR，实际 SDK/模型验收随后在真实环境执行；该项保持待验收。生产数据库迁移须单独验收。
+以上是后续 ADR 评审的实施选择。Phase 0 使用独立本地测试依赖；新增测试接入现有完整文件 owner，不更改 required 聚合策略。真实 SDK/模型验收须绑定当前候选与隔离环境，执行结果记录在实施 PR；源码回归不代替该项验收。生产数据库迁移须单独验收。
 
 范围包括请求接受到下一轮续接的完整生命周期。Pi/ACP 适配、换 Sandbox provider、引入 Temporal、队列载荷全面瘦身、保留策略和新网络隔离方案分别安排，不与本轮混合实施。
 
@@ -95,7 +95,7 @@
 | sandbox 创建/dispatch/资源 | Settings：create 30s、executor health 60s、dispatch 30s、lease TTL 1800s、cleanup 30s；OpenSandbox request 30s、lifetime 1800s | 本地单次 I/O 预算与 provider/PG lease 到期不同；取消等待不证明远端已停止 |
 | executor 心跳及总时间 | [create_executor_app](../../app/runtime/sandbox/executor_app.py)：heartbeat 15s；执行预算读取冻结请求 `resource_limits.max_seconds` | 单调时钟控制单次等待；不把 SDK 默认 timeout=0 解释为所有任务无截止时间 |
 | probe 与 terminal reconciliation | [executor_reconciler](../../app/executor_reconciler.py)：心跳 stale 45s、probe client 10s、连续失败阈值 3；batch 1、claim stale 300s、work 240s、idle 30s、fallback 2s | candidate 读 PG 持久时间，认领后复核 claim；provider 不可达不是权威 not_found；已有回执走结算 |
-| 暂时结算失败 | [retry_sandbox_executor_reconciliation](../../app/sandbox/infrastructure/executor_reconciliation_postgres.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
+| 暂时结算失败 | [retry_attempt_settlement_claim](../../app/runs/infrastructure/attempt_settlement_writer_postgres.py)：`now() + least(30, greatest(1, attempt_count))` 秒 | PG `retry_not_before` 持久化；没有放弃总期限，不重跑 Agent。cleanup 单独 claim/槽位，stop 成功后才能 release |
 
 Harness 前置复核：当前 [计划 §5.6](completed/harness-migration-2026-10.md#56-2026-10-19-当前实现与验收缺口) 仍记录 D5、完整基线/可信覆盖阻断等未闭环。本切片新增测试和库存，不改变事务、身份或删除字段；不能据此宣布 B3–B5 或后续生命周期迁移已满足前置条件。
 
@@ -271,47 +271,23 @@ Phase 1 各节点在其相关回归和既有前置具备后可独立交付；不
 - 产出：优先复用 submission/Run 可重建事实；只有现有字段不足才增加 outbox。覆盖 keyed/unkeyed Chat、直接 Run、retry/resume/copy 的已接受任务；首次记录不要求 Attempt 已存在。
 - 实现取舍：保留按 `(tenant_id, run_id)` 唯一关联的 `run_delivery_intents`。现有 Run/input/context 与 submission 可重建候选语义，但没有统一保存本次接受时的 canonical queue payload 和 message identity；无 submission 的入口也不能借用 Chat 幂等记录。仅扫描 queued Run 无法区分原消息已入 Redis 但 receipt 未提交的窗口。由 [Redis queue adapter](../../app/execution/infrastructure/run_delivery_queue.py) 冻结原消息、[intent store](../../app/execution/infrastructure/run_delivery_intents_postgres.py) 与 Run 同事务保存，再按原身份 readback；claim/retry 字段用于调度，不作为新增表的必要性论据。明细表只记录投递事实，不复制 Run/Attempt 终态。
 - 验收：原 Run 与调度意图同事务成立；重复提交不新建事实；保存原消息身份/版本，不能从最新 Profile 重建旧意图；撤权/取消/已有执行时不能授予再执行权。启用持久投递时先映射缺少 intent 的 queued 历史 Run：只从其原 `input_json`、context snapshot、Chat submission 或 Run-control operation 证明身份；存在缺失、冲突或无法证明的记录时 API 启动失败，要求先作有限处置，不留下永久 pending。
-- 回退：schema 先展开，writer 默认不启用；保留已写意图及历史读取。不得同时建独立 submission 状态账本或 SSE publication outbox。
+- 当前运行时要求启用 durable delivery；保留已接受意图及历史身份。不得同时建独立 submission 状态账本或 SSE publication outbox。
 
 **N23：投递恢复与至少一次传输 — Execution owner。依赖 N22 及 R09/claim 并发保护。**
 
 - 产出：短事务 scoped claim -> 原身份投递/读回 -> claim-fenced receipt；持久 next_retry、公平扫描、进展指标；协调现行 stale-run/fence，不提前删除它们。
 - 验收：API commit 后崩溃无需浏览器可恢复；Redis 已写未记账、双 scanner+HTTP retry、旧 I/O 晚到、撤权、取消与 stale 回收竞争均不重复 Run/工具执行；只重试投递。响应与紧随的 readback 都暂时失败但 Attempt 已创建时，scanner 只能用原 payload/message identity 做 readback，不能再次 enqueue；无真实队列 receipt 时保持 pending 并退避，不可伪造完成。receipt-owner 事务失败时须回滚 intent 与 Chat 投影，旧 claim 保持 claim-fenced 至过期后由 scanner 重试；receipt 与 Chat queued/queue identity 同事务提交。过期 claim 可由 scanner 接管，旧 claim 仍不能写入；取消且无 Attempt 的 Run 不得进入队列 I/O。
-- 回退：先停止领取并处理在途命令，再由旧兼容路径消费未完成意图；关闭扫描器不等于 Redis 请求已撤销。保留原 queue owner token/CAS。
+- 恢复：先停止领取并处理在途命令，再由兼容当前 intent 的修复版本继续；关闭扫描器不等于 Redis 请求已撤销。保留原 queue owner token/CAS。
 
 N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新读取 Profile、不创建新 Attempt，也不以新队列 identity 覆盖已存在 Redis receipt。Run status/schema 版本 `2026.10.25.1`、delivery intent `2026.10.25.2` 和 Sandbox dispatch `2026.10.25.3` 各自保留。
 
-兼容退出：Phase 2 关闭 intent 时，Chat 的 [queue admission](../../app/conversations/application/queue_admission.py)、Runs 的 create/copy 路由和 [control queue admission](../../app/runs/application/control_queue_admission.py) 仍拥有即时 enqueue/readback；这些分支尚未退役。退出须先完成全部入口切换、历史 identity 映射和在途 claim 排空/交接，再删除其调用、测试与配置消费者。queue lease reclaim、stale Run reconciliation 和 executor terminal reconciler 分别负责队列所有权、失活执行和结算，不能因 outbox 存在一并删除；其迁移依 N23/N33 的实际接管证据。
+当前 Chat、Runs create/copy/retry/resume 已统一要求 durable delivery intent，关闭它会失败关闭，不再启用即时 enqueue/readback 兼容入口。历史 identity preflight 与在途 claim 排空仍必需。queue lease reclaim、stale Run reconciliation 和 executor terminal reconciler 分别负责队列所有权、失活执行和结算，不能因 outbox 存在一并删除。
 
-### Phase 3：结算投影与监督迁移
+### Phase 3：Attempt 唯一结算与监督调度
 
-**N30：Attempt 结算数据设计及展开 — Runs 主责，Sandbox/Context/Artifacts 共同评审。依赖 N12/N13/N21/N23。**
+原 N30/N31 shadow 双写方案由 PR #1956 的完整收敛要求取代：运行时只读写原 Attempt 的 canonical settlement detail。旧列仅供 schema apply 中的一次性历史升级，完成全量映射、比较、停旧 writer、排空与备份/恢复核验后，在同事务删除旧列、索引、约束及 marker。不再有 shadow 配置、reader/writer 切换或回退到旧结算的运行模式。详细合同由 [ExecutionSpec/Attempt §3.2](../architecture/execution-spec-and-attempt-lifecycle.md#32-attempt-is-the-single-execution-settlement-authority) 拥有。
 
-- 产出：逐字段定义 receipt、dispatch、结算 phase/claim/retry/result 与资源字段的归属；选择 Attempt 上字段或所属明细表，仍只有原 Attempt ledger；schema/readiness/index 同步展开。
-- 验收：新增普通结算进度不调用执行状态 transition，不改变现有 generation；running、取消、writer generation、native coverage 的前置保持；资源 stop/release claim 不迁成执行权。
-- 回退：新增字段只作影子且无业务读者时可停写；保留已保存字段。若确需改变执行状态/原生会话条件，先追加明确设计、兼容和负例，不能在此顺手放宽。
-
-**N31：影子写入、历史回填与语义比对 — Runs/Sandbox persistence owner。依赖 N30。**
-
-- 产出：现有 writer 仍唯一权威，在同一受控事务生成新投影；shadow 不调度、不发事件、不决定终态。历史数据按精确 Attempt 映射，含 released lease 的未结算回执及 cleanup_pending/failed。
-- 验收：R01–R14、双控制进程、一次进程重启、至少覆盖最长适用 lease/claim/retry 周期的两次到期扫描；可比记录逐项一致且覆盖数明确。未知/冲突记录不得从分母隐去；阻止其切读并指定读取/修复责任。
-- 比对：身份、原回执摘要、accepted 合并、结算含义、取消/generation、next-retry 和 cleanup 归属；不要求不同表示的时间戳字节相等。影子写失败造成的事务影响也必须测量。
-- 回退：停止 shadow 写；旧事实未被修改。回填不执行旧任务、不重写 Spec 或原 terminal receipt。
-
-当前 N30/N31 投影切片（schema `2026.10.25.5`）为原 Attempt 添加一对一 settlement detail，并提供最多 800 条/页的显式回填与页级语义比对。回填只插入、不覆盖；缺失、unknown、conflict 在各页计数中保留。页级结果和稳定快照的计数/最高 key 均不证明全量语义一致，也不得授权切读。shadow writer 由 `RUN_ATTEMPT_SETTLEMENT_SHADOW_ENABLED` 显式启用，默认关闭；旧 Sandbox writer仍是唯一业务权威。
-
-同事务 hook 与锁序：
-
-| Hook | 受影子化的源字段 | 锁序/边界 |
-|---|---|---|
-| Attempt 创建、Sandbox lease 创建 | Attempt 状态/代际快照、source lease identity | lease shadow 在插入前按 Run → lease id → Attempt 获取源锁；Attempt 创建仍遵守现有 Run owner |
-| Sandbox accepted 与 terminal receipt、dispatch intent | Dispatch intent recovery context、accepted context、receipt identity/content/digest/generation、phase/attempt count | writer 在改源行前按 Run → lease id → Attempt 锁定；intent recovery context 与 accepted semantics 分开，detail 经 Runs API 写入 |
-| terminal reconciliation/probe claim 与 retry | 仅 terminal reconciliation 投影 claim/token/time、retry clock/count；无回执的 probe claim 不投影 settlement token/phase | 先读有界候选，再按 Attempt key 排序锁 Run → lease id → Attempt，最后按候选 lease ID 执行 claim 并刷新 detail；单条 retry 在更新前取得相同源锁序 |
-| Run/Attempt cancel、stale recovery 与 terminalize | Run/Attempt 状态、结果、取消与 owner-generation 快照 | 先取得 Run → lease id → Attempt 源锁，再调用 lifecycle persistence 并刷新 detail；detail 写入本身不迁移 Attempt、不增加 generation |
-| executor heartbeat、cleanup claim、lease release | heartbeat 时间与 Sandbox 资源/清理事实 | 不写 settlement detail；清理状态由 Sandbox lease 保持权威，比较时仍纳入全分母 cleanup 统计 |
-| cleanup pending、cleanup finalize / reconciliation failed | 仅当底层 reconciliation status 改变 settlement phase 时刷新；cleanup claim/retry 字段仍不投影 | 更新前由原 Sandbox writer持有其 lease；hook 只读 source facts 并写 detail，不再请求 Run/Attempt 锁 |
-
-调用方事务中的 shadow SQL 失败会使源写与 detail 一起回滚。页级 compare 保持 page scope。`compare_snapshot` 只在 caller transaction 为 `REPEATABLE READ` 或 `SERIALIZABLE` 时扫描全部分页，提供观测结果，不提供切换证明。未来 N40 必须在新事务重新执行全量语义比对，并在切换提交前 fence `runs`、`run_attempts`、`sandbox_leases` 和 `sandbox_execution_dispatches` 的相关 writer；仅校验 Attempt 数量或最高 key 不能证明投影内容未改变。
+停止 checkpoint 的 Context 续聊、Run/Attempt 终态、结果/事件及资源 finalize 绑定同一 claim 和事务；任一 CAS/身份失败全回滚。停止证据、历史镜像核验、尾部权限、workspace/media 完整性不放宽。Sandbox 继续拥有 heartbeat/probe/cleanup/stop/release，监督调度的独立域模式不属于本次结算兼容移除。
 
 **N32：统一监督调度的只读决策阶段 — Execution scheduler + 各决策 owner。依赖 N21/N23/N31。**
 
@@ -331,43 +307,17 @@ N22/N23 历史恢复使用独立 enable 前 preflight/backfill；回填不重新
 
 N33 执行入口使用现有 Worker maintenance 和 executor reconciler 循环，没有增加部署进程或第二份裁决逻辑。每个责任域继续使用自身的批量上限、I/O 超时、轮询/唤醒路径和容量；统一 action 的活动调用在结束前保留 PG claim，调用方取消时先等待 action 收尾再释放。双副本 PostgreSQL 状态迁移回归覆盖单域 `legacy → draining → unified → draining → legacy`，包括旧模式拒绝、在途容量占用及关闭后恢复。该测试是本地 PG 证据，不代表真实 Worker/Redis/Docker 或生产 fleet 的外部验收；如果真实 PG 零跳过检查未执行或失败，须保留为切片退出项。claim 过期不能自动释放在途槽位；恢复只能由人工输入精确 fence 与 stop 证据，平台记录输入但不自动验真，也不把 domain TTL 解释为外部 exactly-once。
 
-### Phase 4：切读、停写与退役
+### Phase 4：一次性升级与旧结算缺席验收
 
-本节记录当前代码与验收边界。schema `2026.10.25.11` 是 N43 expanded 状态；仓库包含 N40 reader、N41 writer、N42 Redis fence retirement 与 N43 schema retirement 的代码和本地 owner 回归。测试数据库和 CI 不证明 production migration、真实 SDK/Sandbox、十四场景或部署验收已完成。
+分阶段 reader/writer/retire 命令与 marker 已被移除，不再作为可执行方案。schema apply 是唯一升级入口；旧数据须完整映射至原 Attempt，unknown/conflict、未排空 Run/resource/supervision/stale/delivery claim 均阻断升级，即使 TTL 已过期。历史 receipt/diagnostics/context/Run 结果与资源证据保留；成功后旧结算列、索引、约束、旧写 fence 和 marker 表必须缺席。新运行时没有兼容 fallback。恢复只用 schema-compatible 包或经授权的恢复点。
 
-**N40：切换结算读取到 Attempt — Runs/Execution owner。**
-
-持久 reader marker 从 `sandbox_lease.v1` 显式转为 `attempt.v1`。`tools/attempt_settlement_storage.py prepare` 做有界 backfill 与稳定比较；`activate` 在排空 Run/Sandbox writers、全部 source writers 使用 N40-compatible 版本并提供真实 SDK、Sandbox 与十四场景 operator 声明后，按 Runs → Sandbox → Attempt → dispatch 顺序 fence writers，再比较完整 Attempt 集合。只有缺失、unknown、conflict、mismatch 均为零且预算满足时才更新 marker。代码只记录 operator 声明，不验证外部事实。
-
-reader 已接到 Sandbox terminal claim/recovery、Runs finalizer claim 检查、Admin Run lease 与 runtime diagnostics。映射缺失或冲突会报错/显式暴露，不回退读取旧列。Heartbeat、probe、资源 identity、stop/release 与 cleanup 仍由 Sandbox 管理；这不是将所有 executor 状态迁入 Attempt。
-
-**N41：切换结算写入到 Attempt — Runs/Sandbox owner。**
-
-writer 有独立 marker 与 `writer-status`、`prepare-writer`、`activate-writer` 命令，不与 N40 reader marker 合并。writer activation 要求 legacy writers 与在途 settlement/cleanup 操作排空，并取得真实 SDK、Sandbox 与十四场景 operator 声明；切换前必须有可用 Attempt detail 和当前 reader。兼容 writer 取得一致的 Run → Sandbox → Attempt → dispatch → detail/marker 锁序，在事务内维护 detail；切换后触碰旧结算列的旧 writer 被拒绝。reader 与 writer 的代码门禁和操作步骤分别记录，两个 marker 的默认值均为 `sandbox_lease.v1`，不表示生产已切换。
-
-退役列为 `executor_terminal_json`、`executor_reconciliation_context_json`、`executor_reconciliation_intent_context_json`、`executor_reconciliation_status`、`executor_reconciliation_claim_token`、`executor_reconciliation_claimed_at`、`executor_reconciliation_retry_not_before`、`executor_terminal_reconciliation_attempt_count`。`executor_terminal_received_at` 诊断时间、`executor_reconciliation_attempt_count`、`executor_reconciliation_error`、`executor_reconciled_at`、heartbeat、probe claim、cleanup 与 stop/release 字段继续由 Sandbox 持有。N43 的目录还列出三个 legacy indexes、一个旧 status constraint 和历史 receipt/context 的保留规则。
-
-**N42：退役 Redis stale-run 业务 fence — Execution queue owner。**
-
-Redis 业务 reconciliation fence 与相应 `worker_main` 兼容入口已从当前代码移除，PG claim owner 位于 `app/execution/application/stale_run_reconciliation.py`，由 `app/bootstrap/execution_stale_run_reconciliation.py` 组合；它绑定 Run、扫描时观察的 Attempt/generation 与 claim token，写回按 Run → Sandbox → Attempt → claim 复核。过期 TTL 不代表外部 I/O 已停止，恢复仍需准确的人工作业证据。`app/queue.py` 保留 delivery `owner_token`、原子 ACK/requeue 与限流，SSE Stream 仍按自己的交付合同运行。
-
-Run delivery intent 是 production 必需的 PostgreSQL outbox：`Settings` 在 production 强制启用，API startup 通过有界、串行化历史映射补齐可证明的旧 queued Run；不可证明的记录会阻止启动。`delivered` intent 重试保留原 `queue_message_id` 与 payload identity，从同一个 queued Redis 消息恢复，不能另造新 identity。测试覆盖代码路径，未替代 production Redis/PG 竞态与 fleet 验收。
-
-**N43：显式退役旧 Sandbox 结算列 — Runs/Sandbox/schema owner。**
-
-`tools/attempt_settlement_storage.py retirement-status` 与 `prepare-retirement` 只读。仅 `retire` 能提交单向 schema 变更；它在 bounded lock/statement budgets 下先按 schema coordinator 的 INDEX → core advisory lock 次序取锁，再按 Run → Sandbox lease → Attempt → dispatch → settlement/storage/writer/retirement → supervision/stale/delivery 的表序 fence writers，之后以 `READ COMMITTED` 读取新快照。retirement marker 必须是当前 `.11` expanded 状态，core schema readiness 必须 current，reader/writer 都须为 `attempt.v1`。
-
-退役 preflight 比较每个 Attempt detail 与历史 receipt/context/intent。Receipt 比对忽略两侧仅 `diagnostics` 的差异；其余 receipt 和 context 身份必须保留。它拒绝所有未解决结算/旧结算/probe/cleanup、未恢复的 supervision/stale-reconciliation/delivery claim、pending settlement、queued/running/cancel-requested Run、active Sandbox lease 与 unresolved dispatch。Claim 的 deadline/TTL 已过期也仍计为未恢复；过期只说明租约时限，不能证明远端操作停止。旧 status、retry time 和 attempt counter 不要求与新 Attempt detail 相等。
-
-操作员必须明确声明旧 binaries 已停、Runs/resource claims 已排空、backup/restore drill 已完成，并指定最低兼容版本。代码记录声明但不验真。成功时显式删除上述八列、三个 legacy indexes 和旧 status constraint，不使用 `CASCADE`，写入独立 retirement marker；普通 schema apply 尊重 marker，布局/marker/core readiness 不一致时 readiness 失败关闭。无自动 down migration。退役后历史 mapping/backfill 和旧 reader/writer compatibility 路径 fail closed，不再访问 legacy settlement columns。
-
-真实 SDK/provider、14 lifecycle scenarios、真实 Sandbox、旧 binary 停写、fleet 排空、backup/restore、最低兼容镜像与生产部署仍待维护者验收。本地 PostgreSQL 测试只证明合成数据库中的迁移、fence 与回归行为。
+PostgreSQL stale recovery 读取 Attempt detail，保持精确 generation/CAS；Redis queue token、ACK/requeue、capacity 与 SSE 不变。生产 delivery outbox 和已验证的监督调度继续由现有 owner 执行。源码、真实 PG/Redis、SDK/Sandbox、构建镜像、部署证据分别记录；旧候选或阶段 CI 不证明本次 Attempt-only 候选通过。
 
 ### U1：可选的“正在整理结果”展示
 
-依赖 N40 的稳定持久进度；由 Runs 公开投影、Streaming 和前端 owner 共同完成。先复用现有 phase 能力；如涉及新字段/事件，按现有 schema、validator、history、hydration、renderer 合同一起演进。保持 queued/running/terminal 状态枚举不变。
+依赖 Attempt 的稳定持久进度；由 Runs 公开投影、Streaming 和前端 owner 共同完成。先复用现有 phase 能力；如涉及新字段/事件，按现有 schema、validator、history、hydration、renderer 合同一起演进。保持 queued/running/terminal 状态枚举不变。
 
-验收：阶段来自当前 Run/Attempt 的合法持久进度；断线刷新仍一致；永久失败覆盖该阶段；等待结算不显示假成功或假百分比。已完成但下载失败是读取错误，不能把 Run 改回 finalizing。不显示 SDK/claim/私有错误内容。此节点可单独回退展示，不改变结算，也不阻塞 N41–N43。
+验收：阶段来自当前 Run/Attempt 的合法持久进度；断线刷新仍一致；永久失败覆盖该阶段；等待结算不显示假成功或假百分比。已完成但下载失败是读取错误，不能把 Run 改回 finalizing。不显示 SDK/claim/私有错误内容。此节点可单独回退展示，不改变结算，也不阻塞结算迁移。
 
 ## 6. 每节点的验收记录和停止条件
 
@@ -381,15 +331,15 @@ Run delivery intent 是 production 必需的 PostgreSQL outbox：`Settings` 在 
 
 出现跨作用域写入、旧 owner 获权、重复副作用、回执被覆盖、原生会话静默重置、未确认 stop 却释放、部分业务事务提交或缺少必要真实依赖证据时，停止受影响节点的启用。按 owning regression 修复或明确处置；不弱化门禁、删断言或用影子数据替代权威。
 
-以下是已有工具的调用形状，不表示本次执行过运行回归；新增 selectors 在 N01/N03 落地后填入实际名称：
+以下是已有工具的调用形状，不表示本次执行过运行回归；使用当前 owning selectors：
 
 ~~~bash
 python tools/run_test_stage.py --stage lifecycle-owner-regression \
   --timeout-seconds 600 --require-zero-skips -- \
-  tests/test_worker_heartbeat_postgres_redis_integration.py \
-  tests/test_frozen_receipt_spec_postgres.py
+  tests/test_reconciled_cancel_commit_postgres.py \
+  tests/test_stale_reconciliation_claims.py
 ~~~
 
 该示例只证明所选两个边界，不能标为十四场景通过。运行需配置隔离的真实依赖，连接凭据只由环境提供，不进入文档或结果日志。部署与远端实际执行继续由 [release runbook](../operations/release-operations-runbook.md) 管理。
 
-当前实施单元为 N00–N01：已补当前入口/故障窗口/预算库存，C 层连接准入、Worker、结算、产物、回收，并加入 Worker 重启与 ACK 丢失故障注入。实际命令结果以 runner evidence 和实施 PR 为准；L 层按维护者安排留待真实环境。后续由 N02 的事实基线决定修复与迁移准入，不能因为局部测试通过就宣布 Phase 0 或 ADR 验收完成。
+原始 N00–N01 切片记录：已补当前入口/故障窗口/预算库存，C 层连接准入、Worker、结算、产物、回收，并加入 Worker 重启与 ACK 丢失故障注入。实际命令结果以 runner evidence 和实施 PR 为准；L 层按维护者安排留待真实环境。后续由 N02 的事实基线决定修复与迁移准入，不能因为局部测试通过就宣布 Phase 0 或 ADR 验收完成。

@@ -6,7 +6,6 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class SandboxReconciliationReceiptAuthority:
-    lock_receipt: Callable[..., Awaitable[bool]]
     lock_resource: Callable[..., Awaitable[bool]] | None = None
     settlement_reader: Any | None = None
 
@@ -26,11 +25,11 @@ class SandboxReconciliationReceiptAuthority:
             "user_id": scope["user_id"],
             "session_id": scope["session_id"],
         }
-        if (
-            self.settlement_reader is None
-            or await self.settlement_reader.storage_version(conn) != "attempt.v1"
-        ):
-            return await self.lock_receipt(conn, claim_token=claim_token, **lock_scope)
+        if self.settlement_reader is None:
+            raise RuntimeError("attempt_settlement_reader_unconfigured")
+        await self.settlement_reader.lock_sources_in_transaction(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        )
         if self.lock_resource is None or not await self.lock_resource(conn, **lock_scope):
             return False
         try:
@@ -40,12 +39,14 @@ class SandboxReconciliationReceiptAuthority:
                 run_id=run_id,
                 attempt_id=attempt_id,
                 require_mapped=True,
+                for_update=True,
             )
         except RuntimeError:
             return False
         return bool(
             detail
             and detail.get("source_lease_id") == lease_id
+            and detail.get("receipt_json") is not None
             and detail.get("settlement_phase") == "claimed"
             and detail.get("settlement_claim_token") == claim_token
             and detail.get("receipt_owner_generation") == expected_owner_generation

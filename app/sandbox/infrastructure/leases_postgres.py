@@ -7,16 +7,8 @@ from app.sandbox.domain.lease_errors import (
     SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
 )
 from app.sandbox.infrastructure.executor_reconciliation_postgres import (
-    claim_sandbox_executor_reconciliations as claim_sandbox_executor_reconciliations,
-    get_sandbox_executor_reconciliation_summary as get_sandbox_executor_reconciliation_summary,
-    has_sandbox_executor_reconciliation_claim as has_sandbox_executor_reconciliation_claim,
-    is_sandbox_executor_reconciliation_claim_current as is_sandbox_executor_reconciliation_claim_current,
-    list_sandbox_executor_reconciliation_candidate_scopes as list_sandbox_executor_reconciliation_candidate_scopes,
-    mark_sandbox_executor_reconciliation_cleanup_pending as mark_sandbox_executor_reconciliation_cleanup_pending,
     mark_sandbox_executor_cleanup_pending as mark_sandbox_executor_cleanup_pending,
-    next_sandbox_executor_reconciliation_retry_delay as next_sandbox_executor_reconciliation_retry_delay,
     quarantine_sandbox_executor_reconciliation as quarantine_sandbox_executor_reconciliation,
-    retry_sandbox_executor_reconciliation as retry_sandbox_executor_reconciliation,
     claim_quarantined_checkpoint_for_repair as claim_quarantined_checkpoint_for_repair,
     finalize_stopped_executor_checkpoint as finalize_stopped_executor_checkpoint,
     get_quarantined_checkpoint_for_repair as get_quarantined_checkpoint_for_repair,
@@ -24,8 +16,6 @@ from app.sandbox.infrastructure.executor_reconciliation_postgres import (
 )
 from app.sandbox.infrastructure.executor_terminal_postgres import (
     get_sandbox_executor_terminal_handoff as get_sandbox_executor_terminal_handoff,
-    record_sandbox_executor_terminal as record_sandbox_executor_terminal,
-    record_sandbox_executor_terminal_diagnostics as record_sandbox_executor_terminal_diagnostics,
     record_sandbox_executor_terminal_observation as record_sandbox_executor_terminal_observation,
 )
 from app.sandbox.infrastructure.executor_probe_postgres import (
@@ -51,7 +41,6 @@ from app.sandbox.infrastructure.lease_runtime_postgres import (
     list_expired_active_sandbox_leases as list_expired_active_sandbox_leases,
     new_lease_id as new_lease_id,
     record_opensandbox_renewal_receipt as record_opensandbox_renewal_receipt,
-    record_sandbox_executor_accepted as record_sandbox_executor_accepted,
     record_sandbox_executor_accepted_observation as record_sandbox_executor_accepted_observation,
     record_sandbox_executor_heartbeat as record_sandbox_executor_heartbeat,
     release_active_sandbox_leases_for_run as release_active_sandbox_leases_for_run,
@@ -75,13 +64,7 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
                   executor_reconciliation_attempt_count, executor_reconciliation_error,
                   executor_reconciled_at, executor_probe_claimed_at,
                   executor_cleanup_status, executor_cleanup_claimed_at,
-                  executor_cleanup_retry_not_before,
-                  to_jsonb(sandbox_leases)->>'executor_reconciliation_status'
-                    as executor_reconciliation_status,
-                  to_jsonb(sandbox_leases)->'executor_terminal_reconciliation_attempt_count'
-                    as executor_terminal_reconciliation_attempt_count,
-                  to_jsonb(sandbox_leases)->'executor_reconciliation_context_json'->'dispatch_timings'
-                    as dispatch_timings
+                  executor_cleanup_retry_not_before
            from sandbox_leases where tenant_id=%s and run_id=%s
            order by created_at desc limit 101""", (tenant_id, run_id),
     )
@@ -89,7 +72,7 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
     projected = []
     for row in rows[:100]:
         item = dict(row)
-        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_reconciliation_status", "executor_cleanup_status", "release_reason"):
+        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_cleanup_status", "release_reason"):
             item[name] = sanitize_public_text(item.get(name))[:256] or None
         projected.append(item)
     return {"leases": projected, "leases_truncated": len(rows) > 100, "lease_limit": 100}
@@ -345,27 +328,6 @@ async def list_sandbox_leases(conn: AsyncConnection, *, tenant_id: str, status: 
     return list(await cursor.fetchall())
 
 
-async def lock_scoped_reconciliation_receipt(
-    conn, *, tenant_id: str, workspace_id: str, user_id: str, session_id: str,
-    run_id: str, attempt_id: str, lease_id: str, claim_token: str,
-    expected_owner_generation: int,
-) -> bool:
-    """Fence receipt settlement to its original exact scope and generation."""
-    cursor = await conn.execute(
-        """
-        select id from sandbox_leases
-        where id = %s and tenant_id = %s and workspace_id = %s and user_id = %s
-          and session_id = %s and run_id = %s and attempt_id = %s
-          and status in ('active', 'released') and executor_terminal_json is not null
-          and executor_reconciliation_status = 'claimed'
-          and executor_reconciliation_claim_token = %s
-          and lease_payload_json->>'owner_generation' = %s
-        for update
-        """,
-        (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
-         claim_token, str(expected_owner_generation)),
-    )
-    return await cursor.fetchone() is not None
 
 
 async def lock_scoped_reconciliation_resource(

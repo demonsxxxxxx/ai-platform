@@ -192,11 +192,6 @@ class SandboxRuntimeCleanup:
             cleanup_status = row.get("executor_cleanup_status")
             if cleanup_status is not None and cleanup_status not in {"not_required", "finalized"}:
                 continue
-            if cleanup_status is None and (
-                row.get("executor_terminal_json") is not None
-                and row.get("executor_reconciliation_status") != "finalized"
-            ):
-                continue
             lease = self.container_lease_from_persisted_row(
                 row,
                 allow_historical_internal_test_cleanup=True,

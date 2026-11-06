@@ -13,7 +13,6 @@ from app.runs.domain.attempt_settlement_projection import (
     CleanupObservation,
 )
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    ATTEMPT_SETTLEMENT_WRITER_VERSIONS,
     _ATTEMPT_FIELDS,
     _RUN_FIELDS,
     _canonical_digest,
@@ -33,24 +32,14 @@ _ACTIVE_RESOURCE_LEASE_FIELDS = (
     "browser_enabled", "lease_payload_json", "runtime_container_id",
     "runtime_container_name", "runtime_executor_url",
     "runtime_workspace_container_path", "runtime_handle_verified_at",
-    "executor_status", "executor_heartbeat_at", "executor_probe_claim_token",
+    "executor_status", "executor_heartbeat_at", "executor_terminal_received_at",
+    "executor_reconciliation_attempt_count", "executor_reconciliation_error", "executor_reconciled_at",
+    "executor_probe_claim_token",
     "executor_probe_claimed_at", "executor_cleanup_status",
     "executor_cleanup_claim_token", "executor_cleanup_claimed_at",
     "executor_cleanup_retry_not_before", "heartbeat_at", "expires_at",
     "released_at", "release_reason", "created_at", "updated_at",
 )
-
-
-async def get_attempt_settlement_writer_version(conn: Any) -> str:
-    row = await (
-        await conn.execute(
-            "select writer_version from run_attempt_settlement_writer where singleton = true"
-        )
-    ).fetchone()
-    version = str(row.get("writer_version") or "") if row else ""
-    if version not in ATTEMPT_SETTLEMENT_WRITER_VERSIONS:
-        raise RuntimeError("attempt_settlement_writer_marker_invalid")
-    return version
 
 
 async def _current_owned_detail(
@@ -224,6 +213,7 @@ async def refresh_attempt_settlement_snapshot(
         finished_at = run.get("finished_at") or attempt.get("finished_at")
         if result is not None and finished_at is not None:
             values.update(
+                settled_claim_token=values.get("settlement_claim_token") or values.get("settled_claim_token"),
                 settlement_phase="settled",
                 settlement_claim_token=None,
                 settlement_claimed_at=None,
@@ -405,19 +395,6 @@ async def record_attempt_settlement_dispatch_outcome(
     return True
 
 
-def _settlement_phase_legacy_alias(phase: str) -> str:
-    return {
-        "awaiting_receipt": "waiting_terminal",
-        "awaiting_context": "waiting_terminal",
-        "pending": "pending",
-        "claimed": "claimed",
-        "retry": "retry",
-        "settled": "finalized",
-        "failed": "failed",
-        "unknown": "unknown",
-    }.get(phase, "unknown")
-
-
 async def claim_due_attempt_settlements(
     conn: Any,
     *,
@@ -485,23 +462,17 @@ async def claim_due_attempt_settlements(
         result = {field: lease.get(field) for field in _ACTIVE_RESOURCE_LEASE_FIELDS}
         detail_row = dict(updated)
         result.update(
-            settlement_storage_version="attempt.v1",
             settlement_mapping_state=detail_row.get("mapping_state"),
             settlement_phase="claimed",
             settlement_dispatch_state=detail_row.get("dispatch_state"),
             settlement_receipt_present=True,
-            executor_terminal_json=detail_row.get("receipt_json"),
-            executor_reconciliation_context_json=detail_row.get("accepted_context_json"),
-            executor_reconciliation_intent_context_json=detail_row.get("intent_recovery_context_json"),
-            executor_reconciliation_status="claimed",
-            executor_reconciliation_claim_token=detail_row.get("settlement_claim_token"),
-            executor_reconciliation_claimed_at=detail_row.get("settlement_claimed_at"),
-            executor_reconciliation_retry_not_before=detail_row.get("next_retry_at"),
-            executor_terminal_reconciliation_attempt_count=detail_row.get("settlement_attempt_count"),
-            executor_terminal_received_at=detail_row.get("updated_at"),
-            executor_reconciliation_attempt_count=detail_row.get("settlement_attempt_count"),
-            executor_reconciliation_error=detail_row.get("settlement_error_code") or "",
-            executor_reconciled_at=detail_row.get("settled_at"),
+            receipt_json=detail_row.get("receipt_json"),
+            accepted_context_json=detail_row.get("accepted_context_json"),
+            intent_recovery_context_json=detail_row.get("intent_recovery_context_json"),
+            settlement_claim_token=detail_row.get("settlement_claim_token"),
+            settlement_claimed_at=detail_row.get("settlement_claimed_at"),
+            next_retry_at=detail_row.get("next_retry_at"),
+            settlement_attempt_count=detail_row.get("settlement_attempt_count"),
         )
         claimed.append(result)
     return claimed
@@ -657,3 +628,26 @@ async def get_attempt_settlement_reconciliation_summary(
         "terminalization_slo_breach_count": int(row.get("terminalization_slo_breach_count") or 0),
     }
 
+
+async def claim_attempt_checkpoint_repair(
+    conn: Any, *, tenant_id: str, run_id: str, attempt_id: str, lease_id: str, claim_token: str,
+) -> bool:
+    """Reclaim only the operator-authorized resource checkpoint in this transaction."""
+    _attempt, _run, lease, _detail = await _current_owned_detail(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id, source_lease_id=lease_id,
+    )
+    payload = _mapping(lease.get("lease_payload_json")) or {}
+    repair = _mapping(payload.get("checkpoint_repair")) or {}
+    if repair.get("claim_token") != claim_token or lease.get("release_reason") != "verified_checkpoint_operator_repair":
+        raise AttemptSettlementProjectionConflict("checkpoint_repair_claim_lost")
+    cursor = await conn.execute(
+        """update run_attempt_settlements set settlement_phase='claimed',settlement_claim_token=%s,
+             settlement_claimed_at=now(),next_retry_at=null,settlement_attempt_count=settlement_attempt_count+1,
+             updated_at=now() where tenant_id=%s and run_id=%s and attempt_id=%s and source_lease_id=%s
+             and mapping_state='mapped' and receipt_json is not null and accepted_context_json is not null
+             and settlement_phase='claimed' returning attempt_id""",
+        (claim_token, tenant_id, run_id, attempt_id, lease_id),
+    )
+    if await cursor.fetchone() is None:
+        raise AttemptSettlementProjectionConflict("checkpoint_repair_claim_lost")
+    return True

@@ -235,25 +235,18 @@ async def test_heartbeat_worker_run_attempt_waits_for_attempt_creation():
 
 
 @pytest.mark.asyncio
-async def test_settlement_writers_fence_source_locks_and_marker_before_projecting():
+async def test_settlement_writers_lock_sources_before_updating_authoritative_detail():
     calls = []
     conn = object()
 
     class Projection:
-        async def attempt_writer_active(self, _conn):
-            return False
-
-        async def lock_writer_fence(self, _conn):
-            calls.append("writer_fence")
-
         async def lock_sources_in_transaction(self, _conn, **_kwargs):
             calls.append("source_locks")
 
-        async def writes_enabled(self, _conn, *, shadow_enabled):
-            calls.append(("marker", shadow_enabled))
-            return True
+        async def initialize_attempt_in_transaction(self, _conn, **_kwargs):
+            calls.append("initialize")
 
-        async def refresh_in_transaction(self, _conn, **_kwargs):
+        async def refresh_snapshot_in_transaction(self, _conn, **_kwargs):
             calls.append("refresh")
 
     class Persistence(AttemptPersistenceStub):
@@ -284,20 +277,18 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
     service = RunAttemptLifecycleService(
         persistence=Persistence({"id": "rat-a", "status": "running"}),
         settlement_projection=Projection(),
-        settlement_shadow_enabled=lambda: False,
     )
     common = {"tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "rat-a"}
 
     await service.start_worker(conn, **common)
     assert calls == [
-        "writer_fence", "start_write", "writer_fence", "source_locks",
-        ("marker", False), "refresh",
+        "start_write", "source_locks", "initialize", "refresh",
     ]
 
     calls.clear()
     await service.request_cancel(conn, **common)
     assert calls == [
-        "writer_fence", "source_locks", ("marker", False), "cancel_write", "refresh",
+        "source_locks", "cancel_write", "refresh",
     ]
 
     calls.clear()
@@ -305,7 +296,7 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
         conn, **common, status="failed", terminal_reason="run_failed"
     )
     assert calls == [
-        "writer_fence", "source_locks", ("marker", False), "terminal_write", "refresh",
+        "source_locks", "terminal_write", "refresh",
     ]
 
     calls.clear()
@@ -317,8 +308,8 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
         reconciler_id="stale-maintenance",
     )
     assert calls == [
-        "writer_fence", ("run_lock", True), ("get_latest", False),
-        "writer_fence", "source_locks", ("marker", False), "stale_write", "refresh",
+        ("run_lock", True), ("get_latest", False),
+        "source_locks", "stale_write", "refresh",
     ]
 
     calls.clear()
@@ -330,7 +321,7 @@ async def test_settlement_writers_fence_source_locks_and_marker_before_projectin
         terminal_reason="run_failed",
     )
     assert calls == [
-        "writer_fence", ("run_lock", True), ("get_latest", False),
-        "writer_fence", "source_locks", ("marker", False), ("get_latest", True),
-        "writer_fence", "source_locks", ("marker", False), "terminal_write", "refresh",
+        ("run_lock", True), ("get_latest", False),
+        "source_locks", ("get_latest", True),
+        "source_locks", "terminal_write", "refresh",
     ]

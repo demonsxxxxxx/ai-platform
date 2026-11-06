@@ -922,7 +922,7 @@ class SandboxRuntime:
                                 )
                             if persisted is None:
                                 return False
-                            terminal = ExecutorTerminalResult.model_validate(persisted["executor_terminal_json"])
+                            terminal = ExecutorTerminalResult.model_validate(persisted["receipt_json"])
                             if (terminal.run_id != request.run_id or normalize_executor_terminal_status(
                                 persisted["executor_status"], terminal.status,
                             ) is None):
@@ -1202,8 +1202,8 @@ class SandboxRuntime:
                             raise SandboxDispatchOutcomeUnknown() from accepted_commit_error
                     if (
                         accepted_lease
-                        and accepted_lease.get("executor_terminal_json") is not None
-                        and accepted_lease.get("executor_reconciliation_status") == "pending"
+                        and accepted_lease.get("receipt_json") is not None
+                        and accepted_lease.get("settlement_phase") == "pending"
                     ):
                         try:
                             async with asyncio.timeout(_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS):

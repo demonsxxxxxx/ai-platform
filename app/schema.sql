@@ -17,33 +17,6 @@ create table if not exists schema_index_migrations (
   updated_at timestamptz not null default now()
 );
 
--- This durable state separates the additive compatibility schema from the
--- operator-triggered destructive retirement. Core upgrades consult it before
--- adding any legacy settlement columns again.
-create table if not exists run_attempt_settlement_retirement (
-  singleton boolean not null default true,
-  state text not null default 'expanded',
-  retirement_version text not null default '2026.10.25.11',
-  minimum_compatible_version text,
-  operator_declaration jsonb,
-  retired_at timestamptz,
-  updated_at timestamptz not null default now(),
-  constraint run_attempt_settlement_retirement_pkey primary key (singleton),
-  constraint chk_run_attempt_settlement_retirement_singleton check (singleton),
-  constraint chk_run_attempt_settlement_retirement_state check (
-    state in ('expanded', 'retired')
-  ),
-  constraint chk_run_attempt_settlement_retirement_receipt check (
-    (state = 'expanded' and retired_at is null)
-    or (state = 'retired' and retired_at is not null
-        and minimum_compatible_version is not null
-        and operator_declaration is not null)
-  )
-);
-insert into run_attempt_settlement_retirement(singleton, state)
-values (true, 'expanded')
-on conflict (singleton) do nothing;
-
 create table if not exists tenants (
   id text primary key,
   name text not null,
@@ -993,6 +966,7 @@ create table if not exists run_attempt_settlements (
   settlement_phase text not null,
   settlement_claim_token text,
   settlement_claimed_at timestamptz,
+  settled_claim_token text,
   next_retry_at timestamptz,
   settlement_attempt_count integer not null default 0,
   result_status text,
@@ -1062,44 +1036,11 @@ alter table run_attempt_settlements
   add column if not exists intent_recovery_context_json jsonb;
 alter table run_attempt_settlements
   add column if not exists receipt_recorded_at timestamptz;
+alter table run_attempt_settlements
+  add column if not exists settled_claim_token text;
 
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
-
--- This singleton is the durable authority for choosing the settlement reader.
--- Schema application only creates the legacy default; operational cutover is
--- performed separately by the explicit N40 command.
-create table if not exists run_attempt_settlement_storage (
-  singleton boolean not null default true,
-  storage_version text not null default 'sandbox_lease.v1',
-  updated_at timestamptz not null default now(),
-  constraint run_attempt_settlement_storage_pkey primary key (singleton),
-  constraint chk_run_attempt_settlement_storage_singleton check (singleton),
-  constraint chk_run_attempt_settlement_storage_version check (
-    storage_version in ('sandbox_lease.v1', 'attempt.v1')
-  )
-);
-
-insert into run_attempt_settlement_storage(singleton, storage_version)
-values (true, 'sandbox_lease.v1')
-on conflict (singleton) do nothing;
-
--- Writer authority is independent from the reader marker above. N41 activates
--- this only after legacy writers and in-flight operations are explicitly drained.
-create table if not exists run_attempt_settlement_writer (
-  singleton boolean not null default true,
-  writer_version text not null default 'sandbox_lease.v1',
-  updated_at timestamptz not null default now(),
-  constraint run_attempt_settlement_writer_pkey primary key (singleton),
-  constraint chk_run_attempt_settlement_writer_singleton check (singleton),
-  constraint chk_run_attempt_settlement_writer_version check (
-    writer_version in ('sandbox_lease.v1', 'attempt.v1')
-  )
-);
-
-insert into run_attempt_settlement_writer(singleton, writer_version)
-values (true, 'sandbox_lease.v1')
-on conflict (singleton) do nothing;
 
 -- A per-Run claim fences stale reconciliation in PostgreSQL. It binds the
 -- exact Attempt owner generation observed before takeover; Attempt CAS remains
@@ -3286,84 +3227,9 @@ alter table sandbox_leases add column if not exists executor_cleanup_status text
 alter table sandbox_leases add column if not exists executor_cleanup_claim_token text;
 alter table sandbox_leases add column if not exists executor_cleanup_claimed_at timestamptz;
 alter table sandbox_leases add column if not exists executor_cleanup_retry_not_before timestamptz;
--- Retain the old writer projection only during the explicit expanded phase.
--- The marker gate is also applied by future core schema upgrades.
-do $$
-begin
-  if exists (
-    select 1 from run_attempt_settlement_retirement
-    where singleton = true and state = 'expanded'
-  ) then
-    alter table sandbox_leases add column if not exists executor_terminal_json jsonb;
-    alter table sandbox_leases add column if not exists executor_reconciliation_context_json jsonb;
-    alter table sandbox_leases add column if not exists executor_reconciliation_intent_context_json jsonb;
-    alter table sandbox_leases add column if not exists executor_reconciliation_status text not null default 'waiting_terminal';
-    alter table sandbox_leases add column if not exists executor_reconciliation_claim_token text;
-    alter table sandbox_leases add column if not exists executor_reconciliation_claimed_at timestamptz;
-    alter table sandbox_leases add column if not exists executor_reconciliation_retry_not_before timestamptz;
-    alter table sandbox_leases add column if not exists executor_terminal_reconciliation_attempt_count integer not null default 0;
-
-    update sandbox_leases
-    set executor_reconciliation_retry_not_before = updated_at + make_interval(
-      secs => least(30, greatest(1, executor_terminal_reconciliation_attempt_count))
-    )
-    where executor_terminal_json is not null
-      and executor_reconciliation_status = 'retry'
-      and executor_reconciliation_retry_not_before is null;
-
-    update sandbox_leases
-    set executor_probe_claim_token = case
-          when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
-            then executor_reconciliation_claim_token
-          else executor_probe_claim_token
-        end,
-        executor_probe_claimed_at = case
-          when executor_terminal_json is null and executor_reconciliation_status = 'claimed'
-            then executor_reconciliation_claimed_at
-          else executor_probe_claimed_at
-        end,
-        executor_cleanup_status = case
-          when executor_terminal_json is null then 'not_required'
-          when executor_reconciliation_status = 'finalized' then 'finalized'
-          when executor_reconciliation_status in ('cleanup_pending', 'failed')
-            then executor_reconciliation_status
-          else 'waiting_settlement'
-        end,
-        executor_cleanup_claim_token = case
-          when executor_terminal_json is not null
-           and executor_reconciliation_status in ('cleanup_pending', 'failed')
-            then executor_reconciliation_claim_token
-          else executor_cleanup_claim_token
-        end,
-        executor_cleanup_claimed_at = case
-          when executor_terminal_json is not null
-           and executor_reconciliation_status in ('cleanup_pending', 'failed')
-            then executor_reconciliation_claimed_at
-          else executor_cleanup_claimed_at
-        end,
-        executor_cleanup_retry_not_before = case
-          when executor_terminal_json is not null
-           and executor_reconciliation_status in ('cleanup_pending', 'failed')
-            then executor_reconciliation_retry_not_before
-          else executor_cleanup_retry_not_before
-        end
-    where executor_cleanup_status = 'not_required';
-  end if;
-end $$;
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_status
   check (executor_status in ('pending', 'accepted', 'running', 'completed', 'failed', 'cancelled'));
-do $$
-begin
-  if exists (
-    select 1 from run_attempt_settlement_retirement
-    where singleton = true and state = 'expanded'
-  ) then
-    alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_reconciliation_status;
-    alter table sandbox_leases add constraint chk_sandbox_leases_executor_reconciliation_status
-      check (executor_reconciliation_status in ('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'));
-  end if;
-end $$;
 alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_cleanup_status;
 alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_status
   check (executor_cleanup_status in (
@@ -3372,54 +3238,6 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_st
   ));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
-
--- Fence binary writers that still try to mutate the retired settlement
--- projection after N41 writer activation. The JSON comparison remains valid
--- after N43 drops the named fields.
-create or replace function reject_legacy_attempt_settlement_write()
-returns trigger language plpgsql as $$
-declare
-  writer_mode text;
-  retirement_state text;
-  legacy_name text;
-  old_values jsonb := to_jsonb(old);
-  new_values jsonb := to_jsonb(new);
-begin
-  select writer_version into writer_mode
-  from run_attempt_settlement_writer where singleton = true;
-  select state into retirement_state
-  from run_attempt_settlement_retirement where singleton = true;
-  if writer_mode is null
-     or writer_mode not in ('sandbox_lease.v1', 'attempt.v1')
-     or retirement_state is null
-     or retirement_state not in ('expanded', 'retired') then
-    raise exception 'attempt_settlement_authority_marker_invalid'
-      using errcode = '55000';
-  end if;
-  if writer_mode = 'attempt.v1' or retirement_state = 'retired' then
-    foreach legacy_name in array array[
-      'executor_terminal_json',
-      'executor_reconciliation_context_json',
-      'executor_reconciliation_intent_context_json',
-      'executor_reconciliation_status',
-      'executor_reconciliation_claim_token',
-      'executor_reconciliation_claimed_at',
-      'executor_reconciliation_retry_not_before',
-      'executor_terminal_reconciliation_attempt_count'
-    ] loop
-      if old_values ? legacy_name and
-         old_values -> legacy_name is distinct from new_values -> legacy_name then
-        raise exception 'legacy_attempt_settlement_write_rejected'
-          using errcode = '55000';
-      end if;
-    end loop;
-  end if;
-  return new;
-end $$;
-drop trigger if exists trg_reject_legacy_attempt_settlement_write on sandbox_leases;
-create trigger trg_reject_legacy_attempt_settlement_write
-before update on sandbox_leases
-for each row execute function reject_legacy_attempt_settlement_write();
 
 -- Attempt-owned evidence for one exact provider dispatch. This is an
 -- observation ledger, not a second Run/Attempt execution authority.
@@ -3447,44 +3265,6 @@ create table if not exists sandbox_execution_dispatches (
     status in ('intent', 'accepted', 'rejected', 'unknown')
   )
 );
-
--- Preserve the best available historical intent context at this additive
--- schema boundary; new dispatches persist it independently of acceptance.
-do $$
-begin
-  if exists (
-    select 1 from run_attempt_settlement_retirement
-    where singleton = true and state = 'expanded'
-  ) then
-    update sandbox_leases
-    set executor_reconciliation_intent_context_json = executor_reconciliation_context_json
-    where executor_reconciliation_intent_context_json is null
-      and executor_reconciliation_context_json is not null;
-  end if;
-end $$;
-
-update run_attempt_settlements
-set intent_recovery_context_json = accepted_context_json
-where intent_recovery_context_json is null
-  and accepted_context_json is not null;
-
--- Rollback for the additive OpenSandbox renewal observations (after callers retire):
--- alter table sandbox_leases drop column if exists provider_renewed_at;
--- alter table sandbox_leases drop column if exists provider_expires_at;
-
--- Rollback for the additive async execution columns:
--- alter table sandbox_leases drop constraint if exists chk_sandbox_leases_executor_status;
--- alter table sandbox_leases drop column if exists executor_terminal_received_at;
--- alter table sandbox_leases drop column if exists executor_terminal_json;
--- alter table sandbox_leases drop column if exists executor_heartbeat_at;
--- alter table sandbox_leases drop column if exists executor_status;
--- drop index if exists idx_sandbox_leases_attempt;
--- alter table sandbox_leases drop column if exists attempt_id;
--- alter table sandbox_leases drop column if exists runtime_handle_verified_at;
--- alter table sandbox_leases drop column if exists runtime_workspace_container_path;
--- alter table sandbox_leases drop column if exists runtime_executor_url;
--- alter table sandbox_leases drop column if exists runtime_container_name;
--- alter table sandbox_leases drop column if exists runtime_container_id;
 
 create table if not exists file_upload_sessions (
   id text primary key,

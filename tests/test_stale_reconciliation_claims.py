@@ -29,18 +29,9 @@ from app.platform.tracing import standard_trace_id
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.domain.execution_spec import EXECUTION_SPEC_SCHEMA_VERSION, compile_execution_spec
-from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
-    activate_attempt_settlement_storage,
-    prepare_attempt_settlement_storage_cutover,
-)
-from app.runs.infrastructure.attempt_settlement_retirement_postgres import (
-    prepare_attempt_settlement_retirement,
-    retire_attempt_settlement_legacy_columns,
-)
-from app.runs.infrastructure.attempt_settlement_writer_cutover_postgres import (
-    activate_attempt_settlement_writer,
-    prepare_attempt_settlement_writer_cutover,
-)
+
+
+
 from app.runs.infrastructure.lifecycle_postgres import (
     PostgresRunLifecyclePersistence,
     claim_stale_run_reconciliation,
@@ -79,8 +70,6 @@ class _Connection:
     async def execute(self, query: str, params: tuple[Any, ...] = ()):
         statement = " ".join(query.split()).lower()
         self.calls.append((statement, params))
-        if statement == "select storage_version from run_attempt_settlement_storage where singleton = true":
-            return _Cursor({"storage_version": "sandbox_lease.v1"})
         return _Cursor(self.rows.pop(0) if self.rows else None)
 
 
@@ -202,6 +191,10 @@ async def _seed_running_attempt(
         "update runs set status = 'running' where tenant_id = %s and id = %s",
         (tenant_id, run_id),
     )
+    from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+    await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+    )
     return tenant_id, run_id, attempt_id, worker_id, old
 
 
@@ -228,14 +221,14 @@ async def test_postgres_stale_candidates_bind_attempt_and_exclude_queued_deliver
         postgres_claim_mode=True,
     )
 
-    statement, params = conn.calls[1]
+    statement, params = conn.calls[0]
     assert rows == []
     assert "runs.status = 'running'" in statement
     assert "latest_attempt.id as expected_attempt_id" in statement
     assert "latest_attempt.owner_generation" in statement
     assert "claim_expires_at > clock_timestamp()" in statement
     assert "lease.status = 'active'" in statement
-    assert "executor_reconciliation_status is distinct from 'finalized'" in statement
+    assert "detail.settlement_phase <> 'settled'" in statement
     assert "attempt.lease_expires_at > clock_timestamp()" in statement
     assert "claim.claim_deadline_at > clock_timestamp()" in statement
     assert "for update of runs skip locked" in statement
@@ -290,8 +283,8 @@ async def test_claim_locks_run_then_attempt_and_replaces_only_an_expired_claim()
     assert claim["expected_attempt_id"] == "attempt-a"
     assert claim["expected_owner_generation"] == 4
     assert claim["stale_before"] == "2026-07-21T11:00:00Z"
-    assert "for update of runs" in conn.calls[1][0]
-    assert "for update" in conn.calls[2][0]
+    assert "for update of runs" in conn.calls[0][0]
+    assert "for update" in conn.calls[1][0]
     assert "on conflict (tenant_id, run_id) do update" in conn.calls[-1][0]
     assert "claim_deadline_at <= clock_timestamp()" in conn.calls[-1][0]
 
@@ -612,11 +605,11 @@ async def test_real_postgres_candidate_scan_skips_unclaimable_rows_before_limit(
             await conn.execute(
                 """insert into sandbox_leases(
                      id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
-                     sandbox_mode, status, executor_terminal_json, executor_reconciliation_status
-                   ) values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'released',
-                             '{"status":"failed"}'::jsonb, 'pending')""",
+                     sandbox_mode, status
+                   ) values (%s, %s, %s, %s, %s, %s, %s, 'ephemeral', 'released')""",
                 ("lease-receipt", tenant_id, workspace_id, user_id, session_id, run_id, attempt_id),
             )
+            await _seed_pending_receipt(conn, tenant_id, run_id, attempt_id, "lease-receipt", 4)
 
             tenant_id, run_id, _attempt_id, _worker_id = fixtures["live_attempt"]
             await conn.execute(
@@ -653,7 +646,7 @@ async def test_real_postgres_candidate_scan_skips_unclaimable_rows_before_limit(
 
 
 @pytest.mark.asyncio
-async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_receipt(monkeypatch):
+async def test_real_stale_owner_cancels_released_expired_attempt_without_receipt(monkeypatch):
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -687,10 +680,6 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
             tenant_id, run_id, attempt_id, _worker_id, old = await _seed_running_attempt(
                 conn, suffix=suffix
             )
-            marker = await (await conn.execute(
-                "select storage_version from run_attempt_settlement_storage where singleton=true"
-            )).fetchone()
-            assert marker["storage_version"] == "sandbox_lease.v1"
             await conn.execute(
                 "update runs set cancel_requested_at=%s, terminalization_target='cancel_requested' "
                 "where tenant_id=%s and id=%s",
@@ -744,7 +733,7 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
                 (tenant_id, run_id, attempt_id),
             )).fetchone()
             lease = await (await conn.execute(
-                "select status, executor_status, executor_terminal_json, executor_reconciliation_status "
+                "select status, executor_status "
                 "from sandbox_leases where tenant_id=%s and run_id=%s and attempt_id=%s",
                 (tenant_id, run_id, attempt_id),
             )).fetchone()
@@ -752,24 +741,14 @@ async def test_real_legacy_stale_owner_cancels_released_expired_attempt_without_
             assert attempt["status"] == "cancelled"
             assert lease["status"] == "released"
             assert lease["executor_status"] == "pending"
-            assert lease["executor_terminal_json"] is None
-            assert lease["executor_reconciliation_status"] == "waiting_terminal"
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("reader_version", "rejection"),
-    [("sandbox_lease.v1", None), ("attempt.v1", None),
-     ("sandbox_lease.v1", "pending_receipt"), ("attempt.v1", "pending_receipt"),
-     ("sandbox_lease.v1", "missing_marker"), ("sandbox_lease.v1", "active_resource"),
-     ("sandbox_lease.v1", "missing_evidence"), ("sandbox_lease.v1", "wrong_generation")],
-)
-async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
-    reader_version, rejection,
-):
+@pytest.mark.parametrize("rejection", [None, "pending_receipt", "active_resource", "missing_evidence", "wrong_generation"])
+async def test_real_postgres_cancel_handoff_recovers_after_release_commit(rejection):
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -824,15 +803,6 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
                 "where tenant_id=%s and id=%s",
                 (old, tenant_id, run_id),
             )
-            if rejection == "missing_marker":
-                await conn.execute(
-                    "delete from run_attempt_settlement_storage where singleton=true"
-                )
-            else:
-                await conn.execute(
-                    "update run_attempt_settlement_storage set storage_version=%s where singleton=true",
-                    (reader_version,),
-                )
             await conn.execute(
                 """
                 insert into sandbox_leases(
@@ -856,31 +826,8 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
                     "update sandbox_leases set lease_payload_json='{}'::jsonb where id=%s",
                     (f"lease-{suffix}",),
                 )
-            if rejection == "pending_receipt" and reader_version == "sandbox_lease.v1":
-                await conn.execute(
-                    "update sandbox_leases set executor_status='completed', "
-                    "executor_terminal_json=%s::jsonb, "
-                    "executor_reconciliation_status='waiting_terminal' "
-                    "where tenant_id=%s and id=%s",
-                    (json.dumps({"status": "succeeded"}), tenant_id, f"lease-{suffix}"),
-                )
-            if rejection == "pending_receipt" and reader_version == "attempt.v1":
-                await conn.execute(
-                    """
-                    insert into run_attempt_settlements(
-                      tenant_id, run_id, attempt_id, mapping_state, source_lease_id,
-                      receipt_identity, receipt_json, receipt_sha256, receipt_owner_generation,
-                      dispatch_state, accepted_context_json, attempt_status_snapshot,
-                      attempt_owner_generation_snapshot, run_status_snapshot,
-                      settlement_phase, settlement_attempt_count
-                    ) values (%s, %s, %s, 'mapped', %s, 'receipt-a',
-                      %s::jsonb, %s, %s, 'accepted',
-                      %s::jsonb, 'cancel_requested', %s, 'running', 'pending', 1)
-                    """,
-                    (tenant_id, run_id, attempt_id, f"lease-{suffix}",
-                     json.dumps({"status": "succeeded"}), "a" * 64, generation - 1,
-                     json.dumps({"accepted": True}), generation),
-                )
+            if rejection == "pending_receipt":
+                await _seed_pending_receipt(conn, tenant_id, run_id, attempt_id, f"lease-{suffix}", generation - 1)
 
         persistence = PostgresRunCancellationPersistence(
             attempt_lifecycle=RunAttemptLifecycleService(persistence=run_attempt_persistence),
@@ -933,19 +880,11 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
             publish_event=lambda *_args, **_kwargs: _noop(), warn=lambda *_args: None,
             handoff_cancelled_attempt=handoff,
         )
-        if rejection == "missing_marker":
-            with pytest.raises(RuntimeError, match="marker_invalid"):
-                await repeat_processor.post_cancel(
-                    CancelRequestResult(run_id, "cancelled", None, (), None, attempt_id, generation),
-                    tenant_id=tenant_id, user_id=f"user-{suffix}",
-                    requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
-                )
-        else:
-            await repeat_processor.post_cancel(
-                CancelRequestResult(run_id, "cancelled", None, (), None, attempt_id, generation),
-                tenant_id=tenant_id, user_id=f"user-{suffix}",
-                requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
-            )
+        await repeat_processor.post_cancel(
+            CancelRequestResult(run_id, "cancelled", None, (), None, attempt_id, generation),
+            tenant_id=tenant_id, user_id=f"user-{suffix}",
+            requested_by_role="owner", reason="cancel_requested", worker_capabilities=None,
+        )
         async with transaction_factory() as conn:
             final = await (await conn.execute(
                 "select owner_kind, owner_id, owner_generation, lease_expires_at, last_heartbeat_at "
@@ -1006,7 +945,7 @@ async def test_real_postgres_cancel_handoff_recovers_after_release_commit(
 
 
 @pytest.mark.asyncio
-async def test_real_cancel_handoff_reader_marker_rejects_unsupported_version():
+async def test_real_schema_has_no_settlement_cutover_markers():
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -1036,16 +975,8 @@ async def test_real_cancel_handoff_reader_marker_rejects_unsupported_version():
             index_connection_factory=index_connection_factory,
         )
         async with transaction_factory() as conn:
-            await conn.execute("savepoint invalid_marker")
-            with pytest.raises(psycopg.errors.CheckViolation):
-                await conn.execute(
-                    "update run_attempt_settlement_storage set storage_version='invalid' where singleton=true"
-                )
-            await conn.execute("rollback to savepoint invalid_marker")
-            marker = await (await conn.execute(
-                "select storage_version from run_attempt_settlement_storage where singleton=true"
-            )).fetchone()
-            assert marker["storage_version"] == "sandbox_lease.v1"
+            for relation in ("run_attempt_settlement_storage", "run_attempt_settlement_writer", "run_attempt_settlement_retirement"):
+                assert (await (await conn.execute("select to_regclass(%s) as relation", (relation,))).fetchone())["relation"] is None
     finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema)))
         await admin.close()
@@ -1199,7 +1130,7 @@ async def test_real_two_connection_run_attempt_claim_writeback_uses_run_first_lo
 
 
 @pytest.mark.asyncio
-async def test_real_stale_run_terminalization_after_legacy_receipt_columns_retired():
+async def test_real_stale_run_terminalization_uses_attempt_only_schema():
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -1228,45 +1159,6 @@ async def test_real_stale_run_terminalization_after_legacy_receipt_columns_retir
             transaction_factory=transaction_factory,
             index_connection_factory=index_connection_factory,
         )
-        assert (await prepare_attempt_settlement_storage_cutover(transaction_factory))["status"] == "ready"
-        async with transaction_factory() as conn:
-            reader = await activate_attempt_settlement_storage(
-                conn,
-                operator_confirmations={
-                    "run_and_sandbox_writers_drained": True,
-                    "all_source_writers_n40_compatible": True,
-                    "real_sdk_acceptance_complete": True,
-                    "real_sandbox_lifecycle_acceptance_complete": True,
-                    "fourteen_lifecycle_scenarios_complete": True,
-                },
-            )
-            assert reader["status"] == "activated"
-        assert (await prepare_attempt_settlement_writer_cutover(transaction_factory))["status"] == "ready"
-        async with transaction_factory() as conn:
-            writer = await activate_attempt_settlement_writer(
-                conn,
-                operator_confirmations={
-                    "legacy_writers_drained": True,
-                    "inflight_settlement_and_cleanup_operations_drained": True,
-                    "real_sdk_acceptance_complete": True,
-                    "real_sandbox_lifecycle_acceptance_complete": True,
-                    "fourteen_lifecycle_scenarios_complete": True,
-                },
-            )
-            assert writer["status"] == "activated"
-            assert (await prepare_attempt_settlement_retirement(conn, schema_authority=schema_migrations))["status"] == "ready"
-        async with transaction_factory() as conn:
-            retired = await retire_attempt_settlement_legacy_columns(
-                conn, schema_authority=schema_migrations,
-                operator_confirmations={
-                    "legacy_binaries_stopped": True,
-                    "runs_and_resource_claims_drained": True,
-                    "backup_restore_drill_complete": True,
-                },
-                minimum_compatible_version="attempt.v1 stale reconciliation regression",
-            )
-            assert retired["status"] == "retired"
-
         async with transaction_factory() as conn:
             legacy_columns = await (
                 await conn.execute(
@@ -1317,6 +1209,7 @@ async def test_real_stale_run_terminalization_after_legacy_receipt_columns_retir
                     f"session-retired-receipt-{suffix}", pending_run, pending_attempt,
                 ),
             )
+            await _seed_pending_receipt(conn, pending_tenant, pending_run, pending_attempt, f"lease-pending-{suffix}", int(old_claim["expected_owner_generation"]))
             assert not await stale_run_reconciliation_claim_is_current(conn, claim=old_claim)
             assert await claim_stale_run_reconciliation(
                 conn,
@@ -1560,3 +1453,10 @@ async def test_real_redis_lease_heartbeat_loses_postgres_attempt_cas_after_claim
 
 async def _noop(*_args, **_kwargs):
     return None
+
+
+async def _seed_pending_receipt(conn, tenant_id, run_id, attempt_id, lease_id, writer_generation):
+    from app.runs.infrastructure.attempt_settlement_writer_postgres import record_attempt_settlement_terminal_receipt
+    await conn.execute("update sandbox_leases set lease_payload_json=%s::jsonb where id=%s", (json.dumps({"attempt_id":attempt_id,"owner_generation":writer_generation}),lease_id))
+    await record_attempt_settlement_terminal_receipt(conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        lease_id=lease_id,receipt={"run_id":run_id,"status":"failed"},receipt_owner_generation=writer_generation)

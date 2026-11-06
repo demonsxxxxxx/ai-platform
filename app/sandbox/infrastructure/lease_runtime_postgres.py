@@ -127,56 +127,6 @@ async def get_sandbox_lease_scope(
         for key in ("tenant_id", "run_id", "attempt_id")
     }
 
-async def record_sandbox_executor_accepted(
-    connection: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    lease_id: str,
-    reconciliation_context: dict[str, Any],
-    ttl_seconds: int = 1800,
-) -> dict[str, Any]:
-    cursor = await connection.execute(
-        """
-        update sandbox_leases
-        set executor_status = case
-                when executor_status in ('running', 'completed', 'failed', 'cancelled')
-                    then executor_status
-                else 'accepted'
-            end,
-            executor_heartbeat_at = now(),
-            executor_reconciliation_context_json = %s::jsonb,
-            executor_reconciliation_status = case
-                when executor_terminal_json is not null
-                  and executor_reconciliation_status = 'waiting_terminal'
-                    then 'pending'
-                else executor_reconciliation_status
-            end,
-            expires_at = now() + make_interval(secs => %s),
-            updated_at = now()
-        where id = %s
-          and tenant_id = %s
-          and run_id = %s
-          and attempt_id = %s
-          and status = 'active'
-        returning *
-        """,
-        (
-            json.dumps(reconciliation_context, ensure_ascii=False),
-            int(ttl_seconds),
-            lease_id,
-            tenant_id,
-            run_id,
-            attempt_id,
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise SandboxLeaseReleaseScopeMismatchError(
-            "sandbox_executor_attempt_inactive"
-        )
-    return dict(row)
 
 
 async def record_sandbox_executor_accepted_observation(

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -12,6 +13,9 @@ from app.execution.api import ContinuationSettlementPorts
 from app.executors.claude.capability_policy import RecoveryToolGate
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.application.worker_result_commit import WorkerResultCommitCommand, WorkerResultCommitService
+
+settlement_lease_port = build_sandbox_executor_reconciliation_port()
+
 
 
 @pytest.mark.parametrize("tool", ["Bash", "Agent", "Skill", "WebFetch", "WebSearch", "Write", "Edit", "NotebookEdit", "mcp__server__write", "mcp__server__code"])
@@ -387,13 +391,13 @@ async def test_reconciler_stops_exact_provider_then_saves_before_terminal_conver
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _: lease)
     monkeypatch.setattr(r, "_container_provider_for_lease", lambda _: Provider())
     monkeypatch.setattr(r, "transaction", transaction)
-    monkeypatch.setattr(__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']), "has_sandbox_executor_reconciliation_claim", claim)
+    monkeypatch.setattr(settlement_lease_port, "has_sandbox_executor_reconciliation_claim", claim)
     async def checkpoint(*args, **kwargs): pass
     monkeypatch.setattr(r, "_record_reconciliation_stage", checkpoint)
     monkeypatch.setattr(r, "run_storage_io", storage_io)
     row = {"id": "lease-a", "run_id": "run-a", "provider": "opensandbox"}
     action = r._collect_workspace_and_convert_result(
-        row, lease_port=__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']), registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
+        row, lease_port=settlement_lease_port, registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
         claim_token="claim-a", continuation_ports=ContinuationSettlementPorts(save, unexpected_settle),
     )
     if stop_status in {"failed", "wrong_identity"}:

@@ -23,13 +23,12 @@ from app.bootstrap.run_lifecycle import build_run_lifecycle_service
 from app.context.domain.conversation_recovery import make_provider_coverage_authority_receipt
 from app.context.domain.provider_sessions import ProviderSessionScope
 from app.context.infrastructure import provider_epochs
-from app.context.infrastructure.provider_continuation import get_session_continuation
+from tests.support.attempt_settlement import read_session_continuation as get_session_continuation
 from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
 from app.execution.api import sandbox_failure_prefers_cancelled
 from app.executors.base import project_execution_spec_to_run_payload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.registry import AdapterRegistry
-from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.runs.application.worker_dispatch_admission import WorkerAuthorizedDispatchCandidate
 from app.runs.application.worker_capability_admission import WorkerCapabilityAuthorization
@@ -41,6 +40,9 @@ from app.identity.infrastructure.audit_postgres import append_audit_log
 from tests.test_run_attempt_repository import _execution_spec
 from tests.test_sandbox_persistence import executor_acceptance_database
 from tests.test_reconciled_cancel_commit import historical_image_lease_binding
+
+sandbox_leases = build_sandbox_executor_reconciliation_port()
+
 
 
 @pytest.mark.asyncio
@@ -284,7 +286,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     if operator_fault is not None:
         assert await sandbox_leases.quarantine_sandbox_executor_reconciliation(conn,
             lease_id=row["id"],claim_token="claim-a",error="executor_reconciliation_runtime_handle_invalid")
-        quarantined = await (await conn.execute("select * from sandbox_leases where id=%s",(row["id"],))).fetchone()
+        quarantined = await sandbox_leases.get_sandbox_lease(conn, tenant_id="tenant-a",user_id="user-a",run_id="run-a",lease_id=row["id"])
         if operator_fault == "ack":
             await conn.execute("update provider_session_append_receipts set batch_sha256=%s where epoch_id=%s",("f"*64,frozen["provider_epoch_id"]))
         if operator_fault == "workspace":
@@ -307,8 +309,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         if operator_fault != "success":
             with pytest.raises((ValueError,RuntimeError)):
                 await repair()
-            after = await (await conn.execute("select * from sandbox_leases where id=%s",(row["id"],))).fetchone()
-            for key in ("status","executor_reconciliation_status","executor_reconciliation_error","updated_at","lease_payload_json","executor_terminal_json"):
+            after = await sandbox_leases.get_sandbox_lease(conn, tenant_id="tenant-a",user_id="user-a",run_id="run-a",lease_id=row["id"])
+            for key in ("status","settlement_phase","executor_reconciliation_error","updated_at","lease_payload_json","receipt_json"):
                 assert after[key] == quarantined[key], key
             assert publication_visits == []
             expected_visits = 1 if operator_fault == "cas" else 0
@@ -322,8 +324,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             return
         outcome = await repair()
         assert len(validation_visits) == 1 and publication_visits == ["after_outer_commit"]
-        after = await (await conn.execute("select * from sandbox_leases where id=%s",(row["id"],))).fetchone()
-        assert after["executor_terminal_json"] == terminal
+        after = await sandbox_leases.get_sandbox_lease(conn, tenant_id="tenant-a",user_id="user-a",run_id="run-a",lease_id=row["id"])
+        assert after["receipt_json"] == terminal
         assert after["lease_payload_json"]["terminal_reconciliation"] == stage
         mark = after["lease_payload_json"]["checkpoint_repair"]
         assert mark["invocation_id"] == "operator-authorized-repair"
@@ -351,7 +353,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             return await original_finalize(actual, **kwargs)
         monkeypatch.setattr(sandbox_leases, "finalize_stopped_executor_checkpoint", observe_finalize)
         # Hand the existing checkpoint to the real scanner's fresh claim, not a helper-only commit.
-        await conn.execute("update sandbox_leases set executor_reconciliation_status='pending',executor_reconciliation_claim_token=null,executor_reconciliation_claimed_at=null where id='runtime-lease'")
+        await conn.execute("update run_attempt_settlements set settlement_phase='pending',settlement_claim_token=null,settlement_claimed_at=null where source_lease_id='runtime-lease'")
         assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
             registry=registry, worker_id="reconciler-a", v4_capabilities=capabilities,
             attempt_lifecycle=attempts, lifecycle=lifecycle,
@@ -362,8 +364,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             assert (await (await conn.execute("select status from runs where id='run-a'")).fetchone())["status"] == "running"
             current = await (await conn.execute("select state,recovery_json from provider_session_epochs where id=%s", (frozen["provider_epoch_id"],))).fetchone()
             assert current == {"state": "active", "recovery_json": None}
-            lease_state = await (await conn.execute("select status,executor_reconciliation_status from sandbox_leases where id='runtime-lease'")).fetchone()
-            assert lease_state["status"] == "active" and lease_state["executor_reconciliation_status"] != "finalized"
+            lease_state = await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()
+            assert lease_state["status"] == "active" and lease_state["executor_cleanup_status"] != "finalized"
             attempt_state = await attempts.get(conn, tenant_id="tenant-a", run_id="run-a", attempt_id=started["id"])
             assert attempt_state["status"] == "cancel_requested" and attempt_state["owner_generation"] == pending_generation
             assert (await (await conn.execute("select count(*) as n from run_events where run_id='run-a' and event_type in ('run_succeeded','run_failed','run_cancelled')")).fetchone())["n"] == 0
@@ -382,8 +384,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         assert epoch["state"] == "active" and epoch["recovery_json"] is None
         assert attempt["status"] == ("cancel_requested" if requested_cancel else "running") and attempt["owner_generation"] == pending_generation
         assert await (await conn.execute("select 1 from run_diagnostics where run_id='run-a'")).fetchone() is None
-        lease_state = await (await conn.execute("select status,executor_reconciliation_status from sandbox_leases where id='runtime-lease'")).fetchone()
-        assert lease_state["status"] == "active" and lease_state["executor_reconciliation_status"] != "finalized"
+        lease_state = await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()
+        assert lease_state["status"] == "active" and lease_state["executor_cleanup_status"] != "finalized"
         assert (await (await conn.execute("select count(*) as n from messages where run_id='run-a' and role='assistant'")).fetchone())["n"] == 0
         return
     assert outcome.status == expected_status, diagnostic
@@ -394,8 +396,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     assert epoch["recovery_json"]["final_sequence"] == 2 and epoch["recovery_json"]["workspace_saved"] is True
     assert all(epoch[key] is None for key in ("writer_run_id", "writer_attempt_id", "writer_owner_generation"))
     assert (await (await conn.execute("select count(*) as n from provider_session_append_receipts where epoch_id=%s", (epoch["id"],))).fetchone())["n"] == 1
-    persisted = await (await conn.execute("select status,executor_reconciliation_status from sandbox_leases where id='runtime-lease'")).fetchone()
-    assert persisted == dict(status="released",executor_reconciliation_status="finalized")
+    persisted = await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()
+    assert persisted == dict(status="released",executor_cleanup_status="finalized")
     if operator_fault is None:
         # A completed checkpoint is no longer claimable and cannot revisit its provider.
         assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
@@ -403,7 +405,10 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             attempt_lifecycle=attempts, lifecycle=lifecycle,
         ) == 0
         # Recover an old partial terminal commit using only its durable checkpoint.
-        await conn.execute("update sandbox_leases set status='active',released_at=null,executor_reconciliation_status='pending',executor_reconciliation_claim_token=null,executor_reconciliation_claimed_at=null where id='runtime-lease'")
+        await conn.execute("update sandbox_leases set status='active',released_at=null,executor_cleanup_status='waiting_settlement' where id='runtime-lease'")
+        # Model a durable partial terminal commit: result/Context survived, but
+        # its original native claim still owns the stop checkpoint.
+        await conn.execute("update run_attempt_settlements set settlement_phase='claimed',settlement_claim_token='recovery-claim',settlement_claimed_at=now()-interval '1 hour',settled_claim_token=null where source_lease_id='runtime-lease'")
         def forbidden_provider(*args, **kwargs):
             raise AssertionError("terminal checkpoint recovery must not create a provider client")
         monkeypatch.setattr(reconciler, "_container_provider_for_lease", forbidden_provider)
@@ -411,7 +416,7 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
             registry=registry, worker_id="reconciler-a", v4_capabilities=capabilities,
             attempt_lifecycle=attempts, lifecycle=lifecycle,
         ) == 1
-        assert (await (await conn.execute("select status,executor_reconciliation_status from sandbox_leases where id='runtime-lease'")).fetchone()) == dict(status="released", executor_reconciliation_status="finalized")
+        assert (await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()) == dict(status="released", executor_cleanup_status="finalized")
     projected = await get_session_continuation(conn,tenant_id="tenant-a",user_id="user-a",session_id="session-a")
     assert projected["state"] == expected_recovery and projected["action"] == "continue"
     if unknown_effect:

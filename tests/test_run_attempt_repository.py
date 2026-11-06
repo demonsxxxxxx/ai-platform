@@ -706,7 +706,6 @@ async def test_cancel_handoff_requires_exact_released_resource_and_transfers_own
                 {"id": "lease-a"},
                 None,
                 {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 5},
-                {"storage_version": "sandbox_lease.v1"},
                 None,
                 {"id": "rat-a"},
             ]
@@ -768,7 +767,6 @@ async def test_cancel_handoff_rejects_unsafe_resource_or_attempt_state(failure_s
         responses = [
             *common, None,
             {"id": "rat-a", "status": "cancel_requested", "owner_kind": "queue_worker", "owner_id": "worker-a", "owner_generation": 5},
-            {"storage_version": "sandbox_lease.v1"},
             {"id": "pending"},
         ]
     persistence = run_attempt_repository.PostgresRunCancellationPersistence(

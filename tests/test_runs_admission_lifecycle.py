@@ -136,10 +136,6 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
         async def execute(self, sql, params=()):
             normalized = " ".join(sql.split())
             calls.append((normalized, params))
-            if normalized.startswith(
-                "select storage_version from run_attempt_settlement_storage"
-            ):
-                return SingleRowCursor({"storage_version": "attempt.v1"})
             return SingleRowCursor(None)
 
     lifecycle = RunLifecycleService(
@@ -168,12 +164,12 @@ async def test_receipt_fenced_stale_terminalization_never_cancels_completed_exec
     )
 
     assert staged is None
-    stage_sql = calls[1][0]
+    stage_sql = calls[0][0]
     assert "run_attempt_settlements detail" in stage_sql
     assert "lease.executor_status in ('completed', 'failed', 'cancelled')" in stage_sql
     assert "executor_terminal_json" not in stage_sql
     assert "executor_reconciliation_status" not in stage_sql
-    assert calls[1][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
+    assert calls[0][1][4:9] == ("tenant-a", "workspace-a", "user-a", "run-a", "running")
 
 
 @pytest.mark.parametrize(

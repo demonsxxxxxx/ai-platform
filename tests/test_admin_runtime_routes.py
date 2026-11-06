@@ -12,26 +12,13 @@ from tests.support.db_transactions import opaque_transaction
 import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
 
 
-class _LegacyAttemptSettlementReader:
-    """Unit port for admin projections backed by legacy Sandbox lease rows."""
+class _AdminAttemptSettlement:
+    """Runs read port for resource-focused administrator projection tests."""
 
-    async def storage_version(self, _conn):
-        return "sandbox_lease.v1"
-
-    async def writer_fence(self, _conn):
-        return None
-
-    async def lock_writer_fence(self, _conn):
-        return None
-
-    async def lock_sources_in_transaction(self, _conn, **_scope):
-        return None
-
-    async def writes_enabled(self, _conn, *, shadow_enabled):
-        return False
-
-    async def attempt_writer_active(self, _conn):
-        return False
+    async def read_attempt(self, _conn, **scope):
+        assert all(scope.get(key) for key in ("tenant_id", "run_id", "attempt_id"))
+        return {"mapping_state": "mapped", "settlement_phase": "awaiting_receipt",
+                "settlement_attempt_count": 0}
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
@@ -53,9 +40,9 @@ def test_retired_phase_readiness_reports_are_not_importable(module_name):
 @pytest.fixture(autouse=True)
 def signed_runtime_proof_key(monkeypatch):
     monkeypatch.setattr(
-        sandbox_lease_ports._shadowed_repository,
+        sandbox_lease_ports._settlement_repository,
         "_settlement",
-        _LegacyAttemptSettlementReader(),
+        _AdminAttemptSettlement(),
     )
 
     async def empty_executor_reconciliation_summary(_conn, *, tenant_id, slo_seconds):
@@ -78,7 +65,8 @@ def signed_runtime_proof_key(monkeypatch):
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
     )
     monkeypatch.setattr(
-        "app.sandbox.infrastructure.leases_postgres.get_sandbox_executor_reconciliation_summary",
+        sandbox_lease_ports._settlement_repository,
+        "get_sandbox_executor_reconciliation_summary",
         empty_executor_reconciliation_summary,
     )
 

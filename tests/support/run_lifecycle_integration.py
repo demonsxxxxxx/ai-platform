@@ -293,6 +293,12 @@ class RunLifecycleTestStack:
                 ),
             )
 
+            from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+            await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+                conn, tenant_id=self.tenant_id, run_id=self.run_id, attempt_id=self.attempt_id,
+                source_lease_id=f"lease_{self.attempt_id}",
+            )
+
     def api_environment(self) -> dict[str, str]:
         return _base_subprocess_environment() | {
             "DATABASE_URL": _schema_dsn(self.dsn, self.schema_name),

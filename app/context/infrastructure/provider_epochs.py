@@ -1072,6 +1072,14 @@ async def read_verified_native_invocation(
 
 
 class PostgresProviderEpochRepository:
+    def __init__(self, *, settlement_reader=None):
+        self._settlement_reader = settlement_reader
+
+    async def get_continuation(self, conn, **scope):
+        if self._settlement_reader is None:
+            raise RuntimeError("attempt_settlement_reader_unconfigured")
+        return await get_session_continuation(conn, **scope, settlement_reader=self._settlement_reader)
+
     verification_scope = staticmethod(provider_epoch_verification_scope)
     read_verified_native_invocation = staticmethod(read_verified_native_invocation)
     prepare_callback_media = staticmethod(prepare_callback_media)
@@ -1084,7 +1092,6 @@ class PostgresProviderEpochRepository:
     commit_turn = staticmethod(commit_provider_turn)
     settle_continuation = staticmethod(settle_provider_continuation)
     advance_unclaimed_terminal_generation = staticmethod(advance_unclaimed_terminal_generation)
-    get_continuation = staticmethod(get_session_continuation)
 
 
 async def read_usage_provider_session(conn, *, tenant_id: str, run_id: str, attempt_id: str) -> str | None:

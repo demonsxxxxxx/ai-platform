@@ -158,9 +158,9 @@ async def test_provider_tail_is_explicit_fallback_only(monkeypatch, allow_tail, 
         )
         assert await authority.recheck_provider_session_append(
             conn, tenant_id="tenant", identity=append_identity,
-        ) is lease
+        ) == lease
     else:
-        assert await authority.recheck_attempt(conn, tenant_id="tenant", identity=identity) is lease
+        assert await authority.recheck_attempt(conn, tenant_id="tenant", identity=identity) == lease
     scope = {"tenant_id": "tenant", "run_id": "run", "attempt_id": "attempt"}
     current.assert_awaited_once_with(conn, **scope)
     if allow_tail and not active:

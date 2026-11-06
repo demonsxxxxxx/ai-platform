@@ -27,7 +27,6 @@ def build_worker_attempt_lifecycle_ports(
 
     run_diagnostics = build_run_diagnostics_service()
     receipt_authority = SandboxReconciliationReceiptAuthority(
-        lock_receipt=leases_postgres.lock_scoped_reconciliation_receipt,
         lock_resource=leases_postgres.lock_scoped_reconciliation_resource,
         settlement_reader=build_attempt_settlement_projection_service(),
     )

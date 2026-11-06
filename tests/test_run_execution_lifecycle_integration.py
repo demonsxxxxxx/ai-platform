@@ -280,9 +280,11 @@ def test_executor_http_callback_persists_answer_to_real_postgres_and_redis(finis
                             lease = await (
                                 await conn.execute(
                                     """
-                                    select status, executor_terminal_json
-                                    from sandbox_leases
-                                    where tenant_id = %s and run_id = %s and attempt_id = %s
+                                    select lease.status, detail.receipt_json
+                                    from sandbox_leases lease join run_attempt_settlements detail
+                                      on detail.tenant_id=lease.tenant_id and detail.run_id=lease.run_id
+                                     and detail.attempt_id=lease.attempt_id
+                                    where lease.tenant_id = %s and lease.run_id = %s and lease.attempt_id = %s
                                     """,
                                     (stack.tenant_id, stack.run_id, stack.attempt_id),
                                 )
@@ -297,7 +299,7 @@ def test_executor_http_callback_persists_answer_to_real_postgres_and_redis(finis
                         assert visible_deltas[0]["payload_json"]["delta"] == (
                             "Synthetic lifecycle answer"
                         )
-                        assert lease == {"status": "active", "executor_terminal_json": None}
+                        assert lease == {"status": "active", "receipt_json": None}
 
                         assert stack.redis is not None
                         stream_rows = await stack.redis.xrange(stack.redis_stream_key)
@@ -346,24 +348,26 @@ def test_executor_http_callback_persists_answer_to_real_postgres_and_redis(finis
                             while True:
                                 async with stack.connection_factory() as conn:
                                     terminal = await (await conn.execute(
-                                        "select executor_status, executor_terminal_json, "
-                                        "executor_reconciliation_status from sandbox_leases "
-                                        "where tenant_id = %s and run_id = %s and attempt_id = %s",
+                                        "select lease.executor_status, detail.receipt_json, detail.settlement_phase "
+                                        "from sandbox_leases lease join run_attempt_settlements detail "
+                                        "on detail.tenant_id=lease.tenant_id and detail.run_id=lease.run_id "
+                                        "and detail.attempt_id=lease.attempt_id "
+                                        "where lease.tenant_id = %s and lease.run_id = %s and lease.attempt_id = %s",
                                         (stack.tenant_id, stack.run_id, stack.attempt_id),
                                     )).fetchone()
-                                if terminal["executor_terminal_json"] is not None:
+                                if terminal["receipt_json"] is not None:
                                     break
                                 assert time.monotonic() < deadline, "terminal receipt was not persisted"
                                 await asyncio.sleep(0.02)
                             assert terminal["executor_status"] == "completed"
-                            assert terminal["executor_reconciliation_status"] == "waiting_terminal"
-                            assert terminal["executor_terminal_json"]["answer_receipt"]["delta_count"] == 1
+                            assert terminal["settlement_phase"] == "awaiting_context"
+                            assert terminal["receipt_json"]["answer_receipt"]["delta_count"] == 1
                             replay = {
                                 "session_id": stack.session_id, "run_id": stack.run_id,
                                 "attempt_id": stack.attempt_id,
                                 "callback_token_id": stack.callback_token_id,
                                 "batch_id": "replayed-terminal", "status": "completed",
-                                "progress": 100, "terminal_result": terminal["executor_terminal_json"],
+                                "progress": 100, "terminal_result": terminal["receipt_json"],
                             }
                             callback_headers = {"X-AI-Platform-Callback-Token": token}
                             first_ack = _post_json(task["callback_url"], replay, headers=callback_headers)
@@ -374,7 +378,7 @@ def test_executor_http_callback_persists_answer_to_real_postgres_and_redis(finis
                             assert second_ack[1]["deduplicated"] is True
                             async with stack.connection_factory() as conn:
                                 persisted = await (await conn.execute(
-                                    "select executor_terminal_json from sandbox_leases "
+                                    "select receipt_json from run_attempt_settlements "
                                     "where tenant_id = %s and run_id = %s and attempt_id = %s",
                                     (stack.tenant_id, stack.run_id, stack.attempt_id),
                                 )).fetchone()
@@ -383,7 +387,7 @@ def test_executor_http_callback_persists_answer_to_real_postgres_and_redis(finis
                                     "and run_id = %s and event_type = 'message.delta'",
                                     (stack.tenant_id, stack.run_id),
                                 )).fetchone()
-                            assert persisted["executor_terminal_json"] == terminal["executor_terminal_json"]
+                            assert persisted["receipt_json"] == terminal["receipt_json"]
                             assert delta_count["n"] == 1
 
                         # Neither receiving the receipt nor losing the process grants business
@@ -563,13 +567,15 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "and event_type='capability_not_authorized') as denials, "
                         "a.id as attempt_id, a.status as attempt_status, a.owner_generation, "
                         "l.status as lease_status, l.executor_status, "
-                        "l.executor_reconciliation_status, l.executor_terminal_json, "
+                        "d.settlement_phase, d.receipt_json, l.executor_cleanup_status, "
                         "l.executor_reconciliation_attempt_count, "
                         "l.executor_reconciliation_error, "
-                        "l.executor_reconciliation_context_json is not null "
+                        "d.accepted_context_json is not null "
                         "as has_reconciliation_context "
                         "from runs r left join run_attempts a on a.run_id = r.id "
-                        "left join sandbox_leases l on l.attempt_id = a.id "
+                        "left join sandbox_leases l on l.tenant_id=r.tenant_id and l.attempt_id = a.id "
+                        "left join run_attempt_settlements d on d.tenant_id=r.tenant_id "
+                        "and d.run_id=r.id and d.attempt_id=a.id "
                         "where r.id = %s", (run_id,),
                     )).fetchone()
 
@@ -699,7 +705,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                         == "sandbox_executor_probe_failed"
                     ):
                         return snapshot
-                    if snapshot["executor_terminal_json"] is not None:
+                    if snapshot["receipt_json"] is not None:
                         raise AssertionError(
                             "temporary provider outage fabricated an executor terminal receipt"
                         )
@@ -805,7 +811,7 @@ def test_admission_worker_settlement_delivery_reclamation(
             assert running["run_status"] == running["attempt_status"] == "running"
             assert running["has_reconciliation_context"] is True
             assert running["lease_status"] == "active"
-            assert running["executor_terminal_json"] is None
+            assert running["receipt_json"] is None
             restart_evidence = None
             terminal_ack_evidence = None
             executor_ack_evidence = None
@@ -904,13 +910,13 @@ def test_admission_worker_settlement_delivery_reclamation(
                 async def receipt_pending(snapshot):
                     return (
                         snapshot
-                        if snapshot["executor_terminal_json"] is not None
-                        and snapshot["executor_reconciliation_status"] == "pending"
+                        if snapshot["receipt_json"] is not None
+                        and snapshot["settlement_phase"] == "pending"
                         else False
                     )
 
                 before_cancel = await poll(receipt_pending, timeout=120)
-                receipt = before_cancel["executor_terminal_json"]
+                receipt = before_cancel["receipt_json"]
                 assert receipt["status"] == "completed"
                 assert receipt["sdk_used"] is False
                 assert before_cancel["executor_status"] == "completed"
@@ -930,8 +936,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert after_cancel["cancel_requested_by"] == stack.user_id
                 assert after_cancel["lease_status"] == "active"
                 assert after_cancel["executor_status"] == "completed"
-                assert after_cancel["executor_reconciliation_status"] == "pending"
-                assert after_cancel["executor_terminal_json"] == receipt
+                assert after_cancel["settlement_phase"] == "pending"
+                assert after_cancel["receipt_json"] == receipt
 
                 restarted_worker_id = await asyncio.to_thread(stack.start_worker)
                 assert restarted_worker_id == stopped_worker_id
@@ -1010,8 +1016,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                         snapshot["run_status"],
                         snapshot["attempt_status"],
                         snapshot["lease_status"],
-                        snapshot["executor_reconciliation_status"],
-                    ) != ("failed", "failed", "released", "finalized"):
+                        snapshot["settlement_phase"], snapshot["executor_cleanup_status"],
+                    ) != ("failed", "failed", "released", "settled", "finalized"):
                         return False
                     await asyncio.to_thread(stack.assert_no_run_resources, run_id)
                     return snapshot
@@ -1021,7 +1027,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                     timeout=180,
                     expected_terminal_statuses=("failed",),
                 )
-                receipt = timed_out["executor_terminal_json"]
+                receipt = timed_out["receipt_json"]
                 assert timed_out["error_code"] == "executor_deadline_exceeded"
                 assert timed_out["executor_status"] == "failed"
                 assert receipt["status"] == "failed"
@@ -1100,8 +1106,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                         snapshot["run_status"],
                         snapshot["attempt_status"],
                         snapshot["lease_status"],
-                        snapshot["executor_reconciliation_status"],
-                    ) != ("failed", "failed", "released", "finalized"):
+                        snapshot["settlement_phase"], snapshot["executor_cleanup_status"],
+                    ) != ("failed", "failed", "released", "settled", "finalized"):
                         return False
                     await asyncio.to_thread(stack.assert_no_run_resources, run_id)
                     return snapshot
@@ -1111,7 +1117,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                     timeout=180,
                     expected_terminal_statuses=("failed",),
                 )
-                receipt = lost["executor_terminal_json"]
+                receipt = lost["receipt_json"]
                 assert receipt["error_code"] == "sandbox_executor_lost"
                 assert lost["error_code"] == "sandbox_executor_lost"
                 assert lost["attempt_id"] == running["attempt_id"]
@@ -1158,10 +1164,8 @@ def test_admission_worker_settlement_delivery_reclamation(
                     assert probe_failure["attempt_id"] == running["attempt_id"]
                     assert probe_failure["lease_status"] == "active"
                     assert probe_failure["executor_status"] == "running"
-                    assert probe_failure["executor_terminal_json"] is None
-                    assert probe_failure["executor_reconciliation_status"] == (
-                        "waiting_terminal"
-                    )
+                    assert probe_failure["receipt_json"] is None
+                    assert probe_failure["settlement_phase"] == "awaiting_receipt"
                     executor.reload()
                     assert executor.attrs.get("State", {}).get("Paused") is True
                     process_fault_evidence["probe_failure_snapshot"] = probe_failure
@@ -1280,9 +1284,9 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert before_reconcile["attempt_id"] == running["attempt_id"]
                 assert before_reconcile["lease_status"] == "active"
                 assert before_reconcile["executor_status"] == "completed"
-                assert before_reconcile["executor_reconciliation_status"] == "pending"
-                assert before_reconcile["executor_terminal_json"] is not None
-                assert before_reconcile["executor_terminal_json"]["answer_receipt"]["delta_count"] == 1
+                assert before_reconcile["settlement_phase"] == "pending"
+                assert before_reconcile["receipt_json"] is not None
+                assert before_reconcile["receipt_json"]["answer_receipt"]["delta_count"] == 1
 
                 (tmp_path / "terminal-ack-fault.json").write_text(
                     json.dumps(terminal_ack_marker, indent=2, sort_keys=True) + "\n",
@@ -1390,7 +1394,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                 assert before_probe["attempt_status"] == "running"
                 assert before_probe["attempt_id"] == running["attempt_id"]
                 assert before_probe["lease_status"] == "active"
-                assert before_probe["executor_terminal_json"] is None
+                assert before_probe["receipt_json"] is None
                 assert before_probe["has_reconciliation_context"] is True
                 async with connection() as conn:
                     persisted_before_probe = await (await conn.execute(
@@ -1443,7 +1447,7 @@ def test_admission_worker_settlement_delivery_reclamation(
                         "run_status": before_probe["run_status"],
                         "attempt_status": before_probe["attempt_status"],
                         "lease_status": before_probe["lease_status"],
-                        "executor_terminal_json_present": False,
+                        "receipt_json_present": False,
                         "has_reconciliation_context": before_probe[
                             "has_reconciliation_context"
                         ],
@@ -1471,8 +1475,8 @@ def test_admission_worker_settlement_delivery_reclamation(
 
             async def reclaimed(snapshot):
                 if (snapshot["run_status"], snapshot["attempt_status"], snapshot["lease_status"],
-                    snapshot["executor_reconciliation_status"]) != (
-                    "succeeded", "succeeded", "released", "finalized",
+                    snapshot["settlement_phase"], snapshot["executor_cleanup_status"]) != (
+                    "succeeded", "succeeded", "released", "settled", "finalized",
                 ):
                     return False
                 await asyncio.to_thread(stack.assert_no_run_resources, run_id)
@@ -1485,7 +1489,7 @@ def test_admission_worker_settlement_delivery_reclamation(
             assert settled["attempt_id"] == running["attempt_id"]
             assert settled["executor_status"] == "completed"
             if fault == "terminal_callback_loss":
-                persisted_terminal_result = settled["executor_terminal_json"]
+                persisted_terminal_result = settled["receipt_json"]
                 assert isinstance(persisted_terminal_result, dict)
                 for key in (
                     "status",
@@ -1509,10 +1513,10 @@ def test_admission_worker_settlement_delivery_reclamation(
                     "attempt_status": settled["attempt_status"],
                     "lease_status": settled["lease_status"],
                     "executor_status": settled["executor_status"],
-                    "executor_reconciliation_status": settled[
-                        "executor_reconciliation_status"
+                    "settlement_phase": settled[
+                        "settlement_phase"
                     ],
-                    "executor_terminal_json_present": True,
+                    "receipt_json_present": True,
                     "persisted_terminal_result_fields_match_executor_status": True,
                 }
 

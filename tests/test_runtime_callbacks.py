@@ -31,32 +31,10 @@ import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
-class _LegacyAttemptSettlementReader:
-    """Unit port for callback scenarios backed by legacy Sandbox receipts."""
-
-    async def storage_version(self, _conn):
-        return "sandbox_lease.v1"
-
-    async def writer_fence(self, _conn):
-        return None
-
-    async def lock_writer_fence(self, _conn):
-        return None
-
-    async def lock_sources_in_transaction(self, _conn, **_scope):
-        return None
-
-    async def writes_enabled(self, _conn, *, shadow_enabled):
-        return False
-
-    async def attempt_writer_active(self, _conn):
-        return False
-
-
 @pytest.fixture(autouse=True)
-def legacy_attempt_settlement_reader(monkeypatch):
-    reader = _LegacyAttemptSettlementReader()
-    monkeypatch.setattr(sandbox_lease_ports._shadowed_repository, "_settlement", reader)
+def attempt_settlement_reader(monkeypatch):
+    from tests.support.attempt_settlement import MemoryAttemptSettlement
+    monkeypatch.setattr(sandbox_lease_ports._settlement_repository, "_settlement", MemoryAttemptSettlement())
 
 
 class CallbackEventPersistence:
@@ -735,7 +713,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     )
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
-        _owner_sandbox_infrastructure_leases_postgres,
+        sandbox_lease_ports._settlement_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -836,7 +814,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
 
     async def fake_record_terminal(conn, **kwargs):
         calls.append(("executor_terminal", kwargs["executor_status"]))
-        lease["executor_terminal_json"] = kwargs["terminal_result"]
+        lease["receipt_json"] = kwargs["terminal_result"]
         return lease
 
     class RecordingDiagnostics:
@@ -865,7 +843,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
         _owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event
     )
     monkeypatch.setattr(
-        _owner_sandbox_infrastructure_leases_postgres,
+        sandbox_lease_ports._settlement_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -926,7 +904,7 @@ def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatc
     assert diagnostics_calls[0][2]["result_json"]["runtime_diagnostics"][
         "error_code"
     ] == ("provider_timeout")
-    assert "runtime_diagnostics" not in lease["executor_terminal_json"]
+    assert "runtime_diagnostics" not in lease["receipt_json"]
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -960,7 +938,7 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', fake_append_event)
     monkeypatch.setattr(
-        _owner_sandbox_infrastructure_leases_postgres,
+        sandbox_lease_ports._settlement_repository,
         "record_sandbox_executor_terminal",
         fake_record_terminal,
     )
@@ -1886,6 +1864,9 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
 
     from app.routes import runtime_callbacks
 
+    sandbox_lease_ports._settlement_repository._settlement.details[("tenant-a", "run-a", "attempt-a")] = {
+        "mapping_state": "mapped", "settlement_phase": "awaiting_receipt",
+    }
     persisted_lease = container_lease_from_persisted_row(heartbeat_row)
     assert persisted_lease is not None
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
@@ -2049,7 +2030,7 @@ async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_termin
                 "runtime_container_name": "executor-a",
                 "runtime_executor_url": "http://sandbox-a.test",
                 "runtime_workspace_container_path": "/workspace",
-                "executor_terminal_json": (
+                "receipt_json": (
                     {"status": "completed"}
                     if race == "terminal_lease" and state["transaction"] > 1
                     else None

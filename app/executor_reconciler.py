@@ -167,13 +167,13 @@ def _context_payload(
     *,
     allow_dispatch_intent: bool = False,
 ) -> tuple[dict[str, Any], RunPayload]:
-    context = lease_row.get("executor_reconciliation_context_json")
+    context = lease_row.get("accepted_context_json")
     if (
         context is None
         and allow_dispatch_intent
         and lease_row.get("settlement_dispatch_state") in {"unknown", "accepted"}
     ):
-        context = lease_row.get("executor_reconciliation_intent_context_json")
+        context = lease_row.get("intent_recovery_context_json")
     if not isinstance(context, dict):
         raise ReconciliationAuthorityError("executor_reconciliation_context_missing")
     adapter_context = context.get("adapter_context")
@@ -228,7 +228,7 @@ def _context_payload(
 def _context_and_payload(
     lease_row: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], RunPayload]:
-    terminal_result = lease_row.get("executor_terminal_json")
+    terminal_result = lease_row.get("receipt_json")
     if not isinstance(terminal_result, dict):
         raise _permanent_reconciliation_error("executor_terminal_result_missing")
     context, run_payload = _context_payload(lease_row, terminal_result)
@@ -378,7 +378,7 @@ async def _terminalize_reconciliation_failure(
                     tenant_id=tenant_id,
                     run_id=run_id,
                     attempt_id=attempt_id,
-                    terminal_result=lease_row.get("executor_terminal_json"),
+                    terminal_result=lease_row.get("receipt_json"),
                     reconciliation_error_code=reconciliation_error_code,
                     reconciliation_evidence_factory=(
                         lambda: _exception_diagnostic_evidence(reconciliation_error)
@@ -1152,7 +1152,7 @@ async def _record_probe_dispatch_accepted(
                 exc_info=True,
             )
             return False
-    intent_context = lease_row.get("executor_reconciliation_intent_context_json")
+    intent_context = lease_row.get("intent_recovery_context_json")
     if not isinstance(intent_context, dict):
         return False
     try:
@@ -1205,16 +1205,6 @@ async def _record_probe_dispatch_accepted(
             )
             if dispatch_row is None or dispatch_row.get("status") != "accepted":
                 raise _ProbeAcceptanceNotCommitted("executor_probe_dispatch_acceptance_not_committed")
-            # Refresh the Runs projection after the dispatch CAS so legacy
-            # shadow writers observe the accepted dispatch in this transaction.
-            await lease_port.record_sandbox_executor_accepted(
-                conn,
-                tenant_id=identity.tenant_id,
-                run_id=identity.run_id,
-                attempt_id=identity.attempt_id,
-                lease_id=identity.lease_id,
-                reconciliation_context=dict(intent_context),
-            )
         return True
     except asyncio.CancelledError:
         raise
@@ -1684,7 +1674,7 @@ async def reconcile_pending_executor_terminals_once(
         except Exception as exc:  # noqa: BLE001 - durable retry or terminal failure boundary.
             error_code = _reconciliation_error_code(exc)
             attempt_count = int(
-                lease_row.get("executor_terminal_reconciliation_attempt_count") or 0
+                lease_row.get("settlement_attempt_count") or 0
             )
             terminal_failure = _reconciliation_failure_is_terminal(exc)
             _logger.exception(

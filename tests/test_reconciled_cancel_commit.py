@@ -202,14 +202,14 @@ async def test_checkpoint_consumer_restores_only_verified_historical_image_ident
     row = dict(id="lease-a",**vars(request),**handle,runtime_container_id="container-a",runtime_executor_url="http://synthetic.invalid",
         runtime_workspace_container_path="/workspace",runtime_handle_verified_at="synthetic-verified",
         lease_payload_json={**persisted,"attempt_id":"attempt-a","owner_generation":4},
-        executor_terminal_json=dict(run_id="run-a",status="cancelled",error_code="executor_cancelled",message="cancelled",sdk_used=True),
-        executor_reconciliation_context_json=dict(adapter_name="claude-agent-worker",run_payload=sandbox_reconciliation_payload(payload),
+        receipt_json=dict(run_id="run-a",status="cancelled",error_code="executor_cancelled",message="cancelled",sdk_used=True),
+        accepted_context_json=dict(adapter_name="claude-agent-worker",run_payload=sandbox_reconciliation_payload(payload),
             adapter_context={"schema_version":"ai-platform.claude-agent-reconciliation-context.v1","workspace":str(tmp_path)}))
     scope = {key:getattr(payload,key) for key in ("tenant_id","workspace_id","user_id","session_id","run_id","attempt_id")}
     saved = dict(schema_version="ai-platform.workspace-version.v1",state="saved",scope=scope,version_id="version-a",
         file_count=1,total_bytes=26,source_stop_evidence="provider_stopped")
     stage = dict(schema_version="ai-platform.terminal-reconciliation.v1",scope=dict(scope),owner_generation=4,container_id="container-a",
-        artifact_workspace=None,terminal_result=row["executor_terminal_json"],continuation=dict(
+        artifact_workspace=None,terminal_result=row["receipt_json"],continuation=dict(
             tenant_id="tenant-a",run_id="run-a",attempt_id="attempt-a",stop_evidence="provider_stopped",workspace_receipt=saved))
     if fault != "no_checkpoint":
         row["lease_payload_json"]["terminal_reconciliation"] = stage
@@ -271,7 +271,7 @@ async def test_operator_repair_rejects_sdk_settlement_disagreeing_with_original_
         yield
     monkeypatch.setattr("app.context.api.provider_session_verification_scope", verification)
     monkeypatch.setattr(owner.runs_postgres,"get_run",load_run)
-    monkeypatch.setattr(__import__('app.sandbox.infrastructure.leases_postgres', fromlist=['x']),"get_quarantined_checkpoint_for_repair",load_lease)
+    monkeypatch.setattr(owner,"_default_reconciliation_port",lambda:SimpleNamespace(get_quarantined_checkpoint_for_repair=load_lease))
     monkeypatch.setattr(owner,"_context_and_payload",lambda _:({"adapter_name":"claude-agent-worker"},terminal,payload))
     monkeypatch.setattr(owner,"_reconciliation_runtime_lease",lambda *args,**kwargs:object())
     monkeypatch.setattr("app.bootstrap.conversation_continuation.verify_checkpoint_workspace",forbidden_verify)

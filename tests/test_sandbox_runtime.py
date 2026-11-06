@@ -30,8 +30,11 @@ from app.sandbox.api import (
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime as _SandboxRuntime, SandboxRuntimeCleanupError
-from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.execution.domain.input_limits import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS, MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
+
+sandbox_lease_repository = build_sandbox_executor_reconciliation_port()
+
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
@@ -75,6 +78,14 @@ class FakeConnection:
 @asynccontextmanager
 async def fake_transaction():
     yield FakeConnection()
+
+
+@pytest.fixture(autouse=True)
+def native_acceptance_port(monkeypatch):
+    # Resource-handle tests stub creation; acceptance is a separate composed port.
+    async def accept(_conn, **kwargs):
+        return {"id": kwargs["lease_id"], "executor_status": "accepted"}
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
 
 
 @pytest.fixture
@@ -1453,8 +1464,8 @@ async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
         events.append("accepted")
         return {
             "id": kwargs["lease_id"],
-            "executor_reconciliation_status": state,
-            "executor_terminal_json": (
+            "settlement_phase": state,
+            "receipt_json": (
                 {"status": "succeeded", "run_id": "run-a"}
                 if state != "waiting_terminal" else None
             ),
@@ -1551,7 +1562,7 @@ async def test_accepted_terminal_keeps_runtime_through_worker_execution_owner(tm
 
     async def accept(_conn, **_kwargs):
         accepted.append("context")
-        return {"id": "lease-a", "executor_reconciliation_status": "pending", "executor_terminal_json": {"status": "succeeded"}}
+        return {"id": "lease-a", "settlement_phase": "pending", "receipt_json": {"status": "succeeded"}}
 
     async def publish():
         notifying.set()
@@ -1787,7 +1798,7 @@ async def test_lost_dispatch_ack_recovers_exact_task_without_resubmitting(tmp_pa
 
     async def record_accepted(_conn, **kwargs):
         accepted.append(kwargs)
-        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+        return {"id": kwargs["lease_id"], "settlement_phase": "waiting_terminal"}
 
     async def execute(_url, task_request, **_kwargs):
         executions.append((task_request.run_id, task_request.attempt_id))
@@ -1930,7 +1941,7 @@ async def test_accepted_commit_retry_returns_accepted_after_exact_task_probe(tmp
         accepted_attempts += 1
         if accepted_attempts == 1:
             raise RuntimeError("first acceptance transaction failed")
-        return {"id": kwargs["lease_id"], "executor_reconciliation_status": "waiting_terminal"}
+        return {"id": kwargs["lease_id"], "settlement_phase": "waiting_terminal"}
 
     async def execute(_url, task_request, **_kwargs):
         posts.append((task_request.run_id, task_request.attempt_id))

@@ -7089,7 +7089,7 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
     assert json.loads(
         restored_handle.labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL]
     ) == persisted_proof
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "schema_version": "ai-platform.executor-reconciliation.v1",
         "run_payload": {
             "tenant_id": lease.tenant_id,
@@ -7120,7 +7120,7 @@ async def test_reconciler_uses_persisted_docker_handle_for_cancel_and_status(mon
 
     async def claim(_conn, *, claim_token, **_kwargs):
         claimed = dict(row)
-        claimed["executor_reconciliation_claim_token"] = claim_token
+        claimed["executor_probe_claim_token"] = claim_token
         claimed["executor_reconciliation_attempt_count"] = 1
         return [claimed]
 

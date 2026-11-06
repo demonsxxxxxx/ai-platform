@@ -1,6 +1,5 @@
 """The bounded compatibility surface retired by the Attempt settlement owner."""
 
-RUN_ATTEMPT_SETTLEMENT_RETIREMENT_SCHEMA_VERSION = "2026.10.25.11"
 LEGACY_ATTEMPT_SETTLEMENT_COLUMNS = (
     "executor_terminal_json",
     "executor_reconciliation_context_json",

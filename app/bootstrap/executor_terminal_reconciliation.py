@@ -33,7 +33,7 @@ async def reconcile_executor_terminal_result(
     outer_terminal_transaction: bool = False,
 ) -> WorkerOutcome:
     payload, attempt_id = restored_executor_reconciliation_queue_payload(
-        lease_row.get("executor_reconciliation_context_json"), result=result.result,
+        lease_row.get("accepted_context_json"), result=result.result,
         run_payload_factory=RunPayload, queue_payload_factory=QueueRunPayload,
     )
     # Preserve the former queue-envelope identity rejection at this ingress.

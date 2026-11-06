@@ -26,7 +26,7 @@ from app.executor_reconciler import (
 )
 from app.executors.base import ExecutorResult, RunPayload
 from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
-from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.api import ReconciliationAuthorityError
 from app.runtime.sandbox.executor_signals import (
@@ -38,6 +38,9 @@ from app.sandbox.api import (
     normalize_sdk_runtime_diagnostics,
 )
 from app.worker import WorkerOutcome
+
+sandbox_lease_repository = build_sandbox_executor_reconciliation_port()
+
 
 
 class _Cursor:
@@ -169,6 +172,10 @@ async def _persist_probe_terminal(*args, **kwargs):
 
 @pytest.fixture(autouse=True)
 def _fake_executor_signal_cursor(monkeypatch):
+    # Orchestration tests model a previously acquired native Attempt claim.
+    # Claim persistence and fencing are exercised independently below and in PG.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", AsyncMock(return_value=True))
     async def initialize():
         return ExecutorReconciliationSignalCursor("0-0")
 
@@ -198,8 +205,8 @@ def _lease_row() -> dict[str, object]:
         "session_id": "session-a",
         "run_id": "run-a",
         "attempt_id": "attempt-a",
-        "executor_reconciliation_claim_token": "claim-a",
-        "executor_terminal_json": {"status": "succeeded", "message": "done"},
+        "settlement_claim_token": "claim-a",
+        "receipt_json": {"status": "succeeded", "message": "done"},
     }
 
 
@@ -218,7 +225,7 @@ def _generation_bound_lease_row(*, legacy_snapshot=False):
     if legacy_snapshot:
         snapshot["execution_payload"].pop("owner_generation", None)
     row["lease_payload_json"] = {"attempt_id": payload.attempt_id, "owner_generation": 4}
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "adapter_name": "claude-agent-worker", "adapter_context": {}, "run_payload": snapshot,
     }
     return row
@@ -228,7 +235,7 @@ def _generation_bound_lease_row(*, legacy_snapshot=False):
 def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legacy_snapshot):
     row = _generation_bound_lease_row(legacy_snapshot=legacy_snapshot)
     if not legacy_snapshot:
-        assert row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
+        assert row["accepted_context_json"]["run_payload"]["execution_payload"]["owner_generation"] == 4
     _, payload = _context_payload(row)
     assert payload.owner_generation == 4
     assert _reconciliation_request(row, payload).owner_generation == 4
@@ -238,7 +245,7 @@ def test_reconciler_preserves_exact_lease_generation_through_real_snapshot(legac
 def test_reconciler_rejects_invalid_or_conflicting_lease_generation(defect):
     row = _generation_bound_lease_row()
     if defect == "snapshot_generation":
-        row["executor_reconciliation_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
+        row["accepted_context_json"]["run_payload"]["execution_payload"]["owner_generation"] = 3
     elif defect == "lease_attempt":
         row["lease_payload_json"]["attempt_id"] = "other-attempt"
     else:
@@ -285,7 +292,7 @@ def test_reconciliation_request_restores_sanitized_tool_policy_subjects():
 
 def test_reconciler_restores_top_level_run_payload_context():
     row = _lease_row()
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "schema_version": "ai-platform.executor-reconciliation.v1",
         "run_payload": {
             "tenant_id": "tenant-a",
@@ -315,7 +322,7 @@ def test_reconciler_restores_top_level_run_payload_context():
 
 def test_reconciler_restores_versioned_execution_payload_without_metadata_leakage():
     row = _lease_row()
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "schema_version": "ai-platform.executor-reconciliation.v1",
         "run_payload": {
             "schema_version": "ai-platform.executor-reconciliation-snapshot.v2",
@@ -346,11 +353,11 @@ def test_reconciler_restores_versioned_execution_payload_without_metadata_leakag
         "adapter_context": {},
     }
 
-    context, payload = _context_payload(row, row["executor_terminal_json"])
+    context, payload = _context_payload(row, row["receipt_json"])
 
     assert context["adapter_context"] == {}
     assert payload.run_id == "run-a"
-    assert "diagnostics" not in row["executor_terminal_json"]
+    assert "diagnostics" not in row["receipt_json"]
 
 
 @pytest.mark.asyncio
@@ -893,7 +900,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
 
 def test_reconciler_quarantines_invalid_persisted_payload_without_run_authority(monkeypatch):
     row = _lease_row()
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "run_payload": {"schema_version": "invalid"},
         "adapter_context": {},
     }
@@ -907,7 +914,7 @@ def test_reconciler_quarantines_invalid_persisted_payload_without_run_authority(
     )
 
     with pytest.raises(ReconciliationAuthorityError) as exc_info:
-        _context_payload(row, row["executor_terminal_json"])
+        _context_payload(row, row["receipt_json"])
 
     assert exc_info.value.code == "executor_reconciliation_run_payload_invalid"
     assert "agent_profile_instructions_invalid" not in str(exc_info.value)
@@ -922,7 +929,7 @@ def test_reconciler_rejects_persisted_payload_identity_mismatch_before_use(
     field,
 ):
     row = _lease_row()
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "run_payload": {},
         "adapter_context": {},
     }
@@ -941,7 +948,7 @@ def test_reconciler_rejects_persisted_payload_identity_mismatch_before_use(
     )
 
     with pytest.raises(ReconciliationAuthorityError) as exc_info:
-        _context_payload(row, row["executor_terminal_json"])
+        _context_payload(row, row["receipt_json"])
 
     assert exc_info.value.code == "executor_reconciliation_identity_mismatch"
 
@@ -949,7 +956,7 @@ def test_reconciler_rejects_persisted_payload_identity_mismatch_before_use(
 def test_reconciler_does_not_equate_missing_and_empty_identity(monkeypatch):
     row = _lease_row()
     row["attempt_id"] = None
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "adapter_context": {},
         "run_payload": {"present": True},
     }
@@ -972,7 +979,7 @@ def test_reconciler_does_not_equate_missing_and_empty_identity(monkeypatch):
     )
 
     with pytest.raises(ReconciliationAuthorityError) as exc_info:
-        _context_payload(row, row["executor_terminal_json"])
+        _context_payload(row, row["receipt_json"])
 
     assert exc_info.value.code == "executor_reconciliation_identity_mismatch"
 
@@ -982,7 +989,7 @@ async def test_reconciler_entrypoint_rejects_identity_mismatch_before_workspace_
     monkeypatch,
 ):
     row = _lease_row()
-    row["executor_reconciliation_context_json"] = {
+    row["accepted_context_json"] = {
         "run_payload": {},
         "adapter_context": {},
     }
@@ -1058,9 +1065,9 @@ def _suspect_lease_row() -> dict[str, object]:
         "tenant_id": "tenant-a",
         "run_id": "run-a",
         "attempt_id": "attempt-a",
-        "executor_reconciliation_claim_token": "claim-a",
+        "settlement_claim_token": "claim-a",
         "executor_reconciliation_attempt_count": 1,
-        "executor_reconciliation_context_json": {
+        "accepted_context_json": {
             "adapter_name": "opensandbox",
             "executor_request": {},
             "adapter_context": {},
@@ -1117,7 +1124,7 @@ async def test_unknown_receipt_probe_recovers_only_exact_dispatch_generation(mon
         "executor_probe_claim_token": "probe-a",
         "settlement_receipt_present": True,
         "settlement_mapping_state": "unknown",
-        "executor_reconciliation_intent_context_json": {
+        "intent_recovery_context_json": {
             "adapter_name": "opensandbox", "frozen": "intent"
         },
     }
@@ -1198,7 +1205,7 @@ async def test_unknown_receipt_dispatch_cas_failure_rolls_back_acceptance(monkey
         "executor_probe_claim_token": "probe-a",
         "settlement_receipt_present": True,
         "settlement_mapping_state": "unknown",
-        "executor_reconciliation_intent_context_json": {"frozen": "intent"},
+        "intent_recovery_context_json": {"frozen": "intent"},
     }
     recovered = await _record_probe_dispatch_accepted(
         lease_row,
@@ -1221,7 +1228,7 @@ async def test_unknown_receipt_probe_keeps_unavailable_provider_recoverable(monk
         "settlement_receipt_present": True,
         "settlement_mapping_state": "unknown",
         "settlement_dispatch_state": "unknown",
-        "executor_reconciliation_intent_context_json": {
+        "intent_recovery_context_json": {
             "adapter_name": "opensandbox", "executor_request": {}, "adapter_context": {},
         },
     }
@@ -1951,7 +1958,7 @@ async def test_reconciler_cancellation_releases_entire_claimed_batch(monkeypatch
 async def test_reconciler_requeues_receipt_after_transient_failure(monkeypatch):
     retried = []
     row = _lease_row()
-    row["executor_terminal_reconciliation_attempt_count"] = 4
+    row["settlement_attempt_count"] = 4
 
     async def claim(_conn, **_kwargs):
         return [row]
@@ -2075,7 +2082,7 @@ async def test_reconciler_keeps_transient_failures_eligible_after_many_attempts(
     rows = []
     for attempt_count in (500, 501):
         row = _lease_row()
-        row["executor_terminal_reconciliation_attempt_count"] = attempt_count
+        row["settlement_attempt_count"] = attempt_count
         rows.append(row)
     retried = []
     collect_calls = 0
@@ -2632,200 +2639,113 @@ async def test_reconciler_bounds_signal_init_without_delaying_database_scan(monk
 
 @pytest.mark.asyncio
 async def test_claim_check_locks_and_fences_current_reconciler():
-    observed = {}
-
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import lock_attempt_settlement_projection_sources
+    from app.runs.infrastructure.attempt_settlement_writer_postgres import is_attempt_settlement_claim_current
+    statements = []
     class Cursor:
-        async def fetchone(self):
-            return {"id": "lease-a"}
-
+        async def fetchone(self): return {"id": "attempt-a"}
     class Connection:
         async def execute(self, sql, params):
-            observed["sql"] = sql
-            observed["params"] = params
+            statements.append((" ".join(sql.lower().split()), params))
             return Cursor()
-
-    claimed = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
-        Connection(),
-        lease_id="lease-a",
-        claim_token="claim-a",
-    )
-
-    assert claimed is True
-    assert "for update" in observed["sql"].lower()
-    assert "status in ('active', 'released')" in observed["sql"].lower()
-    assert observed["params"] == ("lease-a", "claim-a")
+    conn = Connection()
+    scope = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a")
+    assert await lock_attempt_settlement_projection_sources(conn, **scope)
+    assert await is_attempt_settlement_claim_current(conn, **scope, lease_id="lease-a", claim_token="claim-a")
+    assert "from runs" in statements[0][0]
+    assert "from sandbox_leases" in statements[1][0]
+    assert "from run_attempts" in statements[2][0]
+    assert all("for update" in sql for sql, _ in statements[:3])
+    assert "from run_attempt_settlements" in statements[3][0]
+    assert "settlement_phase = 'claimed'" in statements[3][0]
+    assert statements[3][1] == ("tenant-a", "run-a", "attempt-a", "lease-a", "claim-a")
 
 
 @pytest.mark.asyncio
 async def test_claim_read_inside_owner_lock_does_not_take_a_second_row_lock():
-    observed = {}
-
+    from app.runs.infrastructure.attempt_settlement_writer_postgres import is_attempt_settlement_claim_current
+    statements = []
     class Cursor:
-        async def fetchone(self):
-            return {"id": "lease-a"}
-
+        async def fetchone(self): return {"current": True}
     class Connection:
         async def execute(self, sql, params):
-            observed["sql"] = sql
-            observed["params"] = params
+            statements.append((sql.lower(), params))
             return Cursor()
-
-    claimed = await sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current(
-        Connection(),
-        lease_id="lease-a",
-        claim_token="claim-a",
-    )
-
-    assert claimed is True
-    assert "for update" not in observed["sql"].lower()
-    assert observed["params"] == ("lease-a", "claim-a")
+    assert await is_attempt_settlement_claim_current(Connection(), tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a", claim_token="claim-a")
+    sql, params = statements[0]
+    assert "for update" not in sql
+    assert params == ("tenant-a", "run-a", "attempt-a", "lease-a", "claim-a")
 
 
 @pytest.mark.asyncio
-async def test_probe_and_terminal_claims_use_independent_attempt_counters():
+async def test_probe_and_terminal_claims_use_independent_attempt_counters(monkeypatch):
+    from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
+    from app.sandbox.infrastructure import executor_probe_postgres as probe
+    from unittest.mock import AsyncMock
     statements = []
-
+    detail = dict(mapping_state="mapped", settlement_phase="pending", receipt_json={"status":"failed"}, accepted_context_json={"adapter_name":"test"})
+    scope = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a")
+    monkeypatch.setattr(writer, "list_due_attempt_settlements", AsyncMock(return_value=[{**scope,"source_lease_id":"lease-a"}]))
+    monkeypatch.setattr(writer, "_current_owned_detail", AsyncMock(return_value=({}, {}, {"id":"lease-a","status":"active"}, detail)))
     class Cursor:
-        async def fetchall(self):
-            return []
-
+        async def fetchall(self): return []
+        async def fetchone(self): return None
     class Connection:
-        async def execute(self, sql, _params):
-            statements.append(" ".join(sql.split()).lower())
+        async def execute(self, sql, params):
+            statements.append((" ".join(sql.lower().split()), params))
             return Cursor()
-
     conn = Connection()
-    await sandbox_lease_repository.claim_sandbox_executor_suspects(
-        conn,
-        claim_token="probe-claim",
-        limit=1,
-        stale_after_seconds=45,
-    )
-    await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
-        conn,
-        claim_token="terminal-claim",
-        limit=1,
-        stale_after_seconds=300,
-    )
-
-    assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in statements[0]
-    assert "executor_terminal_reconciliation_attempt_count" not in statements[0]
-    assert statements[0].count("make_interval(secs => %s)") == 4
-    assert (
-        "lease.executor_probe_claim_token is null and "
-        "coalesce(lease.executor_heartbeat_at, lease.updated_at, lease.created_at) "
-        "< now() - make_interval(secs => %s)"
-    ) in statements[0]
-    assert (
-        "lease.executor_probe_claim_token is not null and "
-        "coalesce(lease.executor_probe_claimed_at, lease.updated_at, lease.created_at) "
-        "< now() - make_interval(secs => %s)"
-    ) in statements[0]
-    assert "executor_reconciliation_status = 'claimed'" in statements[0]
-    assert "executor_reconciliation_claimed_at" in statements[0]
-    assert "executor_terminal_reconciliation_attempt_count = executor_terminal_reconciliation_attempt_count + 1" in statements[1]
-    assert "status in ('active', 'released')" in statements[1]
-    assert "order by coalesce(executor_terminal_received_at, created_at) asc, id asc" in statements[1]
-    assert "executor_reconciliation_status = 'retry'" in statements[1]
-    assert "executor_reconciliation_retry_not_before" in statements[1]
-    assert "case executor_reconciliation_status" not in statements[1]
-    assert "updated_at <=" not in statements[1]
-    assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" not in statements[1]
+    await probe.claim_sandbox_executor_suspects(conn, claim_token="probe-claim", limit=1, stale_after_seconds=45)
+    await writer.claim_due_attempt_settlements(conn, claim_token="terminal-claim", limit=1, stale_after_seconds=300)
+    probe_sql, _ = statements[0]
+    terminal_sql, terminal_params = statements[1]
+    assert "executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1" in probe_sql
+    assert "settlement_attempt_count" not in probe_sql
+    assert "executor_probe_claimed_at" in probe_sql and probe_sql.count("make_interval(secs => %s)") == 4
+    assert "update run_attempt_settlements" in terminal_sql
+    assert "settlement_attempt_count = settlement_attempt_count + 1" in terminal_sql
+    assert "settlement_phase = 'retry' and next_retry_at <= now()" in terminal_sql
+    assert "settlement_claimed_at < now() - make_interval(secs => %s)" in terminal_sql
+    assert terminal_params == ("terminal-claim", "tenant-a", "run-a", "attempt-a", "lease-a", 300)
+    assert "update sandbox_leases" not in terminal_sql
 
 
 @pytest.mark.asyncio
 async def test_probe_terminal_receipt_rejects_a_stale_claim_token():
+    from app.sandbox.infrastructure.executor_terminal_postgres import record_sandbox_executor_terminal_observation
     statements = []
-    responses = [
-        {
-            "id": "lease-a",
-            "executor_status": "running",
-            "executor_terminal_json": None,
-        },
-        None,
-    ]
-
+    responses = [{"id":"lease-a", "executor_status":"running", "executor_probe_claim_token":"probe-claim"}, None]
     class Cursor:
-        def __init__(self, row):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
+        def __init__(self, row): self.row = row
+        async def fetchone(self): return self.row
     class Connection:
         async def execute(self, sql, params):
-            statements.append((" ".join(sql.split()).lower(), params))
+            statements.append((" ".join(sql.lower().split()), params))
             return Cursor(responses.pop(0))
-
-    with pytest.raises(
-        sandbox_lease_repository.SandboxExecutorTerminalConflictError,
-        match="sandbox_executor_terminal_conflict",
-    ):
-        await sandbox_lease_repository.record_sandbox_executor_terminal(
-            Connection(),
-            tenant_id="tenant-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            lease_id="lease-a",
-            executor_status="failed",
-            terminal_result={"run_id": "run-a", "status": "failed"},
-            claim_token="stale-probe-claim",
-        )
-
-    update_sql, update_params = statements[1]
-    assert "executor_reconciliation_status = 'claimed'" in update_sql
-    assert "executor_reconciliation_claim_token = %s" in update_sql
-    assert update_params[-2:] == ("stale-probe-claim", "stale-probe-claim")
+    with pytest.raises(sandbox_lease_repository.SandboxExecutorTerminalConflictError):
+        await record_sandbox_executor_terminal_observation(Connection(), tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a", executor_status="failed", terminal_result={"run_id":"run-a","status":"failed"}, claim_token="probe-claim")
+    sql, params = statements[1]
+    assert "executor_probe_claim_token = %s" in sql
+    assert params[-2:] == ("probe-claim", "probe-claim")
+    assert "receipt_json" not in sql
 
 
 @pytest.mark.asyncio
 async def test_probe_terminal_receipt_is_claim_fenced_when_receipt_matches():
+    from app.sandbox.infrastructure.executor_terminal_postgres import record_sandbox_executor_terminal_observation
     statements = []
-    terminal_result = {"run_id": "run-a", "status": "failed"}
-
+    row = {"id":"lease-a", "executor_status":"failed", "executor_probe_claim_token":"newer-claim"}
     class Cursor:
-        async def fetchone(self):
-            return {
-                "id": "lease-a",
-                "executor_status": "failed",
-                "executor_terminal_json": terminal_result,
-                "executor_reconciliation_claim_token": "newer-claim",
-            }
-
+        async def fetchone(self): return dict(row)
     class Connection:
         async def execute(self, sql, params):
-            statements.append((" ".join(sql.split()).lower(), params))
+            statements.append(sql)
             return Cursor()
-
-    with pytest.raises(
-        sandbox_lease_repository.SandboxExecutorTerminalConflictError,
-        match="sandbox_executor_terminal_conflict",
-    ):
-        await sandbox_lease_repository.record_sandbox_executor_terminal(
-            Connection(),
-            tenant_id="tenant-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            lease_id="lease-a",
-            executor_status="failed",
-            terminal_result=terminal_result,
-            claim_token="stale-probe-claim",
-        )
-
+    kwargs = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a", executor_status="failed", terminal_result={"run_id":"run-a","status":"failed"})
+    with pytest.raises(sandbox_lease_repository.SandboxExecutorTerminalConflictError):
+        await record_sandbox_executor_terminal_observation(Connection(), **kwargs, claim_token="stale-claim")
     assert len(statements) == 1
-
-    recorded = await sandbox_lease_repository.record_sandbox_executor_terminal(
-        Connection(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        lease_id="lease-a",
-        executor_status="failed",
-        terminal_result=terminal_result,
-        claim_token="newer-claim",
-    )
-
-    assert recorded["executor_reconciliation_claim_token"] == "newer-claim"
+    assert await record_sandbox_executor_terminal_observation(Connection(), **kwargs, claim_token="newer-claim") == row
     assert len(statements) == 2
 
 
@@ -2859,7 +2779,7 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(
     finished = []
     retried = []
     row = _lease_row()
-    row["executor_terminal_reconciliation_attempt_count"] = 1
+    row["settlement_attempt_count"] = 1
 
     async def claim(_conn, **_kwargs):
         return [row]
@@ -2987,7 +2907,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
             "tenant_id": "tenant-a",
             "run_id": "run-a",
             "attempt_id": "rat-a",
-            "executor_terminal_json": {
+            "receipt_json": {
                 "run_id": "run-a",
                 "status": "failed",
                 "error_code": "provider_timeout",
@@ -3311,102 +3231,33 @@ async def test_terminal_failure_hands_off_cleanup_without_provider_io(monkeypatc
 
 @pytest.mark.asyncio
 async def test_reconciliation_repository_writes_are_claim_fenced_and_aggregate_only():
+    from app.sandbox.infrastructure import executor_reconciliation_postgres as resources
+    from app.sandbox.infrastructure import reconciliation_cleanup_postgres as cleanup
+    from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
     statements = []
-    responses = [
-        {"id": "lease-a"},
-        {"id": "lease-a"},
-        {"id": "lease-a"},
-        {
-            "pending_receipt_count": 3,
-            "released_pending_receipt_count": 1,
-            "retry_receipt_count": 2,
-            "retry_attempt_count": 7,
-            "cleanup_pending_receipt_count": 4,
-            "quarantined_receipt_count": 1,
-            "max_attempt_count": 5,
-            "oldest_pending_receipt_age_seconds": 901,
-            "terminalization_slo_breach_count": 1,
-        },
-    ]
-
+    responses = [{"id":"lease-a"}]*3 + [{"pending_receipt_count":3, "retry_receipt_count":2, "retry_attempt_count":7, "max_attempt_count":5}]
     class Cursor:
-        def __init__(self, row):
-            self.row = row
-
-        async def fetchone(self):
-            return self.row
-
+        def __init__(self, row): self.row = row
+        async def fetchone(self): return self.row
     class Connection:
         async def execute(self, sql, params):
-            statements.append((" ".join(sql.split()).lower(), params))
+            statements.append((" ".join(sql.lower().split()),params))
             return Cursor(responses.pop(0))
-
     conn = Connection()
-    assert await sandbox_lease_repository.finalize_failed_sandbox_executor_reconciliation_cleanup(
-        conn,
-        tenant_id="tenant-a",
-        user_id="user-a",
-        run_id="run-a",
-        lease_id="lease-a",
-        claim_token="claim-a",
-        reason="executor_reconciled",
-    )
-    assert await sandbox_lease_repository.quarantine_sandbox_executor_reconciliation(
-        conn,
-        lease_id="lease-a",
-        claim_token="claim-a",
-        error="invalid_runtime",
-    )
-    assert await sandbox_lease_repository.mark_sandbox_executor_reconciliation_cleanup_pending(
-        conn,
-        lease_id="lease-a",
-        claim_token="claim-a",
-        error="RuntimeError",
-    )
-    summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
-        conn,
-        tenant_id="tenant-a",
-        slo_seconds=900,
-    )
-
-    release_sql, release_params = statements[0]
-    assert "set status = 'released'" in release_sql
-    assert "executor_reconciliation_status = 'finalized'" in release_sql
-    assert "executor_reconciliation_error = ''" in release_sql
-    assert "executor_reconciliation_error = null" not in release_sql
-    assert "executor_cleanup_claim_token = %s" in release_sql
-    assert release_params[-2:] == ("lease-a", "claim-a")
-
-    quarantine_sql, _ = statements[1]
-    assert "set status = 'quarantined'" in quarantine_sql
-    assert "status in ('active', 'released')" in quarantine_sql
-    assert "released_at" not in quarantine_sql
-
-    cleanup_sql, _ = statements[2]
-    assert "executor_reconciliation_status = 'cleanup_pending'" in cleanup_sql
-    assert "status in ('active', 'released')" in cleanup_sql
-    assert "expires_at = least" in cleanup_sql
-    assert "released_at" not in cleanup_sql
-
-    assert "runtime_handle_verified_at" in " ".join(statement for statement, _ in statements)
-    summary_sql, summary_params = statements[3]
-    assert "where tenant_id = %s" in summary_sql
-    assert "status in ('active', 'released')" in summary_sql
-    assert "released_pending_receipt_count" in summary_sql
-    assert summary_params == (900, "tenant-a")
-    assert summary == {
-        "pending_receipt_count": 3,
-        "released_pending_receipt_count": 1,
-        "retry_receipt_count": 2,
-        "retry_attempt_count": 7,
-        "cleanup_pending_receipt_count": 4,
-        "quarantined_receipt_count": 1,
-        "max_attempt_count": 5,
-        "oldest_pending_receipt_age_seconds": 901,
-        "terminalization_slo_seconds": 900,
-        "terminalization_slo_breach_count": 1,
-    }
-    assert not {"run_id", "lease_id", "error"} & set(summary)
+    assert await cleanup.finalize_failed_sandbox_executor_reconciliation_cleanup(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a", lease_id="lease-a", claim_token="claim-a", reason="executor_reconciled")
+    assert await resources.quarantine_sandbox_executor_reconciliation(conn, lease_id="lease-a", claim_token="claim-a", error="invalid_runtime")
+    assert await resources.mark_sandbox_executor_cleanup_pending(conn, lease_id="lease-a", claim_token="claim-a", error="retry")
+    summary = await writer.get_attempt_settlement_reconciliation_summary(conn, tenant_id="tenant-a", slo_seconds=900)
+    assert "executor_cleanup_status = 'finalized'" in statements[0][0]
+    assert "executor_cleanup_claim_token = %s" in statements[0][0]
+    assert "status = 'quarantined'" in statements[1][0] and "released_at" not in statements[1][0]
+    assert "detail.settlement_claim_token = %s" in statements[1][0]
+    assert "executor_cleanup_status = 'cleanup_pending'" in statements[2][0]
+    assert "detail.settled_claim_token = %s" in statements[2][0] and "released_at" not in statements[2][0]
+    assert "from run_attempt_settlements detail" in statements[3][0]
+    assert statements[3][1] == (900,"tenant-a")
+    assert summary["pending_receipt_count"] == 3 and summary["retry_attempt_count"] == 7
+    assert not {"run_id", "lease_id", "error", "receipt_json"} & set(summary)
 
 
 @pytest.mark.asyncio
@@ -3496,7 +3347,7 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     assert "%s::text is null or lease.tenant_id = %s" in claim_sql
     assert "lease.runtime_handle_verified_at" in claim_sql
     assert "for update of lease skip locked" in claim_sql
-    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a", "cleanup-a")
+    assert claim_params == (45, "tenant-a", "tenant-a", 8, "cleanup-a")
 
     has_claim_sql, _ = statements[1]
     assert "executor_cleanup_status = 'claimed'" in has_claim_sql
@@ -3511,7 +3362,7 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
 
     finalize_sql, finalize_params = statements[3]
     assert "set status = 'released'" in finalize_sql
-    assert "executor_reconciliation_status = 'finalized'" in finalize_sql
+    assert "executor_cleanup_status = 'finalized'" in finalize_sql
     assert "executor_cleanup_status = 'claimed'" in finalize_sql
     assert "executor_cleanup_claim_token = %s" in finalize_sql
     assert finalize_params[-2:] == ("lease-a", "cleanup-a")
@@ -3546,13 +3397,13 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
     calls = []
 
     async def claim(_conn, **kwargs):
-        row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+        row["settlement_claim_token"] = kwargs["claim_token"]
         return [row]
 
     async def has_claim(_conn, **kwargs):
         return kwargs == {
             "lease_id": row["id"],
-            "claim_token": row["executor_reconciliation_claim_token"],
+            "claim_token": row["settlement_claim_token"],
         }
 
     async def get_run(_conn, **_kwargs):
@@ -3588,7 +3439,7 @@ async def test_reconciler_hands_off_cleanup_only_for_exact_run_terminal_outcomes
     else:
         assert calls == [("retry", {
             "lease_id": "lease-a",
-            "claim_token": row["executor_reconciliation_claim_token"],
+            "claim_token": row["settlement_claim_token"],
             "error": (
                 "executor_reconciliation_outcome_run_mismatch"
                 if outcome_run_id != "run-a"

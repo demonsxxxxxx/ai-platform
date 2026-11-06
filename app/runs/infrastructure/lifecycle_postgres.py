@@ -14,41 +14,21 @@ from app.platform.postgres.limits import (
     ensure_json_size,
 )
 from app.runs.domain.run_status import is_terminal_run_status
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    get_attempt_settlement_storage_version,
-)
 from app.runs.infrastructure.steps_postgres import _cancel_open_run_steps, _fail_open_run_steps
 
 
-def _pending_terminal_receipt_sql(*, attempt_reader_active: bool) -> str:
-    if attempt_reader_active:
-        return """
-        exists (
-          select 1 from sandbox_leases lease
-          left join run_attempt_settlements detail
-            on detail.tenant_id = lease.tenant_id and detail.run_id = lease.run_id
-           and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
-          where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
-            and (
-              (detail.attempt_id is null
-               and lease.executor_status in ('completed', 'failed', 'cancelled'))
-              or (detail.receipt_json is not null
-                  and detail.settlement_phase <> 'settled')
-            )
-        )
-        """
+def _pending_terminal_receipt_sql() -> str:
     return """
     exists (
       select 1 from sandbox_leases lease
+      left join run_attempt_settlements detail
+        on detail.tenant_id = lease.tenant_id and detail.run_id = lease.run_id
+       and detail.attempt_id = lease.attempt_id and detail.source_lease_id = lease.id
       where lease.tenant_id = runs.tenant_id and lease.run_id = runs.id
-        and lease.executor_terminal_json is not null
-        and lease.executor_reconciliation_status is distinct from 'finalized'
+        and ((detail.attempt_id is null and lease.executor_status in ('completed', 'failed', 'cancelled'))
+          or (detail.receipt_json is not null and detail.settlement_phase <> 'settled'))
     )
     """
-
-
-async def _attempt_settlement_reader_active(conn: AsyncConnection) -> bool:
-    return await get_attempt_settlement_storage_version(conn) == "attempt.v1"
 
 
 def require_run_result_size(result_json: dict[str, Any] | None) -> None:
@@ -296,9 +276,7 @@ async def list_stale_run_reconciliation_candidates(
     )
     bounded_limit = max(1, min(int(limit), 50))
     if postgres_claim_mode:
-        pending_receipt_guard = _pending_terminal_receipt_sql(
-            attempt_reader_active=await _attempt_settlement_reader_active(conn)
-        )
+        pending_receipt_guard = _pending_terminal_receipt_sql()
         cursor = await conn.execute(
             f"""
             select runs.tenant_id, runs.workspace_id, runs.user_id, runs.id as run_id,
@@ -451,9 +429,7 @@ async def stage_stale_run_reconciliation(
     if terminal_status not in {"failed", "cancelled"}:
         raise ValueError("invalid_stale_run_terminal_status")
 
-    pending_receipt_guard = _pending_terminal_receipt_sql(
-        attempt_reader_active=await _attempt_settlement_reader_active(conn)
-    )
+    pending_receipt_guard = _pending_terminal_receipt_sql()
     target_result = (
         {"message": "任务已取消", "reconciliation_reason": "stale_run_no_owner"}
         if terminal_status == "cancelled"
@@ -624,9 +600,7 @@ async def claim_stale_run_reconciliation(
     ):
         raise ValueError("stale_run_reconciliation_claim_invalid")
 
-    pending_receipt_guard = _pending_terminal_receipt_sql(
-        attempt_reader_active=await _attempt_settlement_reader_active(conn)
-    )
+    pending_receipt_guard = _pending_terminal_receipt_sql()
     run_cursor = await conn.execute(
         f"""
         select runs.id, runs.tenant_id, runs.workspace_id, runs.user_id, runs.status,
@@ -868,9 +842,7 @@ async def _stale_run_reconciliation_claim_binding_is_current(
     leases = list(await lease_cursor.fetchall())
     pending_receipt_cursor = await conn.execute(
         f"""
-        select ({_pending_terminal_receipt_sql(
-            attempt_reader_active=await _attempt_settlement_reader_active(conn)
-        )}) as pending_terminal_receipt
+        select ({_pending_terminal_receipt_sql()}) as pending_terminal_receipt
         from runs where tenant_id = %s and id = %s
         """,
         (claim["tenant_id"], claim["run_id"]),

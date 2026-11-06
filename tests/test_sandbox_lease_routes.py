@@ -86,17 +86,10 @@ def test_create_sandbox_lease_records_run_scoped_lease_and_event(monkeypatch):
         calls.append(("event", kwargs))
         return "evt-a"
 
-    async def disable_projection_write(_self, _conn, _scope):
-        return False
-
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
     monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.create_sandbox_lease", fake_create_sandbox_lease)
-    monkeypatch.setattr(
-        "app.sandbox.application.attempt_settlement_shadow.AttemptSettlementShadowLeaseRepository._write_enabled",
-        disable_projection_write,
-    )
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", fake_append_event)
     client = TestClient(create_app())
 

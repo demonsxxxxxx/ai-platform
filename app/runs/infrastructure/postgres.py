@@ -28,7 +28,6 @@ from app.runs.domain.terminalization import (
     RunTerminalizationProgress,
 )
 from app.runs.infrastructure.lifecycle_postgres import (
-    _attempt_settlement_reader_active,
     _pending_terminal_receipt_sql,
     stage_run_terminalization,
 )
@@ -1592,26 +1591,13 @@ class PostgresRunCancellationPersistence:
             or int(attempt.get("owner_generation") or 0) != expected_owner_generation
         ):
             return False
-        if await _attempt_settlement_reader_active(conn):
-            pending = _pending_terminal_receipt_sql(attempt_reader_active=True)
-            row = await (await conn.execute(
-                f"select 1 from runs where tenant_id=%s and id=%s and ({pending})",
-                (tenant_id, run_id),
-            )).fetchone()
-            if row is not None:
-                return False
-        else:
-            row = await (await conn.execute(
-                """
-                select 1 from sandbox_leases
-                where tenant_id=%s and run_id=%s
-                  and executor_terminal_json is not null
-                  and executor_reconciliation_status is distinct from 'finalized'
-                """,
-                (tenant_id, run_id),
-            )).fetchone()
-            if row is not None:
-                return False
+        pending = _pending_terminal_receipt_sql()
+        row = await (await conn.execute(
+            f"select 1 from runs where tenant_id=%s and id=%s and ({pending})",
+            (tenant_id, run_id),
+        )).fetchone()
+        if row is not None:
+            return False
         cursor = await conn.execute(
             """
             update run_attempts

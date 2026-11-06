@@ -577,7 +577,8 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     from app.bootstrap.run_lifecycle import build_run_lifecycle_service
     from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
     from app.executor_reconciler import reconcile_pending_executor_terminals_once
-    from app.sandbox.infrastructure import leases_postgres as sandbox_lease_repository
+    from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+    sandbox_lease_repository = build_sandbox_executor_reconciliation_port()
     from app.runs.application import attempt_lifecycle
     from app.runs.infrastructure import postgres as run_attempt_persistence
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
@@ -650,21 +651,39 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             insert into sandbox_leases(
               id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
               sandbox_mode, provider, status, lease_payload_json, executor_status,
-              executor_terminal_json, executor_terminal_received_at,
-              executor_reconciliation_context_json, executor_reconciliation_status,
-              executor_cleanup_status, expires_at
+              executor_terminal_received_at, executor_cleanup_status, expires_at
             ) values (
               'lease-a', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
               'run-a', 'attempt-a', 'ephemeral', 'fake', 'active', %s::jsonb,
-              'completed', %s::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-              'pending', 'waiting_settlement', now() - interval '1 minute'
+              'completed', now() - interval '5 minutes',
+              'waiting_settlement', now() - interval '1 minute'
             )
             """,
             (
-                json.dumps({"workspace_host_path": str(workspace_file.parent.parent)}),
-                json.dumps({"run_id": "run-a", "status": "succeeded"}),
+                json.dumps({"workspace_host_path": str(workspace_file.parent.parent), "owner_generation": 4}),
             ),
         )
+
+        async def seed_attempt(run_id, attempt_id, lease_id, *, recorded_age="0 seconds"):
+            from tests.test_run_attempt_repository import _execution_spec as harness_spec
+            spec = harness_spec(run_id=run_id)
+            await conn.execute("update runs set status='queued' where id=%s", (run_id,))
+            await create_run_attempt(conn, tenant_id="tenant-a",run_id=run_id,attempt_id=attempt_id,
+                ordinal=1,owner_kind="queue_worker",owner_id="worker-a",queue_attempt_id="q-"+run_id,execution_spec=spec)
+            for before,after,generation in (("created","queued",1),("queued","claimed",2),("claimed","running",3)):
+                await transition_run_attempt(conn,tenant_id="tenant-a",run_id=run_id,attempt_id=attempt_id,
+                    expected_status=before,requested_status=after,expected_owner_kind="queue_worker",
+                    expected_owner_id="worker-a",expected_owner_generation=generation)
+            await conn.execute("update runs set status='running' where id=%s", (run_id,))
+            from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+            projection = build_attempt_settlement_projection_service()
+            await projection.initialize_attempt_in_transaction(conn,tenant_id="tenant-a",run_id=run_id,attempt_id=attempt_id,source_lease_id=lease_id)
+            await projection.record_accepted_context_in_transaction(conn,tenant_id="tenant-a",run_id=run_id,attempt_id=attempt_id,lease_id=lease_id,accepted_context={})
+            await projection.record_terminal_receipt_in_transaction(conn,tenant_id="tenant-a",run_id=run_id,attempt_id=attempt_id,lease_id=lease_id,
+                receipt={"run_id":run_id,"status":"succeeded"},receipt_owner_generation=4)
+            await conn.execute("update run_attempt_settlements set receipt_recorded_at=now()-%s::interval where attempt_id=%s",(recorded_age,attempt_id))
+
+        await seed_attempt("run-a","attempt-a","lease-a",recorded_age="5 minutes")
 
         @asynccontextmanager
         async def cleanup_transaction():
@@ -737,7 +756,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
                 )
                 # Keep this retry ineligible while testing the other ready receipt.
                 await conn.execute(
-                    "update sandbox_leases set executor_reconciliation_retry_not_before = now() + interval '1 hour' where id = 'lease-a'"
+                    "update run_attempt_settlements set next_retry_at = now() + interval '1 hour' where source_lease_id = 'lease-a'"
                 )
         finally:
             await contender.close()
@@ -758,18 +777,16 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             insert into sandbox_leases(
               id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
               sandbox_mode, provider, status, lease_payload_json, executor_status,
-              executor_terminal_json, executor_terminal_received_at,
-              executor_reconciliation_context_json, executor_reconciliation_status,
-              executor_cleanup_status, expires_at
+              executor_terminal_received_at, executor_cleanup_status, expires_at
             ) values (
               'lease-pending', 'tenant-a', 'workspace-a', 'user-a', 'session-a',
               'run-pending', 'attempt-pending', 'ephemeral', 'fake', 'active',
-              '{}'::jsonb, 'completed',
-              '{"run_id":"run-pending","status":"succeeded"}'::jsonb,
-              now(), '{}'::jsonb, 'pending', 'waiting_settlement', now() + interval '1 minute'
+              '{"owner_generation":4}'::jsonb, 'completed',
+              now(), 'waiting_settlement', now() + interval '1 minute'
             )
             """
         )
+        await seed_attempt("run-pending","attempt-pending","lease-pending")
         async with conn.transaction():
             pending_rows = await sandbox_lease_repository.claim_sandbox_executor_reconciliations(
                 conn,
@@ -801,7 +818,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         )
 
         # Advance the fixture's explicit terminal retry deadline, not lease updates.
-        await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before = now() - interval '31 seconds' where id = 'lease-a'")
+        await conn.execute("update run_attempt_settlements set next_retry_at = now() - interval '31 seconds' where source_lease_id = 'lease-a'")
         from tests.test_streaming_v4_postgres_integration import _callback_capabilities
 
         assert await reconcile_pending_executor_terminals_once(
@@ -817,21 +834,21 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         ).fetchone()
         lease = await (
             await conn.execute(
-                "select status, executor_reconciliation_status from sandbox_leases where id = 'lease-a'"
+                "select status, executor_cleanup_status from sandbox_leases where id = 'lease-a'"
             )
         ).fetchone()
         artifact_count = await (
             await conn.execute("select count(*) as count from artifacts where tenant_id = 'tenant-a'")
         ).fetchone()
 
-        # The historical receipt has no adapter context or authoritative
-        # Attempt. Quarantine it without granting authority to fail its Run.
+        # A receipt without adapter authority cannot terminalize its Run.
+        # Quarantine the resource while retaining the canonical Attempt receipt.
         assert run["status"] == "running"
         assert run["error_code"] is None
         assert "artifact_count" not in run["result_json"]
         assert lease == {
             "status": "quarantined",
-            "executor_reconciliation_status": "failed",
+            "executor_cleanup_status": "failed",
         }
         assert artifact_count["count"] == 3
         assert workspace_file.read_text(encoding="utf-8") == "retained"
@@ -854,21 +871,18 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
               id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
               sandbox_mode, provider, status, lease_payload_json, runtime_container_id,
               runtime_container_name, runtime_executor_url, runtime_workspace_container_path,
-              runtime_handle_verified_at, executor_status, executor_terminal_json,
-              executor_terminal_received_at, executor_reconciliation_context_json,
-              executor_reconciliation_status, executor_cleanup_status,
+              runtime_handle_verified_at, executor_status,
+              executor_terminal_received_at, executor_cleanup_status,
               executor_reconciliation_error, expires_at, released_at
             ) values
               ('lease-b', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-b',
                'attempt-b', 'ephemeral', 'fake', 'active', '{}'::jsonb, 'container-b',
                'executor-b', 'http://executor-b.test', '/workspace', now(), 'failed',
-               '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-               'failed', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', null),
+               now() - interval '5 minutes', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', null),
               ('lease-c', 'tenant-a', 'workspace-a', 'user-a', 'session-a', 'run-c',
                'attempt-c', 'ephemeral', 'fake', 'released', '{}'::jsonb, 'container-c',
                'executor-c', 'http://executor-c.test', '/workspace', now(), 'failed',
-               '{"status":"failed"}'::jsonb, now() - interval '5 minutes', '{}'::jsonb,
-               'failed', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', now())
+               now() - interval '5 minutes', 'cleanup_pending', 'stop_failed', now() - interval '1 minute', now())
             """
         )
         stopped = []
@@ -897,8 +911,8 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
         cleaned_states = await (
             await conn.execute(
                 """
-                select id, status, executor_reconciliation_status,
-                       executor_reconciliation_claim_token
+                select id, status, executor_cleanup_status,
+                       executor_cleanup_claim_token
                 from sandbox_leases
                 where id in ('lease-b', 'lease-c')
                 order by id
@@ -909,14 +923,14 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             {
                 "id": "lease-b",
                 "status": "released",
-                "executor_reconciliation_status": "finalized",
-                "executor_reconciliation_claim_token": None,
+                "executor_cleanup_status": "finalized",
+                "executor_cleanup_claim_token": None,
             },
             {
                 "id": "lease-c",
                 "status": "released",
-                "executor_reconciliation_status": "finalized",
-                "executor_reconciliation_claim_token": None,
+                "executor_cleanup_status": "finalized",
+                "executor_cleanup_claim_token": None,
             },
         ]
     finally:

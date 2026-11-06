@@ -156,7 +156,6 @@ class RunAttemptLifecycleService:
 
     persistence: RunAttemptPersistence
     settlement_projection: Any | None = None
-    settlement_shadow_enabled: Callable[[], bool] = lambda: True
 
     async def _lock_settlement_sources(
         self,
@@ -167,16 +166,13 @@ class RunAttemptLifecycleService:
         attempt_id: str,
     ) -> bool:
         if self.settlement_projection is not None:
-            await self.settlement_projection.lock_writer_fence(conn)
             await self.settlement_projection.lock_sources_in_transaction(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
                 attempt_id=attempt_id,
             )
-            return await self.settlement_projection.writes_enabled(
-                conn, shadow_enabled=bool(self.settlement_shadow_enabled())
-            )
+            return True
         return False
 
     async def _refresh_settlement(
@@ -191,14 +187,9 @@ class RunAttemptLifecycleService:
     ) -> None:
         if attempt is None or self.settlement_projection is None:
             return
-        if await self.settlement_projection.attempt_writer_active(conn):
-            await self.settlement_projection.refresh_snapshot_in_transaction(
-                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
-            )
-        elif write_detail:
-            await self.settlement_projection.refresh_in_transaction(
-                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
-            )
+        await self.settlement_projection.refresh_snapshot_in_transaction(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        )
     finalize_terminal_transition: Callable[..., Awaitable[None]] | None = None
 
     async def restore_reconciliation(
@@ -317,8 +308,6 @@ class RunAttemptLifecycleService:
         return await self.persistence.lock_queued_run_for_attempt(conn, **kwargs)
 
     async def start_worker(self, conn: Any, **kwargs: Any) -> dict[str, Any]:
-        if self.settlement_projection is not None:
-            await self.settlement_projection.lock_writer_fence(conn)
         attempt = await self.persistence.start_worker_run_attempt(conn, **kwargs)
         write_detail = await self._lock_settlement_sources(
             conn,
@@ -326,7 +315,7 @@ class RunAttemptLifecycleService:
             run_id=str(attempt["run_id"]),
             attempt_id=str(attempt["id"]),
         )
-        if self.settlement_projection is not None and await self.settlement_projection.attempt_writer_active(conn):
+        if self.settlement_projection is not None:
             await self.settlement_projection.initialize_attempt_in_transaction(
                 conn,
                 tenant_id=str(attempt["tenant_id"]),
@@ -452,7 +441,6 @@ class RunAttemptLifecycleService:
             # Fence the source set before choosing the latest Attempt. A new
             # Attempt can commit between an earlier latest-row read and the
             # Run lock; the locked Run then prevents any later Attempt insert.
-            await self.settlement_projection.lock_writer_fence(conn)
             run = await self.persistence.get_run(
                 conn,
                 tenant_id=str(kwargs["tenant_id"]),
@@ -507,7 +495,6 @@ class RunAttemptLifecycleService:
         """Mirror one terminal Run onto its latest durable attempt atomically."""
 
         if self.settlement_projection is not None:
-            await self.settlement_projection.lock_writer_fence(conn)
             run = await self.persistence.get_run(
                 conn,
                 tenant_id=tenant_id,

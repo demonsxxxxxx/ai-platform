@@ -436,7 +436,7 @@ async def record_executor_callback(
                     status_code=422,
                     detail="executor_terminal_result_invalid",
                 ) from exc
-            terminal_was_new = lease.get("executor_terminal_json") is None
+            terminal_was_new = lease.get("receipt_json") is None
             try:
                 await lease_port.record_sandbox_executor_terminal(
                     conn,
@@ -533,7 +533,7 @@ async def record_executor_callback(
                 identity=callback_identity,
             )
             if str(lease.get("provider") or "").strip().lower() == "opensandbox":
-                if lease.get("executor_terminal_json") is not None:
+                if lease.get("receipt_json") is not None:
                     raise HTTPException(
                         status_code=409,
                         detail="sandbox_runtime_attempt_inactive",
@@ -571,7 +571,7 @@ async def record_executor_callback(
                 conn,
                 identity=callback_identity,
             )
-            if lease.get("executor_terminal_json") is not None:
+            if lease.get("receipt_json") is not None:
                 raise HTTPException(
                     status_code=409,
                     detail="sandbox_runtime_attempt_inactive",

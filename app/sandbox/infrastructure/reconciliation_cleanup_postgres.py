@@ -40,14 +40,7 @@ async def claim_failed_sandbox_executor_reconciliation_cleanups(
     tenant_id: str | None,
     limit: int,
     stale_after_seconds: int,
-    legacy_settlement_compat: bool = True,
 ) -> list[dict[str, Any]]:
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-            executor_reconciliation_claim_token = %s,
-            executor_reconciliation_claimed_at = now(),
-        """
     cursor = await connection.execute(
         f"""
         with candidates as (
@@ -86,14 +79,13 @@ async def claim_failed_sandbox_executor_reconciliation_cleanups(
             executor_cleanup_claim_token = %s,
             executor_cleanup_claimed_at = now(),
             executor_cleanup_retry_not_before = null,
-            {compatibility_assignments}
             updated_at = now()
         from candidates
         where lease.id = candidates.id
         returning {_RESOURCE_CLEANUP_FIELDS_FOR_LEASE}
         """,
         (stale_after_seconds, tenant_id, tenant_id, limit, claim_token,
-         *([claim_token] if legacy_settlement_compat else [])),
+         ),
     )
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
@@ -128,23 +120,14 @@ async def release_failed_sandbox_executor_reconciliation_cleanup_claim(
     lease_id: str,
     claim_token: str,
     error: str,
-    legacy_settlement_compat: bool = True,
 ) -> bool:
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-            executor_reconciliation_retry_not_before = now() + interval '30 seconds',
-            executor_reconciliation_claim_token = null,
-            executor_reconciliation_claimed_at = null,
-        """
     cursor = await connection.execute(
-        f"""
+        """
         update sandbox_leases
         set executor_cleanup_status = 'retry',
             executor_cleanup_retry_not_before = now() + interval '30 seconds',
             executor_cleanup_claim_token = null,
             executor_cleanup_claimed_at = null,
-            {compatibility_assignments}
             executor_reconciliation_error = %s,
             updated_at = now()
         where id = %s
@@ -167,16 +150,7 @@ async def finalize_failed_sandbox_executor_reconciliation_cleanup(
     lease_id: str,
     claim_token: str,
     reason: str,
-    legacy_settlement_compat: bool = True,
 ) -> dict[str, Any] | None:
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-                executor_reconciliation_status = 'finalized',
-                executor_reconciliation_retry_not_before = null,
-                executor_reconciliation_claim_token = null,
-                executor_reconciliation_claimed_at = null,
-        """
     row = await (
         await connection.execute(
             f"""
@@ -188,8 +162,7 @@ async def finalize_failed_sandbox_executor_reconciliation_cleanup(
                 executor_cleanup_retry_not_before = null,
                 executor_cleanup_claim_token = null,
                 executor_cleanup_claimed_at = null,
-                {compatibility_assignments}
-                executor_reconciliation_error = '',
+                    executor_reconciliation_error = '',
                 executor_reconciled_at = now(),
                 updated_at = now()
             where tenant_id = %s
@@ -213,22 +186,14 @@ async def quarantine_failed_sandbox_executor_reconciliation_cleanup(
     lease_id: str,
     claim_token: str,
     error: str,
-    legacy_settlement_compat: bool = True,
 ) -> bool:
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-            executor_reconciliation_claim_token = null,
-            executor_reconciliation_claimed_at = null,
-        """
     cursor = await connection.execute(
-        f"""
+        """
         update sandbox_leases
         set status = 'quarantined',
             executor_cleanup_status = 'failed',
             executor_cleanup_claim_token = null,
             executor_cleanup_claimed_at = null,
-            {compatibility_assignments}
             executor_reconciliation_error = %s,
             updated_at = now()
         where id = %s

@@ -6,7 +6,6 @@ from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.bootstrap.attempt_settlement_projection import (
     build_attempt_settlement_projection_service,
 )
-from app.settings import get_settings
 
 
 def build_run_attempt_lifecycle_service() -> RunAttemptLifecycleService:
@@ -16,8 +15,5 @@ def build_run_attempt_lifecycle_service() -> RunAttemptLifecycleService:
     return RunAttemptLifecycleService(
         persistence=run_attempt_persistence,
         settlement_projection=projection,
-        settlement_shadow_enabled=lambda: bool(
-            get_settings().run_attempt_settlement_shadow_enabled
-        ),
         finalize_terminal_transition=advance_unclaimed_terminal_generation,
     )

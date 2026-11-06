@@ -253,7 +253,7 @@ generation, timestamps, and reconciliation ownership in one migration.
    compatibility alias or external wire contract.
    Owner and administrator cancellation of an active Attempt records intent and
    leaves the original executor responsible for bounded SDK drain. Its exact
-   provider must stop before private workspace save and the atomic Context/Run
+   provider must stop before private workspace save and the atomic Context/Run/Attempt
    terminal transaction; lease release follows that transaction's terminal facts.
    A dispatch response still in flight retains the same Attempt's observation
    responsibility, including a verified durable terminal handoff after endpoint
@@ -314,39 +314,34 @@ generation, timestamps, and reconciliation ownership in one migration.
 replace a general monotonically increasing fencing generation for provider
 commands. That generation belongs in the target transition-ledger migration.
 
-## Terminal completion compatibility and retirement
+## Attempt settlement and Sandbox resource cleanup
 
-Schema `2026.10.13.1` adds the nullable retry deadline and `cleanup_pending`.
-Existing terminal retries retain `updated_at + min(30, max(1, attempt_count))`
-as their first deadline. Probe retry retains its separate heartbeat/attempt clock.
-The accepted writer cannot reset either a deadline or a cleanup handoff.
-The concurrent-index ledger advances with this contract. The existing
-`idx_sandbox_leases_executor_reconcile` is rebuilt to order by receipt age and
-ID for both active and historically released receipts; its active-only,
-status/updated-at definition is retired. A separate partial retry-deadline index
-supports the next-due query without scanning finalized history. Both indexes
-have one concurrent migration owner and exact readiness catalog contracts;
-they are not duplicated in the core schema's static index registry.
+Runs' Attempt detail is the sole receipt/context and settlement claim/retry
+owner. Sandbox retains resource identity, executor status/heartbeat, terminal
+observation time, independent probe claims, cleanup claims/retry, and verified
+stop/release evidence. None of these resource facts replaces the Run/Attempt
+terminal transaction. Accepted observations cannot reset settlement or cleanup
+claims and deadlines.
 
-The inline terminal provider-stop helpers and the claimed-to-finalized release
-writer are retired from `executor_reconciler.py` and `sandbox_leases.py`, together
-with their former inline-stop tests. Terminal completion tests now assert durable
-handoff; Sandbox cleanup tests own stop, timeout, lost-claim and finalization.
-The serial completion loop, fixed pending priority, terminal retry derived from
-arbitrary lease updates and Redis-dependent 30-second scan wait are replaced.
-The existing `cleanup_failed_*` API names remain as the compatibility owner for
-persisted legacy `failed` cleanup rows and the new handoff; both use one claim,
-stop and finalize implementation. Their removal requires absence of legacy failed
-rows and migration of all current callers, not a second cleanup implementation.
-No new public endpoint, queue ledger, SDK execution path or environment setting
-is introduced. Existing test files remain in their current CI shards; the real
-PostgreSQL/Redis handoff regression belongs to `test_sandbox_persistence.py`.
+Native continuation requires stop of the exact verified producer, host workspace
+save and a durable generation-bound checkpoint. Context validation, Run/Attempt
+completion and checkpoint resource finalization share one terminal transaction;
+a stale claim or failed CAS cannot leave partial continuation or resource release.
+A completed stopped checkpoint never revisits its producer.
 
-The schema readiness gate requires the new target. Stop old writers before
-migration and start only matching binaries under the release runbook. Mixed-version
-writers are unsupported. Binary rollback requires first draining or explicitly
-mapping `cleanup_pending` to the legacy cleanup owner while retaining unfinished
-leases; simply starting an older Worker cannot consume the new state.
+Noncheckpoint results hand off to the existing independent cleanup owner.
+`cleanup_failed_*` names continue to consume persisted failed resource cleanup
+rows through one implementation. Provider stop remains outside that claimed
+cleanup's transaction; only verified `stopped` or authoritative `not_found`
+permits fenced release. Stop failure retains responsibility and durable retry.
+Heartbeat/probe/cleanup never dual-write old settlement fields.
+
+The one-time schema upgrader preserves historical evidence before removing the
+old settlement columns/indexes/constraint and markers. These old indexes are
+not rebuilt or recreated by current schema. Current retry clocks live in Attempt
+detail; resource cleanup retry clocks remain Sandbox-owned. Old binaries must
+stop and work/claims drain before the one-way upgrade. Use a compatible corrected
+package or authorized restore for recovery, not mixed-version writers.
 
 ## Provider port
 

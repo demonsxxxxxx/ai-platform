@@ -1,57 +1,13 @@
 from __future__ import annotations
-
-import asyncio
 import json
-
 import pytest
-from app import schema_migrations
-from app.bootstrap.attempt_settlement_projection import (
-    build_attempt_settlement_projection_service,
-)
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.runs.infrastructure import lifecycle_postgres
-from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-    backfill_attempt_settlement_projections,
-)
-from app.runs.infrastructure.attempt_settlement_cutover_postgres import (
-    activate_attempt_settlement_storage,
-)
 from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
-from app.runs.infrastructure import attempt_settlement_writer_cutover_postgres as cutover
-from tests import test_attempt_settlement_projection as projection_tests
 from tests.support.frozen_receipts import frozen_spec
+from tests import test_sandbox_attempt_authority as authority_tests
 
-attempt_settlement_db = projection_tests.attempt_settlement_db
-
-_READER_CONFIRMATIONS = {
-    "run_and_sandbox_writers_drained": True,
-    "all_source_writers_n40_compatible": True,
-    "real_sdk_acceptance_complete": True,
-    "real_sandbox_lifecycle_acceptance_complete": True,
-    "fourteen_lifecycle_scenarios_complete": True,
-}
-_WRITER_CONFIRMATIONS = {
-    "legacy_writers_drained": True,
-    "inflight_settlement_and_cleanup_operations_drained": True,
-    "real_sdk_acceptance_complete": True,
-    "real_sandbox_lifecycle_acceptance_complete": True,
-    "fourteen_lifecycle_scenarios_complete": True,
-}
-
-
-async def _activate_reader(connect) -> None:
-    async with connect() as conn, conn.transaction():
-        await backfill_attempt_settlement_projections(conn, limit=800)
-        recorded = await (await conn.execute(
-            "select receipt_recorded_at from run_attempt_settlements "
-            "where tenant_id='tenant-a' and run_id='run-a'"
-        )).fetchone()
-        assert recorded["receipt_recorded_at"] is not None
-    async with connect() as conn, conn.transaction():
-        result = await activate_attempt_settlement_storage(
-            conn, operator_confirmations=_READER_CONFIRMATIONS,
-        )
-        assert result["status"] == "activated"
+attempt_settlement_db = authority_tests.sandbox_attempt_authority_db
 
 
 async def _start_attempt_with_lease(conn, *, run_id: str, context_id: str):
@@ -124,13 +80,6 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
     attempt_settlement_db,
 ):
     connect, *_ = attempt_settlement_db
-    await _activate_reader(connect)
-    async with connect() as conn, conn.transaction():
-        activated = await cutover.activate_attempt_settlement_writer(
-            conn, operator_confirmations=_WRITER_CONFIRMATIONS,
-        )
-        assert activated["status"] == "activated"
-
     async with connect() as conn, conn.transaction():
         attempt, lease_id = await _start_attempt_with_lease(
             conn, run_id="run-authority-late-accept", context_id="context-authority-late",
@@ -177,14 +126,6 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
         assert detail[3]["accepted_context_json"] == accepted
         assert detail[3]["receipt_json"] == receipt
 
-        fixture_retry = await (await conn.execute(
-            "select next_retry_at from run_attempt_settlements "
-            "where tenant_id='tenant-a' and run_id='run-a'"
-        )).fetchone()
-        await conn.execute(
-            "update run_attempt_settlements set next_retry_at='infinity' "
-            "where tenant_id='tenant-a' and run_id='run-a'"
-        )
         claims = await writer.claim_due_attempt_settlements(
             conn, claim_token="authority-claim", limit=10, stale_after_seconds=30,
         )
@@ -254,105 +195,3 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
         )
         assert early_detail[3]["settlement_phase"] == "pending"
         assert early_detail[3]["accepted_context_json"] == early_context
-        await conn.execute(
-            "update run_attempt_settlements set next_retry_at=%s "
-            "where tenant_id='tenant-a' and run_id='run-a'",
-            (fixture_retry["next_retry_at"],),
-        )
-
-
-@pytest.mark.asyncio
-async def test_writer_cutover_waits_for_fenced_source_writer_and_repeats_without_legacy_compare(
-    attempt_settlement_db, monkeypatch,
-):
-    connect, *_ = attempt_settlement_db
-    await _activate_reader(connect)
-    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
-        lock_attempt_settlement_writer_fence,
-        refresh_attempt_settlement_projection,
-    )
-
-    async with connect() as conn, conn.transaction():
-        await conn.execute(
-            """
-            update run_attempt_settlements
-            set settlement_phase='claimed', settlement_claim_token='cutover-claim',
-                settlement_claimed_at=clock_timestamp(), next_retry_at=null
-            where tenant_id='tenant-a' and run_id='run-a'
-            """
-        )
-    async with connect() as conn, conn.transaction():
-        blocked = await cutover.activate_attempt_settlement_writer(
-            conn, operator_confirmations=_WRITER_CONFIRMATIONS,
-        )
-    assert blocked["status"] == "blocked"
-    assert blocked["inflight_claim_counts"]["attempt_settlement_claim_count"] == 1
-    async with connect() as conn, conn.transaction():
-        attempt_row = await (await conn.execute(
-            "select id from run_attempts where tenant_id='tenant-a' and run_id='run-a'"
-        )).fetchone()
-        projection = await refresh_attempt_settlement_projection(
-            conn, tenant_id="tenant-a", run_id="run-a", attempt_id=attempt_row["id"],
-        )
-        await build_attempt_settlement_projection_service().persist_in_transaction(conn, projection)
-
-    locked = asyncio.Event()
-    release = asyncio.Event()
-
-    async def source_writer():
-        async with connect() as conn, conn.transaction():
-            await lock_attempt_settlement_writer_fence(conn)
-            await conn.execute(
-                "update sandbox_leases set heartbeat_at=clock_timestamp() where id='lease-a'"
-            )
-            locked.set()
-            await release.wait()
-
-    async def activate():
-        async with connect() as conn, conn.transaction():
-            return await cutover.activate_attempt_settlement_writer(
-                conn, operator_confirmations=_WRITER_CONFIRMATIONS,
-            )
-
-    writer_task = asyncio.create_task(source_writer())
-    await asyncio.wait_for(locked.wait(), timeout=5)
-    activation_task = asyncio.create_task(activate())
-    await asyncio.sleep(0.1)
-    assert activation_task.done() is False
-    release.set()
-    await asyncio.wait_for(writer_task, timeout=5)
-    activation = await asyncio.wait_for(activation_task, timeout=10)
-    assert activation["status"] == "activated"
-
-    async def no_legacy_compare(*_args, **_kwargs):
-        raise AssertionError("active writer must not compare retired source columns")
-
-    monkeypatch.setattr(cutover, "compare_attempt_settlement_snapshot", no_legacy_compare)
-    monkeypatch.setattr(cutover, "_unbound_execution_lease_count", no_legacy_compare)
-    repeated = await cutover.prepare_attempt_settlement_writer_cutover(connect)
-    assert repeated["status"] == "already_active"
-    assert repeated["legacy_comparison"] == "not_applicable_after_writer_activation"
-    async with connect() as conn, conn.transaction():
-        repeated_activation = await cutover.activate_attempt_settlement_writer(
-            conn, operator_confirmations=_WRITER_CONFIRMATIONS,
-        )
-    assert repeated_activation["status"] == "already_active"
-    assert "comparison" not in repeated_activation
-
-
-@pytest.mark.asyncio
-async def test_schema_migration_refuses_weak_attempt_writer_marker_constraint(attempt_settlement_db):
-    connect, *_ = attempt_settlement_db
-    async with connect() as conn, conn.transaction():
-        await conn.execute(
-            "alter table run_attempt_settlement_writer drop constraint "
-            "chk_run_attempt_settlement_writer_version"
-        )
-        await conn.execute(
-            "alter table run_attempt_settlement_writer add constraint "
-            "chk_run_attempt_settlement_writer_version check (writer_version is not null)"
-        )
-    async with connect() as conn:
-        status = await schema_migrations.schema_status(conn)
-    assert status["ready"] is False
-    assert status["constraint_definitions_current"] is False

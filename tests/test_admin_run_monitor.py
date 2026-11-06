@@ -6,7 +6,7 @@ from app.runs.application.admin_run_monitor import (
 )
 
 
-def test_runtime_health_uses_attempt_settlement_mapping_after_storage_cutover():
+def test_runtime_health_uses_canonical_attempt_settlement_mapping():
     observed_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
     attempt = {
         "id": "attempt-a",
@@ -27,7 +27,6 @@ def test_runtime_health_uses_attempt_settlement_mapping_after_storage_cutover():
         "lease_owner_generation": "4",
         "executor_status": "accepted",
         "executor_terminal_received_at": observed_at + timedelta(days=1),
-        "settlement_storage_version": "attempt.v1",
         "settlement_mapping_state": "mapped",
         "settlement_dispatch_state": "accepted",
         "settlement_receipt_present": True,
@@ -47,7 +46,7 @@ def test_runtime_health_uses_attempt_settlement_mapping_after_storage_cutover():
 
     lease["settlement_mapping_state"] = "unknown"
     lease["settlement_receipt_present"] = False
-    legacy_projection = build_admin_runtime_health(
+    unmapped_projection = build_admin_runtime_health(
         "running",
         tenant_id="tenant-a",
         run_id="run-a",
@@ -55,8 +54,8 @@ def test_runtime_health_uses_attempt_settlement_mapping_after_storage_cutover():
         leases=[lease],
         observed_at=observed_at,
     )
-    assert legacy_projection["state"] == "unknown"
-    assert legacy_projection["async_dispatch_accepted"] is False
+    assert unmapped_projection["state"] == "unknown"
+    assert unmapped_projection["async_dispatch_accepted"] is False
 
 
 def test_worker_execution_projects_only_safe_effective_information():

@@ -23,17 +23,9 @@ async def claim_sandbox_executor_suspects(
     limit: int,
     stale_after_seconds: int,
     candidate_lease_ids: list[str] | None = None,
-    legacy_settlement_compat: bool = True,
 ) -> list[dict[str, Any]]:
     """Claim stale accepted tasks and exact unknown dispatch intents for probing."""
 
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-            executor_reconciliation_status = 'claimed',
-            executor_reconciliation_claim_token = %s,
-            executor_reconciliation_claimed_at = now(),
-        """
 
     cursor = await connection.execute(
         f"""
@@ -77,17 +69,6 @@ async def claim_sandbox_executor_suspects(
                   and detail.intent_recovery_context_json is not null
                   and detail.accepted_context_json is null
                   and detail.receipt_json is null)
-                  or (
-                    detail.attempt_id is null
-                    and to_jsonb(lease)->>'executor_reconciliation_intent_context_json' is not null
-                    and exists (
-                      select 1 from sandbox_execution_dispatches dispatch
-                      where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
-                        and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
-                        and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
-                        and dispatch.status in ('intent', 'unknown', 'accepted')
-                    )
-                  )
                 )
               )
             )
@@ -101,7 +82,7 @@ async def claim_sandbox_executor_suspects(
                 and detail.receipt_json is not null
               )
             )
-            and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
+            and detail.attempt_id is not null
             and (
               (
                 {_UNKNOWN_RECEIPT_PROBE_STATE}
@@ -139,7 +120,6 @@ async def claim_sandbox_executor_suspects(
         update sandbox_leases as lease
         set executor_probe_claim_token = %s,
             executor_probe_claimed_at = now(),
-            {compatibility_assignments}
             executor_reconciliation_attempt_count = executor_reconciliation_attempt_count + 1,
             executor_reconciliation_error = '',
             updated_at = now()
@@ -156,7 +136,6 @@ async def claim_sandbox_executor_suspects(
             stale_after_seconds,
             limit,
             claim_token,
-            *([claim_token] if legacy_settlement_compat else []),
         ),
     )
     rows = await cursor.fetchall()
@@ -238,28 +217,12 @@ async def release_sandbox_executor_probe_claim(
     lease_id: str,
     claim_token: str,
     error: str = "",
-    legacy_settlement_compat: bool = True,
 ) -> bool:
-    compatibility_assignments = ""
-    if legacy_settlement_compat:
-        compatibility_assignments = """
-            executor_reconciliation_status = case
-              when executor_terminal_json is not null
-               and (
-                 executor_reconciliation_context_json is not null
-                 or executor_reconciliation_intent_context_json is not null
-               ) then 'pending'
-              else 'waiting_terminal'
-            end,
-            executor_reconciliation_claim_token = null,
-            executor_reconciliation_claimed_at = null,
-        """
     cursor = await connection.execute(
-        f"""
+        """
         update sandbox_leases
         set executor_probe_claim_token = null,
             executor_probe_claimed_at = null,
-            {compatibility_assignments}
             executor_reconciliation_error = %s,
             updated_at = now()
         where id = %s
@@ -358,17 +321,6 @@ async def list_sandbox_executor_suspect_candidate_scopes(
                 and detail.intent_recovery_context_json is not null
                 and detail.accepted_context_json is null
                 and detail.receipt_json is null)
-                or (
-                  detail.attempt_id is null
-                  and to_jsonb(lease)->>'executor_reconciliation_intent_context_json' is not null
-                  and exists (
-                    select 1 from sandbox_execution_dispatches dispatch
-                    where dispatch.tenant_id = lease.tenant_id and dispatch.run_id = lease.run_id
-                      and dispatch.attempt_id = lease.attempt_id and dispatch.lease_id = lease.id
-                      and dispatch.owner_generation::text = lease.lease_payload_json->>'owner_generation'
-                      and dispatch.status in ('intent', 'unknown', 'accepted')
-                  )
-                )
               )
             )
           )
@@ -382,7 +334,7 @@ async def list_sandbox_executor_suspect_candidate_scopes(
               and detail.receipt_json is not null
             )
           )
-          and (detail.attempt_id is not null or to_jsonb(lease)->>'executor_terminal_json' is null)
+          and detail.attempt_id is not null
           and (
             (
               {_UNKNOWN_RECEIPT_PROBE_STATE}
@@ -434,16 +386,15 @@ async def list_cancel_requested_executor_leases(
 
     cursor = await connection.execute(
         """
-        select lease.*
-        from sandbox_leases as lease
-        join runs on runs.tenant_id = lease.tenant_id and runs.id = lease.run_id
-        where lease.status = 'active'
-          and lease.executor_terminal_json is null
-          and lease.executor_reconciliation_context_json is not null
-          and lease.executor_reconciliation_status in ('waiting_terminal', 'claimed')
-          and runs.cancel_requested_at is not null
-        order by runs.cancel_requested_at, lease.id
-        limit %s
+        select lease.* from sandbox_leases lease
+        join runs on runs.tenant_id=lease.tenant_id and runs.id=lease.run_id
+        join run_attempt_settlements detail
+          on detail.tenant_id=lease.tenant_id and detail.run_id=lease.run_id
+         and detail.attempt_id=lease.attempt_id and detail.source_lease_id=lease.id
+        where lease.status='active' and detail.receipt_json is null
+          and detail.accepted_context_json is not null and detail.dispatch_state='accepted'
+          and detail.mapping_state='mapped' and runs.cancel_requested_at is not null
+        order by runs.cancel_requested_at,lease.id limit %s
         """,
         (max(1, int(limit)),),
     )

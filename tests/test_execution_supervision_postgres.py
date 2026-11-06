@@ -658,11 +658,16 @@ async def test_probe_observation_has_fair_cancel_and_normal_lanes():
                     """insert into sandbox_leases(
                          id, tenant_id, workspace_id, user_id, session_id, run_id,
                          attempt_id, sandbox_mode, status, executor_status,
-                         executor_heartbeat_at, executor_reconciliation_context_json)
+                         executor_heartbeat_at)
                        values (%s, 'tenant', 'workspace', 'user', 'session', %s,
                          %s, 'chat', 'active', 'running',
-                         clock_timestamp() - interval '1 hour', '{}'::jsonb)""",
+                         clock_timestamp() - interval '1 hour')""",
                     (f"lease-{run_id}", run_id, attempt_id),
+                )
+                from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+                await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+                    connection,tenant_id="tenant",run_id=run_id,attempt_id=attempt_id,
+                    source_lease_id=f"lease-{run_id}",
                 )
 
         await seed_probe("normal-a")

@@ -106,30 +106,6 @@ _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = _repo_app_mcp_infrastructure_tool_policies_po
 _ORIGINAL_MATERIALIZE_RUN_SKILL_MANIFESTS = _repo_app_skills_infrastructure_run_snapshots_postgres.materialize_run_skill_manifests
 
 
-class _LegacyAttemptSettlementReader:
-    """Unit port for scenarios that intentionally exercise legacy lease storage."""
-
-    async def storage_version(self, _conn):
-        return "sandbox_lease.v1"
-
-    async def writer_fence(self, _conn):
-        return None
-
-    async def lock_writer_fence(self, _conn):
-        return None
-
-    async def lock_sources_in_transaction(self, _conn, **_scope):
-        return None
-
-    async def writes_enabled(self, _conn, *, shadow_enabled):
-        return False
-
-    async def attempt_writer_active(self, _conn):
-        return False
-
-
-_LEGACY_ATTEMPT_SETTLEMENT_READER = _LegacyAttemptSettlementReader()
-
 
 def _native_snapshot(row):
     from app.context.domain.conversation_authority import initial_source_digest, make_authority_receipt
@@ -1125,12 +1101,11 @@ def default_cancel_not_requested(monkeypatch):
     _CURRENT_QUEUE_PAYLOAD = None
     _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
 
-    # These unit scenarios seed only the legacy sandbox receipt. Inject the
-    # corresponding reader port so composition does not issue marker SQL while
-    # the real RunAttemptLifecycleService and receipt authority remain active.
+    from tests.support.attempt_settlement import MemoryAttemptSettlement
+    settlement = MemoryAttemptSettlement()
     monkeypatch.setattr(
         "app.bootstrap.worker_attempt_lifecycle.build_attempt_settlement_projection_service",
-        lambda: _LEGACY_ATTEMPT_SETTLEMENT_READER,
+        lambda: settlement,
     )
     monkeypatch.setattr(
         "app.bootstrap.worker_run_preparation.build_worker_attempt_lifecycle_ports",
@@ -1139,9 +1114,9 @@ def default_cancel_not_requested(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        sandbox_lease_ports._shadowed_repository,
+        sandbox_lease_ports._settlement_repository,
         "_settlement",
-        _LEGACY_ATTEMPT_SETTLEMENT_READER,
+        settlement,
     )
 
     def capture_queue_payload(raw):
@@ -2060,7 +2035,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
 
     monkeypatch.setattr(reconciliation_module, "prepare_worker_run", capture_payload)
     lease_row = {
-        "executor_reconciliation_context_json": {
+        "accepted_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
             "run_payload": {
@@ -2130,6 +2105,8 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
         "tenant_id", "workspace_id", "user_id", "session_id", "run_id",
     )})
     lease_row["lease_payload_json"] = {"attempt_id": lease_row["attempt_id"], "owner_generation": 4}
+    lease_row.setdefault("settlement_claim_token", "claim-a")
+    lease_row.setdefault("settlement_phase", "claimed")
 
     async def run(conn, **kwargs):
         return {**model, "executor_type": payload.executor_type,
@@ -2144,9 +2121,9 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
         return True
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_scoped_reconciliation_run", run, raising=False)
     monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", read)
-    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.lock_scoped_reconciliation_receipt", claim)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.lock_scoped_reconciliation_resource", claim)
 
-    async def exact_legacy_lease_scope(_conn, lease_id):
+    async def exact_attempt_lease_scope(_conn, lease_id):
         assert lease_id == lease_row["id"]
         return {
             "tenant_id": lease_row["tenant_id"],
@@ -2155,15 +2132,25 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
         }
 
     monkeypatch.setattr(
-        sandbox_lease_ports._shadowed_repository,
+        sandbox_lease_ports._settlement_repository,
         "_scope_for_lease",
-        exact_legacy_lease_scope,
+        exact_attempt_lease_scope,
     )
+    async def read_detail(_conn, **scope):
+        assert all(scope[key] == lease_row[key] for key in ("tenant_id", "run_id", "attempt_id"))
+        return {
+            "mapping_state": "mapped", "source_lease_id": lease_row["id"],
+            "settlement_phase": lease_row.get("settlement_phase", "claimed"),
+            "receipt_owner_generation": 4,
+            "settlement_claim_token": lease_row.get("settlement_claim_token"),
+            "receipt_json": lease_row.get("receipt_json"),
+        }
+    monkeypatch.setattr(sandbox_lease_ports._settlement_repository._settlement, "read_attempt", read_detail)
     return spec
 
 
 @pytest.mark.asyncio
-async def test_frozen_legacy_receipt_scope_rejects_wrong_lease_id(monkeypatch):
+async def test_frozen_attempt_receipt_scope_rejects_wrong_lease_id(monkeypatch):
     persisted = base_payload(
         _leased=False,
         agent_id="general-agent",
@@ -2189,7 +2176,7 @@ async def test_frozen_legacy_receipt_scope_rejects_wrong_lease_id(monkeypatch):
     }
     _install_frozen_receipt(monkeypatch, persisted, lease_row)
     with pytest.raises(AssertionError, match="lease-a"):
-        await sandbox_lease_ports._shadowed_repository._scope_for_lease(
+        await sandbox_lease_ports._settlement_repository._scope_for_lease(
             object(), "lease-other"
         )
 
@@ -2291,7 +2278,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         reauthorize_profile,
     )
     monkeypatch.setattr(
-        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
+        sandbox_lease_ports._settlement_repository, "is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
 
@@ -2322,7 +2309,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     lease_row = {
         "id": "lease-a",
         "attempt_id": "attempt-a",
-        "executor_reconciliation_context_json": {
+        "accepted_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
             "run_payload": sandbox_reconciliation_payload(run_payload),
@@ -2489,7 +2476,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         terminalize_attempt,
     )
     monkeypatch.setattr(
-        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
+        sandbox_lease_ports._settlement_repository, "is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
 
@@ -2515,7 +2502,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     lease_row = {
         "id": "lease-a",
         "attempt_id": "rat-attempt-a",
-        "executor_reconciliation_context_json": {
+        "accepted_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
             "run_payload": sandbox_reconciliation_payload(run_payload),
@@ -3782,7 +3769,7 @@ async def test_worker_keeps_attempt_running_across_dispatch_recovery(monkeypatch
             raise RuntimeError("first acceptance transaction failed")
         return {
             "id": _kwargs["lease_id"],
-            "executor_reconciliation_status": "waiting_terminal",
+            "settlement_phase": "waiting_terminal",
         }
 
     async def create_runtime_lease(_conn, **kwargs):
