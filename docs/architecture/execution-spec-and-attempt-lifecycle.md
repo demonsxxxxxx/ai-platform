@@ -305,10 +305,14 @@ explicitly `receipt_before_acceptance` / `awaiting_context`.
 
 This detail has no Attempt transition trigger. Writing it does not update
 `run_attempts`, `runs.status`, `owner_generation`, lifecycle events, or audit
-facts. It does not change `commit_provider_turn` requirements: Attempt
-`running`, no cancellation, and the exact writer generation remain mandatory.
-The stored status/generation/cancellation values are comparison snapshots, not
-execution authority.
+facts. It does not grant `commit_provider_turn` authority. Ordinary completion
+requires a running Attempt and its exact writer generation. For a completed
+executor turn racing with cancellation, Context also accepts the original writer
+only while the same Run remains `running`, its Attempt is `cancel_requested`, a
+cancellation timestamp exists, and the current Attempt generation is exactly the
+writer generation plus one. A later takeover generation or terminal Run remains
+rejected. The stored status/generation/cancellation values are comparison
+snapshots, not execution authority.
 
 Resource identity, stop/release evidence, cleanup phase, cleanup retry and
 cleanup claim stay Sandbox-owned on `sandbox_leases`. The shared legacy
@@ -351,7 +355,11 @@ the Sandbox claim CAS. Callback recovery receives the accepted context and
 receipt from the same detail mapping; Runs finalization checks its claim token
 there while Sandbox still locks the exact resource identity and generation.
 Admin Run lease projections and runtime health/diagnostics use this mapping as
-well. Missing details raise an error. Unknown/conflict mappings remain visible in
+well. The default `sandbox_lease.v1` reader preserves the existing reconciliation
+status, terminal-attempt count and allowlisted bounded dispatch timings. Once the
+Attempt reader or writer owns settlement, diagnostics use that detail instead;
+missing accepted context cannot fall back to legacy timings. The resource query
+also works after legacy settlement columns are retired. Missing details raise an error. Unknown/conflict mappings remain visible in
 comparison, admin diagnostics and retirement readiness, but are isolated from
 the due-claim batch so one unverifiable receipt cannot block mapped Runs. The
 existing `claim_sandbox_executor_suspects` probe owner also claims the narrow

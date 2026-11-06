@@ -75,7 +75,13 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
                   executor_reconciliation_attempt_count, executor_reconciliation_error,
                   executor_reconciled_at, executor_probe_claimed_at,
                   executor_cleanup_status, executor_cleanup_claimed_at,
-                  executor_cleanup_retry_not_before
+                  executor_cleanup_retry_not_before,
+                  to_jsonb(sandbox_leases)->>'executor_reconciliation_status'
+                    as executor_reconciliation_status,
+                  to_jsonb(sandbox_leases)->'executor_terminal_reconciliation_attempt_count'
+                    as executor_terminal_reconciliation_attempt_count,
+                  to_jsonb(sandbox_leases)->'executor_reconciliation_context_json'->'dispatch_timings'
+                    as dispatch_timings
            from sandbox_leases where tenant_id=%s and run_id=%s
            order by created_at desc limit 101""", (tenant_id, run_id),
     )
@@ -83,9 +89,8 @@ async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_i
     projected = []
     for row in rows[:100]:
         item = dict(row)
-        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_cleanup_status", "release_reason"):
+        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_reconciliation_status", "executor_cleanup_status", "release_reason"):
             item[name] = sanitize_public_text(item.get(name))[:256] or None
-        item["dispatch_timings"] = {}
         projected.append(item)
     return {"leases": projected, "leases_truncated": len(rows) > 100, "lease_limit": 100}
 

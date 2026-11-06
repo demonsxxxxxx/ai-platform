@@ -217,7 +217,11 @@ class AttemptSettlementShadowLeaseRepository:
             }
             view = await self._settlement_view(conn, source)
             context = view.get("executor_reconciliation_context_json")
-            dispatch_timings = context.get("dispatch_timings") if isinstance(context, Mapping) else None
+            dispatch_timings = (
+                context.get("dispatch_timings") if isinstance(context, Mapping)
+                else view.get("dispatch_timings") if view.get("settlement_storage_version") != "attempt.v1"
+                else None
+            )
             projected.append(
                 {
                     **item,
@@ -230,7 +234,19 @@ class AttemptSettlementShadowLeaseRepository:
                     "executor_terminal_reconciliation_attempt_count": view.get(
                         "executor_terminal_reconciliation_attempt_count"
                     ),
-                    "dispatch_timings": dispatch_timings if isinstance(dispatch_timings, Mapping) else {},
+                    "dispatch_timings": {
+                        name: value for name, value in (
+                            dispatch_timings.items() if isinstance(dispatch_timings, Mapping) else ()
+                        )
+                        if name in {
+                            "sandbox_queue_wait_latency_ms", "sandbox_lease_acquire_latency_ms",
+                            "sandbox_container_start_latency_ms", "sandbox_container_cold_start_latency_ms",
+                            "sandbox_healthcheck_latency_ms", "sandbox_executor_dispatch_latency_ms",
+                            "executor_first_token_latency_ms", "executor_tool_call_latency_ms",
+                            "executor_model_latency_ms", "document_processing_latency_ms",
+                            "artifact_upload_latency_ms", "sandbox_cleanup_latency_ms", "sandbox_total_latency_ms",
+                        } and type(value) in (int, float) and 0 <= value <= 86_400_000
+                    },
                 }
             )
         return {**result, "leases": projected}
