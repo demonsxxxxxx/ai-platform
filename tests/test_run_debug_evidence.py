@@ -212,6 +212,10 @@ class DebugPersistence:
         self.connections.append(conn)
         return [{"skill_id": "skill-a", "skill_version": "2", "content_hash": "a" * 64, "dependency_ids": []}]
 
+    async def get_admin_inspection_facts(self, conn, **kwargs):
+        self.connections.append(conn)
+        return {"input": {}, "relationships": [], "model_calls": [], "model_calls_truncated": False}
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("beta_revision,beta_rejection", [(1, "not_allowed"), (2, "invalid_format")])

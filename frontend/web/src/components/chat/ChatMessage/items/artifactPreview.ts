@@ -37,11 +37,10 @@ function normalizeArtifactPreviewUrl(
     const pathname = new URL(url, "http://localhost").pathname;
     const segments = pathname.split("/").filter(Boolean);
     return (
-      segments.length === 5 &&
-      segments[0] === "api" &&
-      segments[1] === "ai" &&
-      (segments[2] === "artifacts" || segments[2] === "files") &&
-      segments[4] === "preview"
+      segments[segments.length - 1] === "preview" && (
+        (segments.length === 5 && segments[0] === "api" && segments[1] === "ai" && (segments[2] === "artifacts" || segments[2] === "files")) ||
+        (segments.length === 8 && segments[0] === "api" && segments[1] === "ai" && segments[2] === "admin" && segments[3] === "runs" && segments[5] === "artifacts")
+      )
     )
       ? url
       : null;

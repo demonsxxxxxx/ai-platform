@@ -1,5 +1,14 @@
 from contextlib import asynccontextmanager
 
+import pytest
+from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
+
+from app.runs.application.admin_run_inspection import build_admin_run_inspection
+from app.runs.application.admin_evidence_search import search_admin_evidence
+from app.runs.application.admin_run_comparison import build_admin_run_comparison
+from app.runs.application.diagnostics import RunDiagnosticsService
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -112,3 +121,76 @@ def test_admin_trajectory_route_is_read_only_tenant_scoped_and_paginated(monkeyp
         ("run", "tenant_a", "run_a"),
         ("events", "tenant_a", "run_a", 10, 2),
     ]
+
+
+
+def test_inspection_uses_closed_input_and_persisted_relationships_only():
+    run = {"run_id": "run_a", "model_id": "mdl-a", "model_gateway_revision": 7,
+           "admitted_agent_profile_revision": 3, "admitted_agent_profile_hash": "a" * 64,
+           "copied_from_run_id": "unverified-parent"}
+    value = build_admin_run_inspection(run, skills=[{"skill_id": "skill-a", "skill_version": "v1"}],
+        input_value={"input": {"_thinking_effort": "high", "prompt": "PRIVATE"}, "file_ids": ["file-a"],
+                     "_trusted_run_source": {"version": 1, "source": "chat_api"}},
+        relationships=[{"source_run_id": "run_old", "child_run_id": "run_a", "action": "retry", "status": "failed"},
+                       {"source_run_id": "foreign", "child_run_id": "foreign-child", "action": "resume"}])
+    assert value["input"]["fields"] == {"thinking_effort": "high", "attachment_count": 1}
+    assert value["configuration"]["profile_revision"] == 3
+    assert value["history"]["source_run_id"] == "run_old"
+    assert len(value["history"]["relationships"]) == 1
+    assert value["trigger"] == {"kind": "chat_api", "coverage": "recorded"}
+    assert "PRIVATE" not in str(value) and "unverified-parent" not in str(value)
+
+
+def test_evidence_search_projects_before_matching_and_scopes_attempts():
+    rows = [_row(1, "message.delta", {"delta": "PRIVATE_SECRET"}),
+            _row(2, "tool.failed", {"operation_id": "op_a", "category": "execute", "display_name": "Execute", "duration_ms": 0, "failure_category": "timeout"}, metadata={"attempt_id": "attempt_a"}),
+            _row(3, "tool.failed", {"operation_id": "op_b", "category": "execute", "display_name": "Execute", "duration_ms": 0, "failure_category": "timeout"}, metadata={"attempt_id": "attempt_b"})]
+    assert not search_admin_evidence(rows=rows, query="PRIVATE_SECRET", attempt_id=None, limit=50, diagnostics=None)["matches"]
+    found = search_admin_evidence(rows=rows, query="timeout", attempt_id="attempt_a", limit=50, diagnostics=None)
+    assert [item["sequence"] for item in found["matches"]] == [2]
+    assert found["matches"][0]["context_after_sequence"] == 0
+
+
+def test_explicit_comparison_never_diffs_unknown_cost_or_incompatible_usage():
+    now = datetime.now(timezone.utc) - timedelta(days=1)
+    run = {"run_id": "run_a", "status": "succeeded", "created_at": now,
+           "queued_at": now, "started_at": now, "finished_at": now + timedelta(seconds=2)}
+    left = {"run": run, "inspection": {"configuration": {"model_id": "mdl-a", "model_gateway_revision": 1}},
+            "usage": {"total_tokens": 0, "estimated_cost_minor": 0}, "artifacts": []}
+    right = {**left, "run": {**run, "run_id": "run_b", "finished_at": now + timedelta(seconds=3)},
+             "inspection": {"configuration": {"model_id": "mdl-b", "model_gateway_revision": 2}}}
+    result = build_admin_run_comparison(left, right)
+    metrics = {item["name"]: item for item in result["metrics"]}
+    assert result["selection"] == "explicit"
+    assert metrics["total_ms"]["difference"] == 1000
+    assert metrics["total_tokens"]["left"] == 0 and metrics["total_tokens"]["difference"] is None
+    assert metrics["estimated_cost_minor"]["reason"] == "cost_unit_not_recorded"
+
+
+@pytest.mark.asyncio
+async def test_evidence_service_reads_no_source_for_inaccessible_run_and_bounds_scan():
+    calls = []
+    async def snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return None if kwargs["tenant_id"] == "foreign" else {"run": {"run_id": "run_a", "workspace_id": "w", "status": "failed"}, "attempts": []}
+    async def page(conn, **kwargs):
+        calls.append(("page", kwargs))
+        return [_row(i, "message.started", {}) for i in range(1,1002)]
+    service = RunDiagnosticsService(persistence=SimpleNamespace(get_admin_snapshot=snapshot, get_admin_evidence_page=page),
+        normalize_runtime_diagnostics=lambda value: {}, runtime_diagnostics_schema_version="v1", exception_log_fields=lambda error: {})
+    assert await service.search_admin_evidence(None, tenant_id="foreign", run_id="run_a", query="x") is None
+    assert len(calls) == 1
+    result = await service.search_admin_evidence(None, tenant_id="tenant_a", run_id="run_a", query="no-match")
+    assert result["searched_source_count"] == 1000 and result["has_more"] is True
+    assert result["next_after_sequence"] == 1000
+    assert calls[-1][1]["limit"] == 1001
+
+
+def test_search_and_comparison_routes_reject_ordinary_users_before_query():
+    client = TestClient(create_app())
+    from app.auth import require_principal
+    app = create_app()
+    app.dependency_overrides[require_principal] = lambda: SimpleNamespace(roles=["user"], tenant_id="tenant_a", user_id="user_a")
+    client = TestClient(app)
+    for path, body in [("evidence-search", {"query": "timeout"}), ("comparison", {"right_run_id": "run_b"})]:
+        assert client.post("/api/ai/admin/runs/run_a/" + path, json=body).status_code == 403

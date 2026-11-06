@@ -31,6 +31,13 @@ from app.skills.pinning import build_skill_manifest_ref
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
+@pytest.fixture(autouse=True)
+def record_run_trigger(monkeypatch):
+    async def record(conn, **kwargs):
+        assert kwargs['source'] in {'copy', 'retry', 'resume'}
+    monkeypatch.setattr(replay_persistence, 'append_run_trigger', record)
+
+
 class _RouteCancellationReceipt:
     def __init__(self, value):
         self._value = value
@@ -4401,7 +4408,8 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
             }
         }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=(), trigger_source="copy"):
+        assert trigger_source == "resume"
         calls.append(("copy", tenant_id, user_id, run_id))
         return {
             "session_id": "ses-old",
@@ -4689,7 +4697,8 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
             "input_json": {"input": {"message": "retry"}},
         }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=(), trigger_source="copy"):
+        assert trigger_source == "retry"
         return {
             "session_id": "ses-old",
             "run_id": "run-new",
@@ -5649,7 +5658,7 @@ async def test_list_admin_runs_is_tenant_scoped_and_parameterized():
 
 
 @pytest.mark.asyncio
-async def test_admin_run_detail_includes_run_steps(monkeypatch):
+async def test_admin_run_detail_retires_raw_steps_and_keeps_cancellation_facts(monkeypatch):
     import app.runs.infrastructure.admin_queries_postgres as _repo_app_runs_infrastructure_admin_queries_postgres
 
     async def fake_get_run(conn, *, tenant_id, run_id):
@@ -5681,25 +5690,6 @@ async def test_admin_run_detail_includes_run_steps(monkeypatch):
     async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
         return []
 
-    async def fake_list_run_steps(conn, *, tenant_id, run_id):
-        return [
-            {
-                "id": "step-verify",
-                "run_id": run_id,
-                "step_key": "verify",
-                "step_kind": "agent",
-                "status": "failed",
-                "title": "验证结果",
-                "role": "verify",
-                "sequence": 2,
-                "payload_json": {"error": "测试未通过"},
-                "started_at": None,
-                "finished_at": None,
-                "created_at": None,
-                "updated_at": None,
-            }
-        ]
-
     class FakeAuditCursor:
         async def fetchall(self):
             return []
@@ -5709,32 +5699,17 @@ async def test_admin_run_detail_includes_run_steps(monkeypatch):
             return FakeAuditCursor()
 
     monkeypatch.setattr(run_queries_persistence, "get_run", fake_get_run)
-    monkeypatch.setattr(run_queries_persistence, "list_run_events", fake_list_run_events)
+    async def bounded_events(*args, **kwargs):
+        return {"rows": [], "truncated": False, "event_limit": 2000, "payload_budget_bytes": 524288}
+    monkeypatch.setattr(run_queries_persistence, "read_admin_detail_events", bounded_events)
     monkeypatch.setattr(run_queries_persistence, "list_run_artifacts", fake_list_run_artifacts)
-    monkeypatch.setattr(run_queries_persistence, "list_run_steps", fake_list_run_steps)
 
     detail = await _repo_app_runs_infrastructure_admin_queries_postgres.get_admin_run_detail(FakeConnection(), tenant_id="default", run_id="run-a")
 
     assert detail["run"]["cancel_requested_at"] == "2026-05-27T01:02:03Z"
     assert detail["run"]["cancel_requested_by"] == "admin-a"
-    assert detail["steps"] == [
-        {
-            "step_id": "step-verify",
-            "run_id": "run-a",
-            "step_key": "verify",
-            "step_kind": "agent",
-            "status": "failed",
-            "title": "验证结果",
-            "role": "verify",
-            "sequence": 2,
-            "payload": {"error": "测试未通过"},
-            "started_at": None,
-            "finished_at": None,
-            "created_at": None,
-            "updated_at": None,
-        }
-    ]
-
+    assert detail["steps"] == []
+    assert detail["audit"] == detail["skill_snapshots"] == detail["sandbox_leases"] == []
 
 @pytest.mark.asyncio
 async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(monkeypatch):

@@ -14,6 +14,14 @@ from app.platform.postgres.errors import RepositoryConflictError
 from tests.support.repository_fixtures import RecordingConnection
 
 
+@pytest.fixture(autouse=True)
+def record_run_trigger(monkeypatch):
+    async def record(conn, **kwargs):
+        assert not hasattr(conn, 'trigger'), 'one source event per child Run'
+        conn.trigger = kwargs
+    monkeypatch.setattr(replay_persistence, 'append_run_trigger', record)
+
+
 _UPLOADED_PROFILE = resolve_skill_execution_profile(
     skill_id="uploaded-test-skill", source_kind="uploaded", lifecycle_status="released"
 )
@@ -552,6 +560,7 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         "principal_department_id": "qa", "principal_department_ids": ("100", "110"), "principal_roles": ["user"],
         "is_admin": False, "permissions": [],
     }
+    assert conn.trigger == {'tenant_id': 'tenant-a', 'run_id': copied['run_id'], 'source': operation}
     assert copied["execution_kind"] == "harness_chat"
     assert copied["skill_id"] is None
     assert copied["schema_version"] == "ai-platform.run-payload.v2"

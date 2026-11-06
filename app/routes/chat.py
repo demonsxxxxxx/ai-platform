@@ -1931,7 +1931,7 @@ async def chat_stream(
                         "admitted_agent_profile_hash": admitted_agent_profile.content_hash,
                     }
                 )
-            run_id = await runs_creation.create_run(conn, **run_create_kwargs)
+            run_id = await runs_creation.create_run(conn, trigger_source="agent_profile_api" if getattr(http_request.scope.get("route"), "path", "").startswith("/api/ai/agent-apps/") else "chat_api", **run_create_kwargs)
             if selected_model is not None:
                 await bind_selected_run_model(conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model)
             if execution_kind == RUN_EXECUTION_KIND_SKILL:

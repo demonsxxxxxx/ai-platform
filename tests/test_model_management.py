@@ -2096,3 +2096,79 @@ def test_group_member_employee_directory_scope_denial_is_http_403(monkeypatch):
     })
     assert response.status_code == 403
     assert response.json() == {"detail": "company_employee_directory_forbidden"}
+
+
+def test_model_call_observation_records_stop_zero_output_and_exact_tool_identity():
+    from app.execution.domain.model_call_observation import ModelCallObservation
+    from app.execution.api import public_tool_operation_id
+    from app.runs.domain.model_call_evidence import project_model_call
+    observation = ModelCallObservation(operation_id=public_tool_operation_id, run_id="run-a")
+    observation.response(200)
+    observation.accept({"type": "message_start", "message": {"usage": {"input_tokens": 0}}})
+    observation.accept({"type": "content_block_start", "content_block": {"type": "tool_use", "id": "tool-private-a", "input": {"prompt": "PRIVATE"}}})
+    observation.accept({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 0}})
+    observation.accept({"type": "message_stop"})
+    value = project_model_call(observation.snapshot(state="completed"))
+    assert value["stop_reason"] == "tool_use" and value["message_stopped"] is True
+    assert value["operation_ids"] == [public_tool_operation_id("run-a", "tool-private-a")]
+    assert value["input_tokens"] == value["output_tokens"] == value["text_characters"] == 0
+    assert value["provider_internal_retry"] == "not_observable"
+    assert "PRIVATE" not in str(value) and "tool-private-a" not in str(value)
+    assert project_model_call({"call_id": "mcall_" + "a" * 32, "state": [], "stop_reason": {}, "operation_ids": "PRIVATE"})["state"] == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage', ['missing_stop', 'invalid', 'oversized', 'unfinished'])
+async def test_model_call_normal_eof_does_not_claim_complete_sse_lifecycle(damage):
+    from app.execution.transport.model_management import _diagnostic_stream
+    from app.execution.domain.model_call_observation import ModelCallObservation
+    from app.execution.api import public_tool_operation_id
+    records = []
+    async def record(value):
+        records.append(value)
+    observer = ModelCallObservation(operation_id=public_tool_operation_id, run_id='run-a')
+    observer.response(200)
+    observer.observes_message_lifecycle = True
+    wire = b'data: {"type":"message_start","message":{}}\n\n'
+    if damage == 'invalid':
+        wire += b'data: invalid-json\n\n'
+    elif damage == 'oversized':
+        wire += b'data: ' + b'x' * 65537 + b'\n\n'
+    elif damage == 'unfinished':
+        wire += b'data: {"type":"message_stop"}'
+    body = observe_anthropic_text([wire], run_id='run-a', attempt_id='attempt-a',
+        accept=observer.accept, on_partial=observer.mark_partial)
+    stream = _diagnostic_stream(body, run_id='run-a', attempt_id='attempt-a', operation='messages',
+        observation=observer, record_call=record)
+    assert b''.join([chunk async for chunk in stream]) == wire
+    assert records[-1]['state'] == 'closed_before_eof'
+    assert records[-1]['partial'] is True and records[-1]['message_stopped'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["completed", "failed", "closed_before_eof"])
+async def test_model_call_stream_reports_actual_end_without_touching_body(mode):
+    from app.execution.transport.model_management import _diagnostic_stream
+    from app.execution.domain.model_call_observation import ModelCallObservation
+    from app.execution.api import public_tool_operation_id
+    records = []
+    async def record(value):
+        records.append(value)
+    def body():
+        yield b"PRIVATE content"
+        if mode == "failed":
+            raise RuntimeError("wire failed")
+    observer = ModelCallObservation(operation_id=public_tool_operation_id, run_id="run-a")
+    observer.response(200)
+    stream = _diagnostic_stream(body(), run_id="run-a", attempt_id="attempt-a", operation="messages", observation=observer, record_call=record)
+    assert await stream.__anext__() == b"PRIVATE content"
+    if mode == "closed_before_eof":
+        await stream.aclose()
+    elif mode == "failed":
+        with pytest.raises(RuntimeError):
+            await stream.__anext__()
+    else:
+        with pytest.raises(StopAsyncIteration):
+            await stream.__anext__()
+    assert records[-1]["state"] == mode
+    assert "PRIVATE" not in str(records)

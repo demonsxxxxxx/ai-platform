@@ -27,6 +27,7 @@ class AssistantTextMessageProjection:
     text: str
     sequence: int
     created_at: Any
+    message_identity: tuple[str, str, int, int]
 
 
 def project_persisted_assistant_text_messages(
@@ -37,7 +38,7 @@ def project_persisted_assistant_text_messages(
 ) -> tuple[AssistantTextMessageProjection, ...]:
     """Keep each authorized Attempt/incarnation/message ledger separate.
 
-    Only completed final-answer selections contain text. Missing/invalid facts
+    Only validated completed public message ledgers contain text. Missing/invalid facts
     remain explicit evidence gaps; this reader neither repairs a receipt nor
     changes Run success. Raw private rows and foreign scopes are never inputs.
     """
@@ -74,12 +75,7 @@ def project_persisted_assistant_text_messages(
         groups.setdefault(key, []).append(row)
 
     messages = []
-    for rows_for_message in groups.values():
-        if not any(
-            row.get("event_type") in ASSISTANT_TEXT_PART_EVENT_TYPES
-            for row in rows_for_message
-        ):
-            continue  # The identified legacy readers retain their existing semantics.
+    for (attempt_id, message_id, incarnation, epoch), rows_for_message in groups.items():
         facts: list[Mapping[str, object]] = []
         for row in rows_for_message:
             public = project_persisted_assistant_message_v4(
@@ -104,6 +100,7 @@ def project_persisted_assistant_text_messages(
                 text=text,
                 sequence=int(last.get("seq") or 0),
                 created_at=last.get("emitted_at"),
+                message_identity=(message_id, attempt_id, incarnation, epoch),
             )
         )
     return tuple(messages)

@@ -12,6 +12,7 @@ interface DownloadAuthenticatedFileOptions {
   createObjectURL?: (blob: Blob) => string;
   revokeObjectURL?: (url: string) => void;
   scheduleRevoke?: (callback: () => void) => void;
+  isCurrent?: () => boolean;
 }
 
 export interface DownloadAuthenticatedFileResult {
@@ -86,6 +87,9 @@ export async function downloadAuthenticatedFile(
   }
 
   const blob = await response.blob();
+  if (options.isCurrent && !options.isCurrent()) {
+    throw new Error("download_request_no_longer_current");
+  }
   const filename =
     parseContentDispositionFilename(response.headers.get("Content-Disposition")) ??
     sanitizeFilename(fallbackFilename);
