@@ -11,10 +11,10 @@ from app.runs.domain.diagnostics import (
     serialize_run_diagnostics_payload,
     sanitize_run_diagnostic_text,
 )
+from app.runs.domain.run_status import is_terminal_run_status
 
 BROWSER_LATENCY_MEASUREMENT = "browser_dom_commit.v1"
 BROWSER_LATENCY_MAX_MS = 24 * 60 * 60 * 1_000
-_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 _PUBLIC_TEXT_TYPES = frozenset({"message.delta", "message.part.delta"})
 
 
@@ -92,7 +92,7 @@ def build_run_latency(
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     observed_at = observed_at or datetime.now(timezone.utc)
-    terminal = run.get("status") in _TERMINAL_STATUSES
+    terminal = is_terminal_run_status(run.get("status"))
     finished_at = run.get("finished_at") if terminal else None
     if timestamp(finished_at) is not None and timestamp(finished_at) > observed_at:
         finished_at = None

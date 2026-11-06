@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capacity_baseline import build_capacity_baseline
@@ -6,16 +6,14 @@ from app.control_plane_contracts import sanitize_public_payload, sanitize_public
 from app.db import get_pool_status, transaction
 from app.error_taxonomy import summarize_error_categories
 from app.execution_boundary import REAL_SANDBOX_PROVIDERS, is_accepted_runtime_lease
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.queue import get_queue_insight, get_queue_status
-from app.routes.sandbox_leases import lease_response
+from app.routes.sandbox_leases import lease_response, sandbox_lease_port
 from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
     DockerUnavailableError,
     create_container_provider,
 )
-from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
 
 router = APIRouter()
@@ -500,12 +498,14 @@ async def admin_runtime_queue(
 
 @router.get("/admin/runtime/containers")
 async def admin_runtime_containers(
+    request: Request,
     include_lease_history: bool = False,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
+    sandbox_leases = sandbox_lease_port(request)
     provider = create_container_provider()
     async with transaction() as conn:
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
@@ -544,12 +544,14 @@ async def admin_runtime_containers(
 
 @router.get("/admin/runtime/overview")
 async def admin_runtime_overview(
+    request: Request,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     """Return an admin-only same-tenant runtime overview snapshot."""
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
+    sandbox_leases = sandbox_lease_port(request)
     provider = create_container_provider()
     async with transaction() as conn:
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
@@ -574,7 +576,7 @@ async def admin_runtime_overview(
     async with transaction() as conn:
         run_summary = await runs_admin_queries.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)
         observability_summary = await runs_admin_queries.get_admin_runtime_observability_summary(conn, tenant_id=principal.tenant_id)
-        executor_reconciliation_summary = await sandbox_lease_repository.get_sandbox_executor_reconciliation_summary(
+        executor_reconciliation_summary = await sandbox_leases.get_sandbox_executor_reconciliation_summary(
             conn,
             tenant_id=principal.tenant_id,
             slo_seconds=_EXECUTOR_RECONCILIATION_SLO_SECONDS,

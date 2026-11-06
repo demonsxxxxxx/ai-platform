@@ -11,6 +11,7 @@ from app.runs.api import (
     RunDiagnosticsService,
     RunLifecycleService,
     RunTerminalizationProgress,
+    record_run_terminalization,
 )
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -23,7 +24,7 @@ from app.runs.api import (
 )
 
 
-async def terminalize_enqueue_failure_with_v4(
+async def terminalize_enqueue_failure(
     v4_capabilities: WorkerV4Capabilities,
     conn: AsyncConnection,
     *,
@@ -78,10 +79,12 @@ async def terminalize_enqueue_failure_with_v4(
                 }
             },
         )
-    terminal_row = await v4_capabilities.event_persistence.append_terminal_row(
+    terminal_row = await record_run_terminalization(
         conn,
+        capabilities=v4_capabilities,
         tenant_id=tenant_id,
         run_id=run_id,
+        progress=progress,
     )
     if terminal_row is None:
         raise RuntimeError("enqueue_failure_v4_terminal_row_missing")

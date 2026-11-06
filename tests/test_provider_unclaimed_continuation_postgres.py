@@ -10,6 +10,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 import pytest
 
+from tests.support.settlement_authority_schema import settlement_authority_sql
+
 from app.context.domain.conversation_recovery import make_provider_coverage_authority_receipt
 from app.context.domain.provider_sessions import ProviderSessionConflictError, ProviderSessionScope
 from app.context.infrastructure import provider_epochs
@@ -41,6 +43,7 @@ async def unclaimed_db():
                 create table runs(tenant_id text, id text, workspace_id text, user_id text,
                   session_id text, agent_id text, session_generation bigint, status text,
                   context_snapshot_id text, started_at timestamptz default now(), cancel_requested_at timestamptz,
+                  result_json jsonb, error_code text, finished_at timestamptz,
                   primary key(tenant_id,id));
                 create table run_attempts(tenant_id text, id text, run_id text, status text,
                   owner_kind text, owner_generation bigint, execution_spec_sha256 text,
@@ -53,14 +56,26 @@ async def unclaimed_db():
                 create table run_context_snapshots(id text, tenant_id text, workspace_id text, user_id text,
                   session_id text, run_id text, context_kind text, conversation_authority_json jsonb);
                 create table messages(id text, tenant_id text, session_id text, run_id text, role text, content text);
-                create table sandbox_leases(tenant_id text, run_id text, attempt_id text, status text,
-                  released_at timestamptz, expires_at timestamptz, lease_payload_json jsonb);
+                create table sandbox_leases(id text default gen_random_uuid()::text, tenant_id text, run_id text, attempt_id text, status text,
+                  workspace_id text default 'workspace', user_id text default 'user', session_id text default 'session',
+                  trace_id text, sandbox_mode text default 'ephemeral',provider text default 'fake',browser_enabled boolean default false,
+                  runtime_container_id text, runtime_container_name text, runtime_executor_url text,
+                  runtime_workspace_container_path text,runtime_handle_verified_at timestamptz,
+                  executor_status text default 'pending',executor_heartbeat_at timestamptz,
+                  executor_probe_claim_token text,executor_probe_claimed_at timestamptz,
+                  executor_cleanup_status text default 'not_required',executor_cleanup_claim_token text,
+                  executor_cleanup_claimed_at timestamptz,executor_cleanup_retry_not_before timestamptz,
+                  executor_terminal_received_at timestamptz,executor_reconciled_at timestamptz,
+                  executor_reconciliation_error text default '',executor_reconciliation_attempt_count integer default 0,
+                  heartbeat_at timestamptz, released_at timestamptz, expires_at timestamptz, lease_payload_json jsonb,
+                  release_reason text,created_at timestamptz default now(),updated_at timestamptz default now());
                 insert into sessions(tenant_id,workspace_id,user_id,id,agent_id)
                   values('tenant','workspace','user','session','agent');
             """)
             source = Path("app/schema.sql").read_text()
             await conn.execute(source[source.index("create table if not exists provider_session_heads"):source.index("-- A populated pre-#511")])
             await conn.execute(Path("app/context/infrastructure/conversation_recovery_schema.sql").read_text())
+            await conn.execute(settlement_authority_sql())
         yield connect
     finally:
         await admin.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema)))
@@ -83,7 +98,9 @@ async def prepare(conn, name, generation):
         ),
     )
     await conn.execute("insert into run_attempts(tenant_id,id,run_id,status,owner_kind,owner_generation,execution_spec_sha256,execution_spec_schema_version,execution_spec_json) values('tenant',%s,%s,'running','queue_worker',2,%s,'ai-platform.execution-spec.v2',%s)", ("attempt-" + name, name, "d" * 64, Jsonb({"context_pack": {"conversation_context": frozen}})))
-    await conn.execute("insert into sandbox_leases values('tenant',%s,%s,'active',null,now()+interval '5 minutes',%s)", (name, "attempt-" + name, Jsonb(dict(owner_generation=2))))
+    await conn.execute("insert into sandbox_leases(tenant_id,run_id,attempt_id,status,released_at,expires_at,lease_payload_json) values('tenant',%s,%s,'active',null,now()+interval '5 minutes',%s)", (name, "attempt-" + name, Jsonb(dict(owner_generation=2))))
+    from app.runs.infrastructure.attempt_settlement_writer_postgres import initialize_attempt_settlement_detail
+    await initialize_attempt_settlement_detail(conn,tenant_id="tenant",run_id=name,attempt_id="attempt-"+name)
     return frozen
 
 
@@ -164,8 +181,7 @@ async def test_prepared_started_attempt_before_first_callback_can_close_and_cont
         await provider_epochs.release_provider_lineage(conn, tenant_id="tenant", run_id="target")
         assert (await (await conn.execute("select active_run_id,active_attempt_id from provider_session_heads")).fetchone()) == dict(active_run_id=None, active_attempt_id=None)
         if terminal == "cancelled" and source:
-            from app.context.infrastructure.provider_continuation import get_session_continuation
-            await conn.execute("alter table sandbox_leases add column executor_terminal_json jsonb")
+            from tests.support.attempt_settlement import read_session_continuation as get_session_continuation
             public = await get_session_continuation(conn, tenant_id="tenant", user_id="user", session_id="session")
             assert public["action"] == "continue" and public["reason_code"] != "writer_unverified"
         next_frozen = await prepare(conn, "next", 3 if with_source else 2)
@@ -274,3 +290,38 @@ async def test_cancel_right_after_lease_without_sdk_settlement_converges(unclaim
         assert recovery["settlement_kind"] == "unclaimed_unaccepted"
         assert recovery["input_accepted"] is False and recovery["ack_unknown"] is False
         assert epoch["state"] == "closed" and epoch["recovery_json"] == recovery
+
+
+@pytest.mark.parametrize("case", ["completed_before_cancel", "generation_jump", "terminal_run"])
+async def test_completion_commit_after_late_cancel_request(unclaimed_db, case):
+    """Completion wins a cancel request that arrived after the executor finished.
+
+    The cancel request bumps the Attempt generation by exactly one; the writer
+    fenced at the prior generation may still commit its completed turn while the
+    Run is not terminal. Any other generation gap or a terminal Run stays rejected.
+    """
+    async with unclaimed_db() as conn:
+        await conn.execute("alter table messages add column if not exists created_at timestamptz default now()")
+        frozen = await prepare(conn, "target", 1)
+        await callback(conn, "target", frozen, "load")
+        await callback(conn, "target", frozen, "append", [{"type": "user", "uuid": "target-user"}], 1)
+        await conn.execute("insert into messages(id,tenant_id,session_id,run_id,role,content,created_at) "
+                           "values('assistant-target','tenant','session','target','assistant','done',now()+interval '1 second')")
+        bump = 2 if case == "generation_jump" else 1
+        await conn.execute("update runs set cancel_requested_at=now() where id='target'")
+        await conn.execute("update run_attempts set status='cancel_requested',owner_generation=owner_generation+%s "
+                           "where id='attempt-target'", (bump,))
+        if case == "terminal_run":
+            await conn.execute("update runs set status='cancelled' where id='target'")
+        commit = provider_epochs.commit_provider_turn(
+            conn, tenant_id="tenant", run_id="target", attempt_id="attempt-target",
+            assistant_message_id="assistant-target", final_sequence=1,
+        )
+        if case == "completed_before_cancel":
+            await commit
+            turn = await (await conn.execute(
+                "select state, assistant_message_id from provider_turn_receipts where run_id='target'")).fetchone()
+            assert turn == {"state": "committed", "assistant_message_id": "assistant-target"}
+        else:
+            with pytest.raises(ProviderSessionConflictError):
+                await commit

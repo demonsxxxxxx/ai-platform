@@ -30,7 +30,9 @@ _LEGAL_RUN_ATTEMPT_TRANSITIONS = {
     "queued": frozenset({"claimed", "cancelled"}),
     "claimed": frozenset({"running", "cancel_requested", "failed", "expired"}),
     "running": frozenset({"cancel_requested", "succeeded", "failed", "expired"}),
-    "cancel_requested": frozenset({"cancelled"}),
+    # A cancel request is a signal; an executor that still completed was not
+    # interrupted, so its success may settle the Attempt (execution outcome wins).
+    "cancel_requested": frozenset({"cancelled", "succeeded"}),
     "expired": frozenset({"failed", "cancelled"}),
     "succeeded": frozenset(),
     "failed": frozenset(),

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.runs.infrastructure import admin_queries_postgres as queries
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_reader
 from app.streaming.api import project_persisted_assistant_text_messages
 from app.runs.application.admin_run_monitor import build_admin_worker_execution
 from tests.test_admin_run_detail import (
@@ -238,10 +239,10 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     for name in (
         "list_run_steps",
         "list_run_artifacts",
-        "list_sandbox_leases_for_run",
         "list_run_skill_snapshots",
     ):
         monkeypatch.setattr(queries, name, empty)
+    monkeypatch.setattr(sandbox_lease_reader, "list_sandbox_leases_for_run", empty)
     _install_admin_monitor_metadata(monkeypatch, {})
     client = TestClient(create_app())
     response = client.get("/api/ai/admin/runs/run_parts", headers=headers())

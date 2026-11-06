@@ -16,13 +16,16 @@ from app.bootstrap import conversation_continuation as composition
 from app.execution.api import ContinuationSettlementPorts
 from app.execution.application.executor_reconciliation import sandbox_reconciliation_payload
 from app.executors.base import ExecutorResult, RunPayload
-from app.platform.postgres import sandbox_leases
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.callback_tokens import derive_callback_token
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from tests.test_provider_unclaimed_continuation_postgres import unclaimed_db, prepare
 from tests.test_sandbox_persistence import executor_acceptance_database
 from tests.test_workspace_versions import request, put
+
+sandbox_leases = build_sandbox_executor_reconciliation_port()
+
 
 
 @pytest.mark.asyncio
@@ -54,6 +57,7 @@ async def test_actual_lease_terminal_claim_records_generation_bound_stage(
     await conn.execute("update run_attempts set status='queued',owner_generation=2,queue_message_id='queue-message-a' where id='attempt-a'")
     await conn.execute("update run_attempts set status='claimed',owner_generation=3 where id='attempt-a'")
     await conn.execute("update run_attempts set status='running',owner_generation=4,started_at=now() where id='attempt-a'")
+    await conn.execute("update sandbox_leases set attempt_id=null where id='lease-a'")
     await sandbox_leases.create_sandbox_lease(
         conn, tenant_id=payload.tenant_id, workspace_id=payload.workspace_id,
         user_id=payload.user_id, session_id=payload.session_id, run_id=payload.run_id,
@@ -95,7 +99,7 @@ async def test_actual_lease_terminal_claim_records_generation_bound_stage(
         )
     assert len(claimed) == 1
     row = claimed[0]
-    assert row["executor_reconciliation_status"] == "claimed"
+    assert row["settlement_phase"] == "claimed"
     assert row["status"] == "active" and row["expires_at"] > row["created_at"]
     assert "run_id" not in row["lease_payload_json"]
     _, restored = reconciler._context_payload(row, terminal)
@@ -138,18 +142,12 @@ async def test_actual_lease_terminal_claim_records_generation_bound_stage(
 async def extend_lease(conn):
     # prepare() inserts the minimal owning fixture before its lease table is extended.
     await conn.execute("""
-        alter table sandbox_leases add column id text;
-        alter table sandbox_leases add column workspace_id text default 'workspace';
-        alter table sandbox_leases add column user_id text default 'user';
-        alter table sandbox_leases add column session_id text default 'session';
-        alter table sandbox_leases add column runtime_container_id text default 'synthetic-container';
-        alter table sandbox_leases add column created_at timestamptz default now();
-        alter table sandbox_leases add column updated_at timestamptz default now();
-        alter table sandbox_leases add column executor_reconciliation_status text default 'claimed';
-        alter table sandbox_leases add column executor_reconciliation_claim_token text default 'synthetic-claim';
-        update sandbox_leases set id='synthetic-lease', lease_payload_json=jsonb_build_object(
-            'attempt_id', attempt_id, 'owner_generation', 2,
+        update sandbox_leases set id='synthetic-lease', runtime_container_id='synthetic-container',
+            lease_payload_json=jsonb_build_object('attempt_id', attempt_id, 'owner_generation', 2,
             'callback_token_id', 'cbt:target:attempt-target:g2');
+        update run_attempt_settlements set source_lease_id='synthetic-lease',
+            settlement_phase='claimed', settlement_claim_token='synthetic-claim',
+            settlement_claimed_at=now(), settlement_attempt_count=1;
     """)
 
 
@@ -217,10 +215,10 @@ async def test_stopped_retry_reuses_durable_pg_snapshot_and_linux_workspace(uncl
 
     async def row():
         async with unclaimed_db() as conn:
-            return await (await conn.execute("select * from sandbox_leases where id='synthetic-lease'")).fetchone()
+            return await sandbox_leases.get_sandbox_lease(conn, lease_id='synthetic-lease', tenant_id='tenant', user_id='user', run_id='target')
 
     async def collect():
-        return await reconciler._collect_workspace_and_convert_result(await row(),
+        return await reconciler._collect_workspace_and_convert_result(await row(), lease_port=sandbox_leases,
             registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
             claim_token="synthetic-claim", continuation_ports=ContinuationSettlementPorts(save, unused))
 

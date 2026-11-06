@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 import json
 import math
 import threading
@@ -2582,7 +2583,12 @@ async def install_refresh_grant(monkeypatch, *, lifetime=86400, legacy=False):
               "depart": "QA", "role": "Analyst", "iat": now - 20,
               "nbf": now - 20, "exp": now + 1, "iss": "test-company", "aud": "test-mcp"}
     token = jwt.encode(claims, settings.company_login_jwt_secret, algorithm="HS256")
-    principal = resolve_company_login_jwt(token, settings=settings)
+    # Validate the one-second setup token at the same clock used to mint it.
+    with monkeypatch.context() as setup_clock:
+        setup_clock.setattr(jwt.api_jwt, "datetime", SimpleNamespace(
+            now=lambda tz: datetime.fromtimestamp(redis.now, tz),
+        ))
+        principal = resolve_company_login_jwt(token, settings=settings)
     snapshot = auth_sessions.principal_snapshot(principal)
     if legacy:
         for name in ("company_username", "company_department", "company_role"):

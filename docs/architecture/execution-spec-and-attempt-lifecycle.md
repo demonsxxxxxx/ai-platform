@@ -236,9 +236,10 @@ server time. A heartbeat normalizes future-skewed Redis lease and worker activit
 timestamps. Reclaim independently normalizes an abandoned future-dated lease in
 both matching metadata hashes, grants one fresh visibility window, and only
 requeues or dead-letters it on a later expired pass. The reclaim mutation
-atomically rechecks lease identity, reconciliation fence, and visibility expiry
-against that same Redis clock before changing queue state; the caller clock is
-only a scan hint.
+atomically rechecks queue lease identity and visibility expiry against that same
+Redis clock before changing queue state; the caller clock is only a scan hint.
+Business stale-Run adjudication uses the Execution PostgreSQL claim path and is
+not part of Redis queue lease mutation.
 
 Protocol-v2 leases store their owner credential in `owner_token_v2` with
 `lease_protocol_version = 2` and omit the legacy `owner_token` projection. A v1
@@ -270,6 +271,39 @@ Redis reclaim still lacks end-to-end expected `owner_generation` fencing and
 recoverable cross-store effects. The heartbeat path has real PostgreSQL/Redis
 rollback-and-convergence coverage; production Sandbox acceptance and rollback
 evidence remain required before the migration can be called complete.
+
+### 3.2 Attempt is the single execution-settlement authority
+
+`run_attempt_settlements` is the Runs-owned canonical settlement detail for the exact `(tenant_id, run_id, attempt_id)`, bound by a composite foreign key. It is not another execution Attempt. All runtime readers and writers use this detail; there is no legacy reader/writer, shadow dual-write, storage marker, cutover flag or separate retirement command.
+
+| Fact | Owner and persistence |
+|---|---|
+| Terminal receipt, identity and canonical digest | Attempt detail; first content wins, conflicting duplicates fail closed; mutable root diagnostics do not change the identity digest |
+| Original dispatch intent and accepted context | Separate immutable Attempt fields; acceptance timings cannot rewrite the original intent |
+| Settlement claim, retry deadline/count and committed result mapping | Attempt detail; ordinary progress never advances execution `owner_generation` |
+| Run outcome | Runs lifecycle same-transaction business projection; a pre-dispatch failure may still have no Attempt |
+| Provider transcript/coverage and continuation | Context validates the exact writer, sequence, append receipts and workspace proof in the terminal transaction |
+| Resource identity, heartbeat, probe, stop/release and cleanup | Sandbox lease; independent claims and retry clocks, never settlement authority |
+
+Callbacks and probes record observations through the composed Sandbox port into Runs' Attempt authority on the caller's transaction. An early terminal receipt remains `receipt_before_acceptance` / `awaiting_context`; accepted context makes it eligible for settlement without replacing the receipt. A probe claim cannot become an Attempt settlement claim. Missing detail raises an error; unknown or conflicting bindings are excluded from due work and remain visible to exact probe/operator recovery and administrator diagnostics. No runtime falls back to Sandbox settlement columns.
+
+Settlement claims lock Run, exact leases in ID order, then Attempt and detail. Due selection skips locked Runs so another replica can make progress. Retry preserves its own `next_retry_at` independently of lease updates and does not re-execute the Agent. An old claim cannot write diagnostics, quarantine a replacement owner's resource, commit a result or release a checkpoint.
+
+For native continuation, the reconciler stops the exact verified producer and saves the host workspace before recording a durable checkpoint. Its final transaction validates the current claim, commits Context continuation, assistant and artifact facts, Run/Attempt outcome and events, records the settled claim, and finalizes that exact stopped resource. Any failed terminal CAS, claim, scope, generation or checkpoint check rolls back the entire transaction. A committed checkpoint is not claimable again; a durable partial handoff can be recovered without contacting its stopped producer. Operator repair retains the one-shot authorization, immutable image identity, verified media and workspace, SDK/receipt agreement and exact cancellation-generation checks.
+
+Executor success still wins a late cancellation request. Context accepts the original completed writer only while the Run remains `running`, the exact Attempt is `cancel_requested`, cancellation is recorded, and its generation is exactly writer generation plus one. Takeover, later generations, incomplete mirrors, unknown append ACKs or external effects never grant normal continuation or replay authority. Context snapshots remain immutable execution inputs and stop/save checkpoints remain evidence, not alternate settlement owners.
+
+Administrator debug exposes Attempt phase/count and only allowlisted numeric `dispatch_timings` in `0..86_400_000`; bools, private context and raw payloads are excluded. Missing accepted context cannot fall back to old timings.
+
+### 3.3 One-time historical upgrade and compatibility disposition
+
+Schema application is the only old-data upgrade entrance. Existing legacy settlement columns require `--confirm-settlement-upgrade` after old binaries are stopped, all Runs/Attempts/resources and unresolved claims are drained, and a recoverable backup/restore drill is verified. Expired claim TTLs do not prove external I/O stopped. The upgrader locks lifecycle sources, maps every Attempt in bounded pages, compares the complete historical denominator, and rejects missing bindings, ambiguous generations, conflicting receipts or unmapped history. Reapplication is idempotent. It preserves original receipt, diagnostics, accepted/intent context, Run/Attempt facts and resource evidence.
+
+A database that already retired the old columns still requires the same confirmations and drain. The upgrader validates its surviving Attempt authority against Run/Attempt results and resource bindings, preserves that authority without reconstructing absent receipts, and removes remaining marker/fence/index metadata.
+
+Only after successful mapping and comparison (or validation of an already-retired layout) does that same transaction remove the eight old Sandbox settlement columns, three old indexes, old status constraint, old write-fence trigger/function and the reader/writer/retirement marker tables. It does not use `CASCADE`. New schemas contain only Attempt settlement plus Sandbox resource fields. Runtime readiness requires that layout; it cannot select an older authority. No automatic down migration exists. Recovery uses a schema-compatible corrected package or an explicitly authorized restore, not an old binary against the contracted schema. See the [release runbook](../operations/release-operations-runbook.md).
+
+The Redis stale-Run business fence is retired. PostgreSQL binds stale recovery to the observed Run, Attempt/generation and claim, and reads pending receipts only from Attempt detail. Queue `owner_token`, ACK/requeue, capacity and SSE retain their separate transport contracts. Production requires the durable Run delivery outbox; historical queued recovery preserves its original identity and fails closed on unprovable input. Execution supervision's independent domain modes and drain claims remain; removing settlement compatibility does not change fleet scheduling ownership.
 
 Queue leasing now scans candidates in oldest-first order across successive
 `queue_lease_scan_limit` batches, skipping quota-blocked entries until it finds
@@ -310,7 +344,7 @@ terminal callbacks remain observations; they do not own Run terminalization.
 Accepted and rejected callback receipts retain the attempt identity and a safe
 reason without persisting callback secrets.
 For a first accepted terminal receipt, the private failure observation and the
-immutable Sandbox receipt commit in the same PostgreSQL transaction. Duplicate
+immutable Attempt receipt commit in the same PostgreSQL transaction. Duplicate
 receipts keep the existing receipt and diagnostic revision. Worker terminal paths
 append private diagnostics only after the current Attempt lifecycle fence and
 before the same transaction projects the Run terminal state. These observations
@@ -332,32 +366,16 @@ Routes may validate transport and request admission. They MUST NOT construct a
 second specification schema. Workers may request a specification projection only
 through the Runs public API and may not rebuild or override it from queue data.
 
-## 6. Mixed-version migration
+## 6. Upgrade ordering
 
-Migration uses additive expand/contract ordering:
-
-1. Introduce the pure specification compiler, canonical codec, and owning tests.
-   Keep existing `QueueRunPayload` and `RunPayload` behavior unchanged.
-2. Add the `run_attempts` relation with the specification version, canonical
-   JSON text, JSONB projection, and digest. Deploy schema before wiring runtime
-   callers to the new writers.
-3. Backfill and report legacy conflicts using Run columns, admitted input,
-   Skill snapshots, context snapshots, queue/Sandbox lease facts, and stream
-   authority. Never guess across conflicting identities.
-4. Dual-write the specification and first attempt. New workers read the durable
-   specification when present and use a bounded legacy compiler only for rows
-   explicitly marked legacy. Queue wire shape remains compatible; do not add a
-   producer field that old `extra="forbid"` workers reject.
-5. Make every worker, callback, Sandbox, terminalization, and reconciler path
-   use the durable attempt fence. Retain `runs.status` as a same-transaction
-   projection.
-6. Enforce non-null specification/attempt bindings and database constraints only
-   after mixed-version telemetry and backfill prove the invariant.
-7. Remove legacy compiler/read paths under the repository compatibility contract.
-
-Rollback may stop new writers and return to dual-read while nullable fields and
-new tables remain. It MUST NOT drop persisted specification or attempt facts
-after a new writer has committed them.
+Queue wire shape remains compatible: historical execution inputs keep their
+versioned meaning and are not rebuilt from settlement or resource observations.
+ExecutionSpec historical readers remain governed by their versioned input
+contract; they do not select settlement storage. Attempt settlement upgrade is
+a stopped-writer, drained, one-time transition described in §3.3. Preserve
+immutable specification bytes, original Attempt/lease identities, Run results,
+Context history and authorization. Do not reinterpret migration checks as
+permission to run old and new settlement binaries concurrently or replay a task.
 
 ## 7. Required evidence
 

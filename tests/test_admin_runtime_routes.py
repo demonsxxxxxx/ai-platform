@@ -9,6 +9,16 @@ from app.routes.admin_runtime import _backpressure_snapshot, _sanitize_observabi
 from app.runtime.sandbox.contracts import ContainerStatus
 from app.settings import Settings
 from tests.support.db_transactions import opaque_transaction
+import app.bootstrap.sandbox_lease_ports as sandbox_lease_ports
+
+
+class _AdminAttemptSettlement:
+    """Runs read port for resource-focused administrator projection tests."""
+
+    async def read_attempt(self, _conn, **scope):
+        assert all(scope.get(key) for key in ("tenant_id", "run_id", "attempt_id"))
+        return {"mapping_state": "mapped", "settlement_phase": "awaiting_receipt",
+                "settlement_attempt_count": 0}
 
 
 ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
@@ -29,6 +39,11 @@ def test_retired_phase_readiness_reports_are_not_importable(module_name):
 
 @pytest.fixture(autouse=True)
 def signed_runtime_proof_key(monkeypatch):
+    monkeypatch.setattr(
+        sandbox_lease_ports._settlement_repository,
+        "_settlement",
+        _AdminAttemptSettlement(),
+    )
 
     async def empty_executor_reconciliation_summary(_conn, *, tenant_id, slo_seconds):
         assert tenant_id == "default"
@@ -50,7 +65,8 @@ def signed_runtime_proof_key(monkeypatch):
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.sandbox_lease_repository.get_sandbox_executor_reconciliation_summary",
+        sandbox_lease_ports._settlement_repository,
+        "get_sandbox_executor_reconciliation_summary",
         empty_executor_reconciliation_summary,
     )
 

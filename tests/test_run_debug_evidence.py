@@ -251,6 +251,59 @@ async def test_capture_to_export_keeps_attempt_facts_timeline_usage_and_one_conn
     assert persistence.payload is original
 
 
+@pytest.mark.asyncio
+async def test_runtime_debug_preserves_attempt_settlement_and_bounded_timings():
+    from app.sandbox.application.attempt_settlement import (
+        AttemptSettlementLeaseRepository,
+    )
+    from app.sandbox.infrastructure import leases_postgres
+
+    resource = {"lease_id": "lease-a", "attempt_id": "attempt-a"}
+    detail = {
+        "mapping_state": "mapped", "settlement_phase": "settled",
+        "dispatch_state": "accepted", "receipt_json": {"status": "completed"},
+        "settlement_attempt_count": 3,
+        "accepted_context_json": {"dispatch_timings": {
+            "sandbox_total_latency_ms": 456, "executor_first_token_latency_ms": 10,
+            "private_payload": "PRIVATE",
+        }},
+    }
+
+    class Cursor:
+        async def fetchall(self):
+            return [resource]
+
+    class Connection:
+        async def execute(self, query, parameters):
+            assert parameters == ("tenant-a", "run-a")
+            assert "to_jsonb" not in query
+            assert "receipt_json" not in query
+            return Cursor()
+
+    class Settlement:
+        async def read_attempt(self, _conn, **kwargs):
+            assert kwargs["attempt_id"] == "attempt-a"
+            return detail
+
+    reader = AttemptSettlementLeaseRepository(
+        repository=leases_postgres, settlement_projection=Settlement(),
+    )
+    result = await reader.read_run_runtime_debug(
+        Connection(), tenant_id="tenant-a", run_id="run-a",
+    )
+    lease, = result["leases"]
+    assert lease["settlement_phase"] == "settled"
+    assert lease["settlement_attempt_count"] == 3
+    assert lease["dispatch_timings"] == {
+        "sandbox_total_latency_ms": 456,
+        "executor_first_token_latency_ms": 10,
+    }
+    assert "PRIVATE" not in json.dumps(result)
+    detail["accepted_context_json"] = None
+    missing = await reader.read_run_runtime_debug(Connection(), tenant_id="tenant-a", run_id="run-a")
+    assert missing["leases"][0]["dispatch_timings"] == {}
+
+
 def test_export_budget_reports_optional_history_omissions_and_preserves_failure():
     from tests.test_admin_diagnostic_export import _diagnostics
     source = _diagnostics()

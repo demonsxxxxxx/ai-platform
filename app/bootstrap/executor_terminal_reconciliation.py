@@ -20,7 +20,7 @@ from app.runs.api import RunAttemptLifecycleService, RunLifecycleService, Worker
 from app.streaming.api import WorkerV4Capabilities, publish_run_event
 from app.kernel.identifiers import assert_safe_id
 from app.sandbox.api import finalize_stopped_executor_checkpoint
-from app.platform.postgres import sandbox_leases
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 
 
 async def reconcile_executor_terminal_result(
@@ -33,7 +33,7 @@ async def reconcile_executor_terminal_result(
     outer_terminal_transaction: bool = False,
 ) -> WorkerOutcome:
     payload, attempt_id = restored_executor_reconciliation_queue_payload(
-        lease_row.get("executor_reconciliation_context_json"), result=result.result,
+        lease_row.get("accepted_context_json"), result=result.result,
         run_payload_factory=RunPayload, queue_payload_factory=QueueRunPayload,
     )
     # Preserve the former queue-envelope identity rejection at this ingress.
@@ -61,7 +61,7 @@ async def reconcile_executor_terminal_result(
         if isinstance(stage, dict) and stage.get("continuation") is not None:
             await finalize_stopped_executor_checkpoint(
                 conn, lease_row=lease_row, claim_token=claim_token,
-                finalize=sandbox_leases.finalize_stopped_executor_checkpoint,
+                finalize=build_sandbox_executor_reconciliation_port().finalize_stopped_executor_checkpoint,
             )
         # Noncheckpoint receipts retain the existing asynchronous cleanup owner.
 

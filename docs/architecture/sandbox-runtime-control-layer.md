@@ -112,14 +112,17 @@ generation, timestamps, and reconciliation ownership in one migration.
    compatibility payload must carry the same value. Historical rows may be read
    through the previous payload field until they expire.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
-   one current active lease. Shared durable admission and rechecks are owned by
+   one current active lease. Callback identity and token authentication share
+   one typed reception path. Durable admission and rechecks are owned by
    `sandbox.api.SandboxCallbackAuthority`, assembled in
    `bootstrap.sandbox_callbacks` with the existing Run and lease queries. It
    locks Run before the exact Attempt using the caller's connection and
    transaction, derives tenant from persisted Run identity, and preserves
-   session, terminal, Attempt and token-generation fences. Only provider-session
-   append opts into the cancelling provider-tail fallback. HTTP token parsing
-   and rejection status/detail mapping remain in the callback route, as do
+   session, terminal, Attempt and token-generation fences. Only the dedicated
+   `ProviderSessionAppendIdentity` can use the cancelling provider-tail
+   fallback; ordinary executor, input, context and credential callbacks cannot
+   request that lease scope. HTTP token parsing and rejection status/detail
+   mapping remain in the callback route, as do
    receipt persistence, renewal sequencing and post-commit publication. The MCP
    credential callback uses this same authority and the selected Server's
    platform-recorded lease binding; the [MCP execution contract](mcp-tool-execution.md#principal-credential-lifetime)
@@ -156,17 +159,32 @@ generation, timestamps, and reconciliation ownership in one migration.
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
-   The terminal callback may commit before the Worker records the asynchronous
-   dispatch acceptance. That later acceptance preserves the terminal executor
-   status and makes a `waiting_terminal` receipt `pending` once its reconciliation
-   context exists. It cannot reset an existing reconciliation claim or outcome.
+   Before the executor POST, Sandbox commits the exact tenant/Run/Attempt,
+   owner-generation, lease, provider and provider-task identity to the
+   Attempt-scoped `sandbox_execution_dispatches` row and places the immutable
+   reconciliation context on that same lease. Its `intent`, `accepted`,
+   `rejected` and `unknown` values record provider-boundary evidence; they do
+   not create another Run or Attempt authority. A lost POST acknowledgement is
+   resolved by querying the same lease's authenticated status endpoint with its
+   original Run and Attempt identity. A persisted intent is never POSTed again.
+   If the status endpoint cannot prove acceptance, the dispatch stays unknown
+   and the resource remains available for recovery. The Worker handles that
+   typed result as detached work: it acknowledges the queue item while preserving
+   the original running Run/Attempt and lease, without terminalizing or releasing
+   the Worker binding. The existing stale executor probe reads that lease and may
+   persist the task's terminal receipt; uncertainty does not authorize dispatch
+   retry. A terminal callback may commit before dispatch acceptance; the
+   precommitted context makes the receipt
+   immediately eligible for reconciliation. Later acceptance preserves terminal
+   executor status and any existing reconciliation claim or outcome.
    After that transaction commits, the runtime emits a second fixed Redis wake
    for a `pending` terminal receipt. Notification has a one-second cooperative
    budget; failure leaves the accepted dispatch and PostgreSQL receipt intact.
    Cancellation during notification propagates without stopping the committed
    receipt's runtime before collection; the local execution-owner stop callback
-   honors the same cleanup handoff. `record_sandbox_executor_accepted` owns
-   that context write. The uncalled
+   honors the same cleanup handoff. `record_sandbox_executor_accepted` records
+   post-acceptance timing and the terminal wake; the pre-dispatch intent writer
+   owns the initial context write. The uncalled
    standalone `record_sandbox_executor_reconciliation_context` helper is removed;
    it had no production, test, or lazy-export consumer. The context column,
    accepted writer, claim fencing, and terminal reconciliation readers remain.
@@ -180,6 +198,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    advance the diagnostic revision twice. The receipt is retained for protocol
    protocol recovery; reconciliation may append its bounded `diagnostics` list,
    but cannot replace the first receipt fields. It is not the administrator query store.
+   A scoped nonterminal heartbeat may arrive while the active, unexpired lease
+   is still `pending`, before its accepted observation commits. Heartbeat and
+   provider renewal permit only `pending`, `accepted` and `running` executor
+   states; terminal executor states cannot be reopened by a late heartbeat.
    A nonterminal OpenSandbox heartbeat captures the current Run/Attempt/lease
    identity in a short transaction, then verifies and renews the provider outside
    database locks. A second short transaction rechecks the same immutable lease
@@ -231,7 +253,7 @@ generation, timestamps, and reconciliation ownership in one migration.
    compatibility alias or external wire contract.
    Owner and administrator cancellation of an active Attempt records intent and
    leaves the original executor responsible for bounded SDK drain. Its exact
-   provider must stop before private workspace save and the atomic Context/Run
+   provider must stop before private workspace save and the atomic Context/Run/Attempt
    terminal transaction; lease release follows that transaction's terminal facts.
    A dispatch response still in flight retains the same Attempt's observation
    responsibility, including a verified durable terminal handoff after endpoint
@@ -292,39 +314,34 @@ generation, timestamps, and reconciliation ownership in one migration.
 replace a general monotonically increasing fencing generation for provider
 commands. That generation belongs in the target transition-ledger migration.
 
-## Terminal completion compatibility and retirement
+## Attempt settlement and Sandbox resource cleanup
 
-Schema `2026.10.13.1` adds the nullable retry deadline and `cleanup_pending`.
-Existing terminal retries retain `updated_at + min(30, max(1, attempt_count))`
-as their first deadline. Probe retry retains its separate heartbeat/attempt clock.
-The accepted writer cannot reset either a deadline or a cleanup handoff.
-The concurrent-index ledger advances with this contract. The existing
-`idx_sandbox_leases_executor_reconcile` is rebuilt to order by receipt age and
-ID for both active and historically released receipts; its active-only,
-status/updated-at definition is retired. A separate partial retry-deadline index
-supports the next-due query without scanning finalized history. Both indexes
-have one concurrent migration owner and exact readiness catalog contracts;
-they are not duplicated in the core schema's static index registry.
+Runs' Attempt detail is the sole receipt/context and settlement claim/retry
+owner. Sandbox retains resource identity, executor status/heartbeat, terminal
+observation time, independent probe claims, cleanup claims/retry, and verified
+stop/release evidence. None of these resource facts replaces the Run/Attempt
+terminal transaction. Accepted observations cannot reset settlement or cleanup
+claims and deadlines.
 
-The inline terminal provider-stop helpers and the claimed-to-finalized release
-writer are retired from `executor_reconciler.py` and `sandbox_leases.py`, together
-with their former inline-stop tests. Terminal completion tests now assert durable
-handoff; Sandbox cleanup tests own stop, timeout, lost-claim and finalization.
-The serial completion loop, fixed pending priority, terminal retry derived from
-arbitrary lease updates and Redis-dependent 30-second scan wait are replaced.
-The existing `cleanup_failed_*` API names remain as the compatibility owner for
-persisted legacy `failed` cleanup rows and the new handoff; both use one claim,
-stop and finalize implementation. Their removal requires absence of legacy failed
-rows and migration of all current callers, not a second cleanup implementation.
-No new public endpoint, queue ledger, SDK execution path or environment setting
-is introduced. Existing test files remain in their current CI shards; the real
-PostgreSQL/Redis handoff regression belongs to `test_sandbox_persistence.py`.
+Native continuation requires stop of the exact verified producer, host workspace
+save and a durable generation-bound checkpoint. Context validation, Run/Attempt
+completion and checkpoint resource finalization share one terminal transaction;
+a stale claim or failed CAS cannot leave partial continuation or resource release.
+A completed stopped checkpoint never revisits its producer.
 
-The schema readiness gate requires the new target. Stop old writers before
-migration and start only matching binaries under the release runbook. Mixed-version
-writers are unsupported. Binary rollback requires first draining or explicitly
-mapping `cleanup_pending` to the legacy cleanup owner while retaining unfinished
-leases; simply starting an older Worker cannot consume the new state.
+Noncheckpoint results hand off to the existing independent cleanup owner.
+`cleanup_failed_*` names continue to consume persisted failed resource cleanup
+rows through one implementation. Provider stop remains outside that claimed
+cleanup's transaction; only verified `stopped` or authoritative `not_found`
+permits fenced release. Stop failure retains responsibility and durable retry.
+Heartbeat/probe/cleanup never dual-write old settlement fields.
+
+The one-time schema upgrader preserves historical evidence before removing the
+old settlement columns/indexes/constraint and markers. These old indexes are
+not rebuilt or recreated by current schema. Current retry clocks live in Attempt
+detail; resource cleanup retry clocks remain Sandbox-owned. Old binaries must
+stop and work/claims drain before the one-way upgrade. Use a compatible corrected
+package or authorized restore for recovery, not mixed-version writers.
 
 ## Provider port
 
@@ -351,6 +368,14 @@ container, owned internal bridge, API witness, two-member topology, and matching
 container/network attachment addresses. The network must disable masquerading;
 Docker's explicit IPv4-enabled/IPv6-disabled defaults are accepted, while other
 options and IPv6 remain rejected.
+
+Callback witness lookup filters by API release role, release owner and source
+commit at the Docker daemon, then reloads matching candidates before checking
+identity, health and uniqueness. Attaching that witness is idempotent only for
+the exact network ID and one `api.sandbox.internal` alias. A concurrent duplicate
+endpoint response must name the same API container and network and pass a fresh
+attachment check; other connection failures deny admission. These checks retain
+the same two-member topology and cleanup ownership requirements.
 
 The optional Docker Compose overlay shares the API network namespace with the
 trusted Worker so both can reach each Attempt's internal bridge. It removes the

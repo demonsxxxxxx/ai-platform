@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
-TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+from app.runs.domain.run_status import (
+    TERMINAL_RUN_STATUSES as TERMINAL_RUN_STATUSES,
+    is_terminal_run_status,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +33,7 @@ class RunTerminalizationProgress:
 
         return (
             self.completed
-            and self.status in TERMINAL_RUN_STATUSES
+            and is_terminal_run_status(self.status)
             and (requested_status is None or self.status == requested_status)
         )
 

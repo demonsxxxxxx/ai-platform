@@ -182,6 +182,27 @@ read-only backend container to check workspace migration markers. It is not
 deployment acceptance. With `--resume-install --check`, PostgreSQL must
 already be running; the preflight never starts it.
 
+## One-time Attempt settlement upgrade
+
+An installation with the old Sandbox settlement columns requires a verified
+recoverable backup and restore drill, stopped old API/Worker writers, and fully
+drained Runs, Attempts, leases, dispatches and unresolved operation claims.
+Expired TTLs do not prove remote work stopped. After verifying those conditions,
+add `--confirm-settlement-upgrade` to the normal package controller command.
+The controller still stops admission and checks quiescence; the flag confirms
+operator recovery preparation, not a selectable runtime mode.
+
+Schema apply maps and compares every historical Attempt before the same
+transaction drops the eight old settlement columns, old indexes/constraint,
+write-fence trigger/function and reader/writer/retirement tables. It retains
+receipt/diagnostic/context history, Run/Attempt identity/results and Sandbox
+resource evidence. Missing bindings, conflicts and unresolved claims block it.
+Fresh databases need no confirmation. Reapplication keeps the Attempt-only
+layout and cannot recreate old columns. Verify schema readiness and preserved
+history before starting matching binaries; do not run an old settlement binary
+against the upgraded database. Recovery requires a compatible corrected package
+or explicitly authorized coordinated restore.
+
 ## Already downloaded images
 
 If image archives were downloaded separately, load them into the same Docker
@@ -217,10 +238,7 @@ partial activity schemas and ambiguous/late startup failures require operator
 classification. Never delete data, journals or migration markers to bypass
 these gates.
 
-A quarantined sandbox record is not silently deleted. Only a terminal,
-unclaimed failed-reconciliation record with a terminal Run and a verifiable
-runtime identity can be excluded; a surviving recorded container or missing
-identity blocks deployment. Keep historical records intact.
+A quarantined sandbox record is not silently deleted or excluded from the drain. Resolve its resource responsibility before deployment and retain the historical record.
 
 ## Build-only network recovery
 
