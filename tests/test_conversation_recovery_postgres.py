@@ -40,13 +40,6 @@ async def lifecycle_db(recovery_db):
             alter table run_attempts alter column ordinal set default 1;
             alter table messages alter column created_at set default now();
         """)
-        from tests.support.settlement_authority_schema import settlement_authority_sql
-        await conn.execute(settlement_authority_sql())
-        await conn.execute("""insert into run_attempt_settlements (
-            tenant_id,run_id,attempt_id,schema_version,mapping_state,dispatch_state,
-            attempt_status_snapshot,attempt_owner_generation_snapshot,run_status_snapshot,settlement_phase
-        ) values ('tenant','run','attempt','ai-platform.run-attempt-settlement.v1',
-            'mapped','accepted','running',2,'running','awaiting_receipt')""")
     return recovery_db
 
 

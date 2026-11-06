@@ -82,6 +82,9 @@ class FakeMigrationConnection:
             return FakeCursor(None)
         if "select attname from pg_attribute" in normalized:
             return FakeCursor([])
+        if "as fence_trigger" in normalized and "as index_ledger" in normalized:
+            return FakeCursor(dict(markers=False, fence_trigger=False, fence_function=False,
+                                   indexes=False, constraint_present=False, index_ledger=False))
         if normalized.startswith("select pg_advisory_xact_lock"):
             await self.state.lock.acquire()
             self.locked = True
