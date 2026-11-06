@@ -23,6 +23,7 @@ from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 from app import schema_migrations
 from app.bootstrap import run_lifecycle
+from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.run_admission_terminalization import terminalize_enqueue_failure
@@ -223,6 +224,9 @@ async def _clear_seeded_stream_authority_for_cancellation(
         """,
         (tenant_id, attempt_id),
     )
+    await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id, source_lease_id="lease",
+    )
 
 
 async def _request_owner_cancel(
@@ -348,6 +352,10 @@ async def _seed_run(
         """,
         (tenant, workspace, user, session, run, attempt, f"trace_{run}", json.dumps(lease_payload)),
     )
+    if with_current_attempt:
+        await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+            conn, tenant_id=tenant, run_id=run, attempt_id=attempt, source_lease_id="lease",
+        )
     tenant_scope = f"scope_{suffix}"
     open_event_id = f"evt4_open_{suffix}"
     opening = build_v4_control(

@@ -64,7 +64,7 @@ from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
-from app.sandbox.infrastructure import leases_postgres as sandbox_lease_port
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.application import skill_markdown
 from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
@@ -72,6 +72,8 @@ from app.skills.pinning import build_skill_version_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
+
+sandbox_lease_port = build_sandbox_executor_reconciliation_port()
 
 
 def _assert_executor_identity_without_retired_metadata(result: ExecutorResult) -> None:

@@ -130,6 +130,65 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", [None, "missing_detail", "stale_claim", "mismatched_result"])
+async def test_upgrade_finishes_previously_retired_layout_without_reconstructing_history(
+    settlement_upgrade_db, blocker,
+):
+    from app.runs.infrastructure.attempt_settlement_upgrade_mapping import backfill_attempt_settlement_projections
+
+    connect, attempt_id, _generation = settlement_upgrade_db
+    async with connect() as conn, conn.transaction():
+        await _legacy_completed_history(conn, attempt_id)
+        await backfill_attempt_settlement_projections(conn)
+        for column in LEGACY_ATTEMPT_SETTLEMENT_COLUMNS:
+            await conn.execute(f"alter table sandbox_leases drop column if exists {column}")
+        await conn.execute("""create function reject_legacy_attempt_settlement_write() returns trigger
+            language plpgsql as $$ begin return new; end $$""")
+        await conn.execute("""create trigger trg_reject_legacy_attempt_settlement_write
+            before update on sandbox_leases for each row
+            execute function reject_legacy_attempt_settlement_write()""")
+        await conn.execute("create index idx_sandbox_leases_executor_reconcile on sandbox_leases(id)")
+        await conn.execute("""alter table sandbox_leases add constraint
+            chk_sandbox_leases_executor_reconciliation_status check (true)""")
+        await conn.execute("""insert into schema_index_migrations(index_name,target_version,checksum_sha256,state)
+            values ('idx_sandbox_leases_executor_reconcile','old','old','ready')""")
+        if blocker == "missing_detail":
+            await conn.execute("delete from run_attempt_settlements where attempt_id=%s", (attempt_id,))
+        elif blocker == "stale_claim":
+            await conn.execute("""update sandbox_leases set executor_probe_claim_token=
+                '00000000-0000-0000-0000-000000000001',executor_probe_claimed_at=now()-interval '2 hours'""")
+        elif blocker == "mismatched_result":
+            await conn.execute("update run_attempt_settlements set result_json='{}'::jsonb where attempt_id=%s", (attempt_id,))
+        before = await (await conn.execute("select * from run_attempt_settlements where attempt_id=%s", (attempt_id,))).fetchone()
+    async with connect() as conn, conn.transaction():
+        with pytest.raises(RuntimeError, match="operator_confirmation_required"):
+            await upgrade_attempt_settlement_authority(conn)
+    if blocker:
+        async with connect() as conn, conn.transaction():
+            with pytest.raises(RuntimeError, match="requires_drain|retired_history_invalid"):
+                await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        async with connect() as conn:
+            assert (await (await conn.execute("select to_regclass('run_attempt_settlement_storage') as marker")).fetchone())["marker"]
+        return
+    async with connect() as conn, conn.transaction():
+        await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        await upgrade_attempt_settlement_authority(conn)
+        after = await (await conn.execute("select * from run_attempt_settlements where attempt_id=%s", (attempt_id,))).fetchone()
+        assert after == before
+        assert await schema_migrations._attempt_settlement_layout_current(conn)
+        status = await (await conn.execute("""select
+            to_regclass('run_attempt_settlement_storage') as storage,
+            to_regclass('run_attempt_settlement_writer') as writer,
+            to_regclass('run_attempt_settlement_retirement') as retirement,
+            to_regprocedure('reject_legacy_attempt_settlement_write()') as fence,
+            to_regclass('idx_sandbox_leases_executor_reconcile') as old_index,
+            (select count(*) from schema_index_migrations where index_name='idx_sandbox_leases_executor_reconcile') as index_ledger""")).fetchone()
+        assert status == dict(storage=None, writer=None, retirement=None, fence=None, old_index=None, index_ledger=0)
+        lease = await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='lease-a'")).fetchone()
+        assert lease == dict(status="released", executor_cleanup_status="finalized")
+
+
+@pytest.mark.asyncio
 async def test_fresh_schema_apply_is_idempotent_and_attempt_only(settlement_upgrade_db):
     connect, _attempt_id, _generation = settlement_upgrade_db
 

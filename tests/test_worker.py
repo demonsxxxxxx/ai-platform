@@ -2107,6 +2107,7 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
     lease_row["lease_payload_json"] = {"attempt_id": lease_row["attempt_id"], "owner_generation": 4}
     lease_row.setdefault("settlement_claim_token", "claim-a")
     lease_row.setdefault("settlement_phase", "claimed")
+    lease_row.setdefault("receipt_json", {"run_id": payload.run_id, "status": "succeeded"})
 
     async def run(conn, **kwargs):
         return {**model, "executor_type": payload.executor_type,

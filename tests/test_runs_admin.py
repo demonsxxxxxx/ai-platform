@@ -1155,7 +1155,9 @@ async def test_admin_runtime_health_uses_current_attempt_execution_heartbeat(
         "heartbeat_at": observed_at, "executor_heartbeat_at": observed_at - timedelta(seconds=2),
         "expires_at": observed_at + timedelta(minutes=30),
         "runtime_container_id": "PRIVATE_RUNTIME_HANDLE",
-        "executor_reconciliation_context_json": {"private_prompt": "PRIVATE_PROMPT"},
+        "accepted_context_json": {"private_prompt": "PRIVATE_PROMPT"},
+        "settlement_mapping_state": "mapped", "settlement_dispatch_state": "accepted",
+        "settlement_receipt_present": False, "settlement_phase": "awaiting_receipt",
     }
     if scenario == "stale":
         lease["executor_heartbeat_at"] = observed_at - timedelta(seconds=46)
@@ -1176,6 +1178,7 @@ async def test_admin_runtime_health_uses_current_attempt_execution_heartbeat(
     elif scenario == "terminal_pending":
         lease["executor_status"] = "completed"
         lease["executor_terminal_received_at"] = observed_at - timedelta(seconds=1)
+        lease.update(settlement_receipt_present=True, settlement_phase="pending")
     elif scenario == "terminal_run":
         run["status"] = "succeeded"
     elif scenario == "queued":
@@ -1194,8 +1197,10 @@ async def test_admin_runtime_health_uses_current_attempt_execution_heartbeat(
         lease["executor_heartbeat_at"] = observed_at.replace(tzinfo=None)
     elif scenario == "sandbox":
         lease["executor_status"] = None
+        lease["settlement_dispatch_state"] = "unknown"
     elif scenario == "terminal_missing_receipt":
         lease["executor_status"] = "completed"
+        lease["settlement_mapping_state"] = "unknown"
     elif scenario == "terminal_owner_transfer_between_reads":
         lease["executor_status"] = "completed"
         lease["executor_terminal_received_at"] = observed_at - timedelta(seconds=1)

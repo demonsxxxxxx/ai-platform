@@ -76,6 +76,7 @@ RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 # the installed main target and the Phase-only labels above.
 LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION = "2026.11.05.1"
 ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION = "2026.11.06.1"
+# The stopped-writer settlement cutover is not binary rollback-compatible.
 TARGET_SCHEMA_VERSION = ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Attempt-only upgrade retires the old Sandbox settlement indexes.

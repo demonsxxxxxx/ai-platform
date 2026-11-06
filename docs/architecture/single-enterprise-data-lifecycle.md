@@ -275,6 +275,12 @@ The core schema includes both additive changes and destructive cutovers:
 - The [Run lifecycle](run-lifecycle-boundary.md) retirement removes
   `run_tool_permission_requests` after legacy Run settlement. Readiness requires
   that retired relation to be absent.
+- The [Attempt settlement upgrade](execution-spec-and-attempt-lifecycle.md#33-one-time-historical-upgrade-and-compatibility-disposition)
+  removes the eight legacy Sandbox settlement columns, write fence and
+  `run_attempt_settlement_storage`, `run_attempt_settlement_writer`,
+  `run_attempt_settlement_retirement` after stopped-writer, drained history
+  validation. Already-retired columns do not waive validation or cleanup of
+  remaining marker/fence metadata. Readiness requires these relations absent.
 - The [Agent Profile persistence](agent-profile-persistence-boundary.md) hard
   cut removes legacy profile columns, compatibility triggers and functions.
   These are committed removals, not unused additive fields.

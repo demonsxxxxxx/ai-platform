@@ -93,6 +93,8 @@ async def recovery_db():
             start = source.index("create table if not exists provider_session_heads")
             end = source.index("-- A populated pre-#511", start)
             await conn.execute(source[start:end])
+            from tests.support.settlement_authority_schema import settlement_authority_sql
+            await conn.execute(settlement_authority_sql())
             await conn.execute((Path(__file__).resolve().parents[1] /
                                 "app/context/infrastructure/conversation_recovery_schema.sql").read_text())
             # Match production prepare: epoch 1 has already consumed its number.
@@ -153,6 +155,12 @@ async def recovery_db():
                     ),
                 ),
             )
+            await conn.execute("""insert into run_attempt_settlements(
+                tenant_id,run_id,attempt_id,mapping_state,source_lease_id,dispatch_state,
+                accepted_context_json,attempt_status_snapshot,attempt_owner_generation_snapshot,
+                run_status_snapshot,settlement_phase)
+                values('tenant','run','attempt','mapped','lease','accepted','{}','running',2,
+                       'running','awaiting_receipt')""")
             await operation(conn, "load")
             await operation(conn, "append", entries=INITIAL, expected_sequence=1)
         yield connect

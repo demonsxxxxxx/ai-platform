@@ -299,7 +299,9 @@ Administrator debug exposes Attempt phase/count and only allowlisted numeric `di
 
 Schema application is the only old-data upgrade entrance. Existing legacy settlement columns require `--confirm-settlement-upgrade` after old binaries are stopped, all Runs/Attempts/resources and unresolved claims are drained, and a recoverable backup/restore drill is verified. Expired claim TTLs do not prove external I/O stopped. The upgrader locks lifecycle sources, maps every Attempt in bounded pages, compares the complete historical denominator, and rejects missing bindings, ambiguous generations, conflicting receipts or unmapped history. Reapplication is idempotent. It preserves original receipt, diagnostics, accepted/intent context, Run/Attempt facts and resource evidence.
 
-Only after successful mapping and comparison does that same transaction remove the eight old Sandbox settlement columns, three old indexes, old status constraint, old write-fence trigger/function and the reader/writer/retirement marker tables. It does not use `CASCADE`. New schemas contain only Attempt settlement plus Sandbox resource fields. Runtime readiness requires that layout; it cannot select an older authority. No automatic down migration exists. Recovery uses a schema-compatible corrected package or an explicitly authorized restore, not an old binary against the contracted schema. See the [release runbook](../operations/release-operations-runbook.md).
+A database that already retired the old columns still requires the same confirmations and drain. The upgrader validates its surviving Attempt authority against Run/Attempt results and resource bindings, preserves that authority without reconstructing absent receipts, and removes remaining marker/fence/index metadata.
+
+Only after successful mapping and comparison (or validation of an already-retired layout) does that same transaction remove the eight old Sandbox settlement columns, three old indexes, old status constraint, old write-fence trigger/function and the reader/writer/retirement marker tables. It does not use `CASCADE`. New schemas contain only Attempt settlement plus Sandbox resource fields. Runtime readiness requires that layout; it cannot select an older authority. No automatic down migration exists. Recovery uses a schema-compatible corrected package or an explicitly authorized restore, not an old binary against the contracted schema. See the [release runbook](../operations/release-operations-runbook.md).
 
 The Redis stale-Run business fence is retired. PostgreSQL binds stale recovery to the observed Run, Attempt/generation and claim, and reads pending receipts only from Attempt detail. Queue `owner_token`, ACK/requeue, capacity and SSE retain their separate transport contracts. Production requires the durable Run delivery outbox; historical queued recovery preserves its original identity and fails closed on unprovable input. Execution supervision's independent domain modes and drain claims remain; removing settlement compatibility does not change fleet scheduling ownership.
 
@@ -366,6 +368,8 @@ through the Runs public API and may not rebuild or override it from queue data.
 
 ## 6. Upgrade ordering
 
+Queue wire shape remains compatible: historical execution inputs keep their
+versioned meaning and are not rebuilt from settlement or resource observations.
 ExecutionSpec historical readers remain governed by their versioned input
 contract; they do not select settlement storage. Attempt settlement upgrade is
 a stopped-writer, drained, one-time transition described in §3.3. Preserve
