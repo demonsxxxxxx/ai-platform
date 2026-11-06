@@ -50,3 +50,10 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
         )
     )
 
+
+async def upgrade_attempt_settlement_authority_in_transaction(conn, *, confirmations=None) -> None:
+    """Compose the one-time schema upgrade without exposing storage adapters."""
+    from app.runs.infrastructure.attempt_settlement_upgrade import upgrade_attempt_settlement_authority
+
+    await upgrade_attempt_settlement_authority(conn, confirmations=confirmations)
+

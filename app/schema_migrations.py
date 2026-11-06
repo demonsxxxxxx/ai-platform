@@ -2120,8 +2120,10 @@ async def apply_migrations(
             else:
                 await _require_no_future_open_attempt_heartbeats(conn)
                 await conn.execute(sql)
-                from app.runs.infrastructure.attempt_settlement_upgrade import upgrade_attempt_settlement_authority
-                await upgrade_attempt_settlement_authority(conn, confirmations=settlement_upgrade_confirmations)
+                from app.bootstrap.attempt_settlement_projection import upgrade_attempt_settlement_authority_in_transaction
+                await upgrade_attempt_settlement_authority_in_transaction(
+                    conn, confirmations=settlement_upgrade_confirmations,
+                )
                 await conn.execute(
                     """
                     insert into schema_migrations(version, checksum_sha256, state)
