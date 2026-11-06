@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.bootstrap.run_diagnostics import record_execution_debug
+from app.bootstrap.model_call_evidence import record_model_call
 from app.auth import is_ai_admin, require_principal
 from app.db import transaction
 from app.execution.application.follow_up_completion import (
@@ -82,6 +83,7 @@ def configure_model_services() -> None:
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,
             diagnostic_recorder=record_execution_debug,
+            model_call_recorder=record_model_call,
         )
     )
     configure_follow_up_suggestions(

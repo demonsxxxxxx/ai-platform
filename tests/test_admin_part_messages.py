@@ -55,6 +55,39 @@ def test_final_answer_excludes_work_and_matches_mounted_contract():
     assert _execution(_rows()) == FIXTURE["worker_execution"]
 
 
+def test_native_and_retained_part_messages_remain_independent_and_appear_once():
+    part_rows = _rows()
+    native_rows = []
+    for index, (kind, payload) in enumerate([
+        ("message.started", {}),
+        ("message.delta", {"delta": "Native answer"}),
+        ("message.completed", {"delta_count": 1, "text_length": len("Native answer")}),
+    ], 8):
+        row = deepcopy(part_rows[0])
+        metadata = deepcopy(row["payload_json"]["__stream_v4"])
+        metadata.update(message_id="msg_native", source_event_id=f"native_source_{index}",
+                        causation_event_id="native_source_9" if kind == "message.completed" else None)
+        row.update(id=f"evt4_native_{index}", sequence=index, event_type=kind,
+                   payload_json={**payload, "__stream_v4": metadata})
+        native_rows.append(row)
+    rows = [*part_rows, *native_rows]
+    expected = ["正常公开回答", "Native answer"]
+    assert [message["text"] for message in _execution(rows)["messages"]] == expected
+    events = [{"event_id": row["id"], "type": row["event_type"],
+               "sequence": row["sequence"], "visible_to_user": row["visible_to_user"],
+               "payload": row["payload_json"]} for row in rows]
+    # A caller supplying only old part projections must not suppress another
+    # native message; a caller supplying all ledgers must not duplicate it.
+    for selected in (part_rows, rows):
+        result = build_admin_worker_execution(
+            events, sanitize_text=lambda text: text,
+            part_messages=project_persisted_assistant_text_messages(
+                selected, tenant_id="default", run_id="run_parts"),
+        )
+        assert [message["text"] for message in result["messages"]] == expected
+        assert result["response"] == "Native answer"
+
+
 @pytest.mark.parametrize(
     "damage",
     [
@@ -226,7 +259,7 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
 
     async def list_events(_conn, *, tenant_id, run_id):
         assert (tenant_id, run_id) == ("default", "run_parts")
-        return _rows()
+        return {"rows": _rows(), "truncated": False, "event_limit": 2000, "payload_budget_bytes": 524288}
 
     async def empty(*_args, **_kwargs):
         return []
@@ -234,13 +267,8 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", transaction)
     monkeypatch.setattr(queries, "get_run", get_run)
-    monkeypatch.setattr(queries, "list_run_events", list_events)
-    for name in (
-        "list_run_steps",
-        "list_run_artifacts",
-        "list_sandbox_leases_for_run",
-        "list_run_skill_snapshots",
-    ):
+    monkeypatch.setattr(queries, "read_admin_detail_events", list_events)
+    for name in ("list_run_artifacts", "list_sandbox_leases_for_run"):
         monkeypatch.setattr(queries, name, empty)
     _install_admin_monitor_metadata(monkeypatch, {})
     client = TestClient(create_app())
@@ -253,6 +281,9 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     assert "_assistant_text_messages" not in body
     assert "__stream_v4" not in response.text
     assert "attempt_a" not in response.text
+    assert "PRIVATE_RESULT_MUST_NOT_BE_ANSWER" not in response.text
+    assert body["events"] == []
+    assert body["run"]["input"] == body["run"]["result"] == {}
 
 
 def test_legacy_v4_same_message_id_in_distinct_attempts_never_concatenates():

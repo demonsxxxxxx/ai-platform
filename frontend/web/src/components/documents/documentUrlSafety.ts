@@ -56,6 +56,9 @@ function isAllowedArtifactFilePath(pathname: string): boolean {
   }
 
   const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 8 && segments[0] === "api" && segments[1] === "ai" && segments[2] === "admin" && segments[3] === "runs" && segments[5] === "artifacts") {
+    return /^[A-Za-z0-9_.:-]{1,160}$/.test(segments[4]) && /^[A-Za-z0-9_.:-]{1,160}$/.test(segments[6]) && ["preview", "download"].includes(segments[7]);
+  }
   const isPlatformArtifact = pathname.startsWith("/api/ai/artifacts/");
   const isPlatformInputFile = pathname.startsWith("/api/ai/files/");
   if ((!isPlatformArtifact && !isPlatformInputFile) || segments.length !== 5) {

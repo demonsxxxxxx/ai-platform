@@ -30,7 +30,6 @@ from app.runs.api import (
 )
 from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runs.infrastructure import postgres as runs_postgres
-from app.streaming.api import V4_METADATA_KEY
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.kernel.identifiers import assert_safe_id
 
@@ -233,27 +232,20 @@ async def admin_run_detail(
     detail = dict(detail)
     detail["run"] = dict(detail["run"])
     detail["run"].update(metadata.get(run_id, {}))
-    detail["worker_execution"] = build_admin_worker_execution(
-        detail.get("events", []),
-        sanitize_text=sanitize_public_text,
-        part_messages=detail.pop("_assistant_text_messages", ()),
-    )
+    if "worker_execution" not in detail:
+        detail["worker_execution"] = build_admin_worker_execution(
+            detail.get("events", []), sanitize_text=sanitize_public_text,
+            part_messages=detail.pop("_assistant_text_messages", ()),
+        )
     # The Worker projection needs persisted identities to join message chunks.
     # Keep private events and internal stream metadata out of the browser detail.
-    detail["events"] = [
-        {
-            **event,
-            "payload": {
-                key: value
-                for key, value in event["payload"].items()
-                if key != V4_METADATA_KEY
-            },
-        }
-        if isinstance(event.get("payload"), dict)
-        else event
-        for event in detail.get("events", [])
-        if event.get("visible_to_user") is not False
-    ]
+    detail["events"] = []
+    for field in ("steps", "sandbox_leases", "skill_snapshots", "audit"):
+        detail[field] = []
+    # Retained empty mappings keep old readers structurally compatible; arbitrary
+    # input/result content belongs neither to this endpoint nor its browser DTO.
+    detail["run"]["input"] = {}
+    detail["run"]["result"] = {}
     detail["run"]["model_output"] = detail["worker_execution"]["response"]
     detail["run"] = await attach_live_queue_context(detail["run"], tenant_id=principal.tenant_id)
     for collection in (

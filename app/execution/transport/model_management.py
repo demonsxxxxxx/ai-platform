@@ -33,14 +33,26 @@ async def _record_proxy_debug(*, run_id: str, attempt_id: str, error_code: str, 
         _logger.warning("model_proxy_debug_capture_unavailable")
 
 
-async def _diagnostic_stream(body, *, run_id: str, attempt_id: str, operation: str):
+async def _diagnostic_stream(body, *, run_id: str, attempt_id: str, operation: str, observation=None, record_call=None):
+    state = "closed_before_eof"
     try:
         async for chunk in iterate_in_threadpool(iter(body)):
             yield chunk
+        if observation is not None and (observation.http_status or 0) >= 400:
+            state = "failed"
+        elif observation is not None and observation.observes_message_lifecycle and (observation.partial or not observation.message_stopped):
+            observation.mark_partial()
+            state = "closed_before_eof"
+        else:
+            state = "completed"
     except Exception as exc:
+        state = "failed"
         await _record_proxy_debug(run_id=run_id, attempt_id=attempt_id,
                                   error_code="model_upstream_unavailable", debug=getattr(exc, "debug", None), operation=operation)
         raise
+    finally:
+        if observation is not None and record_call is not None:
+            await record_call(observation.snapshot(state=state))
 
 
 class _OwnedModelStreamingResponse(StreamingResponse):
@@ -423,7 +435,7 @@ async def proxy_model_request(
                                           "failure_class": "http_error", "http_status": upstream.status,
                                       }, operation=operation)
         return _OwnedModelStreamingResponse(
-            _diagnostic_stream(upstream.body, run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id, operation=operation),
+            _diagnostic_stream(upstream.body, run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id, operation=operation, observation=upstream.call_observation, record_call=upstream.record_call),
             close=upstream.close,
             status_code=upstream.status,
             media_type=upstream.content_type.split(";", 1)[0],

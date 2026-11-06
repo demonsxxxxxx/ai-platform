@@ -182,7 +182,11 @@ Chat admission 先解析显式、继承及 Agent Profile 注入的 MCP 工具，
 
 Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent Profile 与 Skill 权威投影标题和名称，并按当前公共文本规则再次脱敏、有界截断。技术 ID 仍作为查询键和可折叠排障信息返回，但不作为默认视觉标题；该投影不新增一套名称或任务状态权威。
 
-详情将交付正文与完整公开事件回放放在折叠区域；消息仍由后端按持久身份拼接并整体脱敏。工具阶段按已知 Attempt 和公开调用身份关联，不将身份未知的历史开始/终态拼成一次调用。主要调查只使用一条阶段时间线和一处执行诊断，显示首条留存异常、来源、后续处理与裁剪说明；“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
+列表 `/runs` 的任务名称进入独立 `/runs/:runId`；行内快速查看仅保留摘要，Escape 关闭后恢复触发焦点。旧 `?run_id=` 地址以 replace 导航到独立页。五个固定标签为概览、执行过程、结果与产物、输入与配置、历史与重试。URL 保存列表筛选/页码和详情 tab/attempt/stage/event/after/observation，不能携带搜索正文或私有内容；列表滚动按认证作用域保存。
+
+详情的 `worker_execution` 仍由完整消息账本按 Attempt/incarnation/message 身份拼接后整体脱敏，不从任意 `result_json` 恢复回答。首屏读取最多最近 2000 条公开源事件及 512 KiB payload；带 v4 元数据的行必须绑定同一 tenant+Run 的已记录 Attempt，否则拒绝并计数。截断时返回 `evidence_coverage`，不把截断的 legacy chunk 流作为完整回答。`events`、`steps`、`sandbox_leases`、`skill_snapshots`、`audit` 保留空数组形状，`run.input`/`run.result` 保留空映射，仅为已识别旧 detail reader 的结构兼容；不再读取和返回这些任意载荷。健康使用内部 lease 事实，配置和附件引用改由 inspection，事件由分页 trajectory；存储和独立 runtime/audit API 不变。
+
+工具阶段按已知 Attempt 和公开调用身份关联，不将身份未知的历史开始/终态拼成一次调用。步骤列表和时间线共用一份调查数据，选中后显示关联证据；“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据。执行区换标签保持 mounted；运行中可显式跟随最新，向上滚动或键盘翻页暂停，自动播放与跟随分开。
 
 Run Monitor 的执行健康由管理详情的 `runtime_health` 单独投影：使用最高 ordinal 的 Attempt 和同租户、Run、Attempt 且当前 owner generation 匹配的活动真实 Sandbox lease。lease 查询携带仅供服务端比较的 `lease_owner_generation`，再与最新 Attempt 的 generation 精确核对；两次 READ COMMITTED 查询之间发生 owner 转移时返回未知，不能只信任先前查询的匹配布尔值。该内部字段不进入管理响应。多个匹配环境、缺少/无效/未来心跳或缺少 lease expiry 返回未知；Executor 已接纳后必须使用其独立心跳，不用新鲜 Sandbox 心跳掩盖陈旧 Executor 心跳。心跳超过 45 秒或运行 lease 已过期显示陈旧，但不改变 Run 状态；已留存 Executor 终态而 Run 仍运行显示等待平台收尾。排队和已终态 Run 不显示活动执行健康。
 
@@ -216,7 +220,13 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 `GET /admin/runs/{run_id}/investigation` 将 Run 生命周期、Attempt、最近 500 条可见模型/工具回执与首段公开文本串成一条调查时间线，返回来源、时间和关联 ID、截断/未绑定计数。条形位置使用平台接收/入库时间；SDK 报告耗时与回执跨度分开，重叠区间不求和、不把最长阶段当成根因。工具证据需同时匹配 Attempt 与调用身份；未知尝试不猜测配对。供应商内部、上下文构建和网络传输细分尚未采集，页面明示缺口。完整公开记录仍通过既有分页 trajectory 查询。
 
-单次调查只读取当前 Run，不再查询其他成功任务。原 `comparison` 响应字段、`comparison_run_id` 参数及 cohort SQL/排序、对照跳转、表格与对应断言均退役；已识别消费者为当前前端及 owning 测试，未保留空对象兼容。监控概览、全窗口趋势和耗时统计继续由 monitor 拥有。
+单次 investigation 只读取当前 Run，不查询其他成功任务。原 `comparison` 响应字段、`comparison_run_id` 参数及自动 cohort SQL/排序保持退役。独立 `POST /admin/runs/{run_id}/comparison` 必须显式给出另一 Run ID，在 REPEATABLE READ 快照逐一验证当前 tenant 读取范围；比较冻结配置、公开结果、SDK 停止分类、生命周期/Token 与产物登记。未终态、不同模型/revision 的用量、缺失测量以及无成本单位不能计算差值；输入等价性未建立，不推断任务质量或优化因果。监控概览、全窗口趋势和耗时统计仍由 monitor 拥有。
+
+`GET /admin/runs/{run_id}/inspection` 仅投影已记录的模型容量/Profile/Skill pins、闭集输入字段、执行上下文附件引用、持久 retry/resume/copy 关系及触发来源。新建 Run 在创建事务内追加私有 `run_trigger_recorded` 事件，并剔除调用者输入中的 `_trusted_run_source`；chat/Agent API 根据服务端入口记录闭集来源，复制/重试/续跑分别记录本次动作。读取来源只信任私有准入事件或已提交的控制操作关系，不信任历史 input 中的同名字段。历史缺少来源为未采集，不从名称或时间猜测。没有任务/流水线实体时不制造关系。
+
+`POST /admin/runs/{run_id}/evidence-search` 每段最多扫描 1000 条当前 Run 源事件，私有 payload 不出数据库，单条公开 payload 上限 64 KiB、每段累计上限 512 KiB；超限内容省略并计数，游标仍前进。先类型白名单投影再匹配；首段也匹配已脱敏诊断。支持 Attempt 范围、after_sequence 和段内 match_offset，返回上下文游标、更多/省略状态。消息 chunk、提示词和私有载荷不检索；零命中不证明未发生。
+
+平台代理记录真实请求开始/结束、响应头等待毫秒、HTTP 状态、SSE 消息停止/stop reason、Token/字符数和响应 tool_use 的 opaque operation ID。开始须当前 RunAttempt/活动 lease/owner generation 匹配；结束只接受该请求已保存的开始绑定，允许终态/释放后的合法结束观察，不延长执行权限。已观察的 SSE 在缺少 message_stop、解析不完整或截断时记为 closed_before_eof/partial，不把正常 HTTP EOF 当作模型消息完整结束；未解析协议的请求只报告传输状态。使用 Streaming ledger 分配 sequence，`visible_to_user=false`，不发布公开 SSE。每次最多 128 个工具身份，管理端读取最近 200 条事件并明示截断；源记录随 Run 既有事件生命周期。供应商内部 retry、未采集主/子线程归属及上下文变化不推断；后续请求不自动计为 retry。
 
 浏览器测量只提交 `POST /chat/submissions/{submission_id}/latency` 的 `run_id` 和有界整数 `duration_ms`。服务端复用 principal-scoped submission resolver，验证已授权 Run 与 outcome 一致，并要求已有非空白公开文本证据。新槽位 `browser_latency.measurement=browser_dom_commit.v1` 位于既有 Run 私有诊断 JSON，按行锁 first-wins；不存正文、Cookie、客户端绝对时间、私有 payload，不推动 Run/Attempt 状态。浏览器按 mounted/session/auth/submission 身份退休观察；历史加载、新标签页、取消、身份更替或卸载不能生成新提交计时。可选采集失败不影响聊天；浏览器数据始终是客户端观测，不是业务权威。
 
@@ -226,7 +236,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 新 monitor/investigation GET 只读取数据库，使用事务内 5 秒 statement timeout，不调用队列、provider 或资源清理。旧 `admin_runtime_overview` 的历史事件百分位及清理分支仍由既有 CLI/运维入口消费，本页不调用；D07 的维护迁移仍是独立范围。
 
-页面退役重复的 Worker 概览、Agent/工具日志、Attempt 独立主区、第二条语义时间线、协议事件分页与无消费者的 `summarizeAdminRuns` / `buildAdminRunEventDiagnostics` 投影。`adminRunTimeline` 仅保留当前动作摘要及仍被工具阶段消费的身份索引；SDK/协议/逐条观察、产物、回放和技术关联折叠展示，证据状态、失败处理、导出和键盘焦点保护保留。
+页面退役全量详情侧栏，快速摘要不再请求 investigation/inspection。原重复 Worker 概览、Agent/工具日志、Attempt 独立主区、第二条语义时间线及协议事件分页保持退役；执行健康、公开回答、配置、历史和产物各由自己的标签承载。`adminRunTimeline` 保留工具身份索引与列表筛选；当前动作由 investigation 阶段事实读取。SDK/协议/逐条观察和技术关联保留折叠，支持查找已保留内容与指定 observation 定位。
 
 回归拥有者是 `tests/test_run_performance{,_routes,_postgres}.py`、前端 `test:run-monitor`、`test:sse` 中的 browser helper 和 mounted submission 测试。真实 PostgreSQL测试使用既有隔离 schema 夹具，未配置 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 时显式 skip；mock、JSDOM 和类型检查不能代替 SQL 执行、查询计划、真实浏览器绘制或正式环境验收。
 
@@ -234,7 +244,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 当前实现使用 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务及 5 秒 statement timeout 调用 `read_admin_debug`，读取 Run/Attempt、诊断 revision/payload、最近 500 条安全类型事件、最多 100 个冻结 Skill 快照以及 Sandbox 公共注入端口投影的最多 100 个租约；释放事务后生成 ZIP，再写响应审计。接口不执行任务或资源维护。
 
-固定三文件及导出 v1 入口保留，`diagnostics.json.debug` 作为加法扩展承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
+导出 schema 为 `ai-platform.run-diagnostic-export.v2`，保留同一 POST 入口。固定 `manifest.json`、`diagnostics.json`、`README.txt` 并增加 `trajectory.md`；后者从同一脱敏、已裁剪快照生成。v1 reader 可继续读取保留原字段的 diagnostics.json，严格校验文件集合/schema 的 reader 必须接受 v2 和新增文件。`diagnostics.json.debug` 承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
 
 Execution 的闭合 `sdk.debug` 契约仅允许受控组件/操作/阶段/失败分类、HTTP 状态、连接尝试次数、代理策略类型/beta 数量、SessionStore entry 类型/主子流/UTF-8 JSON 大小及限制、图片编码字节计数与版本值。Sandbox 和 Runs 在各自领域的诊断投影边界按同一闭集契约独立复验，不从领域层导入其他 bounded context；回归测试逐项核对枚举、数值边界和版本格式的一致性。不保存 header、beta 原文、URL/IP、凭据或 entry。模型代理在响应前、HTTP 错误及流迭代故障处记录；HTTPX 原异常类型、仅连接失败可尝试下一个地址及不重发已接收 POST 的规则保留。记录经实际 Run/Attempt/存活租约及 owner generation 绑定，诊断失败不改变代理或 callback 结果。
 
@@ -244,7 +254,7 @@ SessionStore adapter 保留首次被拒绝写入的已测大小；Context 媒体
 
 审计只记录 export_id、操作者、范围、快照 revision、策略版本、结果类别与字节数。审计失败则不返回诊断包。下载开始后无法保证客户端完整接收；审计的 `response_started` 与 `generation_failed` 等结果不得伪称下载已送达。
 
-包按 PRD 固定文件名，未压缩合计上限 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。可选事件/阶段/租约/Skill 历史超过导出预算时缩减其较早详情，`debug.export_omissions` 与 manifest 写明数量，保留原异常与既有 losses；最小包仍失败则返回固定安全错误。
+包按 PRD 四个固定文件名，包含新增轨迹的未压缩合计上限仍为 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。可选事件/阶段/租约/Skill 历史超过导出预算时缩减其较早详情，`debug.export_omissions` 与 manifest 写明数量，保留原异常与既有 losses；最小包仍失败则返回固定安全错误。
 
 ### 5.3 脱敏与版本
 
@@ -376,7 +386,7 @@ SessionStore adapter 保留首次被拒绝写入的已测大小；Context 媒体
 | S1 异常与规范化 | 候选已完成：采集保真、观察链、预算与损失元数据 | D01/D02 新写路径已删除 | T01/T02/T03 聚焦测试通过 |
 | S2 保存与传输 | 主分支已有核心链路；本批增加诊断失败 savepoint/timeout 降级、最终 MCP 集合提交前授权及入队、Worker 逃逸、工作区收集来源 | 删除显式工具提前授权与最终集合授权的重复路径；Worker 调用前授权和公共 Sandbox 映射保持兼容 | 聚焦单元测试；真实 PostgreSQL 选择器在配置 DSN 后验收 |
 | S3 管理查询与页面 | 主分支已有结构化详情；本批增加逐观察证据、普通用户四项结果摘要且保留旧汇总形状 | 同身份 handling 重复投影退出 | 后端投影/多观察测试；前端类型、状态和挂载测试 |
-| S4 导出与治理工具 | 候选已完成：固定三文件、有审计、512 KiB 未压缩预算、无存储公开链接的单 Run 快照包 | D09 中 readiness 契约仍保留；实际下载不再由 readiness 冒充 | 单元/API 权限与审计失败测试已覆盖；真实 PG 快照、并发性能和工具消费者回归待验 |
+| S4 导出与治理工具 | 候选已完成：v2 固定四文件、有审计、512 KiB 未压缩预算、无存储公开链接的单 Run 快照包 | D09 中 readiness 契约仍保留；实际下载不再由 readiness 冒充 | 单元/API 权限与审计失败测试已覆盖；真实 PG 快照、并发性能和工具消费者回归待验 |
 | S5 发布与收口 | 待实施：打包迁移、授权环境故障语料、回滚演练 | D10 与达到退出证明的外部兼容项待实施 | T15/T16 和 PRD 全量验收待验 |
 
 主控负责范围、技术取舍、修改、集成与最终验证。只读子代理可并行核对互不重叠的 SDK/HTTP、持久化/身份、前端/测试、部署/兼容消费者，返回精确文件位置与证据；不得以探查结论代替完整实现验收。

@@ -1,5 +1,11 @@
 """Application boundary for the Redis Stream-only runtime."""
 
+from app.streaming.application.admin_evidence import (
+    append_private_model_call as append_private_model_call,
+    append_run_trigger as append_run_trigger,
+    read_admin_detail_events as read_admin_detail_events,
+)
+
 from app.streaming.application.assistant_text_projection import (
     AssistantTextMessageProjection,
     project_persisted_assistant_text_messages,

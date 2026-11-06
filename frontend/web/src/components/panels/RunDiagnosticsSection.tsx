@@ -1,4 +1,5 @@
-import { Button } from "@lobehub/ui/base-ui";
+import { Button, Input } from "@lobehub/ui/base-ui";
+import { useEffect, useRef, useState } from "react";
 import type { AdminRunDiagnosticLoss, AdminRunDiagnosticsResponse } from "../../services/api/adminRuns";
 
 
@@ -82,6 +83,7 @@ export function RunDiagnosticsSection({
   exportError = null,
   onRetry,
   onExport,
+  selectedObservationId,
 }: {
   diagnostics: AdminRunDiagnosticsResponse | null;
   loading: boolean;
@@ -90,7 +92,22 @@ export function RunDiagnosticsSection({
   exportError?: string | null;
   onRetry?: () => void;
   onExport?: () => void;
+  selectedObservationId?: string | null;
 }) {
+  const [query, setQuery] = useState("");
+  const section = useRef<HTMLElement>(null);
+  const located = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedObservationId) { located.current = null; return; }
+    if (located.current === selectedObservationId) return;
+    const target = [...(section.current?.querySelectorAll<HTMLElement>("[data-observation-id]") ?? [])].find((node) => node.dataset.observationId === selectedObservationId);
+    if (!target) return;
+    for (let parent: HTMLElement | null = target; parent && parent !== section.current; parent = parent.parentElement) {
+      if (parent instanceof HTMLDetailsElement) parent.open = true;
+    }
+    target.scrollIntoView({ block: "nearest" });
+    located.current = selectedObservationId;
+  }, [selectedObservationId, diagnostics]);
   if (loading && !diagnostics) {
     return (
       <section className="p-4" data-run-runtime-diagnostics>
@@ -99,7 +116,7 @@ export function RunDiagnosticsSection({
       </section>
     );
   }
-  if (error) {
+  if (error && !diagnostics) {
     return (
       <section className="p-4" data-run-runtime-diagnostics>
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行诊断</h3>
@@ -124,7 +141,20 @@ export function RunDiagnosticsSection({
   }
   const apiErrorStatus = sdkHttpStatus(diagnostics.details.sdk.api_error_status);
   const sdkErrors = sdkErrorItems(diagnostics.details.sdk.errors);
-  const observationEvidence = diagnostics.details.observations ?? [];
+  const allObservations = diagnostics.details.observations ?? [];
+  const observationEvidence = allObservations;
+  const searchableEvidence = [
+    { label: "根异常", value: diagnostics.root },
+    ...diagnostics.handling.map((item, index) => ({ label: `处理观察 ${index + 1}`, value: item })),
+    ...allObservations.map((item, index) => ({ label: `观测 ${item.observation_id || index + 1}`, value: item })),
+    { label: "SDK 证据", value: diagnostics.details.sdk },
+    { label: "输出校验断点", value: diagnostics.details.projection_failure },
+    { label: "终态协议证据", value: diagnostics.details.executor_protocol },
+    { label: "工具生命周期", value: diagnostics.details.tool_lifecycles },
+    { label: "工具调用", value: diagnostics.details.tool_calls },
+    { label: "工具拒绝", value: diagnostics.details.tool_policy_denials },
+  ].filter((item) => item.value != null);
+  const matches = query.trim() ? searchableEvidence.filter((item) => diagnosticJson(item.value).toLowerCase().includes(query.trim().toLowerCase())) : [];
   const toolEvidence = observationEvidence.length
     ? observationEvidence.flatMap((observation) => [
         ...observation.tool_lifecycles,
@@ -143,7 +173,8 @@ export function RunDiagnosticsSection({
     return attempt ? `第 ${attempt.ordinal} 次尝试` : "执行尝试未能关联";
   };
   return (
-    <section className="p-4" data-run-runtime-diagnostics>
+    <section ref={section} className="p-4" data-run-runtime-diagnostics>
+      {selectedObservationId && diagnostics.root?.observation_id !== selectedObservationId && !allObservations.some((item) => item.observation_id === selectedObservationId) ? <p role="status">指定观察未保留在当前尝试范围中；不表示异常未发生。</p> : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行诊断</h3>
         <div className="flex items-center gap-2">
@@ -163,6 +194,9 @@ export function RunDiagnosticsSection({
           ) : null}
         </div>
       </div>
+      {error ? <p role="alert" className="mt-2 text-sm">刷新失败，仍显示上次诊断：{error}<Button type="text" onClick={onRetry}>重新读取诊断</Button></p> : null}
+      <Input className="mt-3" aria-label="查找已保留诊断证据" placeholder="查找错误、堆栈、工具或观察编号（包括折叠内容）" value={query} onChange={(event) => setQuery(event.target.value)} />
+      {query.trim() ? <div data-run-diagnostic-search-results className="mt-2 text-sm" role="status">在 {searchableEvidence.length} 组已保留证据中匹配 {matches.length} 组；未保留内容不在范围内。{matches.map((item, index) => <details key={index} open><summary>{item.label}</summary><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{diagnosticJson(item.value)}</pre></details>)}</div> : null}
       <p className="mt-2 text-[11px] leading-5 text-[var(--theme-text-secondary)]">诊断包包含本次运行的阶段、事件关联、用量、冻结配置、租约及已采集的调试事实；缺失与裁剪会在包内列明。</p>
       {observationEvidence.some((observation) => observation.sdk.debug) || diagnostics.details.sdk.debug ? (
         <details className="mt-3 rounded-md border border-[var(--theme-border)] p-3" data-run-debug-facts>
@@ -188,7 +222,7 @@ export function RunDiagnosticsSection({
       ) : (
         <div className="mt-3 space-y-3">
           {diagnostics.root ? (
-            <div className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs">
+            <div data-observation-id={allObservations.some((item) => item.observation_id === diagnostics.root?.observation_id) ? undefined : diagnostics.root.observation_id} className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs">
             <p className="font-mono font-semibold text-[var(--theme-danger-text)]">
               {diagnostics.root.error_code || "未分类异常"}
             </p>
@@ -348,7 +382,7 @@ export function RunDiagnosticsSection({
               <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">逐条观测证据</summary>
               <div className="mt-2 space-y-2">
                 {observationEvidence.map((observation, index) => (
-                  <details key={`${observation.observation_id ?? "observation"}-${index}`}>
+                  <details data-observation-id={observation.observation_id} key={`${observation.observation_id ?? "observation"}-${index}`}>
                     <summary className="cursor-pointer break-words font-mono text-[11px] text-[var(--theme-text)]">
                       {[
                         observation.error_code,

@@ -31,6 +31,9 @@ from app.runs.domain.diagnostics import (
 from app.sandbox.api import SandboxRuntimeDebugReader
 from app.execution.events import normalize_execution_debug
 from app.runs.application.admin_trajectory import project_admin_trajectory_page
+from app.runs.application.admin_run_inspection import build_admin_run_inspection
+from app.runs.application.admin_evidence_search import search_admin_evidence
+from app.runs.application.admin_run_comparison import build_admin_run_comparison
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,12 @@ class RunDiagnosticsPersistence(Protocol):
     ) -> dict[str, Any]: ...
 
     async def get_admin_debug_skills(self, conn: Any, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]: ...
+
+    async def get_admin_inspection_facts(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]: ...
+
+    async def get_admin_evidence_page(self, conn: Any, *, tenant_id: str, run_id: str, after_sequence: int, limit: int) -> list[dict[str, Any]]: ...
+
+    async def get_admin_public_result(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]: ...
 
     async def get_execution_debug_binding(self, conn: Any, *, run_id: str, attempt_id: str) -> dict[str, Any] | None: ...
 
@@ -420,6 +429,52 @@ class RunDiagnosticsService:
             },
         )
 
+    async def compare_admin_runs(self, conn: Any, *, tenant_id: str, left_run_id: str, right_run_id: str) -> dict[str, Any] | None:
+        snapshots = []
+        for run_id in (left_run_id, right_run_id):
+            snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+            if snapshot is None:
+                return None
+            facts = await self.persistence.get_admin_inspection_facts(conn, tenant_id=tenant_id, run_id=run_id)
+            skills = await self.persistence.get_admin_debug_skills(conn, tenant_id=tenant_id, run_id=run_id)
+            inspection = build_admin_run_inspection(snapshot["run"], skills=skills, relationships=facts["relationships"], input_value=facts["input"])
+            artifacts = [{"artifact_id": item.get("artifact_id"),
+                          "label": sanitize_run_diagnostic_text(item.get("label"), max_bytes=512),
+                          "content_type": sanitize_run_diagnostic_text(item.get("content_type"), max_bytes=256),
+                          "size_bytes": item.get("size_bytes") if type(item.get("size_bytes")) is int and item["size_bytes"] >= 0 else None}
+                         for item in facts["artifacts"][:100]]
+            result = await self.persistence.get_admin_public_result(conn, tenant_id=tenant_id, run_id=run_id)
+            snapshots.append({**snapshot, "inspection": inspection, "artifacts": artifacts,
+                              "artifacts_truncated": len(facts["artifacts"]) > 100, "public_result": result})
+        return build_admin_run_comparison(*snapshots)
+
+    async def search_admin_evidence(self, conn: Any, *, tenant_id: str, run_id: str, query: str,
+                                    after_sequence: int = 0, attempt_id: str | None = None, limit: int = 50, match_offset: int = 0) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        rows = await self.persistence.get_admin_evidence_page(conn, tenant_id=tenant_id, run_id=run_id,
+                                                               after_sequence=after_sequence, limit=1001)
+        diagnostics = _admin_projection(snapshot, normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+                                         tool_operation_id=self.tool_operation_id) if after_sequence == 0 else None
+        result = search_admin_evidence(rows=rows[:1000], query=query, attempt_id=attempt_id, limit=limit, diagnostics=diagnostics, match_offset=match_offset)
+        return {"contract_version": "ai-platform.admin-run-evidence-search.v1", "run_id": run_id,
+                "after_sequence": after_sequence, "next_after_sequence": int(rows[min(len(rows), 1000)-1]["sequence"]) if rows else after_sequence,
+                "has_more": len(rows) > 1000, "payload_omitted_count": sum(bool(row.get("payload_omitted")) for row in rows[:1000]),
+                "diagnostic_revision": (diagnostics or {}).get("revision"), **result}
+
+    async def read_admin_inspection(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        facts = await self.persistence.get_admin_inspection_facts(conn, tenant_id=tenant_id, run_id=run_id)
+        skills = await self.persistence.get_admin_debug_skills(conn, tenant_id=tenant_id, run_id=run_id)
+        inspection = build_admin_run_inspection(snapshot["run"], skills=skills,
+            relationships=facts["relationships"], input_value=facts["input"], attachments=facts.get("attachments", []))
+        inspection["model_calls"] = facts["model_calls"]
+        inspection["model_calls_truncated"] = facts["model_calls_truncated"]
+        return inspection
+
     async def read_admin_debug(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
         if snapshot is None:
@@ -435,12 +490,15 @@ class RunDiagnosticsService:
             observed_at=self.clock(),
         )
         trajectory = project_admin_trajectory_page(evidence["events"], sanitize_text=sanitize_run_diagnostic_text)
+        facts = await self.persistence.get_admin_inspection_facts(conn, tenant_id=tenant_id, run_id=run_id)
+        inspection = build_admin_run_inspection(snapshot["run"], skills=skills, relationships=facts["relationships"], input_value=facts["input"], attachments=facts.get("attachments", []))
         runtime = await self.runtime_debug_reader(conn, tenant_id=tenant_id, run_id=run_id) if self.runtime_debug_reader else None
         diagnostics["debug"] = {
             "schema_version": "ai-platform.run-debug.v1", "observed_at": self.clock(),
             "investigation": {"run_id": run_id, **investigation, "events_truncated": evidence["events_truncated"]},
             "events": trajectory["events"], "events_omitted": trajectory["omitted"],
             "events_truncated": evidence["events_truncated"], "event_limit": 500,
+            "inspection": inspection, "model_calls": facts["model_calls"], "model_calls_truncated": facts["model_calls_truncated"],
             "usage": {
                 name: value if type(value) is int and 0 <= value <= 2**63 - 1 else None
                 for name, value in snapshot.get("usage", {}).items()

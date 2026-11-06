@@ -129,6 +129,7 @@ def reduce_assistant_text_part_message(
     if not facts:
         return AssistantTextPartState(has_parts=False, completed=False, answer=None)
 
+    legacy_deltas: list[Mapping[str, object]] = []
     part_text: dict[str, list[str]] = {}
     part_roles: dict[str, str] = {}
     part_order: list[str] = []
@@ -224,16 +225,42 @@ def reduce_assistant_text_part_message(
             continue
 
         if event_type == "message.delta":
-            # A legacy-only lifecycle is deliberately validated by the v1
-            # receipt path; it cannot be mixed into a part lifecycle.
+            delta = payload.get("delta")
+            if not isinstance(delta, str) or not 1 <= len(delta) <= 8192:
+                raise _invalid("delta_invalid")
+            source_event_id = _safe_ref(fact.get("source_event_id"))
+            if source_event_id in delta_source_ids:
+                raise _invalid("source_event_duplicate")
+            delta_source_ids.add(source_event_id)
+            legacy_deltas.append(fact)
             continue
 
         if event_type == "message.completed":
             completed_fact = fact
 
     if not has_parts:
+        answer = None
+        if completed_fact is not None:
+            text = "".join(fact["payload"]["delta"] for fact in legacy_deltas)
+            payload = completed_fact["payload"]
+            if not legacy_deltas or not text:
+                raise _invalid("answer_missing")
+            last_delta = _safe_ref(legacy_deltas[-1].get("source_event_id"))
+            if (
+                type(payload.get("delta_count")) is not int
+                or payload.get("delta_count") != len(legacy_deltas)
+                or type(payload.get("text_length")) is not int
+                or payload.get("text_length") != len(text)
+                or completed_fact.get("causation_event_id") != last_delta
+            ):
+                raise _invalid("completed_selection_mismatch")
+            answer = AssistantTextPartAnswer(
+                message_id=message_id or "", text=text,
+                delta_count=len(legacy_deltas), text_length=len(text),
+                last_delta_event_id=last_delta,
+            )
         return AssistantTextPartState(
-            has_parts=False, completed=completed_fact is not None, answer=None
+            has_parts=False, completed=completed_fact is not None, answer=answer
         )
     if not started:
         raise _invalid("started_missing")

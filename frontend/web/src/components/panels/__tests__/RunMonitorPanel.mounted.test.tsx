@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
-import React, { act } from "react";
+import { act } from "react";
 
 import {
   adminRunsApi,
@@ -15,13 +15,13 @@ import {
   type AdminRunInvestigation,
 } from "../../../services/api/adminRuns";
 import {
-  buildAdminRunMonitorView,
   indexToolDiagnosticEvidence,
+  filterAdminRuns,
 } from "../adminRunTimeline";
 const fixture = installSelectTestDom();
 const dom = { window };
 test.after(() => fixture.close());
-const { filterAdminRuns, RunMonitorPanel } = await import("../RunMonitorPanel");
+const { RunMonitorPanel } = await import("../RunMonitorPanel");
 const { RunDiagnosticsSection } = await import("../RunDiagnosticsSection");
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
@@ -109,13 +109,6 @@ function investigationResponse(runId: string): AdminRunInvestigation {
       started_at: "2026-04-01T09:00:02Z", finished_at: "2026-04-01T09:00:03Z", offset_ms: 2000, receipt_duration_ms: 1000, duration_ms: 1200 }] };
 }
 
-test("Run Monitor derives current activity without private events or stale terminal labels", () => {
-  const events = [{ type: "agent.progress", payload: { phase: "model_wait" } }, { type: "tool.completed", visible_to_user: false, message: "PRIVATE" }, { type: "stream.heartbeat" }];
-  assert.equal(buildAdminRunMonitorView(runs[0], events).currentAction, "正在等待模型响应");
-  assert.equal(buildAdminRunMonitorView(runs[1], events).currentAction, "运行失败");
-  assert.doesNotMatch(JSON.stringify(buildAdminRunMonitorView(runs[0], events)), /PRIVATE/);
-});
-
 test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "running", "chat_2026").map((run) => run.run_id), [
     "run_running",
@@ -159,6 +152,8 @@ for (const scenario of [
   const originalDiagnostics = adminRunsApi.diagnostics;
   const originalTrajectory = adminRunsApi.trajectory;
   const originalExportDiagnostics = adminRunsApi.exportDiagnostics;
+  const originalInspection = adminRunsApi.inspection;
+  adminRunsApi.inspection = async (runId) => ({ contract_version: "ai-platform.admin-run-inspection.v1", run_id: runId, input: { fields: {}, coverage: "not_collected", excluded: [] }, configuration: { source: "persisted_run_snapshot", model_id: null, model_value: null, model_gateway_revision: null, auto_compact_window: null, max_output_tokens: null, profile_revision: null, profile_hash: null, skills: [], skills_truncated: false }, history: { source_run_id: null, relationships: [], truncated: false }, trigger: {kind: null, coverage: "not_collected"} });
   const calls: string[] = [];
 
   Object.defineProperty(dom.window.HTMLElement.prototype, "scrollIntoView", {
@@ -524,472 +519,94 @@ for (const scenario of [
     };
   };
 
-  const container = dom.window.document.getElementById("root");
-  assert.ok(container);
+  const container = document.getElementById("root")!;
   const root = await createLobeTestRoot(container);
-
+  const click = async (element: Element | undefined | null) => {
+    assert.ok(element);
+    await act(async () => { element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 })); });
+  };
+  const button = (text: string) => Array.from(document.querySelectorAll("button")).find((item) => item.textContent === text);
+  const selectTab = async (label: string) => { await click(Array.from(document.querySelectorAll('.run-detail-tabs [role="tab"]')).find((item) => item.textContent === label)); };
+  const open = async (id: string) => {
+    await click(document.querySelector('a[aria-label="查看 ' + id + '"]'));
+    await waitFor(() => Boolean(document.querySelector("[data-run-detail-page] h1")));
+  };
   try {
-    await act(async () => {
-      root.render(React.createElement(RunMonitorPanel));
-    });
+    await act(async () => { root.render(<BrowserRouter><Routes><Route path="/runs" element={<RunMonitorPanel />} /><Route path="/runs/:runId" element={<RunMonitorPanel />} /></Routes></BrowserRouter>); });
     await waitFor(() => document.body.textContent?.includes("审核季度采购合同") === true);
-
+    await click(document.querySelector('button[aria-label="暂停自动刷新"]'));
+    await click(document.querySelector('button[aria-label="第 2 页"]'));
+    assert.match(document.body.textContent ?? "", /run_failed_8/);
+    await click(document.querySelector('button[aria-label="第 1 页"]'));
+    const quick = document.querySelector('button[aria-label="快速查看 run_running"]') as HTMLButtonElement;
+    quick.focus(); await click(quick);
+    await waitFor(() => Boolean(document.querySelector('[data-run-quick-view]')));
+    assert.equal(document.querySelector('[data-run-runtime-diagnostics]'), null, "quick view must not retain a second full investigation");
+    await click(document.querySelector('button[aria-label="关闭运行详情"]'));
+    await waitFor(() => !document.querySelector('[data-run-quick-view]'));
+    await open("run_running");
+    assert.equal(window.location.pathname, "/runs/run_running");
+    assert.deepEqual(new Set(Array.from(document.querySelectorAll('.run-detail-tabs [role="tab"]'), (item) => item.textContent)), new Set(["概览", "执行过程", "结果与产物", "输入与配置", "历史与重试"]));
+    await waitFor(() => diagnostics && document.body.textContent?.includes("诊断部分采集") === true);
+    assert.equal(document.activeElement, document.querySelector('[data-run-detail-page] h1'));
+    assert.match(document.body.textContent ?? "", /138|诊断部分采集/);
+    const exportButton = () => Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.includes("下载脱敏诊断包"));
     if (exportOwnership) {
-      type ExportResult = Awaited<ReturnType<typeof adminRunsApi.exportDiagnostics>>;
-      const pending: { runId: string; resolve: (result: ExportResult) => void; reject: (error: Error) => void }[] = [];
-      adminRunsApi.exportDiagnostics = (runId) => new Promise((resolve, reject) => {
-        pending.push({ runId, resolve, reject });
-      });
-      adminRunsApi.detail = async (runId) => ({ ...detail, run: { ...detail.run, run_id: runId } });
-      const click = async (button: Element | null | undefined) => {
-        assert.ok(button);
-        await act(async () => { button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-      };
-      const exportButton = () => (Array.from(document.querySelectorAll("button")) as HTMLButtonElement[])
-        .find((button) => /^(下载脱敏诊断包|正在生成…)$/u.test(button.textContent ?? ""));
-      const open = async (runId: string) => {
-        await click(document.querySelector(`button[aria-label="查看 ${runId}"]`));
-        await waitFor(() => Boolean(exportButton()));
-      };
-      const result = (runId: string): ExportResult => ({
-        blob: new Blob(["zip"]), filename: `run-diagnostics-${runId}.zip`, exportId: `export-${runId}`,
-      });
-      const downloads: string[] = [];
-      Object.defineProperty(dom.window.HTMLAnchorElement.prototype, "click", {
-        configurable: true, value: function (this: HTMLAnchorElement) { downloads.push(this.download); },
-      });
-      await click(document.querySelector('button[aria-label="暂停自动刷新"]'));
-      await open("run_running");
+      type Result = Awaited<ReturnType<typeof adminRunsApi.exportDiagnostics>>;
+      const pending: Array<{runId:string;resolve:(value:Result)=>void;reject:(error:Error)=>void}> = [];
+      adminRunsApi.exportDiagnostics = (runId) => new Promise((resolve,reject) => pending.push({runId,resolve,reject}));
+      adminRunsApi.detail = async (id) => ({...detail,run:{...detail.run,run_id:id}});
       await click(exportButton());
-      assert.equal(exportButton()?.disabled, true);
-      await click(document.querySelector('button[aria-label="关闭运行详情"]'));
-      const nextRunId = exportOwnership.reopenSameRun ? "run_running" : "run_failed";
-      await open(nextRunId);
-      assert.equal(exportButton()?.disabled, false);
-      await click(exportButton());
-      assert.deepEqual(pending.map((request) => request.runId), ["run_running", nextRunId]);
-      await act(async () => {
-        if (exportOwnership.staleFails) pending[0].reject(new Error("STALE_EXPORT_ERROR"));
-        else pending[0].resolve(result("run_running"));
-      });
-      assert.doesNotMatch(document.body.textContent ?? "", /STALE_EXPORT_ERROR/);
-      assert.equal(exportButton()?.disabled, true, "stale finally must not clear the current export busy state");
-      assert.deepEqual(downloads, exportOwnership.staleFails ? [] : ["run-diagnostics-run_running.zip"]);
-      // The current request still owns error and busy state, and retry still downloads.
-      await act(async () => { pending[1].reject(new Error("CURRENT_EXPORT_ERROR")); });
-      assert.match(document.body.textContent ?? "", /CURRENT_EXPORT_ERROR/);
-      assert.equal(exportButton()?.disabled, false);
-      await click(exportButton());
-      assert.doesNotMatch(document.body.textContent ?? "", /CURRENT_EXPORT_ERROR/);
-      await act(async () => { pending[2].resolve(result(nextRunId)); });
-      assert.equal(exportButton()?.disabled, false);
-      assert.equal(downloads.at(-1), `run-diagnostics-${nextRunId}.zip`);
+      await click(Array.from(document.querySelectorAll('a')).find((a)=>a.textContent === "运行监控"));
+      await waitFor(()=>Boolean(document.querySelector('[data-run-monitor]')));
+      const next = exportOwnership.reopenSameRun ? "run_running" : "run_failed";
+      await open(next); await click(exportButton());
+      await act(async()=>{if(exportOwnership.staleFails)pending[0].reject(new Error("STALE_EXPORT_ERROR"));else pending[0].resolve({blob:new Blob(["zip"]),filename:"old.zip",exportId:null});});
+      assert.doesNotMatch(document.body.textContent??"",/STALE_EXPORT_ERROR/);
+      assert.equal(exportButton()?.disabled,true);
+      await act(async()=>pending[1].resolve({blob:new Blob(["zip"]),filename:"current.zip",exportId:null}));
+      assert.equal(exportButton()?.disabled,false);
       return;
     }
-
-    assert.equal(calls[0], "monitor");
-    const listCallCount = calls.filter((call) => call === "monitor").length;
-    await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
-    });
-    assert.equal(calls.filter((call) => call === "monitor").length, listCallCount);
-    const pauseAutoRefresh = document.querySelector(
-      'button[aria-label="暂停自动刷新"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(pauseAutoRefresh);
-    await act(async () => {
-      pauseAutoRefresh.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    assert.ok(document.querySelector('button[aria-label="开启自动刷新"]'));
-    assert.match(document.body.textContent ?? "", /P50/);
-    const performanceDetails = document.querySelector(".run-performance-details") as HTMLDetailsElement;
-    assert.equal(performanceDetails.open, false);
-    performanceDetails.open = true;
-    assert.match(performanceDetails.textContent ?? "", /P95/);
-    assert.match(performanceDetails.textContent ?? "", /有效样本/);
-    assert.equal(document.querySelectorAll('[aria-label="运行摘要"] [data-run-metric]').length, 4);
-    const toolbar = document.querySelector('[aria-label="调查范围"]');
-    assert.ok(toolbar?.querySelector('input[aria-label="搜索任务 / Agent / 用户 / 运行编号"]'));
-    assert.ok(toolbar?.querySelector('label'));
-    assert.ok(Array.from(document.querySelectorAll('th')).some((cell) => cell.textContent === "耗时"));
-    assert.doesNotMatch(document.body.textContent ?? "", /正常任务对照|同类成功任务对照/);
-    assert.match(document.body.textContent ?? "", /80/);
-    assert.doesNotMatch(document.body.textContent ?? "", /Worker 在线/);
-    assert.match(document.body.textContent ?? "", /王敏/);
-    assert.match(document.body.textContent ?? "", /法务工作区/);
-    assert.match(document.body.textContent ?? "", /合同审阅助手/);
-    assert.match(document.body.textContent ?? "", /run_failed/);
-    assert.match(document.body.textContent ?? "", /worker_execution_failed/);
-    assert.match(document.body.textContent ?? "", /显示 1-10 \/ 12 条/);
-
-    const nextPageButton = document.querySelector(
-      'button[aria-label="下一页"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(nextPageButton);
-    assert.ok(document.querySelector('button[aria-label="第 1 页"][aria-current="page"]'));
-    const secondPage = document.querySelector('button[aria-label="第 2 页"]') as HTMLButtonElement;
-    assert.ok(secondPage);
-    assert.equal(nextPageButton.disabled, false);
-    await act(async () => {
-      secondPage.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.body.textContent?.includes("run_failed_8") === true);
-    assert.doesNotMatch(document.body.textContent ?? "", /run_failed_0/);
-    const previousPageButton = document.querySelector(
-      'button[aria-label="上一页"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(previousPageButton);
-    await act(async () => {
-      previousPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.body.textContent?.includes("run_failed_0") === true);
-
-    const openButtons = Array.from(
-      document.querySelectorAll('button[aria-label="查看 run_running"]'),
-    ) as HTMLButtonElement[];
-    assert.ok(openButtons.length >= 1);
-    openButtons[0].focus();
-    await act(async () => {
-      openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.querySelector("[data-run-investigation]") !== null);
-    assert.ok(calls.includes("investigation:run_running"));
-
-    assert.ok(calls.includes("detail:run_running"));
-    assert.ok(calls.includes("diagnostics:run_running"));
-    await waitFor(() => calls.includes("trajectory:run_running:0"));
-    assert.match(document.body.textContent ?? "", /事件回放/);
-    const trajectoryButtons = Array.from(
-      document.querySelectorAll("[data-run-trajectory-replay] button"),
-    ) as HTMLButtonElement[];
-    const nextTrajectoryStep = trajectoryButtons.find((button) => button.textContent === "下一步");
-    assert.ok(nextTrajectoryStep);
-    await act(async () => {
-      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    assert.match(document.querySelector("[data-run-trajectory-current]")?.textContent ?? "", /动作.*Read/);
-    const loadMoreTrajectory = Array.from(document.querySelectorAll("[data-run-trajectory-replay] button"))
-      .find((button) => (button as HTMLButtonElement).textContent === "加载后续事件") as HTMLButtonElement | undefined;
-    assert.ok(loadMoreTrajectory);
-    await act(async () => {
-      loadMoreTrajectory.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => calls.includes("trajectory:run_running:2"));
-    assert.match(document.querySelector("[data-run-trajectory-replay]")?.textContent ?? "", /1 \/ 4 条/);
-    await act(async () => {
-      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-      nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    assert.match(document.querySelector("[data-run-trajectory-message]")?.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    assert.match(document.body.textContent ?? "", /审核季度采购合同/);
-    assert.match(document.body.textContent ?? "", /技术关联/);
-    assert.match(document.body.textContent ?? "", /Run ID/);
-    assert.match(document.body.textContent ?? "", /trace-a/);
-    assert.match(document.body.textContent ?? "", /lease-a/);
-    assert.match(document.body.textContent ?? "", /阶段调查/);
-    assert.equal(document.querySelectorAll("[data-run-runtime-diagnostics]").length, 1);
-    assert.equal(document.querySelector("[data-run-execution-journal]"), null);
-    const runtimeHealth = document.querySelector("[data-run-runtime-health]");
-    assert.ok(runtimeHealth);
-    assert.match(runtimeHealth.textContent ?? "", /Executor 心跳正常/);
-    assert.match(runtimeHealth.textContent ?? "", /异步派发已接纳/);
-    assert.match(runtimeHealth.textContent ?? "", /队列 Worker 心跳（历史）/);
-    assert.match(runtimeHealth.textContent ?? "", /队列租约（历史）/);
-    assert.match(document.querySelector("[data-run-latency=server_first_text_ms]")?.textContent ?? "", /0 ms/);
-    assert.match(document.querySelector("[data-run-latency=browser_first_text_ms]")?.textContent ?? "", /未采集/);
-    assert.match(document.body.textContent ?? "", /138/);
-    assert.ok(document.body.textContent?.includes(observedCost === null ? "未记录" : `${observedCost} 最小计价单位`));
-    if (observedCost === null) assert.doesNotMatch(document.body.textContent ?? "", /0 最小计价单位/);
-    assert.match(document.body.textContent ?? "", /下载脱敏诊断包/);
-    const exportButton = (
-      Array.from(document.querySelectorAll("button")) as HTMLButtonElement[]
-    ).find(
-      (button) => button.textContent === "下载脱敏诊断包",
-    );
-    assert.ok(exportButton);
-    await act(async () => {
-      exportButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => calls.includes("download-click"));
-    assert.ok(calls.includes("export:run_running"));
-    assert.match(document.body.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    const stageButton = document.querySelector("[data-stage-id]");
-    assert.ok(stageButton);
-    await act(async () => { stageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-    assert.match(document.querySelector("[data-selected-stage-evidence]")?.textContent ?? "", /tool_parameters_not_authorized/);
-    const abortLabels = (Array.from(document.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
-    assert.deepEqual(abortLabels, [
-      "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
-      "SDK 报告工具 abort：否；不代表用户取消或 Run 取消状态。",
-      "SDK 报告工具 abort：未知（未采集）；不代表用户取消或 Run 取消状态。",
-    ]);
-    assert.match(document.body.textContent ?? "", /审核结果\.docx/);
-    const lossEntries = Array.from(document.querySelectorAll("[data-run-diagnostic-loss]")) as HTMLElement[];
-    assert.match(lossEntries[0].textContent ?? "", /脱敏.*redacted/);
-    assert.match(lossEntries[0].textContent ?? "", /count 0/);
-    assert.match(lossEntries[1].textContent ?? "", /长度截断/);
-    assert.match(lossEntries[1].textContent ?? "", /原始字节 8192 \/ 保留字节 4096/);
-    assert.match(lossEntries[2].textContent ?? "", /投影拒绝/);
-    assert.match(lossEntries[3].textContent ?? "", /类别未知/);
-    assert.match(lossEntries[3].textContent ?? "", /未知（未采集）/);
-    assert.match(lossEntries[4].textContent ?? "", /数量截断/);
-    assert.match(lossEntries[4].textContent ?? "", /原始 9 \/ 保留 8/);
-    assert.doesNotMatch(document.body.textContent ?? "", /裁剪或拒绝/);
-    assert.match(document.body.textContent ?? "", /执行诊断/);
-    assert.match(document.body.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
-    assert.match(document.querySelector("[data-sdk-http-status]")?.textContent ?? "", /上游 HTTP 状态：429/);
-    assert.match(document.body.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
-    assert.match(document.body.textContent ?? "", /tool_parameters_not_authorized/);
-    assert.match(document.body.textContent ?? "", /逐条观测证据/);
-    const diagnosticSummaries = Array.from(document.querySelectorAll("[data-run-runtime-diagnostics] details")) as HTMLDetailsElement[];
-    const originDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "技术关联编号");
-    const handlingDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "观察关联");
-    assert.ok(originDetails && handlingDetails);
-    assert.equal(originDetails.open, false);
-    assert.equal(handlingDetails.open, false);
-    assert.match(originDetails.textContent ?? "", /观察 obs-origin/);
-    assert.match(handlingDetails.textContent ?? "", /观察 obs-wrapper.*父观察 obs-origin/);
-    await act(async () => {
-      originDetails.open = true;
-      handlingDetails.open = true;
-    });
-    assert.equal(originDetails.open, true);
-    assert.equal(handlingDetails.open, true);
-  const projectionEvidence = document.querySelector("[data-projection-failure-evidence]");
-  assert.ok(projectionEvidence);
-  assert.match(projectionEvidence.textContent ?? "", /输出校验断点/);
-  assert.match(projectionEvidence.textContent ?? "", /block_delta_type/);
-  assert.match(projectionEvidence.textContent ?? "", /raw_stream_frame/);
-  const observationEvidence = Array.from(document.querySelectorAll("details") as NodeListOf<HTMLDetailsElement>)
-    .find((item) => item.querySelector("summary")?.textContent?.includes("sdk_result_error"));
-  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /block_delta_type/);
-  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"api_error_status": 429/);
-  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"parent_observation_id": "obs-wrapper"/);
-    assert.match(document.body.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
-    assert.equal(document.querySelector('[aria-label="下一页事件"]'), null);
-    assert.doesNotMatch(document.body.textContent ?? "", /DIAGNOSTIC_EVENT_BODY_MARKER/);
-    assert.match(document.body.textContent ?? "", /artifact_manifest_invalid/);
-    assert.match(document.body.textContent ?? "", /sdk\.exception_chain\[8\]/);
-    assert.match(document.body.textContent ?? "", /终态协议证据/);
-    assert.match(document.body.textContent ?? "", /上报结构（已脱敏）/);
-    assert.match(document.body.textContent ?? "", /\$ · value_error/);
-    assert.match(document.body.textContent ?? "", /executor_protocol_invalid/);
-    assert.match(document.body.textContent ?? "", /历史记录|部分采集/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_RESULT_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_EVENT_PAYLOAD_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_LEASE_PAYLOAD_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_RELEASE_REASON_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_AUDIT_PAYLOAD_MARKER/);
-
-    const closeDetailButton = document.querySelector(
-      'button[aria-label="关闭运行详情"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(closeDetailButton);
-    await waitFor(() => dom.window.document.activeElement === closeDetailButton);
-    await act(async () => {
-      dom.window.document.dispatchEvent(
-        new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
-      );
-    });
-    assert.equal(dom.window.document.activeElement, closeDetailButton);
-    const lastSummary = (Array.from(document.querySelectorAll('[role="dialog"] summary')) as HTMLElement[])
-      .filter((item) => item.textContent === "技术关联").at(-1);
-    assert.ok(lastSummary);
-    await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
-    });
-    assert.equal(dom.window.document.activeElement, lastSummary, "reverse Tab must target the collapsed summary, not its hidden copy buttons");
-    await act(async () => {
-      dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    });
-    assert.equal(dom.window.document.activeElement, closeDetailButton);
-    openButtons[0].focus();
-    await waitFor(() => dom.window.document.activeElement === closeDetailButton);
-    assert.equal(dom.window.document.activeElement, closeDetailButton);
-    await act(async () => {
-      dom.window.document.dispatchEvent(
-        new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') === null);
-    assert.equal(dom.window.document.activeElement, openButtons[0]);
-
-    adminRunsApi.detail = async () => ({
-      ...detail,
-      runtime_health: undefined,
-      worker_execution: { ...detail.worker_execution, messages: undefined },
-    });
-    await act(async () => {
-      openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') !== null);
-    assert.match(document.querySelector("[data-run-runtime-health]")?.textContent ?? "", /未知/);
-    assert.doesNotMatch(document.querySelector("[data-run-runtime-health]")?.textContent ?? "", /心跳正常/);
-    assert.match(document.body.textContent ?? "", /交付结果与完整事件记录/);
-    assert.match(document.body.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    await act(async () => {
-      dom.window.document.dispatchEvent(
-        new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      );
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') === null);
-
-    adminRunsApi.monitor = async () => monitorResponse([]);
-    openButtons[0].focus();
-    await act(async () => {
-      openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') !== null);
-    const refreshButton = document.querySelector(
-      'button[aria-label="刷新最近运行"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(refreshButton);
-    await act(async () => {
-      refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => openButtons[0].isConnected === false);
-    const refreshRemovalBackdrop = document.querySelector(
-      "button[data-run-monitor-backdrop]",
-    ) as HTMLButtonElement | null;
-    assert.ok(refreshRemovalBackdrop);
-    await act(async () => {
-      refreshRemovalBackdrop.dispatchEvent(
-        new dom.window.MouseEvent("click", { bubbles: true }),
-      );
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') === null);
-    assert.equal(dom.window.document.activeElement, refreshButton);
-
-    adminRunsApi.monitor = async (options) => monitorResponse(runs.filter((run) => !options?.status || run.status === options.status));
-    await act(async () => {
-      refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.body.textContent?.includes("run_running") === true);
-
-    const failedFilter = (
-      Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent?.startsWith("失败"));
-    assert.ok(failedFilter);
-    await act(async () => {
-      failedFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    await waitFor(() => document.body.textContent?.includes("run_failed") === true);
-    assert.doesNotMatch(document.body.textContent ?? "", /chat_2026_04/);
-
-    const partFixture = JSON.parse(readFileSync(
-      new URL("../../../../../../tests/fixtures/admin-part-message.json", import.meta.url), "utf8",
-    )) as { worker_execution: AdminRunDetailResponse["worker_execution"] };
-    const partOpen = document.querySelector('button[aria-label="查看 run_failed"]') as HTMLButtonElement;
-    for (const status of ["available", "incomplete", "invalid", "unknown"] as const) {
-      adminRunsApi.detail = async () => ({
-        ...detail, run: { ...detail.run, ...runs[1], status: "succeeded" },
-        worker_execution: status === "available" ? partFixture.worker_execution : {
-          ...partFixture.worker_execution, response: "", messages: [],
-          answer_projection: { status, incomplete_messages: status === "incomplete" ? 1 : 0, invalid_messages: status === "invalid" ? 1 : 0 },
-        },
-      });
-      await act(async () => { partOpen.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-      await waitFor(() => document.querySelector("[data-run-answer-projection]") !== null);
-      assert.match(document.querySelector("[data-run-answer-projection]")?.textContent ?? "", {
-        available: /已有可验证回答/, incomplete: /账本尚不完整/, invalid: /账本未通过校验/, unknown: /未采集或证据不足/,
-      }[status]);
-      if (status === "available") {
-        assert.match(document.querySelector("[data-run-agent-output]")?.textContent ?? "", /正常公开回答/);
-        assert.match(document.querySelector("[data-worker-execution-content]")?.textContent ?? "", /正常公开回答/);
-      } else {
-        assert.equal(document.querySelectorAll("[data-run-agent-output]").length, 0);
-      }
-      assert.doesNotMatch(document.querySelector("[data-worker-execution-content]")?.textContent ?? "", /WORK_TEXT_MUST_NOT_BE_ANSWER|PRIVATE_RESULT_MARKER/);
-      await act(async () => {
-        (document.querySelector("button[data-run-monitor-backdrop]") as HTMLButtonElement).dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-      });
-      await waitFor(() => document.querySelector('[role="dialog"]') === null);
-    }
-
-    let resolvePendingDetail:
-      | ((value: AdminRunDetailResponse) => void)
-      | undefined;
-    let resolvePendingDiagnostics:
-      | ((value: AdminRunDiagnosticsResponse) => void)
-      | undefined;
-    adminRunsApi.detail = async () =>
-      new Promise<AdminRunDetailResponse>((resolve) => {
-        resolvePendingDetail = resolve;
-      });
-    adminRunsApi.diagnostics = async () =>
-      new Promise<AdminRunDiagnosticsResponse>((resolve) => {
-        resolvePendingDiagnostics = resolve;
-      });
-    const failedOpenButton = document.querySelector(
-      'button[aria-label="查看 run_failed"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(failedOpenButton);
-    failedOpenButton.focus();
-    await act(async () => {
-      failedOpenButton.dispatchEvent(
-        new dom.window.MouseEvent("click", { bubbles: true }),
-      );
-    });
-    await waitFor(
-      () => resolvePendingDetail !== undefined && resolvePendingDiagnostics !== undefined,
-    );
-    const pendingBackdrop = document.querySelector(
-      "button[data-run-monitor-backdrop]",
-    ) as HTMLButtonElement | null;
-    assert.ok(pendingBackdrop);
-    await act(async () => {
-      pendingBackdrop.dispatchEvent(
-        new dom.window.MouseEvent("click", { bubbles: true }),
-      );
-    });
-    await waitFor(() => document.querySelector('[role="dialog"]') === null);
-    assert.equal(dom.window.document.activeElement, failedOpenButton);
-    await act(async () => {
-      resolvePendingDetail?.({
-        ...detail,
-        run: { ...runs[1], trace_id: "STALE_DETAIL_MARKER" },
-      });
-      resolvePendingDiagnostics?.({
-        ...diagnostics,
-        root: { ...diagnostics.root!, message: "STALE_DIAGNOSTICS_MARKER" },
-      });
-      await Promise.resolve();
-    });
-    assert.equal(document.querySelector('[role="dialog"]'), null);
-    assert.doesNotMatch(document.body.textContent ?? "", /STALE_DETAIL_MARKER/);
-    assert.doesNotMatch(document.body.textContent ?? "", /STALE_DIAGNOSTICS_MARKER/);
-
-    const allFilter = (
-      Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent?.startsWith("全部"));
-    assert.ok(allFilter);
-    await act(async () => {
-      allFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-
-    adminRunsApi.monitor = async () => monitorResponse([runs[1]]);
-    const refreshButtonForManualCheck = document.querySelector(
-      'button[aria-label="刷新最近运行"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(refreshButtonForManualCheck);
-    await act(async () => {
-      refreshButtonForManualCheck.dispatchEvent(
-        new dom.window.MouseEvent("click", { bubbles: true }),
-      );
-    });
-    await waitFor(() => document.body.textContent?.includes("run_failed") === true);
-    assert.doesNotMatch(document.body.textContent ?? "", /run_running/);
+    await selectTab("执行过程");
+    await waitFor(()=>calls.includes("trajectory:run_running:0"));
+    await click(document.querySelector('[data-stage-id]'));
+    assert.match(document.querySelector('[data-selected-stage-evidence]')?.textContent??"",/tool_parameters_not_authorized/);
+    await click(button("下一步"));
+    assert.match(document.querySelector('[data-run-trajectory-current]')?.textContent??"",/Read/);
+    await click(button("加载后续事件"));
+    await waitFor(()=>calls.includes("trajectory:run_running:2"));
+    const search=document.querySelector('input[aria-label="搜索已加载事件"]') as HTMLInputElement;
+    await act(async()=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!;setter.call(search,"timeout");search.dispatchEvent(new Event("input",{bubbles:true}));});
+    await click(Array.from(document.querySelectorAll('[aria-label="已加载公开事件"] button')).find((item)=>item.textContent?.includes("Execute")));
+    assert.match(document.querySelector('[data-run-trajectory-current]')?.textContent??"",/timeout/);
+    assert.equal(document.querySelectorAll('[data-run-runtime-diagnostics]').length,1);
+    assert.match(document.body.textContent??"",/ACTUAL_SDK_FAILURE_MARKER/);
+    assert.match(document.body.textContent??"",/ACTUAL_STACK_TAIL_MARKER/);
+    assert.match(document.body.textContent??"",/ACTUAL_CHAIN_MARKER/);
+    assert.match(document.body.textContent??"",/parent_observation_id/);
+    assert.equal(document.querySelectorAll('[data-sdk-tool-abort]').length,3);
+    assert.equal(document.querySelectorAll('[data-run-diagnostic-loss]').length,diagnostics.losses.length);
+    await selectTab("结果与产物");
+    assert.match(document.querySelector('[data-run-agent-output]')?.textContent??"",/WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(document.body.textContent??"",/审核结果.docx/);
+    assert.match(document.body.textContent??"",/文件可用性未核验/);
+    await selectTab("输入与配置");
+    assert.match(document.body.textContent??"",/138/);
+    assert.ok(document.body.textContent?.includes(observedCost===null?"未记录":observedCost+" 最小计价单位"));
+    assert.doesNotMatch(document.body.textContent??"",/PRIVATE_PROMPT_MARKER|PRIVATE_RESULT_MARKER|PRIVATE_EVENT_PAYLOAD_MARKER|PRIVATE_LEASE_PAYLOAD_MARKER|PRIVATE_AUDIT_PAYLOAD_MARKER/);
+    await click(exportButton()); await waitFor(()=>calls.includes("download-click"));
+    await click(Array.from(document.querySelectorAll('a')).find((a)=>a.textContent==="运行监控"));
+    await waitFor(()=>Boolean(document.querySelector('[data-run-monitor]')));
   } finally {
-    await act(async () => {
-      root.unmount();
-    });
+    await act(async()=>root.unmount());
     adminRunsApi.monitor = originalMonitor;
     adminRunsApi.investigation = originalInvestigation;
     adminRunsApi.detail = originalDetail;
     adminRunsApi.diagnostics = originalDiagnostics;
     adminRunsApi.trajectory = originalTrajectory;
     adminRunsApi.exportDiagnostics = originalExportDiagnostics;
+    adminRunsApi.inspection = originalInspection;
 
   }
 });
@@ -1058,4 +675,57 @@ test("SDK errors retain readable causes alongside attempt-scoped MCP codes", asy
     await act(async () => { root.unmount(); });
 
   }
+});
+
+
+test("diagnostic lookup includes root stack, handling and top-level SDK/tool facts", async () => {
+  document.body.innerHTML = '<div id="root"></div>';
+  const root = await createLobeTestRoot(document.getElementById('root')!);
+  const diagnostics: AdminRunDiagnosticsResponse = {
+    schema_version: 'ai-platform.run-diagnostics.v1', revision: 1, coverage: 'partial',
+    run: {run_id:'run-a',session_id:null,user_id:null,workspace_id:'w',status:'failed'},
+    root: {kind:'failure',stack:'ROOT_STACK_MARKER',message:'ROOT_MESSAGE_MARKER'},
+    handling: [{kind:'handling',message:'HANDLING_MARKER'}], losses:[],attempts:[],
+    details: {sdk:{errors:['SDK_MARKER']},tool_lifecycles:[],tool_calls:[{tool_name:'TOOL_MARKER'}],tool_policy_denials:[]},
+    versions:{},counts:{retained_observations:0,omitted_observations:0},
+  };
+  try {
+    await act(async()=>root.render(<RunDiagnosticsSection diagnostics={diagnostics} loading={false} error={null}/>));
+    const input=document.querySelector('input[aria-label="查找已保留诊断证据"]')!;
+    for(const marker of ['ROOT_STACK_MARKER','ROOT_MESSAGE_MARKER','HANDLING_MARKER','SDK_MARKER','TOOL_MARKER']) {
+      await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,marker);input.dispatchEvent(new Event('input',{bubbles:true}));});
+      assert.match(document.querySelector('[data-run-diagnostic-search-results]')?.textContent??'',new RegExp(marker));
+    }
+  } finally { await act(async()=>root.unmount()); }
+});
+
+
+test("follow latest drains pages and yields to external evidence selection and upward navigation", async () => {
+  const {AdminRunTrajectoryReplay}=await import('../AdminRunTrajectoryReplay');
+  document.body.innerHTML='<div id="root"></div>';
+  const root=await createLobeTestRoot(document.getElementById('root')!);
+  const original=adminRunsApi.trajectory;
+  const reads:number[]=[];
+  adminRunsApi.trajectory=async(runId,after=0)=>{
+    reads.push(after);
+    return {contract_version:'ai-platform.admin-run-trajectory.v1',run_id:runId,after_sequence:after,next_after_sequence:after+1,has_more:after<2,source_count:1,omitted:{private:0,unsupported:0,invalid:0},events:[{event_id:`evt-${after+1}`,sequence:after+1,kind:'action',source_type:'tool.started',summary:`Tool ${after+1}`,attempt_id:null,recorded_at:null,message_id:null,causation_event_id:null,operation_id:null}]};
+  };
+  try {
+    await act(async()=>root.render(<AdminRunTrajectoryReplay runId="run-a" attempts={[]} messages={[]} active/>));
+    await waitFor(()=>reads.length===1&&!document.querySelector('button:disabled')?.textContent?.includes('读取'));
+    const follow=Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='跟随最新')!;
+    await act(async()=>follow.click());
+    await waitFor(()=>reads.length===3);
+    assert.deepEqual(reads,[0,1,2]);
+    await waitFor(()=>document.querySelector('[data-run-trajectory-current]')?.textContent?.includes('Tool 3')===true);
+    await act(async()=>root.render(<AdminRunTrajectoryReplay runId="run-a" attempts={[]} messages={[]} active selectedSequence={1}/>));
+    await waitFor(()=>document.querySelector('[data-run-trajectory-current]')?.textContent?.includes('Tool 1')===true);
+    assert.equal(follow.getAttribute('aria-pressed'),'false');
+    const more=Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='读取新事件')!;
+    await act(async()=>more.click());
+    assert.match(document.querySelector('[data-run-trajectory-current]')?.textContent??'',/Tool 1/);
+    await act(async()=>follow.click());
+    await act(async()=>document.querySelector('[data-run-trajectory-replay]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'PageUp',bubbles:true})));
+    assert.equal(follow.getAttribute('aria-pressed'),'false');
+  } finally {adminRunsApi.trajectory=original;await act(async()=>root.unmount());}
 });

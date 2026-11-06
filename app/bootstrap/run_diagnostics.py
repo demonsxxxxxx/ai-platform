@@ -3,6 +3,7 @@
 import logging
 
 from app.db import transaction
+from app.bootstrap.admin_run_evidence import configure_admin_run_evidence
 from app.execution.events import normalize_execution_debug
 from app.platform.tracing import safe_exception_log_fields
 from app.execution.api import public_tool_operation_id
@@ -34,6 +35,7 @@ async def record_execution_debug(*, run_id: str, attempt_id: str, error_code: st
 
 
 def build_run_diagnostics_service() -> RunDiagnosticsService:
+    configure_admin_run_evidence()
     settings = get_settings()
     return RunDiagnosticsService(
         exception_log_fields=safe_exception_log_fields,
