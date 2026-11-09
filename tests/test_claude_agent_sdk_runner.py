@@ -7333,9 +7333,11 @@ async def test_sdk_unknown_local_exceptions_do_not_claim_provider_or_input_failu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["success", "failure", "cancel"])
+@pytest.mark.parametrize(("ending", "interrupt_outcome"), [
+    ("success", None), ("failure", None), ("cancel", "ok"), ("cancel", "error"),
+])
 @pytest.mark.usefixtures("terminal_stage_logs")
-async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_path, caplog, ending):
+async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_path, caplog, ending, interrupt_outcome):
     from app.platform import tracing
     now = [10.0]
     monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
@@ -7353,7 +7355,13 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
                 if ending != "success":
                     raise failure
 
+    async def interrupt(_client):
+        now[0] += 0.25
+        if interrupt_outcome == "error":
+            raise RuntimeError("private interrupt failure /path token")
+
     sdk.query = delayed_query
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "interrupt", interrupt, raising=False)
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     if ending == "cancel":
@@ -7365,11 +7373,19 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
                                            run_id="run-a", attempt_id="attempt-a")
         assert (result.error is None) == (ending == "success")
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
-    assert len(records) == 1
-    assert records[0].terminal_phase == "sdk_final_flush"
-    assert records[0].terminal_phase_duration_ms == 1750
-    assert records[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
-    assert "private" not in repr(vars(records[0]))
+    flush = [record for record in records if record.terminal_phase == "sdk_final_flush"]
+    interrupt = [record for record in records if record.terminal_phase == "sdk_interrupt"]
+    assert len(flush) == 1
+    assert len(interrupt) == (1 if ending == "cancel" else 0)
+    assert len(records) == len(flush) + len(interrupt)
+    assert flush[0].terminal_phase_duration_ms == 1750
+    assert flush[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
+    for record in records:
+        assert (record.run_id, record.attempt_id) == ("run-a", "attempt-a")
+        assert "private" not in repr(vars(record))
+    if interrupt:
+        assert interrupt[0].terminal_phase_outcome == interrupt_outcome
+        assert interrupt[0].terminal_phase_duration_ms == 250
 
 
 async def _persist_sdk_failure_diagnostics(result):
