@@ -2111,6 +2111,7 @@ def create_executor_app(
         "attempt_id": None,
         "delivery_error": None,
         "cancel_requested": False,
+        "cancel_timing": None,
     }
     shutdown_state: dict[str, float | bool | None] = {
         "deadline": None,
@@ -3176,6 +3177,10 @@ def create_executor_app(
                     exception=exc,
                 ),
             }
+        cancel_timing = task_state.get("cancel_timing")
+        if isinstance(cancel_timing, TerminalStageTiming):
+            cancel_timing.terminal_status = result.get("status")
+            cancel_timing.finish()
         _log_sandbox_execution_terminal(request, result)
         task_state["result"] = result
         task_state["status"] = str(result.get("status") or "failed")
@@ -3273,6 +3278,9 @@ def create_executor_app(
         task = task_state.get("task")
         if isinstance(task, asyncio.Task) and not task.done() and not task_state["cancel_requested"]:
             task_state["cancel_requested"] = True
+            task_state["cancel_timing"] = TerminalStageTiming(
+                "executor_cancel_to_terminal", run_id=run_id, attempt_id=attempt_id,
+            )
             ensure_shutdown_deadline()
             # A queued supervisor must publish its own cancelled receipt; a second
             # cancel must not interrupt the original writer's mirror drain.

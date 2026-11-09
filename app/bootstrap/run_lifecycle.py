@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.db import transaction
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.queue import remove_queued_run
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.runtime.sandbox.executor_signals import publish_executor_terminal_signal
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
-from app.platform.tracing import standard_trace_id
+from app.platform.tracing import TerminalStageTiming, standard_trace_id
 from app.runs.application.cancellation import (
     RunCancellationPostProcessor,
     RunCancellationUseCase,
@@ -80,6 +82,11 @@ def build_run_cancellation_use_case(
         async with transaction() as conn:
             return await persistence.handoff_cancelled_attempt(conn, **kwargs)
 
+    async def wake_executor(*, run_id: str, attempt_id: str) -> None:
+        # A lost hint must not delay the request beyond the existing fallback cadence.
+        with TerminalStageTiming("cancel_wake", run_id=run_id, attempt_id=attempt_id):
+            await asyncio.wait_for(publish_executor_terminal_signal(), timeout=1.0)
+
     return RunCancellationUseCase(
         transaction_factory=transaction,
         persistence=persistence,
@@ -96,6 +103,7 @@ def build_run_cancellation_use_case(
             admit_stream=admit_v4_stream,
             publish_event=publish_run_event,
             warn=_warn_cancellation_publication,
+            wake_executor=wake_executor,
             handoff_cancelled_attempt=handoff_cancelled_attempt,
         ),
     )

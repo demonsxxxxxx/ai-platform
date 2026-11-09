@@ -5,8 +5,27 @@ import { JSDOM } from "jsdom";
 import { sessionApi } from "../../../services/api/session";
 import {
   beginBrowserRunLatency, bindBrowserRunLatency, retireBrowserRunLatency,
-  watchBrowserRunText,
+  watchBrowserRunText, recordBrowserCancelLatency,
 } from "../browserRunLatency";
+
+test("browser cancel timings are bounded local observations without identity or duplicate buffers", () => {
+  const started = performance.now();
+  try {
+    for (const phase of ["request_ack", "terminal_observed", "continuation_ready"] as const) {
+      recordBrowserCancelLatency(phase, started);
+      recordBrowserCancelLatency(phase, started);
+      const entries = performance.getEntriesByName(`ai-platform.cancel.${phase}`, "measure");
+      assert.equal(entries.length, 1);
+      assert.ok(entries[0].duration >= 0);
+      assert.equal((entries[0] as PerformanceMeasure).detail, null);
+    }
+    recordBrowserCancelLatency("request_ack", Number.NaN);
+    recordBrowserCancelLatency("request_ack", performance.now() + 10000);
+    assert.equal(performance.getEntriesByName("ai-platform.cancel.request_ack").length, 1);
+  } finally {
+    for (const phase of ["request_ack", "terminal_observed", "continuation_ready"]) performance.clearMeasures(`ai-platform.cancel.${phase}`);
+  }
+});
 
 for (const scenario of ["visible", "streamed", "hidden", "history", "stale", "cancelled", "wrong-session", "duplicate", "recovery", "tool-only", "leading-empty", "stale-after-commit", "remount"] as const) {
   test(`browser first text: ${scenario}`, async () => {

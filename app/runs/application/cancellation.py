@@ -54,6 +54,7 @@ class RunCancellationPostProcessor:
         admit_stream: RunCancellationStreamOperation,
         publish_event: RunCancellationStreamOperation,
         warn: RunCancellationWarning,
+        wake_executor: RunCancellationStreamOperation | None = None,
         handoff_cancelled_attempt: Callable[..., Awaitable[bool]] | None = None,
     ) -> None:
         self._queue_cleanup = queue_cleanup
@@ -63,6 +64,7 @@ class RunCancellationPostProcessor:
         self.admit_v4_stream = admit_stream
         self.publish_run_event = publish_event
         self._warn = warn
+        self._wake_executor = wake_executor
         self._handoff_cancelled_attempt = handoff_cancelled_attempt
 
     async def post_cancel(
@@ -77,6 +79,13 @@ class RunCancellationPostProcessor:
     ) -> dict[str, Any] | None:
         if cancellation is None:
             return None
+        result = cancellation.as_route_result()
+        result.pop("_terminalization_progress", None)
+        if result["status"] == "cancel_requested" and cancellation.attempt_id and self._wake_executor is not None:
+            try:
+                await self._wake_executor(run_id=cancellation.run_id, attempt_id=cancellation.attempt_id)
+            except Exception as exc:  # noqa: BLE001 - the durable scan remains the fallback
+                self._warn("executor_cancel_wake_deferred", cancellation.run_id, exc)
         if cancellation.attempt_id:
             try:
                 await self.admit_v4_stream(
@@ -89,8 +98,6 @@ class RunCancellationPostProcessor:
                 self._warn(
                     "Cancellation v4 admission deferred", cancellation.run_id, exc,
                 )
-        result = cancellation.as_route_result()
-        result.pop("_terminalization_progress", None)
         if cancellation.attempt_id:
             try:
                 await self.publish_run_event(

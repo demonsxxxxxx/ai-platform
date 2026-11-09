@@ -63,6 +63,18 @@ test("collapsed work activity keeps failed and denied operation counts visible",
   assert.doesNotMatch(markup, /查看执行详情|>全部展开<|>全部收起</);
 });
 
+test("stopping work keeps its nonterminal status without an active spinner or completed claim", async () => {
+  const renderToStaticMarkup = await createLobeServerTestRoot();
+  const markup = renderToStaticMarkup(createElement(MessageWorkActivity, {
+    messageId: "message-stopping", isStreaming: false, isStopping: true,
+    parts: [{ type: "tool", name: "Read", args: {}, status: "started", public_operation_id: "stop-tool", public_category: "read" }],
+    partKeys: ["stop-tool"], renderPart: () => createElement("span", null, "保留工具记录"),
+  }));
+  assert.match(markup, /data-status="stopping"/);
+  assert.match(markup, /已请求取消/);
+  assert.doesNotMatch(markup, /animate-spin|aui-shimmer|data-status="complete"/);
+});
+
 test("streaming hides routine phases and keeps only the latest meaningful phase", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const routineStarted: Extract<MessagePart, { type: "execution_step" }> = {

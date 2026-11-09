@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from unittest.mock import patch
+from types import SimpleNamespace
 import uuid
 
 import psycopg
@@ -1726,6 +1727,52 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
             }}
             # now() is transaction-stable; random audit IDs do not encode request order.
             assert sorted(audits, key=lambda row: row["payload_json"]["result_status"]) == [requested_audit, expected_audit]
+
+
+@pytest.mark.asyncio
+async def test_production_cancel_wakes_reconciler_after_real_commit_with_fixed_redis_hint(monkeypatch):
+    from app.runtime.sandbox import executor_signals
+
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        monkeypatch.setattr(executor_signals, "get_redis_client", lambda: Redis.from_url(_redis_url(), decode_responses=True))
+        cursor = await executor_signals.initialize_executor_reconciliation_signal_cursor()
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _clear_seeded_stream_authority_for_cancellation(conn, tenant_id=tenant, run_id=run, attempt_id=attempt)
+        seen = []
+        publish = executor_signals.publish_executor_terminal_signal
+
+        async def wake():
+            async with _connection_factory(dsn, schema_name) as observer:
+                row = await (await observer.execute("select cancel_requested_at from runs where tenant_id=%s and id=%s", (tenant, run))).fetchone()
+                assert row["cancel_requested_at"] is not None, "the hint cannot precede the real cancellation commit"
+            await publish()
+            seen.append("wake")
+
+        async def public_noop(*_args, **_kwargs):
+            seen.append("public")
+
+        monkeypatch.setattr(run_lifecycle, "publish_executor_terminal_signal", wake)
+        monkeypatch.setattr(run_lifecycle, "transaction", lambda: _connection_factory(dsn, schema_name))
+        monkeypatch.setattr(run_lifecycle, "get_settings", lambda: SimpleNamespace(ai_session_secret="test-v4-authority-secret"))
+        monkeypatch.setattr(run_lifecycle, "admit_v4_stream", public_noop)
+        monkeypatch.setattr(run_lifecycle, "publish_run_event", public_noop)
+        use_case = run_lifecycle.build_run_cancellation_use_case(
+            attempt_lifecycle=build_run_attempt_lifecycle_service(), lifecycle=run_lifecycle.build_run_lifecycle_service(),
+        )
+        receipt = await use_case.request_owner_cancel(tenant_id=tenant, run_id=run, owner_user_id=f"u_{tenant[2:]}")
+        assert seen == []
+        assert receipt.status == "cancel_requested"
+        await use_case.post_cancel(receipt, tenant_id=tenant, user_id=f"u_{tenant[2:]}", requested_by_role="owner",
+                                   reason="cancel_requested", worker_capabilities=object())
+        assert seen == ["wake", "public", "public"]
+        assert await executor_signals.wait_for_executor_reconciliation_signal(block_ms=100, cursor=cursor)
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        try:
+            entries = await client.xrange(executor_signals._EXECUTOR_RECONCILIATION_SIGNAL_KEY, min=cursor.last_id, max=cursor.last_id)
+            assert entries[0][1] == {"wake": "1"}
+            await client.xdel(executor_signals._EXECUTOR_RECONCILIATION_SIGNAL_KEY, cursor.last_id)
+        finally:
+            await client.aclose()
 
 
 @pytest.mark.asyncio

@@ -182,12 +182,14 @@ function countWorkActivityIssues(parts: readonly MessagePart[]): WorkActivityIss
 export function MessageWorkActivity({
   messageId,
   isStreaming,
+  isStopping = false,
   parts,
   partKeys,
   renderPart,
 }: {
   messageId: string;
   isStreaming?: boolean;
+  isStopping?: boolean;
   parts: MessagePart[];
   partKeys: string[];
   renderPart: (
@@ -213,7 +215,7 @@ export function MessageWorkActivity({
   const displayItems = buildWorkActivityDisplayItems(displayEntries);
   const issueCounts = countWorkActivityIssues(parts);
   const contentId = `chat-work-${messageId}`;
-  const activityStatus = isStreaming
+  const activityStatus = isStopping ? "stopping" : isStreaming
     ? "running"
     : issueCounts.failed > 0 || issueCounts.denied > 0
       ? "error"
@@ -258,7 +260,7 @@ export function MessageWorkActivity({
         open={expanded}
         onOpenChange={setExpanded}
         status={activityStatus}
-        label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+        label={t(isStopping ? "chat.runStatus.event.cancelRequested" : isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
         itemCount={t("chat.workDetails.itemCount", { count: displayItems.length })}
         toggleLabel={t(expanded ? "chat.workDetails.collapseAll" : "chat.workDetails.expandAll")}
         contentId={contentId}

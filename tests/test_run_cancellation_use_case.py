@@ -357,6 +357,7 @@ def _post_processor(order, *, failures=None):
         sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=operation("sandbox")),
         provider_factory=object(), transaction_factory=object(),
         admit_stream=operation("admit"), publish_event=operation("publish"), warn=warn,
+        wake_executor=operation("wake"),
     ), captured
 
 
@@ -412,6 +413,31 @@ async def test_missing_attempt_skips_publication_and_only_cancelled_status_remov
     receipt = CancelRequestResult("run-a", status, None, (), None)
     assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
     assert order == (["queue", "sandbox"] if status == "cancelled" else [])
+
+
+@pytest.mark.asyncio
+async def test_cancel_wake_is_after_commit_before_publication_and_failure_keeps_fallback():
+    order = []
+    processor, captured = _post_processor(order, failures={"wake": RuntimeError("redis unavailable")})
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(prior_status="running")),
+        event_writer=_EventWriter(order), progress_terminalization=_Progressor(order),
+        post_processor=processor,
+    )
+    receipt = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+    )
+    assert order[-1] == "transaction.commit"
+    result = await use_case.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert order[-4:] == ["transaction.commit", "wake", "admit", "publish"]
+    assert captured["wake"] == {"run_id": "run-a", "attempt_id": "attempt-a"}  # Local timing correlation only; Redis remains a fixed marker.
+    assert captured["warnings"][0][0] == "executor_cancel_wake_deferred"
+    assert result == {"run_id": "run-a", "status": "cancel_requested"}
+    assert "sandbox" not in order and "queue" not in order
 
 
 @pytest.mark.asyncio

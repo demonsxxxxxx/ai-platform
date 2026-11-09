@@ -1249,12 +1249,16 @@ async def forward_requested_executor_cancellations_once(
                 raise ValueError("executor_reconciliation_runtime_handle_invalid")
             provider = _container_provider_for_lease(lease)
             executor_url, executor_headers = await provider.executor_control_endpoint(lease, request)
-            await SandboxExecutorClient(timeout_seconds=_CANCEL_FORWARD_TIMEOUT_SECONDS).cancel(
-                executor_url,
-                run_id=str(lease_row["run_id"]),
+            with TerminalStageTiming(
+                "executor_cancel_forward", run_id=str(lease_row["run_id"]),
                 attempt_id=str(lease_row["attempt_id"]),
-                executor_headers=executor_headers,
-            )
+            ):
+                await SandboxExecutorClient(timeout_seconds=_CANCEL_FORWARD_TIMEOUT_SECONDS).cancel(
+                    executor_url,
+                    run_id=str(lease_row["run_id"]),
+                    attempt_id=str(lease_row["attempt_id"]),
+                    executor_headers=executor_headers,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the stale probe still owns recovery.
@@ -1780,6 +1784,7 @@ async def run_executor_terminal_reconciler(
     domain_settings = get_settings()
     wake = asyncio.Event()
     cleanup_wake = asyncio.Event()
+    cancel_wake = asyncio.Event()
     active: set[asyncio.Task[int]] = set()
 
     async def read_signals() -> None:
@@ -1791,14 +1796,16 @@ async def run_executor_terminal_reconciler(
                         initialize_executor_reconciliation_signal_cursor(),
                         timeout=_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS,
                     )
-                    # A callback may commit while the initial tail is being read.
+                    # A callback/cancel may commit while the initial tail is being read.
                     wake.set()
+                    cancel_wake.set()
                 signalled = await wait_for_executor_reconciliation_signal(
                     block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000), cursor=cursor,
                 )
                 if signalled:
                     wake.set()
                     cleanup_wake.set()
+                    cancel_wake.set()
                 await asyncio.sleep(0)
             except (ExecutorSignalUnavailable, TimeoutError):
                 cursor = None
@@ -1883,7 +1890,7 @@ async def run_executor_terminal_reconciler(
         asyncio.create_task(cleanup(), name="executor-reconciliation-cleanup"),
         asyncio.create_task(maintenance_phase_until_done(
             "executor-cancel-forward", forward_cancellations, _CANCEL_FORWARD_INTERVAL_SECONDS,
-            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
+            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger, wake_event=cancel_wake,
         ), name="executor-cancel-forward"),
         asyncio.create_task(maintenance_phase_until_done(
             "executor-suspect-probe", probe, _RECONCILIATION_IDLE_SECONDS,

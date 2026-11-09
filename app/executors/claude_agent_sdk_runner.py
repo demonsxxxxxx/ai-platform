@@ -4412,7 +4412,8 @@ async def run_claude_agent_sdk(
             await interaction_actor.cancel()
         if active_client is not None:
             try:
-                await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
+                with TerminalStageTiming("sdk_interrupt", run_id=run_id or "", attempt_id=attempt_id or "", terminal_status="cancelled"):
+                    await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
             except Exception:  # noqa: BLE001 - cancellation still closes the client.
                 pass
             await stop_background_tasks(active_client)

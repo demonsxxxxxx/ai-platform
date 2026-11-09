@@ -227,6 +227,22 @@ The migration MUST preserve these observable semantics:
 
 ### 4.1 Asynchronous terminal consumption and elapsed metrics
 
+After an admitted Attempt's cancellation transaction commits, the existing Runs
+post-processor sends the private Redis reconciliation wake before public stream
+publication. Bootstrap bounds this optional wake to one second. The marker has
+no tenant, Run, Attempt, endpoint or stop payload and grants no authority; the
+consumer re-reads the existing scoped cancellation/lease/detail query and calls
+the same authenticated Executor cancel endpoint. Signal failure never reverses
+cancellation or prevents later publication/cleanup. The existing one-second
+cancel-forward scan and stale probe remain the recovery path, not a new queue or
+cancellation writer.
+
+The same signal now wakes the independent cancel-forward maintenance phase.
+Hints coalesce; a hint during an active operation triggers another scan only
+after that owner actually finishes, without overlapping or cancelling its I/O.
+Shutdown still cancels and joins the sole phase and its wait. The normal terminal
+consumer and cleanup owners remain independent.
+
 The terminal reconciler drains ready PostgreSQL receipts before starting idle
 maintenance. Failed-environment cleanup and suspect-executor probing each run
 as a separately supervised, non-overlapping phase; neither is awaited on the
@@ -293,6 +309,15 @@ observations, new schema fields, public payload fields, or new telemetry backend
 
 The barriers remain separate:
 
+- `cancel_wake`: the bounded post-commit Redis hint await, not Executor receipt;
+  `executor_cancel_forward`: provider-resolved cancel HTTP await, not SDK idle;
+  `executor_cancel_to_terminal`: first authenticated Executor cancel until the
+  supervisor obtains its terminal result, including SDK/mirror/public-stream
+  drain but excluding the following terminal callback retry/ACK. Repeat cancel
+  does not reset this stopwatch or interrupt its writer;
+  `sdk_interrupt`: the existing bounded SDK interrupt RPC, excluding later EOF,
+  background-task stop, mirror flush and workspace checkpoint. These observations
+  use the existing safe logger and retain all cancellation/claim boundaries.
 - `sdk_final_flush`: accepted final SDK Result through public EOF and callback /
   provider-store settlement. Intermediate/background Results are excluded.
   The SDK flushes pending mirror entries **before** delivering public Result;

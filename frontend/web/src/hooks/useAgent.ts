@@ -103,7 +103,7 @@ import {
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import {
   beginBrowserRunLatency, bindBrowserRunLatency, retireBrowserRunLatency,
-  pruneBrowserRunLatencies,
+  pruneBrowserRunLatencies, recordBrowserCancelLatency,
 } from "./useAgent/browserRunLatency";
 import {
   projectChatAdmissionError,
@@ -851,6 +851,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     runControlLifecycleRef.current = new RunControlLifecycle();
   }
   const runControlLifecycle = runControlLifecycleRef.current;
+  const stoppedDisplayRef = useRef<{ ownerId: string; runId: string; messages: Message[] } | null>(null);
+  const cancelTimingRef = useRef<{ ownerId: string; runId: string; startedAt: number; terminal: boolean } | null>(null);
   const continuationSnapshot = useSyncExternalStore(
     runControlLifecycle.subscribe, runControlLifecycle.getSnapshot,
   );
@@ -1221,6 +1223,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       publicStreamPresentationRef.current?.invalidate();
       if (!isLoadingHistoryRef.current && outcome !== "status_unavailable") {
         runControlLifecycle.markContinuationPending(runId);
+      }
+      const cancelTiming = cancelTimingRef.current;
+      if (cancelTiming?.runId === runId && outcome !== "status_unavailable") {
+        recordBrowserCancelLatency("terminal_observed", cancelTiming.startedAt);
+        cancelTiming.terminal = true;
       }
       currentRunIdRef.current = null;
       setCanStopGeneration(false);
@@ -2500,6 +2507,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     runControlLifecycle.configure({
       adoptRunControlChild,
       reconnectRunControlOwner,
+      onCancelRequested: (owner) => {
+        toast.dismiss("chat-queue");
+        stoppedDisplayRef.current = { ownerId: owner.id, runId: owner.runId, messages: messagesRef.current };
+        cancelTimingRef.current = { ownerId: owner.id, runId: owner.runId, startedAt: performance.now(), terminal: false };
+      },
+      onCancelAcknowledged: (owner) => {
+        const timing = cancelTimingRef.current;
+        if (timing?.ownerId === owner.id) recordBrowserCancelLatency("request_ack", timing.startedAt);
+      },
     });
   }, [adoptRunControlChild, reconnectRunControlOwner, runControlLifecycle]);
 
@@ -3182,8 +3198,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ) {
       return "unavailable" as const;
     }
-    // A cancel acknowledgement is only a request. The existing SSE/reconcile
-    // path remains the sole terminal convergence writer for the transcript.
+    if (owner.mutationStarted) return "unavailable" as const;
+    // Freeze display only; accepted deltas and terminal hydration keep updating messagesRef.
     return runControlLifecycle.cancel();
   }, [runControlLifecycle]);
 
@@ -3727,9 +3743,33 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     };
   }, [connectionStatus, handleReconnectSSE]);
 
+  const isStopping = currentRunId !== null && continuationSnapshot.owner?.runId === currentRunId && continuationSnapshot.cancelRequested;
+  useEffect(() => {
+    const timing = cancelTimingRef.current;
+    if (!timing) return;
+    if (timing.ownerId !== continuationSnapshot.owner?.id) cancelTimingRef.current = null;
+    else if (timing.terminal && continuationSnapshot.continuationLoaded && continuationSnapshot.continuation && canContinueConversation(continuationSnapshot.continuation)) {
+      recordBrowserCancelLatency("continuation_ready", timing.startedAt);
+      cancelTimingRef.current = null;
+    }
+  }, [continuationSnapshot]);
+  useEffect(() => {
+    if (!isStopping || stoppedDisplayRef.current?.ownerId !== continuationSnapshot.owner?.id) stoppedDisplayRef.current = null;
+  }, [continuationSnapshot.owner, isStopping]);
+  const displayMessages = useMemo(() => {
+    const stopped = stoppedDisplayRef.current;
+    if (!isStopping || !stopped || stopped.ownerId !== continuationSnapshot.owner?.id) return messages;
+    const frozen = new Map(stopped.messages.filter((message) => message.role === "assistant" && message.runId === currentRunId)
+      .map((message) => [message.id, { ...message, isStopping: true }]));
+    return messages.flatMap((message) => message.role === "assistant" && message.runId === currentRunId
+      ? frozen.has(message.id) ? [frozen.get(message.id)!] : [] : [message]);
+  }, [continuationSnapshot.owner, currentRunId, isStopping, messages]);
+
   return {
-    messages,
+    messages: displayMessages,
     isLoading,
+    isStopping,
+    stopUnconfirmed: isStopping && continuationSnapshot.phase === "unconfirmed",
     isLoadingHistory,
     error: error ?? historyReadError?.message ?? null,
     historyReadError,

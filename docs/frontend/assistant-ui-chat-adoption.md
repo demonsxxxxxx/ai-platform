@@ -97,10 +97,14 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 | --- | --- |
 | 等待首段 / 正在追加 | 一处 GenerationLoader：等待首段为微光文字；正文追加时改为正文末尾的流式圆点，状态仅对读屏播报（视觉约束第 7.5 节）。只有当前追加且未收敛的 assistant 正文允许平滑 |
 | Run 仍运行而连接中断 | 保留正文，使用原 reconnect；不映射为 message reload/regenerate |
-| 取消请求 acknowledged | 表示请求已受理；等待权威取消终态，保留确认框与 RunControlLifecycle |
+| 用户确认停止 / 取消请求 acknowledged | 确认后立即关闭确认框、冻结当前 Run 的可见增量并停止动画；显示“正在停止并保存”，草稿仍可编辑。acknowledged 仅表示受理，真实终态与可续聊仍由 RunControlLifecycle / SSE / GET 收敛 |
 | Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示，暂不显示复制 |
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
+
+停止展示由同一个 RunControlLifecycle 的 owner-bound cancellation fence 驱动，普通 Composer 与 Run Playback 取消共用该入口。冻结的只是当前 Run 的可见快照；在途 SSE 继续进入原 messagesRef，终态/历史 hydration 后显示全部已接受内容，不删除晚到文字，也不伪造 cancelled。重复请求不再次提交，账号、会话、Run 或 history generation 变化清除旧展示；响应丢失显示未确认与重新连接入口，仍阻止下一轮执行。现有前端没有 steering/follow-up 待发送队列，不新增队列或自动重发；保留草稿和附件，收尾时 Enter、原生 Send 和表单提交保持受阻。权限丢失及历史加载仍禁用编辑，临时同步/continuation 收尾只阻止发送。最终 resumable 仍不增加常驻说明。
+
+浏览器本地 User Timing 只保留最近一次 `ai-platform.cancel.request_ack`、`terminal_observed`、`continuation_ready` 的耗时，不附身份、消息或配置，也不新增上报端点。它们从用户确认发起取消计时，分别观察 HTTP 确认、权威终态被前端接受和 continuation 允许继续，不冒充 paint、后端持久化或整个资源回收时间。切换 owner 不沿用计时；现有首段文字指标在停止时退休。
 
 普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调；`remark-cjk-friendly-gfm-strikethrough/parseOnly` 放在 GFM 后，补齐 `~~旧方案：~~新方案` 的中文删除线解析。不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
 
@@ -149,5 +153,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
 
 `node scripts/composer-trigger-browser-check.mjs` 复用合成聊天 fixture，以真实鼠标按下/抬起事件验证桌面模型按钮、桌面及窄屏设置齿轮的再次点击关闭、重新打开、Escape 和外部点击关闭。独立按钮的开关不再被库的 `outside-press` 抢先处理，其他外部点击仍由库关闭。手机模型选择器保留模态 Drawer 的关闭入口。脚本通过 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite；仅 DOM `.click()` 不覆盖该指针事件时序。
+
+`generic-chat-preview.html?stop-lifecycle` 复用实际 App/useAgent/ChatView/Composer，提供可控的合成取消 ACK、在途文字和终态，供浏览器验证确认后立即冻结、草稿编辑、禁止重复投递及最终正文恢复。该参数仅存在开发 fixture，不进入生产 route 或真实 API；检查必须区分未确认、已确认与最终结算，不能以本地冻结作为后端取消证据。
 
 `node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

@@ -3,7 +3,7 @@ import { ChevronRight, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { clsx } from "clsx";
 
-export type RunActivityStatus = "running" | "complete" | "error";
+export type RunActivityStatus = "running" | "stopping" | "complete" | "error";
 
 export interface RunActivityProps {
   open: boolean;

@@ -3537,3 +3537,51 @@ async def test_reconciler_forwards_cancellations_on_a_short_cadence_not_the_stal
     assert len(ticks) >= 2
     # One per-process memo keeps each lease to a single delivery.
     assert len(memos) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_signal_wakes_existing_forwarder_before_periodic_fallback(monkeypatch):
+    from app import executor_reconciler
+
+    stop = asyncio.Event()
+    initial_scan = asyncio.Event()
+    release_signal = asyncio.Event()
+    forwarded = asyncio.Event()
+    calls = 0
+
+    async def forward(_memo, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            initial_scan.set()
+        elif release_signal.is_set():
+            forwarded.set()
+            stop.set()
+        return 0
+
+    async def signal(**_kwargs):
+        await release_signal.wait()
+        return True
+
+    async def no_work(**_kwargs):
+        return 0
+
+    async def cursor():
+        return object()
+
+    monkeypatch.setattr(executor_reconciler, "_CANCEL_FORWARD_INTERVAL_SECONDS", 30)
+    monkeypatch.setattr(executor_reconciler, "initialize_executor_reconciliation_signal_cursor", cursor)
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", no_work)
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
+    monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "forward_requested_executor_cancellations_once", forward)
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop))
+    try:
+        await asyncio.wait_for(initial_scan.wait(), 1)
+        release_signal.set()
+        await asyncio.wait_for(forwarded.wait(), 1)
+        await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
