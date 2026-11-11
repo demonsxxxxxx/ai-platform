@@ -35,7 +35,7 @@ export function useChatMcpSelection({
     const next = restore ? serverSelectedToolIds : initialize && selectedToolIds === undefined
       ? tools.filter((tool) => tool.default_enabled && !tool.system_disabled).map((tool) => tool.name)
       : undefined;
-    if (next === undefined || (selectedToolIds !== undefined && next.length === selectedToolIds.length &&
+    if (next === undefined || (!restore && next.length === 0) || (selectedToolIds !== undefined && next.length === selectedToolIds.length &&
       next.every((toolId, index) => selectedToolIds[index] === toolId))) return;
     setSelectedToolIds(next);
   }, [enabled, identityScope, owner, sessionId, tools, catalogStatus, selectedToolIds, serverSelectedToolIds, setSelectedToolIds]);

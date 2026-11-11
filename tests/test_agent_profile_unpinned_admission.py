@@ -84,7 +84,7 @@ async def test_generic_run_rejects_profile_with_independently_authorized_skill(m
 @pytest.mark.parametrize("use_query_selector", [False, True])
 async def test_generic_chat_rejects_unpinned_profile_identity_before_files_or_run(monkeypatch, use_query_selector):
     monkeypatch.setattr(chat_routes, "transaction", transaction)
-    monkeypatch.setattr(chat_routes, "resolve_default_mcp_tool_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr("app.mcp.api.resolve_default_mcp_tool_ids", AsyncMock(return_value=[]))
     monkeypatch.setattr(chat_routes.runs_postgres, "acquire_user_active_run_admission_lock", AsyncMock())
     monkeypatch.setattr(chat_routes.identity_postgres, "ensure_submission_principal", AsyncMock())
     monkeypatch.setattr(chat_routes, "resolve_chat_model_selection", AsyncMock(return_value=SimpleNamespace(

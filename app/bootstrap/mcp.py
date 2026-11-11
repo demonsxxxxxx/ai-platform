@@ -146,12 +146,14 @@ class _McpRuntimeServices:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
-        if operation == "resolve_default_mcp_tool_ids":
-            return await McpDefaultTools(
+        if operation in {"resolve_default_mcp_tool_ids", "filter_available_mcp_tool_ids"}:
+            defaults = McpDefaultTools(
                 list_servers=mcp_postgres.list_mcp_server_registry,
                 authorize_available=self.selection_authorization.authorize_available_chat,
                 discover=self._discover_default_tools, is_admin=is_ai_admin,
-            ).resolve(conn, **kwargs)
+            )
+            operation_handler = defaults.resolve if operation == "resolve_default_mcp_tool_ids" else defaults.filter_available
+            return await operation_handler(conn, **kwargs)
         if operation == "authorize_available_chat_mcp_tools":
             return await self.selection_authorization.authorize_available_chat(conn, **kwargs)
         if operation == "authorize_selected_chat_mcp_tools":

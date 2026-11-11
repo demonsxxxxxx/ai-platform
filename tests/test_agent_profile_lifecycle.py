@@ -1464,6 +1464,91 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     assert calls[0][1]["for_update"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["worker", "replay"])
+async def test_pinned_profile_defaults_keep_snapshot_but_filter_current_permissions_and_live_catalog(monkeypatch, boundary):
+    from app.agent_apps import AgentProfileAuthority
+    from unittest.mock import AsyncMock
+
+    row = _profile_row()
+    async def get_row(*_args, **_kwargs):
+        return row
+    async def validated(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a", "executor_type": "claude-agent-worker"},)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_row)
+    monkeypatch.setattr(authority, "_validate_pinned_definition", validated)
+    available = AsyncMock(return_value=[{"tool_id": "gateway::kept"}, {"tool_id": "gateway::offline"}])
+    live = AsyncMock(return_value={"gateway::kept", "gateway::new-default"})
+    defaults = AsyncMock(side_effect=AssertionError("accepted Run must not read current defaults"))
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
+    from types import SimpleNamespace
+    from app.bootstrap.mcp import _McpRuntimeServices
+    from app.mcp.application import runtime_registry
+    services = SimpleNamespace(
+        selection_authorization=SimpleNamespace(authorize_available_chat=available),
+        _discover_default_tools=live,
+    )
+    async def repository_call(operation, conn, **kwargs):
+        return await _McpRuntimeServices.repository_call(services, operation, conn, **kwargs)
+    services.repository_call = repository_call
+    monkeypatch.setattr(runtime_registry, "_services", services)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.resolve_default_mcp_tool_ids", defaults)
+    resolve = authority.resolve_bound_for_worker_dispatch if boundary == "worker" else authority.resolve_pinned_profile_for_replay
+    accepted = ("gateway::kept", "gateway::revoked", "gateway::offline")
+    admission = await resolve(
+        object(), principal=_principal(), agent_id="agt_support", revision=7,
+        content_hash=str(row["content_hash"]), pinned_default_mcp_tool_ids=accepted,
+        pinned_skill_set=[{"skill_id": "general-chat", "expected_version": "version-a"}],
+        pinned_manifests=[], pinned_executor_type="claude-agent-worker", execution_kind="harness_chat",
+    )
+    assert admission is not None
+    assert admission.mcp_tool_ids == ("gateway::kept",)
+    assert admission.private_execution_input["default_mcp_tool_ids"] == list(accepted)
+    assert available.await_args.kwargs["tool_ids"] == list(accepted)
+    assert live.await_args.kwargs["tool_ids"] == ["gateway::kept", "gateway::offline"]
+    defaults.assert_not_awaited()
+    if boundary == "replay":
+        source = {
+            "id": "accepted-run", "agent_id": "agt_support", "skill_id": None,
+            "admitted_agent_profile_revision": 7, "admitted_agent_profile_hash": row["content_hash"],
+            "execution_kind": "harness_chat",
+            "input_json": {
+                "execution_kind": "harness_chat", "executor_type": "claude-agent-worker",
+                "input": {"message": "retry", "mcp_tool_ids": list(accepted)},
+                "model_id": "synthetic-model", "model_value": "synthetic-provider/model",
+                "agent_profile": admission.private_execution_input,
+            },
+        }
+        async def get_run(*_args, **_kwargs):
+            return source
+        monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", get_run)
+        monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.materialize_run_skill_manifests", AsyncMock(return_value=[]))
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+            await authority.reauthorize_pinned_run_for_replay(object(), principal=_principal(), run_id="accepted-run")
+        source["input_json"]["input"]["mcp_tool_ids"] = ["gateway::kept"]
+        await authority.reauthorize_pinned_run_for_replay(object(), principal=_principal(), run_id="accepted-run")
+    else:
+        from app.agent_apps.application.worker_profile_snapshot import reauthorize_worker_locked_profile
+        payload = SimpleNamespace(
+            agent_profile=admission.private_execution_input, skill_manifests=[],
+            executor_type="claude-agent-worker", execution_kind="harness_chat",
+            input={"mcp_tool_ids": list(accepted)},
+        )
+        payload.model_copy = lambda *, update: SimpleNamespace(**{**vars(payload), **update})
+        filtered, reason = await reauthorize_worker_locked_profile(
+            object(), payload=payload, principal=_principal(), run_identity={"agent_id": "agt_support"},
+            reauthorize=authority.resolve_bound_for_worker_dispatch,
+            snapshot_matches=lambda queued, current: queued.agent_profile == current.private_execution_input,
+            extract_mcp_tool_ids=lambda source: source["mcp_tool_ids"],
+        )
+        assert reason is None
+        assert filtered.input["mcp_tool_ids"] == ["gateway::kept"]
+        assert payload.input["mcp_tool_ids"] == list(accepted)
+    defaults.assert_not_awaited()
+
+
 @pytest.mark.parametrize("denial", ["withdrawn", "hash_mismatch", "acl", "capability"])
 @pytest.mark.asyncio
 async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch, denial):

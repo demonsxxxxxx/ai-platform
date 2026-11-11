@@ -584,7 +584,10 @@ invocation. New tools do not automatically become defaults.
 
 Accepted Runs keep their selected set. The Profile private snapshot additionally
 retains nonempty `default_mcp_tool_ids`; absent means empty for existing snapshots.
-Worker and replay recover these accepted defaults, never the current settings.
+Worker and replay recover these accepted defaults, never the current settings,
+and intersect the accepted set with current platform authorization and user-effective
+live discovery. Worker may remove unavailable tools; replay fails closed before
+side effects when its execution selection is no longer authorized.
 Reconciliation remains identity-only and reloads the full Profile snapshot from
 the durable Run before authorization; it does not serialize default selectors as
 recovery authority. Profile publication definitions and hashes are unchanged.

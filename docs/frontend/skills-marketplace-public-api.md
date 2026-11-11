@@ -302,7 +302,8 @@ change exact tool IDs. Direct servers and unknown sources retain explicit groups
 
 The authorized Chat catalog adds boolean `default_enabled` metadata to tools
 already present in that user's fresh `tools/list`. New ordinary Chat initializes
-selection from those defaults. A restored explicit selection, including `[]`,
+selection from those defaults when nonempty; an empty default set keeps the
+selection omitted for backend admission. A restored explicit selection, including `[]`,
 wins; refresh and first-send URL canonicalization do not overwrite manual edits.
 For callers that omit selection, backend admission inherits the previous Run's
 explicit set, or resolves current administrator defaults when no selection exists.
@@ -318,8 +319,9 @@ connections, including the file-server authentication session.
 
 Accepted expert Runs retain the resolved default IDs in their private Profile
 execution snapshot. Dispatch/replay use that accepted set, never a fresh default
-lookup. Current authorization may remove tools but never add newly configured
-ones to an accepted Run. Existing snapshots without the optional field mean an
+lookup. Current platform authorization and live user discovery may remove tools
+but never add newly configured ones to an accepted Run. Replay fails closed before
+side effects if its stored execution selection is no longer authorized. Existing snapshots without the optional field mean an
 empty default set. Profile revision definitions/hashes and public projections are
 unchanged; the Profile boundary contract owns this private execution extension.
 

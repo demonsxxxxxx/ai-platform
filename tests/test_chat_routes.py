@@ -159,7 +159,7 @@ def authorized_default_model_for_chat_routes(monkeypatch):
     async def no_model_binding(_conn, **_kwargs):
         return None
 
-    monkeypatch.setattr("app.routes.chat.resolve_default_mcp_tool_ids", AsyncMock(return_value=[]))
+    monkeypatch.setattr("app.mcp.api.resolve_default_mcp_tool_ids", AsyncMock(return_value=[]))
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", governed_model)
     monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", no_model_binding)
 
@@ -789,7 +789,7 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
 ):
     calls = {"authorization": []}
     defaults = AsyncMock(return_value=["gateway::default"])
-    monkeypatch.setattr("app.routes.chat.resolve_default_mcp_tool_ids", defaults)
+    monkeypatch.setattr("app.mcp.api.resolve_default_mcp_tool_ids", defaults)
     request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
 
     async def authorize_tools(*_args, **kwargs):
@@ -857,7 +857,7 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
     monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', latest_input)
     monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'list_authorized_session_runs', prior_runs)
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', noop)
@@ -1429,7 +1429,7 @@ async def test_keyed_replay_uses_original_intent_before_mutable_mcp_admission(mo
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         authorize_tools,
     )
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'claim_chat_submission', claim_submission)
@@ -3345,7 +3345,7 @@ async def test_chat_stream_unauthorized_structured_mcp_selection_fails_before_cr
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', fail_create_run)
@@ -3397,7 +3397,7 @@ async def test_keyed_unauthorized_structured_mcp_rejection_persists_only_safe_le
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         deny_selection,
     )
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_submission_principal', provision_principal)
@@ -5403,7 +5403,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         profile_admission,
     )
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         authorize_final_profile_mcp_selection,
     )
     monkeypatch.setattr(
@@ -5945,7 +5945,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
     )
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.resolve_for_admission", bound_profile)
     monkeypatch.setattr(
-        "app.routes.chat.authorize_selected_chat_mcp_tools",
+        "app.mcp.api.authorize_selected_chat_mcp_tools",
         authorize_transport_mcp_defaults,
     )
     monkeypatch.setattr(

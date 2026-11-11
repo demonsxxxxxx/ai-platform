@@ -17,6 +17,7 @@ from app.mcp.application.worker_dispatch_authorization import (
     WorkerToolPolicyAudit as WorkerToolPolicyAudit,
     project_authorized_worker_mcp_payload as project_authorized_worker_mcp_payload,
 )
+from app.mcp.application.default_tools import resolve_chat_mcp_selection as _resolve_chat_mcp_selection
 from app.mcp.application.live_catalog import (
     LiveMcpServerResult,
     McpCatalogFailure,
@@ -128,6 +129,19 @@ async def resolve_default_mcp_tool_ids(conn: Any, *, principal: Any) -> list[str
     return await _repository_call("resolve_default_mcp_tool_ids", conn, principal=principal)
 
 
+async def filter_available_mcp_tool_ids(conn: Any, *, principal: Any, tool_ids: list[str]) -> list[str]:
+    return await _repository_call("filter_available_mcp_tool_ids", conn, principal=principal, tool_ids=tool_ids)
+
+
+async def resolve_chat_mcp_selection(
+    conn: Any, *, principal: Any, tool_ids: list[str] | None, apply_defaults: bool, is_admin: bool,
+) -> list[str] | None:
+    return await _resolve_chat_mcp_selection(
+        conn, principal=principal, tool_ids=tool_ids, apply_defaults=apply_defaults, is_admin=is_admin,
+        resolve_defaults=resolve_default_mcp_tool_ids, authorize_selected=authorize_selected_chat_mcp_tools,
+    )
+
+
 async def set_mcp_default_tools(conn: Any, **kwargs: Any) -> dict[str, Any]:
     return await _repository_call("set_mcp_default_tools", conn, **kwargs)
 
@@ -214,6 +228,8 @@ __all__ = [
     "mcp_capability_subject",
     "mcp_tool_lifecycle_status",
     "resolve_default_mcp_tool_ids",
+    "resolve_chat_mcp_selection",
+    "filter_available_mcp_tool_ids",
     "set_mcp_default_tools",
     "authorize_available_chat_mcp_tools",
     "authorize_selected_chat_mcp_tools",

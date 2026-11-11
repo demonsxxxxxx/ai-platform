@@ -34,6 +34,18 @@ test("new Chat selects backend defaults only, independent of server display name
   finally { await probe.close(); }
 });
 
+test("new Chat without defaults preserves omission until the user explicitly clears tools", async () => {
+  for (const tools of [[], [other]]) {
+    const probe = await mount({ tools, catalogStatus: tools.length ? "ready" : "empty" });
+    try {
+      assert.equal(probe.current().config.config.selectedMcpToolIds, undefined);
+      await React.act(async () => { probe.current().selection.markToolsEdited([]); probe.current().config.setSelectedMcpToolIds([]); });
+      await probe.update({ tools: [base], catalogStatus: "ready" });
+      assert.deepEqual(probe.current().config.config.selectedMcpToolIds, []);
+    } finally { await probe.close(); }
+  }
+});
+
 test("restored explicit selections including empty override defaults", async () => {
   for (const selected of [[], [other.name]]) {
     const probe = await mount({ sessionId: "session-a", selectionScope: "session-a", serverSelectedToolIds: selected });

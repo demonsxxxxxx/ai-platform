@@ -1339,10 +1339,12 @@ class AgentProfileAuthority:
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid") from exc
         effective_mcp_tool_ids = tuple(dict.fromkeys((*effective_mcp_tool_ids, *default_mcp_tool_ids)))
-        # Dispatch owns current tool authorization; do not resolve it twice in
-        # the same Worker transaction. Replay validates the accepted snapshot.
-        available_mcp_tool_ids: tuple[str, ...] = effective_mcp_tool_ids if pinned_skill_set is not None else ()
-        if effective_mcp_tool_ids and pinned_skill_set is None:
+        available_mcp_tool_ids: tuple[str, ...] = ()
+        if effective_mcp_tool_ids and pinned_skill_set is not None:
+            available_mcp_tool_ids = tuple(await mcp_api.filter_available_mcp_tool_ids(
+                conn, principal=principal, tool_ids=list(effective_mcp_tool_ids),
+            ))
+        elif effective_mcp_tool_ids:
             available_tools = await mcp_api.authorize_available_chat_mcp_tools(
                 conn,
                 tenant_id=principal.tenant_id,

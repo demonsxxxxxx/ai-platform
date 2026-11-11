@@ -6,6 +6,25 @@ from typing import Any
 from app.mcp.domain.tool_references import parse_mcp_tool_reference
 
 
+async def resolve_chat_mcp_selection(
+    conn: Any, *, principal: Any, tool_ids: list[str] | None, apply_defaults: bool,
+    is_admin: bool, resolve_defaults: Callable[..., Awaitable[Any]],
+    authorize_selected: Callable[..., Awaitable[Any]],
+) -> list[str] | None:
+    """Resolve only omitted Chat selection, then authorize before persistence."""
+    if tool_ids is None and apply_defaults:
+        tool_ids = await resolve_defaults(conn, principal=principal) or None
+    if tool_ids is not None:
+        await authorize_selected(
+            conn, tenant_id=principal.tenant_id, tool_ids=tool_ids,
+            principal_department_id=principal.department_id,
+            principal_department_ids=principal.department_ids,
+            principal_roles=principal.roles, is_admin=is_admin,
+            permissions=principal.permissions,
+        )
+    return tool_ids
+
+
 class McpDefaultTools:
     def __init__(
         self, *, list_servers: Callable[..., Awaitable[Any]],
@@ -32,15 +51,21 @@ class McpDefaultTools:
                     configured.append(tool_id)
         if not configured:
             return []
+        return await self.filter_available(conn, principal=principal, tool_ids=configured)
+
+    async def filter_available(self, conn: Any, *, principal: Any, tool_ids: list[str]) -> list[str]:
+        """Recheck an accepted selection without looking up current defaults."""
+        if not tool_ids:
+            return []
         available = await self._authorize_available(
-            conn, tenant_id=principal.tenant_id, tool_ids=configured,
+            conn, tenant_id=principal.tenant_id, tool_ids=tool_ids,
             principal_department_id=principal.department_id,
             principal_department_ids=principal.department_ids,
             principal_roles=principal.roles, is_admin=self._is_admin(principal),
             permissions=principal.permissions,
         )
         authorized = {str(tool["tool_id"]) for tool in available}
-        candidates = [tool_id for tool_id in configured if tool_id in authorized]
+        candidates = [tool_id for tool_id in tool_ids if tool_id in authorized]
         if not candidates:
             return []
         live = await self._discover(principal=principal, tool_ids=candidates)
