@@ -73,7 +73,7 @@ from app.intent_router import (
     classify_execution_polarity,
     route_intent,
 )
-from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.mcp.api import authorize_selected_chat_mcp_tools, resolve_default_mcp_tool_ids
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -1552,6 +1552,10 @@ async def chat_stream(
                 )
                 if isinstance(prior_input, dict) and "mcp_tool_ids" in prior_input:
                     run_input["mcp_tool_ids"] = runs_capability_admission.extract_run_mcp_tool_ids(prior_input)
+
+            if allowed and admitted_agent_profile is None and "mcp_tool_ids" not in run_input:
+                if defaults := await resolve_default_mcp_tool_ids(conn, principal=principal):
+                    run_input["mcp_tool_ids"] = defaults
 
             # Authorize the final execution selection exactly once, after
             # explicit, inherited, and Agent-profile MCP sources have been

@@ -61,6 +61,7 @@ function bootstrapSource(loading = false, chatFiles = false) {
     localStorage.setItem('ai-platform-sidebar-collapsed', 'false');
     const originalFetch = window.fetch.bind(window);
     const state = window.__routeLayoutSmoke = { errors: [], requests: [] };
+    let mcpDefaults = ['synthetic-mcp::tool-3-00'];
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
     window.addEventListener('unhandledrejection', (event) => state.errors.push(String(event.reason)));
     const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
@@ -197,12 +198,19 @@ function bootstrapSource(loading = false, chatFiles = false) {
         { tool_id: 'mcp:calendar:list', label: '列出会议', description: '查看授权日历。', server: 'calendar', category: 'mcp', cached: false }
       ], count: 3, unavailable: [] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/synthetic-mcp/default-tools' && method === 'PUT') {
+        const body = JSON.parse(init.body);
+        if (JSON.stringify(body.expected_tool_ids) !== JSON.stringify(mcpDefaults)) return json({detail:'mcp_default_tools_stale'},409);
+        mcpDefaults = body.tool_ids;
+        state.savedMcpDefaults = mcpDefaults;
+        return json({name:'synthetic-mcp',default_tool_ids:mcpDefaults});
+      }
       if (url.pathname === '/api/mcp/') return json({ servers: [{
-        name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
-        enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
+        name: 'synthetic-mcp', transport: 'streamable_http', integration_kind:'enterprise_gateway', url: 'https://example.invalid/mcp',
+        enabled: true, is_system: true, can_edit: true, default_tool_ids:mcpDefaults, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
       }], total: 1, skip: 0, limit: 20 });
       if (url.pathname === '/api/mcp/synthetic-mcp/catalog') return json({
-        server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
+        server_name: 'synthetic-mcp', default_tool_ids:mcpDefaults, tools: [['AliMailMCPServer',6],['DingMCPServer',132],['PMMCPServer',19],['ProfileDriveMCPServer',12],['ProjectInfoMCPServer',8],['PublicMCPServer',6],['RDMoleculeMCPServer',5],['RDSampleMCPServer',13],['TmeetMCPServer',7]].flatMap(([upstream_server,count],sourceIndex)=>Array.from({length:count},(_,index)=>({name:'synthetic-mcp::tool-'+sourceIndex+'-'+String(index).padStart(2,'0'),description:'合成企业工具 '+index+'，只在当前账号授权范围内提供能力。',upstream_server,parameters:[],available:sourceIndex!==8||index!==6}))), count:207, unavailable_reason:null
       });
       if (url.pathname === '/api/ai/admin/runs/monitor') return json({
         measurement: 'run_lifecycle.v1', window: monitorWindow, counts: { total: 1, succeeded: 0, failed: 1, cancelled: 0, queued: 0, running: 0 },
@@ -417,6 +425,13 @@ const cases = [
     path: "/mcp",
     selector: "[data-mcp-view-tools]",
     name: "mcp",
+    requiredSelectors: ["[data-mcp-view-tools]", "[data-mcp-tool-count]"],
+    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/catalog"],
+  },
+  {
+    path: "/mcp",
+    selector: "[data-mcp-view-tools]",
+    name: "mcp-tools",
     requiredSelectors: ["[data-mcp-view-tools]", "[data-mcp-tool-count]"],
     requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/catalog"],
   },
@@ -1104,25 +1119,53 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor(`Boolean([...document.querySelectorAll('[data-skill-distribution-governance] [role=status]')].find((node) => node.textContent.includes('已保存')))`, `${viewport.name}:skill-distribution-receipt`);
     }
     let mcpFocus = null;
-    if (scenario.name === "mcp") {
+    if (scenario.name === "mcp" || scenario.name === "mcp-tools") {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-view-tools]'); button.focus(); button.click(); })()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-tool-detail] input[type=search]'))", `${viewport.name}:mcp:drawer`);
-      await browser.client.evaluate(`document.querySelector('[data-mcp-tool-detail] input[type=search]').focus()`);
+      await browser.client.waitFor(`document.querySelectorAll('[data-mcp-tool-group]').length===9 && document.querySelectorAll('[data-mcp-tool-row]').length===0`, `${viewport.name}:mcp:groups-collapsed`);
+      await browser.client.waitFor(`(() => { const popup = document.querySelector('[data-mcp-tool-detail]'); const box = popup.querySelector('[data-drawer-placement]').getBoundingClientRect(); return box.right<=innerWidth+1 && popup.getAnimations({subtree:true}).every(animation=>animation.effect?.getTiming().iterations===Infinity || animation.playState!=='running'); })()`, `${viewport.name}:mcp:groups-painted`);
+      const collapsedScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-groups`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="展开 DingMCPServer"]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.waitFor(`document.querySelectorAll('[data-mcp-tool-row]').length===132`, `${viewport.name}:mcp:large-group-keyboard`);
+      await browser.client.evaluate(`document.querySelector('[data-mcp-tool-row="synthetic-mcp::tool-1-131"]').scrollIntoView({block:'center'})`);
+      await browser.client.waitFor(`(() => { const row=document.querySelector('[data-mcp-tool-row="synthetic-mcp::tool-1-131"]').getBoundingClientRect(); const save=[...document.querySelectorAll('[data-mcp-tool-detail] button')].find(node=>node.textContent==='保存默认工具').getBoundingClientRect(); return row.top>=0 && row.bottom<save.top && save.bottom<=innerHeight+1; })()`, `${viewport.name}:mcp:large-group-last-reachable`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="收起 DingMCPServer"]').click(); document.querySelector('[aria-label="展开 ProfileDriveMCPServer"]').click()`);
+      await browser.client.waitFor(`document.querySelectorAll('[data-mcp-tool-row]').length===12`, `${viewport.name}:mcp:group-expanded`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="默认启用 synthetic-mcp::tool-3-01"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[data-mcp-tool-detail]').textContent.includes('已选 2 个默认工具')`, `${viewport.name}:mcp:default-choice`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="默认启用分组 ProfileDriveMCPServer"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[data-mcp-tool-detail]').textContent.includes('已选 12 个默认工具')`, `${viewport.name}:mcp:group-choice`);
+      await browser.client.evaluate(`([...document.querySelectorAll('[data-mcp-tool-detail] button')].find(node=>node.textContent==='保存默认工具')).focus()`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
       await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail-close]')", `${viewport.name}:mcp:tab-wrap`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
-      await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail] input[type=search]')", `${viewport.name}:mcp:shift-tab-wrap`);
+      await browser.client.waitFor("document.activeElement?.textContent === '保存默认工具'", `${viewport.name}:mcp:shift-tab-wrap`);
+      await browser.client.waitFor(`(() => {
+        const save = [...document.querySelectorAll('[data-mcp-tool-detail] button')].find(node=>node.textContent==='保存默认工具').getBoundingClientRect();
+        return save.left>=0 && save.right<=innerWidth+1 && save.top>=0 && save.bottom<=innerHeight+1;
+      })()`, `${viewport.name}:mcp:default-save-reachable`);
       await browser.client.waitFor(`(() => {
         const panel = document.querySelector('[data-mcp-tool-detail] [data-drawer-placement]').getBoundingClientRect();
         const close = document.querySelector('[data-mcp-tool-detail-close]').getBoundingClientRect();
         return panel.left >= 0 && panel.right <= innerWidth + 1 && close.left >= 0 && close.right <= innerWidth + 1;
       })()`, `${viewport.name}:mcp:drawer-contained`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="收起 ProfileDriveMCPServer"]').scrollIntoView({block:'start'})`);
       const drawerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-drawer`);
+      await browser.client.evaluate(`([...document.querySelectorAll('[data-mcp-tool-detail] button')].find(node=>node.textContent==='保存默认工具')).click()`);
+      await browser.client.waitFor(`window.__routeLayoutSmoke.savedMcpDefaults?.length===12 && window.__routeLayoutSmoke.savedMcpDefaults.includes('synthetic-mcp::tool-3-01') && !document.querySelector('[data-mcp-tool-detail]')`, `${viewport.name}:mcp:defaults-saved`);
+      await browser.client.evaluate(`document.querySelector('[data-mcp-view-tools]').click()`);
+      await browser.client.waitFor(`document.querySelector('[aria-label="默认启用分组 ProfileDriveMCPServer"]')?.getAttribute('aria-checked')==='true'`, `${viewport.name}:mcp:defaults-persisted`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="展开 ProfileDriveMCPServer"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[aria-label="默认启用 synthetic-mcp::tool-3-01"]')?.getAttribute('aria-checked')==='true'`, `${viewport.name}:mcp:default-child-persisted`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.waitFor("!document.querySelector('[data-mcp-tool-detail]') && document.activeElement === document.querySelector('[data-mcp-view-tools]')", `${viewport.name}:mcp:focus-restore`);
+      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, groupedSources:9, groupedTools:208, groupSelection:true, largeGroupKeyboard:true, lastToolReachable:true, collapsedScreenshot, drawerScreenshot };
+      if (scenario.name === "mcp") {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-admin-controls] button'); button.focus(); button.click(); })()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:editor`);
       await browser.client.evaluate(`(() => { const label = [...document.querySelectorAll('[role=dialog] label')].find((node) => node.htmlFor && node.textContent === '传输类型'); if (!label) throw new Error('transport_label_missing'); document.getElementById(label.htmlFor).click(); })()`);
@@ -1141,7 +1184,8 @@ async function runCase(viewport, scenario) {
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.waitFor("!document.querySelector('[data-mcp-editor-initial-focus]') && document.activeElement === document.querySelector('[data-mcp-admin-controls] button')", `${viewport.name}:mcp:editor-focus-restore`);
-      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot, departmentScreenshot, departmentSelection: true };
+      mcpFocus = { ...mcpFocus, nestedEscapeIsolated: true, editorFocusRestored: true, departmentScreenshot, departmentSelection: true };
+      }
     }
     let runDiagnostics = null;
     if (scenario.name === "runs") {

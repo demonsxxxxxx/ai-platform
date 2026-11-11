@@ -29,6 +29,7 @@ export interface MCPServerResponse extends MCPServerBase {
   credential_state?: "not_configured" | "configured" | "platform_managed";
   credential_metadata?: Record<string, unknown>;
   contract_version?: string;
+  default_tool_ids?: string[];
   created_at?: string;
   updated_at?: string;
 }
@@ -103,6 +104,7 @@ export interface MCPToolParamInfo {
 // MCP Tool Discovery Response
 export interface MCPToolDiscoveryResponse {
   server_name: string;
+  default_tool_ids?: string[];
   tools: MCPToolInfo[];
   count: number;
   unavailable_reason: string | null;

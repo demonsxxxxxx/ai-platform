@@ -46,6 +46,9 @@ def available_profile_mcp(monkeypatch):
     async def available(_conn, *, tool_ids, **_kwargs):
         return [{"tool_id": item} for item in tool_ids]
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
+    async def defaults(*_args, **_kwargs):
+        return []
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.resolve_default_mcp_tool_ids", defaults)
 
 
 def _principal(*, roles: list[str] | None = None, department_ids: tuple[str, ...] = ()) -> AuthPrincipal:
@@ -2218,7 +2221,10 @@ async def test_new_turn_uses_current_publication_and_accepted_run_replays_its_sn
     old, current = _profile_row(revision=7), _profile_row(revision=9)
     current["instructions"] = "current instructions"
     _seal_profile_row(current)
-    state = {"current": old}
+    state = {"current": old, "defaults": ["gateway::base"]}
+    async def defaults(*_args, **_kwargs):
+        return state["defaults"]
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.resolve_default_mcp_tool_ids", defaults)
     async def get_current(*_args, **_kwargs):
         return state["current"]
     async def get_bound(*_args, **kwargs):
@@ -2233,8 +2239,12 @@ async def test_new_turn_uses_current_publication_and_accepted_run_replays_its_sn
     selected = SelectedAgentProfileRequest(agent_id="agt_support")
     first = await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)
     state["current"] = current
+    state["defaults"] = ["gateway::new-base"]
     next_turn = await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)
-    replay = await authority.resolve_pinned_profile_for_replay(object(), principal=_principal(), agent_id="agt_support", revision=first.revision, content_hash=first.content_hash)
+    replay = await authority.resolve_pinned_profile_for_replay(object(), principal=_principal(), agent_id="agt_support", revision=first.revision, content_hash=first.content_hash, pinned_default_mcp_tool_ids=tuple(first.private_execution_input["default_mcp_tool_ids"]))
+    assert first.mcp_tool_ids == ("gateway::base",)
+    assert next_turn.mcp_tool_ids == ("gateway::new-base",)
+    assert replay.mcp_tool_ids == ("gateway::base",)
     assert (first.revision, next_turn.revision, replay.revision) == (7, 9, 7)
     assert next_turn.private_execution_input["instructions"] == "current instructions"
     assert replay.private_execution_input == first.private_execution_input

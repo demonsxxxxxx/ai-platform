@@ -33,6 +33,23 @@ test("ordinary MCP discovery bounds in-flight requests across a large catalog", 
   assert.equal(result.toolsByServer.size, 24);
 });
 
+test("discovery retains bounded upstream groups without copying unrelated fields", async () => {
+  const result = await collectMcpTools(["gateway"], async () => response("gateway", [
+    { ...tool("drive"), upstream_server: "ProfileDriveMCPServer", private_id: "discard" } as MCPToolInfo,
+    { ...tool("unknown"), upstream_server: null },
+    tool("direct"),
+  ]));
+  assert.deepEqual(result.toolsByServer.get("gateway"), [
+    { ...tool("drive"), upstream_server: "ProfileDriveMCPServer" },
+    { ...tool("unknown"), upstream_server: null },
+    tool("direct"),
+  ]);
+  for (const upstream_server of [42, "", "x".repeat(129), "bad\nsource"]) {
+    const invalid = await collectMcpTools(["gateway"], async () => response("gateway", [{ ...tool("drive"), upstream_server } as MCPToolInfo]));
+    assert.equal(invalid.unavailableServers.has("gateway"), true);
+  }
+});
+
 test("HTTP-200 discovery failure stays unavailable while other servers retain their tools", async () => {
   const result = await collectMcpTools(["failed", "healthy"], async (name) =>
     name === "failed" ? { ...response(name, []), unavailable_reason: "discovery_failed" } : response(name),

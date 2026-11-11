@@ -102,6 +102,7 @@ async def _default_enqueue_failure(*_args, **_kwargs):
 
 _TEST_RUN_LIFECYCLE = SimpleNamespace(mark_run_enqueue_failed=_default_enqueue_failure)
 _TEST_STREAM_REQUEST = SimpleNamespace(
+    scope={},
     app=SimpleNamespace(
         state=SimpleNamespace(
             run_stream_runtime=SimpleNamespace(
@@ -158,6 +159,7 @@ def authorized_default_model_for_chat_routes(monkeypatch):
     async def no_model_binding(_conn, **_kwargs):
         return None
 
+    monkeypatch.setattr("app.routes.chat.resolve_default_mcp_tool_ids", AsyncMock(return_value=[]))
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", governed_model)
     monkeypatch.setattr("app.execution.application.model_selection.bind_run_model", no_model_binding)
 
@@ -773,17 +775,21 @@ async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(mon
          ["lifecycle-recovery::create_test_object", "lifecycle-recovery::delete_test_object"]),
         ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], False, ["gateway::qa-search"]),
         ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], False, ["gateway::qa-search"]),
+        ("请调用 MCP 搜索员工手册", None, False, ["gateway::default"]),
+        ("请调用 MCP 搜索员工手册", [], False, []),
         ("不要调用 MCP，只解释它是什么", [], True, []),
         ("不要调用 MCP，只解释它是什么", None, True, None),
         ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"]),
     ],
-    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative"],
+    ids=["negative-other-tool", "explanation-available", "affirmative", "administrator-default", "explicit-empty", "explicit-clear", "implicit-negative", "implicit-affirmative"],
 )
 @pytest.mark.asyncio
 async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_polarity(
     monkeypatch, roles, message, selected_tools, continuation, expected_tools
 ):
     calls = {"authorization": []}
+    defaults = AsyncMock(return_value=["gateway::default"])
+    monkeypatch.setattr("app.routes.chat.resolve_default_mcp_tool_ids", defaults)
     request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
 
     async def authorize_tools(*_args, **kwargs):
@@ -882,6 +888,7 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
         "is_admin": "admin" in roles,
         "permissions": request_principal.permissions,
     }] if expected_tools is not None else [])
+    assert defaults.await_count == (1 if not continuation and selected_tools is None else 0)
     assert calls["run_input"].get("mcp_tool_ids") == expected_tools
     assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
     assert calls["frozen_input"] == calls["run_input"]

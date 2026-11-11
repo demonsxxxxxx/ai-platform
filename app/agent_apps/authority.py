@@ -1148,7 +1148,7 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        admission = await self._admission_from_row(conn, principal=principal, row=row)
+        admission = await self._admission_from_row(conn, principal=principal, row=row, include_default_tools=True)
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
                 submitted_request,
@@ -1173,6 +1173,7 @@ class AgentProfileAuthority:
         execution_kind: str | None = None,
         submitted_request: ChatStreamRequest | None = None,
         query_agent_id: str | None = None,
+        pinned_default_mcp_tool_ids: tuple[str, ...] = (),
     ) -> AgentProfileAdmission:
         """Reauthorize the immutable Profile snapshot already accepted by one Run."""
 
@@ -1198,6 +1199,7 @@ class AgentProfileAuthority:
             principal=principal,
             row=row,
             acl_row=current_row,
+            pinned_default_mcp_tool_ids=pinned_default_mcp_tool_ids,
             pinned_skill_set=pinned_skill_set,
             pinned_manifests=pinned_manifests,
             pinned_executor_type=pinned_executor_type,
@@ -1224,6 +1226,7 @@ class AgentProfileAuthority:
         pinned_manifests: list[dict[str, Any]] | None = None,
         pinned_executor_type: str | None = None,
         execution_kind: str | None = None,
+        pinned_default_mcp_tool_ids: tuple[str, ...] = (),
     ) -> AgentProfileAdmission | None:
         """Reauthorize a pinned Profile for dispatch without leaking HTTP errors."""
 
@@ -1257,6 +1260,7 @@ class AgentProfileAuthority:
                 principal=principal,
                 row=row,
                 acl_row=current_row,
+                pinned_default_mcp_tool_ids=pinned_default_mcp_tool_ids,
                 pinned_skill_set=pinned_skill_set,
                 pinned_manifests=pinned_manifests,
                 pinned_executor_type=pinned_executor_type,
@@ -1276,6 +1280,8 @@ class AgentProfileAuthority:
         pinned_manifests: list[dict[str, Any]] | None = None,
         pinned_executor_type: str | None = None,
         execution_kind: str | None = None,
+        include_default_tools: bool = False,
+        pinned_default_mcp_tool_ids: tuple[str, ...] = (),
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
@@ -1324,6 +1330,15 @@ class AgentProfileAuthority:
             row,
             skills=skills,
         )
+        default_mcp_tool_ids = tuple(await mcp_api.resolve_default_mcp_tool_ids(conn, principal=principal)) if include_default_tools else pinned_default_mcp_tool_ids
+        try:
+            if not isinstance(default_mcp_tool_ids, tuple) or len(set(default_mcp_tool_ids)) != len(default_mcp_tool_ids):
+                raise ValueError("invalid defaults")
+            for tool_id in default_mcp_tool_ids:
+                mcp_api.assert_mcp_tool_reference(tool_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="agent_profile_snapshot_invalid") from exc
+        effective_mcp_tool_ids = tuple(dict.fromkeys((*effective_mcp_tool_ids, *default_mcp_tool_ids)))
         # Dispatch owns current tool authorization; do not resolve it twice in
         # the same Worker transaction. Replay validates the accepted snapshot.
         available_mcp_tool_ids: tuple[str, ...] = effective_mcp_tool_ids if pinned_skill_set is not None else ()
@@ -1358,6 +1373,7 @@ class AgentProfileAuthority:
                 "revision": revision,
                 "content_hash": content_hash,
                 "instructions": str(row["instructions"]),
+                **({"default_mcp_tool_ids": list(default_mcp_tool_ids)} if default_mcp_tool_ids else {}),
                 "skill_set": [
                     {
                         "skill_id": str(skill["skill_id"]),
@@ -1413,6 +1429,14 @@ class AgentProfileAuthority:
         )
         if not isinstance(pinned_skill_set, list):
             raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
+        pinned_defaults = profile_snapshot.get("default_mcp_tool_ids", [])
+        if not isinstance(pinned_defaults, list) or any(not isinstance(item, str) for item in pinned_defaults):
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
+        try:
+            for item in pinned_defaults:
+                mcp_api.assert_mcp_tool_reference(item)
+        except ValueError as exc:
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
         try:
             skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
                 conn, tenant_id=principal.tenant_id, run_id=run_id,
@@ -1427,6 +1451,7 @@ class AgentProfileAuthority:
             conn, principal=principal, agent_id=str(run.get("agent_id") or ""),
             revision=revision, content_hash=str(content_hash or ""),
             pinned_skill_set=pinned_skill_set,
+            pinned_default_mcp_tool_ids=tuple(pinned_defaults),
             pinned_manifests=skill_manifests,
             pinned_executor_type=str(snapshot.get("executor_type") or ""),
             execution_kind=execution_kind,
@@ -1520,12 +1545,7 @@ class AgentProfileAuthority:
             or not skill_version_matches
             or str(snapshot.get("executor_type") or "")
             != str(admission.skill.get("executor_type") or "")
-            or (bool(execution_mcp_tool_ids) and not set(execution_mcp_tool_ids).issubset(
-                _effective_mcp_tool_ids(
-                    {"mcp_tool_ids": list(admission.configured_mcp_tool_ids)},
-                    skills=admission.skills,
-                )[1]
-            ))
+            or (bool(execution_mcp_tool_ids) and not set(execution_mcp_tool_ids).issubset(admission.mcp_tool_ids))
         ):
             raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
 

@@ -124,6 +124,14 @@ async def _repository_call(operation: str, conn: Any, **kwargs: Any) -> Any:
     return await mcp_runtime_services().repository_call(operation, conn, **kwargs)
 
 
+async def resolve_default_mcp_tool_ids(conn: Any, *, principal: Any) -> list[str]:
+    return await _repository_call("resolve_default_mcp_tool_ids", conn, principal=principal)
+
+
+async def set_mcp_default_tools(conn: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _repository_call("set_mcp_default_tools", conn, **kwargs)
+
+
 async def authorize_selected_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
     return await _repository_call("authorize_selected_chat_mcp_tools", conn, **kwargs)
 
@@ -205,6 +213,8 @@ __all__ = [
     "authorized_mcp_registration_input",
     "mcp_capability_subject",
     "mcp_tool_lifecycle_status",
+    "resolve_default_mcp_tool_ids",
+    "set_mcp_default_tools",
     "authorize_available_chat_mcp_tools",
     "authorize_selected_chat_mcp_tools",
     "authorize_selected_replay_mcp_tools",
