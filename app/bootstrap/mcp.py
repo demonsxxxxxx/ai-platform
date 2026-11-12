@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from app.auth import normalize_roles, refresh_company_session
+import asyncio
+
+from app.auth import is_ai_admin, normalize_roles, refresh_company_session
 from app.auth_sessions import browser_auth_grant, store_auth_context_credential
 from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
 
@@ -14,6 +16,8 @@ from app.bootstrap.identity import build_worker_distribution_authority
 from app.control_plane_contracts import sanitize_public_text
 from app.mcp import api as mcp_api
 from app.mcp.application.selection_authorization import McpSelectionAuthorization
+from app.mcp.application.default_tools import McpDefaultTools
+from app.mcp.infrastructure import registry_postgres
 from app.platform.postgres.errors import RepositoryConflictError
 
 from app.db import transaction
@@ -84,6 +88,24 @@ class _McpRuntimeServices:
             gateway_catalog=GatewayCatalogAdapter(),
         )
 
+    async def _discover_default_tools(self, *, principal: Any, tool_ids: list[str]) -> set[str]:
+        try:
+            jwt = await self.principal_jwt_store.get(principal)
+        except mcp_runtime.McpRuntimeContextError:
+            return set()
+        server_ids = list(dict.fromkeys(mcp_api.parse_mcp_tool_reference(item)[0] for item in tool_ids))
+        semaphore = asyncio.Semaphore(8)
+
+        async def discover(server_id: str) -> Any:
+            async with semaphore:
+                return await self.live_catalog.list_server_tools(
+                    tenant_id=principal.tenant_id, user_id=principal.user_id,
+                    server_id=server_id, jwt=jwt,
+                )
+
+        results = await asyncio.gather(*(discover(server_id) for server_id in server_ids))
+        return {tool.tool_id for result in results for tool in result.tools if tool.available is not False}
+
     @staticmethod
     async def _resolve_live_target(tenant_id: str, server_id: str) -> _LiveMcpTarget:
         async with transaction() as conn:
@@ -124,6 +146,14 @@ class _McpRuntimeServices:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
+        if operation in {"resolve_default_mcp_tool_ids", "filter_available_mcp_tool_ids"}:
+            defaults = McpDefaultTools(
+                list_servers=mcp_postgres.list_mcp_server_registry,
+                authorize_available=self.selection_authorization.authorize_available_chat,
+                discover=self._discover_default_tools, is_admin=is_ai_admin,
+            )
+            operation_handler = defaults.resolve if operation == "resolve_default_mcp_tool_ids" else defaults.filter_available
+            return await operation_handler(conn, **kwargs)
         if operation == "authorize_available_chat_mcp_tools":
             return await self.selection_authorization.authorize_available_chat(conn, **kwargs)
         if operation == "authorize_selected_chat_mcp_tools":
@@ -133,6 +163,7 @@ class _McpRuntimeServices:
         if operation == "get_mcp_tool_registry_entry":
             return await self._get_tool(conn, **kwargs)
         operations = {
+            "set_mcp_default_tools": registry_postgres.set_mcp_default_tools,
             "delete_mcp_server_registry": mcp_postgres.delete_mcp_server_registry,
             "get_mcp_server_credential": mcp_postgres.get_mcp_server_credential,
             "get_mcp_server_registry_entry": mcp_postgres.get_mcp_server_registry_entry,

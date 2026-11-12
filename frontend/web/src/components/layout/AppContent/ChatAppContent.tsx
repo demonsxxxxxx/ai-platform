@@ -14,13 +14,13 @@ import { useAuth } from "../../../hooks/useAuth";
 import {
   canSelectChatMcpTools,
   ChatMcpCatalogContext,
-  hasValidatedChatMcpCatalog,
   reconcileChatMcpToolSelection,
   useTools,
 } from "../../../hooks/useTools";
 import { useSkills } from "../../../hooks/useSkills";
 import { useSelectedSkillTask, type SelectedSkillTaskState } from "../../../hooks/useSelectedSkillTask";
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
+import { useChatMcpSelection } from "../../../hooks/useChatMcpSelection";
 import {
   Permission,
   type MessageAttachment,
@@ -322,45 +322,21 @@ export function ChatAppContent({
     setSelectedMcpToolIds,
   ]);
 
-  const restoredMcpSelectionRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (
-      agentConversationControlsLocked ||
-      !hasValidatedChatMcpCatalog(mcpCatalogState.status)
-    )
-      return;
-
-    const serverSelection =
-      sessionId && serverSelectedToolIds !== undefined
-        ? serverSelectedToolIds
-        : undefined;
-    const restoreKey =
-      serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
-    const shouldRestoreServerSelection =
-      restoreKey !== null && restoredMcpSelectionRef.current !== restoreKey;
-    if (shouldRestoreServerSelection) {
-      restoredMcpSelectionRef.current = restoreKey;
-    }
-
-    const reconciled = shouldRestoreServerSelection ? serverSelection : undefined;
-    if (
-      reconciled === undefined ||
-      (sessionConfig.selectedMcpToolIds !== undefined &&
-        reconciled.length === sessionConfig.selectedMcpToolIds.length &&
-        reconciled.every((toolId, index) => toolId === sessionConfig.selectedMcpToolIds?.[index]))
-    ) {
-      return;
-    }
-    setSelectedMcpToolIds(reconciled);
-  }, [
-    agentConversationControlsLocked,
-    mcpCatalogState.status,
-    serverSelectedToolIds,
-    sessionConfig.selectedMcpToolIds,
+  const { markToolsEdited, resetDefaults: resetMcpDefaults } = useChatMcpSelection({
+    enabled: !agentConversationControlsLocked && !isLoadingHistory &&
+      (!routeSessionId || routeSessionId === sessionId),
+    identityScope: JSON.stringify([user?.tenant_id, user?.id]),
+    // Canonicalizing the first send's URL must not undo an explicit draft choice.
+    selectionScope: sessionId && newlyCreatedSession?.id === sessionId
+      ? "draft"
+      : routeSessionId ?? "draft",
     sessionId,
-    setSelectedMcpToolIds,
     tools,
-  ]);
+    catalogStatus: mcpCatalogState.status,
+    selectedToolIds: sessionConfig.selectedMcpToolIds,
+    serverSelectedToolIds,
+    setSelectedToolIds: setSelectedMcpToolIds,
+  });
 
   const authoritativeMcpSelection = useMemo(
     () =>
@@ -529,15 +505,17 @@ export function ChatAppContent({
       if (!tool) return;
 
       if (tool.category === "mcp") {
+        markToolsEdited([toolName]);
         toggleSessionMcpTool(toolName);
       }
     },
-    [canSelectMcpTools, tools, toggleSessionMcpTool],
+    [canSelectMcpTools, tools, markToolsEdited, toggleSessionMcpTool],
   );
 
   const effectiveToggleCategory = useCallback(
     (category: ToolCategory, enabled: boolean) => {
       if (canSelectMcpTools && category === "mcp") {
+        markToolsEdited(tools.map((tool) => tool.name));
         setSelectedMcpToolIds(
           enabled
             ? tools
@@ -547,12 +525,13 @@ export function ChatAppContent({
         );
       }
     },
-    [canSelectMcpTools, setSelectedMcpToolIds, tools],
+    [canSelectMcpTools, markToolsEdited, setSelectedMcpToolIds, tools],
   );
 
   const effectiveToggleAll = useCallback(
     (enabled: boolean) => {
       if (!canSelectMcpTools) return;
+      markToolsEdited(tools.map((tool) => tool.name));
       setSelectedMcpToolIds(
         enabled
           ? tools
@@ -561,7 +540,7 @@ export function ChatAppContent({
           : [],
       );
     },
-    [canSelectMcpTools, setSelectedMcpToolIds, tools],
+    [canSelectMcpTools, markToolsEdited, setSelectedMcpToolIds, tools],
   );
 
   const effectiveEnabledToolsCount = useMemo(
@@ -736,6 +715,8 @@ export function ChatAppContent({
     handleNewSession();
     clearSelectedSkill();
     resetToDefaults();
+    resetMcpDefaults();
+
     resetAgentOptionDefaults();
 
     setCurrentModelId("");
@@ -745,6 +726,7 @@ export function ChatAppContent({
     handleNewSession,
     clearSelectedSkill,
     resetToDefaults,
+    resetMcpDefaults,
     resetAgentOptionDefaults,
     agentWorkspace,
     agentWorkspaceRouteBasePath,

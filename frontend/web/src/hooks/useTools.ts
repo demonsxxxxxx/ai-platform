@@ -107,6 +107,7 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
   ) {
     return null;
   }
+  if (value.default_enabled !== undefined && typeof value.default_enabled !== "boolean") return null;
   const upstreamServer = value.upstream_server;
   const normalizedUpstreamServer =
     upstreamServer === undefined ? undefined : normalizeUpstreamServer(upstreamServer);
@@ -120,6 +121,7 @@ function parseChatMcpTool(value: unknown): ChatMcpToolState | null {
     ...(normalizedUpstreamServer !== undefined
       ? { upstream_server: normalizedUpstreamServer }
       : {}),
+    ...(value.default_enabled !== undefined ? { default_enabled: value.default_enabled } : {}),
     parameters: [],
     system_disabled: false,
     user_disabled: false,

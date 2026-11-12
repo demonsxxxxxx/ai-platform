@@ -108,6 +108,7 @@ export function MCPPanel() {
     getServer,
     createServer,
     updateServer,
+    saveDefaultTools,
     deleteServer,
     toggleServer,
   } = useMCP({
@@ -451,7 +452,7 @@ render: (_value, server) => (<>
           />
         </div>
       )}
-      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} fullCatalog={selectedToolServer.integration_kind === "enterprise_gateway"} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
+      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} fullCatalog={selectedToolServer.integration_kind === "enterprise_gateway"} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} defaultToolIds={selectedToolServer.default_tool_ids ?? []} onSaveDefaults={canManageMcpUi ? async (ids) => { const saved = await saveDefaultTools(selectedToolServer.name, ids, selectedToolServer.default_tool_ids ?? []); if (saved) toast.success("默认工具已保存"); return saved; } : undefined} savingDefaults={isLoading} defaultsError={error} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
       {canManageMcpUi ? (
         <ModalRoot open={editorOpen} onOpenChange={(open) => { if (!open) closeEditor(); }}>
           <ModalPortal>

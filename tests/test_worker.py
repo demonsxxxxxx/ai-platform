@@ -1116,10 +1116,12 @@ def default_cancel_not_requested(monkeypatch):
         pinned_manifests,
         pinned_executor_type,
         execution_kind,
+        pinned_default_mcp_tool_ids=(),
     ):
         queue_payload = _CURRENT_QUEUE_PAYLOAD or {}
         profile = dict(queue_payload.get("agent_profile") or {})
         skill_set = list(profile.get("skill_set") or [])
+        assert pinned_default_mcp_tool_ids == tuple(profile.get("default_mcp_tool_ids", ()))
         assert pinned_skill_set == skill_set
         assert isinstance(pinned_manifests, list)
         assert pinned_executor_type == (
@@ -2273,6 +2275,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         "pinned_manifests": [],
         "pinned_executor_type": "claude-agent-worker",
         "execution_kind": "harness_chat",
+        "pinned_default_mcp_tool_ids": (),
     }]
     assert not any(
         call == ("event", "capability_not_authorized") for call in terminal_calls

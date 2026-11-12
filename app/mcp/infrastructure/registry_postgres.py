@@ -56,6 +56,7 @@ def _dynamic_server_projection(row: dict[str, Any]) -> dict[str, Any]:
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
         "integration_kind": str(row.get("integration_kind") or "mcp"),
+        "default_tool_ids": _runtime_json_string_list(row.get("default_tool_ids")),
         "endpoint_redacted": str(row.get("endpoint_redacted") or ""),
         "status": str(row.get("status") or "disabled"),
         "is_system": bool(row.get("is_system")),
@@ -74,7 +75,7 @@ def _dynamic_server_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 _DYNAMIC_SERVER_FIELDS = """
-  tenant_id, name, transport, integration_kind, endpoint_redacted, status, is_system,
+  tenant_id, name, transport, integration_kind, default_tool_ids, endpoint_redacted, status, is_system,
   allowed_roles, role_quotas_json, department_ids, credential_state,
   credential_metadata_json, created_at, updated_at
 """
@@ -219,6 +220,26 @@ async def delete_runtime_mcp_server_registry(
     row = await cursor.fetchone()
     if row is None:
         raise RepositoryNotFoundError("mcp_server_not_found")
+    return _dynamic_server_projection(dict(row))
+
+
+async def set_mcp_default_tools(
+    conn: Any, *, tenant_id: str, name: str, tool_ids: list[str],
+    expected_tool_ids: list[str], updated_by: str,
+) -> dict[str, Any]:
+    cursor = await conn.execute(
+        f"""
+        update mcp_servers
+        set default_tool_ids = %s, updated_by = %s, updated_at = now()
+        where tenant_id = %s and name = %s and status <> 'deleted'
+          and default_tool_ids = %s
+        returning {_DYNAMIC_SERVER_FIELDS}
+        """,
+        (tool_ids, updated_by, tenant_id, name, expected_tool_ids),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryConflictError("mcp_default_tools_stale")
     return _dynamic_server_projection(dict(row))
 
 

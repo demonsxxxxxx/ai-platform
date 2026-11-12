@@ -281,6 +281,58 @@ While a read is pending, the existing loading fence disables selection; the
 local selection draft survives and is reconciled against the returned catalog.
 No automatic retry, tool invocation or new authorization is introduced.
 
+Administrators configure per-tool defaults in the Server tool drawer. The
+`default_tool_ids` array is tenant/connection-scoped registry configuration, not
+a persisted remote catalog or an ACL. `PUT /api/mcp/{name}/default-tools` accepts
+exact canonical `tool_ids` and `expected_tool_ids`; the latter is the current
+stored array and prevents lost updates. Only platform administrators may write.
+New selections must belong to that connection's live available management catalog;
+removing retained missing tools does not require successful discovery. Ordinary
+connection edits preserve defaults. New tools are not defaults until selected.
+The drawer retains failed drafts, shows safe errors and uses the existing
+identity/permission/request owner. An authority change fences retained callbacks.
+Its tool list replaces the former flat cards with the same connection/upstream
+source groups as the Chat selector. Source groups start collapsed, show selected
+and total counts, and support whole-group and per-tool selection. Search matches
+source labels, tool names and descriptions and expands matching groups; selection
+remains independent of filtering. A group toggle applies to its complete source,
+not only search matches, and never adds unavailable tools. Discovery preserves
+only bounded public `upstream_server` labels; these labels do not route calls or
+change exact tool IDs. Direct servers and unknown sources retain explicit groups.
+
+The authorized Chat catalog adds boolean `default_enabled` metadata to tools
+already present in that user's fresh `tools/list`. New ordinary Chat initializes
+selection from those defaults when nonempty; an empty default set keeps the
+selection omitted for backend admission. A restored explicit selection, including `[]`,
+wins; refresh and first-send URL canonicalization do not overwrite manual edits.
+For callers that omit selection, backend admission inherits the previous Run's
+explicit set, or resolves current administrator defaults when no selection exists.
+No default is appended to an explicit ordinary-Chat selection.
+
+New expert Runs resolve the same backend defaults and union them with the
+Profile's configured tools and declared Skill dependencies. Defaults first pass
+current tenant/department/server access and user-effective live discovery. Missing,
+revoked or unavailable default tools are optional and excluded. The final set
+still passes ordinary admission and Worker checks. Expert clients cannot add tools
+or override this set. Defaults do not invoke tools or establish service-specific
+connections, including the file-server authentication session.
+
+Accepted expert Runs retain the resolved default IDs in their private Profile
+execution snapshot. Dispatch/replay use that accepted set, never a fresh default
+lookup. Current platform authorization and live user discovery may remove tools
+but never add newly configured ones to an accepted Run. Replay fails closed before
+side effects if its stored execution selection is no longer authorized. Existing snapshots without the optional field mean an
+empty default set. Profile revision definitions/hashes and public projections are
+unchanged; the Profile boundary contract owns this private execution extension.
+
+The frontend `ProfileDriveMCPServer` name/connection-status default is retired.
+`useChatMcpSelection` retains one server-selection restoration owner and consumes
+only backend default flags; the connector API/event remains used by the file
+browser and authentication page, not MCP selection. Owning regressions cover
+administrator writes, stale saves, explicit empty selection, expert union and
+accepted-Run stability. No per-user browser default store or parallel MCP path is
+introduced.
+
 This replaces the former centered degraded card and reason-key-only frontend
 projection. The HTTP response and string reason protocol are unchanged; the
 frontend retains bounded label/reason records for its existing selector consumer.

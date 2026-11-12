@@ -563,6 +563,55 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   configuration references with targeted searches before completion.
 
 
+## Administrator default tools
+
+MCP owns per-connection `default_tool_ids` settings, stored in the tenant-scoped
+Server registry. They contain exact existing canonical references, not catalog
+definitions, a wildcard, a new ACL or a service-specific connected-state rule.
+Only administrator writes may change them. The dedicated write requires the
+previous array to prevent lost updates and validates added references against
+live available management discovery. Removing retained missing references remains
+possible during discovery failure; ordinary lifecycle edits preserve defaults.
+
+New ordinary Chat with no explicit or inherited selection and new expert Runs
+resolve this same default source. MCP filters configured defaults through current
+principal/department/Server authorization and current user-effective discovery;
+only the exact intersection is offered. Explicit ordinary Chat selections,
+including empty selections, override the default. Expert candidates union those
+resolved defaults with Profile tools and dependencies. The existing selected-tool,
+Worker, SDK and callback boundaries still apply. Selection never requires an
+invocation. New tools do not automatically become defaults.
+
+Accepted Runs keep their selected set. The Profile private snapshot additionally
+retains nonempty `default_mcp_tool_ids`; absent means empty for existing snapshots.
+Worker and replay recover these accepted defaults, never the current settings,
+and intersect the accepted set with current platform authorization and user-effective
+live discovery. Worker may remove unavailable tools; replay fails closed before
+side effects when its execution selection is no longer authorized.
+Reconciliation remains identity-only and reloads the full Profile snapshot from
+the durable Run before authorization; it does not serialize default selectors as
+recovery authority. Profile publication definitions and hashes are unchanged.
+
+**Change Contract.** MCP owns settings, validation and default resolution; Agent
+Apps owns the expert union and accepted private snapshot. Tenant, user, department,
+Run/Attempt and lease boundaries, current tool ACLs and all transport controls are
+retained. Falsifiable acceptance covers administrator-only writes, wrong-connection
+and missing-tool rejection, stale/concurrent saves, no grants from default flags,
+explicit empty/manual choices, expert union, revocation and unchanged accepted
+Run/replay. Schema `2026.11.11.1` adds an empty non-null array; existing rows and
+Profile revisions retain their meaning until an administrator configures defaults.
+Apply schema before these binaries; an application rollback can leave the unused
+additive column but must preserve the previous migration ledger per release
+operations. Do not deploy on a failed authorization, snapshot or migration check.
+
+The retired frontend ProfileDrive name/connection-event default has no selection
+consumer. The connector's independent authentication and file-browser callers
+remain. `useChatMcpSelection` owns Chat restoration and backend-default display;
+its regression belongs to the general control-plane stage, not ProfileDrive.
+Inventory the removed default branch with
+`rg 'ProfileDrive|profileDrive|CONNECTION_CHANGED|upstream_server' frontend/web/src/hooks/useChatMcpSelection.ts`.
+The frontend public API contract owns administrator drawer and wire details.
+
 ## Selection policy ownership
 
 Chat selected/available admission and source-identity replay share the MCP
