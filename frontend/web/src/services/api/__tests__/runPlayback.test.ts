@@ -383,3 +383,26 @@ test("playback preserves unknown cost absence and real zero independently of tok
     assert.deepEqual(projected.events[0].token_counts, {input: 3, output: 5, total: 8});
   }
 });
+
+test("lineage preserves public scalars and rejects containers for artifacts and timeline", () => {
+  const keys = ["source_event_id", "source_step_id", "source_file_id", "producer_kind", "producer_role", "checkpoint_id", "subagent_id"];
+  const cases: Array<[unknown, unknown]> = [
+    [null, null], [true, true], [false, false], [0, 0], [-0, -0], [42.5, 42.5],
+    [Infinity, Infinity], [-Infinity, -Infinity], [NaN, undefined],
+    [" event-1 ", " event-1 "], ["", undefined], ["  ", undefined],
+    ["a".repeat(64), undefined], ["runtime_path", undefined],
+    ["storage-key", undefined], ["private/path", undefined],
+    [[], undefined], [{}, undefined], [[{ nested: ["safe"] }], undefined],
+    [{ nested: { payload: "hidden" } }, undefined], [undefined, undefined],
+    [Symbol("unsupported"), undefined], [1n, undefined], [() => "unsupported", undefined],
+  ];
+  for (const key of keys) {
+    for (const [value, expected] of cases) {
+      const artifact = { artifact_id: "artifact-1", lineage: { [key]: value, unknown_key: "ignored" } };
+      const result = normalizeRunPlayback({ artifacts: [artifact], timeline: [{ artifact }] });
+      const lineage = expected === undefined ? undefined : { [key]: expected };
+      assert.deepEqual(result.artifacts[0]?.lineage, lineage);
+      assert.deepEqual(result.timeline[0]?.artifact?.lineage, lineage);
+    }
+  }
+});
