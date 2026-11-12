@@ -68,6 +68,54 @@ names are not enumerated or scoped by operation. Other upstream header names
 remain filtered. The proxy does not implement OpenSandbox lifecycle or
 capability admission.
 
+### Model request byte budget
+
+The OpenAI model routes and Anthropic messages/count-token routes accept at most
+**32,000,000 serialized request-body bytes**, inclusive. The Nginx model locations
+use `client_max_body_size 32000000` and the API counts cumulative ASGI body chunks
+against the same boundary before extending its buffer. A request exceeding it by
+one byte receives HTTP `413` before model dispatch. The API keeps the existing
+`model_proxy_request_too_large` error code. This is decimal 32 MB, not Nginx `32m`
+(32 MiB), and is independent of token windows, automatic compaction and upstream
+request limits; an upstream may still reject an admitted request.
+
+The former 1 MiB model-body limit rejected valid long tool conversations even
+after SDK compaction. It is replaced in both layers, without a legacy toggle.
+The server-level 1 MiB budget remains for callbacks and other locations. Internal
+tokens, Run/Attempt capabilities, pinned model/output capacity, request/header
+validation, DNS pinning and external-effect receipt/retry protections are
+unchanged. No request is retried or task replayed by this budget change.
+
+Model locations use `proxy_request_buffering off` with upstream HTTP/1.1, so
+Content-Length and chunked model bodies stream to the API without requiring the
+whole request in Nginx's retained 16 MiB `/var/cache/nginx` tmpfs. Callback request
+buffering and that tmpfs size remain unchanged. Nginx may begin forwarding before
+an oversized chunked body's total is known; API cumulative admission still rejects
+it before model dispatch. No partially forwarded model POST is retried by this
+change.
+
+The larger budget permits proportionally more buffered API request memory per
+concurrent request. It remains finite; it does not promise that every 1M-token or
+multimodal input fits. Change acceptance covers a
+valid UTF-8 JSON body above the old limit, exactly 32,000,000 bytes and cumulative
+chunk overflow, both provider route families and count requests, retained invalid
+capability rejection, and Nginx/API budget agreement without expanding callbacks.
+
+Retirement and compatibility disposition: the API's model-body `1024 * 1024`
+condition and model-route inheritance of Nginx's `1m` limit are replaced. The
+existing overflow selector is migrated to the new boundary; no old-budget switch
+or alternate implementation remains. Existing clients and stored Runs need no
+migration, and the `413` machine code remains compatible. The owning inventory is
+`rg -n 'client_max_body_size|MODEL_PROXY_MAX_REQUEST_BYTES|model_proxy_request_too_large'
+app/execution/transport/model_management.py deploy/ai-platform/opensandbox-egress-nginx.conf.template
+tests/test_model_management.py tests/test_runtime_launch_script.py`.
+Rolling out only one layer does not activate the larger end-to-end budget;
+rollback to either old layer restores 1 MiB admission for subsequent requests.
+Verification must exercise exact-boundary and chunked bodies with the 16 MiB
+Nginx tmpfs used by both OpenSandbox Compose profiles. Source tests do not
+establish deployed configuration. Runtime replacement follows
+the release procedure and must preserve active tasks and existing copied files.
+
 ### Anthropic beta protocol boundary
 
 Execution validates the wire form of `anthropic-beta`, not a list of known

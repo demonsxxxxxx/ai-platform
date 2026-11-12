@@ -18,6 +18,7 @@ from app.execution.application.model_stream_ownership import close_model_stream
 
 
 _logger = logging.getLogger(__name__)
+_MODEL_PROXY_MAX_REQUEST_BYTES = 32_000_000
 
 
 async def _record_proxy_debug(*, run_id: str, attempt_id: str, error_code: str, debug: object, operation: str) -> None:
@@ -359,7 +360,7 @@ async def proxy_model_request(
         model_proxy_capability = ""
     body_buffer = bytearray()
     async for chunk in request.stream():
-        if len(body_buffer) + len(chunk) > 1024 * 1024:
+        if len(body_buffer) + len(chunk) > _MODEL_PROXY_MAX_REQUEST_BYTES:
             raise HTTPException(status_code=413, detail="model_proxy_request_too_large")
         body_buffer.extend(chunk)
     body = bytes(body_buffer)
