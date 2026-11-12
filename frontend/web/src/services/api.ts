@@ -42,6 +42,5 @@ export {
   type SessionInputFilesResponse,
 } from "./api/session";
 export { skillApi } from "./api/skill";
-export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";
 export { uploadApi } from "./api/upload";

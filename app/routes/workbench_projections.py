@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, NoReturn
+from typing import NoReturn
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel, ValidationError
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.db import transaction
-from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import (
     WorkbenchGovernanceResponse,
-    WorkbenchOperationResponse,
     WorkbenchUserListResponse,
     WorkbenchUserResponse,
-    WorkbenchUserWriteRequest,
 )
 from app.kernel.identifiers import assert_safe_id
 
@@ -57,13 +52,6 @@ async def _optional_principal(request: Request) -> AuthPrincipal | None:
         raise
 
 
-def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
-    try:
-        return model_type.model_validate(payload)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail="invalid_workbench_payload") from exc
-
-
 def _safe_id(value: str, field_name: str) -> str:
     try:
         return assert_safe_id(value, field_name)
@@ -91,42 +79,6 @@ def _governance(
     )
 
 
-async def _record_operation(
-    *,
-    principal: AuthPrincipal,
-    target_type: str,
-    target_id: str,
-    operation: str,
-    payload_json: dict[str, Any] | None = None,
-) -> WorkbenchOperationResponse:
-    safe_target_id = _safe_id(target_id, f"{target_type}_id")
-    audit_payload = {
-        "operation": operation,
-        "department_id": principal.department_id,
-        "secret_material_projected": False,
-    }
-    if payload_json:
-        audit_payload.update(payload_json)
-    async with transaction() as conn:
-        audit_id = await identity_audit.append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action=f"{target_type}.admin.{operation}_requested",
-            target_type=target_type,
-            target_id=safe_target_id,
-            payload_json=audit_payload,
-        )
-    return WorkbenchOperationResponse(
-        target_type=target_type,
-        target_id=safe_target_id,
-        operation=operation,
-        status="queued",
-        audit_id=audit_id,
-        message=f"{target_type} {operation.replace('_', ' ')} accepted for audited execution",
-    )
-
-
 def _user_projection(principal: AuthPrincipal) -> WorkbenchUserResponse:
     return WorkbenchUserResponse(
         id=principal.user_id,
@@ -144,12 +96,12 @@ def _user_projection(principal: AuthPrincipal) -> WorkbenchUserResponse:
 
 @router.get("/users/", response_model=WorkbenchUserListResponse)
 async def list_users(
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
     search: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> WorkbenchUserListResponse:
-    """Return a safe company user-directory projection."""
+    """Return only the authenticated self; no company directory is available."""
 
     _require_permission(principal, "user:read")
     user = _user_projection(principal)
@@ -157,12 +109,12 @@ async def list_users(
     if search and search.lower() not in user.username.lower() and search.lower() not in user.full_name.lower():
         users = []
     return WorkbenchUserListResponse(
-        users=users,
-        items=users,
+        users=users[skip : skip + limit],
+        items=users[skip : skip + limit],
         total=len(users),
         skip=skip,
         limit=limit,
-        governance=_governance(principal, "safe_user_directory", degraded=not is_ai_admin(principal)),
+        governance=_governance(principal, "authenticated_self", degraded=True),
     )
 
 
@@ -175,57 +127,31 @@ async def get_user(user_id: str, principal: AuthPrincipal = Depends(require_prin
     user = _user_projection(principal)
     if safe_user_id != user.id and not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="missing_permission:user:admin")
-    return user.model_copy(update={"id": safe_user_id, "username": safe_user_id}) if is_ai_admin(principal) else user
+    if safe_user_id != user.id:
+        _unavailable("user_directory_unavailable")
+    return user
 
 
-@router.post("/users/", response_model=WorkbenchOperationResponse)
-async def create_user(
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchOperationResponse:
-    """Queue an audited user creation request."""
-
-    _require_permission(principal, "user:admin")
-    request = _request_model(WorkbenchUserWriteRequest, payload or {})
-    target_id = request.username or "new-user"
-    return await _record_operation(
-        principal=principal,
-        target_type="user",
-        target_id=target_id,
-        operation="create",
-        payload_json={"role_count": len(request.roles), "permission_count": len(request.permissions)},
-    )
-
-
-@router.put("/users/{user_id}", response_model=WorkbenchOperationResponse)
-async def update_user(
-    user_id: str,
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchOperationResponse:
-    """Queue an audited user update request."""
+@router.post("/users/", status_code=501, response_model=None)
+async def create_user(principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
+    """Reject user creation until an actual lifecycle owner exists."""
 
     _require_permission(principal, "user:admin")
-    request = _request_model(WorkbenchUserWriteRequest, payload or {})
-    return await _record_operation(
-        principal=principal,
-        target_type="user",
-        target_id=user_id,
-        operation="update",
-        payload_json={
-            "role_count": len(request.roles),
-            "permission_count": len(request.permissions),
-            "is_active_changed": request.is_active is not None,
-        },
-    )
+    _unavailable("user_management_unavailable")
 
 
-@router.delete("/users/{user_id}", response_model=WorkbenchOperationResponse)
-async def delete_user(user_id: str, principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchOperationResponse:
-    """Queue an audited user deletion request."""
-
+@router.put("/users/{user_id}", status_code=501, response_model=None)
+async def update_user(user_id: str, principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
     _require_permission(principal, "user:admin")
-    return await _record_operation(principal=principal, target_type="user", target_id=user_id, operation="delete")
+    _safe_id(user_id, "user_id")
+    _unavailable("user_management_unavailable")
+
+
+@router.delete("/users/{user_id}", status_code=501, response_model=None)
+async def delete_user(user_id: str, principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
+    _require_permission(principal, "user:admin")
+    _safe_id(user_id, "user_id")
+    _unavailable("user_management_unavailable")
 
 
 def _unavailable(detail: str) -> NoReturn:

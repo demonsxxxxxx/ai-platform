@@ -95,23 +95,24 @@ function mockBootstrapSource(isAdmin) {
         is_admin: ${isAdmin},
         source: "company-login",
       });
-      if (url.pathname === "/api/users/") {
+      if (url.pathname === "/api/ai/admin/users") {
         const projectedUser = {
-          id: "synthetic-user-record",
-          username: "synthetic-user-record",
-          email: null,
-          full_name: "Synthetic User",
-          is_active: true,
-          is_superuser: false,
-          roles: ["user"],
-          permissions: [],
-          tenant_id: "synthetic-tenant",
-          department_id: "",
+          user_id: "synthetic-user-record",
+          display_name: "Synthetic User",
+          status: "active",
+          session_count: 0,
+          run_count: 0,
+          queued_run_count: 0,
+          running_run_count: 0,
+          succeeded_run_count: 0,
+          failed_run_count: 0,
+          cancelled_run_count: 0,
           created_at: null,
-          updated_at: null,
+          last_activity_at: null,
         };
         return json({
-          users: [projectedUser], items: [projectedUser], total: 1, skip: 0, limit: 20, governance,
+          schema_version: "ai-platform.admin-user-diagnostics.v1",
+          users: [projectedUser], total: 1, offset: 0, limit: 20,
         });
       }
       if (url.pathname === "/api/agent/models/available") return json({

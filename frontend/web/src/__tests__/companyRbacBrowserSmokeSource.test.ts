@@ -111,3 +111,12 @@ test("company source contract reads only packaged frontend inputs", () => {
   assert.doesNotMatch(setup, /docs\/agent-rules/);
   assert.doesNotMatch(setup, /agentsPath|workflowPath/);
 });
+
+
+test("company Users fixture targets the real Identity diagnostics directory", () => {
+  const scenario = read(scenarioPath);
+  assert.match(scenario, /pathname === "\/api\/ai\/admin\/users"/);
+  assert.match(scenario, /schema_version: "ai-platform.admin-user-diagnostics.v1"/);
+  assert.match(scenario, /user_id: "synthetic-user-record"/);
+  assert.doesNotMatch(scenario, /pathname === "\/api\/users\/"/);
+});

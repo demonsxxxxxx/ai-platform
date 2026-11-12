@@ -101,7 +101,8 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/mcp" in all_safe_routes
     assert "/api/notifications/active" not in all_safe_routes
     assert "/api/settings" not in all_safe_routes
-    assert "/api/users" in all_safe_routes
+    # Legacy HTTP compatibility remains backend-owned; no frontend client survives.
+    assert "/api/users" not in all_safe_routes
     assert "/api/role-governance" in SAFE_PUBLIC_ROUTE_PREFIXES
     all_safe_admin_routes = {
         route["route_prefix"]

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
-import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
 import type { SessionSidebarHandle } from "../../panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../panels/SessionSidebar";
@@ -1059,7 +1058,6 @@ export function ChatAppContent({
             ) : null}
           </div>
         ) : null}
-        <BlockPreviewPortal />
       </div>
     </AppShell>
   );
