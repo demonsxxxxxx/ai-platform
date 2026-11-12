@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { UploadRequestError, uploadApi } from "../upload.ts";
+import type { FileDeletionResponse } from "../../../types/upload";
 
 type FetchHandler = (
   url: string,
@@ -230,3 +231,55 @@ test(
     }
   },
 );
+
+test("deleteFile preserves the durable deletion response and DELETE transport", { concurrency: false }, async () => {
+  for (const deletion_state of ["pending", "processing", "failed", "dead_letter", "deleted"] as const) {
+    for (const reconcile_required of [false, true]) {
+      const payload = {
+        file_id: "file-1",
+        lifecycle_state: deletion_state === "deleted" ? "deleted" as const : "delete_pending" as const,
+        deletion_state,
+        reconcile_required,
+      };
+      const restore = installFetch((url, options) => {
+        assert.equal(url, "/api/ai/files/file%2Fwith%20space%3F");
+        assert.equal(options.method, "DELETE");
+        assert.equal(options.credentials, "include");
+        assert.equal(options.body, undefined);
+        return jsonResponse(payload);
+      });
+      try {
+        const result: FileDeletionResponse = await uploadApi.deleteFile("file/with space?");
+        assert.deepEqual(result, payload);
+        assert.equal("deleted" in result, false);
+        assert.equal("key" in result, false);
+      } finally {
+        restore();
+      }
+    }
+  }
+});
+
+test("deleteFile keeps rejected, invalid JSON, and network outcomes as failures", { concurrency: false }, async () => {
+  for (const [status, detail] of [[404, "file_not_found"], [409, "file_deletion_blocked"]] as const) {
+    const restore = installFetch(() => jsonResponse({ detail }, status));
+    try {
+      await assert.rejects(uploadApi.deleteFile("file-1"), { message: detail });
+    } finally {
+      restore();
+    }
+  }
+  let restore = installFetch(() => new Response("not-json", { status: 200 }));
+  try {
+    await assert.rejects(uploadApi.deleteFile("file-1"), SyntaxError);
+  } finally {
+    restore();
+  }
+  const failure = new TypeError("synthetic network failure");
+  restore = installFetch(() => { throw failure; });
+  try {
+    await assert.rejects(uploadApi.deleteFile("file-1"), (error) => error === failure);
+  } finally {
+    restore();
+  }
+});
