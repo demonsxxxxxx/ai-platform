@@ -36,7 +36,7 @@ server {
     # those segments into the headers consumed by the existing model control
     # plane and supplies its internal credential server-side.
     location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {
-        client_max_body_size 32000000;
+        client_max_body_size 100M;
         proxy_request_buffering off;
         if ($request_method != POST) { return 405; }
         if ($query_string != "") { return 400; }
@@ -68,7 +68,7 @@ server {
     }
 
     location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {
-        client_max_body_size 32000000;
+        client_max_body_size 100M;
         proxy_request_buffering off;
         if ($request_method != POST) { return 405; }
         if ($query_string !~ "^(|beta=true)$") { return 400; }

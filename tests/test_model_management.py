@@ -2000,7 +2000,7 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
 
     chunks = iter(
         [
-            {"type": "http.request", "body": b"x" * 32_000_000, "more_body": True},
+            {"type": "http.request", "body": b"x" * 104_857_600, "more_body": True},
             {"type": "http.request", "body": b"x", "more_body": False},
         ]
     )
@@ -2057,7 +2057,7 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
     ("anthropic", "v1/messages"),
     ("anthropic", "v1/messages/count_tokens"),
 ])
-@pytest.mark.parametrize("request_bytes", [1_744_783, 32_000_000])
+@pytest.mark.parametrize("request_bytes", [1_744_783, 104_857_600])
 async def test_internal_runtime_proxy_accepts_large_serialized_model_requests(
     monkeypatch, provider, path, request_bytes,
 ):

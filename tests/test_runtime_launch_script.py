@@ -1308,10 +1308,13 @@ def test_opensandbox_egress_model_request_budget_matches_api_without_expanding_c
     locations = re.findall(r"    location [^\n]+ \{\n(.*?)(?=\n    \})", template, re.DOTALL)
     model_locations = [body for body in locations if "/api/ai/internal/model-proxy/" in body]
     callback_locations = [body for body in locations if "proxy_pass" in body and body not in model_locations]
-    assert _MODEL_PROXY_MAX_REQUEST_BYTES == 32_000_000
+    assert _MODEL_PROXY_MAX_REQUEST_BYTES == 104_857_600
     assert len(model_locations) == 2
     for body in model_locations:
-        assert f"client_max_body_size {_MODEL_PROXY_MAX_REQUEST_BYTES};" in body
+        assert "client_max_body_size 100M;" in body
+        budget = re.search(r"client_max_body_size ([0-9]+)M;", body)
+        assert budget is not None
+        assert int(budget.group(1)) * 1024 * 1024 == _MODEL_PROXY_MAX_REQUEST_BYTES
         assert "proxy_request_buffering off;" in body
         assert "proxy_http_version 1.1;" in body
     for compose_file in (OPENSANDBOX_COMPOSE_FILE, DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"):

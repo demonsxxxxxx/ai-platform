@@ -18,7 +18,7 @@ from app.execution.application.model_stream_ownership import close_model_stream
 
 
 _logger = logging.getLogger(__name__)
-_MODEL_PROXY_MAX_REQUEST_BYTES = 32_000_000
+_MODEL_PROXY_MAX_REQUEST_BYTES = 100 * 1024 * 1024
 
 
 async def _record_proxy_debug(*, run_id: str, attempt_id: str, error_code: str, debug: object, operation: str) -> None:

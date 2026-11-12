@@ -71,13 +71,15 @@ capability admission.
 ### Model request byte budget
 
 The OpenAI model routes and Anthropic messages/count-token routes accept at most
-**32,000,000 serialized request-body bytes**, inclusive. The Nginx model locations
-use `client_max_body_size 32000000` and the API counts cumulative ASGI body chunks
+**104,857,600 serialized request-body bytes (100 MiB)**, inclusive. The Nginx model
+locations use `client_max_body_size 100M` and the API counts cumulative ASGI body chunks
 against the same boundary before extending its buffer. A request exceeding it by
 one byte receives HTTP `413` before model dispatch. The API keeps the existing
-`model_proxy_request_too_large` error code. This is decimal 32 MB, not Nginx `32m`
-(32 MiB), and is independent of token windows, automatic compaction and upstream
-request limits; an upstream may still reject an admitted request.
+`model_proxy_request_too_large` error code. Nginx `100M` uses binary units, not
+100,000,000 decimal bytes. This default aligns with Dify’s Nginx default and
+Open WebUI’s deployment example, replacing the initial 32,000,000-byte proposal.
+It is independent of token windows, automatic compaction and upstream request
+limits; an upstream may still reject an admitted request.
 
 The former 1 MiB model-body limit rejected valid long tool conversations even
 after SDK compaction. It is replaced in both layers, without a legacy toggle.
@@ -97,7 +99,7 @@ change.
 The larger budget permits proportionally more buffered API request memory per
 concurrent request. It remains finite; it does not promise that every 1M-token or
 multimodal input fits. Change acceptance covers a
-valid UTF-8 JSON body above the old limit, exactly 32,000,000 bytes and cumulative
+valid UTF-8 JSON body above the old limit, exactly 104,857,600 bytes and cumulative
 chunk overflow, both provider route families and count requests, retained invalid
 capability rejection, and Nginx/API budget agreement without expanding callbacks.
 
