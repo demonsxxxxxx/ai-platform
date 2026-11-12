@@ -313,3 +313,56 @@ def test_admin_preview_fallback_writes_audit(monkeypatch):
     assert calls[0]["payload_json"]["target_user_id"] == "user-a"
     assert calls[0]["payload_json"]["artifact_id"] == "art-a"
     assert calls[0]["payload_json"]["run_id"] == "run-a"
+
+
+
+@pytest.mark.asyncio
+async def test_admin_run_artifact_metadata_never_reads_content_and_audit_is_required():
+    from app.artifacts.api import AdminRunArtifactAccess, AdminArtifactAccessError
+    calls = []
+    @asynccontextmanager
+    async def tx():
+        yield object()
+    async def binding(conn, **kwargs):
+        calls.append(kwargs)
+        if kwargs["run_id"] != "run-a" or kwargs["tenant_id"] != "tenant-a":
+            return None
+        return {"id": "art-a", "run_id": "run-a", "lifecycle_state": "active", "content_type": "application/pdf", "storage_key": "PRIVATE"}
+    async def audit(conn, **kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("audit_unavailable")
+    access = AdminRunArtifactAccess(transaction=tx, read_binding=binding, audit=audit)
+    metadata = await access.resolve(tenant_id="tenant-a", user_id="admin-a", run_id="run-a", artifact_id="art-a", action="access")
+    assert metadata == {"run_id": "run-a", "artifact_id": "art-a", "access": "allowed", "availability": "unverified", "preview_allowed": True}
+    assert "PRIVATE" not in str(metadata) and len(calls) == 1
+    for tenant, run in (("tenant-b", "run-a"), ("tenant-a", "run-b")):
+        with pytest.raises(AdminArtifactAccessError, match="artifact_not_found"):
+            await access.resolve(tenant_id=tenant, user_id="admin-a", run_id=run, artifact_id="art-a", action="download")
+    with pytest.raises(RuntimeError, match="audit_unavailable"):
+        await access.resolve(tenant_id="tenant-a", user_id="admin-a", run_id="run-a", artifact_id="art-a", action="download")
+
+
+def test_admin_run_artifact_route_reauthorizes_and_never_serves_content_after_audit_failure(monkeypatch):
+    from app.artifacts.api import AdminRunArtifactAccess
+    from app.runs.transport.admin_artifacts import build_admin_run_artifact_router
+    from fastapi import FastAPI
+    from types import SimpleNamespace
+    @asynccontextmanager
+    async def tx():
+        yield object()
+    async def binding(conn, **kwargs):
+        return {"id": "art-a", "lifecycle_state": "active", "content_type": "application/pdf"} if kwargs["run_id"] == "run-a" else None
+    async def audit(conn, **kwargs):
+        raise RuntimeError("audit_unavailable")
+    async def content(**kwargs):
+        raise AssertionError("unaudited content must not be read")
+    app = FastAPI()
+    principal = SimpleNamespace(tenant_id="tenant-a", user_id="admin-a", admin=True)
+    app.include_router(build_admin_run_artifact_router(access=AdminRunArtifactAccess(transaction=tx, read_binding=binding, audit=audit),
+        principal_dependency=lambda: principal, is_admin=lambda value: value.admin, read_content=content))
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.get("/admin/runs/run-a/artifacts/art-a/access").headers["cache-control"] == "private, no-store"
+    assert client.get("/admin/runs/run-b/artifacts/art-a/download").status_code == 404
+    assert client.get("/admin/runs/run-a/artifacts/art-a/download").status_code == 500
+    principal.admin = False
+    assert client.get("/admin/runs/run-a/artifacts/art-a/access").status_code == 403

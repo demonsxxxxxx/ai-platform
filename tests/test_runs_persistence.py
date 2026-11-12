@@ -23,6 +23,14 @@ from app.streaming.infrastructure.run_events_postgres import append_event, list_
 from tests.support.repository_fixtures import FakeConnection, RecordingConnection, SingleRowConnection, SingleRowCursor
 
 
+@pytest.fixture(autouse=True)
+def record_run_trigger(monkeypatch):
+    async def record(conn, **kwargs):
+        assert not hasattr(conn, 'trigger'), 'one source event per admitted Run'
+        conn.trigger = kwargs
+    monkeypatch.setattr(run_creation_persistence, 'append_run_trigger', record)
+
+
 @pytest.mark.asyncio
 async def test_tenant_exists_checks_tenant_identity():
     class ExistingTenantCursor:
@@ -225,6 +233,17 @@ async def test_create_run_rejects_execution_skill_identity_mismatch(
             skill_id=skill_id,
             input_json={},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', [None, 'chat_api', 'agent_profile_api'])
+async def test_run_creation_overwrites_caller_trigger_with_server_source(source):
+    conn = RecordingConnection()
+    await create_run(conn, tenant_id='tenant-a', workspace_id='workspace-a', session_id='session-a',
+        user_id='user-a', agent_id='general-agent', skill_id='general-chat', trigger_source=source, run_id='run-trigger',
+        input_json={'_trusted_run_source': {'version': 1, 'source': 'retry'}})
+    assert conn.trigger == {'tenant_id': 'tenant-a', 'run_id': 'run-trigger', 'source': source or 'direct_skill'}
+    assert all('_trusted_run_source' not in str(value) for value in conn.calls[-1][1])
 
 
 @pytest.mark.asyncio

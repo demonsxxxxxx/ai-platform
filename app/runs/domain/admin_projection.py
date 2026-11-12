@@ -56,6 +56,7 @@ class AdminRunRuntimeHealth(TypedDict):
 class AdminRunDetailResponse(TypedDict):
     run: dict[str, Any]
     runtime_health: NotRequired[AdminRunRuntimeHealth]
+    evidence_coverage: NotRequired[dict[str, Any]]
     worker_execution: dict[str, Any]
     events: list[dict[str, Any]]
     steps: list[dict[str, Any]]

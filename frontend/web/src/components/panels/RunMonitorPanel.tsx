@@ -6,14 +6,13 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleX,
-  Copy,
   Pause,
   Play,
   RefreshCw,
   Search,
-  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, Navigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { PanelHeader } from "../common/PanelHeader";
 import { Table } from "@lobehub/ui/base-ui";
 import { PanelLoadingState } from "../common/PanelLoadingState";
@@ -22,20 +21,21 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
   adminRunsApi,
   readAdminRunDeepLinkScope,
-  type AdminRunDiagnosticsResponse,
-  type AdminRunDetailResponse,
   type AdminRunSummary,
-  type AdminRunInvestigation,
   type AdminRunMonitorResponse,
 } from "../../services/api/adminRuns";
-import { formatDateTimeShort } from "../../utils/datetime";
-import { buildAdminRunMonitorView } from "./adminRunTimeline";
-import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
+import { agentDisplayName, compactIdentifier, dateTime, durationLabel, runDisplayTitle, skillDisplayName, userDisplayName, workspaceDisplayName } from "./runPresentation";
+import { RunQuickView } from "./RunQuickView";
+import { StatusBadge } from "./RunDetailFacts";
+import { RunDetailPage } from "./RunDetailPage";
+import { runDetailUrl } from "./runDetailNavigation";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { RunPerformanceSummary } from "./RunPerformanceSummary";
-import { RunInvestigationTimeline } from "./RunInvestigationTimeline";
-import { formatRunDuration } from "./runPerformance";
-import { AdminRunTrajectoryReplay } from "./AdminRunTrajectoryReplay";
+import { filterAdminRuns } from "./adminRunTimeline";
+import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation";
+
+const listScrollPositions = new Map<string, number>();
+registerAuthScopedCacheClearer(() => listScrollPositions.clear());
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
@@ -52,471 +52,8 @@ const STATUS_FILTERS = [
 
 type StatusFilter = (typeof STATUS_FILTERS)[number]["value"];
 
-const STATUS_LABELS: Record<string, string> = {
-  queued: "排队",
-  running: "执行中",
-  succeeded: "成功",
-  failed: "失败",
-  cancelled: "已取消",
-  cancel_requested: "取消中",
-  denied: "已拒绝",
-};
-
-const STATUS_TONES: Record<string, string> = {
-  queued:
-    "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
-  running:
-    "bg-[var(--theme-info-soft)] text-[var(--theme-info)] ring-[var(--theme-info-ring)]",
-  succeeded:
-    "bg-[var(--theme-success-soft)] text-[var(--theme-success)] ring-[var(--theme-success-ring)]",
-  failed:
-    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-[var(--theme-danger-ring)]",
-  cancelled:
-    "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-[var(--theme-border)]",
-  cancel_requested:
-    "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
-  denied:
-    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-[var(--theme-danger-ring)]",
-};
-
-function normalized(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
-}
-
-function displayText(value: string | null | undefined): string {
-  return value?.trim() ?? "";
-}
-
-function runDisplayTitle(run: AdminRunSummary): string {
-  return (
-    displayText(run.session_title) ||
-    displayText(run.task_summary) ||
-    "未命名任务"
-  );
-}
-
-function userDisplayName(run: AdminRunSummary): string {
-  return displayText(run.user_display_name) || "未知用户";
-}
-
-function workspaceDisplayName(run: AdminRunSummary): string {
-  return displayText(run.workspace_name) || "默认工作区";
-}
-
-function agentDisplayName(run: AdminRunSummary): string {
-  return displayText(run.agent_name) || "未命名 Agent";
-}
-
-function skillDisplayName(run: AdminRunSummary): string {
-  return (
-    displayText(run.skill_name) ||
-    (run.execution_kind === "harness_chat" ? "通用对话" : "未命名 Skill")
-  );
-}
-
-function compactIdentifier(value: string | null | undefined): string {
-  const text = displayText(value);
-  if (!text) return "-";
-  if (text.length <= 18) return text;
-  return `${text.slice(0, 8)}…${text.slice(-6)}`;
-}
-
-export function filterAdminRuns(
-  runs: AdminRunSummary[],
-  status: StatusFilter,
-  query: string,
-): AdminRunSummary[] {
-  const normalizedQuery = normalized(query);
-  return runs.filter((run) => {
-    if (status !== "all" && run.status !== status && !(status === "running" && run.status === "cancel_requested")) return false;
-    if (!normalizedQuery) return true;
-    return [
-      run.session_title,
-      run.task_summary,
-      run.user_display_name,
-      run.workspace_name,
-      run.agent_name,
-      run.skill_name,
-      run.run_id,
-      run.session_id,
-      run.user_id,
-      run.workspace_id,
-      run.agent_id,
-      run.skill_id,
-      run.trace_id,
-      run.error_code,
-    ].some((value) => normalized(value).includes(normalizedQuery));
-  });
-}
-
-
 function statusCount(filter: StatusFilter, report: AdminRunMonitorResponse | null): number | null {
-  if (!report) return null;
-  if (filter === "all") return report.counts.total;
-  return report.counts[filter] ?? null;
-}
-
-function statusLabel(status: string | null | undefined): string {
-  return STATUS_LABELS[status ?? ""] ?? status ?? "未知";
-}
-
-function statusTone(status: string | null | undefined): string {
-  return (
-    STATUS_TONES[status ?? ""] ??
-    "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-[var(--theme-border)]"
-  );
-}
-
-function dateTime(value: string | null | undefined): string {
-  return value ? formatDateTimeShort(value) : "-";
-}
-
-function durationLabel(run: AdminRunSummary): string {
-  if (run.latency?.total_ms != null) return formatRunDuration(run.latency.total_ms);
-  if (run.status === "queued") return "排队中";
-  if (run.status === "running") return "执行中";
-  return "未采集";
-}
-
-function tokenCountLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "未记录";
-  return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-function estimatedCostLabel(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "未记录";
-  return `${new Intl.NumberFormat("zh-CN").format(value)} 最小计价单位`;
-}
-
-function byteSizeLabel(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return "-";
-  if (value < 1_024) return `${value} B`;
-  if (value < 1_048_576) return `${(value / 1_024).toFixed(1)} KB`;
-  return `${(value / 1_048_576).toFixed(1)} MB`;
-}
-
-function StatusBadge({ status }: { status: string | null | undefined }) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ring-1 ${statusTone(status)}`}
-    >
-      <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
-      {statusLabel(status)}
-    </span>
-  );
-}
-
-function IdentityField({ label, value }: { label: string; value?: string | null }) {
-  const [copied, setCopied] = useState(false);
-  const copyValue = async () => {
-    if (!value || !navigator.clipboard) return;
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <div className="min-w-0">
-      <dt className="flex items-center justify-between gap-2 text-[11px] font-medium text-[var(--theme-text-tertiary)]">
-        <span>{label}</span>
-        {value ? (
-          <Button type="text"
-            htmlType="button"
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-[var(--theme-bg-sidebar)]"
-            onClick={() => void copyValue()}
-            aria-label={`复制${label}`}
-          >
-            <Copy size={11} />
-            {copied ? "已复制" : "复制"}
-          </Button>
-        ) : null}
-      </dt>
-      <dd className="mt-1 break-all font-mono text-xs leading-5 text-[var(--theme-text)]" title={value || undefined}>
-        {value || "-"}
-      </dd>
-    </div>
-  );
-}
-
-function RuntimeHealth({ detail }: { detail: AdminRunDetailResponse }) {
-  const health = detail.runtime_health;
-  const state = detail.run.status === "queued" ? "queued"
-    : ["succeeded", "failed", "cancelled"].includes(detail.run.status) ? "terminal"
-    : health?.state ?? "unknown";
-  const labels = {
-    queued: "尚未开始执行",
-    terminal: "运行已结束",
-    healthy: `${health?.heartbeat_source === "executor" ? "Executor" : "Sandbox"} 心跳正常`,
-    stale: "执行心跳或运行租约已过期；不等于 Run 已失败",
-    unknown: "未知（缺少当前执行证据）",
-    awaiting_reconciliation: "执行器终态已留存，等待平台收尾",
-  };
-  return (
-    <section className="mt-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3 text-xs" data-run-runtime-health>
-      <h4 className="font-semibold text-[var(--theme-text)]">执行健康（本次观测）</h4>
-      <p className="mt-1 text-[var(--theme-text)]">{labels[state]}</p>
-      {health?.async_dispatch_accepted && detail.run.status === "running" ? (
-        <p className="mt-1 text-[var(--theme-text-secondary)]">
-          异步派发已接纳；队列 Worker 心跳仅记录交接前的队列持有状态。
-        </p>
-      ) : null}
-      {health?.queue_last_heartbeat_at ? (
-        <p className="mt-1 text-[var(--theme-text-tertiary)]">
-          队列 Worker 心跳（历史）：{dateTime(health.queue_last_heartbeat_at)} · 队列租约（历史）：{dateTime(health.queue_lease_expires_at)}
-        </p>
-      ) : null}
-      {health?.heartbeat_at && (state === "healthy" || state === "stale") ? (
-        <p className="mt-1 text-[var(--theme-text-tertiary)]">
-          {health.heartbeat_source === "executor" ? "Executor" : "Sandbox"} 最近心跳：{dateTime(health.heartbeat_at)}
-        </p>
-      ) : null}
-      {health?.observed_at ? (
-        <p className="mt-1 text-[var(--theme-text-tertiary)]">观测时间：{dateTime(health.observed_at)}</p>
-      ) : null}
-    </section>
-  );
-}
-
-function focusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), summary, [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => {
-    if (element.closest("[hidden]")) return false;
-    let closed = element.closest<HTMLDetailsElement>("details:not([open])");
-    while (closed) {
-      if (element !== closed.querySelector(":scope > summary")) return false;
-      closed = closed.parentElement?.closest<HTMLDetailsElement>("details:not([open])") ?? null;
-    }
-    return true;
-  });
-}
-
-function RunDetail({
-  detail,
-  diagnostics,
-  loading,
-  diagnosticsLoading,
-  error,
-  diagnosticsError,
-  diagnosticsExporting,
-  diagnosticsExportError,
-  onRetryDiagnostics,
-  onExportDiagnostics,
-  investigation,
-  investigationLoading,
-  investigationError,
-  onRetryInvestigation,
-  onFocusAgent,
-  onClose,
-  fallbackFocusRef,
-}: {
-  detail: AdminRunDetailResponse | null;
-  diagnostics: AdminRunDiagnosticsResponse | null;
-  loading: boolean;
-  diagnosticsLoading: boolean;
-  error: string | null;
-  diagnosticsError: string | null;
-  diagnosticsExporting: boolean;
-  diagnosticsExportError: string | null;
-  onRetryDiagnostics: () => void;
-  onExportDiagnostics: () => void;
-  investigation: AdminRunInvestigation | null;
-  investigationLoading: boolean;
-  investigationError: string | null;
-  onRetryInvestigation: () => void;
-  onFocusAgent: (agentId: string, label: string) => void;
-  onClose: () => void;
-  fallbackFocusRef: RefObject<HTMLButtonElement | null>;
-}) {
-  const detailRef = useRef<HTMLElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
-
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    const restoreFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const previousBodyOverflow = document.body.style.overflow;
-    const fallbackFocus = fallbackFocusRef.current;
-    let focusCancelled = false;
-    document.body.style.overflow = "hidden";
-    queueMicrotask(() => {
-      if (!focusCancelled) closeRef.current?.focus();
-    });
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const focusable = detailRef.current ? focusableElements(detailRef.current) : [];
-      if (!focusable.length) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable.at(-1)!;
-      if (!detailRef.current?.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    const handleFocusIn = (event: FocusEvent) => {
-      const detailElement = detailRef.current;
-      if (!detailElement || detailElement.contains(event.target as Node)) return;
-      focusableElements(detailElement)[0]?.focus();
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("focusin", handleFocusIn);
-    return () => {
-      focusCancelled = true;
-      document.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("focusin", handleFocusIn);
-      document.body.style.overflow = previousBodyOverflow;
-      if (restoreFocus?.isConnected) restoreFocus.focus();
-      else fallbackFocus?.focus();
-    };
-  }, [fallbackFocusRef]);
-
-  const monitorView = detail
-    ? buildAdminRunMonitorView(detail.run, detail.events)
-    : null;
-  const workerExecution = detail?.worker_execution ?? {
-    response: monitorView?.modelOutput ?? "",
-    messages: [],
-    actions: [],
-    model: {},
-  };
-  const artifacts = detail?.artifacts ?? [];
-
-  return (
-    <aside
-      ref={detailRef}
-      data-run-monitor-detail
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="run-monitor-detail-title"
-      className="h-full min-w-0 overflow-y-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
-    >
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-[var(--theme-text-secondary)]">
-            运行详情
-          </p>
-          <h2 id="run-monitor-detail-title" className="truncate text-sm font-semibold text-[var(--theme-text)]">
-            {detail ? runDisplayTitle(detail.run) : "正在读取运行详情"}
-          </h2>
-          {detail ? (
-            <p className="mt-1 truncate text-[11px] text-[var(--theme-text-tertiary)]">
-              {agentDisplayName(detail.run)} · 运行 {compactIdentifier(detail.run.run_id)}
-            </p>
-          ) : null}
-        </div>
-        <Button type="text"
-          ref={closeRef}
-          htmlType="button"
-          className="flex size-9 shrink-0 items-center justify-center rounded-md"
-          onClick={onClose}
-          aria-label="关闭运行详情"
-          title="关闭运行详情"
-          icon={<X size={17} />}
-        />
-      </div>
-
-      {loading ? (
-        <div className="flex min-h-64 items-center justify-center">
-          <PanelLoadingState text="正在读取运行详情" />
-        </div>
-      ) : error ? (
-        <div className="p-4">
-          <div
-            role="alert"
-            className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]"
-          >
-            {error}
-          </div>
-        </div>
-      ) : detail ? (
-        <div className="divide-y divide-[var(--theme-border)]">
-          <section className="p-4" data-worker-execution-result>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold">任务状态</h3>
-              <StatusBadge status={detail.run.status} />
-            </div>
-            <p className="mt-2 text-sm font-medium">{monitorView?.currentAction}</p>
-            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-              {userDisplayName(detail.run)} · {workspaceDisplayName(detail.run)} · {agentDisplayName(detail.run)} · {skillDisplayName(detail.run)}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-[var(--theme-text-secondary)]">
-              <span>提交 {dateTime(detail.run.created_at)}</span>
-              <span>Token {tokenCountLabel(detail.run.total_token_count)}</span>
-              <span>估算成本 {estimatedCostLabel(detail.run.estimated_cost_minor)}</span>
-            </div>
-            <RuntimeHealth detail={detail} />
-            {detail.run.error_code ? <p className="mt-2 text-xs text-[var(--theme-danger-text)]">终态分类：{detail.run.error_code}（与最早异常分开解释）</p> : null}
-            {detail.run.agent_id ? <Button type="default" htmlType="button" className="mt-3 text-xs" onClick={() => onFocusAgent(detail.run.agent_id!, agentDisplayName(detail.run))}>只看这个 Agent 的任务</Button> : null}
-          </section>
-
-          <RunInvestigationTimeline
-            key={detail.run.run_id}
-            investigation={investigation}
-            loading={investigationLoading}
-            error={investigationError}
-            diagnostics={diagnostics}
-            onRetry={onRetryInvestigation}
-          />
-          <RunDiagnosticsSection
-            diagnostics={diagnostics}
-            loading={diagnosticsLoading}
-            error={diagnosticsError}
-            exporting={diagnosticsExporting}
-            exportError={diagnosticsExportError}
-            onRetry={onRetryDiagnostics}
-            onExport={onExportDiagnostics}
-          />
-
-          <details className="p-4" data-worker-execution-content>
-            <summary className="cursor-pointer text-xs font-semibold">交付结果与完整事件记录</summary>
-            {workerExecution.answer_projection ? <p data-run-answer-projection className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">公开回答：{{ available: "已有可验证回答", incomplete: "回答账本尚不完整", invalid: "回答账本未通过校验", unknown: "未采集或证据不足" }[workerExecution.answer_projection.status]}</p> : null}
-            {workerExecution.response ? <p data-run-agent-output className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-[var(--theme-text-secondary)]">{workerExecution.response}</p> : null}
-            {artifacts.length ? <ul className="mt-3 space-y-1" aria-label="已登记产物">{artifacts.map((artifact) => <li key={artifact.artifact_id} className="text-xs">{artifact.label} · {byteSizeLabel(artifact.size_bytes)}</li>)}</ul> : null}
-            <div className="-mx-4 mt-3 border-t border-[var(--theme-border)]">
-              <AdminRunTrajectoryReplay key={detail.run.run_id} runId={detail.run.run_id} attempts={diagnostics?.attempts ?? []} messages={workerExecution.messages ?? []} />
-            </div>
-          </details>
-
-          <details className="p-4">
-            <summary className="cursor-pointer text-xs font-semibold">技术关联</summary>
-            <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-              <IdentityField label="Run ID" value={detail.run.run_id} />
-              <IdentityField label="Session ID" value={detail.run.session_id} />
-              <IdentityField label={detail.run.trace_id_recorded ? "已记录 Trace ID" : "派生关联 ID"} value={detail.run.trace_id} />
-            </dl>
-            {detail.sandbox_leases.length ? <details className="mt-3 text-xs"><summary className="cursor-pointer">运行环境关联（{detail.sandbox_leases.length}）</summary><ul className="mt-2 space-y-2">{detail.sandbox_leases.map((lease, index) => <li key={lease.lease_id ?? lease.id ?? index} className="text-[var(--theme-text-secondary)]">{lease.provider || "平台沙箱"} · {statusLabel(lease.status)}<span className="ml-2 break-all font-mono text-[10px]">{lease.lease_id ?? lease.id}</span></li>)}</ul></details> : null}
-          </details>
-        </div>
-      ) : null}
-    </aside>
-  );
+  return !report ? null : filter === "all" ? report.counts.total : report.counts[filter] ?? null;
 }
 
 function DesktopRunTable({
@@ -556,9 +93,8 @@ render: (_value, run) => (<>
 </>) },
 { key: "identity", title: "任务 / 运行", width: "24%",
 render: (_value, run) => (<>
-<Button type="text"
-                    htmlType="button"
-                    onClick={() => onSelect(run.run_id)}
+<Link
+                    to={runDetailUrl(run.run_id, window.location.search)}
                     className="block w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-focus-ring)]"
                     aria-label={`查看 ${run.run_id}`}
                   >
@@ -576,7 +112,7 @@ render: (_value, run) => (<>
                       运行 {compactIdentifier(run.run_id)}
                     </span>
                     </span>
-                  </Button>
+                  </Link>
 </>) },
 { key: "user", title: "用户 / 工作区", width: "16%",
 render: (_value, run) => (<>
@@ -612,9 +148,9 @@ render: (_value, run) => (<>
                     htmlType="button"
                     onClick={() => onSelect(run.run_id)}
                     className="font-medium text-[var(--theme-primary)]"
-                    aria-label={`打开 ${run.run_id} 详情`}
-                    title="打开详情"
->查看</Button>
+                    aria-label={`快速查看 ${run.run_id}`}
+                    title="快速查看"
+>快速查看</Button>
 </>) }
 ]}
 />
@@ -634,19 +170,14 @@ function MobileRunList({
   return (
     <div className="divide-y divide-[var(--theme-border)] md:hidden">
       {runs.map((run) => (
-        <Button type="text"
+        <div
           key={run.run_id}
-          htmlType="button"
-          onClick={() => onSelect(run.run_id)}
-          aria-label={`查看 ${run.run_id}`}
           data-selected={run.run_id === selectedRunId ? "true" : "false"}
           className="block w-full px-3 py-3 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] data-[selected=true]:bg-[var(--theme-info-soft)]"
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate text-xs font-medium text-[var(--theme-text)]">
-                {runDisplayTitle(run)}
-              </p>
+              <Link to={runDetailUrl(run.run_id, window.location.search)} aria-label={`查看 ${run.run_id}`} className="block truncate text-sm font-medium text-[var(--theme-text)]">{runDisplayTitle(run)}</Link>
               <p className="mt-1 truncate font-mono text-[11px] text-[var(--theme-text-tertiary)]">
                 运行 {compactIdentifier(run.run_id)}
               </p>
@@ -662,110 +193,52 @@ function MobileRunList({
             <span className="truncate">{userDisplayName(run)} · {agentDisplayName(run)}</span>
             <span className="shrink-0 tabular-nums">{durationLabel(run)}</span>
           </div>
-        </Button>
+          <Button type="text" htmlType="button" size="small" aria-label={`快速查看 ${run.run_id}`} onClick={() => onSelect(run.run_id)}>快速查看</Button>
+        </div>
       ))}
     </div>
   );
 }
 
 export function RunMonitorPanel() {
-  const scope = useMemo(() => readAdminRunDeepLinkScope(), []);
+  const { runId } = useParams<{ runId: string }>();
+  const location = useLocation();
+  const scope = readAdminRunDeepLinkScope(location.search);
+  if (runId) return <RunDetailPage key={runId} runId={runId} />;
+  if (scope.runId) return <Navigate replace to={runDetailUrl(scope.runId, location.search)} />;
+  return <RunMonitorList />;
+}
+
+export function RunMonitorList() {
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const scope = useMemo(() => readAdminRunDeepLinkScope(location.search), [location.search]);
   const [runs, setRuns] = useState<AdminRunSummary[]>([]);
   const [monitorReport, setMonitorReport] = useState<AdminRunMonitorResponse | null>(null);
-  const [hours, setHours] = useState(24);
-  const [modelFilter, setModelFilter] = useState("all");
-  const [agentFilter, setAgentFilter] = useState<{ id: string; label: string } | null>(null);
-  const [order, setOrder] = useState<"slow" | "recent">("recent");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const hours = [1, 24, 168].includes(Number(params.get("hours"))) ? Number(params.get("hours")) : 24;
+  const modelFilter = params.get("model") || "all";
+  const setModelFilter = (value: string) => setParams((current) => { if (value === "all") current.delete("model"); else current.set("model", value); current.delete("page"); return current; }, { replace: true });
+  const agentFilter = params.get("agent_id") ? { id: params.get("agent_id")!, label: params.get("agent_id")! } : null;
+  const agentId = agentFilter?.id;
+  const setAgentFilter = (value: { id: string; label: string } | null) => setParams((current) => { if (value) current.set("agent_id", value.id); else current.delete("agent_id"); current.delete("page"); return current; }, { replace: true });
+  const order = params.get("order") === "slow" ? "slow" : "recent";
+  const setOrder = (value: string) => setParams((current) => { current.set("order", value); current.delete("page"); return current; }, { replace: true });
+  const statusFilter: StatusFilter = STATUS_FILTERS.find((item) => item.value === params.get("status"))?.value ?? "all";
+  const setStatusFilter = (value: StatusFilter) => setParams((current) => { if (value === "all") current.delete("status"); else current.set("status", value); current.delete("page"); return current; }, { replace: true });
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(scope.runId);
-  const [detail, setDetail] = useState<AdminRunDetailResponse | null>(null);
-  const [diagnostics, setDiagnostics] = useState<AdminRunDiagnosticsResponse | null>(null);
-  const [investigation, setInvestigation] = useState<AdminRunInvestigation | null>(null);
-  const [investigationLoading, setInvestigationLoading] = useState(false);
-  const [investigationError, setInvestigationError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
-  const [diagnosticsExporting, setDiagnosticsExporting] = useState(false);
-  const [diagnosticsExportError, setDiagnosticsExportError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  const [page, setPage] = useState(1);
+  const page = Math.max(1, Number(params.get("page")) || 1);
+  const setPage = (value: number | ((current: number) => number)) => setParams((current) => { const next = typeof value === "function" ? value(Math.max(1, Number(current.get("page")) || 1)) : value; if (next === 1) current.delete("page"); else current.set("page", String(next)); return current; }, { replace: true });
+  const listScroll = useRef<HTMLElement>(null);
+  const scrollPositions = useRef(listScrollPositions);
   const listRequestSequence = useRef(0);
   const listRequestInFlight = useRef<number | null>(null);
-  const detailRequestSequence = useRef(0);
-  const diagnosticsRequestSequence = useRef(0);
-  const investigationRequestSequence = useRef(0);
-  const diagnosticsExportSequence = useRef(0);
-  const selectedRunIdRef = useRef<string | null>(scope.runId);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    selectedRunIdRef.current = selectedRunId;
-  }, [selectedRunId]);
-
-  const loadDetail = useCallback(async (runId: string, announce = true) => {
-    const requestId = ++detailRequestSequence.current;
-    if (announce) setDetailLoading(true);
-    setDetailError(null);
-    try {
-      const response = await adminRunsApi.detail(runId);
-      if (requestId !== detailRequestSequence.current || selectedRunIdRef.current !== runId) {
-        return;
-      }
-      setDetail(response);
-    } catch (error) {
-      if (requestId !== detailRequestSequence.current || selectedRunIdRef.current !== runId) {
-        return;
-      }
-      setDetailError(error instanceof Error ? error.message : "运行详情加载失败");
-    } finally {
-      if (requestId === detailRequestSequence.current) setDetailLoading(false);
-    }
-  }, []);
-
-  const loadInvestigation = useCallback(async (runId: string, announce = true) => {
-    const requestId = ++investigationRequestSequence.current;
-    if (announce) setInvestigationLoading(true);
-    setInvestigationError(null);
-    try {
-      const response = await adminRunsApi.investigation(runId);
-      if (requestId !== investigationRequestSequence.current || selectedRunIdRef.current !== runId) return;
-      setInvestigation(response);
-    } catch (error) {
-      if (requestId !== investigationRequestSequence.current || selectedRunIdRef.current !== runId) return;
-      setInvestigationError(error instanceof Error ? error.message : "运行调查加载失败");
-    } finally {
-      if (requestId === investigationRequestSequence.current) setInvestigationLoading(false);
-    }
-  }, []);
-
-  const loadDiagnostics = useCallback(async (runId: string, announce = true) => {
-    const requestId = ++diagnosticsRequestSequence.current;
-    if (announce) setDiagnosticsLoading(true);
-    setDiagnosticsError(null);
-    try {
-      const response = await adminRunsApi.diagnostics(runId);
-      if (
-        requestId !== diagnosticsRequestSequence.current ||
-        selectedRunIdRef.current !== runId
-      ) return;
-      setDiagnostics(response);
-    } catch (error) {
-      if (
-        requestId !== diagnosticsRequestSequence.current ||
-        selectedRunIdRef.current !== runId
-      ) return;
-      setDiagnosticsError(error instanceof Error ? error.message : "运行诊断加载失败");
-    } finally {
-      if (requestId === diagnosticsRequestSequence.current) setDiagnosticsLoading(false);
-    }
-  }, []);
 
   const loadRuns = useCallback(async (initial = false) => {
     if (!initial && listRequestInFlight.current !== null) return;
@@ -779,7 +252,7 @@ export function RunMonitorPanel() {
         limit: RUN_LIMIT, hours, order,
         userId: scope.userId ?? undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
-        agentId: agentFilter?.id, modelId,
+        agentId, modelId,
         modelGatewayRevision: revision ? Number(revision) : undefined,
       });
       if (requestId !== listRequestSequence.current) return;
@@ -787,12 +260,7 @@ export function RunMonitorPanel() {
       setRuns(response.runs);
       setLoadError(null);
       setLastUpdatedAt(new Date());
-      const activeRunId = selectedRunIdRef.current;
-      if (activeRunId) {
-        void loadDetail(activeRunId, false);
-        void loadDiagnostics(activeRunId, false);
-        void loadInvestigation(activeRunId, false);
-      }
+
     } catch (error) {
       if (requestId !== listRequestSequence.current) return;
       setLoadError(error instanceof Error ? error.message : "最近运行加载失败");
@@ -803,7 +271,7 @@ export function RunMonitorPanel() {
         setIsRefreshing(false);
       }
     }
-  }, [loadDetail, loadDiagnostics, loadInvestigation, scope.userId, hours, modelFilter, agentFilter, statusFilter, order]);
+  }, [scope.userId, hours, modelFilter, agentId, statusFilter, order]);
 
   useEffect(() => {
     void loadRuns(true);
@@ -818,74 +286,11 @@ export function RunMonitorPanel() {
   }, [autoRefresh, loadRuns]);
 
   useEffect(() => () => {
-    diagnosticsExportSequence.current += 1;
     listRequestSequence.current += 1;
-    detailRequestSequence.current += 1;
-    diagnosticsRequestSequence.current += 1;
-    investigationRequestSequence.current += 1;
   }, []);
 
-  const exportDiagnostics = useCallback(async () => {
-    const runId = selectedRunIdRef.current;
-    if (!runId) return;
-    const requestId = ++diagnosticsExportSequence.current;
-    setDiagnosticsExporting(true);
-    setDiagnosticsExportError(null);
-    try {
-      const result = await adminRunsApi.exportDiagnostics(runId);
-      const objectUrl = URL.createObjectURL(result.blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = result.filename;
-      anchor.rel = "noopener";
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-    } catch (error) {
-      if (requestId === diagnosticsExportSequence.current) {
-        setDiagnosticsExportError(error instanceof Error ? error.message : "诊断包生成失败");
-      }
-    } finally {
-      if (requestId === diagnosticsExportSequence.current) setDiagnosticsExporting(false);
-    }
-  }, []);
-
-  const selectRun = useCallback((runId: string) => {
-    // Navigation retires UI ownership, not an already requested download.
-    diagnosticsExportSequence.current += 1;
-    setDiagnosticsExporting(false);
-    selectedRunIdRef.current = runId;
-    setSelectedRunId(runId);
-    setDetail(null);
-    setDiagnostics(null);
-    setInvestigation(null);
-    setInvestigationError(null);
-    setDiagnosticsExportError(null);
-    void loadDetail(runId);
-    void loadDiagnostics(runId);
-    void loadInvestigation(runId);
-  }, [loadDetail, loadDiagnostics, loadInvestigation]);
-
-  const closeDetail = useCallback(() => {
-    diagnosticsExportSequence.current += 1;
-    detailRequestSequence.current += 1;
-    diagnosticsRequestSequence.current += 1;
-    investigationRequestSequence.current += 1;
-    selectedRunIdRef.current = null;
-    setSelectedRunId(null);
-    setDetail(null);
-    setDiagnostics(null);
-    setInvestigation(null);
-    setInvestigationError(null);
-    setInvestigationLoading(false);
-    setDetailError(null);
-    setDiagnosticsError(null);
-    setDiagnosticsExportError(null);
-    setDiagnosticsExporting(false);
-    setDetailLoading(false);
-    setDiagnosticsLoading(false);
-  }, []);
+  const closeDetail = useCallback(() => setSelectedRunId(null), []);
+  const selectRun = useCallback((runId: string) => setSelectedRunId(runId), []);
 
   const invalidateMonitorScope = useCallback(() => {
     listRequestSequence.current += 1;
@@ -894,7 +299,6 @@ export function RunMonitorPanel() {
     setRuns([]);
     setIsLoading(true);
     setLoadError(null);
-    setPage(1);
   }, [closeDetail]);
 
   const filteredRuns = useMemo(
@@ -908,11 +312,8 @@ export function RunMonitorPanel() {
     [currentPage, filteredRuns],
   );
   useEffect(() => {
-    setPage(1);
-  }, [searchQuery, statusFilter]);
-  useEffect(() => {
-    setPage((current) => Math.min(current, pageCount));
-  }, [pageCount]);
+    if (!isLoading && listScroll.current) listScroll.current.scrollTop = scrollPositions.current.get(location.search) || 0;
+  }, [isLoading, location.search]);
 
   const lastUpdatedLabel = lastUpdatedAt
     ? lastUpdatedAt.toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })
@@ -997,11 +398,11 @@ export function RunMonitorPanel() {
       ) : null}
 
       <div className="run-monitor-toolbar" aria-label="调查范围">
-        <Input className="run-monitor-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+        <Input className="run-monitor-search" value={searchQuery} onChange={(event) => { setSearchQuery(event.target.value); setPage(1); }}
           prefix={<Search size={16} />} aria-label="搜索任务 / Agent / 用户 / 运行编号" placeholder="搜索任务 / Agent / 用户 / 运行编号" />
         <LobeSelectField value={String(hours)} aria-label="统计时间窗" className="w-32"
           options={[{ value: "1", label: "最近 1 小时" }, { value: "24", label: "最近 24 小时" }, { value: "168", label: "最近 7 天" }]}
-          onChange={(value) => { invalidateMonitorScope(); setHours(Number(value)); setModelFilter("all"); }} />
+          onChange={(value) => { invalidateMonitorScope(); setParams((current) => { current.set("hours", value); current.delete("model"); current.delete("page"); return current; }, { replace: true }); }} />
         <LobeSelectField value={modelFilter} aria-label="模型配置筛选" className="w-56"
           options={[{ value: "all", label: "全部模型配置" }, ...(monitorReport?.models ?? []).map((model) => ({ value: `${model.model_id}@${model.model_gateway_revision ?? ""}`, label: `${model.model_value || "未记录模型名称"}${model.model_gateway_revision == null ? "" : ` · 配置 v${model.model_gateway_revision}`}` }))]}
           onChange={(value) => { invalidateMonitorScope(); setModelFilter(value); }} />
@@ -1047,6 +448,8 @@ export function RunMonitorPanel() {
 
       <div className="run-monitor-list relative min-h-64 flex-1 px-4 pb-0">
         <section
+          ref={listScroll}
+          onScroll={(event) => scrollPositions.current.set(location.search, event.currentTarget.scrollTop)}
           aria-label="最近 Worker 请求"
           className="h-full min-w-0 overflow-auto rounded-b-lg border border-t-0 border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"
         >
@@ -1082,38 +485,7 @@ export function RunMonitorPanel() {
           )}
         </section>
 
-        {selectedRunId ? (
-          <div className="fixed inset-0 z-[300]">
-            <Button type="text"
-              htmlType="button"
-              data-run-monitor-backdrop
-              className="absolute inset-0 cursor-default bg-[var(--theme-overlay-strong)]"
-              aria-label="关闭运行详情遮罩"
-              onClick={closeDetail}
-            />
-            <div className="absolute inset-y-0 right-0 w-full xl:w-[640px] 2xl:w-[760px] xl:p-2">
-              <RunDetail
-                detail={detail}
-                diagnostics={diagnostics}
-                loading={detailLoading}
-                diagnosticsLoading={diagnosticsLoading}
-                error={detailError}
-                diagnosticsError={diagnosticsError}
-                diagnosticsExporting={diagnosticsExporting}
-                diagnosticsExportError={diagnosticsExportError}
-                onRetryDiagnostics={() => void loadDiagnostics(selectedRunId)}
-                onExportDiagnostics={() => void exportDiagnostics()}
-                investigation={investigation}
-                investigationLoading={investigationLoading}
-                investigationError={investigationError}
-                onRetryInvestigation={() => void loadInvestigation(selectedRunId)}
-                onFocusAgent={(id, label) => { invalidateMonitorScope(); setAgentFilter({ id, label }); }}
-                onClose={closeDetail}
-                fallbackFocusRef={refreshButtonRef}
-              />
-            </div>
-          </div>
-        ) : null}
+        {selectedRunId ? <RunQuickView key={selectedRunId} runId={selectedRunId} search={location.search} onClose={closeDetail} /> : null}
       </div>
 
       {filteredRuns.length ? (
