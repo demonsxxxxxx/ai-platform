@@ -308,21 +308,6 @@ def project_legacy_attempt_settlement(
         and lease.get("executor_reconciliation_claim_token") is None
         and lease.get("executor_reconciliation_claimed_at") is None
     )
-    if cancelled_before_dispatch:
-        result = _object(run.get("result_json"))
-        finished_at = run.get("finished_at") or attempt.get("finished_at")
-        if result is not None and finished_at is not None:
-            # Preserve a committed cancellation, not proof that the executor
-            # accepted input. Dispatch stays unknown and no receipt is invented.
-            values.update(
-                mapping_state="mapped", settlement_phase="settled",
-                result_status=run_status, result_json=result,
-                result_sha256=_canonical_digest(result),
-                settlement_error_code=(run.get("error_code") or attempt.get("error_code")),
-                settled_at=finished_at,
-            )
-            return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=True))
-
     if receipt is not None:
         immutable_receipt = {key: value for key, value in receipt.items() if key != "diagnostics"}
         if not immutable_receipt:
@@ -340,6 +325,20 @@ def project_legacy_attempt_settlement(
     if receipt_attempt_count < 0:
         return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=settled))
     values["settlement_attempt_count"] = receipt_attempt_count
+    if cancelled_before_dispatch:
+        result = _object(run.get("result_json"))
+        finished_at = run.get("finished_at") or attempt.get("finished_at")
+        if result is not None and finished_at is not None:
+            # Preserve a committed cancellation, not proof that the executor
+            # accepted input. Dispatch stays unknown and no receipt is invented.
+            values.update(
+                mapping_state="mapped", settlement_phase="settled",
+                result_status=run_status, result_json=result,
+                result_sha256=_canonical_digest(result),
+                settlement_error_code=(run.get("error_code") or attempt.get("error_code")),
+                settled_at=finished_at,
+            )
+            return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=True))
 
     phase_by_legacy = {
         "pending": "pending",

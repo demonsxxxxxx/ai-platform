@@ -86,6 +86,7 @@ def test_cancelled_before_dispatch_preserves_terminal_history_without_inventing_
     assert values["mapping_state"] == "mapped"
     assert values["settlement_phase"] == "settled"
     assert values["result_json"] == {"answer": "stopped"}
+    assert values["settlement_attempt_count"] == 2
     assert values["dispatch_state"] == "unknown"
     assert values["receipt_json"] is None and values["accepted_context_json"] is None
     assert projected.cleanup.released_pending_settlement_count == 0
