@@ -11,7 +11,11 @@ import re
 import secrets
 from typing import Any, Mapping
 
-from app.identity.api import department_authority_from_snapshot
+from app.identity.api import (
+    AuthContextError,
+    department_authority_from_snapshot,
+    raise_auth_context_store_error as _raise_for_store_status,
+)
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
 
@@ -1061,16 +1065,6 @@ class AuthBootstrapResult:
     cookie_max_age_seconds: int | None = None
 
 
-class AuthContextError(RuntimeError):
-    """A safe auth-context failure that can be projected to browser clients."""
-
-    def __init__(self, code: str, status_code: int, *, discard_orphaned_cookie: bool = False):
-        super().__init__(code)
-        self.code = code
-        self.status_code = status_code
-        self.discard_orphaned_cookie = discard_orphaned_cookie
-
-
 def get_redis() -> RedisClientHandle:
     """Return an operation handle to the current loop's bounded Redis pool."""
 
@@ -1300,30 +1294,6 @@ def _decode_script_result(raw_result: object) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {"status": "corrupt"}
     return parsed if isinstance(parsed, dict) else {"status": "corrupt"}
-
-
-def _raise_for_store_status(operation: str, status: str) -> None:
-    if status in {
-        "stale",
-        "generation_gap",
-        "generation_conflict",
-        "migration_conflict",
-        "invalid_ticket",
-    }:
-        raise AuthContextError("auth_context_stale", 409)
-    if status == "rebootstrap_required":
-        raise AuthContextError("auth_context_rebootstrap_required", 409)
-    if status == "refresh_busy":
-        raise AuthContextError("auth_refresh_in_progress", 409)
-    if status == "missing":
-        raise AuthContextError("auth_context_missing", 401)
-    if status == "superseded":
-        raise AuthContextError("auth_operation_superseded", 409)
-    if status == "expired":
-        raise AuthContextError("auth_operation_expired", 409)
-    if operation == "oauth" and status == "invalid":
-        raise AuthContextError("auth_operation_superseded", 409)
-    raise AuthContextError("auth_context_unavailable", 503)
 
 
 async def _eval(script: str, keys: list[str], args: list[object]) -> dict[str, Any]:

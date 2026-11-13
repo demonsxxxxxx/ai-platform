@@ -1,3 +1,7 @@
+from app.identity.application.browser_auth_failures import (
+    AuthContextError,
+    raise_auth_context_store_error,
+)
 from app.identity.application.department_authority import (
     DepartmentAuthority,
     department_authority_from_snapshot,
@@ -37,6 +41,8 @@ from app.identity.application.department_authority import (
 )
 
 __all__ = [
+    "AuthContextError",
+    "raise_auth_context_store_error",
     "assert_safe_department_authority_id",
     "DepartmentAuthority",
     "department_authority_from_snapshot",

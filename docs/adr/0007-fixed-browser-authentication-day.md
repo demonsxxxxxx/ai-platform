@@ -126,6 +126,13 @@ own lifecycles; the recovery does not replay started stream or tool effects.
 
 ### Explicit login after authentication-store loss
 
+Identity owns the browser-context error type and store-outcome disposition in
+`identity.application.browser_auth_failures`, exposed through `identity.api`.
+The legacy `auth_sessions.AuthContextError` import remains the same class for
+existing authentication routes and consumers; its former local implementation
+and duplicate outcome mapping are retired. Redis operations, signed-cookie
+validation and key ownership remain unchanged.
+
 A signed browser Cookie does not restore a lost Redis authority or principal.
 Ordinary bootstrap continues to reject that Cookie. Explicit login first uses
 `recovery_only`, which cannot create authority, rotate, or renew a grant. When
