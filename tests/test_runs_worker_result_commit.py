@@ -156,7 +156,7 @@ async def test_success_preserves_empty_terminal_anchor_without_inventing_respons
 
 @pytest.mark.asyncio
 async def test_empty_assistant_anchor_keeps_provider_coverage_identity(monkeypatch):
-    from app.runs.application import provider_terminalization as owner
+    from app.runs.application import run_terminalization as owner
     calls = []
     async def append(conn, **kwargs):
         calls.append(("append", kwargs))

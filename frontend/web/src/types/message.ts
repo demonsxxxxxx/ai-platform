@@ -12,14 +12,18 @@ export interface Message {
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   isStreaming?: boolean;
+  /** Local display is frozen after cancel; receiving and terminal authority continue. */
+  isStopping?: boolean;
   /** The Run is terminal; exact persisted public history is still reconciling. */
   isSynchronizing?: boolean;
   // 有序内容块 - 用于按顺序渲染文本和工具调用
   parts?: MessagePart[];
   // Token 使用统计
   tokenUsage?: TokenUsagePart;
-  // 对话耗时（毫秒）
+  // SDK/model-reported duration (milliseconds), not the whole Run.
   duration?: number;
+  /** Server run_started to finished_at span, restored by terminal history hydration. */
+  runDurationMs?: number;
   // 用户消息附件
   attachments?: MessageAttachment[];
   // 运行 ID - 用于反馈

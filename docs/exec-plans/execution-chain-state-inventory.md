@@ -71,9 +71,10 @@ Claude 类任务由 `decide_execution_boundary`（`app/execution_boundary.py:105
 `data_retention`、`file_upload_session_cleanup`、`queue_reclaim`、`stale_run_reconciliation`，
 并按 `integrated` / `execution` / `finalizer` 三种角色裁剪（`worker_main.py:605`）。
 
-Runs 终态写入本身是集中的（`runs/application/lifecycle.py`），但外面包了两套同构包装：
-`provider_terminalization.py` 的 `*_with_context` 与 `terminalization_v4.py` 的 `*_with_v4`，
-二者都在终态后调用 `release_provider_lineage`，后者另写 v4 终态行。
+本清单基线记录了 Runs 终态写入外围的两套同构包装：
+`provider_terminalization.py` 的 `*_with_context` 与 `terminalization_v4.py` 的 `*_with_v4`。
+N12 当前候选已将 provider lineage 与 v4 终态行组合到
+`app/runs/application/run_terminalization.py`，取消请求仍由独立 `append_terminal` 唯一追加终态行。
 
 ## 5. 错误码
 
@@ -94,8 +95,8 @@ Runs 终态写入本身是集中的（`runs/application/lifecycle.py`），但�
 | F3 | 死信 4 种拼写，共约 140 处 | `dead_letter` 115、`dead_lettered` 13、`dead-letter` 10、`dead-lettered` 2；`runs/infrastructure/creation_postgres.py:26` 同时接受三种 |
 | F4 | 取消 2 种拼写 | `normalize_run_status`（`runs/domain/public_terminal.py:4`）、执行器状态同时接受 `cancelled`/`canceled` |
 | F5 | 执行器与 Run 用不同的成功词 | 执行器 `completed`（亦接受 `succeeded`），Run `succeeded`；`claude_agent_worker.py:92` 需要 `{"completed", "succeeded"}` |
-| F6 | 同一张表两个写入方 | `sandbox_leases` 由 `platform/postgres/sandbox_leases.py`（1116 行）与 `sandbox/infrastructure/leases_postgres.py`（292 行）分别写入；前者位于 `platform` 层却承载 Sandbox 业务状态 |
-| F7 | 终态包装层重复 | `provider_terminalization.py` 与 `terminalization_v4.py` 同构 |
+| F6 | 历史记录：同一张表两个写入方 | 历史基线中 `sandbox_leases` 曾由 `platform/postgres/sandbox_leases.py` 与 `sandbox/infrastructure/leases_postgres.py` 分别写入；当前唯一活跃租约写入入口为 `sandbox/infrastructure/leases_postgres.py` 及其所属适配器，旧路径已删除。 |
+| F7 | 终态包装层重复（基线） | 基线中的 `provider_terminalization.py` 与 `terminalization_v4.py` 同构；当前候选由 `run_terminalization.py` 组合 |
 | F8 | “是否结束”有多个独立判断者 | P1–P10 中至少 P2、P3、P5、P6、P9、P10 会在不同进程、以不同 fence（Redis 队列租约、对账 fence、`owner_generation`、租约 claim token）独立推进终态 |
 | F9 | 一个沙箱任务需要 6 个维度各自收敛 | 第 3 节维度 1、3、4、5、6、7；竞态与“卡住的任务”多发生在维度之间 |
 | F10 | 执行链路内部码对外统一为 `run_failed` | 第 5 节；用户与客服无法区分超时、执行器崩溃、回执丢失 |
@@ -104,7 +105,7 @@ Runs 终态写入本身是集中的（`runs/application/lifecycle.py`），但�
 
 1. **统一状态词表**（低风险）：在 Runs domain 定义唯一的 Run/Attempt/执行器终态集合与拼写；
    删除 F1、F3、F4、F5 的本地副本与同义词，读取历史数据时在一处归一化；为 `runs.status` 加 CHECK。
-2. **合并包装层**（低风险）：F7 二选一，终态后副作用（provider 谱系、v4 行）由 Runs 应用服务一次完成。
+2. **合并包装层**（低风险）：F7 的当前候选由 Runs application 的 `run_terminalization.py` 一次协调终态后副作用（provider 谱系、v4 行）。
 3. **租约单一写入方**（中风险）：F6 收敛到 Sandbox 上下文，`platform` 层只保留连接与通用原语。
 4. **终态单一裁决入口**（高收益、高风险）：回调、探测、过期回收、异常兜底只产生“终态候选”，
    由对账器一个入口按固定优先级裁决并推进所有维度；Worker 与维护阶段不再直接写终态。

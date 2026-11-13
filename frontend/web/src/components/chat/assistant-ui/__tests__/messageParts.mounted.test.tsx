@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { act, createElement } from "react";
-import { AuiIf, MessagePrimitive, ThreadPrimitive, getExternalStoreMessages, useAuiState } from "@assistant-ui/react";
+import { MessagePrimitive, ThreadPrimitive, getExternalStoreMessages, useAuiState } from "@assistant-ui/react";
 import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import type { Message } from "../../../../types";
 import { selectAssistantCopyText } from "../../../../types/assistantTextParts";
@@ -28,9 +28,7 @@ test("native parts keep one snapshot through streaming, classification, synchron
         <AssistantUiMessagePart key={keys[index]} part={part} messageId={message.id} partIndex={index} isLast={index === parts.length - 1} />,
       ) : <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />}</div>
       <AssistantUiMessageStatus />
-      <AuiIf condition={(state) => state.message.status?.type !== "running" && !state.message.metadata.custom.isSynchronizing}>
-        <AssistantUiMessageActions messageId={message.id} text={selectAssistantCopyText(message.parts, message.content)} />
-      </AuiIf>
+      <AssistantUiMessageActions messageId={message.id} text={selectAssistantCopyText(message.parts, message.content)} />
     </MessagePrimitive.Root>;
   }
   const render = async (message: Message) => {
@@ -57,6 +55,7 @@ test("native parts keep one snapshot through streaming, classification, synchron
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 700)); });
     assert.ok(body().querySelector("h1"));
     assert.equal(status(), "streaming");
+    assert.ok(container.querySelector('[aria-label="复制"]'));
 
     message = { ...message, content: "预览", parts: [{ type: "text", logical_id: "part-preview", public_part_id: "part-preview", text_role: "pending", content: "预览" }] };
     await render(message);
@@ -66,8 +65,8 @@ test("native parts keep one snapshot through streaming, classification, synchron
     ], isStreaming: false, isSynchronizing: true };
     await render(message);
     assert.equal(status(), "synchronizing");
-    assert.equal(container.querySelector('[aria-label="复制"]'), null);
-    assert.doesNotMatch(JSON.stringify(toAssistantUiMessage(message)), /已归入工作过程/);
+    assert.ok(container.querySelector('[aria-label="复制"]'));
+    assert.match(JSON.stringify(toAssistantUiMessage(message)), /已归入工作过程/);
     assert.equal(getAssistantUiDisplayParts(message).length, (toAssistantUiMessage(message).content as unknown[]).length);
 
     message = { ...message, isSynchronizing: false };

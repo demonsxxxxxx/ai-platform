@@ -1,6 +1,8 @@
 """Regression windows from the independent lifecycle control review."""
 from __future__ import annotations
 
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -12,6 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.execution.api import ContinuationSettlementPorts, RecoveryOperationError
+
+settlement_lease_port = build_sandbox_executor_reconciliation_port()
+
 
 
 @pytest.mark.asyncio
@@ -67,12 +72,12 @@ async def test_reconciler_retry_after_stop_preserves_success_and_nonempty_attach
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _: lease)
     monkeypatch.setattr(r, "_container_provider_for_lease", lambda _: Provider())
     monkeypatch.setattr(r, "transaction", transaction)
-    monkeypatch.setattr(r.sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", claim)
+    monkeypatch.setattr(settlement_lease_port, "has_sandbox_executor_reconciliation_claim", claim)
     monkeypatch.setattr(r, "_record_reconciliation_stage", checkpoint)
     monkeypatch.setattr(r, "run_storage_io", io)
     async def reconcile():
         return await r._collect_workspace_and_convert_result(
-            row, registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
+            row, lease_port=settlement_lease_port, registry=SimpleNamespace(get=lambda _: SimpleNamespace(reconcile_sandbox_terminal=convert)),
             claim_token="claim", continuation_ports=ContinuationSettlementPorts(save, unused),
         )
     if failure == "conversion":
@@ -172,21 +177,22 @@ async def test_dispatch_inflight_cancel_observes_same_attempt_and_hands_terminal
         calls.append("durable-terminal")
         assert kwargs["terminal_result"]["sdk_settlement"]["input_accepted"] is True
         if race == "write_conflict":
-            raise module.sandbox_lease_repository.SandboxLeaseReleaseScopeMismatchError("concurrent release")
+            raise settlement_lease_port.SandboxLeaseReleaseScopeMismatchError("concurrent release")
     async def persisted(*args, **kwargs):
         calls.append("persisted-handoff")
         assert kwargs == dict(tenant_id="t", workspace_id="w", user_id="u", session_id="s",
                               run_id="r", attempt_id="a", lease_id="lease", owner_generation=1)
         if race == "unowned_404" and not rejected:
             return None
-        return {"executor_status": "cancelled", "executor_terminal_json": {"status": "cancelled", "run_id": "foreign" if race == "foreign_terminal" and not rejected else "r",
+        return {"executor_status": "cancelled", "receipt_json": {"status": "cancelled", "run_id": "foreign" if race == "foreign_terminal" and not rejected else "r",
                 "message": "cancelled", "error_code": "executor_cancelled", "error_message": "Task cancelled"}}
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(sandbox_callback_base_url="http://platform.test", sandbox_callback_token="synthetic", sandbox_lease_ttl_seconds=1800))
     monkeypatch.setattr(module, "transaction", transaction)
-    monkeypatch.setattr(module.sandbox_lease_repository, "record_sandbox_executor_accepted", accepted)
-    monkeypatch.setattr(module.sandbox_lease_repository, "record_sandbox_executor_terminal", receipt)
-    monkeypatch.setattr(module.sandbox_lease_repository, "get_sandbox_executor_terminal_handoff", persisted, raising=False)
-    runtime = module.SandboxRuntime(workspace_root=tmp_path.parent / race, provider=Provider(executor_url="http://executor.test"),
+    monkeypatch.setattr(settlement_lease_port, "record_sandbox_executor_accepted", accepted)
+    monkeypatch.setattr(settlement_lease_port, "record_sandbox_executor_terminal", receipt)
+    monkeypatch.setattr(settlement_lease_port, "get_sandbox_executor_terminal_handoff", persisted, raising=False)
+    from tests.test_sandbox_runtime import SandboxRuntime as _TestRuntime
+    runtime = _TestRuntime(workspace_root=tmp_path.parent / race, provider=Provider(executor_url="http://executor.test"),
         execute_task=execute, callback_token_resolver=lambda _: "synthetic", record_lease=lambda *args: "lease",
         release_lease=unexpected, continuation_ports=ContinuationSettlementPorts(unexpected, unexpected))
     runtime.executor_client = SimpleNamespace(cancel=cancel, get_status=status)
@@ -345,7 +351,7 @@ async def test_terminal_cas_passes_exact_transition_to_context_before_return(ter
         calls.append("context-finalize")
         assert kwargs["previous"] == previous
         assert kwargs["terminal"]["owner_generation"] == 8
-    service = RunAttemptLifecycleService(SimpleNamespace(get_run_attempt=get, terminalize_run_attempt=transition), finalize)
+    service = RunAttemptLifecycleService(SimpleNamespace(get_run_attempt=get, terminalize_run_attempt=transition), finalize_terminal_transition=finalize)
     result = await service.terminalize(object(), tenant_id="t", run_id="r", attempt_id="a", status=terminal)
     assert result["owner_generation"] == 8
     assert calls == ["terminal-cas", "context-finalize"]

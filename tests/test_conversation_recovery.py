@@ -301,7 +301,7 @@ async def test_api_recovery_ports_delegate_without_widening_identity(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_private_saved_receipt", [False, True])
 async def test_terminal_run_with_unverified_writer_projects_blocked_instead_of_wait_forever(has_private_saved_receipt):
-    from app.context.infrastructure.provider_continuation import get_session_continuation
+    from tests.support.attempt_settlement import read_session_continuation as get_session_continuation
 
     private = (dict(schema_version=RECOVERY_SCHEMA_VERSION, state="blocked", reason_code="writer_unverified",
                     source_run_id="failed-run", stop_evidence="unverified", workspace_saved=True)

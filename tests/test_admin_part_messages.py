@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.runs.infrastructure import admin_queries_postgres as queries
+from app.sandbox.infrastructure import leases_postgres as sandbox_lease_reader
 from app.streaming.api import project_persisted_assistant_text_messages
 from app.runs.application.admin_run_monitor import build_admin_worker_execution
 from tests.test_admin_run_detail import (
@@ -53,6 +54,39 @@ def _execution(rows):
 
 def test_final_answer_excludes_work_and_matches_mounted_contract():
     assert _execution(_rows()) == FIXTURE["worker_execution"]
+
+
+def test_native_and_retained_part_messages_remain_independent_and_appear_once():
+    part_rows = _rows()
+    native_rows = []
+    for index, (kind, payload) in enumerate([
+        ("message.started", {}),
+        ("message.delta", {"delta": "Native answer"}),
+        ("message.completed", {"delta_count": 1, "text_length": len("Native answer")}),
+    ], 8):
+        row = deepcopy(part_rows[0])
+        metadata = deepcopy(row["payload_json"]["__stream_v4"])
+        metadata.update(message_id="msg_native", source_event_id=f"native_source_{index}",
+                        causation_event_id="native_source_9" if kind == "message.completed" else None)
+        row.update(id=f"evt4_native_{index}", sequence=index, event_type=kind,
+                   payload_json={**payload, "__stream_v4": metadata})
+        native_rows.append(row)
+    rows = [*part_rows, *native_rows]
+    expected = ["正常公开回答", "Native answer"]
+    assert [message["text"] for message in _execution(rows)["messages"]] == expected
+    events = [{"event_id": row["id"], "type": row["event_type"],
+               "sequence": row["sequence"], "visible_to_user": row["visible_to_user"],
+               "payload": row["payload_json"]} for row in rows]
+    # A caller supplying only old part projections must not suppress another
+    # native message; a caller supplying all ledgers must not duplicate it.
+    for selected in (part_rows, rows):
+        result = build_admin_worker_execution(
+            events, sanitize_text=lambda text: text,
+            part_messages=project_persisted_assistant_text_messages(
+                selected, tenant_id="default", run_id="run_parts"),
+        )
+        assert [message["text"] for message in result["messages"]] == expected
+        assert result["response"] == "Native answer"
 
 
 @pytest.mark.parametrize(
@@ -238,10 +272,10 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     for name in (
         "list_run_steps",
         "list_run_artifacts",
-        "list_sandbox_leases_for_run",
         "list_run_skill_snapshots",
     ):
         monkeypatch.setattr(queries, name, empty)
+    monkeypatch.setattr(sandbox_lease_reader, "list_sandbox_leases_for_run", empty)
     _install_admin_monitor_metadata(monkeypatch, {})
     client = TestClient(create_app())
     response = client.get("/api/ai/admin/runs/run_parts", headers=headers())

@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.db import transaction
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.queue import remove_queued_run
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.runtime.sandbox.executor_signals import publish_executor_terminal_signal
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
-from app.platform.tracing import standard_trace_id
+from app.platform.tracing import TerminalStageTiming, standard_trace_id
 from app.runs.application.cancellation import (
     RunCancellationPostProcessor,
     RunCancellationUseCase,
 )
-from app.runs.api import RunAttemptLifecycleService
+from app.runs.api import RunAttemptLifecycleService, progress_run_terminalization
 from app.runs.application.lifecycle import RunLifecycleService
-from app.runs.application.provider_terminalization import progress_run_terminalization_with_context
 from app.runs.infrastructure.postgres import (
     PostgresRunCancellationPersistence,
     load_current_terminal_event_fact,
@@ -62,22 +63,33 @@ def build_run_cancellation_use_case(
     lifecycle: RunLifecycleService,
 ) -> RunCancellationUseCase:
     async def progress_terminalization(conn: object, *, tenant_id: str, run_id: str):
-        return await progress_run_terminalization_with_context(
+        return await progress_run_terminalization(
             conn,
-            progress_terminalization=lifecycle.progress_run_terminalization,
+            lifecycle=lifecycle,
             tenant_id=tenant_id,
             run_id=run_id,
         )
 
     sandbox_cleanup = build_sandbox_runtime_cleanup()
+    persistence = PostgresRunCancellationPersistence(
+        attempt_lifecycle=attempt_lifecycle,
+        append_event=append_event,
+        append_audit_log=append_audit_log,
+        list_active_sandbox_leases=list_active_sandbox_leases_for_run,
+    )
+
+    async def handoff_cancelled_attempt(**kwargs: object) -> bool:
+        async with transaction() as conn:
+            return await persistence.handoff_cancelled_attempt(conn, **kwargs)
+
+    async def wake_executor(*, run_id: str, attempt_id: str) -> None:
+        # A lost hint must not delay the request beyond the existing fallback cadence.
+        with TerminalStageTiming("cancel_wake", run_id=run_id, attempt_id=attempt_id):
+            await asyncio.wait_for(publish_executor_terminal_signal(), timeout=1.0)
+
     return RunCancellationUseCase(
         transaction_factory=transaction,
-        persistence=PostgresRunCancellationPersistence(
-            attempt_lifecycle=attempt_lifecycle,
-            append_event=append_event,
-            append_audit_log=append_audit_log,
-            list_active_sandbox_leases=list_active_sandbox_leases_for_run,
-        ),
+        persistence=persistence,
         event_writer=PostgresRunCancellationEventWriter(
             authority_secret=get_settings().ai_session_secret,
             load_terminal_event_fact=load_current_terminal_event_fact,
@@ -91,5 +103,7 @@ def build_run_cancellation_use_case(
             admit_stream=admit_v4_stream,
             publish_event=publish_run_event,
             warn=_warn_cancellation_publication,
+            wake_executor=wake_executor,
+            handoff_cancelled_attempt=handoff_cancelled_attempt,
         ),
     )

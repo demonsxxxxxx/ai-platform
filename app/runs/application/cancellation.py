@@ -33,7 +33,7 @@ class RunCancellationSandboxCleanup(Protocol):
         trace_id: str | None,
         provider_factory: Callable[..., Any],
         transaction_factory: Callable[[], AsyncContextManager[object]],
-    ) -> None: ...
+    ) -> list[dict[str, Any]]: ...
 
 
 RunCancellationQueueCleanup = Callable[..., Awaitable[Any]]
@@ -54,6 +54,8 @@ class RunCancellationPostProcessor:
         admit_stream: RunCancellationStreamOperation,
         publish_event: RunCancellationStreamOperation,
         warn: RunCancellationWarning,
+        wake_executor: RunCancellationStreamOperation | None = None,
+        handoff_cancelled_attempt: Callable[..., Awaitable[bool]] | None = None,
     ) -> None:
         self._queue_cleanup = queue_cleanup
         self._sandbox_cleanup = sandbox_cleanup
@@ -62,6 +64,8 @@ class RunCancellationPostProcessor:
         self.admit_v4_stream = admit_stream
         self.publish_run_event = publish_event
         self._warn = warn
+        self._wake_executor = wake_executor
+        self._handoff_cancelled_attempt = handoff_cancelled_attempt
 
     async def post_cancel(
         self,
@@ -75,6 +79,13 @@ class RunCancellationPostProcessor:
     ) -> dict[str, Any] | None:
         if cancellation is None:
             return None
+        result = cancellation.as_route_result()
+        result.pop("_terminalization_progress", None)
+        if result["status"] == "cancel_requested" and cancellation.attempt_id and self._wake_executor is not None:
+            try:
+                await self._wake_executor(run_id=cancellation.run_id, attempt_id=cancellation.attempt_id)
+            except Exception as exc:  # noqa: BLE001 - the durable scan remains the fallback
+                self._warn("executor_cancel_wake_deferred", cancellation.run_id, exc)
         if cancellation.attempt_id:
             try:
                 await self.admit_v4_stream(
@@ -87,8 +98,6 @@ class RunCancellationPostProcessor:
                 self._warn(
                     "Cancellation v4 admission deferred", cancellation.run_id, exc,
                 )
-        result = cancellation.as_route_result()
-        result.pop("_terminalization_progress", None)
         if cancellation.attempt_id:
             try:
                 await self.publish_run_event(
@@ -107,7 +116,10 @@ class RunCancellationPostProcessor:
             except Exception as exc:  # noqa: BLE001 - report after sandbox cleanup
                 queue_cleanup_failures.append(exc)
         if result["status"] == "cancelled":
-            await self._sandbox_cleanup.cleanup_cancelled_run_leases(
+            # An admitted Attempt (cancel_requested) keeps its sandbox: the executor
+            # drains the SDK, saves the stop snapshot and settles continuation.
+            # Only a Run that is already cancelled releases resources here.
+            released_leases = await self._sandbox_cleanup.cleanup_cancelled_run_leases(
                 result.get("active_sandbox_leases"),
                 tenant_id=tenant_id,
                 run_id=cancellation.run_id,
@@ -118,6 +130,23 @@ class RunCancellationPostProcessor:
                 provider_factory=self._provider_factory,
                 transaction_factory=self._transaction_factory,
             )
+            if (
+                self._handoff_cancelled_attempt is not None
+                and cancellation.attempt_id
+                and cancellation.attempt_owner_generation is not None
+            ):
+                released_ids = tuple(
+                    str(lease["id"])
+                    for lease in released_leases
+                    if isinstance(lease, dict) and lease.get("id")
+                )
+                await self._handoff_cancelled_attempt(
+                    tenant_id=tenant_id,
+                    run_id=cancellation.run_id,
+                    attempt_id=cancellation.attempt_id,
+                    expected_owner_generation=cancellation.attempt_owner_generation,
+                    resource_lease_ids=released_ids,
+                )
         if queue_cleanup_failures:
             raise RunCancellationQueueCleanupError(queue_cleanup_failures)
         return result
@@ -134,6 +163,7 @@ class CancelRequestAuthority:
     requested_by_role: CancelRequesterRole
     source: CancelEventSource
     newly_requested: bool
+    attempt_owner_generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +174,7 @@ class CancelRequestResult:
     active_sandbox_leases: tuple[dict[str, Any], ...]
     initial_terminalization_progress: RunTerminalizationProgress | None
     attempt_id: str | None = None
+    attempt_owner_generation: int | None = None
 
     def as_route_result(self) -> dict[str, Any]:
         result: dict[str, Any] = {"run_id": self.run_id, "status": self.status}
@@ -183,6 +214,17 @@ class RunCancellationPersistence(Protocol):
         authority: CancelRequestAuthority,
         progress: RunTerminalizationProgress | None,
     ) -> CancelRequestResult: ...
+
+    async def handoff_cancelled_attempt(
+        self,
+        conn: object,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        expected_owner_generation: int,
+        resource_lease_ids: tuple[str, ...],
+    ) -> bool: ...
 
 
 class RunCancellationEventWriter(Protocol):

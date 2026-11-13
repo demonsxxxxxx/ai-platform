@@ -106,6 +106,23 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal(textarea().value, "停止后的新消息草稿");
       await type("");
     });
+    await t.test("stopping keeps an editable draft and attachment while native and keyboard sends stay blocked", async () => {
+      const attachment = { id: "stop-draft-file", key: "stop-draft-file", name: "next.txt", type: "document" as const,
+        url: "/api/files/next", mimeType: "text/plain", size: 4 };
+      await render({ canSend: false, canEdit: true, isLoading: true, isStopping: true,
+        canStop: false, attachments: [attachment], sendBlockedReason: "synchronizing" });
+      await type("下一轮草稿");
+      assert.equal(textarea().disabled, false);
+      assert.ok(container.querySelector("[data-composer-file-reference]"));
+      await key("Enter");
+      await act(async () => textarea().closest("form")!.requestSubmit());
+      assert.equal(sends.length, 0);
+      assert.equal(dialogOpen(), false, "Enter cannot request another stop");
+      assert.equal(textarea().value, "下一轮草稿");
+      await render({ canSend: true, canEdit: undefined, isLoading: false, isStopping: false, attachments: [], sendBlockedReason: undefined });
+      assert.equal(textarea().value, "下一轮草稿");
+      await type("");
+    });
     await t.test("ordinary placeholder does not replace the permission reason or administrator action", async () => {
       await render({ canSend: false, placeholder: "向专家描述要完成的任务", sendBlockedReason: "permission" });
       const { default: i18n } = await import("../../../i18n");
@@ -193,13 +210,23 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal(selectedCommand(), "mcp");
       assert.equal((await key("ArrowUp")).defaultPrevented, true);
       assert.equal(selectedCommand(), "skill");
-      assert.equal((await key("Tab")).defaultPrevented, true);
-      assert.equal(selectedCommand(), undefined);
-      assert.equal(sends.length, 1);
-      await type("/s");
-      assert.equal((await key("Enter")).defaultPrevented, true);
-      assert.equal(selectedCommand(), undefined);
-      assert.equal(sends.length, 1);
+      const scheduleFrame = globalThis.requestAnimationFrame;
+      const pendingFrames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = (callback) => { pendingFrames.push(callback); return pendingFrames.length; };
+      try {
+        assert.equal((await key("Tab")).defaultPrevented, true);
+        assert.equal(selectedCommand(), undefined);
+        assert.equal(sends.length, 1);
+        await type("/s");
+        await act(async () => {
+          for (const callback of pendingFrames.splice(0)) callback(0);
+          document.dispatchEvent(new dom.window.Event("selectionchange", { bubbles: true }));
+        });
+        assert.equal(textarea().selectionStart, 2, "a previous command cannot move the new draft's caret");
+        assert.equal((await key("Enter")).defaultPrevented, true);
+        assert.equal(selectedCommand(), undefined);
+        assert.equal(sends.length, 1);
+      } finally { globalThis.requestAnimationFrame = scheduleFrame; }
       await type("/");
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);

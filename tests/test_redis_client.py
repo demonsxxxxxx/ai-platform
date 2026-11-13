@@ -151,7 +151,9 @@ async def test_api_lifespan_closes_redis_then_database_even_if_redis_close_fails
 
     monkeypatch.setattr(
         main, "build_run_stream_runtime",
-        lambda *_args: types.SimpleNamespace(aclose=close_stream_runtime),
+        lambda *_args: types.SimpleNamespace(
+            worker_capabilities=object(), aclose=close_stream_runtime,
+        ),
     )
     monkeypatch.setattr(main, "build_run_cancellation_use_case", lambda **_kwargs: object())
     monkeypatch.setattr(main, "close_redis_client", close_redis)

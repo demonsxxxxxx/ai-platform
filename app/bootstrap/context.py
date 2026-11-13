@@ -32,9 +32,10 @@ from app.execution.infrastructure.harness.claude.session_images import provider_
 
 
 def configure_context_services() -> None:
+    from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
     configure_provider_session_use_cases(
         ProviderSessionUseCases(
-            PostgresProviderEpochRepository(), image_fields=provider_session_image_fields,
+            PostgresProviderEpochRepository(settlement_reader=build_attempt_settlement_projection_service().read_attempt), image_fields=provider_session_image_fields,
             storage_factory=ObjectStorage, storage_io=run_storage_io,
         )
     )

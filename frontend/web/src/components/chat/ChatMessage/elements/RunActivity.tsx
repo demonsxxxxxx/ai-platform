@@ -3,7 +3,7 @@ import { ChevronRight, LoaderCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { clsx } from "clsx";
 
-export type RunActivityStatus = "running" | "complete" | "error";
+export type RunActivityStatus = "running" | "stopping" | "complete" | "error";
 
 export interface RunActivityProps {
   open: boolean;
@@ -13,6 +13,7 @@ export interface RunActivityProps {
   itemCount: ReactNode;
   toggleLabel: string;
   issueSummary?: ReactNode;
+  duration?: ReactNode;
   contentId: string;
   ariaControls?: string;
   children: ReactNode;
@@ -32,6 +33,7 @@ export function RunActivity({
   itemCount,
   toggleLabel,
   issueSummary,
+  duration,
   contentId,
   ariaControls,
   children,
@@ -59,6 +61,7 @@ export function RunActivity({
             <span className={clsx("font-medium", running && "aui-shimmer")}>{label}</span>
             <span className="text-[var(--theme-text-tertiary)]" aria-hidden="true">·</span>
             <span>{itemCount}</span>
+            {duration}
             {issueSummary}
             <ChevronRight
               size={14}

@@ -53,7 +53,6 @@ function convertPart(
     case "text": {
       const role = assistantTextPartRole(part);
       if (role === null) return null;
-      if (role === "work") return { type: "data-work", data: {} };
       return { type: "text", text: `${textPrefix}${part.content}` };
     }
     case "thinking":
@@ -142,7 +141,7 @@ export function toAssistantUiMessage(message: Message): ThreadMessageLike {
     let prefix = "";
     if (part.type === "text") {
       const role = assistantTextPartRole(part);
-      if (role !== "legacy" && role !== null && role !== "work") {
+      if (role !== "legacy" && role !== null) {
         prefix =
           lastPublicPartId !== null && lastPublicPartId !== part.public_part_id
             ? "\n\n"
@@ -171,6 +170,7 @@ export function toAssistantUiMessage(message: Message): ThreadMessageLike {
         runId: message.runId,
         cancelled: message.cancelled,
         isSynchronizing: message.isSynchronizing,
+        isStopping: message.isStopping,
       },
     },
   };

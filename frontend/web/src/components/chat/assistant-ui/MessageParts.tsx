@@ -16,10 +16,12 @@ function MarkdownTextContent() {
   const status = useAuiState((state) => state.message.status?.type);
   const imageGallery = useSessionImageGallery();
   const stopped = useAuiState((state) => state.message.role === "assistant" && Boolean(state.message.metadata.custom.cancelled));
-  const isStreaming = status === "running";
+  const isStopping = useAuiState((state) => Boolean(state.message.metadata.custom.isStopping));
+  const isStreaming = status === "running" && !isStopping;
   const smooth = useAuiState((state) => state.message.role === "assistant"
     && state.message.status?.type === "running"
     && !state.message.metadata.custom.isSynchronizing
+    && !state.message.metadata.custom.isStopping
     && !state.message.metadata.custom.cancelled);
   return (
     <AssistantMarkdownText
@@ -89,7 +91,7 @@ export function AssistantUiMessageStatus({ activityLabel, startedAt }: {
   const hasText = useAuiState((state) => state.message.parts.some((part) => part.type === "text" && part.text.trim().length > 0));
   // While text streams, the caret after the text is the visible cue; the
   // status stays announced for assistive technology without a second row.
-  return <AuiIf condition={(state) => state.message.status?.type === "running" || Boolean(state.message.metadata.custom.isSynchronizing)}>
+  return <AuiIf condition={(state) => !state.message.metadata.custom.isStopping && (state.message.status?.type === "running" || Boolean(state.message.metadata.custom.isSynchronizing))}>
     <GenerationLoader data-assistant-ui-stream-status={synchronizing ? "synchronizing" : hasText ? "streaming" : "waiting"}
       visuallyHidden={hasText && !synchronizing}
       elapsed={!hasText && !synchronizing && elapsedSeconds !== null && elapsedSeconds > 0 ? formatElapsed(t, elapsedSeconds) : undefined}

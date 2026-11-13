@@ -200,3 +200,37 @@ async def test_timed_out_progress_backs_off_after_sole_attempt_finishes(monkeypa
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_wake_hint_runs_after_active_operation_without_overlap_or_idle_delay():
+    wake = asyncio.Event()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    reran = asyncio.Event()
+    calls = 0
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await release.wait()
+        else:
+            reran.set()
+
+    task = asyncio.create_task(maintenance_phase_until_done(
+        "cancel", operation, 30, 30, logger=logging.getLogger(__name__), wake_event=wake,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        wake.set()
+        await asyncio.sleep(0)
+        assert calls == 1, "a wake cannot replace or overlap the active owner"
+        release.set()
+        await asyncio.wait_for(reran.wait(), 1)
+        assert calls == 2
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

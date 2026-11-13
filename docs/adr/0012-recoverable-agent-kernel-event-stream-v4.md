@@ -53,8 +53,9 @@ The schema owns the closed Agent-kernel registry, including the subsequently
 accepted [Assistant-part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection):
 
 - `message.started`, `message.delta`, `message.completed`;
-- `message.part.delta`, `message.part.classified` for incremental public text
-  and explicit answer/work classification under a stable `part_id`;
+- retained `message.part.delta`, `message.part.classified` for historical
+  text-part/v2 receipt compatibility; current Claude output uses ordered
+  `message.delta` and does not classify ordinary text as work/answer;
 - `commentary.delta` for disclosure-safe, tool-using Assistant progress that is
   presented as work activity and never appended to the terminal answer;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;

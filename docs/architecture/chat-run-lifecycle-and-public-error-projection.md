@@ -63,14 +63,14 @@ schema, or historical-data rewrite.
 ### Ordinary-user execution presentation
 
 Chat presents user-meaningful work state, not an executor transcript. The active
-Run opens details during a work phase and collapses earlier work when safe answer
-preview begins. Same-phase text updates preserve manual choices; terminal
-convergence folds work into a summary that the user may reopen. The display contract is:
+Run displays ordinary Assistant text in event order without semantic regrouping.
+Each explicit Tool/activity owns an independent disclosure; token updates and
+terminal convergence preserve its manual expansion choice. The display contract is:
 
 | Surface | Ordinary-user presentation | Allowed content |
 | --- | --- | --- |
 | Assistant answer, artifacts, permission requests, failures, and cancellation | Visible outside the work-details fold | Accepted answer text, authorized artifact labels/actions, and fixed actionable status copy |
-| `message.part.delta` / classification | Pending and answer outside the fold; work inside | Incrementally gated Assistant prose with explicit stable part identity |
+| `message.delta`; retained `message.part.delta` / classification | All accepted ordinary Assistant prose stays outside activity folds, in event order | Native text increments; retained part identity/role is read compatibility only |
 | Retained `commentary.delta` with `worktrace_` summary ID | Visible in work details | Legacy sanitized work narration |
 | Other `commentary.delta` | Visible inline outside the work-details fold | Existing explicit sanitized public summaries and historical events |
 | Tool lifecycle | Visible inside work details | Fixed public category label; Skill events may show the exact name admitted by the current Run's `allowed_skill_names`; other tools use the canonical name derived from the allowlisted category (`mcp`, `read`, `write`, `edit`, `search`, or `execute`); lifecycle status; and bounded duration |
@@ -78,10 +78,10 @@ convergence folds work into a summary that the user may reopen. The display cont
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
 | Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, unauthorized or unselected Skill identifier, storage key, credential, trace, or executor payload; an authorized Skill name or active Skill call ID may still appear when included in intentional Assistant prose |
 
-The table describes v4 rendering. Validated Tool-turn work narration is
-visible in message order within work details; final-answer text remains outside
-that fold. The distinction follows explicit provider-bound part classification facts;
-classification updates display grouping while prior delta rows remain immutable. User-requested code,
+The table describes v4 rendering. Ordinary Tool-turn narration and later answers
+remain public text in their original order. New Claude output emits no
+work/answer classification. Retained classification facts do not change text
+visibility, placement or copy eligibility; prior delta rows remain immutable. User-requested code,
 JSON examples and non-sensitive task references are ordinary Assistant answer
 content. The active workspace cwd may also appear literally in Assistant prose;
 the answer stream does not replace it with a mask or alias. A script executed
@@ -179,8 +179,9 @@ admission and browser rendering safety are unchanged by this content policy.
 Live delivery, committed history and terminal hydration use the same content
 policy. The frontend adapter maps metadata-only `message.completed` to a public
 activity rather than a final text chunk, and builds Assistant text from accepted
-legacy `message.delta` or versioned part frames. Final copy/receipt select answer
-parts; pending previews and work prose retain independent roles. Full Assistant messages reconcile their own streamed
+legacy `message.delta` or versioned part frames. Copy selects the current accepted public body, including generation and
+synchronization; new receipts cover all ordered public deltas. Old part/v2 receipt
+readers retain their persisted selection contract only for historical materialization. Full Assistant messages reconcile their own streamed
 fragments by stable source identity. A distinct final answer must not be
 discarded because it is not a prefix extension of earlier narration; absent or
 ambiguous source identity fails closed instead. Repeated delivery of the same
@@ -231,6 +232,16 @@ and closes that transaction before enqueue. The direct Run response accepts
 Chat and Copy have no
 client-supplied operation identity; a caller that loses the HTTP response must
 use session/Run history to locate the child before repeating the request.
+
+Server-side delivery-intent recovery proceeds without a browser retry. When an
+Attempt already exists, the scanner may claim the intent only to read back the
+original persisted payload and message identity; it must not enqueue again. It
+records `delivered` and the Chat `queued` projection together only after an
+actual queue receipt is read. An absent or unavailable receipt leaves the
+intent recoverable with backoff and does not fabricate delivery. A failed
+receipt-owner transaction rolls back both projections; the scanner may retry
+after that claim expires. A stale claim cannot commit the receipt, and a
+cancelled Run without an Attempt never crosses the queue boundary.
 
 Queue metrics, scheduling limits and Redis facts remain supported. Do not
 reintroduce the retired browser `queue_update` fallback. A disconnected browser

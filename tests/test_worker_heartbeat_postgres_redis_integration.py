@@ -969,7 +969,7 @@ async def test_real_redis_concurrent_reclaim_transfers_processing_entry_once(
             return values
 
         async def eval(self, script, *args):
-            if script == queue.REQUEUE_WITH_FENCE_SCRIPT:
+            if script == queue.REQUEUE_EXPIRED_LEASE_SCRIPT:
                 requeue_calls.append((script, *args))
             return await self.client.eval(script, *args)
 

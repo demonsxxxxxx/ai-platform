@@ -48,7 +48,14 @@ to perform one fresh AD login before surfacing the expiry. Concurrent requests
 share the attempt; safe replay requires the verified user and tenant to match
 the previous principal. The browser never retains the password or uses an
 expired credential as a new grant. [ADR 0007](../adr/0007-fixed-browser-authentication-day.md#automatic-company-reauthentication-after-context-expiry)
-owns cancellation, replay and login-fallback behavior.
+owns cancellation, replay and login-fallback behavior. Authentication Redis and
+its volume are persistent deployment state, not disposable mock state. An
+isolated data clone starts a separate auth lifecycle and does not copy active
+principals or queues. Existing browsers may retain signed Cookies from the
+previous auth store; explicit-login recovery retires only a verified orphaned
+Cookie after both server records are proven absent, then requires a new normal
+company login. Do not rotate Cookie names or clear all origin storage as a
+routine restart procedure.
 
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
 authentication lifetime: the signed platform token and server authentication
@@ -195,9 +202,10 @@ python -m app.schema_migrations apply
 The runner holds a session-scoped advisory coordinator lock across both phases.
 Within the core phase it also takes a transaction-scoped advisory lock, creates
 the `schema_migrations` ledger when bootstrapping, applies the versioned core
-schema, and records the target version plus SHA-256 checksum in the same
-transaction. A matching target ledger and checksum skips the core SQL; safe
-repeated invocation does not imply that business-schema changes are additive or
+schema, and records the target version plus SHA-256 checksum as `pending` in the
+same transaction. After required checks validate, a separate transaction marks
+the target `applied`. A matching applied or pending target and checksum skips
+the core SQL; safe repeated invocation does not imply that business-schema changes are additive or
 reversible. New hot-table indexes are a separate resumable phase recorded in
 `schema_index_migrations`: each is built with `CREATE INDEX CONCURRENTLY`
 outside the core transaction, catalog validity is checked before it is marked
@@ -208,19 +216,30 @@ across the concurrent index build. Every committed schema change must advance
 checksum mismatch.
 
 The migration runner owns a separate autocommit coordinator connection whose
-session advisory lock spans the core transaction and concurrent-index phase.
+session advisory lock spans the core transaction, Run status validation, target
+ledger completion and concurrent-index phase.
 Failed or cancelled autocommit setup closes the connection before ownership can
 transfer to the runner. Once transferred, the runner always attempts session
 close, including when explicit advisory unlock fails. The first failure or
 cancellation remains primary; a cleanup failure is raised when no earlier
-failure exists. This does not change migration transactions, ledger checksums,
-or retry/idempotency semantics.
+failure exists. The target ledger checksum and retry semantics remain bound to
+the exact schema contract.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
 startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
 verify the target ledger and index-ledger entries, checksum, critical column
 types/nullability, named constraints, and valid/ready indexes. Connectivity or
 relation existence alone is insufficient.
+
+The Run status check keeps its inline validated form for a newly created
+`runs` table. For an existing table, the coordinator adds the exact named check
+as `NOT VALID` under a 2-second lock-acquisition budget and commits that DDL
+before scanning historical rows. A separate transaction validates it with the
+same lock-acquisition budget and a 30-second statement budget, allowing ordinary
+Run writes during the scan. The target schema-ledger row remains `pending`
+until validation succeeds; a timeout or invalid historical value leaves the
+check unvalidated and the target pending for a safe retry. The migration rejects
+an unexpected same-name check and never rewrites existing Run statuses.
 
 Upgrade procedure:
 
@@ -263,6 +282,12 @@ The core schema includes both additive changes and destructive cutovers:
 - The [Run lifecycle](run-lifecycle-boundary.md) retirement removes
   `run_tool_permission_requests` after legacy Run settlement. Readiness requires
   that retired relation to be absent.
+- The [Attempt settlement upgrade](execution-spec-and-attempt-lifecycle.md#33-one-time-historical-upgrade-and-compatibility-disposition)
+  removes the eight legacy Sandbox settlement columns, write fence and
+  `run_attempt_settlement_storage`, `run_attempt_settlement_writer`,
+  `run_attempt_settlement_retirement` after stopped-writer, drained history
+  validation. Already-retired columns do not waive validation or cleanup of
+  remaining marker/fence metadata. Readiness requires these relations absent.
 - The [Agent Profile persistence](agent-profile-persistence-boundary.md) hard
   cut removes legacy profile columns, compatibility triggers and functions.
   These are committed removals, not unused additive fields.

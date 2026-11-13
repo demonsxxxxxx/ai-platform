@@ -24,6 +24,7 @@ import { ModelCatalogProvider } from "../../src/contexts/ModelCatalogContext";
 const previewParams = new URLSearchParams(location.search);
 const theme = previewParams.get("theme") === "dark" ? "dark" : "light";
 const cjkMarkdownPreview = previewParams.has("cjk-markdown");
+const stopPreview = previewParams.has("stop-lifecycle");
 const savedContinuation = { state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true };
 const markdownAnswer = "有，主要有以下几类：\n\n"
   + "- **共享盘访问失败：**多次返回 `reauth_required`，无法读取相关资料。\n"
@@ -49,6 +50,7 @@ interface PreviewTurn {
   question: string;
   answer: string;
   suggestions: string[];
+  status?: "running" | "cancelled";
 }
 
 // Synthetic model questions so the surface is observable without any real call.
@@ -103,7 +105,44 @@ function eventFrame(runId: string, eventType: string, seq: number, payload: Reco
   };
 }
 
+let stopControl: { acknowledge: () => void; late: () => void; finish: () => void } | null = null;
+
+function stoppingStream(turn: PreviewTurn) {
+  turn.status = "running";
+  let seq = 0;
+  let acknowledge = () => {};
+  const ack = new Promise<void>((resolve) => { acknowledge = resolve; });
+  const messageId = `${turn.runId}-assistant`;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (type: string, payload: Record<string, unknown>, message: string | null) => {
+        const frame = eventFrame(turn.runId, type, ++seq, payload, message);
+        controller.enqueue(new TextEncoder().encode(`id: ${frame.id}\nevent: ${type}\ndata: ${frame.data}\n\n`));
+      };
+      turn.answer = "停止前已经接收的正文。";
+      send("message.started", {}, messageId);
+      send("message.delta", { delta: turn.answer }, messageId);
+      stopControl = {
+        acknowledge,
+        late() {
+          turn.answer += "停止后的在途文字也会保存。";
+          send("message.delta", { delta: "停止后的在途文字也会保存。" }, messageId);
+        },
+        finish() {
+          turn.status = "cancelled";
+          send("run.cancelled", { terminal_event_id: `${turn.runId}-terminal`, hydrate_required: true, reason_code: "user_cancelled" }, null);
+          controller.close();
+        },
+      };
+      (window as unknown as { __stopPreview: object }).__stopPreview = stopControl;
+    },
+  });
+  (turn as PreviewTurn & { cancelAck: Promise<void> }).cancelAck = ack;
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
 function streamBody(turn: PreviewTurn) {
+  if (stopPreview) return stoppingStream(turn);
   const messageId = `${turn.runId}-assistant`;
   const frames = [
     eventFrame(turn.runId, "message.started", 1, {}, messageId),
@@ -167,13 +206,13 @@ function historyEvents() {
           delta: turn.answer,
         },
       },
-      {
+      ...(turn.status === "running" ? [] : [{
         id: `${turn.runId}-terminal`,
         run_id: turn.runId,
-        event_type: "run_succeeded",
+        event_type: turn.status === "cancelled" ? "run_cancelled" : "run_succeeded",
         timestamp: EMITTED,
-        data: { status: "succeeded" },
-      },
+        data: { status: turn.status ?? "succeeded" },
+      }]),
     ];
   });
 }
@@ -226,7 +265,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === "/api/ai/auth/bootstrap" && method === "POST") {
     return json({ status: "ready", protocol_version: 2, generation: 1 });
   }
-  if (cjkMarkdownPreview && url.pathname === "/api/ai/models/groups") {
+  if ((cjkMarkdownPreview || stopPreview) && url.pathname === "/api/ai/models/groups") {
     return json({ groups: [{ id: "cjk-preview-group", name: "合成业务组", type: "business", enabled: true }] });
   }
   if (url.pathname === "/api/agent/models/available") {
@@ -248,6 +287,14 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   }
   if (url.pathname === "/api/mcp/chat-tools") return json({ tools: [], count: 0, unavailable: [] });
   if (url.pathname === "/api/profile-drive/status") return json({ status: "disconnected", connected: false, reauthRequired: false });
+  if (stopPreview && url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/cancel")) {
+    await (lastTurn() as PreviewTurn & { cancelAck: Promise<void> }).cancelAck;
+    return json({ run_id: lastTurn()?.runId, status: "cancel_requested" });
+  }
+  if (url.pathname.endsWith("/playback") && stopPreview) {
+    return json({ run: { run_id: lastTurn()?.runId, status: lastTurn()?.status ?? "succeeded" },
+      timeline: [], events: [], artifacts: [], steps: [] });
+  }
   if (url.pathname === "/api/chat/stream" && method === "POST") {
     const body = init.body ? JSON.parse(String(init.body)) : {};
     const question = typeof body.message === "string" && body.message.trim() ? body.message.trim() : "（未填写问题）";
@@ -273,10 +320,11 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return json({
       session_id: SESSION_ID,
       run_id: lastTurn()?.runId ?? null,
-      ...(cjkMarkdownPreview ? { continuation: savedContinuation } : {}),
+      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
+        ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}),
       events: historyEvents(),
       next_cursor: null,
-      terminal_run_statuses: Object.fromEntries(turns.map((turn) => [turn.runId, "succeeded"])),
+      terminal_run_statuses: Object.fromEntries(turns.filter((turn) => turn.status !== "running").map((turn) => [turn.runId, turn.status ?? "succeeded"])),
     });
   }
   if (url.pathname === `/api/sessions/${SESSION_ID}`) {
@@ -284,7 +332,9 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   }
   if (url.pathname === `/api/ai/chat/sessions/${SESSION_ID}/files`) return json({ session_id: SESSION_ID, files: [] });
   if (url.pathname === `/api/chat/sessions/${SESSION_ID}/status`) {
-    return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: "succeeded", raw_status: "succeeded", ...(cjkMarkdownPreview ? { continuation: savedContinuation } : {}) });
+    return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: lastTurn()?.status ?? "succeeded", raw_status: lastTurn()?.status ?? "succeeded",
+      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
+        ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}) });
   }
   if (url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/inputs")) {
     return json({ run_id: url.pathname.split("/")[4], state: "inactive", inputs: [], questions: [] });

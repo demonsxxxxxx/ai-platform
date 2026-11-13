@@ -89,6 +89,8 @@ export const ChatInput = memo(function ChatInput({
   onSend,
   onStop,
   isLoading,
+  isStopping = false,
+  canEdit,
   canStop = false,
   runControlKey,
   disabled,
@@ -536,9 +538,9 @@ export const ChatInput = memo(function ChatInput({
     requestCancel: () => setStopConfirmOpen(true),
     getText: () => draftSnapshot.value,
     setText: (text) => setInput(text),
-    disabled: Boolean(disabled || !canSend),
-    sendDisabled: !canSend || Boolean(modelUnavailableReason) || isLoading || hasUploadingAttachment || questionMode,
-    canCancel: Boolean(canStop && isLoading),
+    disabled: Boolean(disabled || !(canEdit ?? canSend)),
+    sendDisabled: !canSend || Boolean(modelUnavailableReason) || isLoading || isStopping || hasUploadingAttachment || questionMode,
+    canCancel: Boolean(canStop && isLoading && !isStopping),
     attachmentAdapter: uploadCategories.length > 0 ? attachmentAdapter : undefined,
   }));
 
@@ -602,7 +604,9 @@ export const ChatInput = memo(function ChatInput({
       if (item.unavailable) {
         upsertUnavailableCommandChip(item);
         setActivePanel(null);
+        const selectedInput = inputRef.current;
         requestAnimationFrame(() => {
+          if (inputRef.current !== selectedInput) return;
           const textarea = textareaRef.current;
           textarea?.focus();
           textarea?.setSelectionRange(commandCursor, commandCursor);
@@ -610,9 +614,11 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
       // Choosing a shortcut consumes only that token, never the surrounding task.
-      setInput(removeComposerCommandDraft(inputRef.current, draft));
+      const nextInput = removeComposerCommandDraft(inputRef.current, draft);
+      setInput(nextInput);
       setCommandCursor(draft.start);
       requestAnimationFrame(() => {
+        if (inputRef.current !== nextInput) return;
         textareaRef.current?.setSelectionRange(draft.start, draft.start);
         scheduleTextareaResize();
       });
@@ -910,7 +916,7 @@ export const ChatInput = memo(function ChatInput({
                     ? placeholder ?? t("chat.placeholder")
                     : placeholder ?? t(SEND_BLOCKED_PLACEHOLDER[sendBlockedReason])
                 }
-                disabled={questionMode || disabled || !canSend}
+                disabled={questionMode || disabled || !(canEdit ?? canSend)}
                 rows={1}
                 />
             </div>
@@ -921,7 +927,7 @@ export const ChatInput = memo(function ChatInput({
                 onActivePanelChange={handlePanelChange}
                 showPermissionLock={!canSend && sendBlockedReason === "permission"}
                 isLoading={isLoading}
-                canStop={canStop}
+                canStop={canStop && !isStopping}
                 canSubmit={canSubmit}
                 modelUnavailableReason={modelUnavailableReason}
                 hasUploadingAttachment={hasUploadingAttachment}
@@ -989,6 +995,7 @@ export const ChatInput = memo(function ChatInput({
             const stopOwner = stopOwnerRef.current;
             const scopeRevision = draftSnapshot.scopeRevision;
             setIsStopSubmitting(true);
+            setStopConfirmOpen(false);
             let result: Awaited<ReturnType<typeof onStop>> = "unconfirmed";
             try {
               result = await onStop();

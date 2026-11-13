@@ -758,6 +758,41 @@ test("missing confirmed V2 recovery persists one fresh identity before one ordin
   }
 });
 
+test("login recovery reuses an unconfirmed replacement after its orphaned cookie is retired", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const state = {
+    id: "current", version: 2, incarnation: "J".repeat(43),
+    currentGeneration: 1, currentNonce: "B".repeat(43), confirmedGeneration: 0,
+    ownerToken: "", leaseExpiresAt: 0,
+  };
+  idb.records.set("current", JSON.parse(JSON.stringify(state)));
+  const requests: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    const v2 = request as unknown as Record<string, unknown>;
+    requests.push(v2);
+    assert.equal(v2.browser_incarnation, state.incarnation);
+    assert.equal(v2.nonce, state.currentNonce);
+    if (requests.length === 1) {
+      assert.equal(v2.recovery_only, true);
+      throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
+    }
+    assert.equal(v2.recovery_only, undefined);
+    return { status: "ready", protocol_version: 2, generation: 1 };
+  };
+  try {
+    await ensureLoginContextRecovery();
+    assert.equal(requests.length, 2);
+    assert.deepEqual(idb.currentState(), { ...state, confirmedGeneration: 1 });
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
 test("a corrupt V2 record fails closed without creating a replacement identity", async () => {
   const stubs = installBrowserCoordinatorStubs();
   const idb = installTransactionalIndexedDb();
@@ -888,7 +923,7 @@ test("ambiguous fresh initial bootstrap keeps its identity for the next login re
     if (submitted.length === 2) {
       throw new ApiRequestError("lost initial response", 503, "auth_context_unavailable");
     }
-    assert.equal(v2.recovery_only, undefined);
+    assert.equal(v2.recovery_only, true);
     assert.equal(v2.browser_incarnation, submitted[1].browser_incarnation);
     assert.equal(v2.nonce, submitted[1].nonce);
     return { status: "ready", protocol_version: 2, generation: 1 };
@@ -965,7 +1000,7 @@ test("a superseded fresh-bootstrap owner cannot confirm before its successor reu
     }
     assert.equal(v2.browser_incarnation, submitted[1].browser_incarnation);
     assert.equal(v2.nonce, submitted[1].nonce);
-    assert.equal(v2.recovery_only, undefined);
+    assert.equal(v2.recovery_only, true);
     return { status: "ready", protocol_version: 2, generation: 1 };
   };
 

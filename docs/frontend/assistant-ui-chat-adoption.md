@@ -41,7 +41,7 @@
 | `empty-state.tsx`、`loading-state.tsx`、`connection-state.tsx` | 同名 Elements；WelcomePage、MessageParts、ChatConnectionStatus | 单一等待/生成/同步反馈，重连保持原入口；不添加无接口的 Retry/Continue |
 | `markdown-text.tsx` | `assistant-ui/elements/markdown-text.tsx`、`ChatMessage/MarkdownRenderer.tsx` | primitive、memoized slots、CodeHeader；共享 GFM/breaks/math/KaTeX、安全链接/图片、CodeMirror/Mermaid、表格导出和标题锚点 |
 | `attachment.aui.tsx`、`message-attachment.tsx`、`file.tsx` | `components/common/AttachmentCard.tsx`、`ChatInputAttachments.tsx`、`assistant-ui/MessageAttachments.tsx` | 上传卡和已发送文件展示；安全图片 URL、取消/删除、专业预览；上传只由 useFileUpload 执行 |
-| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，连续成功工具合并为可展开记录且默认隐藏耗时；无 raw request/result fallback |
+| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，每个工具保持原事件位置和独立开合，后续正文/终态不覆盖手动选择，默认隐藏耗时；无 raw request/result fallback |
 | `subagent-list.tsx`、`task-card.tsx`、`todo-list.tsx` | `ChatMessage/elements/TaskCard.tsx`、`SubagentList.tsx`、`TodoList.tsx`；SubagentBlocks、TodoBlock | 公开父子关系、三级递归与持久面板导航；只显示真实进度，Todo 保留平台三种状态 |
 | `artifact-card.tsx` | `ChatMessage/elements/ArtifactCard.tsx`；MessagePartRenderer | 已登记公开产物和原授权下载/预览；不发明 registered/delivery_scope 字段或新准入条件 |
 | `thread-list.tsx` | `components/panels/SidebarParts/ThreadList.tsx`、`components/panels/SidebarParts/sessionThreadListAdapter.ts`；SessionListContent、SessionItem | 受控行、Lobe 按钮、可访问未读；原专家/时间分组、loadMore、迟到改名删除隔离 |
@@ -77,7 +77,7 @@
 
 有实际候选时，上下键移动高亮，普通 Enter/Tab 确认候选；用户配置的换行组合键、IME（含 229）和 Shift+Tab 保持编辑行为。Esc 只关闭菜单，不删除触发符或草稿。点击发送始终提交原文，不确认高亮候选；无候选或关闭菜单后的 Enter 走同一平台提交事务，不重新解析命令。专家工作区的 `disableSlashCommands` 继续禁用建议。
 
-明确选择可用候选后，只移除该触发片段，保留前后正文、附件和已选能力，再打开原功能；选择或取消功能不再按消息前缀清空整稿。选择不可用候选仅显示可移除的不可用 chip，保留原文和附件，不打开缺失的功能。文件候选仍经现有安全上传控件，所选 Skill、MCP、模型和附件继续受原准入、权限与回执约束。
+明确选择可用候选后，只移除该触发片段，保留前后正文、附件和已选能力，再打开原功能；选择或取消功能不再按消息前缀清空整稿。选择不可用候选仅显示可移除的不可用 chip，保留原文和附件，不打开缺失的功能。候选确认安排的延迟光标更新只适用于当时的草稿；用户已继续编辑时，不得移动新草稿的光标或重新打开旧菜单。文件候选仍经现有安全上传控件，所选 Skill、MCP、模型和附件继续受原准入、权限与回执约束。
 
 退役与兼容：移除旧的任意前导 `/` / `$` 命令分类、表单命令拦截、`$` Skill 别名、命令参数注入选择器搜索、模型/技能选择清空整稿和输入即创建不可用 chip 的路径；没有兼容消费者。原 `parseComposerCommand`、`resolveCommandPrefixPanel`、`clearModelCommandDraft` 和 `commandSearchSeed` 不再保留。对应 parser/source/挂载回归及 PRD 浏览器脚本改为明确选择；`chat-dollar-skills.png` 由 `chat-skill-selector.png` 取代。保留现有菜单、行、模型、附件和 chip 选择器，浏览器 `composer-commands` 场景复用合成 ChatView fixture，验证原文投递、键盘、局部移除和附件保留。
 
@@ -97,10 +97,14 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 | --- | --- |
 | 等待首段 / 正在追加 | 一处 GenerationLoader：等待首段为微光文字；正文追加时改为正文末尾的流式圆点，状态仅对读屏播报（视觉约束第 7.5 节）。只有当前追加且未收敛的 assistant 正文允许平滑 |
 | Run 仍运行而连接中断 | 保留正文，使用原 reconnect；不映射为 message reload/regenerate |
-| 取消请求 acknowledged | 表示请求已受理；等待权威取消终态，保留确认框与 RunControlLifecycle |
-| Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示，暂不显示复制 |
+| 用户确认停止 / 取消请求 acknowledged | 确认后立即关闭确认框、冻结当前 Run 的可见增量并停止动画；显示“正在停止并保存”，草稿仍可编辑。acknowledged 仅表示受理，真实终态与可续聊仍由 RunControlLifecycle / SSE / GET 收敛 |
+| Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示且可复制当前内容 |
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
+
+停止展示由同一个 RunControlLifecycle 的 owner-bound cancellation fence 驱动，普通 Composer 与 Run Playback 取消共用该入口。冻结的只是当前 Run 的可见快照；在途 SSE 继续进入原 messagesRef，终态/历史 hydration 后显示全部已接受内容，不删除晚到文字，也不伪造 cancelled。重复请求不再次提交，账号、会话、Run 或 history generation 变化清除旧展示；响应丢失显示未确认与重新连接入口，仍阻止下一轮执行。现有前端没有 steering/follow-up 待发送队列，不新增队列或自动重发；保留草稿和附件，收尾时 Enter、原生 Send 和表单提交保持受阻。权限丢失及历史加载仍禁用编辑，临时同步/continuation 收尾只阻止发送。最终 resumable 仍不增加常驻说明。
+
+浏览器本地 User Timing 只保留最近一次 `ai-platform.cancel.request_ack`、`terminal_observed`、`continuation_ready` 的耗时，不附身份、消息或配置，也不新增上报端点。它们从用户确认发起取消计时，分别观察 HTTP 确认、权威终态被前端接受和 continuation 允许继续，不冒充 paint、后端持久化或整个资源回收时间。切换 owner 不沿用计时；现有首段文字指标在停止时退休。
 
 普通聊天正文只由 MarkdownTextPrimitive 解析和平滑，外层 Text smooth 关闭，defer 固定。共享插件使用 `remark-cjk-friendly/parseOnly` 识别 `**标题：**后文` 等中文标点紧邻正文的强调；`remark-cjk-friendly-gfm-strikethrough/parseOnly` 放在 GFM 后，补齐 `~~旧方案：~~新方案` 的中文删除线解析。不改写源文本、代码或复制内容。减少动态效果时立即显示完整文本；动画不改变最终答案或复制来源。显式内容的文档预览、公开 work/subagent 内容及专业摘要使用共享 MarkdownRenderer，不依赖 message-part context；插件和安全组件与聊天入口共用，每段内容只解析一次。独立文档保留 500,000 字符截断。react-markdown 9.x/10.x 暂留对应真实消费者；统一版本前须验证这些消费者、插件、类型和专业预览。
 
@@ -149,5 +153,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
 
 `node scripts/composer-trigger-browser-check.mjs` 复用合成聊天 fixture，以真实鼠标按下/抬起事件验证桌面模型按钮、桌面及窄屏设置齿轮的再次点击关闭、重新打开、Escape 和外部点击关闭。独立按钮的开关不再被库的 `outside-press` 抢先处理，其他外部点击仍由库关闭。手机模型选择器保留模态 Drawer 的关闭入口。脚本通过 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite；仅 DOM `.click()` 不覆盖该指针事件时序。
+
+`generic-chat-preview.html?stop-lifecycle` 复用实际 App/useAgent/ChatView/Composer，提供可控的合成取消 ACK、在途文字和终态，供浏览器验证确认后立即冻结、草稿编辑、禁止重复投递及最终正文恢复。该参数仅存在开发 fixture，不进入生产 route 或真实 API；检查必须区分未确认、已确认与最终结算，不能以本地冻结作为后端取消证据。
 
 `node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

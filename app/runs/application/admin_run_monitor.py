@@ -70,16 +70,15 @@ def build_admin_runtime_health(
     if len(current) != 1:
         return health
     lease = current[0]
-    executor_status = lease.get("executor_status")
-    health["async_dispatch_accepted"] = executor_status in {
-        "accepted", "running", "completed", "failed", "cancelled",
-    }
-    terminal_received_at = _monitor_timestamp(lease.get("executor_terminal_received_at"))
-    if executor_status in {"completed", "failed", "cancelled"}:
-        if terminal_received_at is not None and terminal_received_at <= observed_at:
+    if lease.get("settlement_mapping_state") != "mapped":
+        return health
+    dispatch_accepted = lease.get("settlement_dispatch_state") == "accepted"
+    health["async_dispatch_accepted"] = dispatch_accepted
+    if lease.get("settlement_receipt_present") is True:
+        if lease.get("settlement_phase") in {"awaiting_context", "pending", "claimed", "retry"}:
             health["state"] = "awaiting_reconciliation"
         return health
-    source = "executor" if health["async_dispatch_accepted"] else "sandbox"
+    source = "executor" if dispatch_accepted else "sandbox"
     heartbeat_key = "executor_heartbeat_at" if source == "executor" else "heartbeat_at"
     heartbeat = _monitor_timestamp(lease.get(heartbeat_key))
     expires_at = _monitor_timestamp(lease.get("expires_at"))
@@ -154,6 +153,7 @@ def assemble_admin_public_messages(
         _message_identity(event) for _, event in ordered
         if event.get("visible_to_user") is True and event.get("type") in _V4_PART_TYPES
     }
+    projected_identities = {message.message_identity for message in part_messages}
     blocks: dict[tuple[str, object, str], dict[str, Any]] = {}
     seen_legacy_ids: set[str] = set()
     for index, event in ordered:
@@ -164,8 +164,8 @@ def assemble_admin_public_messages(
             identity = _message_identity(event)
             if identity is None:
                 continue
-            if event_type in _V4_MESSAGE_TYPES and identity in part_identities:
-                continue  # Part lifecycles are owned by Streaming's validated reducer.
+            if event_type in _V4_MESSAGE_TYPES and (identity in projected_identities or identity in part_identities):
+                continue  # Streaming owns authorized complete message ledgers.
             kind = "commentary" if event_type == _V4_COMMENTARY_TYPE else "answer"
             summary_id = ""
             if kind == "commentary":

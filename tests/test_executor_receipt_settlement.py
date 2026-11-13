@@ -16,9 +16,13 @@ from app import executor_reconciler as r
 from app.runs.application.execution_spec import worker_dispatch_fence
 from app.runs.application.worker_dispatch_binding import WorkerDispatchBindingService
 from app.sandbox.infrastructure import leases_postgres
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.execution.api import sandbox_reconciliation_payload
+
+lease_port = build_sandbox_executor_reconciliation_port()
+
 
 
 def _settlement_scenario(
@@ -79,23 +83,23 @@ def _settlement_scenario(
         "id": "lease-a",
         "attempt_id": "attempt-a",
         "status": "active",
-        "executor_reconciliation_status": "pending",
-        "executor_terminal_json": {
+        "settlement_phase": "pending",
+        "receipt_json": {
             "run_id": "run-a",
             "status": "cancelled",
             "message": "cancelled",
         },
-        "executor_reconciliation_context_json": {
+        "accepted_context_json": {
             "adapter_name": "claude-agent-worker",
             "adapter_context": {},
             "run_payload": sandbox_reconciliation_payload(run_payload),
         },
     }
-    original_receipt_lock = leases_postgres.lock_scoped_reconciliation_receipt
+    original_receipt_lock = leases_postgres.lock_scoped_reconciliation_resource
     spec = w._install_frozen_receipt(monkeypatch, persisted, row, calls=calls)
     # Restore real receipt SQL after helper setup; synthetic DB checks every predicate argument.
     monkeypatch.setattr(
-        leases_postgres, "lock_scoped_reconciliation_receipt", original_receipt_lock
+        leases_postgres, "lock_scoped_reconciliation_resource", original_receipt_lock
     )
     from tests.support.frozen_receipts import frozen_attempt
 
@@ -136,61 +140,68 @@ def _settlement_scenario(
                     row["session_id"],
                     row["run_id"],
                     row["attempt_id"],
-                    row["executor_reconciliation_claim_token"],
                     "4",
                 )
                 assert (
                     row["status"] in {"active", "released"}
-                    and row["executor_terminal_json"]
+                    and row["receipt_json"]
                 )
-                assert row["executor_reconciliation_status"] == "claimed"
+                assert row["settlement_phase"] == "claimed"
                 calls.append("full_receipt_scope_checked")
                 return Cursor(None if corrupt == "claim" else {"id": row["id"]})
-            if "executor_reconciliation_status = 'retry'" in sql:
+            if "settlement_phase = 'retry'" in sql:
                 assert params[1:] == (row["id"], claimed_tokens[-1])
                 calls.append(("retry", params[0]))
-                if row["executor_reconciliation_claim_token"] != params[2]:
+                if row["settlement_claim_token"] != params[2]:
                     return Cursor(None)
                 row.update(
-                    executor_reconciliation_status="retry",
-                    executor_reconciliation_claim_token=None,
+                    settlement_phase="retry",
+                    settlement_claim_token=None,
                 )
                 return Cursor({"id": row["id"]})
             if "status = 'quarantined'" in sql:
                 assert params[1:] == (row["id"], claimed_tokens[-1])
                 calls.append(("quarantine", params[0]))
                 row.update(
-                    status="quarantined", executor_reconciliation_status="failed"
+                    status="quarantined", settlement_phase="failed"
                 )
                 return Cursor({"id": row["id"]})
-            if "set executor_reconciliation_status = 'cleanup_pending'" in sql:
+            if "set executor_cleanup_status = 'cleanup_pending'" in sql:
                 assert params[1:] == (row["id"], claimed_tokens[-1])
-                assert row["executor_reconciliation_status"] == "claimed"
-                if row["executor_reconciliation_claim_token"] != params[2]:
+                assert row["settlement_phase"] == "settled"
+                if row["settled_claim_token"] != params[2]:
                     return Cursor(None)
                 calls.append(("cleanup_pending", run["status"], attempt["status"]))
-                row.update(executor_reconciliation_status="cleanup_pending", executor_reconciliation_claim_token=None)
+                row.update(executor_cleanup_status="cleanup_pending")
                 return Cursor({"id": row["id"]})
-            if "executor_reconciliation_status = 'finalized'" in sql:
+            if "set settlement_phase = 'cleanup_pending'" in sql:
+                assert params[1:] == (row["id"], claimed_tokens[-1])
+                assert row["settlement_phase"] == "claimed"
+                if row["settlement_claim_token"] != params[2]:
+                    return Cursor(None)
+                calls.append(("cleanup_pending", run["status"], attempt["status"]))
+                row.update(settlement_phase="cleanup_pending", settlement_claim_token=None)
+                return Cursor({"id": row["id"]})
+            if "executor_cleanup_status = 'finalized'" in sql:
                 assert params == (
                     "executor_reconciliation_cleanup",
                     row["tenant_id"],
                     row["user_id"],
                     row["run_id"],
                     row["id"],
-                    row["executor_reconciliation_claim_token"],
+                    row["executor_cleanup_claim_token"],
                 )
-                assert row["executor_reconciliation_status"] == "cleanup_pending"
+                assert row["executor_cleanup_status"] == "cleanup_pending"
                 calls.append(("finalize", run["status"], attempt["status"]))
                 row.update(
                     status="released",
-                    executor_reconciliation_status="finalized",
-                    executor_reconciliation_claim_token=None,
+                    executor_cleanup_status="finalized",
+                    executor_cleanup_claim_token=None,
                 )
                 return Cursor(dict(row))
             if "from sandbox_leases" in sql:
-                assert params == (row["id"], row["executor_reconciliation_claim_token"])
-                assert row["executor_reconciliation_status"] in {"claimed", "cleanup_pending"}
+                assert params == (row["id"], row["executor_cleanup_claim_token"])
+                assert row["executor_cleanup_status"] == "cleanup_pending"
                 return Cursor({"id": row["id"]})
             raise AssertionError(sql)
 
@@ -208,11 +219,12 @@ def _settlement_scenario(
     claimed_tokens = []
 
     async def claim(_conn, **kwargs):
-        assert row["executor_reconciliation_status"] in {"pending", "retry"}
+        assert row["settlement_phase"] in {"pending", "retry"}
         claimed_tokens.append(kwargs["claim_token"])
         row.update(
-            executor_reconciliation_status="claimed",
-            executor_reconciliation_claim_token=kwargs["claim_token"],
+            settlement_phase="claimed",
+            settlement_claim_token=kwargs["claim_token"],
+            settlement_attempt_count=int(row.get("settlement_attempt_count") or 0) + 1,
         )
         return [row]
 
@@ -306,13 +318,35 @@ def _settlement_scenario(
         outcome = await w.reconciliation_module.reconcile_executor_terminal_result(**kwargs)
         calls.append(("outcome", outcome.status, outcome.error_code))
         if lose_retry_claim:
-            row["executor_reconciliation_claim_token"] = "replacement-claim"
+            row["settlement_claim_token"] = "replacement-claim"
         return outcome
 
     monkeypatch.setattr(r, "transaction", transaction)
-    monkeypatch.setattr(
-        r.sandbox_lease_repository, "claim_sandbox_executor_reconciliations", claim
-    )
+    monkeypatch.setattr(lease_port, "claim_sandbox_executor_reconciliations", claim)
+    async def current(_conn, **kwargs):
+        return row.get("settlement_claim_token") == kwargs["claim_token"] and row["settlement_phase"] == "claimed"
+    async def retry(_conn, **kwargs):
+        calls.append(("retry", kwargs["error"]))
+        if not await current(_conn, **kwargs):
+            return False
+        row.update(settlement_phase="retry", settlement_claim_token=None)
+        return True
+    async def lock_sources(_conn, **kwargs): return True
+    async def refresh(_conn, **kwargs):
+        assert run["status"] == attempt["status"] == "cancelled"
+        row.update(settlement_phase="settled", settled_claim_token=row["settlement_claim_token"],
+            settlement_claim_token=None,result_json={"message":"cancelled"},result_status="cancelled",settled_at="synthetic",settlement_attempt_count=1,source_lease_id=row["id"])
+        return True
+    monkeypatch.setattr(lease_port, "has_sandbox_executor_reconciliation_claim", current)
+    monkeypatch.setattr(lease_port, "retry_sandbox_executor_reconciliation", retry)
+    monkeypatch.setattr(lease_port._settlement, "settlement_claim_current", current, raising=False)
+    monkeypatch.setattr(lease_port._settlement,"lock_sources_in_transaction",lock_sources)
+    monkeypatch.setattr(lease_port._settlement,"refresh_snapshot_in_transaction",refresh)
+    original_reader=lease_port._settlement.read_attempt
+    async def detail(conn, **kwargs):
+        return {**await original_reader(conn, **kwargs), **row, "source_lease_id":row["id"]}
+    monkeypatch.setattr(lease_port._settlement,"read_attempt",detail)
+    monkeypatch.setattr(lease_port,"is_sandbox_executor_reconciliation_claim_current",current)
     monkeypatch.setattr(r.runs_postgres, "get_run", get_run)
     monkeypatch.setattr(r, "_collect_workspace_and_convert_result", collect)
     monkeypatch.setattr(r, "reconcile_executor_terminal_result", capture_outcome)
@@ -323,8 +357,8 @@ def _settlement_scenario(
     monkeypatch.setattr(w._TEST_RUN_LIFECYCLE, "cancel_run", lifecycle.cancel_run)
 
     async def claim_cleanup(_conn, **kwargs):
-        assert row["executor_reconciliation_status"] == "cleanup_pending"
-        row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+        assert row["executor_cleanup_status"] == "cleanup_pending"
+        row["executor_cleanup_claim_token"] = kwargs["claim_token"]
         return [row]
 
     async def cleanup_event(_conn, **kwargs):
@@ -333,7 +367,7 @@ def _settlement_scenario(
 
     monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row, **_kwargs: SimpleNamespace(provider="fake"))
     monkeypatch.setattr(r._sandbox_cleanup, "_append_event", cleanup_event)
-    monkeypatch.setattr(r.sandbox_lease_repository, "claim_failed_sandbox_executor_reconciliation_cleanups", claim_cleanup)
+    monkeypatch.setattr(leases_postgres, "claim_failed_sandbox_executor_reconciliation_cleanups", claim_cleanup)
 
     async def cleanup_once():
         return await r._sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
@@ -342,6 +376,7 @@ def _settlement_scenario(
 
     async def run_once():
         return await r.reconcile_pending_executor_terminals_once(
+            lease_port=lease_port,
             registry=AdapterRegistry(
                 {"claude-agent-worker": w.SuccessfulExecutorStub()}
             ),
@@ -373,12 +408,14 @@ async def test_binding_cancel_settles_original_cancelled_receipt_before_cleanup(
     assert len(set(state.claimed_tokens)) == 1
     assert state.attempt["id"] == "attempt-a"
     assert state.run["status"] == state.attempt["status"] == "cancelled"
-    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "cleanup_pending"
     assert state.receipt["status"] == "active"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
     assert await state.cleanup_once()
     assert state.receipt["status"] == "released"
-    assert state.receipt["executor_reconciliation_status"] == "finalized"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "finalized"
     expected = [
         ("run_terminal", "cancelled"),
         ("attempt_terminal", "attempt-a", "cancelled"),
@@ -396,13 +433,15 @@ async def test_admission_cancel_settles_before_receipt_release(monkeypatch):
     state = _settlement_scenario(monkeypatch, cancel_at="admission")
     assert await state.run_once() == 1
     assert ("outcome", "cancelled", None) in state.calls
-    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "cleanup_pending"
     assert state.receipt["status"] == "active"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
     assert await state.cleanup_once()
     assert ("stop", "cancelled", "cancelled") in state.calls
     assert ("finalize", "cancelled", "cancelled") in state.calls
-    assert state.receipt["executor_reconciliation_status"] == "finalized"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "finalized"
 
 
 @pytest.mark.asyncio
@@ -428,8 +467,8 @@ async def test_nonterminal_outcome_cannot_release_or_retry_replacement_claim(
 ):
     state = _settlement_scenario(monkeypatch, cancel_at="terminal_after_collection", lose_retry_claim=True)
     assert await state.run_once() == 1
-    assert state.receipt["executor_reconciliation_claim_token"] == "replacement-claim"
-    assert state.receipt["executor_reconciliation_status"] == "claimed"
+    assert state.receipt["settlement_claim_token"] == "replacement-claim"
+    assert state.receipt["settlement_phase"] == "claimed"
     assert state.receipt["status"] == "active"
     assert ("outcome", "skipped", "stale_terminal_state") in state.calls
     assert ("retry", "executor_reconciliation_run_not_terminal") in state.calls
@@ -448,7 +487,7 @@ async def test_skipped_terminal_race_retries_then_uses_existing_terminal_branch(
     assert await state.run_once() == 1
     assert ("outcome", "skipped", "stale_terminal_state") in state.calls
     assert state.run["status"] == state.attempt["status"] == "cancelled"
-    assert state.receipt["executor_reconciliation_status"] == "retry"
+    assert state.receipt["settlement_phase"] == "retry"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
 
     async def unexpected_collection(*_args, **_kwargs):
@@ -457,11 +496,13 @@ async def test_skipped_terminal_race_retries_then_uses_existing_terminal_branch(
     monkeypatch.setattr(r, "_collect_workspace_and_convert_result", unexpected_collection)
     assert await state.run_once() == 1
     assert len(set(state.claimed_tokens)) == 2
-    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "cleanup_pending"
     assert state.receipt["status"] == "active"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
     assert await state.cleanup_once()
-    assert state.receipt["executor_reconciliation_status"] == "finalized"
+    assert state.receipt["settlement_phase"] == "settled"
+    assert state.receipt["executor_cleanup_status"] == "finalized"
     assert ("stop", "cancelled", "cancelled") in state.calls
     assert ("finalize", "cancelled", "cancelled") in state.calls
     assert (

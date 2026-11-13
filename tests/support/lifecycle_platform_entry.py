@@ -85,6 +85,20 @@ async def platform_entry(monkeypatch, tmp_path):
         admitted.append(dict(payload))
         return SimpleNamespace(queue_position=1, queue_admission_ordinal=len(admitted), source="synthetic-transport", message_id="1" * 64), None
     monkeypatch.setattr(chat, "_attempt_chat_queue_admission", enqueue)
+
+    # Without a durable delivery service, the route enqueues through these two
+    # Redis transports; substitute only the transport, never the admission rows.
+    async def enqueue_with_metadata(payload):
+        admitted.append(dict(payload))
+        return SimpleNamespace(queue_position=1, queue_admission_ordinal=len(admitted),
+                               source="synthetic-transport", message_id="1" * 64)
+
+    async def no_existing_admission(_payload):
+        return None
+    if hasattr(chat, "enqueue_run_with_metadata"):
+        monkeypatch.setattr(chat, "enqueue_run_with_metadata", enqueue_with_metadata)
+    if hasattr(chat, "read_queue_admission"):
+        monkeypatch.setattr(chat, "read_queue_admission", no_existing_admission)
     app = SimpleNamespace(state=SimpleNamespace(run_lifecycle=lifecycle,
                           run_stream_runtime=SimpleNamespace(worker_capabilities=capabilities)))
 

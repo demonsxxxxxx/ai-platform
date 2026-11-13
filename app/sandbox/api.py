@@ -11,12 +11,24 @@ from app.sandbox.domain.workspace_version import WorkspaceVersionError as Worksp
 from app.sandbox.application.artifact_transfer import ArtifactStreamStager as ArtifactStreamStager
 
 from app.sandbox.application.callback_authority import (
+    ExecutorTerminalTailIdentity as ExecutorTerminalTailIdentity,
+    ProviderSessionAppendIdentity as ProviderSessionAppendIdentity,
+    ProviderTailDrainIdentity as ProviderTailDrainIdentity,
+    SandboxCallbackIdentity as SandboxCallbackIdentity,
     SandboxCallbackAuthority as SandboxCallbackAuthority,
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
 )
 
 from app.sandbox.application.diagnostic_capture import (
     capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
+)
+
+from app.sandbox.application.dispatch_intent import (
+    DispatchOutcome as DispatchOutcome,
+    SandboxDispatchIdentity as SandboxDispatchIdentity,
+    SandboxDispatchIntentRepository as SandboxDispatchIntentRepository,
+    SandboxDispatchIntentService as SandboxDispatchIntentService,
+    SandboxDispatchOutcomeUnknown as SandboxDispatchOutcomeUnknown,
 )
 
 from app.sandbox.application.reconciliation_receipt import (
@@ -29,6 +41,13 @@ from app.sandbox.application.runtime_cleanup import (
     SandboxRuntimeCleanup as SandboxRuntimeCleanup,
     SandboxRuntimeCleanupError as SandboxRuntimeCleanupError,
 )
+from app.sandbox.application.lease_ports import (
+    SandboxExecutorCallbackLeasePort as SandboxExecutorCallbackLeasePort,
+    SandboxExecutorReconciliationPort as SandboxExecutorReconciliationPort,
+    SandboxRunLeaseReader as SandboxRunLeaseReader,
+    SandboxRuntimeLeasePort as SandboxRuntimeLeasePort,
+    SandboxLeaseTransportPort as SandboxLeaseTransportPort,
+)
 
 from dataclasses import asdict, dataclass
 from re import fullmatch
@@ -40,6 +59,10 @@ from app.sandbox.domain.executor_failure import (
     canonical_executor_reported_failure_code as canonical_executor_reported_failure_code,
     executor_reported_failure_message as executor_reported_failure_message,
     normalize_executor_reported_failure as normalize_executor_reported_failure,
+)
+from app.sandbox.domain.lease_errors import (
+    SandboxExecutorTerminalConflictError as SandboxExecutorTerminalConflictError,
+    SandboxLeaseReleaseScopeMismatchError as SandboxLeaseReleaseScopeMismatchError,
 )
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,

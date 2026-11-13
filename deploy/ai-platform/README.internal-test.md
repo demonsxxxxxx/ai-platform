@@ -190,13 +190,32 @@ or changing application/data services, add `--check`. It may run a temporary,
 network-disabled, read-only verifier container from the digest-verified backend
 to check a root-owned workspace for an incomplete migration marker; it makes no
 application/data changes. This is preflight only, not deployment
-acceptance. Expired quarantined records are not automatically deleted: only
-terminal, unclaimed failed-reconciliation records tied to a terminal Run may
-be excluded, and any surviving recorded sandbox container still blocks.
+acceptance. Quarantined resources are not excluded from the drain; resolve their resource responsibility while retaining historical records.
 
 Success ends with `deployment: healthy (<commit>)`. A returned nonzero status is
 not a successful deployment. Do not start another invocation while one is still
 running; the project-wide lock prevents concurrent package deployments.
+
+## One-time Attempt settlement upgrade
+
+An installation with the old Sandbox settlement columns requires a verified
+recoverable backup and restore drill, stopped old API/Worker writers, and fully
+drained Runs, Attempts, leases, dispatches and unresolved operation claims.
+Expired TTLs do not prove remote work stopped. After verifying those conditions,
+add `--confirm-settlement-upgrade` to the normal package controller command.
+The controller still stops admission and checks quiescence; the flag confirms
+operator recovery preparation, not a selectable runtime mode.
+
+Schema apply maps and compares every historical Attempt before the same
+transaction drops the eight old settlement columns, old indexes/constraint,
+write-fence trigger/function and reader/writer/retirement tables. It retains
+receipt/diagnostic/context history, Run/Attempt identity/results and Sandbox
+resource evidence. Missing bindings, conflicts and unresolved claims block it.
+Fresh databases need no confirmation. Reapplication keeps the Attempt-only
+layout and cannot recreate old columns. Verify schema readiness and preserved
+history before starting matching binaries; do not run an old settlement binary
+against the upgraded database. Recovery requires a compatible corrected package
+or explicitly authorized coordinated restore.
 
 ## Legacy SSE upgrades
 

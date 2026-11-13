@@ -64,6 +64,7 @@ from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.application import skill_markdown
 from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
@@ -71,6 +72,8 @@ from app.skills.pinning import build_skill_version_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
+
+sandbox_lease_port = build_sandbox_executor_reconciliation_port()
 
 
 def _assert_executor_identity_without_retired_metadata(result: ExecutorResult) -> None:
@@ -5706,7 +5709,7 @@ def stopped_continuation_ports(monkeypatch):
 
     monkeypatch.setattr(executor_reconciler, "transaction", transaction)
     monkeypatch.setattr(executor_reconciler, "_record_reconciliation_stage", checkpoint)
-    monkeypatch.setattr(executor_reconciler.sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", claimed)
+    monkeypatch.setattr(sandbox_lease_port, "has_sandbox_executor_reconciliation_claim", claimed)
     return ContinuationSettlementPorts(save, unexpected_settlement)
 
 
@@ -5772,12 +5775,12 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     row = {"id": "lease-a", "tenant_id": current.tenant_id, "run_id": current.run_id, "provider": "docker"}
     if fail_upload:
         with pytest.raises(RuntimeError) as caught:
-            await executor_reconciler._collect_workspace_and_convert_result(row, registry=registry, claim_token="claim-a", continuation_ports=stopped_continuation_ports)
+            await executor_reconciler._collect_workspace_and_convert_result(row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports)
         assert caught.value is failure
         assert stored == []
     else:
         result, _provider, _lease = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", continuation_ports=stopped_continuation_ports)
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports)
         assert result.status == "succeeded", result.result
         assert result.result["message"] == "private answer"
         assert result.result["artifact_count"] == 1
@@ -5916,14 +5919,14 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
     ):
         with pytest.raises(asyncio.CancelledError):
             await executor_reconciler._collect_workspace_and_convert_result(
-                row, registry=registry, claim_token="claim-a", continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+                row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert terminal == original
         if collection_mode != "transaction_exit_cancel":
             assert persistence.value is None
         return
     for _ in range(2):
         result, _, _ = await executor_reconciler._collect_workspace_and_convert_result(
-            row, registry=registry, claim_token="claim-a", continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+            row, registry=registry, claim_token="claim-a", lease_port=sandbox_lease_port, continuation_ports=stopped_continuation_ports, run_diagnostics=None if collection_mode == "log_only" else diagnostics)
         assert result.status == ("succeeded" if status == "succeeded" and collection_mode == "ok" else "failed")
         assert result.artifacts == []
         assert terminal == original

@@ -74,7 +74,8 @@ async def test_role_process_owns_exact_tasks_and_one_shutdown(monkeypatch, role,
         assert role == settings.worker_role
         calls.append("heartbeat")
         await asyncio.Event().wait()
-    async def maintenance(*args):
+    async def maintenance(*args, **kwargs):
+        assert "run_delivery_intents" in kwargs
         calls.append("maintenance")
         await asyncio.Event().wait()
     original_supervise = worker_main._supervise_worker_tasks
@@ -87,7 +88,13 @@ async def test_role_process_owns_exact_tasks_and_one_shutdown(monkeypatch, role,
     monkeypatch.setattr(worker_main, "configure_worker_services", lambda: calls.append("bootstrap"))
     monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
     monkeypatch.setattr(worker_main, "require_schema_current", schema)
-    monkeypatch.setattr(worker_main, "build_worker_v4_runtime", lambda *a: SimpleNamespace(capabilities=object(), aclose=close_runtime))
+    monkeypatch.setattr(
+        worker_main,
+        "build_worker_v4_runtime",
+        lambda *a: SimpleNamespace(
+            capabilities=object(), aclose=close_runtime,
+        ),
+    )
     monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
     monkeypatch.setattr(worker_main, "_run_worker_slot", slot)
     monkeypatch.setattr(worker_main, "run_executor_terminal_reconciler", reconciler)

@@ -124,6 +124,32 @@ This recovery is owned by the shared HTTP request transport. SSE's existing
 credential refresh/reconnect and initial login-page AD discovery keep their
 own lifecycles; the recovery does not replay started stream or tool effects.
 
+### Explicit login after authentication-store loss
+
+Identity owns the browser-context error type and store-outcome disposition in
+`identity.application.browser_auth_failures`, exposed through `identity.api`.
+The legacy `auth_sessions.AuthContextError` import remains the same class for
+existing authentication routes and consumers; its former local implementation
+and duplicate outcome mapping are retired. Redis operations, signed-cookie
+validation and key ownership remain unchanged.
+
+A signed browser Cookie does not restore a lost Redis authority or principal.
+Ordinary bootstrap continues to reject that Cookie. Explicit login first uses
+`recovery_only`, which cannot create authority, rotate, or renew a grant. When
+its requested authority is absent, a signed supplied V2 Cookie can be retired
+only after an atomic probe proves both that Cookie's own authority and context
+records are absent. The HTTP 401 `auth_context_missing` response then expires
+only the configured HttpOnly Cookie; invalid signatures, live or partially
+missing records, and unavailable storage do not clear it.
+
+The coordinator persists one fresh anonymous identity after this typed missing
+result, or reuses the unconfirmed replacement left by an earlier failed attempt.
+It performs one ordinary bootstrap and still requires normal company login.
+This recovery neither recreates the prior principal nor replays its mutations.
+The recovery-only probe also precedes retrying an unconfirmed initial identity,
+so an already-replaced browser record cannot remain blocked by an orphaned
+HttpOnly Cookie. Other origin storage and unrelated instance Cookies remain.
+
 The amended decision 4 permits transparent recovery only within this bounded
 grant. The absolute non-sliding day, expired-token
 rejection, company-authority checks, and other decisions remain in force.

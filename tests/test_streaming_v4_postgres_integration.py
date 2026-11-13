@@ -1,5 +1,6 @@
 from __future__ import annotations
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
 import asyncio
@@ -10,6 +11,7 @@ import hashlib
 import json
 import os
 from unittest.mock import patch
+from types import SimpleNamespace
 import uuid
 
 import psycopg
@@ -22,15 +24,16 @@ from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 from app import schema_migrations
 from app.bootstrap import run_lifecycle
+from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
-from app.run_admission_terminalization import terminalize_enqueue_failure_with_v4
+from app.run_admission_terminalization import terminalize_enqueue_failure
 from app.runs.infrastructure.postgres import load_current_terminal_event_fact
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.routes import runtime_callbacks
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-from app.runs.api import cancel_run_with_v4, complete_run_with_v4, fail_run_with_v4
+from app.runs.api import cancel_run_terminalization, complete_run_terminalization, fail_run_terminalization
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities, admit_v4_stream, publish_run_event
 from app.streaming.api import build_v4_control, stream_key
 from app.streaming.redis import (
@@ -122,16 +125,24 @@ def _answer_callback(run, attempt, batch_id, *, use_parts=False):
     from app.runtime.kernel_contracts import AgentEvent
 
     adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt, sanitizer=sanitize_public_text, payload_sanitizer=sanitize_public_payload)
+    candidates = adapter.accept_answer_text("answer")
+    if use_parts:
+        # Retained historical part callback compatibility, not a live Claude producer.
+        from app.execution.api import ClaudeAgentEventCandidate
+        candidates = (candidates[0], ClaudeAgentEventCandidate(
+            run_id=run, event_id=candidates[1].event_id,
+            event_type="message.part.delta", message_id=adapter.message_id,
+            causation_event_id=None,
+            payload={"schema_version": "ai-platform.assistant-text-part.v1", "part_id": "part-retained", "delta": "answer"},
+            payload_sanitizer=sanitize_public_payload,
+        ))
     return ExecutorCallbackEvent(
         session_id=f"s_{run[2:]}", run_id=run, attempt_id=attempt,
         callback_token_id=callback_token_id_for_binding(CallbackTokenBinding(
             run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
         )), batch_id=batch_id,
         status="running", progress=20, new_message=None, state_patch={},
-        events=[AgentEvent(**event.as_agent_event_fields()) for event in (
-            adapter.accept_part_text(("provider-answer", None), "answer")
-            if use_parts else adapter.accept_answer_text("answer")
-        )],
+        events=[AgentEvent(**event.as_agent_event_fields()) for event in candidates],
     )
 
 
@@ -221,6 +232,9 @@ async def _clear_seeded_stream_authority_for_cancellation(
         where tenant_id = %s and id = %s
         """,
         (tenant_id, attempt_id),
+    )
+    await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id, source_lease_id="lease",
     )
 
 
@@ -347,6 +361,10 @@ async def _seed_run(
         """,
         (tenant, workspace, user, session, run, attempt, f"trace_{run}", json.dumps(lease_payload)),
     )
+    if with_current_attempt:
+        await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+            conn, tenant_id=tenant, run_id=run, attempt_id=attempt, source_lease_id="lease",
+        )
     tenant_scope = f"scope_{suffix}"
     open_event_id = f"evt4_open_{suffix}"
     opening = build_v4_control(
@@ -896,7 +914,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
         )
         with pytest.raises(RuntimeError, match="enqueue_failure_v4_terminal_row_missing"):
             async with factory() as conn:
-                await terminalize_enqueue_failure_with_v4(
+                await terminalize_enqueue_failure(
                     rollback_capabilities,
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
@@ -934,7 +952,7 @@ async def test_enqueue_failure_creates_authority_and_terminal_row_atomically():
             publication_transport=object(),
         )
         async with factory() as conn:
-            progress = await terminalize_enqueue_failure_with_v4(
+            progress = await terminalize_enqueue_failure(
                 capabilities,
                 conn,
                 lifecycle=run_lifecycle.build_run_lifecycle_service(),
@@ -1231,6 +1249,7 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
             await runtime_callbacks.record_executor_callback(
                 callback,
                 capabilities=_callback_capabilities(dsn, schema_name),
+                lease_port=sandbox_lease_reader,
             )
 
         assert exc_info.value.detail == "sandbox_runtime_attempt_inactive"
@@ -1252,11 +1271,11 @@ async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(m
             callback = _answer_callback(run, attempt, "batch-handler-duplicate", use_parts=use_parts)
             monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
             capabilities = _callback_capabilities(dsn, schema_name, bridge=bridge)
-            first = await runtime_callbacks.record_executor_callback(callback, capabilities=capabilities)
+            first = await runtime_callbacks.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
             first_stream = await client.xrange(key)
             async with _connection_factory(dsn, schema_name) as conn:
                 first_rows = await (await conn.execute("select * from run_events order by sequence")).fetchall()
-            second = await runtime_callbacks.record_executor_callback(callback, capabilities=capabilities)
+            second = await runtime_callbacks.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
             async with _connection_factory(dsn, schema_name) as conn:
                 rows = await (await conn.execute("select * from run_events order by sequence")).fetchall()
                 receipts = await (await conn.execute("select count(*) as count from run_event_batches")).fetchone()
@@ -1290,7 +1309,7 @@ async def test_real_callback_handler_commits_facts_before_redis_outage_and_retri
         callback = _answer_callback(run, attempt, "batch-handler-outage")
         monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
         with pytest.raises(HTTPException) as caught:
-            await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=V4RedisStreamBridge(RedisStreamBridge(publish_client=FailingRedis()))))
+            await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=V4RedisStreamBridge(RedisStreamBridge(publish_client=FailingRedis()))), lease_port=sandbox_lease_reader)
         assert caught.value.status_code == 503
         assert caught.value.detail == "callback_stream_unavailable"
         assert len(observed) == 1 and len(observed[0]) == 2
@@ -1298,7 +1317,7 @@ async def test_real_callback_handler_commits_facts_before_redis_outage_and_retri
             before = await (await conn.execute("select * from run_events order by sequence")).fetchall()
         client, key, bridge = await _redis_stream(tenant, run)
         try:
-            accepted = await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=bridge))
+            accepted = await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=bridge), lease_port=sandbox_lease_reader)
             assert accepted["deduplicated"] is True
             async with _connection_factory(dsn, schema_name) as conn:
                 assert await (await conn.execute("select * from run_events order by sequence")).fetchall() == before
@@ -1331,6 +1350,7 @@ async def test_run_event_cannot_overtake_a_committed_callback_before_redis_appen
         try:
             task = asyncio.create_task(runtime_callbacks.record_executor_callback(
                 _answer_callback(run, attempt, "batch-terminal-race"), capabilities=capabilities,
+                lease_port=sandbox_lease_reader,
             ))
             await asyncio.wait_for(committed.wait(), 2)
             async with _connection_factory(dsn, schema_name) as conn:
@@ -1476,7 +1496,7 @@ async def test_complete_run_writes_one_v4_terminal_row_from_the_run_fact():
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, _attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
-            assert await complete_run_with_v4(
+            assert await complete_run_terminalization(
                 conn,
                 lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn_value, schema_name),
@@ -1514,7 +1534,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
         tenant, run, attempt = ids
         async with _connection_factory(_dsn(), schema_name) as conn:
             if status == "failed":
-                progress = await fail_run_with_v4(
+                progress = await fail_run_terminalization(
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),
@@ -1524,7 +1544,7 @@ async def test_failed_and_cancelled_run_producers_are_exact_once_and_conflict_cl
                     error_message="private path C:/tenant/secret",
                 )
             else:
-                progress = await cancel_run_with_v4(
+                progress = await cancel_run_terminalization(
                     conn,
                     lifecycle=run_lifecycle.build_run_lifecycle_service(),
                     capabilities=_callback_capabilities(_dsn_value, schema_name),
@@ -1644,7 +1664,7 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
                 (tenant, run),
             )).fetchone()
             assert pending["status"] == "queued" and pending["cancel_requested_at"] is not None
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
                 result_json={"message": "任务已取消"},
@@ -1718,6 +1738,52 @@ async def test_production_cancel_composition_preserves_owner_fences_order_and_re
 
 
 @pytest.mark.asyncio
+async def test_production_cancel_wakes_reconciler_after_real_commit_with_fixed_redis_hint(monkeypatch):
+    from app.runtime.sandbox import executor_signals
+
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        monkeypatch.setattr(executor_signals, "get_redis_client", lambda: Redis.from_url(_redis_url(), decode_responses=True))
+        cursor = await executor_signals.initialize_executor_reconciliation_signal_cursor()
+        async with _connection_factory(dsn, schema_name) as conn:
+            await _clear_seeded_stream_authority_for_cancellation(conn, tenant_id=tenant, run_id=run, attempt_id=attempt)
+        seen = []
+        publish = executor_signals.publish_executor_terminal_signal
+
+        async def wake():
+            async with _connection_factory(dsn, schema_name) as observer:
+                row = await (await observer.execute("select cancel_requested_at from runs where tenant_id=%s and id=%s", (tenant, run))).fetchone()
+                assert row["cancel_requested_at"] is not None, "the hint cannot precede the real cancellation commit"
+            await publish()
+            seen.append("wake")
+
+        async def public_noop(*_args, **_kwargs):
+            seen.append("public")
+
+        monkeypatch.setattr(run_lifecycle, "publish_executor_terminal_signal", wake)
+        monkeypatch.setattr(run_lifecycle, "transaction", lambda: _connection_factory(dsn, schema_name))
+        monkeypatch.setattr(run_lifecycle, "get_settings", lambda: SimpleNamespace(ai_session_secret="test-v4-authority-secret"))
+        monkeypatch.setattr(run_lifecycle, "admit_v4_stream", public_noop)
+        monkeypatch.setattr(run_lifecycle, "publish_run_event", public_noop)
+        use_case = run_lifecycle.build_run_cancellation_use_case(
+            attempt_lifecycle=build_run_attempt_lifecycle_service(), lifecycle=run_lifecycle.build_run_lifecycle_service(),
+        )
+        receipt = await use_case.request_owner_cancel(tenant_id=tenant, run_id=run, owner_user_id=f"u_{tenant[2:]}")
+        assert seen == []
+        assert receipt.status == "cancel_requested"
+        await use_case.post_cancel(receipt, tenant_id=tenant, user_id=f"u_{tenant[2:]}", requested_by_role="owner",
+                                   reason="cancel_requested", worker_capabilities=object())
+        assert seen == ["wake", "public", "public"]
+        assert await executor_signals.wait_for_executor_reconciliation_signal(block_ms=100, cursor=cursor)
+        client = Redis.from_url(_redis_url(), decode_responses=True)
+        try:
+            entries = await client.xrange(executor_signals._EXECUTOR_RECONCILIATION_SIGNAL_KEY, min=cursor.last_id, max=cursor.last_id)
+            assert entries[0][1] == {"wake": "1"}
+            await client.xdel(executor_signals._EXECUTOR_RECONCILIATION_SIGNAL_KEY, cursor.last_id)
+        finally:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_production_cancel_composition_preserves_admin_self_cancel_facts():
     async with _schema() as (_dsn_value, schema_name, ids):
         tenant, run, attempt = ids
@@ -1738,7 +1804,7 @@ async def test_production_cancel_composition_preserves_admin_self_cancel_facts()
             )
             assert result is not None
             assert result["status"] == "cancel_requested"
-            progress = await cancel_run_with_v4(
+            progress = await cancel_run_terminalization(
                 conn, lifecycle=run_lifecycle.build_run_lifecycle_service(),
                 capabilities=_callback_capabilities(_dsn(), schema_name), tenant_id=tenant, run_id=run,
                 result_json={"message": "任务已取消"},
@@ -1918,7 +1984,7 @@ async def test_real_admin_part_reader_uses_authorized_attempt_rows():
                     (row["id"], tenant, run, row["sequence"], row["event_type"], json.dumps(row["payload_json"])),
                 )
         async with _connection_factory(dsn, schema) as conn:
-            detail = await get_admin_run_detail(conn, tenant_id=tenant, run_id=run)
+            detail = await get_admin_run_detail(conn, tenant_id=tenant, run_id=run, sandbox_lease_reader=_owner_sandbox_infrastructure_leases_postgres)
             assert detail is not None
             messages = detail.pop("_assistant_text_messages")
             assert len(messages) == 1
@@ -1991,9 +2057,14 @@ async def test_assembled_callback_authority_holds_real_run_attempt_and_lease_loc
             run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
         ))
         async with _connection_factory(dsn, schema_name) as conn:
+            from app.sandbox.api import SandboxCallbackIdentity
+
             identity, lease = await build_sandbox_callback_authority().lock_run_then_attempt(
-                conn, run_id=run, attempt_id=attempt, callback_token_id=token_id,
-                session_id=f"s_{run[2:]}",
+                conn,
+                SandboxCallbackIdentity(
+                    run_id=run, attempt_id=attempt, callback_token_id=token_id,
+                    session_id=f"s_{run[2:]}",
+                ),
             )
             assert identity["tenant_id"] == tenant and lease["id"] == "lease"
             for table, identifier in (("runs", run), ("run_attempts", attempt), ("sandbox_leases", "lease")):

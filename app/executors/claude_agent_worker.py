@@ -71,7 +71,7 @@ from app.runtime.sandbox.contracts import (
     ModelTokenLimits,
     SandboxRuntimeRequest,
 )
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.bootstrap.sandbox_runtime import SandboxRuntime
 from app.bootstrap.conversation_continuation import (
     build_continuation_settlement_ports, runtime_continuation_fields,
     prepare_worker_workspace_restore, finish_worker_workspace_restore,
