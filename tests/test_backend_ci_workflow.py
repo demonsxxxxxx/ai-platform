@@ -395,6 +395,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
         "tests/test_auth_refresh_redis_integration.py",
+        "tests/test_auth_context_recovery_redis_integration.py",
         "tests/test_streaming_v4_transport.py",
     ),
     "release-governance-policy": (

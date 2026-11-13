@@ -439,12 +439,11 @@
       "durationSuffix": "，用时 {{duration}}"
     },
     "workDetails": {
-      "title": "工作过程",
-      "working": "工作中",
+      "title": "执行过程",
+      "working": "执行过程",
       "itemCount": "{{count}} 项",
-      "toolGroup": "已完成 {{count}} 项连续工具操作",
-      "collapseAll": "全部收起",
-      "expandAll": "全部展开"
+      "collapseAll": "收起",
+      "expandAll": "展开"
     },
     "runStatus": {
       "event": {

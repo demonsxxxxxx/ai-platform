@@ -47,12 +47,12 @@ async def test_complete_blocks_publish_before_tool_and_result_with_one_message_o
 
     async def source(*, prompt, options):
         del prompt
-        assert options.include_partial_messages is False
+        assert options.include_partial_messages is True
         yield assistant(
             sdk, "work", "work-text", sdk.TextBlock(text="Checking synthetic input. ")
         )
         # The public part must already be ACKed before subsequent SDK messages.
-        assert any(event.event_type == "message.part.delta" for event in captured)
+        assert any(event.event_type == "message.delta" for event in captured)
         yield assistant(
             sdk,
             "work",
@@ -93,9 +93,9 @@ async def test_complete_blocks_publish_before_tool_and_result_with_one_message_o
         on_agent_event=lambda batch: captured.extend(batch) or True,
         on_tool_lifecycle=acknowledge,
     )
-    assert_answer(result, captured, "Safe final answer.")
-    assert commentary(captured) == "Checking synthetic input. "
-    assert "".join(texts) == "Safe final answer."
+    assert_answer(result, captured, "Checking synthetic input. \n\nSafe final answer.")
+    assert commentary(captured) == ""
+    assert "".join(texts) == "Checking synthetic input. \n\nSafe final answer."
     assert "PRIVATE" not in str([event.payload for event in captured])
     assert {event.event_type for event in captured} >= {
         "tool.started",
@@ -104,73 +104,77 @@ async def test_complete_blocks_publish_before_tool_and_result_with_one_message_o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "raw", [None, "missing-stop", "overlap-tools", "duplicate-stop"]
-)
-async def test_raw_noise_cannot_poison_typed_answer_or_refill_result_only(
-    source_routing_settings, raw
-):
+async def test_native_tokens_publish_before_completed_block_and_replay_once(source_routing_settings):
+    import claude_agent_sdk as sdk
+
+    captured = []
+
+    async def source(*, prompt, options):
+        del prompt
+        assert options.include_partial_messages is True
+        yield frame(sdk, "main", 0, {"type": "message_start", "message": {"id": "main"}})
+        yield frame(sdk, "main", 1, {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}})
+        first = frame(sdk, "main", 2, {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello "}})
+        yield first
+        assert "".join(event.payload["delta"] for event in captured if event.event_type == "message.delta") == "Hello "
+        yield first  # Stable native event UUID, not equal-text suppression.
+        yield frame(sdk, "main", 3, {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "world. "}})
+        yield assistant(sdk, "main", "typed-1", sdk.TextBlock(text="Hello world. "))
+        yield frame(sdk, "main", 4, {"type": "content_block_stop", "index": 0})
+        yield frame(sdk, "main", 5, {"type": "message_stop"})
+        yield terminal(sdk, "PRIVATE_RESULT")
+
+    result, events, texts = await execute(source_routing_settings, source, partial=True, captured=captured)
+    assert_answer(result, events, "Hello world. ")
+    assert "".join(texts) == "Hello world. "
+    assert "PRIVATE" not in str([event.payload for event in events])
+
+
+@pytest.mark.asyncio
+async def test_native_delta_after_completed_block_cannot_duplicate_public_text(source_routing_settings):
     import claude_agent_sdk as sdk
 
     async def source(*, prompt, options):
         del prompt, options
-        if raw:
-            yield frame(
-                sdk,
-                "raw-only",
-                0,
-                {
-                    "type": "message_start",
-                    "message": {"id": "raw-only", "role": "assistant"},
-                },
-            )
-            if raw == "overlap-tools":
-                for index in range(2):
-                    yield frame(
-                        sdk,
-                        "raw-only",
-                        index + 1,
-                        {
-                            "type": "content_block_start",
-                            "index": index,
-                            "content_block": {
-                                "type": "tool_use",
-                                "id": f"private-raw-tool-{index}",
-                                "name": "Read",
-                            },
-                        },
-                    )
-            else:
-                yield frame(
-                    sdk,
-                    "raw-only",
-                    1,
-                    {
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {"type": "text"},
-                    },
-                )
-            yield frame(
-                sdk,
-                "raw-only",
-                3,
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": "PRIVATE_RAW_BODY"},
-                },
-            )
-            if raw == "duplicate-stop":
-                for ordinal in (4, 5):
-                    yield frame(sdk, "raw-only", ordinal, {"type": "message_stop"})
-        yield assistant(sdk, "main", "main-1", sdk.TextBlock(text="Safe typed answer."))
-        yield terminal(sdk, "PRIVATE_RESULT_BODY")
+        yield frame(sdk, "main", 0, {"type": "message_start", "message": {"id": "main"}})
+        yield frame(sdk, "main", 1, {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}})
+        text = "Visible prefix. "
+        delta = {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": text}}
+        yield frame(sdk, "main", 2, delta)
+        yield assistant(sdk, "main", "typed-main", sdk.TextBlock(text=text))
+        yield frame(sdk, "main", 3, delta)  # Different UUID after the block was confirmed.
+        yield frame(sdk, "main", 4, {"type": "content_block_stop", "index": 0})
+        yield frame(sdk, "main", 5, {"type": "message_stop"})
+        yield terminal(sdk, "PRIVATE_RESULT")
 
     result, events, texts = await execute(source_routing_settings, source, partial=True)
-    assert_answer(result, events, "Safe typed answer.")
-    assert "".join(texts) == "Safe typed answer."
-    assert "PRIVATE" not in str([event.payload for event in events])
+    assert result.error is None
+    assert result.answer_receipt is None
+    assert texts == []
+    assert "".join(event.payload["delta"] for event in events if event.event_type == "message.delta") == "Visible prefix. "
+    assert not any(event.event_type == "message.completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_malformed_native_block_stops_projection_without_replacing_received_text(source_routing_settings):
+    import claude_agent_sdk as sdk
+
+    async def source(*, prompt, options):
+        del prompt, options
+        yield frame(sdk, "main", 0, {"type": "message_start", "message": {"id": "main"}})
+        yield frame(sdk, "main", 1, {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}})
+        yield frame(sdk, "main", 2, {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Visible prefix. "}})
+        yield frame(sdk, "main", 3, {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "private-raw-tool", "name": "Read"}})
+        yield assistant(sdk, "other", "other-1", sdk.TextBlock(text="NOT_ACCEPTED"))
+        yield terminal(sdk, "PRIVATE_RESULT")
+
+    result, events, texts = await execute(source_routing_settings, source, partial=True)
+    assert result.error is None
+    assert result.answer_receipt is None
+    assert texts == []
+    assert "".join(event.payload["delta"] for event in events if event.event_type == "message.delta") == "Visible prefix. "
+    assert not any(event.event_type == "message.completed" for event in events)
+    assert "NOT_ACCEPTED" not in str([event.payload for event in events])
 
 
 @pytest.mark.asyncio
@@ -200,6 +204,11 @@ async def test_no_public_answer_is_invented_from_result(source_routing_settings,
     assert result.error is None
     assert result.received_structured_terminal is True
     assert result.message == ""
+    if shape in {"work-only", "whitespace"}:
+        expected = "Checking." if shape == "work-only" else " \n\t"
+        assert_answer(result, events, expected)
+        assert "".join(texts) == expected
+        return
     assert result.runtime_diagnostics["failure_source"] == "public_projection"
     assert set(result.runtime_diagnostics) == {
         "schema_version",
@@ -278,7 +287,7 @@ async def test_invalid_typed_identity_or_body_cannot_complete(
     assert result.received_structured_terminal is True
     assert result.runtime_diagnostics["failure_source"] == "public_projection"
     assert result.answer_receipt is None
-    assert not texts
+    assert texts == []
     assert not any(event.event_type == "message.completed" for event in events)
     assert "PRIVATE" not in str([event.payload for event in events])
 
@@ -305,8 +314,8 @@ async def test_terminal_control_failure_keeps_preview_but_never_finalizes(
     result, events, texts = await execute(source_routing_settings, source, partial=True)
     assert result.error is not None
     assert result.answer_receipt is None
-    assert not texts
-    assert any(event.event_type == "message.part.delta" for event in events)
+    assert texts == []
+    assert any(event.event_type == "message.delta" for event in events)
     assert not any(event.event_type == "message.completed" for event in events)
 
 
@@ -369,7 +378,7 @@ async def test_recovered_assistant_error_cannot_reclassify_later_terminal(
     assert result.error == "claude_agent_sdk_execution_failed"
     assert "PRIVATE" not in str([event.payload for event in events])
     assert result.answer_receipt is None
-    assert not texts
+    assert texts == []
 
 
 @pytest.mark.asyncio
@@ -542,22 +551,15 @@ async def test_actual_typed_facts_match_receipt_history_and_1659_admin(
         yield terminal(sdk, "PRIVATE_RESULT")
 
     result, events, texts = await execute(source_routing_settings, source, partial=True)
-    assert_answer(result, events, "正常公开█回答")
-    assert "".join(texts) == "正常公开█回答"
+    assert_answer(result, events, "Checking synthetic input. \n\n正常公开█回答")
+    assert "".join(texts) == "Checking synthetic input. \n\n正常公开█回答"
     rows = persisted_rows(events)
-    answer_part = next(
-        event.payload["part_id"]
-        for event in events
-        if event.event_type == "message.part.classified"
-        and event.payload["role"] == "answer"
-    )
     if damage:
         rows = deepcopy(rows)
         row = next(
             row
             for row in rows
-            if row["event_type"] == "message.part.delta"
-            and row["payload_json"]["part_id"] == answer_part
+            if row["event_type"] == "message.delta"
         )
         if damage == "attempt":
             row["payload_json"]["__stream_v4"]["attempt_id"] = "foreign-attempt"
@@ -591,7 +593,7 @@ async def test_actual_typed_facts_match_receipt_history_and_1659_admin(
     else:
         assert len(projections) == 1
         assert projections[0].status == "complete"
-        assert projections[0].text == admin["response"] == "正常公开█回答"
+        assert projections[0].text == admin["response"] == "Checking synthetic input. \n\n正常公开█回答"
         assert admin["answer_projection"]["status"] == "available"
     assert "PRIVATE" not in str(admin)
 
@@ -781,7 +783,11 @@ async def test_success_without_answer_is_honest_in_history_and_admin(
     assert result.error is None and result.received_structured_terminal is True
     assert result.turn_diagnostics["terminal_class"] == "completed"
     assert result.turn_diagnostics["retryable"] is False
-    assert result.message == "" and result.answer_receipt is None and texts == []
+    assert result.message == ""
+    if shape == "work":
+        assert_answer(result, events, "Safe preview.")
+    else:
+        assert result.answer_receipt is None
     rows = persisted_rows(events)
     projections = project_persisted_assistant_text_messages(
         rows, tenant_id="tenant", run_id="run-1651"
@@ -800,9 +806,13 @@ async def test_success_without_answer_is_honest_in_history_and_admin(
         part_messages=projections,
         sanitize_text=lambda text: text,
     )
-    assert not any(message.text for message in projections)
-    assert admin["response"] == ""
-    assert admin["answer_projection"]["status"] == expected_projection
+    if shape == "work":
+        assert admin["response"] == "Safe preview."
+        assert admin["answer_projection"]["status"] == "available"
+    else:
+        assert not any(message.text for message in projections)
+        assert admin["response"] == ""
+        assert admin["answer_projection"]["status"] == expected_projection
     assert "PRIVATE" not in str(admin)
 
 
@@ -976,9 +986,9 @@ async def test_legal_two_tools_share_message_role_and_keep_independent_receipts(
         yield result  # terminal replay cannot produce a second public receipt
 
     result, events, texts = await execute(source_routing_settings, source, partial=True)
-    assert_answer(result, events, "Both reads completed.")
-    assert "".join(texts) == "Both reads completed."
-    assert commentary(events) == "Checking two inputs."
+    assert_answer(result, events, "Checking two inputs.\n\nBoth reads completed.")
+    assert "".join(texts) == "Checking two inputs.\n\nBoth reads completed."
+    assert commentary(events) == ""
     completed = [event for event in events if event.event_type == "tool.completed"]
     assert (
         len(completed) == 2
@@ -995,7 +1005,7 @@ async def test_completed_source_never_invents_raw_checkpoint(source_routing_sett
 
     async def source(*, prompt, options):
         del prompt
-        assert options.include_partial_messages is False
+        assert options.include_partial_messages is True
         yield assistant(
             sdk, "final", "final-answer", sdk.TextBlock(text="Safe answer.")
         )

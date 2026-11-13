@@ -1017,9 +1017,9 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
     assert all(len(callback.events) <= 100 for callback in callbacks)
 
     events = [event for callback in callbacks for event in callback.events]
-    deltas = [event for event in events if event.type == "message.part.delta"]
+    deltas = [event for event in events if event.type == "message.delta"]
     assert len(deltas) >= 101
-    assert not any(event.type == "message.delta" for event in events)
+    assert not any(event.type.startswith("message.part.") for event in events)
     assert "".join(event.payload["delta"] for event in deltas) == answer
     assert sum(len(event.payload["delta"]) for event in deltas) == len(answer)
     assert all(len(event.payload["delta"]) <= 8_192 for event in deltas)
@@ -1037,7 +1037,7 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
     }
     assert completion.causation_event_id == deltas[-1].event_id
     assert result["answer_receipt"] == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": deltas[0].message_id,
         "delta_count": len(deltas),
         "text_length": len(answer),
@@ -3563,24 +3563,20 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     assert_response_checkpoints(wire_before, sdk_before, [before_text])
     assert_response_checkpoints(wire_after, sdk_after, after_chunks, complete=ending == "complete")
     assert wire_before[0]["call_ref"] != wire_after[0]["call_ref"]
-    # Raw wire/SDK observations retain their bounded hashes independently of
-    # public completed blocks. No partial raw text becomes public or requires
-    # a shared public-text ACK; callback transport batching has its own tests.
+    # Private checkpoints observe the raw wire independently of the sanitized
+    # native text deltas. Callback transport batching has its own tests.
     assert [item["events"] for item in sdk_after] == [1, 128, 256, 270]
     public_events = [event for callback in callbacks for event in callback["events"]
                      if event["type"] != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
-    parts = {}
-    for event in public_events:
-        if event["type"] == "message.part.delta":
-            parts.setdefault(event["payload"]["part_id"], []).append(event["payload"]["delta"])
-    assert len(parts) == (2 if ending == "complete" else 1)
-    public_text = "\n\n".join("".join(chunks) for chunks in parts.values())
-    assert public_text == (before_text + "\n\n" + "".join(after_chunks) if ending == "complete" else before_text)
-    roles = {event["payload"]["part_id"]: event["payload"]["role"]
-             for event in public_events if event["type"] == "message.part.classified"}
-    assert roles[next(iter(parts))] == "work"
+    public_text = "".join(event["payload"]["delta"] for event in public_events if event["type"] == "message.delta")
+    # Native partial text stays visible on failure/cancellation. Only the
+    # undecided sanitizer tail may remain unpublished on interrupted input.
+    expected = before_text + "\n\n" + "".join(after_chunks)
+    assert expected.startswith(public_text)
+    assert len(public_text) > len(before_text)
     if ending == "complete":
-        assert list(roles.values()) == ["work", "answer"]
+        assert public_text == expected
+    assert not any(event["type"].startswith("message.part.") for event in public_events)
     assert "call_ref" not in json.dumps(public_events)
     assert "private-model-before" not in caplog.text
     assert "private-model-after" not in caplog.text

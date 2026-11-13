@@ -14,9 +14,9 @@ remain with their dedicated owners.
 
 The [streaming message design](../implementation/streaming-message-parts-design.md)
 defines how current v4 Assistant text, public summaries, Tool activity and
-artifacts compose in one reply. Its incremental Assistant parts and final
-selection use the adopted coordinated v4 schema extension and answer receipt v2
-specified in the [change contract below](#change-contract-incremental-assistant-parts-and-final-selection).
+artifacts compose in one reply. Current Claude output uses native text increments
+through existing message deltas and receipt v1; part/v2 readers remain for
+historical compatibility as specified in the [change contract below](#change-contract-incremental-assistant-parts-and-final-selection).
 The outer v4 envelope is unchanged; new event types still require coordinated
 readers and producers. Schema compatibility alone does not establish correct
 content or latency.
@@ -63,8 +63,8 @@ they are not interchangeable:
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
 | `ResultMessage.result` | Ordinary-text SDK terminal observation | It cannot overwrite acknowledged public text, validate an artifact, or declare Run success; streamed persistence uses committed rows and an exact receipt |
 | `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
-| `message.delta` | Legacy v4 answer delta / receipt v1 | Retained producers and historical rows keep their original semantics |
-| `message.part.delta` / `message.part.classified` | Versioned Assistant text parts and immutable classification facts | Safe pending previews stream before classification; answer/work selection owns receipt v2 |
+| `message.delta` | Ordered public Assistant text / receipt v1 | Current Claude native increments and retained producers use this existing chain |
+| `message.part.delta` / `message.part.classified` | Historical Assistant text parts and immutable role annotations | Part/v2 receipt materialization remains compatible; role no longer controls Chat placement or copying |
 | `commentary.delta` | Disclosure-safe public summary or marked Claude work narration | Existing summaries remain inline; work narration uses a server-owned `worktrace_` summary ID and folds with work activity. Neither enters the answer receipt |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
 | `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
@@ -72,8 +72,8 @@ they are not interchangeable:
 The Chat history API retains the legacy `message:chunk` and `summary` projections.
 New part events retain their public v4 envelope, IDs, sequence, message ownership,
 incarnation and closed part payload. Live and history reduce the same part facts.
-Old commentary/worktrace rows retain their presentation; new Claude work text is
-identified by its explicit part classification. Unknown new events fail closed
+Old commentary/worktrace rows retain their presentation; new Claude narration
+uses ordinary ordered message deltas, without work/answer classification. Unknown new events fail closed
 in older clients, so schema, producer, Worker, history and frontend release together.
 The ordinary-user display matrix is owned by
 [Chat Run lifecycle and public error projection](chat-run-lifecycle-and-public-error-projection.md#ordinary-user-execution-presentation).
@@ -111,8 +111,8 @@ answer cutoff. `message.completed` is metadata-only with
 and the completion never carries full text. `commentary.delta` is separately
 bounded to 8,192 code points and carries a stable `summary_id`; neither a public
 summary nor SDK work narration contributes to answer content or capability evidence.
-Every new Claude part suffix passes the stateful safety gate before callback.
-Classification later selects answer/work; batches contain at most 100 events. The SDK terminal result closes ordinary assistant text;
+Every new Claude native text suffix passes the stateful safety gate before
+callback; batches contain at most 100 events. No semantic classification follows. The SDK terminal result closes ordinary assistant text;
 optional final files are selected separately through `attach_file` and projected
 as ordered artifact parts after storage succeeds. Worker, API, and frontend
 support for this closed event is deployed release-atomically because older v4
@@ -122,8 +122,8 @@ The Sandbox may enqueue only single-item callbacks containing one adjacent,
 already-projected `message.delta` or `message.part.delta` event before this boundary. The worker batches
 those callback items without concatenating or rewriting their events: each
 keeps its event identity and becomes its own durable row and SSE sequence. It
-uses a configured 50-millisecond aggregation delay measured from the first
-queued item, stops adding before a batch would exceed 100 events or 8 KiB of
+uses the existing zero-delay aggregation window, stops adding before a batch
+would exceed 100 events or 8 KiB of
 aggregate delta text, and holds at most 100 queued callback items. A barrier or
 close wakes the worker immediately; a delta whose deadline expires behind an
 in-flight callback is sent without starting a new delay. The text byte limit
@@ -200,7 +200,7 @@ not persisted publication state, and is stripped at the public boundary.
 
 The closed Agent-kernel application registry is:
 
-- `message.started`, legacy `message.delta`, `message.completed`;
+- `message.started`, ordered `message.delta`, `message.completed`;
 - `message.part.delta`, `message.part.classified` with closed `ai-platform.assistant-text-part.v1` payloads;
 - `commentary.delta` for a sanitized public summary or Claude tool-turn work
   narration; `worktrace_` summary IDs fold as work activity, never answer text;
@@ -474,55 +474,52 @@ timer clears its own reference before starting the connection attempt.
 
 ## Change Contract: incremental Assistant parts and final selection
 
-- **Owner:** Execution owns SDK source reconciliation and pre-publication safety;
-  Streaming owns closed part facts, ordering and receipt reconstruction; Chat
-  owns consistent live/history rendering, copying and disclosure phases.
-- **Scope:** generated schema/types, Claude adapter/gate/router, callback and
-  persisted ledger, Worker receipt v2, history decoder and frontend consumers.
-  Outer v4 envelope, Redis keys/cursors, authorization, Attempt/lease fences,
-  callback ACK, Tool evidence and Run terminal authority remain unchanged.
-- **Projection:** `message.part.delta` introduces a pending visible preview.
-  `message.part.classified` references an existing part in the same message.
-  Pending/answer may become work before completion; work cannot become answer.
-  Safe text remains in the ledger; classification changes its presentation and
-  final selection. Thinking, raw Tool payloads and executor-private values remain
-  excluded. Generic sanitizer output with ambiguous cross-source ownership fails closed.
-- **Receipt:** v2 keeps the five v1 fields but counts only final answer-part
-  deltas. First-observed answer parts join with two LF; length includes those
-  separators, and last source delta follows ledger order. Completion carries
-  these counts and causation only. Worker reconstructs current authorized facts,
-  rejecting orphan/mixed/foreign/after-completion/unclassified facts or mismatches.
-  Failed/cancelled terminals never carry an answer receipt. Streamed Sandbox
-  terminal inline text remains empty; legacy v1 rows and receipts remain readable.
-- **Ordering and recovery:** existing Tool and terminal receipt barriers remain.
-  Live, replay, gap and terminal history apply exact part identities. Public
-  history replays authorized `message.started` before its parts and
-  `message.completed` when persisted, including across pagination; unmarked
-  legacy lifecycle rows remain omitted. Invalid history cannot advance accepted
-  watermarks or make the Run complete. Hydration preserves authoritative roles
-  and newer suffixes within the same Run.
-- **Bounds:** 8192 code points per delta and 100 events per callback remain.
-  Normal part append uses bounded indexed lifecycle/owner/role/source lookups
-  under the Run fence; completion and receipt validate the full persisted ledger.
-  Schema `2026.10.09.1` installs exact message/part/source index contracts.
-- **UI:** pending/answer appear outside work details; work appears inside.
-  First safe preview collapses earlier work; later work opens it. Ordinary token
-  updates preserve manual choices within the same phase. Final copy, outline and
-  notification answer consumers filter roles consistently.
-- **Retirement and compatibility:** Claude's source-complete buffering and new
-  worktrace production are replaced. Retained old delta/v1 receipt/commentary
-  consumers are owned by Streaming, Worker and Chat. Legacy `assistant_delta`
-  public-history fallback and `assistant_final` remain retired. No historical
-  row rewrite, second stream, hidden fields or runtime negotiation is introduced.
-- **Release/rollback:** deploy all new consumers with producer. Old clients reject
-  new events. Retain updated readers and current schema/index readiness while
-  new facts/v2 receipts exist; a producer rollback must preserve those contracts.
-  Reverting an old incompatible image is not a valid reader rollback.
-- **Acceptance:** locked SDK synthetic source/replay/safety/receipt tests, real
-  PostgreSQL split callbacks and Redis transport, mounted front live/gap/hydrate,
-  copy/folding, generated contracts, typecheck and build. Exact image, real
-  provider pacing, network flushing, browser paint and controlled-host restart
-  acceptance require separate runtime evidence.
+The original part/v2 extension remains a stored-data compatibility contract.
+Current Claude output retires its semantic classification producer and follows
+these rules:
 
-Detailed source and selection rules are in the
+- **Owner:** Execution reconciles native SDK deltas/completed blocks and applies
+  the existing safety gate. Streaming owns durable ordered facts/receipts; Chat
+  owns stable rendering, current-text copy and independent activity disclosures.
+- **Scope:** enable SDK partial messages and publish text increments through the
+  existing `message.started → message.delta* → message.completed` chain. No new
+  schema, event type, option, runtime negotiation or second stream is introduced.
+  Run/Attempt/lease, authorization, callback ACK, Tool evidence and terminal
+  authority remain unchanged.
+- **Projection:** ordinary main-Assistant text is public after redaction, not
+  after answer/work classification. Completed SDK text checks its own streamed
+  block without duplicate publication. Thinking, child prose, raw Tool payloads
+  and executor-private values remain excluded. Result never backfills text.
+- **Receipt:** new output uses receipt v1 over all ordered public message deltas.
+  Counts, length, final delta identity and causation must match current authorized
+  durable facts. Failed/cancelled terminals produce no success receipt. Sandbox
+  inline terminal text stays empty. Part/v2 receipt reconstruction retains its
+  original role selection only when reading existing stored facts.
+- **Recovery:** live, replay, gap and terminal hydration retain the same Run,
+  message, Attempt/incarnation/epoch and cursor fences. Old part/classified
+  events remain validated and replayable; their role is no longer a visibility
+  or copy gate. Orphan/malformed/foreign/closed-state events still fail closed.
+- **Bounds:** 8192 code points per public delta, 100 events per callback and the
+  existing indexed append/receipt checks stay in force. Native frame/typed
+  observation replay is Attempt-local; new public event IDs include Attempt.
+- **UI:** accepted text stays in event order outside explicit activity folds.
+  Each activity owns its disclosure; token updates and terminality never reset
+  a manual choice. Current text can be copied while generating/synchronizing.
+  Result-first relocation and consecutive-success tool subgroups are retired.
+- **Retirement/compatibility:** remove Claude classification/router role state,
+  part producer and role-gated UI/copy/recovery. Streaming, Worker and Chat retain
+  part schema/decoder, v2 receipts and their indexes for existing historical
+  data; no row rewrite or deletion occurs. Existing non-Claude message deltas,
+  v1 receipts and commentary/worktrace history keep their identified readers.
+  `assistant_delta` public-history fallback and `assistant_final` stay retired.
+- **Release/rollback:** backend and frontend must be updated for consistent UX.
+  Keep part/v2-capable readers and current schema/index readiness after producer
+  rollback. Publishing/deployment still requires the release runbook authority.
+- **Acceptance:** synthetic native increments before completed blocks/Result,
+  exact replay and body conflicts, scope/redaction/ACK/unknown-write boundaries,
+  receipt/history/admin consistency, mounted copy/order/independent disclosure,
+  type/build and rendered browser checks. Real provider pacing, reverse-proxy
+  flushing and s72 acceptance require separate observed runtime evidence.
+
+Detailed source and retirement inventory is in the
 [streaming message design](../implementation/streaming-message-parts-design.md).

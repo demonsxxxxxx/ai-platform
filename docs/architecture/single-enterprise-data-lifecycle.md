@@ -48,7 +48,14 @@ to perform one fresh AD login before surfacing the expiry. Concurrent requests
 share the attempt; safe replay requires the verified user and tenant to match
 the previous principal. The browser never retains the password or uses an
 expired credential as a new grant. [ADR 0007](../adr/0007-fixed-browser-authentication-day.md#automatic-company-reauthentication-after-context-expiry)
-owns cancellation, replay and login-fallback behavior.
+owns cancellation, replay and login-fallback behavior. Authentication Redis and
+its volume are persistent deployment state, not disposable mock state. An
+isolated data clone starts a separate auth lifecycle and does not copy active
+principals or queues. Existing browsers may retain signed Cookies from the
+previous auth store; explicit-login recovery retires only a verified orphaned
+Cookie after both server records are proven absent, then requires a new normal
+company login. Do not rotate Cookie names or clear all origin storage as a
+routine restart procedure.
 
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
 authentication lifetime: the signed platform token and server authentication

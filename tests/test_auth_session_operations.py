@@ -176,6 +176,10 @@ class FakeAuthRedis:
     async def eval(self, script: str, numkeys: int, *args: object) -> str:
         self._require_available()
         with self.lock:
+            if "ai-platform:auth-context-orphaned-cookie:v2" in script:
+                return json.dumps({"status": "stale" if any(
+                    self._get(str(key), self.now) is not None for key in args
+                ) else "missing"})
             if "ai-platform:auth-context-bootstrap:v2" in script:
                 (
                     authority_key,
@@ -1394,6 +1398,75 @@ def test_v2_recovery_only_route_never_creates_or_sets_a_cookie_without_exact_aut
     assert alternate.json()["detail"] == "auth_context_stale"
     assert "set-cookie" not in alternate.headers
     assert redis.values == before_repair
+
+
+@pytest.mark.parametrize("fresh_local_identity", [False, True])
+def test_login_recovery_discards_only_a_signed_cookie_whose_server_records_are_both_gone(
+    monkeypatch, fresh_local_identity,
+):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    original = {
+        "nonce": "A" * 43, "protocol_version": 2,
+        "browser_incarnation": "I" * 43, "generation": 1,
+    }
+    created = client.post("/api/ai/auth/bootstrap", json=original)
+    assert created.status_code == 200
+    old_cookie = client.cookies["ai_platform_auth_context"]
+    redis.values.clear()  # Simulate a new auth Redis, not an expired browser cookie.
+    request = ({**original, "nonce": "B" * 43, "browser_incarnation": "J" * 43}
+               if fresh_local_identity else original)
+    headers = {"Cookie": f"ai_platform_auth_context={old_cookie}"}
+    rejected = client.post("/api/ai/auth/bootstrap", json=request, headers=headers)
+    assert rejected.status_code == 409
+    assert "set-cookie" not in rejected.headers
+
+    missing = client.post("/api/ai/auth/bootstrap", json={**request, "recovery_only": True}, headers=headers)
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "auth_context_missing"
+    assert "Max-Age=0" in missing.headers["set-cookie"]
+    assert "HttpOnly" in missing.headers["set-cookie"]
+    assert redis.values == {}
+    client.cookies.clear()
+
+    fresh = {**original, "nonce": "C" * 43, "browser_incarnation": "K" * 43}
+    admitted = client.post("/api/ai/auth/bootstrap", json=fresh)
+    assert admitted.status_code == 200
+    assert client.cookies["ai_platform_auth_context"] != old_cookie
+    contexts = [json.loads(raw) for key, (raw, _expiry) in redis.values.items()
+                if key.startswith("ai-platform:auth-context:")]
+    assert len(contexts) == 1 and contexts[0]["principal"] is None
+
+
+@pytest.mark.parametrize("surviving_record", ["authority", "context", "both", "forged"])
+def test_login_recovery_keeps_live_partial_or_forged_cookies_fail_closed(monkeypatch, surviving_record):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    original = {
+        "nonce": "A" * 43, "protocol_version": 2,
+        "browser_incarnation": "I" * 43, "generation": 1,
+    }
+    assert client.post("/api/ai/auth/bootstrap", json=original).status_code == 200
+    cookie = client.cookies["ai_platform_auth_context"]
+    if surviving_record == "forged":
+        cookie = "v2.synthetic.invalid"
+        redis.values.clear()
+    elif surviving_record != "both":
+        prefix = "ai-platform:auth-context:" if surviving_record == "authority" else "ai-platform:auth-browser-authority:"
+        for key in list(redis.values):
+            if key.startswith(prefix):
+                redis.values.pop(key)
+    before = dict(redis.values)
+    rejected = client.post("/api/ai/auth/bootstrap", json={
+        **original, "nonce": "B" * 43, "browser_incarnation": "J" * 43,
+        "recovery_only": True,
+    }, headers={"Cookie": f"ai_platform_auth_context={cookie}"})
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in rejected.headers
+    assert redis.values == before
 
 
 @pytest.mark.asyncio

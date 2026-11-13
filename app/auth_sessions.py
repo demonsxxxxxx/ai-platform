@@ -11,7 +11,11 @@ import re
 import secrets
 from typing import Any, Mapping
 
-from app.identity.api import department_authority_from_snapshot
+from app.identity.api import (
+    AuthContextError,
+    department_authority_from_snapshot,
+    raise_auth_context_store_error as _raise_for_store_status,
+)
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
 
@@ -555,6 +559,16 @@ return cjson.encode({
 """
 
 
+V2_ORPHANED_COOKIE_PROBE_SCRIPT = """
+-- ai-platform:auth-context-orphaned-cookie:v2
+-- A signed cookie grants no authority when both of its server records are gone.
+if redis.call("EXISTS", KEYS[1], KEYS[2]) ~= 0 then
+  return cjson.encode({status = "stale"})
+end
+return cjson.encode({status = "missing"})
+"""
+
+
 V2_ROTATE_AUTH_CONTEXT_SCRIPT = """
 -- ai-platform:auth-context-rotate:v2
 """ + V2_LUA_HELPERS + """
@@ -1051,15 +1065,6 @@ class AuthBootstrapResult:
     cookie_max_age_seconds: int | None = None
 
 
-class AuthContextError(RuntimeError):
-    """A safe auth-context failure that can be projected to browser clients."""
-
-    def __init__(self, code: str, status_code: int):
-        super().__init__(code)
-        self.code = code
-        self.status_code = status_code
-
-
 def get_redis() -> RedisClientHandle:
     """Return an operation handle to the current loop's bounded Redis pool."""
 
@@ -1291,30 +1296,6 @@ def _decode_script_result(raw_result: object) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"status": "corrupt"}
 
 
-def _raise_for_store_status(operation: str, status: str) -> None:
-    if status in {
-        "stale",
-        "generation_gap",
-        "generation_conflict",
-        "migration_conflict",
-        "invalid_ticket",
-    }:
-        raise AuthContextError("auth_context_stale", 409)
-    if status == "rebootstrap_required":
-        raise AuthContextError("auth_context_rebootstrap_required", 409)
-    if status == "refresh_busy":
-        raise AuthContextError("auth_refresh_in_progress", 409)
-    if status == "missing":
-        raise AuthContextError("auth_context_missing", 401)
-    if status == "superseded":
-        raise AuthContextError("auth_operation_superseded", 409)
-    if status == "expired":
-        raise AuthContextError("auth_operation_expired", 409)
-    if operation == "oauth" and status == "invalid":
-        raise AuthContextError("auth_operation_superseded", 409)
-    raise AuthContextError("auth_context_unavailable", 503)
-
-
 async def _eval(script: str, keys: list[str], args: list[object]) -> dict[str, Any]:
     redis = get_redis()
     try:
@@ -1446,6 +1427,20 @@ async def bootstrap_auth_context_v2(
                 set_cookie=status == "repair",
                 cookie_max_age_seconds=_cookie_max_age_from_result(result),
             )
+        if status == "missing" and supplied_identity is not None:
+            # The browser may already have persisted its fresh replacement
+            # identity after a prior recovery response. Probe the signed
+            # cookie's own records, not the new request's missing identity.
+            orphaned = await _eval(
+                V2_ORPHANED_COOKIE_PROBE_SCRIPT,
+                [_authority_key(supplied_identity.incarnation_digest),
+                 _context_key(supplied_identity.context_handle)],
+                [],
+            )
+            cookie_status = str(orphaned.get("status") or "")
+            if cookie_status != "missing":
+                _raise_for_store_status("bootstrap", cookie_status)
+            raise AuthContextError("auth_context_missing", 401, discard_orphaned_cookie=True)
         _raise_for_store_status("bootstrap", status)
         raise AssertionError("unreachable")
 

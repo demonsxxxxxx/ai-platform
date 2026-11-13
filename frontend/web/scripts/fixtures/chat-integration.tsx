@@ -89,7 +89,7 @@ function longHistoryProjection(index: number): RunInputsProjection {
     ],
   };
 }
-const fixtureState = { sends: 0, stops: 0, lastSubmission: { content: "", attachmentCount: 0 }, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
+const fixtureState = { nativeTokens: noop as (suffix?: string) => void, sends: 0, stops: 0, lastSubmission: { content: "", attachmentCount: 0 }, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -132,6 +132,16 @@ export function Fixture() {
   const updateActiveMessage = useCallback((update: (message: Message) => Message) => setMessages((current) => current.map((message) =>
     message.id === `assistant-synthetic-${fixtureState.sends}` ? update(message) : message)), []);
   useEffect(() => {
+    fixtureState.nativeTokens = (suffix = "后续 token") => updateActiveMessage((message) => ({
+      ...message,
+      content: `前置公开正文。\n\n${suffix}`,
+      parts: [
+        { type: "text", content: "前置公开正文。", logical_id: "native-before" },
+        toolParts[0],
+        toolParts[1],
+        { type: "text", content: suffix, logical_id: "native-after" },
+      ],
+    }));
     fixtureState.advance = (text = "正在整理文件。") => updateActiveMessage((message) => ({
       ...message, content: text, parts: [...toolParts, { type: "text", content: text }],
     }));

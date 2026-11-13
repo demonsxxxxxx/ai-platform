@@ -1,4 +1,4 @@
-import { AuiIf, MessagePrimitive, getExternalStoreMessages, useAuiState } from "@assistant-ui/react";
+import { MessagePrimitive, getExternalStoreMessages, useAuiState } from "@assistant-ui/react";
 import { memo } from "react";
 import { AssistantMessageContent } from "../assistant-ui/elements/thread";
 import { MessageTiming, type TimingStat } from "../assistant-ui/elements/message-timing";
@@ -12,6 +12,7 @@ import { createMessagePartRenderKeys } from "./MessagePartRenderer";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
 import { MessageWorkActivity } from "./MessageWorkActivity";
+import { formatTaskDuration } from "./taskDuration";
 import { getPublicToolActivityLabel } from "./messagePartVisibility";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
@@ -89,6 +90,7 @@ export const ChatMessage = memo(function ChatMessage({
   const visibleParts = getAssistantUiDisplayParts(message);
   const hasParts = visibleParts.length > 0;
   const visiblePartKeys = createMessagePartRenderKeys(message.id, visibleParts);
+  const taskDuration = message.isStreaming || message.isStopping ? null : formatTaskDuration(message.runDurationMs);
   // User message: bubble style, right aligned
   if (isUser) {
     return (
@@ -134,6 +136,7 @@ export const ChatMessage = memo(function ChatMessage({
               messageId={message.id}
               isStreaming={message.isStreaming && !message.isStopping}
               isStopping={message.isStopping}
+              runDurationMs={message.runDurationMs}
               parts={visibleParts}
               partKeys={visiblePartKeys}
               renderPart={(part, index, withinWorkDetails) => (
@@ -150,16 +153,19 @@ export const ChatMessage = memo(function ChatMessage({
               )}
             />
           ) : (
-            <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+            <>
+              {taskDuration !== null &&
+                <div data-task-duration className="py-1 text-sm tabular-nums text-[var(--theme-text-secondary)]">
+                  {t("chat.message.duration")} {taskDuration}
+                </div>}
+              <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+            </>
           )}
           <AssistantUiMessageStatus activityLabel={currentActivityLabel(visibleParts)} startedAt={message.isStreaming ? message.timestamp : undefined} />
         </div>
-        {/* Actions sit directly under the answer once it has settled. */}
-        <AuiIf condition={(state) => state.message.status?.type !== "running" && !state.message.metadata.custom.isSynchronizing}>
-          <AssistantUiMessageActions messageId={message.id} text={getAssistantTextContent()}>
-            <MessageTiming stats={timingStats} label={t("chat.message.tokenUsage")} />
-          </AssistantUiMessageActions>
-        </AuiIf>
+        <AssistantUiMessageActions messageId={message.id} text={getAssistantTextContent()}>
+          <MessageTiming stats={timingStats} label={t("chat.message.tokenUsage")} />
+        </AssistantUiMessageActions>
       </AssistantMessageContent>
     </div>
   );

@@ -4254,12 +4254,12 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
       (message) => message.role === "assistant" && message.runId === firstRunId,
     );
     assert.equal(harness.hook.currentRunId, null);
-    assert.equal(failedLive?.content, "");
+    assert.equal(failedLive?.content, "Tool preamble");
     const livePart = failedLive?.parts?.find(
       (part) => part.type === "text" && part.public_part_id === partId,
     );
     assert.equal(livePart?.type === "text" ? livePart.text_role : null, "work");
-    assert.equal(selectAssistantCopyText(failedLive?.parts), "");
+    assert.equal(selectAssistantCopyText(failedLive?.parts), "Tool preamble");
     assert.ok(resolveFailedHistory, "failed Run history hydration should be pending");
 
     await harness.act(async () => {
@@ -4350,7 +4350,7 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
       hydratedWorkPart?.type === "text" ? hydratedWorkPart.text_role : null,
       "work",
     );
-    assert.equal(selectAssistantCopyText(failedHydrated?.parts), "");
+    assert.equal(selectAssistantCopyText(failedHydrated?.parts), "Tool preamble with suffix");
     const nextAfterHydration = harness.hook.messages.find(
       (message) => message.role === "assistant" && message.runId === secondRunId,
     );
