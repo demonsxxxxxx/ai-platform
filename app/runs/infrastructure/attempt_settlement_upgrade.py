@@ -87,6 +87,7 @@ async def upgrade_attempt_settlement_authority(
                  and executor_reconciliation_status='finalized'
                  and executor_reconciled_at is not null and executor_terminal_json is not null
                  and executor_reconciliation_claim_token is null
+                 and executor_reconciliation_claimed_at is null
                  and executor_probe_claim_token is null and executor_probe_claimed_at is null
                  and executor_cleanup_claim_token is null and executor_cleanup_claimed_at is null"""
         )
@@ -99,7 +100,8 @@ async def upgrade_attempt_settlement_authority(
              or executor_probe_claimed_at is not null or executor_cleanup_claim_token is not null
              or executor_cleanup_claimed_at is not null
              or executor_cleanup_status not in ('not_required','finalized')
-             or to_jsonb(sandbox_leases)->>'executor_reconciliation_claim_token' is not null) as resource_claims,
+             or to_jsonb(sandbox_leases)->>'executor_reconciliation_claim_token' is not null
+             or to_jsonb(sandbox_leases)->>'executor_reconciliation_claimed_at' is not null) as resource_claims,
           (select count(*) from execution_supervision_claims where recovered_at is null) as supervision_claims,
           (select count(*) from run_stale_reconciliation_claims) as stale_claims,
           (select count(*) from run_delivery_intents where state='claimed' or claim_token is not null) as delivery_claims,

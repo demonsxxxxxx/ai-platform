@@ -129,7 +129,7 @@ async def test_upgrade_preserves_cancelled_before_dispatch_with_no_receipt(settl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("blocker", ["open_run", "unrecovered_claim", "missing_attempt_binding", "immutable_conflict", "cleanup_claim", "unsettled_receipt"])
+@pytest.mark.parametrize("blocker", ["open_run", "unrecovered_claim", "missing_attempt_binding", "immutable_conflict", "cleanup_claim", "unsettled_receipt", "partial_reconciliation_claim"])
 async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_upgrade_db, blocker):
     connect, attempt_id, _generation = settlement_upgrade_db
     async with connect() as conn, conn.transaction():
@@ -151,6 +151,10 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
         elif blocker == "unsettled_receipt":
             await conn.execute("""update sandbox_leases set executor_cleanup_status='waiting_settlement',
                 executor_reconciled_at=null where id='lease-a'""")
+        elif blocker == "partial_reconciliation_claim":
+            await conn.execute("""update sandbox_leases set executor_cleanup_status='waiting_settlement',
+                executor_reconciliation_claim_token=null,executor_reconciliation_claimed_at=now()
+                where id='lease-a'""")
         else:
             await conn.execute(
                 "update sandbox_leases set executor_cleanup_status='waiting_settlement',executor_terminal_json='{}'::jsonb where id='lease-a'"
@@ -165,7 +169,7 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
         )).fetchall()
         assert len(columns) == 7
         assert (await (await conn.execute("select count(*) as count from sandbox_leases")).fetchone())["count"] == 1
-        if blocker in {"immutable_conflict", "cleanup_claim", "unsettled_receipt"}:
+        if blocker in {"immutable_conflict", "cleanup_claim", "unsettled_receipt", "partial_reconciliation_claim"}:
             assert (await (await conn.execute("select executor_cleanup_status from sandbox_leases where id='lease-a'")).fetchone())["executor_cleanup_status"] == "waiting_settlement"
 
 
