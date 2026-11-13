@@ -21,15 +21,20 @@ CONFIRMATIONS = {
 }
 
 
-async def _legacy_completed_history(conn, attempt_id):
-    result = {"answer": "retained historical completion"}
-    await lifecycle_postgres.complete_run(
-        conn, tenant_id="tenant-a", run_id="run-a", result_json=result,
-        observability=(None, 0, 0, 0, 0),
-    )
+async def _legacy_completed_history(conn, attempt_id, *, cancelled=False):
+    result = {"answer": "stopped before dispatch" if cancelled else "retained historical completion"}
+    if cancelled:
+        await conn.execute("""update runs set status='cancelled',cancel_requested_at=now(),
+            finished_at=now(),result_json=%s::jsonb where id='run-a'""", (json.dumps(result),))
+    else:
+        await lifecycle_postgres.complete_run(
+            conn, tenant_id="tenant-a", run_id="run-a", result_json=result,
+            observability=(None, 0, 0, 0, 0),
+        )
     await build_run_attempt_lifecycle_service().terminalize(
         conn, tenant_id="tenant-a", run_id="run-a", attempt_id=attempt_id,
-        status="succeeded", terminal_reason="run_succeeded",
+        status="cancelled" if cancelled else "succeeded",
+        terminal_reason="run_cancelled" if cancelled else "run_succeeded",
     )
     # This fixture is the sole historical input. Current schema/runtime never
     # creates these columns or the phased reader/writer/retirement markers.
@@ -101,13 +106,9 @@ async def test_one_time_upgrade_preserves_history_and_removes_exact_old_surface(
 
 @pytest.mark.asyncio
 async def test_upgrade_preserves_cancelled_before_dispatch_with_no_receipt(settlement_upgrade_db):
-    connect, attempt_id, generation = settlement_upgrade_db
+    connect, attempt_id, _generation = settlement_upgrade_db
     async with connect() as conn, conn.transaction():
-        await _legacy_completed_history(conn, attempt_id)
-        await conn.execute("""update runs set status='cancelled',cancel_requested_at=now(),
-            result_json='{"answer":"stopped before dispatch"}'::jsonb where id='run-a'""")
-        await conn.execute("""update run_attempts set status='cancelled',terminal_reason='run_cancelled',
-            owner_generation=%s where id=%s""", (generation + 2, attempt_id))
+        await _legacy_completed_history(conn, attempt_id, cancelled=True)
         await conn.execute("""update sandbox_leases set executor_status='pending',
             executor_terminal_json=null,executor_terminal_received_at=null,executor_reconciled_at=null,
             executor_reconciliation_context_json=null,executor_reconciliation_status='waiting_terminal',
@@ -150,8 +151,8 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
             await conn.execute(
                 "update sandbox_leases set executor_cleanup_status='waiting_settlement',executor_terminal_json='{}'::jsonb where id='lease-a'"
             )
-    async with connect() as conn, conn.transaction():
-        with pytest.raises(RuntimeError, match="attempt_settlement_upgrade_"):
+    with pytest.raises(RuntimeError, match="attempt_settlement_upgrade_"):
+        async with connect() as conn, conn.transaction():
             await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
     async with connect() as conn:
         columns = await (await conn.execute(
