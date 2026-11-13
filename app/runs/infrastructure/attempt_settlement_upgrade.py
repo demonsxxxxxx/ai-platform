@@ -75,6 +75,21 @@ async def upgrade_attempt_settlement_authority(
         "run_stale_reconciliation_claims", "run_delivery_intents",
     ):
         await conn.execute(f"lock table {relation} in access exclusive mode")
+    if columns:
+        # Legacy finalizers could finish the receipt and release the resource
+        # without advancing the newer cleanup projection. Transfer that proven
+        # completion before checking drain; later history validation is in this
+        # same transaction, so a mapping conflict rolls the projection back.
+        await conn.execute(
+            """update sandbox_leases set executor_cleanup_status='finalized'
+               where executor_cleanup_status='waiting_settlement'
+                 and status='released' and released_at is not null
+                 and executor_reconciliation_status='finalized'
+                 and executor_reconciled_at is not null and executor_terminal_json is not null
+                 and executor_reconciliation_claim_token is null
+                 and executor_probe_claim_token is null and executor_probe_claimed_at is null
+                 and executor_cleanup_claim_token is null and executor_cleanup_claimed_at is null"""
+        )
     counts = await (await conn.execute(
         """select
           (select count(*) from runs where status in ('queued','running','cancel_requested')) as open_runs,

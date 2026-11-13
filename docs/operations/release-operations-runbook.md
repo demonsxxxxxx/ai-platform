@@ -196,7 +196,15 @@ Schema apply maps and compares every historical Attempt before the same
 transaction drops the eight old settlement columns, old indexes/constraint,
 write-fence trigger/function and reader/writer/retirement tables. It retains
 receipt/diagnostic/context history, Run/Attempt identity/results and Sandbox
-resource evidence. Missing bindings, conflicts and unresolved claims block it.
+resource evidence. For legacy rows with a finalized receipt, reconciliation
+receipt timestamp and released resource, a stale `waiting_settlement` cleanup
+projection is transferred to `finalized` only when every resource claim is absent.
+This transfer and subsequent history comparison share the migration transaction;
+any validation failure rolls back the transfer. Missing bindings, conflicts and
+unresolved claims still block the upgrade. A historical pre-dispatch cancellation
+with a released lease, pending executor, no dispatch record/context/receipt and
+matching terminal Run/Attempt preserves its committed result without inventing
+an executor receipt or changing its unknown dispatch state.
 Fresh databases need no confirmation. Reapplication keeps the Attempt-only
 layout and cannot recreate old columns. Verify schema readiness and preserved
 history before starting matching binaries; do not run an old settlement binary

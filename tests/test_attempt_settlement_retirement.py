@@ -60,10 +60,12 @@ async def _legacy_completed_history(conn, attempt_id):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("existing_detail", [False, True])
-async def test_one_time_upgrade_preserves_history_and_removes_exact_old_surface(settlement_upgrade_db, existing_detail):
+@pytest.mark.parametrize("cleanup_status", ["not_required", "waiting_settlement"])
+async def test_one_time_upgrade_preserves_history_and_removes_exact_old_surface(settlement_upgrade_db, existing_detail, cleanup_status):
     connect, attempt_id, _generation = settlement_upgrade_db
     async with connect() as conn, conn.transaction():
         result = await _legacy_completed_history(conn, attempt_id)
+        await conn.execute("update sandbox_leases set executor_cleanup_status=%s", (cleanup_status,))
         await conn.execute("""update sandbox_leases set executor_terminal_json=
             executor_terminal_json || '{"diagnostics":["historical-note"]}'::jsonb""")
         if existing_detail:
@@ -98,7 +100,31 @@ async def test_one_time_upgrade_preserves_history_and_removes_exact_old_surface(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("blocker", ["open_run", "unrecovered_claim", "missing_attempt_binding", "immutable_conflict"])
+async def test_upgrade_preserves_cancelled_before_dispatch_with_no_receipt(settlement_upgrade_db):
+    connect, attempt_id, generation = settlement_upgrade_db
+    async with connect() as conn, conn.transaction():
+        await _legacy_completed_history(conn, attempt_id)
+        await conn.execute("""update runs set status='cancelled',cancel_requested_at=now(),
+            result_json='{"answer":"stopped before dispatch"}'::jsonb where id='run-a'""")
+        await conn.execute("""update run_attempts set status='cancelled',terminal_reason='run_cancelled',
+            owner_generation=%s where id=%s""", (generation + 2, attempt_id))
+        await conn.execute("""update sandbox_leases set executor_status='pending',
+            executor_terminal_json=null,executor_terminal_received_at=null,executor_reconciled_at=null,
+            executor_reconciliation_context_json=null,executor_reconciliation_status='waiting_terminal',
+            release_reason='run_cancelled' where id='lease-a'""")
+    async with connect() as conn, conn.transaction():
+        await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        row = await (await conn.execute("""select mapping_state,settlement_phase,dispatch_state,
+            receipt_json,accepted_context_json,result_json from run_attempt_settlements where attempt_id=%s""",
+            (attempt_id,))).fetchone()
+        assert row == dict(mapping_state="mapped", settlement_phase="settled", dispatch_state="unknown",
+                           receipt_json=None, accepted_context_json=None, result_json={"answer": "stopped before dispatch"})
+        assert await schema_migrations._attempt_settlement_layout_current(conn)
+        await upgrade_attempt_settlement_authority(conn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["open_run", "unrecovered_claim", "missing_attempt_binding", "immutable_conflict", "cleanup_claim", "unsettled_receipt"])
 async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_upgrade_db, blocker):
     connect, attempt_id, _generation = settlement_upgrade_db
     async with connect() as conn, conn.transaction():
@@ -113,9 +139,16 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
             )
         elif blocker == "missing_attempt_binding":
             await conn.execute("update sandbox_leases set attempt_id=null where id='lease-a'")
+        elif blocker == "cleanup_claim":
+            await conn.execute("""update sandbox_leases set executor_cleanup_status='waiting_settlement',
+                executor_cleanup_claim_token='00000000-0000-0000-0000-000000000001',
+                executor_cleanup_claimed_at=now() where id='lease-a'""")
+        elif blocker == "unsettled_receipt":
+            await conn.execute("""update sandbox_leases set executor_cleanup_status='waiting_settlement',
+                executor_reconciled_at=null where id='lease-a'""")
         else:
             await conn.execute(
-                "update sandbox_leases set executor_terminal_json='{}'::jsonb where id='lease-a'"
+                "update sandbox_leases set executor_cleanup_status='waiting_settlement',executor_terminal_json='{}'::jsonb where id='lease-a'"
             )
     async with connect() as conn, conn.transaction():
         with pytest.raises(RuntimeError, match="attempt_settlement_upgrade_"):
@@ -127,6 +160,8 @@ async def test_upgrade_blocks_unsafe_history_without_dropping_data(settlement_up
         )).fetchall()
         assert len(columns) == 7
         assert (await (await conn.execute("select count(*) as count from sandbox_leases")).fetchone())["count"] == 1
+        if blocker in {"immutable_conflict", "cleanup_claim", "unsettled_receipt"}:
+            assert (await (await conn.execute("select executor_cleanup_status from sandbox_leases where id='lease-a'")).fetchone())["executor_cleanup_status"] == "waiting_settlement"
 
 
 @pytest.mark.asyncio

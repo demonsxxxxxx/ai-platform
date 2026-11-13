@@ -75,6 +75,38 @@ def lease(
     }
 
 
+def test_cancelled_before_dispatch_preserves_terminal_history_without_inventing_receipt():
+    projected = project_legacy_attempt_settlement(
+        attempt(status="cancelled", generation=6, finished_at=NOW, terminal_reason="run_cancelled"),
+        run(status="cancelled", cancel_requested_at=NOW, finished_at=NOW, result_json={"answer": "stopped"}),
+        [lease(status="released", generation=4, reconciliation_status="waiting_terminal",
+               executor_status="pending", receipt=None, context=None, release_reason="run_cancelled")],
+    )
+    values = projected.to_mapping()
+    assert values["mapping_state"] == "mapped"
+    assert values["settlement_phase"] == "settled"
+    assert values["result_json"] == {"answer": "stopped"}
+    assert values["dispatch_state"] == "unknown"
+    assert values["receipt_json"] is None and values["accepted_context_json"] is None
+    assert projected.cleanup.released_pending_settlement_count == 0
+
+
+@pytest.mark.parametrize("override", [
+    {"dispatch_status": "unknown"}, {"executor_status": "accepted"},
+    {"executor_reconciliation_context_json": {"accepted": True}},
+    {"release_reason": "timeout"}, {"released_at": None},
+    {"executor_reconciliation_claim_token": "owned"},
+])
+def test_cancelled_history_does_not_infer_settlement_from_ambiguous_dispatch(override):
+    values = project_legacy_attempt_settlement(
+        attempt(status="cancelled", generation=6, finished_at=NOW),
+        run(status="cancelled", cancel_requested_at=NOW, finished_at=NOW),
+        [lease(status="released", generation=4, reconciliation_status="waiting_terminal",
+               **({"executor_status": "pending", "release_reason": "run_cancelled"} | override))],
+    ).to_mapping()
+    assert values["settlement_phase"] != "settled"
+
+
 def test_pending_projection_preserves_receipt_context_retry_and_owner_generation():
     receipt = {
         "status": "succeeded",
