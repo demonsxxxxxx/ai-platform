@@ -105,8 +105,8 @@ async def finish_read(options):
     await options.hooks["PostToolUse"][-1].hooks[0](hook_input, "synthetic-call", {})
 
 
-async def execute(workspace, source, *, partial):
-    events = []
+async def execute(workspace, source, *, partial, captured=None):
+    events = captured if captured is not None else []
     texts = []
 
     async def on_text(text):
@@ -130,47 +130,20 @@ async def execute(workspace, source, *, partial):
 
 def assert_answer(result, events, expected):
     assert result.error is None, result.runtime_diagnostics
-    roles = {
-        event.payload["part_id"]: event.payload["role"]
-        for event in events
-        if event.event_type == "message.part.classified"
-    }
-    parts = {}
-    for event in events:
-        if event.event_type != "message.part.delta":
-            continue
-        part_id = event.payload["part_id"]
-        parts.setdefault(part_id, []).append(event)
-    answer_parts = [
-        deltas for part_id, deltas in parts.items() if roles.get(part_id) == "answer"
-    ]
-    selected_deltas = [event for deltas in answer_parts for event in deltas]
-    answer = "\n\n".join(
-        "".join(event.payload["delta"] for event in deltas)
-        for deltas in answer_parts
-    )
-    assert answer == expected
+    deltas = [event for event in events if event.event_type == "message.delta"]
+    assert "".join(event.payload["delta"] for event in deltas) == expected
+    assert not any(event.event_type.startswith("message.part.") for event in events)
     assert result.message == ""
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
-        "message_id": selected_deltas[0].message_id,
-        "delta_count": len(selected_deltas), "text_length": len(expected),
-        "last_delta_event_id": selected_deltas[-1].event_id,
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": deltas[0].message_id,
+        "delta_count": len(deltas), "text_length": len(expected),
+        "last_delta_event_id": deltas[-1].event_id,
     }
 
 
 def commentary(events):
-    roles = {
-        event.payload["part_id"]: event.payload["role"]
-        for event in events
-        if event.event_type == "message.part.classified"
-    }
-    return "".join(
-        event.payload["delta"]
-        for event in events
-        if event.event_type == "message.part.delta"
-        and roles.get(event.payload["part_id"]) == "work"
-    )
+    return "".join(event.payload["delta"] for event in events if event.event_type == "commentary.delta")
 
 
 @pytest.mark.asyncio
@@ -206,8 +179,8 @@ async def test_tool_narration_then_completed_source_keeps_the_answer(source_rout
         yield terminal(sdk, "Final answer.")
 
     result, events, _ = await execute(source_routing_settings, source, partial=partial)
-    assert_answer(result, events, "Final answer.")
-    assert commentary(events) == "Checking sources."
+    assert_answer(result, events, "Checking sources.\n\nFinal answer.")
+    assert commentary(events) == ""
 
 
 @pytest.mark.asyncio
@@ -251,8 +224,8 @@ async def test_split_typed_text_and_tool_share_the_same_classification(source_ro
         yield terminal(sdk, "Final answer.")
 
     result, events, _ = await execute(source_routing_settings, source, partial=False)
-    assert_answer(result, events, "Final answer.")
-    assert commentary(events) == "Checking sources."
+    assert_answer(result, events, "Checking sources.\n\nFinal answer.")
+    assert commentary(events) == ""
 
 
 @pytest.mark.asyncio
@@ -275,9 +248,7 @@ async def test_whitespace_or_raw_only_source_has_no_answer_but_preserves_sdk_suc
     result, events, _ = await execute(source_routing_settings, source, partial=raw)
     assert result.error is None
     assert result.received_structured_terminal is True
-    assert result.runtime_diagnostics["failure_source"] == "public_projection"
-    assert result.answer_receipt is None
-    assert not any(event.event_type == "message.completed" for event in events)
+    assert_answer(result, events, " \t\n")
 
 
 @pytest.mark.asyncio
@@ -305,6 +276,6 @@ async def test_cross_source_gate_failure_withholds_answer_without_overriding_sdk
     assert result.runtime_diagnostics["failure_source"] == "public_projection"
     assert result.answer_receipt is None
     assert not any(event.event_type == "message.completed" for event in events)
-    preview = "".join(event.payload["delta"] for event in events if event.event_type == "message.part.delta")
+    preview = "".join(event.payload["delta"] for event in events if event.event_type == "message.delta")
     assert preview == ("Prior " if first.startswith("Prior ") else "")
     assert "private-value" not in preview

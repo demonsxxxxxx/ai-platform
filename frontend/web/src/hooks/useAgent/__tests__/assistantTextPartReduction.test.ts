@@ -76,36 +76,26 @@ test("source deltas upsert exact stable parts and join provider messages with a 
   );
 });
 
-test("classification targets one source, keeps pending visible, and excludes work from copy", () => {
+test("historical classification annotates identity without hiding or moving public text", () => {
   const pending = delta(startedParts(), "part_pending", "Preview", 2);
   assert.equal(pending.content, "Preview");
-  assert.equal(selectAssistantCopyText(pending.parts), "");
-
+  assert.equal(selectAssistantCopyText(pending.parts), "Preview");
   const work = classify(pending.parts, "part_pending", "work");
   assert.equal(work.accepted, true);
-  assert.equal(work.content, "");
+  assert.equal(work.content, "Preview");
+  assert.equal(selectAssistantCopyText(work.parts), "Preview");
   const contradictory = classify(work.parts, "part_pending", "answer");
   assert.equal(contradictory.accepted, false);
   assert.equal(contradictory.parts, work.parts);
-
   const nextSource = delta(work.parts, "part_answer", "Final answer", 3);
   const answer = classify(nextSource.parts, "part_answer", "answer");
-  assert.equal(answer.accepted, true);
-  assert.equal(answer.content, "Final answer");
-  assert.equal(selectAssistantCopyText(answer.parts), "Final answer");
-  assert.equal(
-    (answer.parts.find((part) => part.type === "text" && part.public_part_id === "part_pending") as Extract<MessagePart, { type: "text" }>).text_role,
-    "work",
-  );
-
-  const reclassifiedAsWork = classify(answer.parts, "part_answer", "work");
-  assert.equal(reclassifiedAsWork.accepted, true);
-  assert.equal(reclassifiedAsWork.content, "");
-  assert.equal(selectAssistantCopyText(reclassifiedAsWork.parts), "");
-  assert.equal(
-    classify(reclassifiedAsWork.parts, "part_answer", "answer").accepted,
-    false,
-  );
+  const expected = "Preview\n\nFinal answer";
+  assert.equal(answer.content, expected);
+  assert.equal(selectAssistantCopyText(answer.parts), expected);
+  const reclassified = classify(answer.parts, "part_answer", "work");
+  assert.equal(reclassified.accepted, true);
+  assert.equal(reclassified.content, expected);
+  assert.equal(selectAssistantCopyText(reclassified.parts), expected);
 });
 
 test("orphan, malformed, unknown, legacy-mixed, and post-completion mutations are rejected", () => {
@@ -168,7 +158,7 @@ test("orphan, malformed, unknown, legacy-mixed, and post-completion mutations ar
   );
 });
 
-test("copy keeps legacy unmarked text and drops pending and work sources", () => {
+test("copy includes all accepted public text regardless of legacy role", () => {
   const parts: MessagePart[] = [
     { type: "text", content: "Old answer." },
     {
@@ -180,7 +170,7 @@ test("copy keeps legacy unmarked text and drops pending and work sources", () =>
     },
     {
       type: "text",
-      content: "Private work narration.",
+      content: "Public work narration.",
       logical_id: "part-work",
       public_part_id: "part-work",
       text_role: "work",
@@ -193,6 +183,7 @@ test("copy keeps legacy unmarked text and drops pending and work sources", () =>
       text_role: "answer",
     },
   ];
-  assert.equal(selectAssistantCopyText(parts), "Old answer.\n\nNew answer.");
-  assert.equal(composeAssistantPreviewText(parts), "Old answer.\n\nVisible preview.\n\nNew answer.");
+  const expected = "Old answer.\n\nVisible preview.\n\nPublic work narration.\n\nNew answer.";
+  assert.equal(selectAssistantCopyText(parts), expected);
+  assert.equal(composeAssistantPreviewText(parts), expected);
 });

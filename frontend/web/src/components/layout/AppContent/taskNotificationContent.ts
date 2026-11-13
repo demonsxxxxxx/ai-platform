@@ -96,7 +96,7 @@ function collectPartText(parts: MessagePart[]): string {
   for (const part of parts) {
     if (part.type === "text") {
       const role = assistantTextPartRole(part);
-      if (role === null || role === "pending" || role === "work") continue;
+      if (role === null) continue;
       textParts.push(part.content);
       continue;
     }

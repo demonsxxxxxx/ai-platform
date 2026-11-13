@@ -602,7 +602,9 @@ export const ChatInput = memo(function ChatInput({
       if (item.unavailable) {
         upsertUnavailableCommandChip(item);
         setActivePanel(null);
+        const selectedInput = inputRef.current;
         requestAnimationFrame(() => {
+          if (inputRef.current !== selectedInput) return;
           const textarea = textareaRef.current;
           textarea?.focus();
           textarea?.setSelectionRange(commandCursor, commandCursor);
@@ -610,9 +612,11 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
       // Choosing a shortcut consumes only that token, never the surrounding task.
-      setInput(removeComposerCommandDraft(inputRef.current, draft));
+      const nextInput = removeComposerCommandDraft(inputRef.current, draft);
+      setInput(nextInput);
       setCommandCursor(draft.start);
       requestAnimationFrame(() => {
+        if (inputRef.current !== nextInput) return;
         textareaRef.current?.setSelectionRange(draft.start, draft.start);
         scheduleTextareaResize();
       });

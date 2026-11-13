@@ -41,7 +41,7 @@
 | `empty-state.tsx`、`loading-state.tsx`、`connection-state.tsx` | 同名 Elements；WelcomePage、MessageParts、ChatConnectionStatus | 单一等待/生成/同步反馈，重连保持原入口；不添加无接口的 Retry/Continue |
 | `markdown-text.tsx` | `assistant-ui/elements/markdown-text.tsx`、`ChatMessage/MarkdownRenderer.tsx` | primitive、memoized slots、CodeHeader；共享 GFM/breaks/math/KaTeX、安全链接/图片、CodeMirror/Mermaid、表格导出和标题锚点 |
 | `attachment.aui.tsx`、`message-attachment.tsx`、`file.tsx` | `components/common/AttachmentCard.tsx`、`ChatInputAttachments.tsx`、`assistant-ui/MessageAttachments.tsx` | 上传卡和已发送文件展示；安全图片 URL、取消/删除、专业预览；上传只由 useFileUpload 执行 |
-| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，连续成功工具合并为可展开记录且默认隐藏耗时；无 raw request/result fallback |
+| `run-activity.tsx`、`tool-call.tsx`、`tool-error.tsx` | `ChatMessage/elements/RunActivity.tsx`、`ToolCall.tsx`、`ToolError.tsx`；MessageWorkActivity、ToolCallItem | 顺序、折叠、局部问题计数、明确生命周期状态；正常技术阶段不逐条展示，执行中保留最新有意义进展，每个工具保持原事件位置和独立开合，后续正文/终态不覆盖手动选择，默认隐藏耗时；无 raw request/result fallback |
 | `subagent-list.tsx`、`task-card.tsx`、`todo-list.tsx` | `ChatMessage/elements/TaskCard.tsx`、`SubagentList.tsx`、`TodoList.tsx`；SubagentBlocks、TodoBlock | 公开父子关系、三级递归与持久面板导航；只显示真实进度，Todo 保留平台三种状态 |
 | `artifact-card.tsx` | `ChatMessage/elements/ArtifactCard.tsx`；MessagePartRenderer | 已登记公开产物和原授权下载/预览；不发明 registered/delivery_scope 字段或新准入条件 |
 | `thread-list.tsx` | `components/panels/SidebarParts/ThreadList.tsx`、`components/panels/SidebarParts/sessionThreadListAdapter.ts`；SessionListContent、SessionItem | 受控行、Lobe 按钮、可访问未读；原专家/时间分组、loadMore、迟到改名删除隔离 |
@@ -81,6 +81,16 @@
 
 退役与兼容：移除旧的任意前导 `/` / `$` 命令分类、表单命令拦截、`$` Skill 别名、命令参数注入选择器搜索、模型/技能选择清空整稿和输入即创建不可用 chip 的路径；没有兼容消费者。原 `parseComposerCommand`、`resolveCommandPrefixPanel`、`clearModelCommandDraft` 和 `commandSearchSeed` 不再保留。对应 parser/source/挂载回归及 PRD 浏览器脚本改为明确选择；`chat-dollar-skills.png` 由 `chat-skill-selector.png` 取代。保留现有菜单、行、模型、附件和 chip 选择器，浏览器 `composer-commands` 场景复用合成 ChatView fixture，验证原文投递、键盘、局部移除和附件保留。
 
+## 输入补全与功能选择
+
+输入框默认编辑普通消息。`ChatInput` 只在光标前的独立 `/` 命令片段能匹配现有 `skill`、`mcp`、`model`、`file` 时展示建议；路径、未知命令、`$` 金额/变量和命令后的整句正文不被当作功能参数。输入不会自动打开选择器、清空草稿或创建不可用 chip。模型、添加菜单、回形针和思考按钮保留既有入口，快捷建议只打开同一套受控选择器，不执行工具或授予权限。
+
+有实际候选时，上下键移动高亮，普通 Enter/Tab 确认候选；用户配置的换行组合键、IME（含 229）和 Shift+Tab 保持编辑行为。Esc 只关闭菜单，不删除触发符或草稿。点击发送始终提交原文，不确认高亮候选；无候选或关闭菜单后的 Enter 走同一平台提交事务，不重新解析命令。专家工作区的 `disableSlashCommands` 继续禁用建议。
+
+明确选择可用候选后，只移除该触发片段，保留前后正文、附件和已选能力，再打开原功能；选择或取消功能不再按消息前缀清空整稿。选择不可用候选仅显示可移除的不可用 chip，保留原文和附件，不打开缺失的功能。文件候选仍经现有安全上传控件，所选 Skill、MCP、模型和附件继续受原准入、权限与回执约束。
+
+退役与兼容：移除旧的任意前导 `/` / `$` 命令分类、表单命令拦截、`$` Skill 别名、命令参数注入选择器搜索、模型/技能选择清空整稿和输入即创建不可用 chip 的路径；没有兼容消费者。原 `parseComposerCommand`、`resolveCommandPrefixPanel`、`clearModelCommandDraft` 和 `commandSearchSeed` 不再保留。对应 parser/source/挂载回归及 PRD 浏览器脚本改为明确选择；`chat-dollar-skills.png` 由 `chat-skill-selector.png` 取代。保留现有菜单、行、模型、附件和 chip 选择器，浏览器 `composer-commands` 场景复用合成 ChatView fixture，验证原文投递、键盘、局部移除和附件保留。
+
 ## 提交、附件与迟到回执
 
 `composerSubmission.ts` 是 native 发送与键盘提交共用的事务：保留文本、模型选项、授权附件和显式 Skill，以及 draft revision、selectedSkillRevision 和首次会话 handoff。仅对应请求 accepted 才清理其内容；后续编辑或清空不被旧回执覆盖。scope revision 隔离账号/会话，旧发送、上传、取消回执不修改新页面。
@@ -98,7 +108,7 @@ assistant-ui 0.15.29 会恢复被 `MessageNotSentError` 拒绝的原生草稿及
 | 等待首段 / 正在追加 | 一处 GenerationLoader：等待首段为微光文字；正文追加时改为正文末尾的流式圆点，状态仅对读屏播报（视觉约束第 7.5 节）。只有当前追加且未收敛的 assistant 正文允许平滑 |
 | Run 仍运行而连接中断 | 保留正文，使用原 reconnect；不映射为 message reload/regenerate |
 | 取消请求 acknowledged | 表示请求已受理；等待权威取消终态，保留确认框与 RunControlLifecycle |
-| Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示，暂不显示复制 |
+| Run 已结束而内容仍同步 | runtime 保留终态，metadata 独立标记同步；正文完整显示且可复制当前内容 |
 | 失败、取消、结果不可用或历史 | 显示已接受的完整文本和安全分类，不继续动画 |
 | 工具失败 / 拒绝 / 取消未确认 | 明确状态决定颜色/图标；running=false 不代表成功 |
 
