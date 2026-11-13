@@ -24,7 +24,11 @@ CONFIRMATIONS = {
 async def _legacy_completed_history(conn, attempt_id, *, cancelled=False):
     result = {"answer": "stopped before dispatch" if cancelled else "retained historical completion"}
     if cancelled:
-        await conn.execute("""update runs set status='cancelled',cancel_requested_at=now(),
+        await conn.execute("update runs set cancel_requested_at=now() where id='run-a'")
+        await build_run_attempt_lifecycle_service().request_cancel(
+            conn, tenant_id="tenant-a", run_id="run-a", attempt_id=attempt_id,
+        )
+        await conn.execute("""update runs set status='cancelled',
             finished_at=now(),result_json=%s::jsonb where id='run-a'""", (json.dumps(result),))
     else:
         await lifecycle_postgres.complete_run(
