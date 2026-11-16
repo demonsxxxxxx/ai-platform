@@ -697,6 +697,8 @@ async def _read_bounded_upload(file: UploadFile) -> bytes:
     content = await file.read(MAX_DIRECT_UPLOAD_BYTES + 1)
     if len(content) > MAX_DIRECT_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file_too_large")
+    if not content:
+        raise HTTPException(status_code=400, detail="empty_file_not_supported")
     return content
 
 
@@ -1081,12 +1083,7 @@ async def upload_file(
     display_name = _normalize_upload_filename(file.filename)
     content_type = file.content_type or "application/octet-stream"
     content = await _read_bounded_upload(file)
-    await _run_storage(
-        _validate_upload_content,
-        filename=display_name,
-        declared_content_type=content_type,
-        content=content,
-    )
+    await _run_storage(_validate_upload_content, filename=display_name, declared_content_type=content_type, content=content)
     try:
         async with transaction() as conn:
             await ensure_workspace(conn, tenant_id=tenant_id, workspace_id=workspace_id)
