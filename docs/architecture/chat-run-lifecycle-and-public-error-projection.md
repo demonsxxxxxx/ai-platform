@@ -18,6 +18,13 @@ its eventual source migration must not create a second taxonomy.
 codes. Live, historical and hydrated messages use the same presentation catalog
 and message projection semantics.
 
+Historical `done` frames with a recognized terminal status also end unresolved
+activity presentation for that Run, including after reload or terminal hydration.
+The history loader uses the same loading-state cleanup as live termination; it
+does not infer tool success/failure, alter recorded terminal tool outcomes, or
+stop activity belonging to a later Run. Missing timing fields do not keep a
+confirmed terminal Run visually active.
+
 ## Session navigation and local unread presentation
 
 History restoration starts with the existing scoped Session projections. It

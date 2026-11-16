@@ -194,7 +194,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 event.stopPropagation();
                 onCancel();
               }}
-              style={{ height: 22, width: 22, minWidth: 22, padding: 0 }}
+              style={{ height: 24, width: 24, minWidth: 24, padding: 0 }}
               className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
               aria-label={t("fileUpload.cancelUpload")}
@@ -207,7 +207,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 type="text"
                 htmlType="button"
                 onClick={handleRemove}
-                style={{ height: 22, width: 22, minWidth: 22, padding: 0 }}
+                style={{ height: 24, width: 24, minWidth: 24, padding: 0 }}
                 className={removeButtonClass}
                 aria-label={`${t("fileUpload.removeAttachment")} ${attachment.name}`}
               >

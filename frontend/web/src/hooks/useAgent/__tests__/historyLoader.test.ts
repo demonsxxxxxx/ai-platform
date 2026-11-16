@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MessagePartRenderer } from "../../../components/chat/ChatMessage/MessagePartRenderer.tsx";
 
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { Message, MessagePart } from "../../../types";
@@ -1711,3 +1714,44 @@ test("partial hydration still excludes malformed marked text", () => {
   const result = mergeHydratedRunSegment([assistant([])], [assistant([invalid, artifact("safe")])], runId);
   assert.deepEqual(result[0].parts, [artifact("safe")]);
 });
+
+
+for (const status of ["cancelled", "failed", "succeeded"]) {
+  test(`terminal ${status} history stops unresolved tools without inventing their outcome`, () => {
+    const toolEvent = (runId: string, operation: string, status: string, sequence: number): HistoryEvent => ({
+      id: `${runId}:${operation}:${status}`, run_id: runId, sequence,
+      event_type: "public_tool_activity",
+      data: { operation_id: operation, category: "read", display_name: "Read authorized files", status },
+    });
+    const events: HistoryEvent[] = [
+      toolEvent("terminal-run", "unfinished", "started", 1),
+      toolEvent("terminal-run", "finished", "completed", 2),
+      toolEvent("terminal-run", "failed", "failed", 3),
+      toolEvent("terminal-run", "denied", "denied", 4),
+      { id: "terminal-run:done", run_id: "terminal-run", event_type: "done", data: { status } },
+      toolEvent("active-run", "still-working", "started", 1),
+      { id: "active-run:done", run_id: "active-run", event_type: "done", data: { status: "running" } },
+    ];
+    const processed = new Set<string>();
+    for (let reload = 0; reload < 2; reload += 1) {
+      const messages = reconstructMessagesFromEvents(events, processed, { activeSubagentStack: [] });
+      const terminal = messages.find(message => message.runId === "terminal-run")!;
+      const tools = getVisibleMessageParts(terminal.parts || []).filter(part => part.type === "tool");
+      assert.equal(tools.length, 4);
+      assert.equal(tools[0]?.status, "started", "do not fabricate a tool completion or failure");
+      assert.equal(tools[0]?.cancelled, true);
+      assert.equal(tools[0]?.isPending, false);
+      assert.equal(tools[0]?.success, undefined);
+      assert.deepEqual(tools.slice(1).map(part => [part.status, part.cancelled]), [
+        ["completed", undefined], ["failed", undefined], ["denied", undefined],
+      ]);
+      const markup = renderToStaticMarkup(createElement(MessagePartRenderer, { part: tools[0]!, isLast: true }));
+      assert.match(markup, /操作已停止，结果尚未确认/);
+      assert.doesNotMatch(markup, /操作已开始|animate-spin/);
+      const active = messages.find(message => message.runId === "active-run")!;
+      const activeTool = active.parts?.find(part => part.type === "tool");
+      assert.equal(activeTool?.status, "started");
+      assert.notEqual(activeTool?.cancelled, true, "another run remains active");
+    }
+  });
+}

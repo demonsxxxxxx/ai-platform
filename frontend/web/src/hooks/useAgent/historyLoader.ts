@@ -738,10 +738,15 @@ export function reconstructMessagesFromEvents(
 
   // Terminal hydration and page reload share this authoritative history path.
   // Do not use model duration, grouped phase spans or the browser clock as Run time.
+  const terminalRuns = new Set<string>();
   const runStarts = new Map<string, number>();
   const runEnds = new Map<string, number>();
   for (const event of uniqueEvents) {
-    if (!event.run_id || !event.timestamp) continue;
+    if (!event.run_id) continue;
+    if (event.event_type === "done" && terminalRunStatus(asRecord(event.data).status)) {
+      terminalRuns.add(event.run_id);
+    }
+    if (!event.timestamp) continue;
     const timestamp = parseDate(event.timestamp).getTime();
     if (!Number.isFinite(timestamp)) continue;
     if (event.event_type === "run_started") {
@@ -752,6 +757,13 @@ export function reconstructMessagesFromEvents(
   }
   for (const message of reconstructedMessages) {
     if (message.role !== "assistant" || !message.runId) continue;
+    // A historical terminal is authoritative even without a timestamp. Stop
+    // unresolved activity presentation, but retain the actual tool outcomes.
+    // Apply after replay so every message in this Run converges, never its successor.
+    if (terminalRuns.has(message.runId)) {
+      message.parts = clearAllLoadingStates(message.parts || []);
+      message.isStreaming = false;
+    }
     const start = runStarts.get(message.runId);
     const end = runEnds.get(message.runId);
     if (start !== undefined && end !== undefined && end >= start) {
