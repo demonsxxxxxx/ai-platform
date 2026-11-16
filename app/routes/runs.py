@@ -606,10 +606,6 @@ def _strip_server_owned_control_metadata(input_payload: object, *, redact_public
     return runs_capability_admission.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
 
 
-def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
-    return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
-
-
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -641,7 +637,7 @@ async def prepare_copied_run_for_queue(
             run_id=str(copied["run_id"]),
             **selected_model_binding_fields(selected_model),
         )
-    source_run_id = _copied_run_source_run_id(authorized_source_run_id)
+    source_run_id = safe_provenance_graph_id("source_run_id", authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
     skill_manifests = await skills_run_snapshots.materialize_run_skill_manifests(
