@@ -121,6 +121,7 @@ export type {
 // ============================================
 export type {
   FileCategory,
+  FileDeletionResponse,
   MessageAttachment,
   LegacyUploadLimits,
   UploadConfig,
