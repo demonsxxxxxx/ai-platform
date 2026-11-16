@@ -8,7 +8,7 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`.
 
 | Concern | Owner |
 | --- | --- |
-| Rationale and supersession | [ADR 0013](../adr/0013-redis-stream-only-sse.md) |
+| Rationale and supersession | [ADR 0013](../adr/0013-redis-stream-only-sse.md); accepted direction to replay from PostgreSQL in [ADR 0018](../adr/0018-postgres-replay-redis-live.md) (not yet implemented) |
 | Envelopes, SDK/callback boundary, progressive timeline, replay/live, cursor/gap and client acceptance | [Wire protocol](redis-streams-sse-wire-protocol.md) |
 | Admission, committed callback/Run publication, authorization leases and terminal convergence | [Execution control](redis-streams-sse-execution-control.md) |
 | Gateway, cutover, deployed fault injection and acceptance | [Cutover acceptance](../operations/redis-streams-sse-cutover-acceptance.md) |

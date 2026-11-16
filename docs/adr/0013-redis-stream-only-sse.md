@@ -8,6 +8,10 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`
 
 Supersedes the publication and recovery architecture in [ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md) and the live fan-out architecture in [ADR 0009](0009-redis-streams-sse-v3-live-fanout.md). The v4 event model and existing business authorities remain in force. The generated schema and the accepted [Assistant-part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection) own the current event set and answer-receipt compatibility.
 
+Amended by [ADR 0018](0018-postgres-replay-redis-live.md) (accepted direction):
+replay moves to `run_events` and callbacks acknowledge after the PostgreSQL commit.
+This ADR remains the current behavior until those slices land.
+
 ## Decision
 
 The production path is:
