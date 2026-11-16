@@ -2,7 +2,7 @@
  * Upload API - 文件上传
  */
 
-import type { FileCategory, UploadConfig, UploadResult } from "../../types";
+import type { FileCategory, FileDeletionResponse, UploadConfig, UploadResult } from "../../types";
 import { API_BASE } from "./config";
 import { ApiRequestError, authFetch } from "./fetch";
 import { authenticatedRequest } from "./authenticatedRequest";
@@ -239,7 +239,7 @@ export const uploadApi = {
   /**
    * 删除上传的文件
    */
-  async deleteFile(key: string): Promise<{ deleted: boolean; key: string }> {
+  async deleteFile(key: string): Promise<FileDeletionResponse> {
     const response = await authenticatedRequest(
       `${API_BASE}/api/ai/files/${encodeURIComponent(key)}`,
       {
