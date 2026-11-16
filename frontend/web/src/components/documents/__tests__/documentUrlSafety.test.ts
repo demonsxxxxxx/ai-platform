@@ -148,6 +148,12 @@ test("authenticated artifact/file allowlist accepts only ai-platform artifact an
 
 test("authenticated allowlist uses the parsed origin for normalized URLs", () => {
   const currentOrigin = "https://app.example.test";
+  for (const action of ["preview", "download"]) {
+    assert.equal(isAllowedAuthenticatedArtifactFileUrl(`/api/ai/admin/runs/run-a/artifacts/art-a/${action}`, { currentOrigin }), true);
+  }
+  for (const suffix of ["access", "preview/extra", "%2e%2e/download"]) {
+    assert.equal(isAllowedAuthenticatedArtifactFileUrl(`/api/ai/admin/runs/run-a/artifacts/art-a/${suffix}`, { currentOrigin }), false);
+  }
   for (const prefix of ["\\\\outside.invalid", "/\\outside.invalid", "https:\t//outside.invalid", "//outside.invalid"]) {
     const url = `${prefix}/api/ai/artifacts/synthetic/download`;
     assert.equal(new URL(url, currentOrigin).origin, "https://outside.invalid");

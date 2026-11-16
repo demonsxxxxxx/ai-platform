@@ -33,6 +33,8 @@ _KINDS = {
     "agent.progress": "observation",
     "model.completed": "observation",
     "run.failed": "error",
+    "subagent.started": "action", "subagent.progress": "observation",
+    "subagent.completed": "observation", "subagent.failed": "error", "subagent.cancelled": "observation",
 }
 
 
@@ -119,12 +121,17 @@ def project_admin_trajectory_page(
                 item["outcome"] = payload["failure_category"]
             elif source_type == "tool.denied":
                 item["outcome"] = payload["denial_code"]
+        elif source_type.startswith("subagent."):
+            item["subagent_id"] = _safe_id(payload.get("subagent_id"))
+            item["summary"] = sanitize_text(payload["display_name"])[:128]
+            item["duration_ms"] = payload.get("duration_ms")
+            item["outcome"] = source_type.split(".", 1)[1]
         elif source_type == "agent.progress":
             item["summary"] = payload["message"]
             item["stage"] = payload["phase"]
             item["outcome"] = payload["lifecycle"]
         elif source_type == "model.completed":
-            item["summary"] = "模型调用结束"
+            item["summary"] = "SDK 整次执行结束"
             item["duration_ms"] = payload["duration_ms"]
             item["outcome"] = payload["stop_category"]
         elif source_type == "run.failed":

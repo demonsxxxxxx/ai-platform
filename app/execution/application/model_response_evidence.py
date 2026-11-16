@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint
 
 
@@ -13,7 +13,8 @@ _MAX_SSE_LINE_BYTES = 64 * 1024
 
 
 def observe_anthropic_text(
-    body: Iterable[bytes], *, run_id: str, attempt_id: str
+    body: Iterable[bytes], *, run_id: str, attempt_id: str, accept: Callable[[dict], None] | None = None,
+    on_partial: Callable[[], None] | None = None
 ) -> Iterator[bytes]:
     """Forward bytes unchanged and checkpoint model text before the SDK sees it."""
     pending = bytearray()
@@ -31,6 +32,11 @@ def observe_anthropic_text(
 
     observer = ModelTextCheckpoint(run_id=run_id, attempt_id=attempt_id, record=record)
 
+    def partial(reason: str) -> None:
+        observer.partial(reason)
+        if on_partial is not None:
+            on_partial()
+
     def accept_event() -> None:
         nonlocal data_size
         if not observing or not data_lines:
@@ -41,12 +47,17 @@ def observe_anthropic_text(
         try:
             event = json.loads(payload)
         except (ValueError, UnicodeDecodeError, RecursionError):
-            observer.partial("partial_invalid_event")
+            partial("partial_invalid_event")
             return
         if not isinstance(event, dict):
-            observer.partial("partial_invalid_event")
+            partial("partial_invalid_event")
             return
         observer.accept(event)
+        if accept is not None:
+            try:
+                accept(event)
+            except Exception:
+                _logger.warning("model_call_event_capture_unavailable")
 
     try:
         for chunk in body:
@@ -62,17 +73,17 @@ def observe_anthropic_text(
                         data_size += len(data)
                         if data_size > _MAX_SSE_LINE_BYTES:
                             observing = False
-                            observer.partial("partial_oversized_event")
+                            partial("partial_oversized_event")
                             break
                         data_lines.append(data)
                 if len(pending) > _MAX_SSE_LINE_BYTES:
                     observing = False
-                    observer.partial("partial_oversized_line")
+                    partial("partial_oversized_line")
                 if not observing:
                     pending.clear()
                     data_lines.clear()
             yield chunk
         if pending or data_lines:
-            observer.partial("partial_unfinished_event")
+            partial("partial_unfinished_event")
     finally:
         observer.finish()

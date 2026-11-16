@@ -74,3 +74,12 @@ test("downloads protected relative artifact URLs through an authenticated reques
 
   assert.deepEqual(revoked, ["blob:artifact-download"]);
 });
+
+test("a retired artifact download cannot create a Blob URL or click a link", async () => {
+  await assert.rejects(downloadAuthenticatedFile("/api/ai/admin/runs/run-a/artifacts/art-a/download", "report.pdf", {
+    request: async () => new Response("file"),
+    documentRef: {} as Document,
+    isCurrent: () => false,
+    createObjectURL: () => { throw new Error("stale bytes must not become a download"); },
+  }), /download_request_no_longer_current/);
+});

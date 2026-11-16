@@ -96,11 +96,10 @@ function isExactXlsxPreviewUrl(value: string | undefined): value is string {
       typeof window === "undefined" ? "http://localhost" : window.location.origin;
     const segments = new URL(value, base).pathname.split("/").filter(Boolean);
     return (
-      segments.length === 5 &&
-      segments[0] === "api" &&
-      segments[1] === "ai" &&
-      (segments[2] === "artifacts" || segments[2] === "files") &&
-      segments[4] === "preview"
+      segments[0] === "api" && segments[1] === "ai" && (
+        (segments.length === 5 && (segments[2] === "artifacts" || segments[2] === "files") && segments[4] === "preview") ||
+        (segments.length === 8 && segments[2] === "admin" && segments[3] === "runs" && segments[5] === "artifacts" && segments[7] === "preview")
+      )
     );
   } catch {
     return false;

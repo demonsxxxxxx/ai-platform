@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.bootstrap.agent_profiles import configure_agent_profile_routes
+from app.bootstrap.admin_run_artifacts import build_admin_run_artifacts_router
+from app.bootstrap.admin_run_evidence import build_admin_run_inspection_router
 from app.bootstrap.context import configure_context_services
 from app.bootstrap.files import (
     configure_file_preview_services,
@@ -207,6 +209,8 @@ def create_app() -> FastAPI:
     app.include_router(runtime_callbacks_router, prefix="/api/ai")
     app.include_router(admin_runtime_router, prefix="/api/ai")
     app.include_router(admin_runs_router, prefix="/api/ai")
+    app.include_router(build_admin_run_artifacts_router(), prefix="/api/ai")
+    app.include_router(build_admin_run_inspection_router(), prefix="/api/ai")
     app.include_router(build_model_token_usage_admin_router(app.state.model_token_usage_service), prefix="/api/ai")
     app.include_router(build_admin_users_router(), prefix="/api/ai")
     app.include_router(build_company_employee_directory_router(), prefix="/api/ai")

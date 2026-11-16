@@ -6,9 +6,7 @@ from datetime import datetime, timezone
 
 from app.artifacts.infrastructure.records_postgres import list_run_artifacts
 from app.control_plane_contracts import ARTIFACT_MANIFEST_SCHEMA_VERSION
-from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
-from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
-from app.streaming.api import project_persisted_assistant_text_messages
+from app.streaming.api import read_admin_detail_events
 from app.control_plane_contracts import EXECUTOR_RESULT_SCHEMA_VERSION
 from app.control_plane_contracts import RUN_CONTRACT_VERSION
 from app.control_plane_contracts import RUN_EXECUTION_KIND_SKILL
@@ -17,18 +15,12 @@ from app.control_plane_contracts import standard_trace_id
 from app.error_taxonomy import summarize_error_categories
 from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.values import _coerce_int
-from app.platform.public_payload import sanitize_public_payload
 from app.platform.public_payload import sanitize_public_text
-from app.runs.domain.cost_observability import projected_event_cost
 from app.runs.infrastructure.creation_postgres import ACTIVE_RUN_STATUSES
 from app.runs.application.admin_run_monitor import build_admin_runtime_health
+from app.runs.application.admin_public_result import build_admin_public_result
 from app.runs.infrastructure.postgres import get_latest_run_attempt, get_run
-from app.runs.infrastructure.steps_postgres import list_run_steps
 from app.sandbox.infrastructure.leases_postgres import list_sandbox_leases_for_run
-from app.skills.infrastructure.run_snapshots_postgres import _attach_skill_usage
-from app.skills.infrastructure.run_snapshots_postgres import _sanitize_skill_snapshot
-from app.skills.infrastructure.run_snapshots_postgres import list_run_skill_snapshots
-from app.streaming.infrastructure.run_events_postgres import list_run_events
 from psycopg import AsyncConnection
 from typing import Any
 import app.runs.domain.terminalization as runs_api
@@ -480,65 +472,6 @@ async def get_admin_runtime_observability_summary(
     }
 
 
-_SANDBOX_LEASE_RUNTIME_HANDLE_PROJECTION_KEYS = {
-    "container_id",
-    "container_name",
-    "executor_url",
-    "workspace_host_path",
-    "workspace_container_path",
-    "labels",
-    "runtime_container_id",
-    "runtime_container_name",
-    "runtime_executor_url",
-    "runtime_workspace_container_path",
-    "runtime_handle_verified_at",
-}
-
-
-def _sandbox_lease_payload_projection(row: dict[str, Any]) -> dict[str, Any]:
-    payload = sanitize_public_payload(
-        row.get("lease_payload_json") if isinstance(row.get("lease_payload_json"), dict) else {}
-    )
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        key: value
-        for key, value in payload.items()
-        if str(key) not in _SANDBOX_LEASE_RUNTIME_HANDLE_PROJECTION_KEYS
-    }
-
-
-def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
-    resource_limits = sanitize_public_payload(
-        row.get("resource_limits_json") if isinstance(row.get("resource_limits_json"), dict) else {}
-    )
-    user_visible_payload = sanitize_public_payload(
-        row.get("user_visible_payload_json") if isinstance(row.get("user_visible_payload_json"), dict) else {}
-    )
-    lease_payload = _sandbox_lease_payload_projection(row)
-    return {
-        "lease_id": str(row["id"]),
-        "tenant_id": str(row["tenant_id"]),
-        "workspace_id": str(row["workspace_id"]),
-        "user_id": str(row["user_id"]),
-        "session_id": str(row["session_id"]),
-        "run_id": str(row["run_id"]),
-        "trace_id": str(row.get("trace_id") or standard_trace_id(str(row["run_id"]))),
-        "sandbox_mode": str(row["sandbox_mode"]),
-        "provider": str(row.get("provider") or "fake"),
-        "status": str(row.get("status") or "active"),
-        "browser_enabled": bool(row.get("browser_enabled")),
-        "resource_limits": resource_limits if isinstance(resource_limits, dict) else {},
-        "workspace": user_visible_payload if isinstance(user_visible_payload, dict) else {},
-        "lease_payload": lease_payload,
-        "heartbeat_at": row.get("heartbeat_at"),
-        "expires_at": row.get("expires_at"),
-        "released_at": row.get("released_at"),
-        "release_reason": str(row.get("release_reason") or ""),
-        "created_at": row.get("created_at"),
-    }
-
-
 async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
     run = await get_run(conn, tenant_id=tenant_id, run_id=run_id)
     if run is None:
@@ -550,8 +483,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
         EXECUTOR_RESULT_SCHEMA_VERSION,
         "invalid_executor_result_schema_version",
     )
-    events = await list_run_events(conn, tenant_id=tenant_id, run_id=run_id)
-    steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    evidence = await read_admin_detail_events(conn, tenant_id=tenant_id, run_id=run_id)
     artifacts = await list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
     sandbox_leases = await list_sandbox_leases_for_run(conn, tenant_id=tenant_id, run_id=run_id)
     latest_attempt = (
@@ -562,36 +494,10 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
         str(run["status"]), tenant_id=tenant_id, run_id=run_id,
         attempt=latest_attempt, leases=sandbox_leases, observed_at=datetime.now(timezone.utc),
     )
-    skill_snapshots = _attach_skill_usage(
-        await list_run_skill_snapshots(conn, tenant_id=tenant_id, run_id=run_id),
-        events,
-    )
-    skill_snapshots = [_sanitize_skill_snapshot(snapshot) for snapshot in skill_snapshots]
-    cursor = await conn.execute(
-        """
-        select id, user_id, action, target_type, target_id, trace_id, schema_version, payload_json, created_at
-        from audit_logs
-        where tenant_id = %s
-          and (
-            target_id = %s
-            or payload_json->>'run_id' = %s
-          )
-        order by created_at asc
-        """,
-        (tenant_id, run_id, run_id),
-    )
-    audit_rows = list(await cursor.fetchall())
-    run_input = sanitize_public_payload(run["input_json"] if isinstance(run.get("input_json"), dict) else {})
-    if not isinstance(run_input, dict):
-        run_input = {}
-    run_result = sanitize_public_payload(run["result_json"] if isinstance(run.get("result_json"), dict) else {})
-    if not isinstance(run_result, dict):
-        run_result = {}
     return {
         "runtime_health": runtime_health,
-        "_assistant_text_messages": project_persisted_assistant_text_messages(
-            events, tenant_id=tenant_id, run_id=run_id,
-        ),
+        "worker_execution": {key: value for key, value in build_admin_public_result(evidence, tenant_id=tenant_id, run_id=run_id).items() if key != "coverage"},
+        "evidence_coverage": {key: value for key, value in evidence.items() if key != "rows"},
         "run": {
             "run_id": run["id"],
             "session_id": run["session_id"],
@@ -607,75 +513,16 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
             "finished_at": run.get("finished_at"),
             "cancel_requested_at": run.get("cancel_requested_at"),
             "cancel_requested_by": run.get("cancel_requested_by"),
-            "input": run_input,
-            "result": run_result,
+            "input": {},
+            "result": {},
             "error_code": sanitize_public_text(run.get("error_code")) or None,
             "error_message": sanitize_public_text(run.get("error_message")),
             "trace_id": run.get("trace_id") or standard_trace_id(str(run["id"])),
             "contract_version": run_contract_version,
             "executor_schema_version": executor_schema_version,
         },
-        "events": [
-            {
-                "event_id": item["id"],
-                "schema_version": _required_schema_version(
-                    item,
-                    "schema_version",
-                    EVENT_ENVELOPE_SCHEMA_VERSION,
-                    "invalid_event_schema_version",
-                ),
-                "sequence": int(item.get("sequence") or 0),
-                "trace_id": item.get("trace_id") or standard_trace_id(str(run["id"])),
-                "type": item["event_type"],
-                "stage": item["stage"],
-                "message": sanitize_public_text(item.get("message")),
-                "severity": item.get("severity") or "info",
-                "visible_to_user": bool(item.get("visible_to_user", True)),
-                "error_code": sanitize_public_text(item.get("error_code")) or None,
-                "latency_ms": item.get("latency_ms"),
-                "token_counts": {
-                    "input": int(item.get("input_token_count") or 0),
-                    "output": int(item.get("output_token_count") or 0),
-                    "total": int(item.get("total_token_count") or 0),
-                },
-                **projected_event_cost(item),
-                "payload": (
-                    sanitized_payload
-                    if isinstance(
-                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
-                        dict,
-                    )
-                    else {}
-                ),
-                "created_at": item["created_at"],
-            }
-            for item in events
-        ],
-        "steps": [
-            {
-                "step_id": item["id"],
-                "run_id": item["run_id"],
-                "step_key": item["step_key"],
-                "step_kind": item["step_kind"],
-                "status": item["status"],
-                "title": sanitize_public_text(item.get("title")),
-                "role": sanitize_public_text(item.get("role")) if item.get("role") is not None else None,
-                "sequence": item["sequence"],
-                "payload": (
-                    sanitized_payload
-                    if isinstance(
-                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
-                        dict,
-                    )
-                    else {}
-                ),
-                "started_at": item["started_at"],
-                "finished_at": item["finished_at"],
-                "created_at": item["created_at"],
-                "updated_at": item["updated_at"],
-            }
-            for item in steps
-        ],
+        "events": [],
+        "steps": [],
         "artifacts": [
             {
                 "artifact_id": item["id"],
@@ -698,32 +545,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
             }
             for item in artifacts
         ],
-        "sandbox_leases": [_sandbox_lease_admin_projection(item) for item in sandbox_leases],
-        "skill_snapshots": skill_snapshots,
-        "audit": [
-            {
-                "audit_id": item["id"],
-                "schema_version": _required_schema_version(
-                    item,
-                    "schema_version",
-                    AUDIT_EVENT_SCHEMA_VERSION,
-                    "invalid_audit_event_schema_version",
-                ),
-                "trace_id": item.get("trace_id"),
-                "user_id": item["user_id"],
-                "action": item["action"],
-                "target_type": item["target_type"],
-                "target_id": item["target_id"],
-                "payload": (
-                    sanitized_payload
-                    if isinstance(
-                        sanitized_payload := sanitize_public_payload(item.get("payload_json") if isinstance(item.get("payload_json"), dict) else {}),
-                        dict,
-                    )
-                    else {}
-                ),
-                "created_at": item["created_at"],
-            }
-            for item in audit_rows
-        ],
+        "sandbox_leases": [],
+        "skill_snapshots": [],
+        "audit": [],
     }

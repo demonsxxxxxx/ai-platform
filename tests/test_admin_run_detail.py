@@ -570,17 +570,14 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["run"]["session_title"] == "审核采购合同"
     assert data["run"]["agent_name"] == "合同审阅助手"
     assert data["run"]["workspace_name"] == "法务工作区"
-    assert data["run"]["input"]["intent"]["selected_capability"] == "document_review"
+    assert data["run"]["input"] == {} and data["run"]["result"] == {}
     assert data["worker_execution"]["messages"][0]["text"] == "完成"
-    assert data["events"][0]["payload"] == {"delta": "完成"}
-    assert len(data["events"]) == 2
+    assert data["events"] == []
     assert "PRIVATE_OUTPUT" not in response.text
     assert data["artifacts"][0]["artifact_id"] == "art_a"
-    assert data["sandbox_leases"][0]["lease_id"] == "lease-a"
-    assert data["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
-    assert data["skill_snapshots"][0]["skill_id"] == "qa-file-reviewer"
-    assert data["skill_snapshots"][0]["used"] is True
-    assert data["skill_snapshots"][0]["usage"]["used_skills_source"] == "executor_hook"
+    assert data["sandbox_leases"] == []
+    assert data["skill_snapshots"] == []
+    assert data["steps"] == [] and data["audit"] == []
 
 
 def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch):

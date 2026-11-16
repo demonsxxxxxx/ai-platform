@@ -442,6 +442,7 @@ export interface AdminRunRuntimeHealth {
 export interface AdminRunDetailResponse {
   run: AdminRunSummary;
   runtime_health?: AdminRunRuntimeHealth;
+  evidence_coverage?: { truncated: boolean; event_limit: number; payload_budget_bytes: number; rejected_attempt_events?: number };
   worker_execution: AdminWorkerExecution;
   events: AdminRunEvent[];
   steps: AdminRunStep[];
@@ -461,6 +462,7 @@ export interface AdminRunTrajectoryEvent {
   message_id: string | null;
   causation_event_id: string | null;
   operation_id: string | null;
+  subagent_id?: string | null;
   summary?: string;
   text_length?: number;
   category?: string;
@@ -480,6 +482,47 @@ export interface AdminRunTrajectoryPage {
   events: AdminRunTrajectoryEvent[];
 }
 
+export interface AdminModelCall {
+  call_id: string; attempt_id: string | null; started_at: string | null; finished_at: string | null;
+  state: string; duration_ms: number | null; first_response_ms: number | null; http_status: number | null;
+  stop_reason: string | null; message_started: boolean; message_stopped: boolean; text_characters: number | null;
+  input_tokens: number | null; output_tokens: number | null; operation_ids: string[]; partial: boolean;
+}
+export interface AdminRunInspection {
+  model_calls?: AdminModelCall[];
+  model_calls_truncated?: boolean;
+  contract_version: "ai-platform.admin-run-inspection.v1";
+  run_id: string;
+  input: { fields: Record<string, string | number>; coverage: string; excluded: string[];
+    attachments?: Array<{ file_id: string | null; name: string; content_type: string; size_bytes: number | null; availability: string }>;
+    attachments_truncated?: boolean };
+  configuration: {
+    source: string; model_id: string | null; model_value: string | null;
+    model_gateway_revision: number | null; auto_compact_window: number | null;
+    max_output_tokens: number | null; profile_revision: number | null; profile_hash: string | null;
+    skills: Array<{ skill_id: string | null; version: string | null; content_hash: string | null }>;
+    skills_truncated: boolean;
+  };
+  history: { source_run_id: string | null; truncated: boolean; relationships: Array<{
+    source_run_id: string; child_run_id: string; action: "retry" | "resume" | "copy" | "unknown";
+    status: string; created_at: string | null; user_id: string | null;
+  }> };
+  trigger: { kind: string | null; coverage: string };
+}
+
+export interface AdminRunEvidenceSearch {
+  payload_omitted_count?: number;
+  run_id: string; matches: Array<{ kind: "event" | "diagnostic"; sequence?: number; observation_id?: string; attempt_id?: string; summary: string; context_after_sequence?: number }>;
+  next_after_sequence: number; next_match_offset: number; has_more: boolean; searched_source_count: number; matches_truncated: boolean;
+}
+export interface AdminRunComparison {
+  left_run_id: string; right_run_id: string;
+  configuration_differences: Array<{ field: string; left: unknown; right: unknown }>;
+  metrics: Array<{ name: string; left: number | null; right: number | null; compatible: boolean; difference: number | null; reason: string | null; measurement: string }>;
+  artifacts: Record<"left" | "right", Array<Pick<AdminRunArtifact, "artifact_id" | "label" | "content_type"> & { size_bytes: number | null }>>;
+  results?: Record<"left" | "right", { answer: string; answer_projection: AdminWorkerExecution["answer_projection"]; stop_category: string | null; coverage: { truncated?: boolean }; artifacts_truncated: boolean }>;
+  context?: Record<"left" | "right", { agent_id: string | null; execution_kind: string | null; status: string; input_equivalence: string }>;
+}
 export interface AdminRunDiagnosticExport {
   blob: Blob;
   filename: string;
@@ -654,4 +697,11 @@ export const adminRunsApi = {
   diagnostics: fetchAdminRunDiagnostics,
   trajectory: fetchAdminRunTrajectory,
   exportDiagnostics: exportAdminRunDiagnostics,
+  searchEvidence: (runId: string, query: string, afterSequence = 0, attemptId?: string, matchOffset = 0) => authFetch<AdminRunEvidenceSearch>(`/api/ai/admin/runs/${encodeURIComponent(runId)}/evidence-search`, { method: "POST", body: JSON.stringify({ query, after_sequence: afterSequence, attempt_id: attemptId || null, match_offset: matchOffset }) }),
+  compare: (runId: string, rightRunId: string) => authFetch<AdminRunComparison>(`/api/ai/admin/runs/${encodeURIComponent(runId)}/comparison`, { method: "POST", body: JSON.stringify({ right_run_id: rightRunId }) }),
+  inspection: async (runId: string): Promise<AdminRunInspection> => {
+    const result = await authFetch<AdminRunInspection>(`/api/ai/admin/runs/${encodeURIComponent(runId)}/inspection`, { method: "GET" });
+    if (result?.contract_version !== "ai-platform.admin-run-inspection.v1" || result.run_id !== runId) throw new Error("admin_run_inspection_response_invalid");
+    return result;
+  },
 };

@@ -259,7 +259,7 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
 
     async def list_events(_conn, *, tenant_id, run_id):
         assert (tenant_id, run_id) == ("default", "run_parts")
-        return _rows()
+        return {"rows": _rows(), "truncated": False, "event_limit": 2000, "payload_budget_bytes": 524288}
 
     async def empty(*_args, **_kwargs):
         return []
@@ -267,13 +267,8 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", transaction)
     monkeypatch.setattr(queries, "get_run", get_run)
-    monkeypatch.setattr(queries, "list_run_events", list_events)
-    for name in (
-        "list_run_steps",
-        "list_run_artifacts",
-        "list_sandbox_leases_for_run",
-        "list_run_skill_snapshots",
-    ):
+    monkeypatch.setattr(queries, "read_admin_detail_events", list_events)
+    for name in ("list_run_artifacts", "list_sandbox_leases_for_run"):
         monkeypatch.setattr(queries, name, empty)
     _install_admin_monitor_metadata(monkeypatch, {})
     client = TestClient(create_app())
@@ -286,6 +281,9 @@ def test_real_admin_query_and_detail_serialize_shared_part_fixture(monkeypatch):
     assert "_assistant_text_messages" not in body
     assert "__stream_v4" not in response.text
     assert "attempt_a" not in response.text
+    assert "PRIVATE_RESULT_MUST_NOT_BE_ANSWER" not in response.text
+    assert body["events"] == []
+    assert body["run"]["input"] == body["run"]["result"] == {}
 
 
 def test_legacy_v4_same_message_id_in_distinct_attempts_never_concatenates():

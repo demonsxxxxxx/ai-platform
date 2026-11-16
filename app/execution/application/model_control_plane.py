@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import re
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from typing import Any, Protocol
 
 from app.identity.api import CompanyEmployee
 from app.execution.domain.runtime_debug import normalize_execution_debug
+from app.execution.domain.model_call_observation import ModelCallObservation
+from app.execution.application.claude_agent_events import public_tool_operation_id
 from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.application.model_stream_ownership import (
     ModelResponseStream, OwnedModelResponseBody, close_model_stream, open_owned_model_stream,
@@ -188,6 +191,8 @@ class RuntimeProxyResponse:
     body: Iterable[bytes]
     close: Callable[[], None] | None = None
     debug: dict[str, str | int] | None = None
+    call_observation: ModelCallObservation | None = None
+    record_call: Callable[..., Any] | None = None
 
 
 _COUNT_TOKENS_FALLBACK_OVERHEAD = 4096
@@ -234,6 +239,7 @@ class ModelControlPlaneService:
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
         diagnostic_recorder: Callable[..., Any] | None = None,
         employee_identities: EmployeeIdentityProvisioner | None = None,
+        model_call_recorder: Callable[..., Any] | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -243,6 +249,7 @@ class ModelControlPlaneService:
         self._attempt_capability_verifier = attempt_capability_verifier
         self._diagnostic_recorder = diagnostic_recorder
         self._employee_identities = employee_identities
+        self._model_call_recorder = model_call_recorder
 
     async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
         facts = normalize_execution_debug(debug)
@@ -624,7 +631,16 @@ class ModelControlPlaneService:
                 body=(count_response.body,),
                 debug=normalize_execution_debug(getattr(count_response, "debug", None)),
             )
-        upstream = await open_owned_model_stream(partial(
+        call = ModelCallObservation(operation_id=public_tool_operation_id, run_id=run_id)
+        async def record_call(evidence):
+            if self._model_call_recorder is not None:
+                try:
+                    await self._model_call_recorder(run_id=run_id, attempt_id=attempt_id, evidence=evidence)
+                except Exception:
+                    logging.getLogger(__name__).warning("model_call_evidence_capture_unavailable")
+        await record_call(call.snapshot())
+        try:
+            upstream = await open_owned_model_stream(partial(
             self._upstream.open_stream,
             base_url=connection.base_url,
             allowed_internal_hosts=allowed_hosts,
@@ -635,7 +651,11 @@ class ModelControlPlaneService:
             body=body,
             headers=outbound_headers,
             query=query,
-        ))
+            ))
+        except BaseException:
+            await record_call(call.snapshot(state="failed"))
+            raise
+        call.response(upstream.status)
         try:
             response_body = upstream.body()
             if (
@@ -644,8 +664,9 @@ class ModelControlPlaneService:
                 and upstream.status == 200
                 and upstream.content_type.lower().startswith("text/event-stream")
             ):
+                call.observes_message_lifecycle = True
                 response_body = observe_anthropic_text(
-                    response_body, run_id=run_id, attempt_id=attempt_id
+                    response_body, run_id=run_id, attempt_id=attempt_id, accept=call.accept, on_partial=call.mark_partial
                 )
             owned_body = OwnedModelResponseBody(response_body, close=upstream.close)
             return RuntimeProxyResponse(
@@ -654,6 +675,7 @@ class ModelControlPlaneService:
                 body=owned_body,
                 close=owned_body.close,
                 debug=normalize_execution_debug(getattr(upstream, "debug", None)),
+                call_observation=call, record_call=record_call,
             )
         except BaseException:
             close_model_stream(upstream.close)

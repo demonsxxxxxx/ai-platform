@@ -1,5 +1,10 @@
 """Public in-process Artifact contracts."""
 
+from app.artifacts.application.admin_run_access import (
+    AdminRunArtifactAccess as AdminRunArtifactAccess,
+    AdminArtifactAccessError as AdminArtifactAccessError,
+)
+
 from app.artifacts.domain.collection_limits import ARTIFACT_MAX_FILE_BYTES as ARTIFACT_MAX_FILE_BYTES
 
 from app.artifacts.application.worker_artifact_persistence import (

@@ -12,6 +12,7 @@ import "./styles/chat.css";
 import "./styles/skill.css";
 import "./styles/skill-management-table.css";
 import "./features/usage/usage.css";
+import "./components/panels/runDetail.css";
 import "./styles/card-base.css";
 import "./styles/welcome.css";
 import "./styles/syntax-highlight.css";

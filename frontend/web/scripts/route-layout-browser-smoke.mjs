@@ -207,23 +207,45 @@ function bootstrapSource(loading = false, chatFiles = false) {
       if (url.pathname === '/api/ai/admin/runs/monitor') return json({
         measurement: 'run_lifecycle.v1', window: monitorWindow, counts: { total: 1, succeeded: 0, failed: 1, cancelled: 0, queued: 0, running: 0 },
         success_rate: 0, latency: { total_ms: metric(5000), queue_ms: metric(1000), execution_ms: metric(4000), server_first_text_ms: metric(null), browser_first_text_ms: metric(null) },
-        models: [], runs: [run], limit: 50, has_more: false, order: 'slow'
+        models: [], runs: [run, ...Array.from({length: 10}, (_, index) => ({...run, run_id: 'run-extra-' + index, session_title: '合成历史运行 ' + index}))], limit: 50, has_more: false, order: 'slow'
       });
       if (url.pathname === '/api/ai/admin/runs/run-failed') return json({
         run, worker_execution: { response: '', messages: [], actions: [], model: { turn_count: 1, duration_ms: 4000, stop_category: 'failed' } },
         events: [], steps: [], artifacts: [], sandbox_leases: [], skill_snapshots: [], audit: []
       });
+      if (url.pathname.startsWith('/api/ai/admin/runs/run-live')) {
+        const live = {...run,run_id:'run-live',status:'running',finished_at:null};
+        if (url.pathname.endsWith('/trajectory')) {
+          const after = Number(url.searchParams.get('after_sequence') || 0);
+          return json({contract_version:'ai-platform.admin-run-trajectory.v1',run_id:live.run_id,events:after<3?[{event_id:'evt-live-'+(after+1),sequence:after+1,kind:'action',source_type:'tool.started',recorded_at:run.started_at,attempt_id:'attempt-a',message_id:null,causation_event_id:null,operation_id:null,summary:'实时步骤 '+(after+1)}]:[],next_after_sequence:Math.min(3,after+1),has_more:after<2,source_count:1,omitted:{private:0,unsupported:0,invalid:0}});
+        }
+        if (url.pathname.endsWith('/evidence-search')) return json({run_id:live.run_id,matches:[{kind:'event',sequence:1,summary:'实时步骤 1',context_after_sequence:0}],next_after_sequence:3,next_match_offset:1,has_more:false,searched_source_count:3,matches_truncated:false});
+        if (url.pathname.endsWith('/diagnostics')) return json({...diagnostics,run:live});
+        if (url.pathname.endsWith('/investigation')) return json({run_id:live.run_id,total_ms:null,queue_ms:1000,execution_ms:null,elapsed_ms:5000,timeline_source:'platform_receipts',stages:[],missing_measurements:[]});
+        if (url.pathname.endsWith('/inspection')) return json({contract_version:'ai-platform.admin-run-inspection.v1',run_id:live.run_id,input:{fields:{},coverage:'not_collected',excluded:[]},configuration:{source:'persisted_run_snapshot',skills:[]},history:{relationships:[]},trigger:{kind:'chat_api'},model_calls:[]});
+        return json({run:live,worker_execution:{response:'',messages:[],actions:[],model:{}},events:[],steps:[],artifacts:[],sandbox_leases:[],skill_snapshots:[],audit:[]});
+      }
+      if (url.pathname === '/api/ai/admin/runs/run-success') return json({
+        run: {...run,run_id:'run-success',status:'succeeded',error_code:null,error_message:null},
+        worker_execution: {response:'审核完成：发现两处需要确认的合同条款。', messages:[],actions:[],model:{stop_category:'completed'}}, events:[],steps:[],sandbox_leases:[],skill_snapshots:[],audit:[],
+        artifacts:[{artifact_id:'art-sheet',artifact_type:'spreadsheet',label:'审核结果.xlsx',content_type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',size_bytes:1024}]
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-success/diagnostics') return json({...diagnostics,run:{...run,run_id:'run-success',status:'succeeded'},root:null,handling:[],coverage:'not_collected',attempts:[]});
+      if (url.pathname === '/api/ai/admin/runs/run-success/investigation') return json({run_id:'run-success',total_ms:5000,queue_ms:1000,execution_ms:4000,elapsed_ms:5000,timeline_source:'platform_receipts',stages:[],missing_measurements:[]});
+      if (url.pathname === '/api/ai/admin/runs/run-success/inspection') return json({contract_version:'ai-platform.admin-run-inspection.v1',run_id:'run-success',input:{fields:{},coverage:'not_collected',excluded:[]},configuration:{source:'persisted_run_snapshot',skills:[]},history:{relationships:[]},trigger:{kind:'chat_api'},model_calls:[]});
+      if (url.pathname === '/api/ai/admin/runs/run-success/trajectory') return json({contract_version:'ai-platform.admin-run-trajectory.v1',run_id:'run-success',events:[],next_after_sequence:0,has_more:false,omitted:{private:0,unsupported:0,invalid:0}});
+      if (url.pathname === '/api/ai/admin/runs/run-success/artifacts/art-sheet/access') return json({access:'allowed',availability:'unverified',preview_allowed:true});
+      if (url.pathname === '/api/ai/admin/runs/run-success/artifacts/art-sheet/preview') return json({schema_version:'ai-platform.file-preview.v2',kind:'xlsx_table',status:'ready',content:{sheets:[{name:'审核结果',images:[],rows:[{row:1,cells:[{column:1,kind:'text',value:'合同条款'}]}]}],sheet_count:1},truncated:false,warnings:[],error:null});
+      if (url.pathname === '/api/ai/admin/runs/run-failed/inspection') return json({ contract_version: 'ai-platform.admin-run-inspection.v1', run_id: run.run_id, input: { fields: { thinking_effort: 'high' }, coverage: 'partial', excluded: [], attachments: [{file_id: 'file-input', name: '采购合同.pdf', content_type: 'application/pdf', size_bytes: 1024, availability: 'active'}] }, configuration: { source: 'persisted_run_snapshot', model_id: 'mdl-synthetic', model_value: 'Synthetic Model', model_gateway_revision: 7, profile_revision: 3, skills: [{skill_id: 'skill-review', version: 'v1', content_hash: 'a'.repeat(64)}], skills_truncated: false }, history: { relationships: [], truncated: false }, trigger: { kind: 'chat_api', coverage: 'recorded' }, model_calls: [] });
       if (url.pathname === '/api/ai/admin/runs/run-failed/diagnostics') return json(diagnostics);
       if (url.pathname === '/api/ai/admin/runs/run-failed/investigation') return json({
         run_id: run.run_id, total_ms: 5000, queue_ms: 1000, execution_ms: 4000, elapsed_ms: 5000,
         server_first_text_ms: null, browser_first_text_ms: null, first_public_text_at: null,
         observed_at: run.finished_at, browser_measurement: null, timeline_source: 'platform_receipts', durations_additive: false,
-        events_truncated: false, unbound_event_count: 0, missing_measurements: ['server_first_text_ms', 'browser_first_text_ms'], stages: [],
-        comparison: { window: monitorWindow, sample_count: 0, latency: {}, normal_run_id: null,
-          scope: 'same_agent_skill_profile_model_configuration', missing_reason: 'no_comparable_successful_run' }
+        events_truncated: false, unbound_event_count: 0, missing_measurements: ['server_first_text_ms', 'browser_first_text_ms'], stages: []
       });
       if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
-        contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
+        contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: Array.from({length: 100}, (_, index) => ({event_id: 'evt_' + (index + 1), sequence: index + 1, kind: 'observation', source_type: 'tool.completed', recorded_at: run.finished_at, attempt_id: null, message_id: null, causation_event_id: null, operation_id: 'op_' + index, summary: '合成工具步骤 ' + index, outcome: 'completed'})), next_after_sequence: 100, has_more: true, source_count: 100, omitted: { private: 0, unsupported: 0, invalid: 0 }
       });
       if (url.pathname === '/api/ai/admin/model-providers/supplier-b/impact') return json({ ...providers.find(p => p.id === 'supplier-b'), group_count: 0, default_group_count: 0, active_run_count: 0, cleanable_count: 2, blocked_models: [] });
       if (url.pathname === '/api/ai/admin/model-providers/supplier-b/retire') { providers = providers.filter(p => p.id !== 'supplier-b'); return json({ id: 'supplier-b', deleted: true }); }
@@ -429,9 +451,11 @@ const cases = [
   },
   {
     path: "/runs", selector: "[data-run-monitor]", name: "runs",
-    requiredSelectors: ['button[aria-label="查看 run-failed"]'],
+    requiredSelectors: ['a[aria-label="查看 run-failed"]', 'button[aria-label="快速查看 run-failed"]'],
     requiredRequests: ["/api/ai/admin/runs/monitor"],
   },
+  { path: "/runs/run-success?tab=results", selector: "[data-run-detail-page]", name: "run-result", requiredSelectors: ["[data-run-agent-output]"] },
+  { path: "/runs/run-live?tab=execution", selector: "[data-run-trajectory-replay]", name: "run-live", requiredSelectors: ["[data-run-detail-page] h1"] },
   {
     path: "/users",
     selector: "[data-workbench-projection-page=users]",
@@ -452,6 +476,7 @@ const cases = [
 const viewports = [
   { name: "wide", width: 1920, height: 900, mobile: false },
   { name: "desktop", width: 1440, height: 900, mobile: false },
+  { name: "short", width: 1440, height: 600, mobile: false },
   { name: "tablet", width: 768, height: 900, mobile: false },
   { name: "mobile", width: 390, height: 844, mobile: true },
 ];
@@ -1145,11 +1170,25 @@ async function runCase(viewport, scenario) {
     }
     let runDiagnostics = null;
     if (scenario.name === "runs") {
+      await browser.client.evaluate(`[...document.querySelectorAll('button[aria-label="第 2 页"]')].find(node => node.checkVisibility()).click()`);
+      await browser.client.waitFor("location.search.includes('page=2') && Boolean(document.querySelector('a[aria-label=\"查看 run-extra-9\"]'))", "runs:last-page");
+      await browser.client.evaluate(`[...document.querySelectorAll('button[aria-label="第 1 页"]')].find(node => node.checkVisibility()).click()`);
+      await browser.client.waitFor("!location.search.includes('page=2') && Boolean(document.querySelector('a[aria-label=\"查看 run-failed\"]'))", "runs:first-page");
       await browser.client.evaluate(`(() => {
-        const button = [...document.querySelectorAll('button[aria-label="查看 run-failed"]')].find(node => node.checkVisibility());
+        const button = [...document.querySelectorAll('button[aria-label="快速查看 run-failed"]')].find(node => node.checkVisibility());
         button.scrollIntoView({ block: 'center' }); button.focus(); window.__runDiagnosticTrigger = button; button.click();
       })()`);
-      await browser.client.waitFor("Boolean(document.querySelector('[data-run-runtime-diagnostics] summary'))", "runs:diagnostics-ready");
+      await browser.client.waitFor("Boolean(document.querySelector('[data-run-quick-view]'))", "runs:quick-view");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-run-quick-view]') && document.activeElement === window.__runDiagnosticTrigger", "runs:focus-restored");
+      await browser.client.evaluate(`[...document.querySelectorAll('a[aria-label="查看 run-failed"]')].find(node => node.checkVisibility()).click()`);
+      await browser.client.waitFor("location.pathname === '/runs/run-failed' && document.activeElement === document.querySelector('[data-run-detail-page] h1')", "runs:independent-detail-focus");
+      await browser.client.evaluate(`[...document.querySelectorAll('.run-detail-tabs [role=tab]')].find(node => node.textContent === '输入与配置' && node.checkVisibility()).click()`);
+      await browser.client.waitFor("location.search.includes('tab=configuration') && document.querySelector('[data-run-detail-page]').innerText.includes('采购合同.pdf')", "runs:input-snapshot");
+      runDiagnostics = { configurationScreenshot: await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-configuration`) };
+      await browser.client.evaluate(`[...document.querySelectorAll('.run-detail-tabs [role=tab]')].find(node => node.textContent === '执行过程' && node.checkVisibility()).click()`);
+      await browser.client.waitFor("location.search.includes('tab=execution') && document.querySelector('[data-run-runtime-diagnostics] summary')?.checkVisibility()", "runs:diagnostics-ready");
       await browser.client.waitFor(`(() => { const node = document.querySelector('[data-run-monitor-detail]'); const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth + 1 && node.getAnimations({ subtree: true }).every(animation => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running'); })()`, "runs:detail-painted");
       const collapsed = await browser.client.evaluate(`(() => {
         const details = [...document.querySelectorAll('[data-run-runtime-diagnostics] details')];
@@ -1162,8 +1201,10 @@ async function runCase(viewport, scenario) {
       for (const label of ["技术关联编号", "观察关联"]) {
         await browser.client.evaluate(`(() => {
           const node = [...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)});
+          window.__runSummary = node;
           node.scrollIntoView({ block: 'center' }); node.focus();
         })()`);
+        await browser.client.waitFor("document.activeElement === window.__runSummary && window.__runSummary.getBoundingClientRect().top >= 0 && window.__runSummary.getBoundingClientRect().bottom <= innerHeight", `runs:summary-focus:${label}`);
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
         await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
         await browser.client.waitFor(`[...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)}).parentElement.open`, `runs:expand:${label}`);
@@ -1195,9 +1236,44 @@ async function runCase(viewport, scenario) {
       runDiagnostics.receiptScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-receipt`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor("!document.querySelector('[data-run-monitor-detail]') && document.activeElement === window.__runDiagnosticTrigger", "runs:focus-restored");
+      await browser.client.evaluate(`[...document.querySelectorAll('[data-run-detail-page] a')].find(node => node.textContent === '运行监控').click()`);
+      await browser.client.waitFor("location.pathname === '/runs' && Boolean(document.querySelector('[data-run-monitor]'))", "runs:return-list");
       runDiagnostics.receiptParent = true;
       runDiagnostics.focusRestored = true;
+    }
+    if (scenario.name === "run-live") {
+      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"已加载公开事件\"]'))", "run-live:initial");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node=>node.textContent==='跟随最新').click()`);
+      await browser.client.waitFor("document.querySelector('[data-run-trajectory-current]')?.innerText.includes('实时步骤 3')", "run-live:drained-pages");
+      await browser.client.evaluate(`(() => {const node=document.querySelector('input[aria-label="检索此运行的安全证据"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(node,'实时步骤');node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node=>node.textContent==='检索').click()`);
+      await browser.client.waitFor("[...document.querySelectorAll('button')].some(node=>node.textContent.includes('#1 · 实时步骤 1'))", "run-live:search-match");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node=>node.textContent.includes('#1 · 实时步骤 1')).click()`);
+      await browser.client.waitFor("document.querySelector('[data-run-trajectory-current]')?.innerText.includes('实时步骤 1') && [...document.querySelectorAll('button')].some(node=>node.textContent==='跟随最新' && node.getAttribute('aria-pressed')==='false')", "run-live:external-selection-pauses-follow");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node=>node.textContent==='读取新事件').click()`);
+      await browser.client.waitFor("[...document.querySelectorAll('button')].some(node=>node.textContent==='读取新事件') && document.querySelector('[data-run-trajectory-current]')?.innerText.includes('实时步骤 1')", "run-live:selection-kept");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node=>node.textContent==='跟随最新').click()`);
+      await browser.client.evaluate(`document.querySelector('[data-run-trajectory-replay]').dispatchEvent(new WheelEvent('wheel',{deltaY:-120,bubbles:true}))`);
+      await browser.client.waitFor("[...document.querySelectorAll('button')].some(node=>node.textContent==='跟随最新' && node.getAttribute('aria-pressed')==='false')", "run-live:pause-reading");
+      const input = "document.querySelector('input[aria-label=\"查找已保留诊断证据\"]')";
+      await browser.client.evaluate(`(() => {const node=${input};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(node,'模型等待超时');node.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      await browser.client.waitFor("document.querySelector('[data-run-diagnostic-search-results]')?.innerText.includes('模型等待超时')", "run-live:root-search");
+      runDiagnostics = { drainedCursorPages: true, searchSelectionPausesFollow: true, selectedEvidenceKept: true, upwardScrollPausesFollow: true, rootSearch: true };
+    }
+    if (scenario.name === "run-result") {
+      await browser.client.waitFor("document.querySelector('[data-run-agent-output]')?.innerText.includes('审核完成')", "run-result:answer");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node => node.textContent === '检查访问权限').click()`);
+      await browser.client.waitFor("[...document.querySelectorAll('button')].some(node => node.textContent === '预览')", "run-result:authorized");
+      await browser.client.evaluate(`[...document.querySelectorAll('button')].find(node => node.textContent === '预览').click()`);
+      await browser.client.waitFor(`(() => {
+        const cell = [...document.querySelectorAll('[data-tool-result-overlay] th, [data-tool-result-overlay] td')].find(node => node.textContent.includes('合同条款'));
+        if (!cell) return false;
+        const box = cell.getBoundingClientRect();
+        return cell.checkVisibility() && box.left >= 0 && box.left < innerWidth && box.top >= 0 && box.bottom <= innerHeight &&
+          [...document.querySelectorAll('[data-tool-result-overlay]')].every(node => node.getAnimations({subtree:true}).every(animation => animation.playState !== 'running' || animation.effect?.getTiming().iterations === Infinity));
+      })()`, "run-result:xlsx-preview");
+      if (await browser.client.evaluate("window.__routeLayoutSmoke.errors.length")) throw new Error("run-result:preview-errors");
+      runDiagnostics = { previewScreenshot: await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-run-artifact-preview`), authorizedPreview: true };
     }
     if (scenario.name === "builder") {
       await browser.client.evaluate(`(() => {
@@ -1296,6 +1372,8 @@ async function runCase(viewport, scenario) {
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
+    if (scenario.name === "run-live") console.error(JSON.stringify(await browser.client.evaluate(`({requests:window.__routeLayoutSmoke.requests,errors:window.__routeLayoutSmoke.errors,trajectory:document.querySelector('[data-run-trajectory-replay]')?.innerText})`)));
+    if (scenario.name === "run-result") console.error(JSON.stringify(await browser.client.evaluate(`({ cells: [...document.querySelectorAll('[data-tool-result-overlay] th, [data-tool-result-overlay] td')].map(node => ({text:node.textContent, visible:node.checkVisibility(), rect:node.getBoundingClientRect().toJSON()})), animations:[...document.querySelectorAll('[data-tool-result-overlay]')].flatMap(node=>node.getAnimations({subtree:true}).map(animation=>({name:animation.animationName,state:animation.playState}))) })`)));
     if (scenario.loading) {
       const paint = await browser.client.evaluate(`(() => {
         const ancestors = [];

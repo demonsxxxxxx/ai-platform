@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.auth import ADMIN_ROLE_ALIASES
+from app.runs.domain.trigger_source import RUN_TRIGGER_INPUT_KEY, validate_run_trigger
+from app.streaming.api import append_run_trigger
 from app.auth import normalize_roles
 from app.control_plane_contracts import EXECUTOR_RESULT_SCHEMA_VERSION
 from app.control_plane_contracts import HARNESS_CHAT_EXECUTOR_TYPE
@@ -52,6 +54,7 @@ async def copy_run_as_new_task(
     user_id: str,
     run_id: str,
     principal_department_ids: tuple[str, ...] = (),
+    trigger_source: str = "copy",
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
@@ -224,6 +227,8 @@ async def copy_run_as_new_task(
     copied_input_json.update(preserved_server_owned_execution_snapshot(source_execution_snapshot))
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
+    validate_run_trigger(trigger_source)
+    copied_input_json.pop(RUN_TRIGGER_INPUT_KEY, None)
     _require_json_size(copied_input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large")
     session_generation = await allocate_session_run_generation(
         conn,
@@ -278,6 +283,7 @@ async def copy_run_as_new_task(
             skill_manifests=skill_manifests,
             release_decision=release_decision_payload,
         )
+    await append_run_trigger(conn, tenant_id=tenant_id, run_id=new_run_id, source=trigger_source)
     await append_event(
         conn,
         tenant_id=tenant_id,
@@ -344,6 +350,7 @@ async def retry_run_as_new_task(
         user_id=user_id,
         run_id=run_id,
         principal_department_ids=principal_department_ids,
+        trigger_source="retry",
     )
     if copied is None:
         return None
@@ -419,6 +426,7 @@ async def resume_run_as_new_task(
         user_id=user_id,
         run_id=run_id,
         principal_department_ids=principal_department_ids,
+        trigger_source="resume",
     )
     if copied is None:
         return None

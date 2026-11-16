@@ -1433,6 +1433,20 @@ async def test_admin_tool_correlation_omits_ambiguous_or_missing_native_identity
     assert public_tool_operation_id(None, "native") is None
 
 
+def test_bootstrap_configures_run_evidence_ports(monkeypatch):
+    from app.bootstrap import admin_run_evidence, run_diagnostics
+    calls = []
+    monkeypatch.setattr(run_diagnostics, 'configure_admin_run_evidence', lambda: calls.append('configured'))
+    run_diagnostics.build_run_diagnostics_service()
+    assert calls == ['configured']
+    captured = []
+    monkeypatch.setattr(admin_run_evidence, 'configure_admin_event_evidence', lambda **kwargs: captured.append(kwargs))
+    admin_run_evidence.configure_admin_run_evidence()
+    assert captured[0]['trigger'] is admin_run_evidence.append_run_trigger
+    assert captured[0]['append'] is admin_run_evidence.append_private_model_call
+    assert captured[0]['read'] is admin_run_evidence.read_admin_detail_events
+
+
 def test_bootstrap_uses_execution_tool_operation_identity_owner():
     from app.bootstrap.run_diagnostics import build_run_diagnostics_service
     from app.execution.api import public_tool_operation_id

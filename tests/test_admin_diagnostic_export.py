@@ -220,3 +220,19 @@ def test_admin_diagnostic_export_does_not_return_package_when_audit_fails(monkey
 
     assert response.status_code == 500
     assert response.headers.get("content-type") != "application/zip"
+
+
+
+def test_v2_offline_trajectory_uses_same_trimmed_snapshot_and_keeps_v1_reader_fields():
+    source = _diagnostics()
+    source["debug"] = {"events": [{"sequence": 4, "source_type": "tool.failed", "attempt_id": "attempt_a", "outcome": "timeout"}], "events_truncated": True}
+    package = build_admin_diagnostic_export(diagnostics=source, export_id="export-a", generated_at=datetime.now(timezone.utc))
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        retained = json.loads(archive.read("diagnostics.json"))
+        text = archive.read("trajectory.md").decode()
+    assert manifest["schema_version"] == "ai-platform.run-diagnostic-export.v2"
+    assert manifest["reader_compatibility"]["diagnostics_json"] == "v1_fields_preserved"
+    assert retained["root"]["message"] == source["root"]["message"]
+    assert "tool.failed" in text and "attempt_a" in text and "timeout" in text
+    assert "事件截断：True" in text

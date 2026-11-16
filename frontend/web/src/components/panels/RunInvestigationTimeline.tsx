@@ -19,15 +19,19 @@ const STATE_LABELS: Record<string, string> = {
 };
 
 export function RunInvestigationTimeline({
-  investigation, loading, error, diagnostics, onRetry,
+  investigation, loading, error, diagnostics, onRetry, selectedStageId: controlledStageId, onSelectStage,
 }: {
   investigation: AdminRunInvestigation | null;
   loading: boolean;
   error: string | null;
   diagnostics: AdminRunDiagnosticsResponse | null;
   onRetry: () => void;
+  selectedStageId?: string | null;
+  onSelectStage?: (stageId: string) => void;
 }) {
-  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const [localStageId, setSelectedStageId] = useState<string | null>(null);
+  const selectedStageId = controlledStageId === undefined ? localStageId : controlledStageId;
+  const [view, setView] = useState("steps");
   if (!investigation) return (
     <section className="p-4" data-run-investigation>
       <h3 className="text-xs font-semibold text-[var(--theme-text)]">阶段调查</h3>
@@ -69,31 +73,33 @@ export function RunInvestigationTimeline({
           {investigation.unbound_event_count > 0 ? ` ${investigation.unbound_event_count} 条记录无法绑定已知执行尝试，未并入阶段。` : ""}
         </p>
       ) : null}
+      <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="过程视图"><Button type="text" aria-pressed={view === "steps"} onClick={() => setView("steps")}>步骤列表</Button><Button type="text" aria-pressed={view === "timeline"} onClick={() => setView("timeline")}>时间线</Button></div>
+      <div className="run-stage-layout">
       <ol className="mt-3 space-y-1" data-run-stage-timeline>
         {investigation.stages.map((stage) => {
           const left = stage.offset_ms == null ? null : Math.min(100, Math.max(0, stage.offset_ms / total * 100));
           const width = left == null ? 0 : Math.min(100 - left, Math.max(1, (stage.receipt_duration_ms ?? 0) / total * 100));
           return <li key={stage.stage_id}>
-            <Button type="text" htmlType="button" onClick={() => setSelectedStageId(stage.stage_id)} aria-pressed={selectedStageId === stage.stage_id}
+            <Button type="text" htmlType="button" onClick={() => { setSelectedStageId(stage.stage_id); onSelectStage?.(stage.stage_id); }} aria-pressed={selectedStageId === stage.stage_id}
               aria-label={`调查阶段 ${stage.label}`} data-stage-id={stage.stage_id}
               className="w-full rounded-md border border-[var(--theme-border)] p-2 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] aria-pressed:bg-[var(--theme-info-soft)]">
-              <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="min-w-0 truncate font-medium">{stage.label}</span>
                 <span className={stage.status === "failed" || stage.status === "denied" ? "text-[var(--theme-danger-text)]" : "text-[var(--theme-text-secondary)]"}>
                   {STATE_LABELS[stage.status] ?? stage.status} · {formatRunDuration(stage.duration_ms)}
                 </span>
               </div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded bg-[var(--theme-bg-sidebar)]" aria-hidden="true">
+              {view === "timeline" ? <div className="mt-1.5 h-2 overflow-hidden rounded bg-[var(--theme-bg-sidebar)]" aria-hidden="true">
                 {left == null ? <div className="h-full w-full border-b border-dashed border-[var(--theme-border)]" /> : <div className="relative h-full rounded bg-[var(--theme-info)] opacity-60" style={{ left: `${left}%`, width: `${width}%` }} />}
-              </div>
-              <p className="mt-1 text-[10px] text-[var(--theme-text-tertiary)]">{SOURCE_LABELS[stage.source]}{stage.offset_ms == null ? " · 起点未采集" : ` · 自提交 ${formatRunDuration(stage.offset_ms)}`}{stage.source === "sdk_tool_hooks" && !stage.attempt_id ? " · 尝试身份未知" : ""}</p>
+              </div> : null}
+              <p className="mt-1 text-xs text-[var(--theme-text-tertiary)]">{SOURCE_LABELS[stage.source]}{stage.offset_ms == null ? " · 起点未采集" : ` · 自提交 ${formatRunDuration(stage.offset_ms)}`}{stage.source === "sdk_tool_hooks" && !stage.attempt_id ? " · 尝试身份未知" : ""}</p>
             </Button>
           </li>;
         })}
       </ol>
       {selected ? (
         <div className="mt-3 rounded-md border border-[var(--theme-info-ring)] bg-[var(--theme-info-soft)] p-3 text-xs" data-selected-stage-evidence>
-          <p className="font-semibold">{selected.label} · 关联证据</p>
+          <p className="font-semibold">{selected.label} · 关联证据</p><Button type="text" size="small" className="lg:hidden" onClick={() => document.querySelector('[data-run-stage-timeline]')?.scrollIntoView({ block: "start" })}>返回步骤目录</Button>
           <p className="mt-1 leading-5 text-[var(--theme-text-secondary)]">
             {evidence ? [evidence.last_stage, evidence.state, evidence.reason].filter(Boolean).join(" · ") || "已找到同一工具调用的诊断记录" : selected.operation_id ? "没有该调用的私有诊断；不表示调用未发生。" : "阶段事实见时间线；异常因果链与证据缺口见下方诊断。"}
           </p>
@@ -107,7 +113,8 @@ export function RunInvestigationTimeline({
             {[['Attempt', selected.attempt_id], ['调用', selected.operation_id], ['事件', selected.event_id], ['上游事件', selected.causation_event_id]].map(([label, value]) => value ? <p key={label} className="mt-1 break-all">{label}：{value}</p> : null)}
           </details>
         </div>
-      ) : null}
+      ) : <p className="mt-3 text-sm">选择步骤查看证据；未绑定异常保留在下方诊断中。</p>}
+      </div>
     </section>
   );
 }

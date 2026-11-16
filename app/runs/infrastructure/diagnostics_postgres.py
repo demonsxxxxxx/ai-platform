@@ -8,7 +8,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.streaming.api import read_admin_detail_events
+from app.files.api import read_admin_run_input_files
+
 from app.runs.domain.cost_observability import projected_estimated_cost_minor
+from app.runs.infrastructure.model_call_evidence_postgres import read_model_call_evidence
+from app.runs.domain.model_call_evidence import project_model_call
 
 from app.runs.infrastructure.admin_queries_postgres import get_admin_run_monitor_report
 from app.runs.domain.run_performance import merge_browser_latency
@@ -359,6 +364,80 @@ class PostgresRunDiagnosticsRepository:
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def get_admin_evidence_page(self, conn: AsyncConnection, *, tenant_id: str, run_id: str, after_sequence: int, limit: int) -> list[dict[str, Any]]:
+        cursor = await conn.execute("""
+            with page as (
+              select id, sequence, event_type, stage, visible_to_user, created_at, payload_json,
+                case when visible_to_user then octet_length(payload_json::text) else 0 end as payload_bytes
+              from run_events where tenant_id = %s and run_id = %s and sequence > %s
+              order by sequence asc limit %s
+            ), budgeted as (
+              select page.*, sum(case when payload_bytes <= 65536 then payload_bytes else 0 end)
+                over (order by sequence) as retained_bytes from page
+            )
+            select id, sequence, event_type, stage, visible_to_user, created_at,
+              case when visible_to_user and payload_bytes <= 65536 and retained_bytes <= 524288
+                then payload_json else '{}'::jsonb end as payload_json,
+              (visible_to_user and (payload_bytes > 65536 or retained_bytes > 524288)) as payload_omitted
+            from budgeted order by sequence
+            """, (tenant_id, run_id, after_sequence, limit))
+        return list(await cursor.fetchall())
+
+    async def get_admin_inspection_facts(self, conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any]:
+        cursor = await conn.execute(
+            """select r.input_json, (select e.payload_json from run_events e
+               where e.tenant_id=r.tenant_id and e.run_id=r.id and e.visible_to_user is false
+                 and e.event_type='run_trigger_recorded' order by e.sequence limit 1) as trusted_trigger
+               from runs r where r.tenant_id = %s and r.id = %s""",
+            (tenant_id, run_id),
+        )
+        row = await cursor.fetchone() or {}
+        related = await conn.execute(
+            """
+            select source.id as source_run_id, child.id as child_run_id, child.status,
+                   child.created_at, child.user_id, coalesce(operation.payload_json->>'action', case when exists (select 1 from run_events t where t.tenant_id=child.tenant_id and t.run_id=child.id and t.event_type='run_trigger_recorded' and t.visible_to_user is false and t.payload_json->>'source'='copy') then 'copy' end) as action
+            from runs current
+            join runs child on child.tenant_id = current.tenant_id
+              and (child.copied_from_run_id = current.id or child.id = current.id)
+            join runs source on source.tenant_id = child.tenant_id and source.id = child.copied_from_run_id
+              and source.workspace_id = child.workspace_id and source.user_id is not distinct from child.user_id
+            left join lateral (
+              select e.payload_json from run_events e
+              where e.tenant_id = source.tenant_id and e.run_id = source.id
+                and e.event_type = 'run_control_operation_committed'
+                and e.payload_json->>'source_run_id' = source.id
+                and e.payload_json->>'child_run_id' = child.id
+                and e.payload_json->>'action' in ('retry', 'resume')
+              order by e.sequence desc limit 1
+            ) operation on true
+            where current.tenant_id = %s and current.id = %s
+              and current.workspace_id = child.workspace_id
+              and current.user_id is not distinct from child.user_id
+            order by child.created_at desc, child.id desc limit 51
+            """, (tenant_id, run_id),
+        )
+        artifacts = await conn.execute("select id as artifact_id, label, content_type, size_bytes from artifacts where tenant_id = %s and run_id = %s order by created_at, id limit 101", (tenant_id, run_id))
+        calls = await read_model_call_evidence(conn, tenant_id=tenant_id, run_id=run_id)
+        observed = {}
+        for entry in calls[:200]:
+            payload = entry.get("payload_json") or {}
+            safe = project_model_call(payload)
+            if safe and safe["call_id"] not in observed:
+                observed[safe["call_id"]] = {**safe, "attempt_id": payload.get("attempt_id")}
+        attachments = await read_admin_run_input_files(conn, tenant_id=tenant_id, run_id=run_id)
+        safe_input = dict(row["input_json"]) if isinstance(row.get("input_json"), dict) else {}
+        safe_input.pop("_trusted_run_source", None)
+        if row.get("trusted_trigger"):
+            safe_input["_trusted_run_source"] = row["trusted_trigger"]
+        return {"input": safe_input, "attachments": attachments, "relationships": list(await related.fetchall()),
+                "artifacts": list(await artifacts.fetchall()), "model_calls": list(reversed(observed.values())),
+                "model_calls_truncated": len(calls) > 200}
+
+    async def get_admin_public_result(self, conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any]:
+        from app.runs.application.admin_public_result import build_admin_public_result
+        evidence = await read_admin_detail_events(conn, tenant_id=tenant_id, run_id=run_id)
+        return build_admin_public_result(evidence, tenant_id=tenant_id, run_id=run_id)
+
     async def get_admin_debug_skills(self, conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
         cursor = await conn.execute(
             """select skill_id, skill_version, content_hash, dependency_ids
@@ -376,7 +455,7 @@ class PostgresRunDiagnosticsRepository:
                    visible_to_user, payload_json, payload_json as payload
             from run_events
             where tenant_id = %s and run_id = %s and visible_to_user is true
-              and event_type in ('tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'model.completed', 'agent.progress', 'run.failed', 'message.completed')
+              and event_type in ('tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'model.completed', 'agent.progress', 'run.failed', 'message.completed', 'subagent.started', 'subagent.progress', 'subagent.completed', 'subagent.failed', 'subagent.cancelled')
             order by sequence desc limit 501
             """, (tenant_id, run_id),
         )

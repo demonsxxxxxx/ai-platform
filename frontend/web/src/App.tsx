@@ -403,6 +403,14 @@ function App() {
               }
             />
             <Route
+              path={APP_ROUTE_PATHS.runDetail}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <RunsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path={APP_ROUTE_PATHS.notifications}
               element={
                 <ProtectedRoute>

@@ -11,6 +11,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app.platform.tracing import safe_exception_log_fields
+from tests.support.db_transactions import event_loop_policy  # noqa: F401
 
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.infrastructure.diagnostics_postgres import (
@@ -365,3 +366,172 @@ async def test_postgres_diagnostic_row_lock_timeout_keeps_outer_transaction_usab
         assert before == after
         assert elapsed < 5
         assert state == {"status": "failed", "revision": 1}
+
+
+async def _seed_detail_attempt(conn):
+    spec = json.dumps({"schema_version": "test.execution.v1", "tenant_id": "tenant-a", "run_id": "run-a",
+                       "workspace_id": "workspace-a", "user_id": "user-a", "session_id": "session-a",
+                       "agent_id": "agent-a", "execution_kind": "skill", "skill_id": "skill-a"})
+    await conn.execute("update runs set status='queued' where id='run-a'")
+    await conn.execute("""insert into run_attempts(id,tenant_id,run_id,ordinal,status,owner_kind,owner_id,
+        queue_attempt_id,execution_spec_schema_version,execution_spec_json,execution_spec_canonical_json,execution_spec_sha256)
+        values('attempt-a','tenant-a','run-a',1,'created','queue_worker','worker-a','queue-a','test.execution.v1',
+               %s::jsonb,%s,encode(sha256(convert_to(%s,'UTF8')),'hex'))""", (spec, spec, spec))
+    for state in ('queued', 'claimed', 'running'):
+        await conn.execute("update run_attempts set status=%s,owner_generation=owner_generation+1 where id='attempt-a'", (state,))
+
+
+@pytest.mark.asyncio
+async def test_postgres_detail_bounded_answer_ledger_hidden_payloads_and_search_scope():
+    from copy import deepcopy
+    from app.bootstrap.admin_run_evidence import configure_admin_run_evidence
+    from app.runs.infrastructure.admin_queries_postgres import get_admin_run_detail
+    from app.streaming.infrastructure.admin_detail_postgres import read_admin_detail_events
+    from app.runs.application.admin_public_result import build_admin_public_result
+    configure_admin_run_evidence()
+    async with _isolated_postgres_run() as (_dsn, _schema, _admin, conn):
+        async with conn.transaction():
+            await _seed_detail_attempt(conn)
+            fixture = json.loads(Path('tests/fixtures/admin-part-message.json').read_text(encoding='utf-8'))
+            for source in fixture['rows']:
+                payload = deepcopy(source['payload_json'])
+                payload['__stream_v4']['attempt_id'] = 'attempt-a'
+                await conn.execute("""insert into run_events(id,tenant_id,run_id,sequence,event_type,stage,visible_to_user,payload_json)
+                    values(%s,'tenant-a','run-a',%s,%s,%s,true,%s::jsonb)""",
+                    (source['id'], source['sequence'], source['event_type'], source['stage'], json.dumps(payload)))
+            await conn.execute("""insert into run_events(id,tenant_id,run_id,sequence,event_type,stage,visible_to_user,payload_json)
+                values('hidden','tenant-a','run-a',8,'model.completed','agent_kernel',false,'{"stop_category":"PRIVATE"}')""")
+            detail = await get_admin_run_detail(conn, tenant_id='tenant-a', run_id='run-a')
+            assert detail['worker_execution']['response'] == '正常公开回答'
+            assert detail['worker_execution']['model'] == {}
+            for sequence, (kind, payload) in enumerate([
+                ('message.delta', {'delta': 'FOREIGN_ANSWER'}),
+                ('model.completed', {'stop_category': 'FOREIGN_STOP'}),
+                ('tool.started', {'operation_id':'foreign','display_name':'FOREIGN_TOOL'}),
+            ], 9):
+                payload['__stream_v4'] = {'version':1,'message_id':'msg_foreign','attempt_id':'foreign-attempt'}
+                await conn.execute("""insert into run_events(id,tenant_id,run_id,sequence,event_type,stage,visible_to_user,payload_json)
+                    values(%s,'tenant-a','run-a',%s,%s,'agent_kernel',true,%s::jsonb)""",
+                    ('foreign-'+str(sequence),sequence,kind,json.dumps(payload)))
+            rejected = await read_admin_detail_events(conn, tenant_id='tenant-a',run_id='run-a')
+            assert rejected['rejected_attempt_events'] == 3
+            safe = build_admin_public_result(rejected,tenant_id='tenant-a',run_id='run-a')
+            assert safe['response'] == '正常公开回答' and 'FOREIGN' not in json.dumps(safe,default=str)
+            await conn.execute("delete from run_events where id like 'foreign-%'")
+            assert detail['events'] == [] and detail['run']['input'] == detail['run']['result'] == {}
+            assert 'PRIVATE' not in json.dumps(detail, default=str)
+            assert await get_admin_run_detail(conn, tenant_id='foreign', run_id='run-a') is None
+            await conn.execute("""insert into run_events(id,tenant_id,run_id,sequence,event_type,stage,visible_to_user,payload_json)
+                select 'bulk-'||n,'tenant-a','run-a',n+8,'unknown','worker',true,jsonb_build_object('private','PRIVATE')
+                from generate_series(1,10000) n""")
+            bounded = await read_admin_detail_events(conn, tenant_id='tenant-a', run_id='run-a')
+            assert bounded['truncated'] and len(bounded['rows']) <= 2000
+            assert build_admin_public_result(bounded, tenant_id='tenant-a', run_id='run-a')['response'] == ''
+            service = RunDiagnosticsService(persistence=PostgresRunDiagnosticsRepository(), exception_log_fields=safe_exception_log_fields,
+                normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics, runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION)
+            search = await service.search_admin_evidence(conn, tenant_id='tenant-a', run_id='run-a', query='PRIVATE')
+            assert search['matches'] == [] and search['searched_source_count'] == 1000 and search['has_more']
+            assert await service.compare_admin_runs(conn, tenant_id='foreign', left_run_id='run-a', right_run_id='run-a') is None
+            comparison = await service.compare_admin_runs(conn, tenant_id='tenant-a', left_run_id='run-a', right_run_id='run-a')
+            assert all(metric['difference'] is None for metric in comparison['metrics'])
+            assert comparison['results']['left']['coverage']['truncated']
+
+
+@pytest.mark.asyncio
+async def test_postgres_model_call_final_binding_survives_terminalization_and_stays_private():
+    from app.bootstrap.admin_run_evidence import configure_admin_run_evidence
+    from app.runs.infrastructure.model_call_evidence_postgres import append_model_call_evidence, get_recorded_model_call_binding
+    configure_admin_run_evidence()
+    async with _isolated_postgres_run() as (_dsn, _schema, _admin, conn):
+        async with conn.transaction():
+            await _seed_detail_attempt(conn)
+            call = {'call_id': 'mcall_' + 'a' * 32, 'state': 'started'}
+            await append_model_call_evidence(conn, tenant_id='tenant-a', run_id='run-a', attempt_id='attempt-a', evidence=call)
+            await conn.execute("update run_attempts set status='succeeded',owner_generation=owner_generation+1,finished_at=now() where id='attempt-a'")
+            assert await PostgresRunDiagnosticsRepository().get_execution_debug_binding(conn, run_id='run-a', attempt_id='attempt-a') is None
+            binding = await get_recorded_model_call_binding(conn, run_id='run-a', attempt_id='attempt-a', call_id=call['call_id'])
+            assert binding['tenant_id'] == 'tenant-a'
+            assert await get_recorded_model_call_binding(conn, run_id='run-a', attempt_id='another', call_id=call['call_id']) is None
+            await append_model_call_evidence(conn, tenant_id='tenant-a', run_id='run-a', attempt_id='attempt-a', evidence={**call,'state':'completed'})
+            cursor = await conn.execute("select sequence,visible_to_user from run_events order by sequence")
+            rows = list(await cursor.fetchall())
+            assert len(rows) == 2 and all(not row['visible_to_user'] for row in rows)
+            assert rows[0]['sequence'] < rows[1]['sequence']
+
+
+@pytest.mark.asyncio
+async def test_postgres_run_artifact_and_admitted_input_file_bindings_reject_other_scopes():
+    from app.artifacts.infrastructure.admin_run_access_postgres import get_admin_run_artifact
+    from app.files.infrastructure.admin_run_inputs_postgres import read_admin_run_input_files
+    async with _isolated_postgres_run() as (_dsn, _schema, _admin, conn):
+        async with conn.transaction():
+            await conn.execute("""insert into artifacts(id,tenant_id,run_id,artifact_type,label,content_type,storage_key,size_bytes)
+                values('artifact-a','tenant-a','run-a','pdf','report.pdf','application/pdf','PRIVATE',10)""")
+            assert (await get_admin_run_artifact(conn, tenant_id='tenant-a', run_id='run-a', artifact_id='artifact-a'))['id'] == 'artifact-a'
+            assert await get_admin_run_artifact(conn, tenant_id='foreign', run_id='run-a', artifact_id='artifact-a') is None
+            assert await get_admin_run_artifact(conn, tenant_id='tenant-a', run_id='run-b', artifact_id='artifact-a') is None
+            await conn.execute("""insert into files(id,tenant_id,workspace_id,user_id,session_id,run_id,original_name,content_type,storage_key,size_bytes,sha256)
+                values('file-a','tenant-a','workspace-a','user-a','session-a','run-a','input.pdf','application/pdf','PRIVATE-input',10,'synthetic')""")
+            await conn.execute("""insert into run_context_snapshots(id,tenant_id,workspace_id,user_id,session_id,run_id,included_file_ids)
+                values('snapshot-a','tenant-a','workspace-a','user-a','session-a','run-a','["file-a"]')""")
+            await conn.execute("""update runs set context_snapshot_id='snapshot-a',input_json='{"context_snapshot_id":"snapshot-a","context_snapshot":{"context_snapshot_id":"snapshot-a"}}' where id='run-a'""")
+            references = await read_admin_run_input_files(conn, tenant_id='tenant-a', run_id='run-a')
+            assert references[0]['file_id'] == 'file-a' and 'PRIVATE' not in json.dumps(references)
+            assert await read_admin_run_input_files(conn, tenant_id='foreign', run_id='run-a') == []
+            await conn.execute("update sessions set status='deleted' where id='session-a'")
+            assert await get_admin_run_artifact(conn, tenant_id='tenant-a', run_id='run-a', artifact_id='artifact-a') is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_run_trigger_is_atomic_private_and_not_read_from_historical_input():
+    from app.bootstrap.admin_run_evidence import configure_admin_run_evidence
+    from app.runs.infrastructure.creation_postgres import create_run
+    from app.runs.application.admin_run_inspection import build_admin_run_inspection
+    configure_admin_run_evidence()
+    async with _isolated_postgres_run() as (_dsn, _schema, _admin, conn):
+        async with conn.transaction():
+            repository = PostgresRunDiagnosticsRepository()
+            await conn.execute("""update runs set input_json='{"_trusted_run_source":{"version":1,"source":"copy"}}'
+                where id='run-a'""")
+            historical = await repository.get_admin_inspection_facts(conn, tenant_id='tenant-a', run_id='run-a')
+            assert '_trusted_run_source' not in historical['input']
+            for source in ('chat_api', 'direct_skill', 'copy', 'retry', 'resume'):
+                run_id = await create_run(conn, tenant_id='tenant-a', workspace_id='workspace-a',
+                    session_id='session-a', user_id='user-a', agent_id='agent-a', skill_id='skill-a',
+                    input_json={'_trusted_run_source': {'version': 1, 'source': 'copy'}}, trigger_source=source)
+                facts = await repository.get_admin_inspection_facts(conn, tenant_id='tenant-a', run_id=run_id)
+                inspection = build_admin_run_inspection({'run_id': run_id}, skills=[],
+                    relationships=facts['relationships'], input_value=facts['input'])
+                assert inspection['trigger'] == {'kind': source, 'coverage': 'recorded'}
+                cursor = await conn.execute("""select r.input_json, e.visible_to_user, e.payload_json from runs r
+                    join run_events e on e.tenant_id=r.tenant_id and e.run_id=r.id
+                    where r.id=%s and e.event_type='run_trigger_recorded'""", (run_id,))
+                rows = list(await cursor.fetchall())
+                assert len(rows) == 1 and rows[0]['visible_to_user'] is False
+                assert rows[0]['input_json'] == {}
+                assert rows[0]['payload_json'] == {'version': 1, 'source': source}
+            with pytest.raises(ValueError, match='run_trigger_source_invalid'):
+                await create_run(conn, tenant_id='tenant-a', workspace_id='workspace-a',
+                    session_id='session-a', user_id='user-a', agent_id='agent-a', skill_id='skill-a',
+                    input_json={}, run_id='invalid-trigger', trigger_source='client_invented')
+            assert await (await conn.execute("select 1 from runs where id='invalid-trigger'")).fetchone() is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_search_never_loads_private_or_oversized_payloads_and_advances_cursor():
+    async with _isolated_postgres_run() as (_dsn, _schema, _admin, conn):
+        async with conn.transaction():
+            payload = json.dumps({'private': 'PRIVATE_LARGE' * 10000})
+            for sequence, visible in ((1, True), (2, False)):
+                await conn.execute("""insert into run_events(id,tenant_id,run_id,sequence,event_type,stage,visible_to_user,payload_json)
+                    values(%s,'tenant-a','run-a',%s,'custom','worker',%s,%s::jsonb)""",
+                    ('large-'+str(sequence),sequence,visible,payload))
+            repository = PostgresRunDiagnosticsRepository()
+            rows = await repository.get_admin_evidence_page(conn,tenant_id='tenant-a',run_id='run-a',after_sequence=0,limit=1001)
+            assert [row['payload_json'] for row in rows] == [{},{}]
+            assert [row['payload_omitted'] for row in rows] == [True,False]
+            service = RunDiagnosticsService(persistence=repository,exception_log_fields=safe_exception_log_fields,
+                normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION)
+            result = await service.search_admin_evidence(conn,tenant_id='tenant-a',run_id='run-a',query='PRIVATE_LARGE')
+            assert result['matches'] == [] and result['payload_omitted_count'] == 1
+            assert result['next_after_sequence'] == 2

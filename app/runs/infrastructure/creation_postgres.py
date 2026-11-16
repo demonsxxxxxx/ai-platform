@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.auth import normalize_roles
+from app.runs.domain.trigger_source import RUN_TRIGGER_INPUT_KEY, validate_run_trigger
+from app.streaming.api import append_run_trigger
 from app.control_plane_contracts import EXECUTOR_RESULT_SCHEMA_VERSION
 from app.control_plane_contracts import RUN_CONTRACT_VERSION
 from app.control_plane_contracts import RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -79,7 +81,11 @@ async def create_run(
     run_id: str | None = None,
     admitted_agent_profile_revision: int | None = None,
     admitted_agent_profile_hash: str | None = None,
+    trigger_source: str | None = None,
 ) -> str:
+    source = trigger_source or ("direct_skill" if skill_id else "direct_api")
+    validate_run_trigger(source)
+    input_json = {key: value for key, value in input_json.items() if key != RUN_TRIGGER_INPUT_KEY}
     _require_json_size(
         input_json, max_bytes=RUN_INPUT_MAX_BYTES, code="run_input_too_large"
     )
@@ -157,6 +163,7 @@ async def create_run(
     row = await cursor.fetchone()
     if row is None:
         raise RepositoryNotFoundError("session_not_found")
+    await append_run_trigger(conn, tenant_id=tenant_id, run_id=resolved_run_id, source=source)
     return resolved_run_id
 
 
