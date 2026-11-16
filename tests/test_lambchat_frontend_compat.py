@@ -101,6 +101,10 @@ def empty_authorized_history_messages(monkeypatch):
         max_history_sequence_bounds,
         raising=False,
     )
+    async def legacy_continuation(conn, *, tenant_id, user_id, session_id):
+        return None
+
+    monkeypatch.setattr("app.routes.lambchat_compat.get_session_continuation", legacy_continuation)
 
 
 @pytest.mark.asyncio
@@ -728,12 +732,14 @@ def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
     assert "旧自定义翻译" not in str(response.json())
 
 
-def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
+@pytest.mark.parametrize("group_id", ["group-selected", None])
+def test_lambchat_session_detail_projects_public_agent_id(monkeypatch, group_id):
     async def fake_get_authorized_lambchat_session(
         conn, *, tenant_id, user_id, session_id
     ):
         assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_review")
         return {
+            "latest_model_selection": {"model_id": "model-a", "model": "provider/model-a", "group_id": group_id, "private_secret": "must-not-project"},
             "id": session_id,
             "agent_id": "qa-word-review",
             "workspace_id": "default",
@@ -757,6 +763,9 @@ def test_lambchat_session_detail_projects_public_agent_id(monkeypatch):
     payload = response.json()
     assert payload["agent_id"] == "document-review"
     assert payload["metadata"]["agent_id"] == "document-review"
+    assert payload["metadata"]["agent_options"] == {"model_id": "model-a", "model": "provider/model-a",
+                                                   "selection_mode": "explicit", **({"group_id": group_id} if group_id else {})}
+    assert "must-not-project" not in str(payload)
     assert "qa-word-review" not in str(payload)
 
 
@@ -914,7 +923,8 @@ def test_lambchat_model_catalog_is_scoped_to_the_authenticated_principal(monkeyp
 
     seen: list[str] = []
 
-    async def catalog(_conn, *, user_id):
+    async def catalog(_conn, *, user_id, tenant_id, usage_scene, group_id):
+        assert (tenant_id, usage_scene, group_id) == ("default", "chat", None)
         seen.append(user_id)
         return {
             "models": [], "count": 0, "enabled_count": 0,
@@ -930,6 +940,22 @@ def test_lambchat_model_catalog_is_scoped_to_the_authenticated_principal(monkeyp
 
     assert response.status_code == 200
     assert seen == ["user-a"]
+
+
+@pytest.mark.parametrize("code,status", [("group_not_available",403),("group_disabled",403),
+                                        ("group_has_no_models",403),("group_models_unavailable",503),
+                                        ("model_policy_changed",409)])
+def test_lambchat_model_group_denials_are_safe_http_errors(monkeypatch, code, status):
+    from app.execution.domain.model_groups import ModelGroupPolicyError
+    async def denied(_conn, **kwargs):
+        assert kwargs["usage_scene"] == "chat"
+        raise ModelGroupPolicyError(code)
+    monkeypatch.setattr("app.routes.lambchat_compat.list_public_models", denied)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    response = TestClient(create_app()).get("/api/agent/models/available", headers=auth_headers())
+    assert response.status_code == status
+    assert response.json() == {"detail": code}
 
 
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
@@ -2370,6 +2396,7 @@ def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_reject
         "run_id": "run-old",
         "status": "completed",
         "raw_status": "succeeded",
+        "continuation": None,
     }
     assert wrong_session.status_code == 404
     assert wrong_user.status_code == 404
@@ -4389,3 +4416,41 @@ def test_lambchat_session_event_pages_preserve_large_v4_history_and_compaction(
     ]
     assert message_queries == ["run-old", "run-new"]
     assert "<late-after-snapshot>" not in str(compact_events)
+
+
+@pytest.mark.parametrize("state,action", [
+    ("settling", "wait"), ("resumable", "continue"),
+    ("recovery_candidate", "continue"), ("blocked", "new_conversation"),
+])
+def test_session_status_projects_context_continuation_after_owner_authorization(monkeypatch, state, action):
+    calls = []
+    projection = dict(state=state, action=action, reason_code="native_ready",
+                      workspace_saved=state in {"resumable", "recovery_candidate"})
+
+    async def session(conn, *, tenant_id, user_id, session_id):
+        calls.append("session")
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        return {"id": session_id}
+
+    async def run(conn, *, tenant_id, user_id, run_id):
+        calls.append("run")
+        return {"id": run_id, "session_id": "ses_a", "status": "cancelled"}
+
+    async def continuation(conn, *, tenant_id, user_id, session_id):
+        assert calls == ["session", "run"]
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        calls.append("continuation")
+        return projection
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.get_authorized_lambchat_session", session)
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", run)
+    monkeypatch.setattr("app.routes.lambchat_compat.get_session_continuation", continuation)
+    response = TestClient(create_app()).get(
+        "/api/chat/sessions/ses_a/status?run_id=run-a", headers=auth_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json()["continuation"] == projection
+    assert response.json()["raw_status"] == "cancelled"
+    assert calls == ["session", "run", "continuation"]

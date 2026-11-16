@@ -463,9 +463,11 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["copy", "retry", "resume"])
+@pytest.mark.parametrize("source_kind", ["legacy", "harness", "harness_documents"])
 async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless_harness(
     monkeypatch,
     operation,
+    source_kind,
 ):
     source = {
         "id": "run-legacy",
@@ -488,6 +490,14 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         },
     }
     calls = {}
+
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_INPUT_KEY, DOCUMENT_PLUGIN_REVISION
+    if source_kind != "legacy":
+        source.update(execution_kind="harness_chat", skill_id=None)
+        source["input_json"]["schema_version"] = "ai-platform.run-payload.v2"
+        source["input_json"]["execution_kind"] = "harness_chat"
+    if source_kind == "harness_documents":
+        source["input_json"]["input"][DOCUMENT_PLUGIN_INPUT_KEY] = DOCUMENT_PLUGIN_REVISION
 
     async def get_source(*args, **kwargs):
         return source
@@ -545,7 +555,7 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     assert copied["execution_kind"] == "harness_chat"
     assert copied["skill_id"] is None
     assert copied["schema_version"] == "ai-platform.run-payload.v2"
-    assert copied["skill_version"] is None
+    assert copied["skill_version"] == (None if source_kind == "legacy" else "")
     assert copied["release_decision"] == {}
     assert copied["skill_manifests"] == []
     assert copied["file_ids"] == ["file-prior"]
@@ -559,6 +569,12 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     persisted_input = json.loads(insert_params[19])
     assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
     assert persisted_input["skill_manifests"] == []
+    if source_kind == "harness_documents":
+        assert copied["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
+        assert persisted_input["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
+    else:
+        assert DOCUMENT_PLUGIN_INPUT_KEY not in copied["input"]
+        assert DOCUMENT_PLUGIN_INPUT_KEY not in persisted_input["input"]
 
 
 @pytest.mark.asyncio

@@ -57,8 +57,12 @@ export interface ChatInputProps {
   runControlKey?: string | null;
   disabled?: boolean;
   canSend?: boolean;
+  /** Why sending is blocked when `canSend` is false; only "permission" shows the lock. */
+  sendBlockedReason?: "permission" | "loadingHistory" | "synchronizing" | "continuation";
   /** Optional product-specific prompt for a locked composer surface. */
   placeholder?: string;
+  /** Model readiness blocks sending, not editing or attachment drafts. */
+  modelUnavailableReason?: string;
   /** Undefined preserves ordinary Chat uploads; an array scopes Agent uploads. */
   acceptedFileTypes?: string[];
   /** Agent workspaces use plain task input and do not expose composer commands. */
@@ -87,6 +91,7 @@ export interface ChatInputProps {
   availableModels?: ModelOption[];
   currentModelId?: string;
   onSelectModel?: (modelId: string, modelValue: string) => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   attachments?: MessageAttachment[];
   onAttachmentsChange?: (
     attachments:

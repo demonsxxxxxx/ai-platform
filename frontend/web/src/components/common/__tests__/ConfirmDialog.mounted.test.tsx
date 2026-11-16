@@ -8,6 +8,18 @@ test.after(() => dom.close());
 const { act, createElement, useState } = await import("react");
 const { ConfirmDialog } = await import("../ConfirmDialog");
 
+test("confirmation renders a persistent operation error inside its dialog", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    await act(async () => root.render(createElement(ConfirmDialog, {
+      isOpen: true, title: "Synthetic confirmation", message: "Synthetic action",
+      error: "操作失败，请重试。", onConfirm: () => {}, onCancel: () => {},
+    })));
+    assert.equal(container.querySelector('[role="dialog"] [role="alert"]')!.textContent, "操作失败，请重试。");
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 test("confirmation locks dismissal while busy and restores the external trigger after Escape", async () => {
   const container = document.createElement("div");
   document.body.append(container);
@@ -37,7 +49,12 @@ test("confirmation locks dismissal while busy and restores the external trigger 
     await act(async () => { trigger.focus(); trigger.click(); });
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
     assert.ok(dialog, "library portal stays inside the theme host");
-    assert.ok(dialog.contains(document.activeElement));
+    // The dialog library moves focus asynchronously after mount; slower runners
+    // observe the opener still focused on the first tick. Bound the wait.
+    for (let waited = 0; !dialog.contains(document.activeElement) && waited < 1000; waited += 20) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    }
+    assert.ok(dialog.contains(document.activeElement), "opening moves focus into the dialog");
     const buttons = dialog.querySelectorAll<HTMLButtonElement>("button");
     await act(async () => buttons[1].click());
     assert.equal(confirmed, 1);

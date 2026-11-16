@@ -152,6 +152,7 @@ export function useSkillsActions(options?: {
 
   // Delete confirmation
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteConfirmData, setDeleteConfirmData] = useState<{
     name: string;
   } | null>(null);
@@ -197,6 +198,7 @@ export function useSkillsActions(options?: {
     const owner = ++formGeneration.current;
     setShowModal(false);
     setEditingSkill(null);
+    clearError();
     const fullSkill = await getSkill(skill.name);
     if (owner !== formGeneration.current) return;
     if (!fullSkill) {
@@ -256,6 +258,7 @@ export function useSkillsActions(options?: {
   };
 
   const handleDelete = (name: string) => {
+    setDeleteError(null);
     setDeleteConfirmData({ name });
     setIsDeleteConfirmOpen(true);
   };
@@ -263,9 +266,10 @@ export function useSkillsActions(options?: {
   const confirmDelete = async () => {
     if (!deleteConfirmData) return;
     const skillName = deleteConfirmData.name;
+    setDeleteError(null);
     const archived = await deleteSkill(skillName);
     if (!archived) {
-      toast.error(t("skills.deleteFailed"));
+      setDeleteError(t("skills.deleteFailed"));
       return;
     }
     const archivedEntries = resolveArchivedSkillCatalogEntries(
@@ -289,6 +293,7 @@ export function useSkillsActions(options?: {
   };
 
   const cancelDelete = () => {
+    setDeleteError(null);
     setIsDeleteConfirmOpen(false);
     setDeleteConfirmData(null);
   };
@@ -387,6 +392,7 @@ export function useSkillsActions(options?: {
 
   // ZIP upload handlers
   const handleZipClick = (targetSkillName?: string) => {
+    clearError();
     setZipFile(null);
     setZipSkills([]);
     setSelectedZipSkills([]);
@@ -673,6 +679,7 @@ export function useSkillsActions(options?: {
 
     // Delete confirm
     isDeleteConfirmOpen,
+    deleteError,
     deleteConfirmData,
     isDeleting,
     confirmDelete,

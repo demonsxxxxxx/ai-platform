@@ -5,6 +5,8 @@ from app.streaming.domain.public_execution import (
     PublicExecutionV2Projector,
     public_execution_event_from_row,
 )
+from app import control_plane_contracts
+from app.runtime import event_bridge
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import AgentEvent
 
@@ -43,6 +45,40 @@ def test_agent_event_to_executor_event_hides_admin_only_events_from_ordinary_use
     assert converted["stage"] == "browser"
     assert converted["payload"]["visible_to_user"] is False
     assert converted["payload"]["admin_only"] is True
+
+
+def test_v4_bridge_leaves_candidate_redaction_and_schema_validation_as_owner(monkeypatch):
+    sanitization_calls = []
+
+    def counted_sanitize(value):
+        sanitization_calls.append(value)
+        return control_plane_contracts.sanitize_public_payload(value)
+
+    monkeypatch.setattr(event_bridge, "sanitize_public_payload", counted_sanitize)
+    converted = agent_event_to_executor_event(
+        AgentEvent(
+            type="tool.started",
+            message="",
+            payload={
+                "operation_id": "op-a",
+                "category": "read",
+                "display_name": "Read",
+            },
+            event_id="evt-a",
+            run_id="run-a",
+            message_id="msg-a",
+        )
+    )
+
+    assert converted["event_type"] == "tool.started"
+    assert converted["payload"] == {
+        "operation_id": "op-a",
+        "category": "read",
+        "display_name": "Read",
+    }
+    # The candidate checks identity fields and structured payload once each.
+    # The bridge keeps only its message-correlation and private-event rules.
+    assert len(sanitization_calls) == 2
 
 
 @pytest.mark.parametrize("event_type", ["intent_detected", "skill_selected", "skill_used"])

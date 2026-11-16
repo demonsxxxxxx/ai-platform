@@ -127,6 +127,13 @@ Pure Runs policy owns:
 - typed `RunTerminalizationProgress` semantics;
 - safe terminal result/error projection rules.
 
+`RunTerminalizationProgress` exposes `completed`, `status`, and `did_transition`
+as typed fields; mapping-style `get` compatibility is retired. The Runs API
+continues to export this value. `is_terminal(requested_status)` and truthiness
+retain terminal-status checks; `did_transition` remains the separate fact that
+the current attempt won the durable transition. This is an in-process value,
+not a persisted-record or HTTP response schema.
+
 Public sanitization uses an explicit stable public contract. Raw child result,
 error, dispatch metadata, storage identity, command, secret, or private path
 never becomes a Run event merely because it was present in a database record.
@@ -301,14 +308,19 @@ The barriers remain separate:
   existing stale/CAS classification; bootstrap selects the decorator without
   changing its public constructor or contract. A `skipped` status is not a newly
   written result. Existing SDK-placeholder lease bookkeeping remains inside the
-  commit; later physical reconciler sandbox stop/release is outside it.
+  commit. Continuation-capable Claude Attempts require exact provider stop and
+  private workspace save before this business transaction; Context/Run terminal
+  facts and lease release share its fence. Other cleanup-only provider work stays
+  outside the business transaction.
 
 `result_business_publication` measures Worker publication after the unchanged
 commit and release-flag update. The separate `terminal_receipt_publication` span
 observes callback-row publication only. Neither proves frontend receipt/history
 or artifact download visibility. `reconciler_provider_stop` measures provider stop
-between claim verification and lease finalization, after business terminality;
-it excludes those two transactions and can delay the next serial reconciliation.
+between claim verification and lease finalization. For continuation-capable Claude
+Attempts it precedes private save and business terminality; a later cleanup-only
+stop may follow terminality. The span excludes the surrounding transactions and
+can delay the next serial reconciliation.
 Existing `reconciler_result_conversion` remains the artifact-path screening span;
 no per-file payload, upload-only claim or new tracing system is introduced.
 

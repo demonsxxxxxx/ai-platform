@@ -84,5 +84,8 @@ test("session file projection remains authoritative without a duplicate side car
   );
   assert.doesNotMatch(chatView, /files=\{visibleWorkspaceProjection\.files\}/);
   assert.match(chatView, /onProfileDriveFileImported=\{handleProfileDriveFileImported\}/);
-  assert.doesNotMatch(chatView, /<WorkbenchRightPanel[\s\S]{0,400}attachments=\{attachments\}/);
+  assert.match(chatView, /<WorkbenchRightPanel[\s\S]{0,400}attachments=\{attachments\}/);
+  assert.match(chatView, /onRemoveAttachment=\{uploadControls\.removeAttachment\}/);
+  assert.match(chatView, /profileDriveReference: reference/);
+  assert.match(chatView, /attachments\.find\(\(item\) => item\.profileDriveReference/);
 });

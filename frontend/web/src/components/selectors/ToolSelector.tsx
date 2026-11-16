@@ -1,8 +1,7 @@
 import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
 import { Table } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Wrench,
@@ -14,10 +13,11 @@ import {
   Container,
   X,
   Info,
-  Plus,
+  Search,
 } from "lucide-react";
 import { Checkbox } from "@lobehub/ui/base-ui";
 import type { ToolState, ToolCategory } from "../../types";
+import { groupKeyForTool, groupLabelForTool } from "./toolGrouping";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
 import {
   canSelectChatMcpTools,
@@ -29,12 +29,10 @@ interface ToolSelectorProps {
   tools: ToolState[];
   onToggleTool: (toolName: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
-  onToggleAll: (enabled: boolean) => void;
   enabledCount: number;
   totalCount: number;
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
-  searchSeed?: string;
 }
 
 type LabeledToolState = ToolState & { label?: string };
@@ -53,7 +51,6 @@ const categoryIcons: Record<ToolCategory, typeof Bot> = {
 
 export interface ChatMcpCatalogNotice {
   titleKey: string;
-  detailKeys: string[];
   retryable: boolean;
 }
 
@@ -63,17 +60,17 @@ export function getChatMcpCatalogNotice(
 ): ChatMcpCatalogNotice | null {
   switch (catalogState.status) {
     case "loading":
-      return { titleKey: "tools.catalog.loading", detailKeys: [], retryable: false };
+      return { titleKey: "tools.catalog.loading", retryable: false };
     case "empty":
-      return { titleKey: "tools.catalog.empty", detailKeys: [], retryable: false };
+      return { titleKey: "tools.catalog.empty", retryable: false };
     case "degraded":
       return {
-        titleKey: "tools.catalog.degraded",
-        detailKeys: [...new Set(catalogState.unavailable)].slice(0, 3),
-        retryable: false,
+        titleKey: catalogState.unavailable.some((service) => service.reasonKey === "tools.catalog.unavailable.noTools")
+          ? "tools.catalog.unavailableSummary" : "tools.catalog.degraded",
+        retryable: true,
       };
     case "error":
-      return { titleKey: "tools.catalog.error", detailKeys: [], retryable: true };
+      return { titleKey: "tools.catalog.error", retryable: true };
     case "ready":
       return null;
   }
@@ -83,23 +80,23 @@ export function ToolSelector({
   tools,
   onToggleTool,
   onToggleCategory,
-  onToggleAll,
   enabledCount,
   totalCount,
   isOpen: externalIsOpen,
   onOpenChange: externalOnOpenChange,
-  searchSeed,
 }: ToolSelectorProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { catalogState, retryTools } = useContext(ChatMcpCatalogContext);
   const catalogNotice = getChatMcpCatalogNotice(catalogState);
   const catalogAllowsSelection = canSelectChatMcpTools(catalogState.status);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const unavailableDetailsId = useId();
+  const [unavailableDetailsOpen, setUnavailableDetailsOpen] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<
     Set<ToolCategory>
   >(new Set(["mcp"]));
@@ -110,23 +107,29 @@ export function ToolSelector({
   });
 
   useEffect(() => {
-    if (!isOpen || searchSeed === undefined) return;
-    setSearchQuery(searchSeed);
-  }, [isOpen, searchSeed]);
+    if (!isOpen) {
+      setExpandedGroups(new Set());
+      setUnavailableDetailsOpen(false);
+    }
+  }, [isOpen]);
 
-  // 按类别分组，每组内按工具名称排序 - 使用 useMemo 缓存计算结果
+  // Search the translated unknown-source label as well as the public tool fields.
   const filteredTools = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
     if (!normalized) return tools;
+    const unknownSource = t("tools.unknownSource").toLowerCase();
     return tools.filter(
       (tool) =>
         tool.name.toLowerCase().includes(normalized) ||
         publicToolLabel(tool).toLowerCase().includes(normalized) ||
         tool.description.toLowerCase().includes(normalized) ||
         tool.category.toLowerCase().includes(normalized) ||
-        (tool.server ?? "").toLowerCase().includes(normalized),
+        (tool.server ?? "").toLowerCase().includes(normalized) ||
+        (tool.upstream_server ?? "").toLowerCase().includes(normalized) ||
+        (groupLabelForTool(tool) ?? "").toLowerCase().includes(normalized) ||
+        (groupLabelForTool(tool) === null && unknownSource.includes(normalized)),
     );
-  }, [searchQuery, tools]);
+  }, [searchQuery, t, tools]);
 
   const groupedTools = useMemo(
     () =>
@@ -143,15 +146,21 @@ export function ToolSelector({
     [filteredTools],
   );
 
-  // Sort tools within each category by name
+  // Keep MCP groups adjacent and stable while preserving the existing category order.
   const sortedGroupedTools = useMemo(() => {
     const sorted: Record<string, ToolState[]> = {};
     for (const [category, categoryTools] of Object.entries(groupedTools)) {
-      sorted[category] = [...categoryTools].sort((a, b) =>
-        publicToolLabel(a)
+      sorted[category] = [...categoryTools].sort((a, b) => {
+        if (category === "mcp") {
+          const firstGroup = groupKeyForTool(a);
+          const secondGroup = groupKeyForTool(b);
+          if (firstGroup < secondGroup) return -1;
+          if (firstGroup > secondGroup) return 1;
+        }
+        return publicToolLabel(a)
           .toLowerCase()
-          .localeCompare(publicToolLabel(b).toLowerCase()),
-      );
+          .localeCompare(publicToolLabel(b).toLowerCase());
+      });
     }
     return sorted;
   }, [groupedTools]);
@@ -186,6 +195,25 @@ export function ToolSelector({
     onToggleTool(tool.name);
   };
 
+  const handleGroupToggle = (groupTools: readonly ToolState[]) => {
+    if (!catalogAllowsSelection) return;
+    const selectable = groupTools.filter((tool) => !tool.system_disabled);
+    const enable = selectable.some((tool) => !tool.enabled);
+    selectable.forEach((tool) => {
+      if (tool.enabled !== enable) onToggleTool(tool.name);
+    });
+  };
+
+  const toggleGroupExpand = (groupKey: string) => {
+    setExpandedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
+  const hasSearchQuery = searchQuery.trim().length > 0;
+
   // Keep the modal subtree mounted when search or expansion state changes.
   const modalContent = (
     <div
@@ -193,73 +221,29 @@ export function ToolSelector({
       className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden sm:min-h-0 sm:max-h-[80vh]"
       data-composer-mcp-selector
     >
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b"
-        style={{ borderColor: "var(--theme-border)" }}
-      >
-        {/* Mobile drag handle */}
-        <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
-        <div className="flex items-center gap-3 mt-2 sm:mt-0">
-          <div className="size-9 sm:size-10 rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)] flex items-center justify-center">
-            <Wrench
-              size={16}
-              className="text-[var(--theme-text-secondary)] sm:w-[18px] sm:h-[18px]"
-            />
-          </div>
-          <div>
+      {/* Header and search stay together above the scrolling catalog. */}
+      <div className="shrink-0 space-y-3 border-b border-[var(--theme-border)] px-4 py-3 sm:px-5 sm:py-4" data-tool-selector-header>
+        <div className="flex items-center justify-between gap-3">
+          {/* Mobile drag handle */}
+          <div className="absolute left-1/2 -translate-x-1/2 top-2 w-10 h-1 rounded-full bg-[var(--theme-border)] sm:hidden" />
+          <div className="mt-2 flex min-w-0 flex-wrap items-baseline gap-2 sm:mt-0">
             <ModalTitle>{t("tools.title")}</ModalTitle>
-            <p className="text-xs sm:text-xs text-[var(--theme-text-secondary)]">
+            <p className="text-xs text-[var(--theme-text-secondary)]">
               {t("tools.selected", {
                 enabled: enabledCount,
                 total: totalCount,
               })}
             </p>
           </div>
+          <Button type="text"
+            aria-label={t("common.close")}
+            onClick={() => setIsOpen(false)}
+            className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
+          >
+            <X size={18} />
+          </Button>
         </div>
-        <Button type="text"
-          aria-label={t("common.close")}
-          onClick={() => setIsOpen(false)}
-          className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
-        >
-          <X size={18} />
-        </Button>
-      </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
-        <Button type="text"
-          htmlType="button"
-          disabled={!catalogAllowsSelection}
-          onClick={() => onToggleAll(true)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t("tools.selectAll")}
-        </Button>
-        <div className="w-px h-4 bg-[var(--theme-border)]" />
-        <Button type="text"
-          htmlType="button"
-          disabled={!catalogAllowsSelection}
-          onClick={() => onToggleAll(false)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t("tools.deselectAll")}
-        </Button>
-        <div className="flex-1" />
-        <Button type="text"
-          htmlType="button"
-          onClick={() => {
-            setIsOpen(false);
-            navigate("/mcp");
-          }}
-          className="flex items-center gap-1 px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
-        >
-          <Plus size={14} />
-          <span>{t("tools.add")}</span>
-        </Button>
-      </div>
-
-      <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
         <Input
           type="text"
           value={searchQuery}
@@ -267,37 +251,43 @@ export function ToolSelector({
           autoFocus
           aria-label={t("tools.searchPlaceholder", "Search tools")}
           placeholder={t("tools.searchPlaceholder", "Search tools")}
-          className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+          size="large"
+          prefix={<Search size={16} />}
         />
       </div>
 
       {/* Categories */}
-      <div className="flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3 space-y-1.5" data-tool-selector-list>
         {catalogNotice && (
           <div
             aria-live="polite"
-            className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 text-center"
+            className="px-2 py-1 text-xs text-[var(--theme-text-secondary)]"
             data-mcp-catalog-status={catalogState.status}
           >
-            <p className="text-sm font-medium text-[var(--theme-text)]">
-              {t(catalogNotice.titleKey)}
-            </p>
-            {catalogNotice.detailKeys.map((detailKey) => (
-              <p
-                key={detailKey}
-                className="mt-1 text-xs text-[var(--theme-text-secondary)]"
-              >
-                {t(detailKey)}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <p className="min-w-0 flex-1">
+                {t(catalogNotice.titleKey, { count: catalogState.unavailable.length })}
+                {catalogState.status === "degraded" && totalCount > 0 ? ` ${t("tools.catalog.othersAvailable")}` : ""}
               </p>
-            ))}
-            {catalogNotice.retryable && retryTools ? (
-              <Button type="text"
-                htmlType="button"
-                onClick={retryTools}
-                className="mt-3 px-3 py-2 text-xs font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
-              >
-                {t("tools.catalog.retry")}
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {catalogState.status === "degraded" ? <Button type="text" size="small"
+                  htmlType="button" aria-expanded={unavailableDetailsOpen} aria-controls={unavailableDetailsId}
+                  onClick={() => setUnavailableDetailsOpen((open) => !open)}>
+                  {t(unavailableDetailsOpen ? "tools.catalog.hideDetails" : "tools.catalog.showDetails")}
+                </Button> : null}
+                {catalogNotice.retryable && retryTools ? <Button type="text" size="small"
+                  htmlType="button" onClick={retryTools}>
+                  {t("tools.catalog.retry")}
+                </Button> : null}
+              </div>
+            </div>
+            {catalogState.status === "degraded" ? (
+              <ul id={unavailableDetailsId} hidden={!unavailableDetailsOpen} aria-label={t("tools.catalog.detailsLabel")} className="mt-2 space-y-2 border-t border-[var(--theme-border)] pt-2">
+                {catalogState.unavailable.map((service, index) => <li key={index} className="break-words">
+                  <span className="font-medium text-[var(--theme-text)]">{service.label ?? t("tools.catalog.unnamedService", { index: index + 1 })}</span>
+                  <span>：{t(service.reasonKey)}</span>
+                </li>)}
+              </ul>
             ) : null}
           </div>
         )}
@@ -355,14 +345,67 @@ export function ToolSelector({
                 {isExpanded && (
                   <div className="animate-[fade-in_150ms_ease-out]">
                     <div className="px-1 sm:px-2 pb-2 pt-1 space-y-0.5">
-                      {categoryTools.map((tool: ToolState) => {
+                      {categoryTools.map((tool: ToolState, toolIndex) => {
                         const isToolExpanded = expandedTools.has(tool.name);
+                        const groupKey = groupKeyForTool(tool);
+                        const groupCollapsed = !expandedGroups.has(groupKey) && !hasSearchQuery;
+                        const previousTool = categoryTools[toolIndex - 1];
+                        const isGroupStart = cat === "mcp" && (
+                          !previousTool || groupKeyForTool(previousTool) !== groupKey
+                        );
+                        const groupTools = isGroupStart
+                          ? categoryTools.filter((candidate) => groupKeyForTool(candidate) === groupKey)
+                          : [];
                         const hasParams =
                           tool.parameters && tool.parameters.length > 0;
 
                         return (
                           <div key={tool.name} className="group">
-                            {/* Tool Row */}
+                            {isGroupStart && (
+                              <div
+                                className="mb-1 mt-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2.5 py-2 first:mt-0"
+                                data-composer-mcp-group={groupKey}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                    aria-expanded={!groupCollapsed}
+                                    onClick={() => toggleGroupExpand(groupKey)}
+                                  >
+                                    <ChevronRight
+                                      size={14}
+                                      className={`shrink-0 text-[var(--theme-text-secondary)] transition-transform ${
+                                        groupCollapsed ? "" : "rotate-90"
+                                      }`}
+                                    />
+                                    <span className="truncate text-xs font-semibold text-[var(--theme-text)]">
+                                      {groupLabelForTool(tool) ?? t("tools.unknownSource")}
+                                    </span>
+                                    {tool.server && (
+                                      <span className="truncate rounded-md bg-[var(--theme-workbench-panel)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--theme-text-secondary)] sm:text-xs">
+                                        {tool.server}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] tabular-nums text-[var(--theme-text-secondary)]">
+                                      {groupTools.filter((candidate) => candidate.enabled).length}/{groupTools.length}
+                                    </span>
+                                  </button>
+                                  <Checkbox
+                                    aria-label={t("tools.toggleGroup", {
+                                      group: groupLabelForTool(tool) ?? t("tools.unknownSource"),
+                                    })}
+                                    checked={groupTools.some((candidate) => !candidate.system_disabled) && groupTools.filter((candidate) => !candidate.system_disabled).every((candidate) => candidate.enabled)}
+                                    onChange={() => handleGroupToggle(groupTools)}
+                                    disabled={!catalogAllowsSelection || groupTools.every((candidate) => candidate.system_disabled)}
+                                    onClick={(event) => event.stopPropagation()}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            {(cat !== "mcp" || !groupCollapsed) && (
+                              <>
+                              {/* Tool Row */}
                             <div
                               className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg cursor-pointer transition-all duration-150 ${
                                 tool.system_disabled
@@ -436,8 +479,8 @@ export function ToolSelector({
                               onClick={(event) => event.stopPropagation()} />
                             </div>
 
-                            {/* Parameters - Conditional Render */}
-                            {isToolExpanded && hasParams && (
+                              {/* Parameters - Conditional Render */}
+                              {isToolExpanded && hasParams && (
                               <div className="animate-[fade-in_150ms_ease-out]">
                                 <div className="mx-2 sm:mx-4 mb-1.5 sm:mb-2 rounded-lg border border-[var(--theme-border)] overflow-hidden">
                                   {/* Table Header */}
@@ -486,6 +529,8 @@ render: (_value, param) => (<>
                                   </div>
                                 </div>
                               </div>
+                              )}
+                              </>
                             )}
                           </div>
                         );
@@ -505,7 +550,7 @@ render: (_value, param) => (<>
       </div>
 
       {/* Footer */}
-      <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="shrink-0 px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <Button type="primary" block
           onClick={() => setIsOpen(false)}
         >

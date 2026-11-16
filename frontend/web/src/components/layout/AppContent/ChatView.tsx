@@ -36,10 +36,10 @@ import {
   ChatInput,
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
+import type { ChatInputProps } from "../../chat/chatInputTypes";
 import { RunInputHistory } from "../../chat/RunInputHistory";
 import { deriveRunInputSurface } from "../../chat/runInputSurface";
 import { WelcomePage } from "../../chat/WelcomePage";
-import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
 import { Virtuoso, type ListRange } from "react-virtuoso";
 import {
@@ -77,7 +77,7 @@ import type {
   MessageAttachment,
   ConnectionStatus,
 } from "../../../types";
-import type { AgentProfilePublicProjection } from "../../../types/agentProfile";
+import type { ChatPresentation } from "../../chat/chatPresentation";
 import type {
   StopGenerationResult,
   SubmissionOutcome,
@@ -139,6 +139,8 @@ import {
   sessionInputFileToAttachment,
 } from "./sessionInputFiles";
 import type { FileUploadControls } from "../../../hooks/useFileUpload";
+import { canContinueConversation, type PublicContinuation } from "../../../services/api/session";
+import { publicContinuationMessage } from "../../../hooks/useAgent/publicTerminalPresentation";
 import { uuid } from "../../../utils/uuid";
 
 const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";
@@ -161,6 +163,8 @@ interface ChatViewProps {
   conversationIdentityKey: string;
   currentRunId: string | null;
   runInputs?: RunInputsController;
+  continuation?: PublicContinuation;
+  continuationPending?: boolean;
   canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -169,10 +173,11 @@ interface ChatViewProps {
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
+  modelUnavailableReason?: string;
   initialComposerDraft?: string;
   initialComposerDraftKey?: string;
   composerDraftHandoffKey?: string | null;
-  agentEmptyProfile?: AgentProfilePublicProjection;
+  presentation?: ChatPresentation;
   tools: ToolState[];
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
@@ -198,6 +203,7 @@ interface ChatViewProps {
   availableModels: ModelOption[];
   currentModelId: string;
   onSelectModel: (modelId: string, modelValue: string) => void;
+  onModelSelectorOpen?: () => void | Promise<unknown>;
   onSendMessage: (
     content: string,
     options?: Record<string, boolean | string | number>,
@@ -235,6 +241,8 @@ export function ChatView({
   conversationIdentityKey,
   currentRunId,
   runInputs,
+  continuation,
+  continuationPending = false,
   canStopGeneration,
   isLoading,
   isLoadingHistory,
@@ -243,10 +251,11 @@ export function ChatView({
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
+  modelUnavailableReason,
   initialComposerDraft,
   initialComposerDraftKey,
   composerDraftHandoffKey,
-  agentEmptyProfile,
+  presentation,
   tools,
   onToggleTool,
   onToggleCategory,
@@ -269,6 +278,7 @@ export function ChatView({
   availableModels,
   currentModelId,
   onSelectModel,
+  onModelSelectorOpen,
   onSendMessage,
   canRetryPendingSubmission,
   onRetryPendingSubmission,
@@ -339,8 +349,20 @@ export function ChatView({
   const terminalResultSynchronizing = messages.some(
     (message) => message.role === "assistant" && message.isSynchronizing,
   );
+  const continuationBlocksSend = continuationPending || !canContinueConversation(continuation);
+  const continuationMessage = publicContinuationMessage(continuation, continuationPending);
   const canSendInCurrentView =
-    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing;
+    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing && !continuationBlocksSend;
+  // A temporary wait must not read as a missing permission.
+  const sendBlockedReason: ChatInputProps["sendBlockedReason"] = !canSendMessage
+    ? "permission"
+    : isLoadingHistory
+      ? "loadingHistory"
+      : terminalResultSynchronizing
+        ? "synchronizing"
+        : continuationBlocksSend
+          ? "continuation"
+          : undefined;
   // The authorized pending batch, not a route flag, owns question mode. A closed
   // or accepted batch leaves no pending answer, so the ordinary composer returns
   // with its draft and attachments untouched.
@@ -385,6 +407,8 @@ export function ChatView({
     handleVirtuosoAtBottomChange,
     scrollToBottom,
     scrollToTop,
+    followOutput,
+    anchoredReplyIndex,
   } = useMessageScroll(
     messages,
     sessionId,
@@ -742,6 +766,15 @@ export function ChatView({
   const handleProfileDriveFileDrop = useCallback(
     async (reference: ProfileDriveFileReference) => {
       const requestKey = `${sessionId ?? "new"}\u0000${reference.source_id}\u0000${reference.path}`;
+      const existing = attachments.find((item) => item.profileDriveReference?.source_id === reference.source_id && item.profileDriveReference.path === reference.path);
+      if (existing) {
+        if (existing.isUploading) return;
+        return {
+          file_id: existing.key, run_id: null, name: existing.name,
+          mime_type: existing.mimeType, size_bytes: existing.size,
+          preview_url: existing.url ?? null, download_url: existing.downloadUrl ?? existing.url ?? "",
+        } satisfies SessionInputFile;
+      }
       if (profileDriveDropInFlightRef.current.has(requestKey)) return;
       profileDriveDropInFlightRef.current.add(requestKey);
       const pendingId = `profile-drive-${uuid()}`;
@@ -754,6 +787,7 @@ export function ChatView({
         size: 0,
         isUploading: true,
         uploadStatus: "uploading",
+        profileDriveReference: reference,
       };
       onAttachmentsChange((current) => [...current, pendingAttachment]);
       try {
@@ -774,7 +808,7 @@ export function ChatView({
               : current,
           );
         }
-        const attachment = sessionInputFileToAttachment(file);
+        const attachment = { ...sessionInputFileToAttachment(file), profileDriveReference: reference };
         onAttachmentsChange((current) =>
           current.map((item) => (item.id === pendingId ? attachment : item)),
         );
@@ -800,7 +834,7 @@ export function ChatView({
         profileDriveDropInFlightRef.current.delete(requestKey);
       }
     },
-    [onAttachmentsChange, sessionId, t],
+    [attachments, onAttachmentsChange, sessionId, t],
   );
 
   const handleProfileDriveDragOver = useCallback(
@@ -886,31 +920,19 @@ export function ChatView({
     [showStreamingFooterSkeleton],
   );
 
-  const assistantIdentity = useMemo(
-    () =>
-      agentEmptyProfile
-        ? {
-            agent_id: agentEmptyProfile.agent_id,
-            name: agentEmptyProfile.name,
-            avatar_ref: agentEmptyProfile.avatar_ref,
-            avatar_seed: agentEmptyProfile.avatar_seed,
-          }
-        : undefined,
-    [agentEmptyProfile],
-  );
-
   const virtuosoItemContent = useCallback(
-    (_index: number, message: (typeof messages)[number]) => (
+    (index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
           <div
-            className="contents"
+            // The reply to a just-sent message keeps the viewport height so the
+            // sent message can stay at the top while the answer grows below.
+            className={index === anchoredReplyIndex ? "chat-anchor-reply" : "contents"}
             data-browser-run-id={message.role === "assistant" ? message.runId : undefined}
             data-browser-session-id={sessionId ?? undefined}
           >
             <ChatMessage
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              assistantIdentity={assistantIdentity}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -923,8 +945,8 @@ export function ChatView({
       </AssistantUiMessageContentContext.Provider>
     ),
     [
+      anchoredReplyIndex,
       artifactDownloadScopeContext,
-      assistantIdentity,
       sessionId,
       handleOpenPreview,
     ],
@@ -946,9 +968,12 @@ export function ChatView({
     canStop: canStopGeneration && currentRunId !== null,
     isLoading: sessionRunning,
     canSend: canSendInCurrentView,
-    placeholder: composerPlaceholder,
+    sendBlockedReason,
+    placeholder: canSendMessage && continuationBlocksSend
+      ? publicContinuationMessage(continuation, continuationPending) : composerPlaceholder,
+    modelUnavailableReason,
     acceptedFileTypes: undefined,
-    disableSlashCommands: Boolean(agentEmptyProfile),
+    disableSlashCommands: presentation?.disableSlashCommands ?? false,
     tools,
     onToggleTool,
     onToggleCategory,
@@ -971,6 +996,7 @@ export function ChatView({
     availableModels,
     currentModelId,
     onSelectModel,
+    onModelSelectorOpen,
     attachments,
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,
@@ -987,37 +1013,7 @@ export function ChatView({
     [onLoadHistory, onReconnect, onSendMessage, onStopGeneration],
   );
 
-  const shellHeader = agentEmptyProfile ? (
-    <div
-      data-expert-workspace-header
-      className="flex min-w-0 items-center gap-3"
-    >
-      <AgentIdentityAvatar
-        agentId={agentEmptyProfile.agent_id}
-        avatarRef={agentEmptyProfile.avatar_ref}
-        avatarSeed={agentEmptyProfile.avatar_seed}
-        name={agentEmptyProfile.name}
-        size="sm"
-      />
-      <div className="min-w-0">
-        <h1
-          className="truncate text-[15px] font-semibold leading-5 text-[var(--theme-text)]"
-          data-expert-workspace-name
-        >
-          {agentEmptyProfile.name}
-        </h1>
-        {agentEmptyProfile.description ? (
-          <p
-            className="truncate text-xs leading-4 text-[var(--theme-text-secondary)]"
-            data-expert-workspace-description
-            title={agentEmptyProfile.description}
-          >
-            {agentEmptyProfile.description}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  ) : (
+  const shellHeader = presentation?.header ?? (
     <div data-general-chat-header className="min-w-0">
       <h1 className="truncate text-[15px] font-semibold leading-5 text-[var(--theme-text)]">
         通用助手
@@ -1033,11 +1029,28 @@ export function ChatView({
       sessionId={sessionId}
       onProfileDriveFileImported={handleProfileDriveFileImported}
       onProfileDriveFileDrop={handleProfileDriveFileDrop}
+      attachments={attachments}
+      onRemoveAttachment={uploadControls.removeAttachment}
     />
   );
 
   const composer = (
     <div className="relative" data-chat-shell-composer>
+      {sessionId && continuationMessage && (continuation || continuationPending || !sessionRunning) ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-chat-continuation={continuationPending ? "checking" : continuation?.state ?? "unavailable"}
+          className="mx-auto mb-2 max-w-[var(--chat-column-max)] px-2 text-sm text-[var(--theme-text-secondary)]"
+        >
+          {continuationMessage}
+          {continuationPending && !sessionRunning ? (
+            <button type="button" className="ml-2 underline" onClick={() => void onLoadHistory()}>
+              {t("chat.continuation.refresh")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {messages.length > 0 && showScrollTop && (
         <div
           className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
@@ -1097,7 +1110,7 @@ export function ChatView({
 
       {historyReadError && (
         <div
-          className="mx-auto mb-2 flex max-w-[76rem] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
+          className="mx-auto mb-2 flex max-w-[var(--chat-column-max)] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
           data-chat-history-read-error
           role="alert"
         >
@@ -1128,7 +1141,7 @@ export function ChatView({
         </div>
       )}
       {canRetryPendingSubmission && (
-        <div className="mx-auto mb-2 flex max-w-[76rem] px-2">
+        <div className="mx-auto mb-2 flex max-w-[var(--chat-column-max)] px-2">
           <Button type="text"
             htmlType="button"
             onClick={() => void onRetryPendingSubmission()}
@@ -1140,29 +1153,9 @@ export function ChatView({
           </Button>
         </div>
       )}
-      {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
-        <div
-          className="mx-auto mb-3 flex max-w-[76rem] flex-wrap gap-2 px-2"
-          data-agent-starter-prompts
-        >
-          <p className="w-full text-xs font-medium text-[var(--theme-text-secondary)]">
-            可以直接开始的任务
-          </p>
-          {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} send={false} asChild>
-              <Button type="default"
-                style={{ height: "auto", padding: "8px 12px", textAlign: "left", whiteSpace: "normal" }}
-                disabled={!canSendInCurrentView || isLoading}
-                htmlType="button"
-              >
-                {prompt}
-              </Button>
-            </ThreadPrimitive.Suggestion>
-          ))}
-        </div>
-      ) : null}
+      {messages.length === 0 ? presentation?.renderStarterPrompts(!canSendInCurrentView || isLoading) : null}
       {runInputs?.loadFailed ? (
-        <div className="mx-auto mb-2 flex w-full max-w-[76rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
+        <div className="mx-auto mb-2 flex w-full max-w-[var(--chat-column-max)] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
           <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
           <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refresh()} htmlType="button">
             {t("common.retry", "重试")}
@@ -1177,7 +1170,7 @@ export function ChatView({
         taskSurface={runInputs
           ? (stop) => <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} stop={stop} />
           : undefined}
-        className="mx-auto max-w-[76rem] px-2"
+        className="mx-auto max-w-[var(--chat-column-max)] px-2"
       />
     </div>
   );
@@ -1210,29 +1203,7 @@ export function ChatView({
           isLoading ? (
             <ChatSkeleton count={5} />
           ) : (
-            agentEmptyProfile ? (
-              <div
-                className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"
-                data-agent-chat-opening
-                data-workbench-empty-state="agent-chat"
-              >
-                <section className="chat-start-surface flex w-full max-w-[76rem] flex-1 flex-col items-center gap-4">
-                  {/* The published description is the opening text; it is not a runtime message. */}
-                  {agentEmptyProfile.description ? (
-                    <p
-                      className="max-w-2xl whitespace-pre-wrap text-center text-sm leading-7 text-[var(--theme-text-secondary)]"
-                      data-agent-opening
-                      data-agent-opening-message
-                    >
-                      {agentEmptyProfile.description}
-                    </p>
-                  ) : (
-                    <div data-agent-opening />
-                  )}
-                  <div className="mt-auto w-full pt-8">{composer}</div>
-                </section>
-              </div>
-            ) : (
+            presentation ? presentation.renderOpening(composer) : (
               <WelcomePage
                 subtitle="直接提问，或上传文件一起讨论。"
                 composer={composer}
@@ -1249,7 +1220,7 @@ export function ChatView({
             computeItemKey={(_, message) => message.id}
             atBottomStateChange={handleVirtuosoAtBottomChange}
             atBottomThreshold={getAtBottomThresholdPx(isMobileViewport)}
-            followOutput={"smooth"}
+            followOutput={followOutput}
             rangeChanged={handleVirtuosoRangeChanged}
             components={virtuosoComponents}
             itemContent={virtuosoItemContent}

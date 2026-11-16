@@ -23,6 +23,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   } });
   const { createLobeTestRoot } = await import("../../common/__tests__/lobeUiTestRoot");
   const { ChatInput } = await import("../ChatInput");
+  const { MemoryRouter } = await import("react-router-dom");
   const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const { AuthProvider } = await import("../../../hooks/useAuth");
   const { authApi } = await import("../../../services/api/auth");
@@ -31,7 +32,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => ({
     id: "keyboard-user", tenant_id: "keyboard-tenant", username: "keyboard-user",
-    email: "keyboard@example.test", roles: [], permissions: [], is_active: true,
+    email: "keyboard@example.test", roles: [], permissions: ["file:upload:document"], is_active: true,
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
   });
   const container = document.getElementById("root")!;
@@ -51,12 +52,13 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   };
   const render = async (changes: Partial<ChatInputProps> = {}) => {
     Object.assign(props, changes);
-    await act(async () => { root.render(<AuthProvider><AssistantUiTestProvider isRunning={props.isLoading}><ThreadPrimitive.Suggestion prompt="建议问题" send={false} data-test-suggestion>建议问题</ThreadPrimitive.Suggestion><ChatInput {...props} /></AssistantUiTestProvider></AuthProvider>); });
+    await act(async () => { root.render(<MemoryRouter><AuthProvider><AssistantUiTestProvider isRunning={props.isLoading}><ThreadPrimitive.Suggestion prompt="建议问题" send={false} data-test-suggestion>建议问题</ThreadPrimitive.Suggestion><ChatInput {...props} /></AssistantUiTestProvider></AuthProvider></MemoryRouter>); });
   };
   const textarea = () => container.querySelector("textarea")!;
-  const type = async (value: string) => {
+  const type = async (value: string, cursor = value.length) => {
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea(), value);
+      textarea().setSelectionRange(cursor, cursor);
       textarea().dispatchEvent(new dom.window.InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
     });
   };
@@ -73,6 +75,45 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       await type("");
       assert.equal((await key("ArrowUp")).defaultPrevented, false);
       assert.equal((await key("ArrowDown")).defaultPrevented, false);
+    });
+    await t.test("settling keeps the draft and blocks keyboard/button sends until continuation is ready", async () => {
+      const { canContinueConversation, parsePublicContinuation } = await import("../../../services/api/session");
+      const { publicContinuationMessage } = await import("../../../hooks/useAgent/publicTerminalPresentation");
+      await type("停止后的新消息草稿");
+      const continuation = parsePublicContinuation({ state: "settling", action: "wait", reason_code: "settling", workspace_saved: false });
+      await render({ canSend: canContinueConversation(continuation), placeholder: publicContinuationMessage(continuation), sendBlockedReason: "continuation" });
+      assert.equal(textarea().disabled, true);
+      const sendButton = container.querySelector<HTMLButtonElement>('button[type="submit"]');
+      assert.ok(sendButton === null || sendButton.disabled);
+      await act(async () => sendButton?.click());
+      assert.match(textarea().placeholder, /正在收尾/);
+      // A temporary continuation wait never reuses the permission lock.
+      const { default: lockI18n } = await import("../../../i18n");
+      assert.equal(container.querySelector(`button[title="${lockI18n.t("chat.noPermission")}"]`), null);
+      await key("Enter");
+      assert.equal(sends.length, 0);
+      assert.equal(textarea().value, "停止后的新消息草稿");
+      await render({ canSend: false, placeholder: publicContinuationMessage(undefined, true), sendBlockedReason: "continuation" });
+      assert.equal(textarea().disabled, true);
+      assert.match(textarea().placeholder, /恢复状态/);
+      await key("Enter");
+      assert.equal(sends.length, 0);
+      assert.equal(textarea().value, "停止后的新消息草稿");
+      const ready = parsePublicContinuation({ state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true });
+      await render({ canSend: canContinueConversation(ready), placeholder: undefined, sendBlockedReason: undefined });
+      assert.equal(textarea().disabled, false);
+      assert.equal(container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')!.disabled, false);
+      assert.equal(textarea().value, "停止后的新消息草稿");
+      await type("");
+    });
+    await t.test("ordinary placeholder does not replace the permission reason or administrator action", async () => {
+      await render({ canSend: false, placeholder: "向专家描述要完成的任务", sendBlockedReason: "permission" });
+      const { default: i18n } = await import("../../../i18n");
+      const permissionButton = container.querySelector<HTMLButtonElement>(`button[title="${i18n.t("chat.noPermission")}"]`);
+      assert.ok(permissionButton);
+      assert.equal(permissionButton.disabled, false);
+      assert.equal(textarea().disabled, true);
+      await render({ canSend: true, placeholder: undefined, sendBlockedReason: undefined });
     });
     await t.test("IME Enter stays native for composing and legacy 229 signals", async () => {
       await type("中文候选");
@@ -155,13 +196,187 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal((await key("Tab")).defaultPrevented, true);
       assert.equal(selectedCommand(), undefined);
       assert.equal(sends.length, 1);
-      await type("/");
+      await type("/s");
       assert.equal((await key("Enter")).defaultPrevented, true);
       assert.equal(selectedCommand(), undefined);
       assert.equal(sends.length, 1);
       await type("/");
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);
+    });
+    await t.test("opening the model picker refreshes once, keeps drafts, and recovers an empty list", async () => {
+      let refreshCalls = 0;
+      await render({ disableSlashCommands: false, availableModels: [],
+        onSelectModel: () => undefined, onModelSelectorOpen: () => { refreshCalls += 1; } });
+      await type("保留模型刷新草稿");
+      const trigger = () => container.querySelector<HTMLButtonElement>("[data-composer-model-trigger]")!;
+      assert.ok(trigger(), "empty catalogs keep the retry entry visible");
+      await act(async () => trigger().click());
+      assert.equal(refreshCalls, 1);
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await render({ availableModels: [{ id: "model-b", value: "model-b", label: "Model B" }] });
+      assert.equal(refreshCalls, 1, "catalog updates do not reopen the picker");
+      assert.ok(document.querySelector('[data-composer-model-panel]'));
+      assert.equal(textarea().value, "保留模型刷新草稿");
+      await act(async () => {
+        trigger().dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      });
+      await act(async () => trigger().click());
+      assert.equal(document.querySelector('[data-composer-model-panel]'), null, "second pointer click closes the model menu");
+      assert.equal(trigger().getAttribute("aria-expanded"), "false");
+      assert.equal(refreshCalls, 1, "closing the picker does not refresh the catalog");
+      await type("/model");
+      assert.equal(refreshCalls, 1, "typing only shows shortcut suggestions");
+      await key("Enter");
+      assert.equal(refreshCalls, 2, "explicit shortcut selection opens the same refresh seam");
+      assert.equal(document.querySelector('[data-composer-model-panel] input')?.getAttribute("value"), "");
+      await act(async () => document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+
+      await type("/");
+      for (let i = 0; i < 8 && container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item") !== "model"; i += 1) {
+        await key("ArrowDown");
+      }
+      assert.equal(container.querySelector('[role="option"][aria-selected="true"]')?.getAttribute("data-composer-command-item"), "model");
+      await key("Enter");
+      assert.equal(refreshCalls, 3, "slash menu selection refreshes as well");
+      await act(async () => document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      await render({ onSelectModel: undefined, onModelSelectorOpen: undefined, availableModels: [] });
+    });
+    await t.test("unavailable model blocks sending but preserves the editable draft and input identity", async () => {
+      const reason = "尚未分配可用模型，请联系管理员。";
+      const before = sends.length;
+      await render({ modelUnavailableReason: reason, onSelectModel: () => undefined });
+      await type("等待模型配置的草稿");
+      const editor = textarea();
+      const send = container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')!;
+      assert.equal(editor.disabled, false);
+      assert.equal(send.disabled, true);
+      assert.match(container.querySelector('[data-composer-model-trigger]')?.textContent ?? "", /暂无可用模型/);
+      assert.equal(container.querySelector('[data-composer-model-status]')?.textContent?.includes(reason), true);
+      assert.equal(container.textContent?.includes("配置模型组"), false);
+      await key("Enter");
+      await act(async () => send.click());
+      assert.equal(sends.length, before);
+      assert.equal(editor.value, "等待模型配置的草稿");
+      await render({ modelUnavailableReason: undefined,
+        onSelectModel: undefined, availableModels: [] });
+      assert.equal(textarea(), editor);
+      assert.equal(editor.value, "等待模型配置的草稿");
+      assert.equal(container.querySelector<HTMLButtonElement>('[data-slot="composer-send"]')?.disabled, false);
+    });
+    await t.test("paths, unknown slash words and dollar text submit unchanged without invisible menu interception", async () => {
+      const submitted: string[] = [];
+      await render({ disableSlashCommands: false, isLoading: false, canSend: true,
+        onSend: async (value) => { submitted.push(value); return { status: "accepted" }; } });
+      for (const value of [
+        "/workspace/.home/Desktop/project-board_2026.xlsx在哪？我指的是我的桌面",
+        "/api/v1", "/unknown", "$100", "$变量", "/model is failing in production",
+      ]) {
+        await type(value);
+        assert.equal(container.querySelector("[data-composer-command-menu]"), null);
+        assert.equal((await key("Tab")).defaultPrevented, false);
+        await key("Enter");
+        assert.equal(submitted.at(-1), value);
+        assert.equal(textarea().value, "");
+      }
+    });
+    await t.test("Send submits literal slash text even while command suggestions are visible", async () => {
+      const submitted: string[] = [];
+      await render({ onSend: async (value) => { submitted.push(value); return { status: "accepted" }; } });
+      for (const value of ["/", "/m", "/skill"]) {
+        await type(value);
+        assert.ok(container.querySelector("[data-composer-command-menu]"));
+        await act(async () => container.querySelector<HTMLButtonElement>("button[aria-label='发送消息']")!.click());
+        assert.equal(submitted.at(-1), value);
+        assert.equal(textarea().value, "");
+      }
+    });
+    await t.test("newline modifiers and Escape preserve slash drafts and do not choose a command", async () => {
+      await type("/m");
+      assert.equal((await key("Enter", { shiftKey: true })).defaultPrevented, false);
+      assert.equal((await key("Tab", { shiftKey: true })).defaultPrevented, false);
+      assert.equal(textarea().value, "/m");
+      assert.ok(container.querySelector("[data-composer-command-menu]"));
+      localStorage.setItem("newlineModifier", "ctrl");
+      assert.equal((await key("Enter", { ctrlKey: true })).defaultPrevented, false);
+      localStorage.removeItem("newlineModifier");
+      assert.equal((await key("Escape")).defaultPrevented, true);
+      assert.equal(textarea().value, "/m");
+      assert.equal(container.querySelector("[data-composer-command-menu]"), null);
+      await key("Enter");
+      assert.equal(textarea().value, "", "Escape does not allow form submission to reopen commands");
+    });
+    await t.test("choosing an unavailable command retains the full draft and attachment", async () => {
+      const attachment = { id: "slash-file", key: "slash-file", name: "draft.txt", type: "document" as const, url: "/api/files/draft", mimeType: "text/plain", size: 5 };
+      await render({ attachments: [attachment], enableSkills: false });
+      await type("保留正文 /skill");
+      assert.ok(container.querySelector("[data-composer-command-item='skill']"));
+      await act(async () => {
+        const item = container.querySelector<HTMLButtonElement>("[data-composer-command-item='skill']")!;
+        item.focus();
+        item.click();
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+      assert.equal(document.activeElement === textarea(), true, "mouse selection returns editing focus after the menu unmounts");
+      assert.equal(textarea().selectionStart, "保留正文 /skill".length);
+      assert.equal(textarea().value, "保留正文 /skill");
+      await type("保留正文 /skill 继续说明");
+      assert.equal(textarea().value, "保留正文 /skill 继续说明");
+      assert.ok(container.querySelector("[data-composer-file-reference]"));
+      assert.ok(container.querySelector("[data-composer-chip-state='unavailable']"));
+      await render({ attachments: [] });
+    });
+    await t.test("available shortcut selection consumes only its token and model selection never clears ordinary text", async () => {
+      const selected: string[] = [];
+      const models = [{ id: "model-a", value: "model-a", label: "模型甲" }, { id: "model-b", value: "model-b", label: "模型乙" }];
+      const attachment = { id: "model-file", key: "model-file", name: "draft.txt", type: "document" as const, url: "/api/files/draft", mimeType: "text/plain", size: 5 };
+      await render({ attachments: [attachment], availableModels: models, currentModelId: "model-a", onSelectModel: (id) => selected.push(id) });
+      await type("请用 /mo 后续正文", 6);
+      assert.ok(container.querySelector("[data-composer-command-item='model']"));
+      await key("Tab");
+      assert.equal(textarea().value, "请用  后续正文");
+      assert.ok(document.querySelector("[data-composer-model-panel]"));
+      await act(async () => document.querySelector<HTMLButtonElement>("[data-composer-model-option='model-b']")!.click());
+      assert.deepEqual(selected, ["model-b"]);
+      assert.equal(textarea().value, "请用  后续正文");
+      assert.ok(container.querySelector("[data-composer-file-reference]"));
+      await type("/model is failing in production");
+      await act(async () => container.querySelector<HTMLButtonElement>("[data-composer-model-trigger]")!.click());
+      await act(async () => document.querySelector<HTMLButtonElement>("[data-composer-model-option='model-a']")!.click());
+      assert.equal(textarea().value, "/model is failing in production");
+      await type("保留正文 /model");
+      await key("Enter");
+      assert.equal(textarea().value, "保留正文 ");
+      await act(async () => document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      assert.equal(textarea().value, "保留正文 ");
+      await render({ availableModels: [], onSelectModel: undefined, attachments: [] });
+    });
+    await t.test("skill selection and file picker keep the task body and authorized attachment", async () => {
+      const skill = { name: "review", expected_version: "1", input_modes: [], requires_file: false, description: "Review", tags: [], enabled: true, source: "manual" as const, files: {}, file_count: 1, installed_from: "manual" as const, is_published: true, marketplace_is_active: true };
+      const picked: string[] = [];
+      const attachment = { id: "selection-file", key: "selection-file", name: "draft.txt", type: "document" as const, url: "/api/files/draft", mimeType: "text/plain", size: 5 };
+      await render({ enableSkills: true, skills: [skill], onSelectSkill: (value) => picked.push(value.name), attachments: [attachment] });
+      await type("正文 /skill");
+      await key("Enter");
+      assert.equal(textarea().value, "正文 ");
+      await act(async () => document.querySelector<HTMLButtonElement>("[data-composer-skill-row='review']")!.click());
+      assert.deepEqual(picked, ["review"]);
+      assert.equal(textarea().value, "正文 ");
+      assert.ok(container.querySelector("[data-composer-file-reference]"));
+      await render({ acceptedFileTypes: undefined });
+      let opened = 0;
+      const file = container.querySelector<HTMLInputElement>("input[type='file']")!;
+      const click = file.click;
+      file.click = () => { opened += 1; };
+      try {
+        await type("正文 /file");
+        await key("Tab");
+        assert.equal(opened, 1);
+        assert.equal(textarea().value, "正文 ");
+        assert.ok(container.querySelector("[data-composer-file-reference]"));
+      } finally { file.click = click; }
+      await render({ acceptedFileTypes: [], enableSkills: false, skills: [], onSelectSkill: undefined, attachments: [] });
     });
     await t.test("native suggestions, send and permission/upload gates use the platform payload", async () => {
       const submitted: Parameters<ChatInputProps["onSend"]>[] = [];

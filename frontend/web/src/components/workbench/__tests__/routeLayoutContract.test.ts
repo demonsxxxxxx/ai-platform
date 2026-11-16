@@ -10,6 +10,7 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
   const shell = read("src/components/layout/AppContent/AppShell.tsx");
   const chat = read("src/components/layout/AppContent/ChatAppContent.tsx");
   const chatView = read("src/components/layout/AppContent/ChatView.tsx");
+  const agentPresentation = read("src/features/agent-market/AgentChatPresentation.tsx");
   const surface = read("src/librechat-ui/surface.ts");
   const skills = read("src/components/panels/SkillsHubPanel.tsx");
   const list = read("src/components/panels/SkillsPanel/SkillsList.tsx");
@@ -24,9 +25,10 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
     chatView,
     /messages\.length > 0 \? "overflow-hidden" : ""/,
   );
-  assert.match(chatView, /className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto py-3"/);
+  assert.match(agentPresentation, /className="welcome-root welcome-chat-start chat-entry-root relative flex h-full min-h-0 flex-col overflow-y-auto py-3"/);
+  assert.match(chatView, /presentation\.renderOpening\(composer\)/);
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
-  assert.match(chatView, /data-agent-chat-opening/);
+  assert.match(agentPresentation, /data-agent-chat-opening/);
   assert.match(chatView, /<Virtuoso/);
   assert.equal((skills.match(/overflow-y-auto/g) ?? []).length, 1);
   assert.match(skills, /data-primary-page-scroller/);
@@ -38,7 +40,12 @@ test("model admin keeps actions visible while its table scrolls on wide screens"
   const admin = read("src/components/panels/ModelAdminControl.tsx");
 
   assert.match(catalog, /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto lg:overflow-hidden`\}/);
-  assert.match(admin, /flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink/);
+  const providers = read("src/components/panels/ModelProviderManagement.tsx");
+  assert.match(providers, /flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4 lg:h-full lg:overflow-y-auto/);
+  assert.match(providers, /data-model-provider-row/);
+  assert.doesNotMatch(providers, /LobeSelectField/);
+  assert.match(admin, /flex min-w-0 shrink-0 flex-col gap-4 p-4 lg:min-h-0 lg:shrink/);
+  assert.match(admin, /providerId \? "lg:flex-1" : "min-h-full lg:h-full"/);
   assert.match(admin, /lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll/);
   assert.match(admin, /<Table[\s\S]*?\bsticky\b/);
   assert.match(admin, /data-model-admin-action-bar/);

@@ -46,6 +46,23 @@ async function mount() {
   };
 }
 
+test("usage keeps safe API causes instead of masking them with generic load failure", async () => {
+  const { apiRequestErrorFromResponse } = await import("../../../services/api/fetch");
+  const { UsageError } = await import("../UsageReportState");
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    for (const [error, expected] of [
+      [await apiRequestErrorFromResponse(new Response(JSON.stringify({ detail: "auth_refresh_unavailable" }), { status: 503 })), /认证服务暂时不可用/],
+      [new Error("private-secret"), /用量加载失败/],
+    ] as const) {
+      await act(async () => root.render(createElement(UsageError, { error, retry: () => {} })));
+      assert.match(container.querySelector('[role="alert"]')!.textContent!, expected);
+      assert.doesNotMatch(container.textContent!, /private-secret/);
+    }
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 test("Beijing calendar dates handle midnight, leap years, invalid and reversed dates", () => {
   assert.deepEqual(usageDateRange(30, new Date("2026-10-19T16:00:00Z")), { start: "2026-09-21", end: "2026-10-20" });
   assert.deepEqual(usageDateRange(1, new Date("2026-10-19T15:59:59Z")), { start: "2026-10-19", end: "2026-10-19" });

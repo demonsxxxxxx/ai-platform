@@ -31,14 +31,11 @@ class PublicAnswerStreamGate:
         *,
         private_replacements: Mapping[str, str],
         sanitizer: Callable[[str], str],
-        public_replacements: Mapping[str, str] | None = None,
         max_private_token_chars: int = 512,
     ) -> None:
         self._sanitizer = sanitizer
         self._max_private_token_chars = max_private_token_chars
         self._replacements: dict[str, str] = {}
-        self._public_replacements: dict[str, str] = {}
-        self._public_values: set[str] = set()
         self._replacement_pattern: re.Pattern[str] | None = None
         self._tokens: tuple[str, ...] = ()
         self._private_tokens: tuple[str, ...] = ()
@@ -62,11 +59,6 @@ class PublicAnswerStreamGate:
         ):
             self._fail("invalid_configuration")
         else:
-            try:
-                self._public_replacements = dict(public_replacements or {})
-            except (TypeError, ValueError):
-                self._fail("invalid_configuration")
-                return
             self._add_replacements(private_replacements)
 
     @property
@@ -125,7 +117,6 @@ class PublicAnswerStreamGate:
                 if any(token in raw_candidate for token in self._tokens)
                 else self._private_prefix_chars(raw_candidate)
             ),
-            self._replacement_prefix_chars(raw_candidate, self._public_values),
         )
         if raw_hold:
             if raw_hold > self._max_private_token_chars:
@@ -361,11 +352,7 @@ class PublicAnswerStreamGate:
                 else None
             )
             token = match.group() if match is not None else None
-            if token in self._public_values:
-                for offset, character in enumerate(token):
-                    self._append_text_segment(result, owner_at(index + offset), character)
-                index += len(token)
-            elif token is not None:
+            if token is not None:
                 matched = True
                 self._append_text_segment(
                     result,
@@ -522,15 +509,8 @@ class PublicAnswerStreamGate:
         if self._finished:
             return
         previous_tokens = set(self._tokens)
-        reclassified_public_tokens = {
-            token
-            for token, replacement in self._public_replacements.items()
-            if isinstance(private_replacements, Mapping)
-            and token in private_replacements
-            and private_replacements[token] != replacement
-        }
         self._add_replacements(private_replacements)
-        added_tokens = (set(self._tokens) - previous_tokens) | reclassified_public_tokens
+        added_tokens = set(self._tokens) - previous_tokens
         if added_tokens:
             published_text = self._published_text()
             if any(token in published_text for token in added_tokens):
@@ -643,27 +623,17 @@ class PublicAnswerStreamGate:
         self._tokens = tuple(
             sorted(self._replacements, key=lambda value: (-len(value), value))
         )
-        self._private_tokens = tuple(
-            token for token in self._tokens if token not in self._public_replacements
-        )
+        self._private_tokens = self._tokens
         if any(
-            self._replacements.get(token) != replacement
-            for token, replacement in self._public_replacements.items()
-        ) or any(
             token in replacement
             for token in self._private_tokens
             for replacement in self._replacements.values()
         ):
             self._fail("private_replacement_invalid")
             return
-        self._public_values = set(self._public_replacements.values())
-        match_values = sorted(
-            set(self._tokens) | self._public_values,
-            key=lambda value: (-len(value), value),
-        )
         self._replacement_pattern = (
-            re.compile("|".join(re.escape(value) for value in match_values))
-            if match_values
+            re.compile("|".join(re.escape(value) for value in self._tokens))
+            if self._tokens
             else None
         )
 
@@ -671,11 +641,7 @@ class PublicAnswerStreamGate:
         text = redact_secret_assignments(text)
         candidate = (
             self._replacement_pattern.sub(
-                lambda match: (
-                    match.group()
-                    if match.group() in self._public_values
-                    else self._replacements[match.group()]
-                ),
+                lambda match: self._replacements[match.group()],
                 text,
             )
             if self._replacement_pattern is not None
@@ -708,7 +674,7 @@ class PublicAnswerStreamGate:
             track_ambiguous_prefixes=True,
         )
         return max(
-            self._replacement_prefix_chars(text, (*self._tokens, *self._public_values)),
+            self._replacement_prefix_chars(text, self._tokens),
             sanitizer_hold,
         )
 

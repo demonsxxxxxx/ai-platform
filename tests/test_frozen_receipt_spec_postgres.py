@@ -47,7 +47,9 @@ async def receipt_db():
                   user_id text, session_id text, agent_id text, status text, cancel_requested_at timestamptz,
                   execution_kind text, skill_id text, context_snapshot_id text, input_json jsonb,
                   model_id text, model_value text, model_gateway_revision integer,
-                  auto_compact_window integer, max_output_tokens integer);
+                  model_group_id text, model_group_code text, model_group_type text,
+                  model_group_revision integer, model_selection_mode text, usage_scene text,
+                  model_policy_version text, auto_compact_window integer, max_output_tokens integer);
                 create table run_attempts(id text primary key, tenant_id text, run_id text,
                   status text, owner_kind text, owner_id text, owner_generation bigint, queue_attempt_id text,
                   execution_spec_schema_version text, execution_spec_sha256 text,
@@ -61,7 +63,8 @@ async def receipt_db():
             spec = frozen_spec()
             await conn.execute("""
                 insert into runs values('run-a','tenant-a','workspace-a','user-a','session-a','agent-a',
-                'running',null,'harness_chat',null,'context-a',%s,'model-a','claude-test',3,200000,4096)
+                'running',null,'harness_chat',null,'context-a',%s,'model-a','claude-test',3,
+                null,null,null,null,null,null,null,200000,4096)
             """, (Jsonb({"executor_type": "claude-agent-worker"}),))
             await conn.execute("""
                 insert into run_attempts values('attempt-a','tenant-a','run-a','running','queue_worker',

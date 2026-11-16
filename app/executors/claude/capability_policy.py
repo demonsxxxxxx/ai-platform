@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 from app.context_manifest import available_context_retrieval_tools
-from app.files.api import PROFILE_DRIVE_READ_TEXT_IDENTITY, PROFILE_DRIVE_STAGE_TOOL
 from app.required_tool_contract import (
     declaration_from_input,
     with_sandbox_local_tool_capability_subjects,
@@ -19,7 +19,6 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_run_artifact",
     "stage_context_file_to_workspace",
     "stage_run_artifact_to_workspace",
-    PROFILE_DRIVE_STAGE_TOOL,
     "search_memory",
 )
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
@@ -60,13 +59,6 @@ def sandbox_runtime_tool_policy_subjects(
     sandbox_provider: str,
 ) -> list[dict[str, Any]]:
     subjects = runtime_tool_policy_subjects(payload, context_manifest)
-    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
-        subjects = [
-            subject
-            for subject in subjects
-            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
-        ]
-        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
     return with_sandbox_local_tool_capability_subjects(
         subjects,
         sandbox_provider=sandbox_provider,
@@ -80,21 +72,18 @@ _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id", "max_bytes"),
     "stage_context_file_to_workspace": ("file_id", "max_bytes"),
     "stage_run_artifact_to_workspace": ("artifact_id", "max_bytes"),
-    PROFILE_DRIVE_STAGE_TOOL: ("path",),
     "search_memory": ("query", "limit", "max_tokens"),
 }
 _SDK_INTERNAL_CONTEXT_PUBLIC_LABELS = {
     "read_run_artifact": "读取任务文件",
     "stage_context_file_to_workspace": "准备上下文文件",
     "stage_run_artifact_to_workspace": "准备任务文件",
-    PROFILE_DRIVE_STAGE_TOOL: "准备共享文件",
     "search_memory": "检索记忆",
 }
 _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id",),
     "stage_context_file_to_workspace": ("file_id",),
     "stage_run_artifact_to_workspace": ("artifact_id",),
-    PROFILE_DRIVE_STAGE_TOOL: ("path",),
 }
 _SANDBOX_LOCAL_TOOL_IDENTITIES = frozenset(
     {"Read", "Glob", "Grep", "LS", "Bash", "Write", "Edit", "NotebookEdit"}
@@ -181,6 +170,77 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
         subject["identity"] = identity
         subjects[identity] = subject
     return subjects
+
+
+@dataclass(frozen=True)
+class RecoveryToolGate:
+    """Trusted recovery evidence narrows, but never grants, tool authority."""
+
+    allowed: frozenset[str]
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "RecoveryToolGate | None":
+        if value is None:
+            return None
+        if not isinstance(value, dict) or set(value) != {
+            "state", "allowed_tool_identities",
+        } or value["state"] != "inspection":
+            raise ValueError("recovery_tool_gate_invalid")
+        allowed = value["allowed_tool_identities"]
+        if not isinstance(allowed, list) or len(allowed) > 256 or any(
+            not isinstance(item, str) or not item or len(item) > 512 for item in allowed
+        ):
+            raise ValueError("recovery_tool_gate_invalid")
+        return cls(frozenset(allowed))
+
+    @staticmethod
+    def evidence_identity_matches(
+        evidence: object, *, run_id: str, attempt_id: str,
+        tool_identity: str, invocation_id: str,
+    ) -> bool:
+        return (
+            isinstance(evidence, dict)
+            and evidence.get("schema_version") == "ai-platform.recovery-operation-evidence.v1"
+            and all(evidence.get(key) == value for key, value in {
+                "run_id": run_id, "attempt_id": attempt_id,
+                "tool_identity": tool_identity, "invocation_id": invocation_id,
+            }.items())
+        )
+
+    @classmethod
+    def evidence_matches(cls, evidence: object, **identity: str) -> bool:
+        return (
+            isinstance(evidence, dict)
+            and cls.evidence_identity_matches(evidence, **identity)
+            and isinstance(evidence.get("operation_key"), str)
+            and re.fullmatch(r"rop_[0-9a-f]{32}", evidence["operation_key"]) is not None
+        )
+
+    @classmethod
+    def evidence_allows(cls, evidence: object, **identity: str) -> bool:
+        if not isinstance(evidence, dict):
+            return False
+        return (
+            cls.evidence_matches(evidence, **identity)
+            and evidence.get("decision") == "allow"
+            and evidence.get("evidence_kind") in ("platform_receipt", "reconciliation")
+            and (
+                evidence.get("permission_basis") == "retry_not_effective"
+                and evidence.get("verified_outcome") == "not_effective"
+                or evidence.get("permission_basis") == "current_invocation_authorized"
+                and evidence.get("verified_outcome") in ("unknown", "not_effective")
+            )
+        )
+
+    def denial(self, identity: str, subject: dict[str, Any] | None) -> str | None:
+        if identity not in self.allowed:
+            return "recovery_tool_not_allowed"
+        # Inspection scope cannot authorize a particular repeated effect.
+        if identity in {"Read", "Glob", "Grep", "LS"}:
+            return None
+        if identity.startswith("mcp__") and subject and subject.get("write_capable") is False:
+            return None
+        return "recovery_effect_unconfirmed"
 
 
 @dataclass(frozen=True)

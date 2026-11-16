@@ -2682,7 +2682,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     )
 
     lease = await provider.create_or_reuse(
-        request(skill_ids=["native-review"], tool_policy_subjects=native_subjects),
+        request(skill_ids=["native-review"], tool_policy_subjects=native_subjects, sdk_session_id="session-a"),
         leased_workspace,
     )
 
@@ -2690,6 +2690,10 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert native_subjects[0]["allowed_skill_names"] == ["native-review"]
     assert [created["name"] for created in fake.created] == [native_tool_name(), "executor-exec-run-a"]
     sidecar, executor = fake.created
+    native_results = ".claude-config/projects/ai-platform/session-a/tool-results"
+    assert sidecar["volumes"][str(workspace_path / native_results)] == {
+        "bind": "/workspace/" + native_results, "mode": "ro",
+    }
     assert sidecar["network_mode"] == "none"
     assert "network_disabled" not in sidecar
     assert sidecar["entrypoint"] == ["python", "-m", "app.runtime.sandbox.native_tool_app"]

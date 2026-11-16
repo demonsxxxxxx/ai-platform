@@ -12,8 +12,7 @@
 }
 
 .chat-input-container {
-  border-radius: 1.25rem;
-  min-height: 104px;
+  border-radius: var(--radius-composer);
   max-height: min(52dvh, 420px);
   overflow: hidden;
   box-shadow:
@@ -36,16 +35,19 @@
    pushing the transcript away. */
 .chat-input-container[data-question-mode] {
   max-height: none;
-  min-height: 0;
   padding: 0.75rem;
-  max-width: 48rem;
-  margin-inline: auto;
 }
 
 .chat-input-container[data-question-mode] [data-slot="composer-task-surface"] {
   max-height: calc(100dvh - 12rem);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* 16px composer text at every width (also prevents iOS focus zoom); the
+   library input style would otherwise win over a utility class. */
+.chat-input-container textarea {
+  font-size: 1rem;
 }
 
 /* Chat input textarea placeholder */
@@ -63,12 +65,7 @@
   }
 
   html[data-mobile-keyboard="true"] .chat-input-container {
-    border-radius: 1.25rem;
     transition: none;
-  }
-
-  .chat-input-container textarea {
-    font-size: 16px;
   }
 }
 
@@ -97,4 +94,118 @@
   border-color: color-mix(in srgb, var(--theme-warning) 40%, transparent);
   background: color-mix(in srgb, var(--theme-warning) 10%, transparent);
   color: var(--theme-warning-text);
+}
+
+/* Generation feedback (docs/frontend/visual-guidelines.md section 7.5). */
+.aui-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--theme-text-tertiary) 0%,
+    var(--theme-text) 50%,
+    var(--theme-text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: aui-shimmer 1.8s linear infinite;
+}
+
+@keyframes aui-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* The caret follows the last streamed block; lists place it after the last item. */
+.markdown-streaming > :last-child:not(ul):not(ol):not(pre):not(table):not(div)::after,
+.markdown-streaming > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-inline-start: 0.3em;
+  border-radius: 9999px;
+  background: var(--theme-text);
+  vertical-align: 0.05em;
+  animation: aui-caret 1s ease-in-out infinite;
+}
+
+@keyframes aui-caret {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aui-shimmer {
+    animation: none;
+    background: none;
+    color: var(--theme-text-secondary);
+  }
+
+  .markdown-streaming > :last-child::after,
+  .markdown-streaming > :is(ul, ol):last-child > li:last-child::after {
+    animation: none;
+  }
+}
+
+/* Attachment strip: room for the corner badges and a fade where it scrolls on. */
+.composer-attachment-strip {
+  padding-inline-end: 1.5rem;
+  -webkit-mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
+}
+
+/* Reply under an anchored, just-sent message (useMessageScroll sets the height). */
+.chat-anchor-reply {
+  display: block;
+  min-height: var(--chat-anchor-min-h, 0px);
+}
+
+/* Thinking indicator: the dot breathes and each new action label fades in. */
+.aui-thinking-dot {
+  animation: aui-caret 1.2s ease-in-out infinite;
+}
+
+.aui-thinking-label {
+  animation:
+    aui-shimmer 1.8s linear infinite,
+    aui-label-in 0.3s ease-out;
+}
+
+@keyframes aui-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aui-thinking-dot,
+  .aui-thinking-label {
+    animation: none;
+  }
+}
+
+/* Stopped answer: a static bar where the text was cut off (stopped-run). */
+.markdown-stopped > :last-child:not(ul):not(ol):not(pre):not(table):not(div)::after,
+.markdown-stopped > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-inline-start: 0.25em;
+  border-radius: 9999px;
+  background: var(--theme-text-tertiary);
+  vertical-align: -0.15em;
 }
