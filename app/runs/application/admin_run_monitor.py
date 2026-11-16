@@ -154,6 +154,7 @@ def assemble_admin_public_messages(
         _message_identity(event) for _, event in ordered
         if event.get("visible_to_user") is True and event.get("type") in _V4_PART_TYPES
     }
+    projected_identities = {message.message_identity for message in part_messages}
     blocks: dict[tuple[str, object, str], dict[str, Any]] = {}
     seen_legacy_ids: set[str] = set()
     for index, event in ordered:
@@ -164,8 +165,8 @@ def assemble_admin_public_messages(
             identity = _message_identity(event)
             if identity is None:
                 continue
-            if event_type in _V4_MESSAGE_TYPES and identity in part_identities:
-                continue  # Part lifecycles are owned by Streaming's validated reducer.
+            if event_type in _V4_MESSAGE_TYPES and (identity in projected_identities or identity in part_identities):
+                continue  # Streaming owns authorized complete message ledgers.
             kind = "commentary" if event_type == _V4_COMMENTARY_TYPE else "answer"
             summary_id = ""
             if kind == "commentary":

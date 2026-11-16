@@ -7,7 +7,7 @@ import type { MessagePart } from "../../../../types";
 import "../../../../i18n";
 import { MessageWorkActivity } from "../MessageWorkActivity";
 
-test("collapsed work activity keeps failed and denied operation counts visible", async () => {
+test("one collapsed process keeps aggregate failure and denial counts visible", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const failedTool: Extract<MessagePart, { type: "tool" }> = {
     type: "tool",
@@ -57,10 +57,10 @@ test("collapsed work activity keeps failed and denied operation counts visible",
   );
 
   assert.match(markup, /aria-expanded="false"/);
+  assert.equal((markup.match(/data-message-work-details-toggle="true"/g) ?? []).length, 1);
   assert.match(markup, /data-work-activity-failed-count="true">· 3 项失败/);
   assert.match(markup, /data-work-activity-denied-count="true">· 2 项未授权/);
-  // The chevron follows the label; there is no separate right-aligned toggle text.
-  assert.doesNotMatch(markup, /查看执行详情|>全部展开<|>全部收起</);
+  assert.doesNotMatch(markup, /查看执行详情/);
 });
 
 test("streaming hides routine phases and keeps only the latest meaningful phase", async () => {
@@ -162,7 +162,7 @@ test("completed routine phases stay hidden while failed phases and cancelled too
   assert.match(markup, /1 项失败/);
 });
 
-test("groups only adjacent successful tools and leaves failures as separate visible work", async () => {
+test("all tools share one process without nested success groups", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const tool = (id: string, status: "completed" | "failed"): Extract<MessagePart, { type: "tool" }> => ({
     type: "tool",
@@ -182,13 +182,13 @@ test("groups only adjacent successful tools and leaves failures as separate visi
     }),
   );
 
-  assert.equal((markup.match(/data-tool-group/g) ?? []).length, 1);
-  assert.match(markup, /已完成 2 项连续工具操作/);
+  assert.equal((markup.match(/data-tool-group/g) ?? []).length, 0);
+  assert.equal((markup.match(/data-message-work-details-toggle="true"/g) ?? []).length, 1);
   assert.match(markup, /operation-failed/);
   assert.match(markup, /operation-3/);
 });
 
-test("work process disclosure renders above the answer so streaming text grows below it", async () => {
+test("explicit work precedes the separate result", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const answer = {
     type: "text",
@@ -216,7 +216,6 @@ test("work process disclosure renders above the answer so streaming text grows b
   const answerIndex = markup.indexOf('data-part="text"');
   const toggleIndex = markup.indexOf("data-message-work-details-toggle");
   assert.ok(answerIndex >= 0, "expected the answer part to render");
-  assert.ok(toggleIndex >= 0 && toggleIndex < answerIndex, "work disclosure must precede the answer");
-  assert.match(markup, /data-message-work-activity-order="process-first"/);
-  assert.doesNotMatch(markup, /result-first/);
+  assert.ok(toggleIndex >= 0 && toggleIndex < answerIndex, "earlier work stays before later text");
+  assert.match(markup, /data-message-work-activity-order="process-then-result"/);
 });
