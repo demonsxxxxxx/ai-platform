@@ -61,36 +61,34 @@ behavior only, not deployment or real provider acceptance.
 ## Current v4 public commentary and terminal text
 
 Execution's Claude adapter selects and sanitizes public text. Streaming owns
-the closed event schema and the frontend owns presentation. Ordinary chat uses
-`ResultMessage.result`, not a required `structured_output.answer` object.
-The SDK result is a terminal text observation; for streamed answers the
-callback-acknowledged v4 rows and validated answer receipt own stored content.
+the closed event schema and the frontend owns presentation. Ordinary chat uses main-Assistant native text increments, not a required
+`structured_output.answer` object or Result body backfill. Callback-acknowledged
+v4 rows and the validated answer receipt own stored content.
 Runs owns business success. Optional files use `attach_file` and Artifact
 validation independently of text; neither a JSON object nor prose creates an
 artifact record.
 
-The adapter reconciles raw/typed text and immediately gates each unique suffix
-before `message.part.delta`. A stable public part identifies its verified
-provider message; later `message.part.classified` facts select answer/work.
-Safe pending previews are visible before Tool/stop or Result; Thinking and raw
-Tool fields remain excluded. Work parts fold with activity and never enter the
-v2 answer receipt. Retained delta/v1 receipt and commentary/worktrace readers
-keep legacy semantics. No committed event row is rewritten.
+The adapter enables native partial messages and gates each unique text suffix
+before ordered `message.delta`. Completed blocks reconcile their own stream
+without repeating text; ordinary narration and later answers stay in event
+order. Thinking and raw Tool fields remain excluded. New output uses receipt
+v1 over all public deltas; part/v2 and commentary/worktrace readers remain for
+existing stored data. No committed event row is rewritten.
 
-The raw projector owns framing; typed blocks may arrive before block stop.
-The gate retains only necessary sensitive suffixes with their exact source
-ownership. Result adds only verified suffixes. Every callback still passes
+Native message/block identity coordinates partial and completed text, including
+completed blocks before block stop. The gate retains only necessary sensitive
+suffixes with their exact source ownership. Result never adds text. Every callback still passes
 current Attempt/lease authority and exact receipt/ACK, with <=8192 code points
 per part delta and <=100 events per batch. Tool completion evidence and Run
-success remain independent. Invalid classifications or history fail closed.
+success remain independent. Invalid historical part facts and unauthorized history still fail closed.
 
 The [streaming message design](../implementation/streaming-message-parts-design.md)
 and [wire contract](redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
-own the closed event family, receipt v2, UI phase rules, additive lookup indexes
-and coordinated release/rollback requirements. New readers must remain available
-while new rows and v2 receipts exist. This replaces classification-time whole
-source publication; selectors and owning tests now prove visible safe prefixes
-before stop, replay dedupe and final selection across live/history recovery.
+own the closed event family, ordered text/v1 receipt, historical part/v2 readers,
+stable UI order and release/rollback requirements. Keep part-capable readers
+while stored part rows/v2 receipts exist. Classification-time publication and
+text-driven fold phases are retired; regressions cover native increments before
+completed blocks/Result, replay dedupe and consistent live/history recovery.
 
 ## Change Contract: Compact terminal history hydration
 

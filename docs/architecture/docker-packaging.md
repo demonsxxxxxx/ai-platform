@@ -50,6 +50,9 @@ The existing APK security upgrades, libexpat minimum, proxy configuration,
 provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
 The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
 later for `CVE-2026-111497`; the base image ships `1.2.0-r1`.
+It also upgrades the installed `libxslt` package from `1.1.43-r3` to the
+repository security update (`1.1.43-r4` or later) for `CVE-2026-125350`,
+`CVE-2026-87636`, and `CVE-2026-9947`; no scanner suppression is introduced.
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs

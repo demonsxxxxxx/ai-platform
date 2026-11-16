@@ -1989,12 +1989,18 @@ async def test_internal_runtime_proxy_rejects_malformed_tokens_before_database(
 
 
 @pytest.mark.asyncio
-async def test_internal_runtime_proxy_bounds_streamed_request_before_database(monkeypatch) -> None:
+@pytest.mark.parametrize("provider,path", [
+    ("openai", "v1/chat/completions"),
+    ("openai", "v1/responses"),
+    ("anthropic", "v1/messages"),
+    ("anthropic", "v1/messages/count_tokens"),
+])
+async def test_internal_runtime_proxy_bounds_streamed_request_before_database(monkeypatch, provider, path) -> None:
     database_accessed = False
 
     chunks = iter(
         [
-            {"type": "http.request", "body": b"x" * (1024 * 1024), "more_body": True},
+            {"type": "http.request", "body": b"x" * 104_857_600, "more_body": True},
             {"type": "http.request", "body": b"x", "more_body": False},
         ]
     )
@@ -2029,8 +2035,8 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
 
     with pytest.raises(HTTPException) as raised:
         await model_routes.proxy_model_request(
-            "openai",
-            "v1/chat/completions",
+            provider,
+            path,
             request,
             x_ai_platform_run_id="run-123",
             x_ai_platform_attempt_id="attempt-123",
@@ -2040,7 +2046,67 @@ async def test_internal_runtime_proxy_bounds_streamed_request_before_database(mo
         )
 
     assert raised.value.status_code == 413
+    assert raised.value.detail == "model_proxy_request_too_large"
     assert database_accessed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,path", [
+    ("openai", "v1/chat/completions"),
+    ("openai", "v1/responses"),
+    ("anthropic", "v1/messages"),
+    ("anthropic", "v1/messages/count_tokens"),
+])
+@pytest.mark.parametrize("request_bytes", [1_744_783, 104_857_600])
+async def test_internal_runtime_proxy_accepts_large_serialized_model_requests(
+    monkeypatch, provider, path, request_bytes,
+):
+    prefix = b'{"model":"synthetic","max_tokens":32,"messages":[{"role":"user","content":"'
+    suffix = b'"}]}'
+    # Keep a multibyte character across an ASGI chunk boundary. Admission is
+    # based on serialized UTF-8 bytes, not characters or model-token counts.
+    payload = prefix + "中".encode() + b"x" * (request_bytes - len(prefix) - len(suffix) - 3) + suffix
+    split = len(prefix) + 1
+    chunks = iter([
+        {"type": "http.request", "body": payload[:split], "more_body": True},
+        {"type": "http.request", "body": payload[split:], "more_body": False},
+    ])
+
+    async def receive():
+        return next(chunks)
+
+    request = Request({
+        "type": "http", "method": "POST", "path": "/proxy",
+        "query_string": b"", "headers": [],
+    }, receive)
+    forwarded = []
+
+    async def proxy(**kwargs):
+        forwarded.append(kwargs)
+        return SimpleNamespace(
+            status=200, content_type="application/json", body=iter([b"{}"]),
+            close=None,
+        )
+
+    monkeypatch.setattr(
+        model_routes, "configured_model_control_plane",
+        lambda: SimpleNamespace(proxy=proxy),
+    )
+    response = await model_routes.proxy_model_request(
+        provider, path, request, x_ai_platform_run_id="run-123",
+        x_ai_platform_attempt_id="attempt-123", x_ai_platform_internal_token="internal-token",
+        x_ai_platform_model_authorization="Bearer attempt-capability",
+        x_ai_platform_model_api_key="",
+    )
+
+    assert response.status_code == 200
+    assert b"".join([chunk async for chunk in response.body_iterator]) == b"{}"
+    assert len(forwarded) == 1
+    assert forwarded[0]["body"] == payload
+    assert (forwarded[0]["provider"], forwarded[0]["upstream_path"]) == (provider, path)
+    assert forwarded[0]["model_proxy_capability"] == "attempt-capability"
+    assert len(payload) == request_bytes
+    assert json.loads(payload)["messages"][0]["content"].startswith("中")
 
 
 def test_model_provider_routes_require_admin_and_keep_provider_scope(monkeypatch):
