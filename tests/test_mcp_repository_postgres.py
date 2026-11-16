@@ -101,11 +101,14 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
         }
         # Recreate the pre-upgrade column shape while retaining real registry/credential rows.
         await conn.execute("alter table mcp_servers drop column integration_kind")
+        await conn.execute("alter table mcp_servers drop column default_tool_ids")
         await conn.execute(schema_source)
         upgraded_target = await mcp_repository.get_mcp_server_runtime_target(
             conn, tenant_id="tenant-mcp", server_name="gateway",
         )
         assert upgraded_target == runtime_target
+        upgraded_server = await mcp_repository.get_mcp_server_registry_entry(conn, tenant_id="tenant-mcp", name="gateway")
+        assert upgraded_server["default_tool_ids"] == []
         with pytest.raises(psycopg.errors.CheckViolation):
             await conn.execute("update mcp_servers set integration_kind = 'unknown'")
         assert tool is not None
@@ -166,6 +169,12 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
         assert created["allowed_roles"] == ["Reviewer"]
         assert created["role_quotas"] == {"Reviewer": 3}
         assert "catalog_status" not in created
+        from app.mcp.infrastructure.registry_postgres import set_mcp_default_tools
+        configured = await set_mcp_default_tools(conn, tenant_id="tenant-mcp-crud", name="crud-gateway", tool_ids=["crud-gateway::search"], expected_tool_ids=[], updated_by="user-mcp")
+        assert configured["default_tool_ids"] == ["crud-gateway::search"]
+        from app.platform.postgres.errors import RepositoryConflictError
+        with pytest.raises(RepositoryConflictError, match="mcp_default_tools_stale"):
+            await set_mcp_default_tools(conn, tenant_id="tenant-mcp-crud", name="crud-gateway", tool_ids=[], expected_tool_ids=[], updated_by="user-mcp")
 
         updated = await mcp_repository.upsert_mcp_server_registry(
             conn,
@@ -184,6 +193,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             credential_fingerprint="fingerprint-v2",
             updated_by="user-mcp",
         )
+        assert updated["default_tool_ids"] == ["crud-gateway::search"]
         assert updated["integration_kind"] == "mcp"
         assert updated["transport"] == "sse"
         assert updated["allowed_roles"] == ["Admin"]

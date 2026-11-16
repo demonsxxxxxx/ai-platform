@@ -61,7 +61,8 @@ MODEL_GROUP_DEFAULT_EXPERT_SCHEMA_VERSION = "2026.10.28.2"
 MODEL_PROVIDERS_SCHEMA_VERSION = "2026.10.29.1"
 MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION = "2026.10.29.2"
 CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION = "2026.11.02.1"
-TARGET_SCHEMA_VERSION = CONTINUATION_MAIN_INTEGRATION_SCHEMA_VERSION
+MCP_DEFAULT_TOOLS_SCHEMA_VERSION = "2026.11.11.1"
+TARGET_SCHEMA_VERSION = MCP_DEFAULT_TOOLS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -116,6 +117,7 @@ CRITICAL_RELATIONS = (
 RETIRED_RELATIONS = ("run_tool_permission_requests",)
 CRITICAL_COLUMNS = (
     ("mcp_servers", "integration_kind", "text", True),
+    ("mcp_servers", "default_tool_ids", "_text", True),
     ("users", "metadata_json", "jsonb", True),
     ("users", "auth_source", "text", True),
     ("users", "model_group_membership_revision", "int8", True),

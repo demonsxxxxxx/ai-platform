@@ -3,6 +3,10 @@ import type { TFunction } from "i18next";
 const SAFE_BACKEND_ERROR_COPY: Record<string, string> = {
   auth_refresh_unavailable: "认证服务暂时不可用，请稍后重试。",
   auth_refresh_in_progress: "身份刷新仍在处理中，请稍后重试。",
+  mcp_default_tools_stale: "默认工具已被其他操作修改，请重新打开工具列表后再保存。",
+  mcp_default_catalog_unavailable: "工具目录暂不可用，无法新增默认工具；请刷新目录后重试。",
+  mcp_default_tool_unavailable: "所选工具已不可用，请刷新工具目录后重新选择。",
+  mcp_default_tool_server_mismatch: "默认工具必须属于当前 MCP 服务器。",
   company_login_failed:
     "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。",
 };

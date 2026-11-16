@@ -46,6 +46,10 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.ok(source.includes('created group remains in the same drawer'));
   assert.ok(source.includes('models:created-group-model-saved'));
   assert.ok(source.includes('models:created-group-members'));
+  assert.match(source, /mcp:groups-collapsed/);
+  assert.match(source, /mcp:group-expanded/);
+  assert.match(source, /mcp:group-choice/);
+  assert.match(source, /mcp:default-child-persisted/);
   assert.match(source, /skill-distribution-receipt/);
   assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);

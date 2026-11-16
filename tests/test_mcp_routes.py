@@ -569,6 +569,7 @@ def install_mcp_route_fakes(
             "name": kwargs["name"],
             "transport": kwargs["transport"],
             "integration_kind": kwargs.get("integration_kind", "mcp"),
+            "default_tool_ids": list((existing or {}).get("default_tool_ids") or []),
             "status": "active" if kwargs["enabled"] else "disabled",
             "is_system": kwargs["is_system"],
             "allowed_roles": kwargs["allowed_roles"],
@@ -581,6 +582,14 @@ def install_mcp_route_fakes(
         }
         servers[kwargs["name"]] = server
         return dict(server)
+
+    async def fake_set_defaults(conn, **kwargs):
+        row = servers.get(kwargs["name"])
+        if not row or list(row.get("default_tool_ids") or []) != kwargs["expected_tool_ids"]:
+            raise RepositoryConflictError("mcp_default_tools_stale")
+        row["default_tool_ids"] = list(kwargs["tool_ids"])
+        calls.append(("set_defaults", dict(kwargs)))
+        return dict(row)
 
     async def fake_get_credential(conn, *, tenant_id, server_name):
         calls.append(
@@ -751,6 +760,7 @@ def install_mcp_route_fakes(
     )
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'archive_capability_distribution_row', fake_archive_distribution, raising=False)
     monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'record_mcp_server_credential', fake_record_credential, raising=False)
+    monkeypatch.setattr(mcp.mcp_repository, "set_mcp_default_tools", fake_set_defaults)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_registry_entry", fake_get_server)
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)
@@ -822,6 +832,27 @@ def test_enterprise_gateway_rejects_static_identity_headers(monkeypatch, header)
     assert not any(name == "upsert_server" for name, _ in calls)
 
 
+def test_administrator_sets_exact_defaults_without_granting_catalog_access(monkeypatch):
+    install_mcp_route_fakes(monkeypatch, tool_rows=[{"server_id": "gateway", "tool_id": "search", "description": "Synthetic"}])
+    client = TestClient(create_app())
+    path = "/api/mcp/gateway/default-tools"
+    body = {"tool_ids": ["gateway::search"], "expected_tool_ids": []}
+    assert client.put(path, headers=headers(), json=body).status_code == 403
+    response = client.put(path, headers=headers(roles="admin"), json=body)
+    assert response.status_code == 200
+    assert response.json()["default_tool_ids"] == ["gateway::search"]
+    assert client.put(path, headers=headers(roles="admin"), json=body).status_code == 409
+    catalog = client.get("/api/mcp/chat-tools", headers=headers()).json()
+    assert catalog["tools"][0]["default_enabled"] is True
+    for ids in (["other::search"], ["gateway::missing"], ["gateway::search", "gateway::search"], ["gateway::*"]):
+        result = client.put(path, headers=headers(roles="admin"), json={"tool_ids": ids, "expected_tool_ids": ["gateway::search"]})
+        assert result.status_code == 422
+    # A normal edit of connection settings must not erase defaults.
+    updated = client.put("/api/mcp/gateway", headers=headers(roles="admin"), json={"url": "https://example.test/mcp"})
+    assert updated.status_code == 200
+    assert updated.json()["default_tool_ids"] == ["gateway::search"]
+
+
 def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_selection(monkeypatch):
     calls = install_mcp_route_fakes(
         monkeypatch,
@@ -850,6 +881,7 @@ def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_sele
                 "category": "mcp",
                 "server": "private-server-production",
                 "cached": False,
+                "default_enabled": False,
             }
         ],
         "unavailable": [],

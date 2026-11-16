@@ -57,6 +57,7 @@ async def test_dynamic_server_registry_projection_excludes_legacy_catalog_state(
             "name": "gateway",
             "transport": "streamable_http",
             "integration_kind": "mcp",
+            "default_tool_ids": [],
             "endpoint_redacted": "",
             "status": "active",
             "is_system": False,

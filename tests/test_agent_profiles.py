@@ -1092,9 +1092,11 @@ def test_profile_copy_snapshot_preserves_private_prompt_model_and_exact_pins():
                 "revision": 4,
                 "content_hash": "a" * 64,
                 "instructions": "Private profile instruction",
+                "default_mcp_tool_ids": ["gateway::accepted-default"],
             },
         }
     )
+    assert source_snapshot["agent_profile"]["default_mcp_tool_ids"] == ["gateway::accepted-default"]
     source_run = {
         "agent_id": "agt_support",
         "admitted_agent_profile_revision": 4,
@@ -1201,7 +1203,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
             }
         ],
         "dependency_ids": [],
-        "mcp_tool_ids": ["profile-tool"],
+        "mcp_tool_ids": ["profile-tool", "gateway::accepted-default"],
     }
     secondary_manifest = {
         "skill_id": "profile-skill-secondary",
@@ -1237,7 +1239,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         "input_json": {
             "input": {
                 "message": "retry",
-                "mcp_tool_ids": ["profile-tool", "profile-tool-secondary"],
+                "mcp_tool_ids": ["profile-tool", "profile-tool-secondary", "gateway::accepted-default"],
             },
             "executor_type": "claude-agent-worker",
             "skill_version": locked_version,
@@ -1250,6 +1252,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
                     "revision": 4,
                     "content_hash": "a" * 64,
                     "instructions": "private profile instruction",
+                    "default_mcp_tool_ids": ["gateway::accepted-default"],
                     "skill_set": skill_set,
                 },
         },
@@ -1259,6 +1262,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
         return source
 
     async def resolve_bound(*_args, **_kwargs):
+        assert _kwargs["pinned_default_mcp_tool_ids"] == ("gateway::accepted-default",)
         return AgentProfileAdmission(
             agent_id="agt_support",
             revision=4,
@@ -1268,13 +1272,14 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
                 "skill_version": locked_version,
                 "executor_type": "claude-agent-worker",
             },
-            mcp_tool_ids=("profile-tool", "profile-tool-secondary"),
+            mcp_tool_ids=("profile-tool", "profile-tool-secondary", "gateway::accepted-default"),
             configured_mcp_tool_ids=(),
             private_execution_input={
                 "agent_id": "agt_support",
                 "revision": 4,
                 "content_hash": "a" * 64,
                 "instructions": "private profile instruction",
+                "default_mcp_tool_ids": ["gateway::accepted-default"],
                 "skill_set": skill_set,
             },
             public_identity=AgentConversationIdentity(
@@ -1305,7 +1310,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
 
     async def validate_replay_skill_manifests(*_args, **kwargs):
         replay_validation_calls.append({"manifest_validation": kwargs})
-        return ["profile-tool", "profile-tool-secondary"]
+        return ["profile-tool", "profile-tool-secondary", "gateway::accepted-default"]
 
     async def materialize_run_skill_manifests(*_args, **kwargs):
         refs = kwargs["skill_manifest_refs"]

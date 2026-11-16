@@ -32,7 +32,11 @@ function principal(id = "user-a", roles = ["admin"]): User {
     username: id, email: "synthetic@example.test", roles, permissions: [], is_active: true, created_at: "", updated_at: "" };
 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
-async function click(node: HTMLButtonElement) { await act(async () => { node.click(); }); }
+async function click(node: HTMLElement) { await act(async () => { node.click(); }); }
+async function expandToolGroups() {
+  const buttons = [...document.querySelectorAll<HTMLElement>('[data-mcp-tool-group] button[aria-expanded="false"]')];
+  for (const button of buttons) await click(button);
+}
 
 type Request = { url: URL; init: RequestInit };
 async function harness(child: ReactNode, fetcher?: (request: Request) => Promise<Response> | Response, discover?: (request: Request) => Promise<Response> | Response) {
@@ -83,6 +87,8 @@ test("administrator sees discovered tools and can inspect their public descripti
     await click(trigger);
     const detail = document.querySelector("[data-mcp-tool-detail]")!;
     assert.ok(detail);
+    assert.equal(detail.querySelectorAll("[data-mcp-tool-row]").length, 0);
+    await expandToolGroups();
     assert.match(detail.textContent!, /Synthetic alpha/);
     assert.match(detail.textContent!, /Synthetic beta/);
     assert.doesNotMatch(detail.textContent!, /example\.invalid|headers|credential/);
@@ -96,6 +102,86 @@ test("administrator sees discovered tools and can inspect their public descripti
     await act(async () => { await new Promise(requestAnimationFrame); });
     assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     assert.ok(document.activeElement === trigger, "closing restores the tools trigger focus");
+  } finally { await view.close(); }
+});
+
+test("administrator edits default tools, keeps failed drafts and saves exact IDs with a concurrency precondition", async () => {
+  let defaults: string[] = []; let fail = true;
+  const tools = [{ name: "synthetic-mcp::alpha", description: "Synthetic alpha", parameters: [] }, { name: "synthetic-mcp::missing", description: "Unavailable", parameters: [], available: false }];
+  const view = await harness(createElement(MCPPanel), ({ url, init }) => {
+    if (url.pathname.endsWith("/default-tools")) {
+      assert.equal(init.method, "PUT");
+      const body = JSON.parse(String(init.body));
+      assert.deepEqual(body, { tool_ids: ["synthetic-mcp::alpha"], expected_tool_ids: [] });
+      if (fail) return json({ detail: "mcp_default_tools_stale" }, 409);
+      defaults = body.tool_ids;
+      return json({ ...server, default_tool_ids: defaults });
+    }
+    return json({ servers: [{ ...server, default_tool_ids: defaults }], total: 1, skip: 0, limit: 20 });
+  }, () => json({ server_name: server.name, tools, count: 1, unavailable_reason: null }));
+  try {
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
+    await expandToolGroups();
+    const checkbox = () => document.querySelector<HTMLElement>('[aria-label="默认启用 synthetic-mcp::alpha"]')!;
+    const save = () => [...document.querySelectorAll<HTMLButtonElement>("[data-mcp-tool-detail] button")].find(node => node.textContent === "保存默认工具")!;
+    assert.ok(checkbox());
+    assert.equal(save().disabled, true);
+    await act(async () => { checkbox().click(); });
+    assert.equal(save().disabled, false);
+    await click(save());
+    assert.match(document.querySelector("[data-mcp-tool-detail] [role=alert]")!.textContent!, /默认工具已被其他操作修改/);
+    assert.equal(checkbox().getAttribute("aria-checked"), "true", "failed save preserves the explicit draft");
+    fail = false;
+    await click(save());
+    assert.deepEqual(defaults, ["synthetic-mcp::alpha"]);
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
+    await expandToolGroups();
+    assert.equal(checkbox().getAttribute("aria-checked"), "true");
+  } finally { await view.close(); }
+});
+
+test("administrator groups upstream services with collapsed counts, whole-group selection and search without losing other defaults", async () => {
+  let defaults = ["synthetic-mcp::mail"];
+  const tools = [
+    { name: "synthetic-mcp::list", description: "List drive files", upstream_server: "ProfileDriveMCPServer", parameters: [] },
+    { name: "synthetic-mcp::read", description: "Read drive files", upstream_server: "ProfileDriveMCPServer", parameters: [] },
+    { name: "synthetic-mcp::missing", description: "Unavailable drive tool", upstream_server: "ProfileDriveMCPServer", available: false, parameters: [] },
+    { name: "synthetic-mcp::mail", description: "Read mail", upstream_server: "AliMailMCPServer", parameters: [] },
+    { name: "synthetic-mcp::unknown", description: "Unknown source", upstream_server: null, parameters: [] },
+  ];
+  const view = await harness(createElement(MCPPanel), ({ init }) => {
+    if (init.method === "PUT") {
+      const body = JSON.parse(String(init.body));
+      assert.deepEqual(body.expected_tool_ids, ["synthetic-mcp::mail"]);
+      defaults = body.tool_ids;
+      return json({ ...server, default_tool_ids: defaults });
+    }
+    return json({ servers: [{ ...server, integration_kind: "enterprise_gateway", default_tool_ids: defaults }], total: 1, skip: 0, limit: 20 });
+  }, () => json({ server_name: server.name, tools, count: 4, unavailable_reason: null }));
+  try {
+    await click(view.container.querySelector<HTMLElement>("[data-mcp-view-tools]")!);
+    assert.equal(document.querySelectorAll("[data-mcp-tool-group]").length, 3);
+    assert.equal(document.querySelectorAll("[data-mcp-tool-row]").length, 0);
+    const group = () => document.querySelector<HTMLElement>('[aria-label="默认启用分组 ProfileDriveMCPServer"]')!;
+    await click(group());
+    assert.equal(group().getAttribute("aria-checked"), "true");
+    const section = () => group().closest("section")!;
+    assert.match(section().textContent!, /2\/3/);
+    await click(section().querySelector<HTMLElement>("button[aria-expanded]")!);
+    assert.equal(section().querySelectorAll("[data-mcp-tool-row]").length, 3);
+    const single = (name: string) => document.querySelector<HTMLElement>(`[aria-label="默认启用 synthetic-mcp::${name}"]`)!;
+    assert.equal(single("missing").getAttribute("aria-disabled"), "true");
+    await click(single("list"));
+    assert.equal(group().getAttribute("aria-checked"), "mixed");
+    await act(async () => { changeInput(document.querySelector<HTMLInputElement>('[data-mcp-tool-detail] input[type="search"]')!, "read"); });
+    assert.equal(section().querySelectorAll("[data-mcp-tool-row]").length, 1);
+    await click(group());
+    assert.match(section().textContent!, /2\/3/);
+    await act(async () => { changeInput(document.querySelector<HTMLInputElement>('[data-mcp-tool-detail] input[type="search"]')!, "ProfileDriveMCPServer"); });
+    assert.equal(document.querySelectorAll("[data-mcp-tool-group]").length, 1);
+    assert.equal(section().querySelectorAll("[data-mcp-tool-row]").length, 3);
+    await click([...document.querySelectorAll<HTMLElement>("[data-mcp-tool-detail] button")].find(node => node.textContent === "保存默认工具")!);
+    assert.deepEqual([...defaults].sort(), ["synthetic-mcp::list", "synthetic-mcp::mail", "synthetic-mcp::read"]);
   } finally { await view.close(); }
 });
 
@@ -137,6 +223,7 @@ test("enterprise catalog retains missing definitions without counting them as av
     assert.ok(view.discoveryCalls.every(call => call.url.pathname.endsWith("/catalog")));
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
     const detail = document.querySelector("[data-mcp-tool-detail]")!;
+    await expandToolGroups();
     assert.equal(detail.querySelectorAll("li").length, 2);
     assert.match(detail.textContent!, /Gateway 全量目录/);
     assert.match(detail.textContent!, /缺失或已停用/);
@@ -189,6 +276,7 @@ test("refresh masks the previous count and updates the open tool detail", async 
     assert.doesNotMatch(document.querySelector("[data-mcp-tool-detail]")!.textContent!, /Synthetic tool/);
     await act(async () => pending.resolve(response(1)));
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
+    await expandToolGroups();
     assert.equal(document.querySelectorAll("[data-mcp-tool-detail] li").length, 1);
     const search = document.querySelector<HTMLInputElement>('[data-mcp-tool-detail] input[type="search"]')!;
     await act(async () => changeInput(search, "no-such-tool"));
@@ -207,6 +295,7 @@ test("late tool discovery cannot publish across a secondary membership change wi
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
     await act(async () => old.resolve(json({ server_name: server.name, tools: [{ name: "old-tool", description: "Old private description", parameters: [] }], count: 1, unavailable_reason: null })));
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
+    await expandToolGroups();
     assert.match(document.querySelector("[data-mcp-tool-detail]")!.textContent!, /Current synthetic tool/);
     assert.doesNotMatch(view.container.textContent!, /Old private description/);
     assert.equal(view.discoveryCalls.length, 2);
@@ -358,6 +447,7 @@ test("retained CRUD callbacks cannot issue requests after denial or while recove
       assert.equal(await old.deleteServer(server.name), false);
       assert.equal(await old.toggleServer(server.name), null);
       assert.equal(await old.getServer(server.name), null);
+      assert.equal(await old.saveDefaultTools(server.name, [], []), null);
     };
     await act(tryOldOperations); assert.equal(view.calls.length, 2);
     await act(async () => { assert.equal(await hook.fetchServers(), false); });

@@ -26,11 +26,17 @@ export async function collectMcpTools(
         const response = await discover(name);
         if (response.unavailable_reason !== null || response.server_name !== name ||
           !Array.isArray(response.tools) || !Number.isInteger(response.count) || response.count !== response.tools.filter((tool) => tool?.available !== false).length ||
-          response.tools.some((tool) => !tool || typeof tool.name !== "string" || !tool.name || typeof tool.description !== "string" || (tool.available !== undefined && typeof tool.available !== "boolean")) ||
+          response.tools.some((tool) => !tool || typeof tool.name !== "string" || !tool.name || typeof tool.description !== "string" || (tool.available !== undefined && typeof tool.available !== "boolean") ||
+            (tool.upstream_server !== undefined && tool.upstream_server !== null &&
+              (typeof tool.upstream_server !== "string" || !tool.upstream_server.trim() ||
+                new TextEncoder().encode(tool.upstream_server).length > 128 || Array.from(tool.upstream_server).some((character) => {
+                  const code = character.codePointAt(0) ?? 0;
+                  return code < 32 || code === 127;
+                })))) ||
           new Set(response.tools.map((tool) => tool.name)).size !== response.tools.length) {
           unavailableServers.add(name);
         } else {
-          toolsByServer.set(name, response.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: [], ...(tool.available !== undefined ? { available: tool.available } : {}) })));
+          toolsByServer.set(name, response.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: [], ...(tool.available !== undefined ? { available: tool.available } : {}), ...(tool.upstream_server !== undefined ? { upstream_server: tool.upstream_server } : {}) })));
         }
       } catch {
         unavailableServers.add(name);

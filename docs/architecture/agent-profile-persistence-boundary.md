@@ -136,6 +136,22 @@ characters. The model-facing catalog preserves all configured roots and trims
 descriptions to its 32 KiB serialized budget; package versions and material
 hashes are unaffected by description trimming.
 
+New Profile Runs also include platform-administrator MCP defaults as shared base
+capabilities, in addition to the Profile's configured tools and Skill dependencies.
+MCP owns the tenant/connection-scoped default settings and resolves them against
+current principal authorization and user-effective live discovery. An empty
+configuration preserves existing behavior. Defaults do not alter immutable Profile
+definitions, publication hashes or public projections. Publication continues to
+validate the Profile's explicit selections; defaults are optional Run-owned input.
+
+The private admitted Profile execution snapshot may additionally carry
+`default_mcp_tool_ids`, containing the exact resolved defaults for that Run.
+Missing means an empty set for existing snapshots. Dispatch, retry, resume and
+copy reconstruct this accepted field and intersect with current authorization;
+they never resolve or append current registry defaults. The durable Run remains
+the source of this field, not client input or reconciliation metadata. New
+ordinary expert turns resolve current defaults independently.
+
 Optional MCP availability filters executable capabilities. Dispatch intersects
 the accepted set with current availability; a restored tool is not added to an
 accepted Run. Revocation does not invalidate the immutable profile snapshot.
@@ -192,8 +208,10 @@ an upgraded database exposes one write contract.
 - Visibility ACL checks fail closed.
 - Public projection is an allowlist and cannot expose executor-private data.
 - Profile admission cannot override Run-owned model selection.
-- Skill and MCP identifiers are accepted only from the immutable authorized
-  profile definition.
+- Skill identifiers come from the immutable authorized Profile definition.
+  MCP identifiers come from that definition, its declared dependencies and the
+  platform-resolved defaults fixed in the accepted Run snapshot; expert client
+  input cannot widen any of these sources.
 - Conversation provenance and accepted Run snapshots are never rewritten by a
   later publication. New Run admission independently resolves the current
   publication as specified in section 5.

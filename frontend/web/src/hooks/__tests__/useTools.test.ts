@@ -68,6 +68,12 @@ test("validates ready, empty, and degraded Chat MCP catalogs without retaining p
   ]);
 });
 
+test("projects administrator default flags only as booleans", () => {
+  const catalog = parseChatMcpCatalogResponse(response({ tools: [{ ...response().tools[0], default_enabled: true }] }));
+  assert.equal(catalog.tools[0].default_enabled, true);
+  assert.throws(() => parseChatMcpCatalogResponse(response({ tools: [{ ...response().tools[0], default_enabled: "true" }] })), /chat_mcp_catalog_tool_invalid/);
+});
+
 test("projects optional Gateway upstream source metadata without exposing extra fields", () => {
   const catalog = parseChatMcpCatalogResponse(response({
     tools: [{

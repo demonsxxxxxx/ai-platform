@@ -156,6 +156,7 @@ create table if not exists mcp_servers (
   name text not null,
   transport text not null default 'streamable_http',
   integration_kind text not null default 'mcp',
+  default_tool_ids text[] not null default array[]::text[],
   endpoint_redacted text not null default '',
   status text not null default 'active',
   is_system boolean not null default false,
@@ -175,6 +176,7 @@ create table if not exists mcp_servers (
 );
 
 alter table mcp_servers add column if not exists integration_kind text not null default 'mcp';
+alter table mcp_servers add column if not exists default_tool_ids text[] not null default array[]::text[];
 do $$
 begin
   if not exists (

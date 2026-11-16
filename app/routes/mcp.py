@@ -134,6 +134,19 @@ class McpServerLifecycleRequest(BaseModel):
         return normalized
 
 
+class McpDefaultToolsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool_ids: list[str] = Field(max_length=1000)
+    expected_tool_ids: list[str] = Field(max_length=1000)
+
+    @field_validator("tool_ids", "expected_tool_ids")
+    @classmethod
+    def validate_tool_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("mcp_default_tools_duplicate")
+        return [mcp_repository.assert_mcp_tool_reference(item) for item in value]
+
+
 class McpServerToggleRequest(BaseModel):
     """Accept frontend toggle aliases for MCP server enablement changes."""
 
@@ -233,6 +246,7 @@ def _server_response(
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
         "integration_kind": str(row.get("integration_kind") or "mcp"),
+        "default_tool_ids": list(row.get("default_tool_ids") or []),
         "status": distribution_status,
         "enabled": enabled,
         "visible_to_user": bool((distribution or {}).get("visible_to_user")),
@@ -574,7 +588,9 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
             )
 
     results = await asyncio.gather(*(discover(server_id) for server_id in server_ids))
-    tools = [tool.public_payload() for result in results for tool in result.tools]
+    default_ids = {tool_id for row in authorized for tool_id in row.get("default_tool_ids") or []}
+    tools = [{**tool.public_payload(), "default_enabled": tool.tool_id in default_ids}
+             for result in results for tool in result.tools]
     tools.sort(key=lambda item: (str(item["server"]), str(item["label"])))
     unavailable = [
         {"label": result.server_id, "reason": result.unavailable_reason}
@@ -795,6 +811,7 @@ async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depen
     result = await _management_catalog(principal, row)
     return {
         "server_name": safe_name,
+        "default_tool_ids": list(row.get("default_tool_ids") or []),
         "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
                    **({"upstream_server": tool.upstream_server} if tool.gateway_source else {}),
                    "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
@@ -802,6 +819,44 @@ async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depen
         "count": sum(tool.available is not False for tool in result.tools),
         "unavailable_reason": result.unavailable_reason,
     }
+
+
+@router.put("/mcp/{name}/default-tools")
+async def set_default_tools(
+    name: str, principal: AuthPrincipal = Depends(require_principal),
+    payload: Any = Body(default=None),
+) -> dict[str, Any]:
+    _require_admin(principal)
+    safe_name = _safe_name(name)
+    request = _request_model(McpDefaultToolsRequest, payload)
+    if any(mcp_repository.parse_mcp_tool_reference(item)[0] != safe_name
+           for item in request.tool_ids + request.expected_tool_ids):
+        raise HTTPException(status_code=422, detail="mcp_default_tool_server_mismatch")
+    row, distribution, _ = await _public_server_access(principal=principal, name=safe_name, management=True)
+    # Removing a stale default must work even when discovery is unavailable.
+    additions = set(request.tool_ids) - set(row.get("default_tool_ids") or [])
+    if additions:
+        result = await _management_catalog(principal, row)
+        if result.unavailable_reason:
+            raise HTTPException(status_code=409, detail="mcp_default_catalog_unavailable")
+        available = {tool.tool_id for tool in result.tools if tool.available is not False}
+        if not additions.issubset(available):
+            raise HTTPException(status_code=422, detail="mcp_default_tool_unavailable")
+    try:
+        async with transaction() as conn:
+            updated = await mcp_repository.set_mcp_default_tools(
+                conn, tenant_id=principal.tenant_id, name=safe_name,
+                tool_ids=request.tool_ids, expected_tool_ids=request.expected_tool_ids,
+                updated_by=principal.user_id,
+            )
+            await identity_audit.append_audit_log(
+                conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+                action="mcp.defaults.updated", target_type="mcp_server", target_id=safe_name,
+                trace_id=standard_trace_id(), payload_json={"tool_ids": request.tool_ids},
+            )
+    except platform_errors.RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail="mcp_default_tools_stale") from exc
+    return _server_response(updated, distribution=distribution, can_edit=True)
 
 
 @router.get("/mcp/chat-tools")

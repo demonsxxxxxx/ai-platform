@@ -375,7 +375,7 @@ export function useMCP(options?: {
   // Details and mutations share the catalog's authorization and lifetime. A
   // new read, identity change, or failure fences every older completion.
   const requestServer = useCallback(async <T,>(
-    load: () => Promise<T>, mutation: boolean,
+    load: () => Promise<T>, mutation: boolean, retainDraft = false,
   ): Promise<T | null> => {
     const current = catalogStateRef.current;
     if (!mountedRef.current || pausedRef.current || !enabled || !canManageServers || activeRequestScopeRef.current !== requestScope ||
@@ -399,7 +399,8 @@ export function useMCP(options?: {
       if (!isActiveCatalogRequest(request)) return null;
       // Advance the same request owner so concurrent old details cannot reopen
       // an editor after the backend has rejected this scope.
-      const failureRequest = beginCatalogRequest(requestScope);
+      const denied = err instanceof ApiRequestError && (err.status === 401 || err.status === 403);
+      const failureRequest = retainDraft && !denied ? request : beginCatalogRequest(requestScope);
       if (failureRequest) publishFailure(failureRequest, err, "operation");
       return null;
     } finally {
@@ -423,6 +424,11 @@ export function useMCP(options?: {
     () => authFetch<MCPServerResponse>(`${isSystem ? "/api/admin/mcp" : API_BASE}/${encodeURIComponent(name)}`, {
       method: "PUT", body: JSON.stringify(updates),
     }), true,
+  ), [requestServer]);
+  const saveDefaultTools = useCallback((name: string, toolIds: string[], expectedToolIds: string[]) => requestServer(
+    () => authFetch<MCPServerResponse>(`${API_BASE}/${encodeURIComponent(name)}/default-tools`, {
+      method: "PUT", body: JSON.stringify({ tool_ids: toolIds, expected_tool_ids: expectedToolIds }),
+    }), true, true,
   ), [requestServer]);
   const deleteServer = useCallback(async (name: string, isSystem = false): Promise<boolean> => {
     const result = await requestServer(async () => {
@@ -463,6 +469,7 @@ export function useMCP(options?: {
     getServer,
     createServer,
     updateServer,
+    saveDefaultTools,
     deleteServer,
     toggleServer,
   };

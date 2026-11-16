@@ -17,6 +17,37 @@ from app.platform.postgres.errors import RepositoryAuthorizationError, Repositor
 MODES = ("authorize_selected_chat", "authorize_available_chat", "authorize_selected_replay")
 
 
+@pytest.mark.asyncio
+async def test_default_tools_intersect_configuration_current_authority_and_live_user_catalog():
+    from app.mcp.application.default_tools import McpDefaultTools
+    calls = []
+    async def servers(conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "include_disabled": False}
+        return [{"name": "gateway", "default_tool_ids": ["gateway::allowed", "gateway::revoked", "gateway::offline"]}]
+    async def available(conn, **kwargs):
+        calls.append(kwargs)
+        return [{"tool_id": item} for item in kwargs["tool_ids"] if item != "gateway::revoked"]
+    async def live(**kwargs):
+        assert kwargs["tool_ids"] == ["gateway::allowed", "gateway::offline"]
+        return {"gateway::allowed", "gateway::unconfigured-new-tool"}
+    service = McpDefaultTools(list_servers=servers, authorize_available=available, discover=live, is_admin=lambda _: False)
+    principal = SimpleNamespace(tenant_id="tenant-a", user_id="user-a", department_id="100", department_ids=("100",), roles=["user"], permissions=[])
+    assert await service.resolve(object(), principal=principal) == ["gateway::allowed"]
+    assert calls[0]["principal_department_ids"] == ("100",)
+    assert calls[0]["is_admin"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_default_configuration_does_not_discover_or_read_credentials():
+    from app.mcp.application.default_tools import McpDefaultTools
+    async def servers(*_args, **_kwargs):
+        return [{"name": "gateway", "default_tool_ids": []}]
+    async def unexpected(*_args, **_kwargs):
+        pytest.fail("empty defaults must not trigger authorization or remote discovery")
+    service = McpDefaultTools(list_servers=servers, authorize_available=unexpected, discover=unexpected, is_admin=lambda _: False)
+    assert await service.resolve(object(), principal=SimpleNamespace(tenant_id="tenant-a")) == []
+
+
 def tool(tool_id="gateway::search", **changes):
     return {
         "tool_id": tool_id, "server_id": "gateway", "allowed_tools": [tool_id.split("::")[-1]],
