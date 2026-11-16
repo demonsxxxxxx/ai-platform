@@ -65,35 +65,16 @@ def _accept_gated_answer(adapter, value):
 
 
 def _assert_sandbox_answer_receipt(result, candidates, answer):
-    delta_candidates = [
-        candidate
-        for candidate in candidates
-        if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.part.delta"
-    ]
-    answer_parts = {
-        candidate.payload["part_id"]
-        for candidate in candidates
-        if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.part.classified"
-        and candidate.payload["role"] == "answer"
-    }
-    selected_deltas = [
-        candidate
-        for candidate in delta_candidates
-        if candidate.payload["part_id"] in answer_parts
-    ]
+    deltas = [candidate for candidate in candidates if candidate.event_type == "message.delta"]
     assert result.message == ""
-    assert "".join(candidate.payload["delta"] for candidate in selected_deltas) == answer
+    assert "".join(candidate.payload["delta"] for candidate in deltas) == answer
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
-        "message_id": selected_deltas[0].message_id,
-        "delta_count": len(selected_deltas),
-        "text_length": len(answer),
-        "last_delta_event_id": selected_deltas[-1].event_id,
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "message_id": deltas[0].message_id,
+        "delta_count": len(deltas), "text_length": len(answer),
+        "last_delta_event_id": deltas[-1].event_id,
     }
-    assert selected_deltas
-    assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in selected_deltas)
+    assert deltas and all(len(candidate.payload["delta"]) <= 8_192 for candidate in deltas)
 
 
 def _framed_sdk_answer_events(
@@ -331,21 +312,17 @@ def test_v4_candidate_validates_answer_shape_while_structured_fields_remain_sani
     assert partial_answer_candidate.payload["delta"] == "token-cou"
 
 
-def test_part_delta_trusts_the_stateful_public_gate_for_fragment_safety():
+def test_text_delta_trusts_the_stateful_public_gate_for_fragment_safety():
     def fragment_sanitizer(value):
         return value.replace("Raw ", "████")
 
     candidate = ClaudeAgentEventCandidate(
         run_id="run-1187",
         event_id="event-gated-part",
-        event_type="message.part.delta",
+        event_type="message.delta",
         message_id="message-1",
         causation_event_id=None,
-        payload={
-            "schema_version": "ai-platform.assistant-text-part.v1",
-            "part_id": "part_" + "a" * 32,
-            "delta": "Raw ",
-        },
+        payload={"delta": "Raw "},
         payload_sanitizer=sanitize_public_event_candidate,
         text_sanitizer=fragment_sanitizer,
     )
@@ -373,70 +350,18 @@ def test_answer_candidates_follow_the_public_gate_and_have_one_stable_message_id
     assert events[-1].causation_event_id == delta_events[-1].event_id
 
 
-def test_text_parts_are_opaque_classified_and_receipt_selects_answers_only():
+def test_public_text_does_not_need_semantic_classification_to_complete():
     adapter = _adapter()
-    work_source = ("private-provider-work-message", "private-parent-id")
-    first_answer = ("private-provider-answer-one", None)
-    second_answer = ("private-provider-answer-two", None)
-
-    work_delta = adapter.accept_part_text(work_source, "Checking sources.")
-    work_role = adapter.classify_text_part(work_source, "work")
-    first_delta = adapter.accept_part_text(first_answer, "文" * 8_193)
-    first_role = adapter.classify_text_part(first_answer, "answer")
-    second_delta = adapter.accept_part_text(second_answer, "Final")
-    second_role = adapter.classify_text_part(second_answer, "answer")
+    text = "Checking sources. " + "文" * 8_193 + "Final"
+    events = adapter.accept_answer_text(text)
     completed = adapter.complete_answer(None)
-
-    part_events = [
-        *work_delta,
-        *work_role,
-        *first_delta,
-        *first_role,
-        *second_delta,
-        *second_role,
-    ]
-    answer_deltas = [
-        event for event in (*first_delta, *second_delta)
-        if event.event_type == "message.part.delta"
-    ]
-    assert adapter.part_id_for_source(first_answer) == first_delta[1].payload["part_id"]
-    assert all(
-        event.payload["schema_version"] == "ai-platform.assistant-text-part.v1"
-        for event in part_events
-        if event.event_type.startswith("message.part.")
-    )
-    assert all(len(event.payload["delta"]) <= 8_192 for event in answer_deltas)
-    assert "private-provider" not in str([event.as_dict() for event in part_events])
-    assert adapter.has_unclassified_text_parts is False
-    assert [event.event_type for event in completed] == ["message.completed"]
-    expected_answer = "文" * 8_193 + "\n\nFinal"
-    assert completed[0].payload == {
-        "delta_count": 3,
-        "text_length": len(expected_answer),
-    }
-    assert completed[0].causation_event_id == answer_deltas[-1].event_id
-    assert adapter.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
-        "message_id": completed[0].message_id,
-        "delta_count": 3,
-        "text_length": len(expected_answer),
-        "last_delta_event_id": answer_deltas[-1].event_id,
-    }
-
-
-def test_successful_part_completion_rejects_unclassified_text():
-    adapter = _adapter()
-    source = ("provider-pending", None)
-    delta = adapter.accept_part_text(source, "Pending text")
-
-    assert [event.event_type for event in delta] == [
-        "message.started",
-        "message.part.delta",
-    ]
-    assert adapter.has_unclassified_text_parts is True
-    assert adapter.complete_answer(None) == ()
-    assert adapter.answer_receipt is None
-    assert adapter.public_projection_omissions == 1
+    deltas = [event for event in events if event.event_type == "message.delta"]
+    assert "".join(event.payload["delta"] for event in deltas) == text
+    assert all(len(event.payload["delta"]) <= 8_192 for event in deltas)
+    assert completed[0].payload == {"delta_count": len(deltas), "text_length": len(text)}
+    assert completed[0].causation_event_id == deltas[-1].event_id
+    assert adapter.answer_receipt["schema_version"] == "ai-platform.assistant-answer-receipt.v1"
+    assert not hasattr(adapter, "classify_text_part")
 
 
 def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
@@ -1359,7 +1284,7 @@ async def test_runner_tool_only_success_keeps_activity_without_public_answer(mon
     assert "subagent.started" in candidate_types
     assert "subagent.completed" in candidate_types
     assert "message.delta" not in candidate_types
-    assert "message.part.delta" not in candidate_types
+    assert "message.delta" not in candidate_types
     assert "message.completed" not in candidate_types
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
@@ -1431,17 +1356,17 @@ async def test_runner_streams_and_receipts_ordinary_completed_text(
     delta_values = [
         candidate.payload["delta"]
         for candidate in candidates
-        if candidate.event_type == "message.part.delta"
+        if candidate.event_type == "message.delta"
     ]
     assert "".join(delta_values) == answer
     assert delta_values and all(len(delta) <= 8_192 for delta in delta_values)
     event_types = [candidate.event_type for candidate in candidates]
     assert event_types[0] == "message.started"
     assert event_types[-2:] == ["message.completed", "model.completed"]
-    assert event_types.count("message.part.classified") == 1
-    assert event_types[1] == "message.part.delta"
+    assert "message.part.classified" not in event_types
+    assert event_types[1] == "message.delta"
     assert all(
-        event_type in {"message.part.delta", "message.part.classified"}
+        event_type == "message.delta"
         for event_type in event_types[1:-2]
     )
 
@@ -1498,13 +1423,13 @@ async def test_runner_reconciles_fragmented_public_answer_into_parts(
     deltas = [
         candidate
         for candidate in candidates
-        if candidate.event_type == "message.part.delta"
+        if candidate.event_type == "message.delta"
     ]
     assert result.error is None
     assert "".join(candidate.payload["delta"] for candidate in deltas) == answer
     assert deltas and all(len(candidate.payload["delta"]) <= 8_192 for candidate in deltas)
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": deltas[0].message_id,
         "delta_count": len(deltas),
         "text_length": len(answer),
@@ -1583,8 +1508,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
     candidate_types = [candidate.event_type for candidate in candidates]
     assert candidate_types[0] == "message.started"
     assert candidate_types[-2:] == ["message.completed", "model.completed"]
-    assert candidate_types[1:2] == ["message.part.delta"]
-    assert candidate_types[2] == "message.part.classified"
+    assert candidate_types[1:2] == ["message.delta"]
 
 
 @pytest.mark.asyncio
@@ -1648,7 +1572,7 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
     assert len(callback_batches) == 1
     assert [candidate.event_type for candidate in callback_batches[0]] == [
         "message.started",
-        "message.part.delta",
+        "message.delta",
     ]
 
 
@@ -1776,7 +1700,7 @@ async def test_timer_text_callback_failure_returns_structured_runner_error(monke
     )
     assert result.message == ""
     assert result.answer_receipt is None
-    assert "message.part.delta" in [candidate.event_type for candidate in candidates]
+    assert "message.delta" in [candidate.event_type for candidate in candidates]
     assert "message.completed" not in [candidate.event_type for candidate in candidates]
 
 
@@ -1939,7 +1863,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
     assert result.error == "agent_event_callback_not_acknowledged"
     assert result.answer_receipt is None
     assert [candidate.event_type for candidate in callback_batches[-1]] == (
-        ["message.part.delta"]
+        ["message.delta"]
         if target_kind == "later_delta"
         else ["message.completed", "model.completed"]
     )
@@ -2040,7 +1964,7 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         candidate.payload["delta"]
         for candidate in candidates
         if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.part.delta"
+        and candidate.event_type == "message.delta"
     ]
     assert len(callback_batches) >= len(deltas)
     assert len(deltas) >= delta_count
