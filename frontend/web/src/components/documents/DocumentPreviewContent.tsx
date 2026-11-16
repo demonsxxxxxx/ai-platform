@@ -119,7 +119,7 @@ export default function DocumentPreviewContent({
           <Spin size={32} />
 
         </div>
-        <p className="text-sm text-stone-500 dark:text-stone-400 font-medium">
+        <p className="text-sm text-neutral-500 dark:text-neutral-400 font-medium">
           {t("documents.loadingFileContent")}
         </p>
       </div>
@@ -129,14 +129,14 @@ export default function DocumentPreviewContent({
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center py-16 sm:py-20 gap-4 px-4">
-        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-red-100 dark:bg-red-900/30">
-          <AlertCircle size={28} className="text-red-500" />
+        <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-[var(--theme-danger-soft)]">
+          <AlertCircle size={28} className="text-[var(--theme-danger-text)]" />
         </div>
         <div className="text-center">
-          <p className="text-sm text-red-600 dark:text-red-400 font-medium mb-2">
+          <p className="text-sm text-[var(--theme-danger-text)] font-medium mb-2">
             {error}
           </p>
-          <p className="text-xs text-stone-400 dark:text-stone-500">
+          <p className="text-xs text-neutral-400 dark:text-neutral-500">
             {t("documents.unableToLoadContent")}
           </p>
         </div>
@@ -199,12 +199,12 @@ export default function DocumentPreviewContent({
 
   if (resolvedVideoFile && videoUrl) {
     return (
-      <div className="flex items-center justify-center h-full bg-gradient-to-b from-stone-900 to-stone-950 min-h-[400px] p-4 sm:p-8">
+      <div className="flex items-center justify-center h-full bg-gradient-to-b from-neutral-900 to-neutral-950 min-h-[400px] p-4 sm:p-8">
         <div className="relative w-full max-w-4xl mx-auto">
           <video
             controls
             autoPlay={false}
-            className="w-full max-h-[65vh] rounded-xl shadow-2xl ring-1 ring-white/10"
+            className="w-full max-h-[65vh] rounded-xl shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)]"
             src={videoUrl}
             style={{ margin: "0 auto", display: "block" }}
           >
@@ -272,8 +272,8 @@ export default function DocumentPreviewContent({
       <Suspense fallback={suspenseFallback}>
         <FileFallbackPanel
           icon={Icon}
-          iconBg="bg-blue-100 dark:bg-blue-900/40"
-          iconColor="text-blue-600 dark:text-blue-400"
+          iconBg="bg-[var(--theme-info-soft)]"
+          iconColor="text-[var(--theme-info-text)]"
           title={t("documents.docNotSupported") || "不支持预览旧版 Word 文档"}
           description={
             t("documents.docConvertHint") ||
@@ -306,7 +306,7 @@ export default function DocumentPreviewContent({
   if (resolvedImageFile || imageUrl) {
     return (
       <>
-        <div className="flex items-center justify-center p-4 sm:p-8 bg-stone-50 dark:bg-stone-800/50 h-full overflow-auto">
+        <div className="flex items-center justify-center p-4 sm:p-8 bg-neutral-50 dark:bg-neutral-800/50 h-full overflow-auto">
           <img
             src={imageUrl || `data:image/${ext};base64,${data?.content}`}
             alt={fileName}

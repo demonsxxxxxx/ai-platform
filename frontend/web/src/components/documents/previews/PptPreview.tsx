@@ -86,13 +86,13 @@ const PptPreview = memo(function PptPreview({
 
   if (!loading && textSlides.length > 0) {
     return (
-      <div className="h-full min-h-[400px] overflow-auto bg-stone-50 p-4 dark:bg-stone-950/40">
+      <div className="h-full min-h-[400px] overflow-auto bg-neutral-50 p-4 dark:bg-neutral-950/40">
         <div className="mx-auto max-w-4xl space-y-3">
-          <div className="rounded-lg border border-stone-200 bg-white px-4 py-3 shadow-sm dark:border-stone-800 dark:bg-stone-900">
-            <div className="text-sm font-semibold text-stone-800 dark:text-stone-100">
+          <div className="rounded-lg border border-neutral-200 bg-white px-4 py-3 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">
               {fileName}
             </div>
-            <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+            <div className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
               {t(
                 "documents.pptPreviewTextMode",
                 "已使用安全文本模式加载 PowerPoint。",
@@ -102,14 +102,14 @@ const PptPreview = memo(function PptPreview({
           {textSlides.map((slide) => (
             <section
               key={slide.id}
-              className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-900"
+              className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
             >
-              <h3 className="text-xs font-semibold uppercase text-stone-400 dark:text-stone-500">
+              <h3 className="text-xs font-semibold uppercase text-neutral-400 dark:text-neutral-500">
                 {t("documents.pptSlideLabel", "幻灯片 {{count}}", {
                   count: slide.number,
                 })}
               </h3>
-              <div className="mt-3 space-y-1 text-sm leading-6 text-stone-700 dark:text-stone-200">
+              <div className="mt-3 space-y-1 text-sm leading-6 text-neutral-700 dark:text-neutral-200">
                 {slide.text.map((line, index) => (
                   <p key={`${slide.id}:${index}`}>{line}</p>
                 ))}
@@ -125,8 +125,8 @@ const PptPreview = memo(function PptPreview({
     return (
       <FileFallbackPanel
         icon={FileWarning}
-        iconBg="bg-amber-100 dark:bg-amber-900/40"
-        iconColor="text-amber-600 dark:text-amber-300"
+        iconBg="bg-[var(--theme-warning-soft)]"
+        iconColor="text-[var(--theme-warning-text)]"
         title={t("documents.pptPreviewUnavailable", "PPT 预览不可用")}
         description={t(
           "documents.pptPreviewUnavailableHint",

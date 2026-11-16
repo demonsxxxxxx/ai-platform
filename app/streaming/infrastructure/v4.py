@@ -881,46 +881,25 @@ async def load_answer_by_receipt(
     if authority is None or authority.attempt_id != attempt_id:
         raise AssistantAnswerReceiptError()
 
-    if receipt_version == "ai-platform.assistant-answer-receipt.v2":
-        cursor = await conn.execute(
-            """
-            select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-                   payload_json, created_at
-            from run_events
-            where tenant_id = %s
-              and run_id = %s
-              and event_type in (
-                  'message.started', 'message.delta', 'message.part.delta',
-                  'message.part.classified', 'message.completed'
-              )
-              and visible_to_user = true
-              and payload_json ? '__stream_v4'
-              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
-            order by sequence asc, id asc
-            for update
-            """,
-            (tenant_id, run_id, attempt_id),
-        )
-    else:
-        cursor = await conn.execute(
-            """
-            select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-                   payload_json, created_at
-            from run_events
-            where tenant_id = %s
-              and run_id = %s
-              and event_type in (
-                  'message.started', 'message.delta', 'message.part.delta',
-                  'message.part.classified', 'message.completed'
-              )
-              and visible_to_user = true
-              and payload_json ? '__stream_v4'
-              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
-            order by sequence asc, id asc
-            for update
-            """,
-            (tenant_id, run_id, attempt_id),
-        )
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+               payload_json, created_at
+        from run_events
+        where tenant_id = %s
+          and run_id = %s
+          and event_type in (
+              'message.started', 'message.delta', 'message.part.delta',
+              'message.part.classified', 'message.completed'
+          )
+          and visible_to_user = true
+          and payload_json ? '__stream_v4'
+          and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+        order by sequence asc, id asc
+        for update
+        """,
+        (tenant_id, run_id, attempt_id),
+    )
     rows = await cursor.fetchall()
     if not rows:
         raise AssistantAnswerReceiptError()
@@ -1109,60 +1088,6 @@ class V4RedisStreamBridge:
                 raise
             raise StreamTransportUnavailable("v4_stream_append_unavailable") from exc
 
-    async def latest_cursor(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-    ) -> str:
-        """Return the latest retained cursor owned by the current Redis stream."""
-
-        bounds = await self.retained_bounds(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-        )
-        if bounds is None:
-            raise StreamTransportUnavailable("v4_stream_cursor_unavailable")
-        return bounds[1].cursor.event_id
-
-    async def build_heartbeat(
-        self,
-        *,
-        event_id: str,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        status: str,
-        emitted_at: str | datetime | None = None,
-    ) -> tuple[dict[str, object], str]:
-        """Build a live-only heartbeat and bind it to a real retained cursor."""
-
-        if status not in {"queued", "running"}:
-            raise V4ProjectionError("v4_stream_heartbeat_status_invalid")
-        cursor = await self.latest_cursor(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-        )
-        envelope = build_v4_control(
-            event_id=event_id,
-            tenant_scope=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-            event_type="stream.heartbeat",
-            payload={"status": status},
-            source={"kind": "stream_authority", "authority_id": event_id},
-            emitted_at=emitted_at,
-        )
-        return envelope, cursor
-
     async def build_gap(
         self,
         *,
@@ -1312,7 +1237,15 @@ class V4RedisStreamBridge:
         if cursor and cursor.stream_incarnation > current_stream_incarnation:
             raise StreamContractError("stream_cursor_future_incarnation")
         if cursor and cursor.stream_incarnation < current_stream_incarnation:
-            return ResumeDecision(None, StreamGap("stream_incarnation_mismatch", cursor.event_id, cursor.stream_incarnation, current_stream_incarnation))
+            return ResumeDecision(
+                None,
+                StreamGap(
+                    "stream_incarnation_mismatch",
+                    cursor.event_id,
+                    cursor.stream_incarnation,
+                    current_stream_incarnation,
+                ),
+            )
         bounds = await self.retained_bounds(
             tenant_scope_value=tenant_scope_value,
             run_id=run_id,
@@ -1320,14 +1253,46 @@ class V4RedisStreamBridge:
             stream_incarnation=current_stream_incarnation,
         )
         if bounds is None:
-            return ResumeDecision(None, StreamGap("stream_missing", cursor.event_id if cursor else None, cursor.stream_incarnation if cursor else None, current_stream_incarnation))
+            return ResumeDecision(
+                None,
+                StreamGap(
+                    "stream_missing",
+                    cursor.event_id if cursor else None,
+                    cursor.stream_incarnation if cursor else None,
+                    current_stream_incarnation,
+                ),
+            )
         first, last = bounds
         if cursor is None:
-            return ResumeDecision("0-0" if first.envelope["event_type"] == "stream.open" else None, None if first.envelope["event_type"] == "stream.open" else StreamGap("retained_history_unavailable", None, None, current_stream_incarnation, first.cursor.event_id, last.cursor.event_id))
+            if first.envelope["event_type"] == "stream.open":
+                return ResumeDecision(
+                    "0-0", None, replay_tail_redis_id=last.cursor.redis_id
+                )
+            return ResumeDecision(
+                None,
+                StreamGap(
+                    "retained_history_unavailable",
+                    None,
+                    None,
+                    current_stream_incarnation,
+                    first.cursor.event_id,
+                    last.cursor.event_id,
+                ),
+            )
         if _redis_id_tuple(cursor.redis_id) > _redis_id_tuple(last.cursor.redis_id):
             raise StreamContractError("stream_cursor_future_redis_id")
         if _redis_id_tuple(cursor.redis_id) < _redis_id_tuple(first.cursor.redis_id):
-            return ResumeDecision(None, StreamGap("retained_history_unavailable", cursor.event_id, cursor.stream_incarnation, current_stream_incarnation, first.cursor.event_id, last.cursor.event_id))
+            return ResumeDecision(
+                None,
+                StreamGap(
+                    "retained_history_unavailable",
+                    cursor.event_id,
+                    cursor.stream_incarnation,
+                    current_stream_incarnation,
+                    first.cursor.event_id,
+                    last.cursor.event_id,
+                ),
+            )
         key = stream_key(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=current_stream_incarnation)
         try:
             exact = await self._bridge._publish_client.xrange(key, min=cursor.redis_id, max=cursor.redis_id, count=1)
@@ -1355,15 +1320,29 @@ class V4RedisStreamBridge:
         event_type = entry.envelope["event_type"]
         if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
             terminal_event_id = _nonempty(entry.envelope["event_id"], "event_id")
-            return ResumeDecision(cursor.redis_id, None, terminal_event_id, False)
+            return ResumeDecision(
+                cursor.redis_id,
+                None,
+                terminal_event_id,
+                False,
+                last.cursor.redis_id,
+            )
         if event_type == "stream.end":
             payload = entry.envelope.get("payload")
             terminal_event_id = _nonempty(
                 payload.get("terminal_event_id") if isinstance(payload, Mapping) else None,
                 "terminal_event_id",
             )
-            return ResumeDecision(cursor.redis_id, None, terminal_event_id, True)
-        return ResumeDecision(cursor.redis_id, None)
+            return ResumeDecision(
+                cursor.redis_id,
+                None,
+                terminal_event_id,
+                True,
+                last.cursor.redis_id,
+            )
+        return ResumeDecision(
+            cursor.redis_id, None, replay_tail_redis_id=last.cursor.redis_id
+        )
 
     async def replay_page(
         self,
@@ -1485,19 +1464,13 @@ class V4RedisStreamBridge:
             raise StreamContractError("v4_stream_authority_mismatch")
         if not isinstance(rows, (list, tuple)):
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
-        candidates = tuple(
-            self._decode(
-                row,
-                tenant_scope_value=tenant_scope_value,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                stream_incarnation=stream_incarnation,
-            )
-            for row in rows
-        )
-        if not candidates or len(candidates) > count:
+        if not rows or len(rows) > count:
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
-        tail = candidates[-1].cursor.redis_id
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) != 2:
+                raise StreamContractError("v4_stream_row_invalid")
+            _redis_id_tuple(str(row[0]))
+        tail = str(rows[-1][0])
         if _redis_id_tuple(tail) <= _redis_id_tuple(after_redis_id):
             raise StreamContractError("stream_replay_continuity_unproven")
         entries = await self.replay_page(

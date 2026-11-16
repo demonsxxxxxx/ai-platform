@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DatabaseZap,
   Gauge,
@@ -16,11 +16,16 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
+import { publicApiErrorMessage } from "../../services/api/fetch";
 import {
   ModelAdminControl,
   type ModelAdminControlState,
 } from "./ModelAdminControl";
+import { ModelGroupManagement } from "./ModelGroupManagement";
+import { ModelProviderManagement } from "./ModelProviderManagement";
+import { TabsIndicator, TabsList, TabsRoot, TabsTab } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../hooks/useAuth";
+import { useModelCatalogContext } from "../../contexts/ModelCatalogContext";
 import { Permission } from "../../types";
 
 type ProviderProjection = {
@@ -68,7 +73,7 @@ function deriveProviderProjections(models: ModelOption[]): ProviderProjection[] 
 }
 
 function contextWindowLabel(model: ModelOption, fallback: string): string {
-  const value = model.profile?.max_input_tokens;
+  const value = model.profile?.auto_compact_window;
   if (!value) return fallback;
   return `${value.toLocaleString()} tokens`;
 }
@@ -93,6 +98,13 @@ export function ModelCatalogPanel() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adminState, setAdminState] = useState<ModelAdminControlState>("loading");
+  const [adminTab, setAdminTab] = useState<"catalog" | "groups">("catalog");
+  const [groupRevision, setGroupRevision] = useState(0);
+  const { refreshModels } = useModelCatalogContext();
+  const groupsChanged = useCallback(() => {
+    setGroupRevision((current) => current + 1);
+    void refreshModels({ force: true });
+  }, [refreshModels]);
 
   const canAdminModels = hasAnyPermission([Permission.MODEL_ADMIN]);
   const adminAvailability = resolveGroupAvailability({
@@ -128,9 +140,7 @@ export function ModelCatalogPanel() {
         if (cancelled) return;
         setState(null);
         setLoadError(
-          err instanceof Error
-            ? err.message
-            : t("models.catalogLoadFailed", "模型目录暂不可用"),
+          publicApiErrorMessage(err, t("models.catalogLoadFailed", "模型目录暂不可用")),
         );
       } finally {
         if (!cancelled) setIsLoading(false);
@@ -158,7 +168,21 @@ export function ModelCatalogPanel() {
         data-frontend-governance-state={adminState}
         className={`${workbenchSurface.page} overflow-y-auto lg:overflow-hidden`}
       >
-        <ModelAdminControl onStateChange={setAdminState} />
+        <div className="shrink-0 border-b border-[var(--theme-border)] px-4 pt-3">
+          <TabsRoot value={adminTab} onValueChange={(value) => setAdminTab(value as "catalog" | "groups")}>
+            <TabsList aria-label="模型配置标签" variant="point">
+              <TabsTab value="catalog" variant="point" data-model-admin-tab="catalog">供应商配置</TabsTab>
+              <TabsTab value="groups" variant="point" data-model-admin-tab="groups">模型组分配</TabsTab>
+              <TabsIndicator variant="point" />
+            </TabsList>
+          </TabsRoot>
+        </div>
+        <div className={adminTab === "catalog" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "catalog"}>
+          <ModelProviderManagement onStateChange={setAdminState} groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
+        </div>
+        <div className={adminTab === "groups" ? "min-h-0 flex-1" : "hidden"} aria-hidden={adminTab !== "groups"}>
+          <ModelGroupManagement groupRevision={groupRevision} onGroupsChanged={groupsChanged} />
+        </div>
       </div>
     );
   }
@@ -168,7 +192,7 @@ export function ModelCatalogPanel() {
       title={t("models.title", "模型")}
       subtitle={t(
         "models.subtitle",
-        "查看平台公共模型；管理员可获取候选模型、配置容量和默认模型，然后发布给全员。",
+        "查看当前业务组可用的模型；管理员通过分组配置模型和成员。",
       )}
       icon={<DatabaseZap size={20} className="text-theme-text-secondary" />}
       searchValue={searchQuery}
@@ -199,10 +223,7 @@ export function ModelCatalogPanel() {
             state="degraded"
             surface="model-public-projection"
             title={t("models.catalogUnavailable", "模型目录暂不可用")}
-            description={t(
-              "models.catalogUnavailableDescription",
-              "模型目录暂时无法读取。目录恢复前，新的模型选择会 fail closed。",
-            )}
+            description={loadError}
           />
         </div>
       </div>
@@ -363,7 +384,7 @@ export function ModelCatalogPanel() {
                     </div>
                     <div className={workbenchSurface.catalog.metricTile}>
                       <dt className={workbenchSurface.catalog.label}>
-                        {t("models.contextWindow", "上下文")}
+                        {t("models.compactionWindow", "压缩窗口")}
                       </dt>
                       <dd className="mt-1 truncate font-medium text-[var(--theme-text)]">
                         {contextWindowLabel(

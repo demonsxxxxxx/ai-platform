@@ -1,4 +1,4 @@
-from app.office_execution_tier import route_office_execution_tier
+from app.execution.domain.office_execution_tier import route_office_execution_tier
 
 
 def test_routes_lightweight_writing_to_sdk_only_without_sandbox():

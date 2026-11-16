@@ -21,7 +21,7 @@ interface FileFallbackPanelProps {
 export default function FileFallbackPanel({
   icon: Icon,
   iconBg,
-  iconColor = "text-slate-600 dark:text-slate-300",
+  iconColor = "text-neutral-600 dark:text-neutral-300",
   title,
   description,
   downloadUrl,
@@ -56,7 +56,7 @@ export default function FileFallbackPanel({
             <Button type="text"
               htmlType="button"
               onClick={handleDownload}
-              className="inline-flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800 dark:bg-slate-600 dark:hover:bg-slate-500"
+              className="inline-flex items-center gap-2 rounded-lg bg-neutral-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-600 dark:hover:bg-neutral-500"
             >
               <Download size={16} />
               {downloadLabel}

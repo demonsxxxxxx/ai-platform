@@ -12,7 +12,7 @@ const BADGE_STYLE: Record<GovernanceAvailabilityState, string> = {
   "admin-only":
     "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
   unavailable:
-    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-[var(--theme-danger-ring)]",
+    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-[var(--theme-danger-ring)]",
 };
 
 const ICONS: Record<GovernanceAvailabilityState, typeof CheckCircle2> = {

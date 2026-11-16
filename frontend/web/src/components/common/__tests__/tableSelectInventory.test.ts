@@ -61,8 +61,11 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
   for (const owner of [
     "components/panels/MCPPanel.tsx",
     "components/panels/ModelAdminControl.tsx",
+    "components/panels/ModelGroupManagement.tsx",
     "components/panels/RunMonitorPanel.tsx",
     "components/panels/RunPerformanceSummary.tsx",
+    "features/usage/UsagePage.tsx",
+    "features/usage/UsageModelDetails.tsx",
     "components/panels/SkillsPanel/SkillManagementTable.tsx",
     "components/selectors/ToolSelector.tsx",
     "features/agent-builder/AgentBuilderLifecycle.tsx",

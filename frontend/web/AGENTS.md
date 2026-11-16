@@ -4,6 +4,9 @@ Apply the root [repository instructions](../../AGENTS.md). This file is the
 frontend implementation and verification entry; detailed contracts stay with
 the owners linked below.
 
+Coding rules and lint/style gates are indexed by the
+[coding standards](../../docs/agent-rules/coding-standards.md).
+
 ## Components and page styling
 
 - Use Lobe UI as the primary general React UI library. Follow the
@@ -18,11 +21,23 @@ the owners linked below.
   chat runtime or use Lobe chat components as a parallel interaction owner.
   Keep the platform SSE data chain; consume one runtime-bound message snapshot
   for text and business parts, with no parallel generic text/loading renderer.
-- Follow the [visual guidelines](../../docs/frontend/lobehub-visual-guidelines.md)
-  for hierarchy, spacing, typography, themes and responsive layout. Keep page CSS
+- Follow the [visual guidelines](../../docs/frontend/visual-guidelines.md)
+  for hierarchy, spacing, typography, themes and responsive layout. The chat
+  body (ordinary and expert) follows the pinned assistant-ui ChatGPT Clone
+  geometry; admin and catalog pages keep their task layouts. Keep page CSS
   scoped to its owner; use public component sizing APIs instead of global
   button/input/svg overrides. Style-preview approval and actual-page acceptance
   are separate.
+- Theme values have one source: `src/styles/base.css` variables, connected to
+  Lobe only through `src/styles/themeContract.ts` and checked by its test.
+  Reference `--theme-*`, `--radius-*` and `--chat-column-max` instead of
+  repeating colors, radii or column widths.
+- Show only operations with a real platform capability. Example-only buttons
+  (voice, share, feedback, regenerate, edit, branch) stay out until their
+  protocol exists.
+- A replacement lands with its cleanup: migrate callers and remove the old
+  implementation, exports, CSS, selectors, assertions and conflicting doc
+  clauses in the same change; keep what still has a real consumer.
 - Follow the [table and Select contract](../../docs/frontend/shared-table-select-components.md)
   for business state, renderer exceptions and retired controls. Preserve field
   values, labels, submit/disabled/loading behavior, keyboard access and focus.
@@ -44,6 +59,9 @@ the owners linked below.
 
 ## Complete the affected checks
 
+- Follow [change verification](../../docs/agent-rules/change-verification.md) for
+  representative scenarios, fast iteration and evidence reuse. The rules below
+  add frontend-specific checks; they do not require a full suite after each edit.
 - Before changing a control, dependency or test command, inventory its callers,
   TypeScript/DOM tests, root Python frontend contracts, browser selectors,
   package/lock files and owning documentation. Update obsolete assertions with
@@ -56,8 +74,11 @@ the owners linked below.
   selected pnpm stages does not establish a full CI pass.
 - Mounted control tests use the real Lobe providers and shared test setup from
   the integration contract. For changed layouts, inspect actual rendered pages
-  in light/dark themes at desktop and 390px width; exercise the affected keyboard,
-  focus, portal and table-scroll behavior with synthetic fixtures. Source
-  inventory and JSDOM checks do not establish visual acceptance.
-- Report checks against the actual candidate, distinguish synthetic browser
-  evidence from real services, and retain failures or unrun checks in the PR.
+  in light/dark themes at desktop and 390px width, adding a low-height viewport
+  when vertical reachability can change. Choose data states by the changed risk;
+  table/pagination layouts include a full data page, last page and expanded rows when
+  applicable, not only a one-row fixture. Exercise affected keyboard, focus,
+  portal and scrolling behavior; do not mechanically multiply every dimension.
+- Keep synthetic browser evidence distinct from real-service results and report
+  failures or required checks not run. Source inventory, JSDOM and a passing build
+  do not establish visual acceptance.

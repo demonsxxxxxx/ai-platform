@@ -28,7 +28,7 @@ function MessageAttachmentRow({
     <>
       <span
         aria-hidden="true"
-        className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-lg"
+        className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-[10px]"
       >
         <img
           src={previewSrc}
@@ -51,7 +51,7 @@ function MessageAttachmentRow({
     </>
   ) : (
     <>
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-card)] text-[var(--theme-text-secondary)]">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-[10px] bg-[var(--theme-bg-card)] text-[var(--theme-text-secondary)]">
         {kind === "document" ? (
           <FileTextIcon aria-hidden="true" className="size-3.5" />
         ) : (
@@ -70,8 +70,8 @@ function MessageAttachmentRow({
   );
 
   const className = isImage
-    ? "group flex w-full items-center gap-3 overflow-hidden rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-start"
-    : "flex w-full items-center gap-2.5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 text-start";
+    ? "group flex w-[15rem] max-w-full items-center gap-3 overflow-hidden rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] dark:bg-[var(--theme-sidebar-panel-muted)] p-1.5 text-start"
+    : "flex w-[15rem] max-w-full items-center gap-2.5 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] dark:bg-[var(--theme-sidebar-panel-muted)] p-1.5 pe-3 text-start";
 
   return onOpen ? (
     <Button
@@ -83,12 +83,11 @@ function MessageAttachmentRow({
       style={{
         height: "auto",
         minHeight: 40,
-        width: "100%",
         justifyContent: "flex-start",
-        padding: isImage ? 0 : "8px 12px",
+        padding: isImage ? 6 : "6px 12px 6px 6px",
         textAlign: "left",
       }}
-      className={`${className} transition-colors hover:bg-[var(--theme-bg-sidebar)]`}
+      className={`${className} transition-colors hover:border-[var(--theme-border-strong)]`}
     >
       {content}
     </Button>
@@ -113,7 +112,7 @@ export function MessageAttachments({
   return (
     <div
       data-slot="message-attachments"
-      className={`flex w-full max-w-sm flex-col gap-1.5 ${className ?? ""}`}
+      className={`flex max-w-full flex-wrap justify-end gap-2 ${className ?? ""}`}
     >
       {attachments.map((attachment) => (
         <MessageAttachmentRow

@@ -55,7 +55,7 @@ From the repository root, `python tools/frontend_release_traceability.py
 `dist/` manifest, and packaged frontend image status. The packaged image status
 is expected to be `configured` only when `frontend/web/Dockerfile`,
 `frontend/web/nginx.conf.template`, and
-`deploy/ai-platform/docker-compose.frontend.yml` are present, pass the
+the `frontend` service in `deploy/ai-platform/docker-compose.yml` are present, pass the
 secret/private-payload denylist scan, and keep the required build provenance,
 upload, proxy-timeout, and compose argument contract. Static `dist/` is
 same-commit evidence only when provenance records a known commit, clean dirty
@@ -138,10 +138,10 @@ Later packaged delivery should use three project-owned images:
 - `ai-platform-frontend` for static files built from `frontend/web/dist`,
   served by nginx or an equivalent static server with `/api/*` proxying.
 
-The optional `deploy/ai-platform/docker-compose.frontend.yml` overlay now
-defines the frontend image boundary for Docker-capable validation. It is not a
-compose one-command acceptance gate and does not pass backend, model-gateway, or
-sandbox secrets into the frontend service. The CI image gate validates the
+The `frontend` service in `deploy/ai-platform/docker-compose.yml` defines the
+frontend image boundary; the former standalone `docker-compose.frontend.yml`
+overlay is retired. The frontend service does not receive backend,
+model-gateway, or sandbox secrets. The CI image gate validates the
 image can be built and that `ai-platform-build-provenance.json` inside the image
 matches the workflow commit; runtime proxy smoke remains a separate release
 gate.

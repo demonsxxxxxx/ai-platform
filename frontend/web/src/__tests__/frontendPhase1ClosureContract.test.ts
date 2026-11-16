@@ -42,10 +42,6 @@ test("phase one composer command names are active source concepts", () => {
   const input = source("src/components/chat/ChatInput.tsx");
 
   for (const command of PHASE1_COMPOSER_COMMANDS) {
-    if (command === "$") {
-      assert.match(commands, /trigger === "\$"/);
-      continue;
-    }
     assert.match(commands, new RegExp(command.slice(1)));
   }
 

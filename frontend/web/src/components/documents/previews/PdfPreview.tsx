@@ -31,7 +31,7 @@ const PdfPreview = memo(function PdfPreview({ url }: PdfPreviewProps) {
 
   if (loadFailed) {
     return (
-      <div className="relative h-full min-h-[400px] w-full bg-stone-100 dark:bg-stone-950">
+      <div className="relative h-full min-h-[400px] w-full bg-neutral-100 dark:bg-neutral-950">
         <iframe
           src={url}
           title={t("documents.pdfPreviewTitle", "PDF 预览")}
@@ -85,19 +85,19 @@ const PdfPreview = memo(function PdfPreview({ url }: PdfPreviewProps) {
                   renderAnnotationLayer={false}
                   loading={
                     <div
-                      className="flex items-center justify-center bg-white shadow-xl ring-1 ring-black/5 dark:bg-stone-900 dark:ring-white/10"
+                      className="flex items-center justify-center bg-white shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
                       style={{
                         width: pageWidth,
                         minHeight: Math.round(pageWidth * 1.35),
                       }}
                     >
                       <Spin
-                        className="text-stone-300 dark:text-stone-600"
+                        className="text-neutral-300 dark:text-neutral-600"
                         size={16}
                       />
                     </div>
                   }
-                  className="overflow-hidden bg-white shadow-xl ring-1 ring-black/5 dark:bg-stone-900 dark:ring-white/10"
+                  className="overflow-hidden bg-white shadow-xl ring-1 ring-black/5 dark:bg-neutral-900 dark:ring-white/10"
                 />
               ))}
             </Document>

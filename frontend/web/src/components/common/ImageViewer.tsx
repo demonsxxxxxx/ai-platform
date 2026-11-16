@@ -215,21 +215,21 @@ export function ImageViewer({
   return createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[300] flex flex-col bg-black/90"
+      className="fixed inset-0 z-[300] flex flex-col bg-[color-mix(in_srgb,var(--theme-overlay-solid)_90%,transparent)]"
       onClick={handleBackgroundClick}
     >
       {/* Top bar */}
-      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black">
+      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-[var(--theme-overlay-solid)]">
         <Button type="text"
           htmlType="button"
           onClick={onClose}
           size="large"
-          icon={<X size={20} className="text-white/70" />}
+          icon={<X size={20} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />}
           aria-label={t("common.close")}
         />
 
         {positionLabel && (
-          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-md bg-white/10 px-2.5 py-1 text-xs font-medium tabular-nums text-white/70">
+          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-md bg-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] px-2.5 py-1 text-xs font-medium tabular-nums text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]">
             {positionLabel}
           </div>
         )}
@@ -243,8 +243,8 @@ export function ImageViewer({
             a.click();
           }}
           size="large"
-          className="text-white/70"
-          icon={<Download size={18} className="text-white/70" />}
+          className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]"
+          icon={<Download size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />}
           aria-label={t("imageViewer.download")}
         >
           <span className="hidden sm:inline">{t("imageViewer.download")}</span>
@@ -286,9 +286,9 @@ export function ImageViewer({
         </div>
 
         {isImageLoading && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/20">
-            <div className="flex items-center gap-2 rounded-full bg-black/65 px-3 py-2 text-xs font-medium text-white/80 shadow-lg backdrop-blur-sm">
-              <span className="h-4 w-4 rounded-full border-2 border-white/25 border-t-white/85 animate-spin" />
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_srgb,var(--theme-overlay-solid)_20%,transparent)]">
+            <div className="flex items-center gap-2 rounded-full bg-[color-mix(in_srgb,var(--theme-overlay-solid)_65%,transparent)] px-3 py-2 text-xs font-medium text-[color-mix(in_srgb,var(--theme-on-overlay)_80%,transparent)] shadow-lg backdrop-blur-sm">
+              <span className="h-4 w-4 rounded-full border-2 border-[color-mix(in_srgb,var(--theme-on-overlay)_25%,transparent)] border-t-white/85 animate-spin" />
               <span>{t("imageViewer.loading", "Loading image")}</span>
             </div>
           </div>
@@ -301,8 +301,8 @@ export function ImageViewer({
               onClick={onPrevious}
               disabled={!canGoPrevious}
               size="large" shape="circle"
-              icon={<ChevronLeft size={28} className="text-white/75" />}
-              className="absolute left-2 sm:left-5 top-1/2 z-10 -translate-y-1/2 bg-black/45"
+              icon={<ChevronLeft size={28} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_75%,transparent)]" />}
+              className="absolute left-2 sm:left-5 top-1/2 z-10 -translate-y-1/2 bg-[color-mix(in_srgb,var(--theme-overlay-solid)_45%,transparent)]"
               aria-label={t("imageViewer.previous", "Previous image")}
               title={t("imageViewer.previous", "Previous image")}
             />
@@ -311,8 +311,8 @@ export function ImageViewer({
               onClick={onNext}
               disabled={!canGoNext}
               size="large" shape="circle"
-              icon={<ChevronRight size={28} className="text-white/75" />}
-              className="absolute right-2 sm:right-5 top-1/2 z-10 -translate-y-1/2 bg-black/45"
+              icon={<ChevronRight size={28} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_75%,transparent)]" />}
+              className="absolute right-2 sm:right-5 top-1/2 z-10 -translate-y-1/2 bg-[color-mix(in_srgb,var(--theme-overlay-solid)_45%,transparent)]"
               aria-label={t("imageViewer.next", "Next image")}
               title={t("imageViewer.next", "Next image")}
             />

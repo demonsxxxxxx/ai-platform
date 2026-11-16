@@ -16,6 +16,9 @@ from app.agent_apps.domain.profile_definition import (
     resolve_session_profile_admission_identity,
     safe_agent_avatar_seed,
 )
+from app.agent_apps.domain.capability_catalog import (
+    get_capability as get_capability,
+)
 
 
 class _ConfiguredProxy:
@@ -132,6 +135,7 @@ def safe_agent_avatar_ref(value: object, *, fallback: str = "builtin:agent") -> 
 
 
 __all__ = [
+    "get_capability",
     "AGENT_PROFILE_AVATAR_REFS",
     "AgentProfileAdminProjection",
     "AgentProfileAuthority",

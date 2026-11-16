@@ -95,7 +95,7 @@ def connection(**changes):
         "model_value": "gateway-model-a",
         "base_url": "https://gateway.example",
         "api_key": "synthetic-provider-key",
-        "max_input_tokens": 128_000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 4096,
     }
     values.update(changes)
@@ -184,6 +184,40 @@ async def completion(upstream: FakeUpstream, repository: FakeModelRepository, *,
         run_id=run_id,
         turns=TURNS,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_provider", [False, True])
+async def test_redis_cache_uses_the_loop_bound_handle_without_awaiting_it(monkeypatch, async_provider):
+    from redis.asyncio import Redis
+    from unittest.mock import AsyncMock
+    from app.conversations.infrastructure.follow_up_cache_redis import RedisFollowUpSuggestionCache
+    from app.redis_client import RedisClientHandle, _RedisClientEntry
+
+    # Redis itself defines __await__. The handle forwards that attribute but
+    # Python's await protocol does not resolve special methods via __getattr__.
+    redis = Redis.from_url("redis://127.0.0.1:1")
+    get = AsyncMock(return_value=json.dumps(["还能补充什么？"], ensure_ascii=False))
+    set_value = AsyncMock(return_value=True)
+    delete = AsyncMock()
+    monkeypatch.setattr(redis, "get", get)
+    monkeypatch.setattr(redis, "set", set_value)
+    monkeypatch.setattr(redis, "delete", delete)
+    handle = RedisClientHandle(_RedisClientEntry(asyncio.get_running_loop(), redis, "synthetic", 1))
+
+    async def provide():
+        return handle
+
+    cache = RedisFollowUpSuggestionCache(provide if async_provider else lambda: handle)
+    try:
+        assert await cache.read("owner-scoped-key") == ["还能补充什么？"]
+        assert await cache.claim("owner-scoped-key", ttl_seconds=60)
+        await cache.store("owner-scoped-key", ["如何验收？"], ttl_seconds=120)
+        assert set_value.await_args_list[0].kwargs == {"nx": True, "ex": 60}
+        assert set_value.await_args_list[1].kwargs == {"ex": 120}
+        delete.assert_awaited_once_with("owner-scoped-key:claim")
+    finally:
+        await redis.aclose()
 
 
 def test_parsing_keeps_only_short_distinct_questions():

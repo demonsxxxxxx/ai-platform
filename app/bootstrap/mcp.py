@@ -25,7 +25,7 @@ from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
 from app.settings import get_settings
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.api import evaluate_tool_policy
 
 
 def worker_payload_with_authorized_mcp_registration(

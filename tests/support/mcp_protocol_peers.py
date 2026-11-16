@@ -13,13 +13,16 @@ SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}, "requir
 
 
 @contextmanager
-def local_mcp_peers():
+def local_mcp_peers(*, protocol="legacy"):
     state = SimpleNamespace(
         tools=[{"name": RAW_TOOL, "description": "Synthetic sequence lookup", "inputSchema": SCHEMA},
                {"name": "unselected_sibling", "inputSchema": {"type": "object"}}],
-        models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
+        models=[], model_headers=[], model_header_validator=None, model_policy_failures=[],
+        calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
-        tool_input={"query": "synthetic"},
+        tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
+        call_error=None, input_required=False, tool_result=None, tool_response_content_type="application/json", model_reply=None,
+        reply_queues=[], sse_opened_sessions=queue.Queue(), sse_endpoint_gates={},
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -47,16 +50,24 @@ def local_mcp_peers():
                 self.respond({}, 405)
                 return
             state.requests.append(("GET", dict(self.headers)))
+            session_number = len(state.reply_queues) + 1
+            replies = queue.Queue()
+            state.reply_queues.append(replies)
+            session_id = f"synthetic-{session_number}"
+            state.sse_opened_sessions.put(session_number)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             try:
-                self.wfile.write(b"event: endpoint\ndata: /messages?session_id=synthetic\n\n")
+                endpoint_gate = state.sse_endpoint_gates.get(session_number)
+                if endpoint_gate is not None:
+                    endpoint_gate.wait()
+                self.wfile.write(f"event: endpoint\ndata: /messages?session_id={session_id}\n\n".encode())
                 self.wfile.flush()
                 while not state.stopped.is_set():
                     try:
-                        reply = state.replies.get(timeout=0.1)
+                        reply = replies.get(timeout=0.1)
                     except queue.Empty:
                         self.wfile.write(b": heartbeat\n\n")
                     else:
@@ -69,10 +80,25 @@ def local_mcp_peers():
                 self.close_connection = True
 
         def do_DELETE(self):
+            state.deleted += 1
             self.respond({})
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            replies = state.replies
+            if "session_id=" in self.path:
+                session_id = self.path.split("session_id=", 1)[1].split("&", 1)[0]
+                replies = state.reply_queues[int(session_id.rsplit("-", 1)[1]) - 1]
+            if self.path.startswith("/v1/messages"):
+                headers = {name.lower(): value for name, value in self.headers.items()}
+                state.model_headers.append((self.path.split("?", 1)[0].lstrip("/"), headers))
+                if state.model_header_validator is not None:
+                    try:
+                        state.model_header_validator("anthropic", state.model_headers[-1][0], headers)
+                    except PermissionError as error:
+                        state.model_policy_failures.append(str(error))
+                        self.respond({"detail": str(error)}, 403)
+                        return
             if self.path.startswith("/v1/messages/count_tokens"):
                 self.respond({"input_tokens": 100})
                 return
@@ -86,6 +112,17 @@ def local_mcp_peers():
                 content = {"type": "text", "text": "Synthetic lookup complete."} if used_tool else {
                     "type": "tool_use", "id": "toolu_synthetic", "name": state.sdk_tool, "input": state.tool_input,
                 }
+                if state.search_tools and len(state.models) == 1:
+                    content = {"type": "tool_use", "id": "toolu_search", "name": "ToolSearch",
+                               "input": {"query": "select:" + state.sdk_tool, "max_results": 1}}
+                    used_tool = False
+                elif state.search_tools and len(state.models) == 2:
+                    content = {"type": "tool_use", "id": "toolu_selected", "name": state.sdk_tool,
+                               "input": state.tool_input}
+                    used_tool = False
+                if state.model_reply is not None:
+                    content = state.model_reply(request)
+                    used_tool = content["type"] == "text"
                 stop_reason = "end_turn" if used_tool else "tool_use"
                 events = [
                     ("message_start", {"type": "message_start", "message": {
@@ -108,7 +145,18 @@ def local_mcp_peers():
                 ), content_type="text/event-stream")
                 return
             state.requests.append((request["method"], dict(self.headers)))
-            if request["method"] == "initialize":
+            if request["method"] == "server/discover" and state.protocol == "modern":
+                result = {"supportedVersions": ["2026-07-28"], "capabilities": {"tools": {}}}
+            elif request["method"] == "server/discover":
+                response = {"jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": -32601, "message": "Method not found"}}
+                if self.path.startswith("/messages?"):
+                    replies.put(response)
+                    self.respond({}, 202)
+                else:
+                    self.respond(response)
+                return
+            elif request["method"] == "initialize":
                 result = {"protocolVersion": request["params"]["protocolVersion"], "capabilities": {"tools": {}},
                           "serverInfo": {"name": "synthetic", "version": "1"}}
             elif request["method"] == "notifications/initialized":
@@ -118,15 +166,27 @@ def local_mcp_peers():
                 result = {"tools": state.tools}
             elif request["method"] == "tools/call":
                 state.calls.append(request["params"])
-                result = {"content": [{"type": "text", "text": "synthetic result"}],
-                          "structuredContent": {"sequence": 7}, "isError": state.is_error}
+                if state.call_error is not None:
+                    self.respond({"jsonrpc": "2.0", "id": request["id"], "error": state.call_error})
+                    return
+                result = state.tool_result if state.tool_result is not None else {
+                    "content": [{"type": "text", "text": "synthetic result"}],
+                    "structuredContent": {"sequence": 7}, "isError": state.is_error,
+                }
+                if state.input_required:
+                    result = {"resultType": "input_required", "requestState": "synthetic-state"}
             else:
                 self.respond({}, 400)
                 return
+            if state.protocol == "modern" and result.get("resultType") != "input_required":
+                result = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private", **result}
             response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
             if self.path.startswith("/messages?"):
-                state.replies.put(response)
+                replies.put(response)
                 self.respond({}, 202)
+            elif request["method"] == "tools/call" and state.tool_response_content_type == "text/event-stream":
+                event = f"event: message\ndata: {json.dumps(response)}\n\n".encode()
+                self.respond(event, content_type="text/event-stream")
             else:
                 self.respond(response)
 

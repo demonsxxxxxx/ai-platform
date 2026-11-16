@@ -229,13 +229,19 @@ generation, timestamps, and reconciliation ownership in one migration.
    entrypoints all consume this Sandbox operation boundary. The former
    `routes/sandbox_runtime_cleanup.py` implementation is retired, with no import
    compatibility alias or external wire contract.
-   Owner and administrator Run cancellation share one stop/release settlement:
-   stop outside the settlement transaction, release successful leases grouped
-   by their own Run, record the actor-scoped outcome in the same transaction,
-   then report a partial stop failure after commit. Routes retain authorization,
-   Run cancellation, queue/publication ordering and the existing 502/503 mapping.
-   The owner release event still omits the administrator role field. Persistence
-   failure takes precedence over the provider failure.
+   Owner and administrator cancellation of an active Attempt records intent and
+   leaves the original executor responsible for bounded SDK drain. Its exact
+   provider must stop before private workspace save and the atomic Context/Run
+   terminal transaction; lease release follows that transaction's terminal facts.
+   A dispatch response still in flight retains the same Attempt's observation
+   responsibility, including a verified durable terminal handoff after endpoint
+   loss. Routes do not immediately kill/release an active cancelled writer.
+   Direct cleanup of an already terminal or never-started Run retains the shared
+   stop/release settlement: stop outside its settlement transaction, release
+   successful leases grouped by their Run, record the actor-scoped outcome, then
+   report any partial stop failure after commit. Authorization, queue/publication
+   ordering, 502/503 mapping and owner/admin event distinctions remain unchanged.
+   Persistence failure takes precedence over provider failure.
    The following concurrency mechanisms are intentionally distinct: single-lease
    release and expiry cleanup retain stop-under-lock; terminal reconciliation
    cleanup keeps its claim, unlocked bounded stop and fenced receipt transactions. Sharing the
@@ -259,7 +265,8 @@ generation, timestamps, and reconciliation ownership in one migration.
    locked by the first. Cancellation or a database write/commit failure rolls
    back that transaction and leaves the leases eligible for retry.
    Restoring a Docker cleanup handle preserves the authoritative attempt binding
-   (with payload fallback for historical rows) and the native-tool requirement.
+   (with payload fallback for historical rows), the native-tool requirement,
+   signed egress proof and requested image identity for control-channel recovery.
    Conflicting attempt projections fail closed. Cleanup uses only verified
    runtime handle fields and derived owned-resource identities, never a
    payload-supplied container or host path.
@@ -336,6 +343,40 @@ invocation and durable receipts behind the application control authority is.
 
 ### Docker asynchronous I/O boundary
 
+The Docker provider keeps a valid published executor endpoint when available.
+An internal bridge may have no published host port even when one was requested.
+In that case the provider resolves port 18000 on the executor's private IPv4
+address only after fresh Docker inspection verifies the exact Run/Attempt
+container, owned internal bridge, API witness, two-member topology, and matching
+container/network attachment addresses. The network must disable masquerading;
+Docker's explicit IPv4-enabled/IPv6-disabled defaults are accepted, while other
+options and IPv6 remain rejected.
+
+The optional Docker Compose overlay shares the API network namespace with the
+trusted Worker so both can reach each Attempt's internal bridge. It removes the
+Worker's separate host aliases and starts it after the API is healthy; Compose
+API replacement also restarts the dependent Worker. API and Worker remain
+separate processes, and the executor remains in its own container and network
+namespace. This coupling belongs only to the Docker overlay. Operators must
+drain active Runs/Attempts/leases before replacing the API, whose container
+identity is part of the existing callback proof, and recreate the dependent
+Worker when replacing the API outside Compose. Dependency restart does not
+provide in-flight recovery across API container replacement.
+
+Recovery verifies the current-key signature and immutable Run/Attempt, image,
+lease, network and callback binding. Docker recovery reads the proof from the
+persisted top-level `governed_egress_proof`; runtime labels are filtered before
+storage. Image subjects come from the inspected, exact-owned container and must
+match that signed proof. Missing proof prevents private control while preserving
+historical resource cleanup under its existing ownership checks.
+The signed launch-time Skill/MCP scope is
+retained, because a reconciliation request is not a new capability admission.
+Proof expiry does not prevent status/cancel of that exact owned executor;
+create, reuse and dispatch still require a fresh admission proof. Key rotation
+revokes control identity, and invalid signatures or scope/ownership drift fail
+closed. These checks retain the caller's durable reconciliation claim and do not
+replace Attempt authority or grant execution permission.
+
 Docker's synchronous SDK lifecycle runs on provider-owned worker loops rather
 than the application event loop. The provider has eight lifecycle slots, eight
 probe slots, and two independently reserved cleanup slots; executor queues do
@@ -368,27 +409,28 @@ thread-isolation adapter. Docker's previous application-loop SDK calls and
 shared-default-executor probes are retired; OpenSandbox keeps its existing async
 SDK lifecycle. No provider ownership checks or durable release semantics change.
 
-## ProfileDrive retrieval staging ownership
+## Native MCP file access
 
-The executor's `PlatformContextRetrievalClient` owns only the temporary file it
-successfully creates with exclusive open for a scoped ProfileDrive transfer.
-It closes the local output before validating the complete byte count and atomically
-replacing the target. A zero-byte response remains a valid complete transfer.
-Until that handoff succeeds, every exit, including cancellation, synchronously
-attempts removal of this owned temporary file. A failed exclusive open conveys
-no ownership; existing target files and other staging files are never cleanup
-targets. Cleanup does not scan the workspace or change file authorization.
+The locked Claude CLI owns decoding and saving standard MCP resource results.
+Its project directory is pinned with `CLAUDE_CODE_PROJECT_DIR_NAME=ai-platform`;
+files remain in `.claude-config/projects/ai-platform/{sdk_session_id}/tool-results`.
+The existing provider session identity and Attempt workspace bind this location.
+Platform session-store loading and resume decisions retain their existing owner.
 
-A close failure during body failure or cancellation, or an unlink failure during
-cleanup, is secondary: it cannot replace the primary error or cancellation.
-Only a stable warning label is logged, without source paths, credentials or raw
-exception details. Warning-sink failures cannot replace that primary result.
-If unlink fails, the temporary file may remain; failure is
-not reported as a successful transfer. A close failure after a successful body
-retains the existing callback-failure mapping and prevents replacement. Existing
-scope, encoding, content-length, maximum-byte checks and callback mappings remain
-unchanged. The Files upstream transfer and HTTP response/client context owners
-remain separate from this executor-local temporary-file owner.
+Docker native filesystem version 3 exposes only that bound session's result
+directory through a read-only bind. An empty, traversable configuration mask
+provides its parent path; credentials, transcripts, other sessions, and other
+runtime-private roots stay hidden. Directory preparation rejects symlinks and
+non-directories. Cached native filesystems from earlier versions fail existing
+reuse validation and must be recreated through the provider lifecycle.
+
+SDK path admission and search-result filtering permit only the current provider
+session's native result files, including lexical and resolved-path checks. Writes and artifact collection still reject this
+runtime root. The Agent uses its authorized Bash or Skill to parse the file and
+can create a deliverable in an ordinary workspace directory for explicit attachment.
+The platform maintains the mount and access boundary; the CLI owns file bytes
+and the Agent owns document processing. Files-owned UI import/download and
+platform-uploaded attachment staging keep their separate contracts.
 
 ## Task workspace and Claude project instructions
 
@@ -456,6 +498,12 @@ underlying copy/hash/fsync work, and does not establish production latency.
 Durable Attempt snapshot retention is separate; this path does not delete
 historical directories after cancellation.
 
+The artifact collector publishes selected files as opaque bytes. Agent/Skill
+execution owns document format and quality checks; the collector does not unpack
+DOCX or parse XML. Path confinement, file-count, raw per-file/total-byte limits,
+artifact authorization and storage receipts remain mandatory. Declared required
+artifact types are checked once by terminal completion, after collection.
+
 The previous recursive workspace
 manifest and file-upload helpers have been removed from both modules.
 
@@ -498,7 +546,12 @@ workspace boundary remain platform-authorized, while ordinary tool parameter
 names and shapes are validated by the SDK/tool implementation. Glob/Grep
 workspace search scopes remain platform-checked; brace, extglob, character-class,
 and question-mark patterns use native tool semantics within that scope. Every
-returned path still passes the workspace and private-root boundary. Skill identity and
+returned path still passes the workspace and private-root boundary. Safe native
+search fields retain SDK semantics; when platform filtering or output budgets
+remove results, complete totals are omitted and Glob is marked truncated rather
+than claiming that the visible subset is complete. Grep pagination parameters
+remain intact, and global totals are omitted for filtered or paginated results.
+Skill identity and
 object constraints, platform context tools, external MCP schemas, and the
 Docker-native command proxy's command/timeout limits remain platform-owned.
 This contract does not claim support for background Bash jobs; a local Bash

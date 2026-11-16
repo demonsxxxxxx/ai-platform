@@ -10,7 +10,11 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_text
 from app.db import transaction
+from app.settings import get_settings, resolve_dingtalk_directory_base_url
+from app.identity.infrastructure.dingtalk_employees import fetch_dingtalk_employees
+from app.identity.transport.company_employees import build_company_employees_router
 from app.identity.api import (
+    CompanyEmployeeDirectoryService,
     AdminUserDiagnosticsService,
     ProfileMetadataService,
     WorkerCapabilityAuditService,
@@ -61,4 +65,23 @@ def build_admin_users_router() -> APIRouter:
         ),
         principal_dependency=require_principal,
         is_admin=is_ai_admin,
+    )
+
+
+def build_company_employee_directory() -> CompanyEmployeeDirectoryService:
+    settings = get_settings()
+
+    async def read_employees():
+        return await fetch_dingtalk_employees(
+            base_url=resolve_dingtalk_directory_base_url(settings.dingtalk_department_authority_base_url),
+            timeout_seconds=settings.dingtalk_department_authority_timeout_seconds,
+        )
+
+    return CompanyEmployeeDirectoryService(read_employees, tenant_id=settings.default_tenant_id)
+
+
+def build_company_employee_directory_router() -> APIRouter:
+    return build_company_employees_router(
+        service=build_company_employee_directory(),
+        principal_dependency=require_principal, is_admin=is_ai_admin,
     )

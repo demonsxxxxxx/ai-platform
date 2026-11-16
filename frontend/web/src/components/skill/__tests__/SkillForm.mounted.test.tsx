@@ -54,6 +54,45 @@ test("fullscreen editor remains in the theme host and Escape preserves the curre
   } finally { await view.close(); skillApi.getFile = original; }
 });
 
+test("Skill save errors stay inside normal and fullscreen forms and receive focus", async () => {
+  const original = skillApi.getFile;
+  skillApi.getFile = async () => ({ content: "# Retained draft" });
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const value = skill("one");
+  const render = (submitError: string | null) => act(async () => root.render(createElement(SkillForm, {
+    skill: value, onSave: async () => false, onCancel: () => {}, submitError,
+  })));
+  try {
+    await render(null);
+    await render("保存未完成，请检查提交内容。");
+    assert.equal(document.activeElement, container.querySelector('[role="alert"]'));
+    const trigger = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === i18n.t("skills.form.editFullscreen"))!;
+    await act(async () => trigger.click());
+    assert.match(container.querySelector('.skill-form--fullscreen [role="alert"]')!.textContent!, /保存未完成/);
+    await render(null);
+    assert.equal(container.querySelector('[role="alert"]'), null);
+  } finally { await act(async () => root.unmount()); container.remove(); skillApi.getFile = original; }
+});
+
+test("Skill ZIP errors stay inside the panel footer instead of the covered catalog", async () => {
+  const { ZipUploadModal } = await import("../../panels/SkillsPanel/ZipUploadModal");
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    await act(async () => root.render(createElement(ZipUploadModal, {
+      showZipModal: true, setShowZipModal: () => {}, zipFile: null, zipUploading: false,
+      zipPreviewing: false, zipSkills: [], selectedZipSkills: [], targetSkillName: null,
+      adminRelease: false, adminReleasePhase: "idle", adminReleaseBlocked: false,
+      adminCatalogItems: [], zipInputRef: { current: null }, isDragging: false,
+      onZipFileChange: () => {}, onDragOver: () => {}, onDragLeave: () => {}, onDrop: () => {},
+      onZipSkillToggle: () => {}, onZipSelectAll: () => {}, onZipUpload: () => {},
+      error: "ZIP 中未找到 SKILL.md。",
+    })));
+    assert.equal(container.querySelector('.editor-sidebar-footer [role="alert"]')!.textContent, "ZIP 中未找到 SKILL.md。");
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 test("metadata-only save preserves unopened text and binary bytes", async () => {
   const original = skillApi.getFile;
   const reads: string[] = [];

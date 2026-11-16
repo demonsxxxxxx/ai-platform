@@ -12,7 +12,7 @@ export function FilesContentSkeleton() {
           className="absolute inset-0"
           style={{ backgroundColor: "var(--theme-bg)" }}
         />
-        <div className="absolute bottom-0 left-0 right-0 h-px bg-stone-200/60 dark:bg-stone-700/40" />
+        <div className="absolute bottom-0 left-0 right-0 h-px bg-neutral-200/60 dark:bg-neutral-700/40" />
         <div className="relative px-3 @sm:px-4 @md:px-6 py-2 @md:py-3">
           <div className="flex items-center justify-between gap-2 @sm:gap-3 w-full">
             <div className="flex flex-wrap gap-1.5 sm:gap-2 items-center">
@@ -73,11 +73,11 @@ export function FilesContentSkeleton() {
 function FileCardSkeleton({ i }: { i: number }) {
   return (
     <div
-      className="flex flex-col overflow-hidden rounded-xl border border-stone-200/60 dark:border-stone-700/40"
-      style={{ backgroundColor: "var(--theme-bg-card, #fff)" }}
+      className="flex flex-col overflow-hidden rounded-xl border border-neutral-200/60 dark:border-neutral-700/40"
+      style={{ backgroundColor: "var(--theme-bg-card)" }}
     >
       {/* File header */}
-      <div className="flex items-center gap-2 px-2.5 py-2.5 border-b border-stone-100 dark:border-stone-800/80">
+      <div className="flex items-center gap-2 px-2.5 py-2.5 border-b border-neutral-100 dark:border-neutral-800/80">
         <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 rounded shrink-0" />
         <SkeletonLine
           width={i === 0 ? "w-3/4" : i === 1 ? "w-1/2" : "w-2/3"}
@@ -86,7 +86,7 @@ function FileCardSkeleton({ i }: { i: number }) {
         <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 rounded-md shrink-0" />
       </div>
       {/* Preview area */}
-      <div className="aspect-[16/9] bg-stone-50/80 dark:bg-stone-800/20 flex items-center justify-center">
+      <div className="aspect-[16/9] bg-neutral-50/80 dark:bg-neutral-800/20 flex items-center justify-center">
         <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-lg" />
       </div>
       {/* Meta footer */}

@@ -1,6 +1,6 @@
 /* Dark mode: blend flow canvas with panel background */
 .dark .react-flow {
-  background-color: #1e1e1e !important;
+  background-color: var(--theme-bg) !important;
 }
 
 /* React Flow controls theme override — uses CSS vars that switch per light/dark */

@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app.capabilities import get_capability
+from app.agent_apps.api import get_capability
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ExecutionPolarity = Literal["affirmative", "non_execution", "unspecified"]

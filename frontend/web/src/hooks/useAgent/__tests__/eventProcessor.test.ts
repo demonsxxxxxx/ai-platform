@@ -298,6 +298,30 @@ test("marks a cancelled terminal while retaining safe partial output", () => {
   assert.doesNotMatch(JSON.stringify(result), /untrusted|\/home\/private/);
 });
 
+test("terminal cancellation replaces request notices and fences late lifecycle notices without hiding operation outcomes", () => {
+  const request = (event_type: string, event_id: string) => ({
+    projection_version: "ai-platform.chat-public-projection.v1",
+    event_type, event_id, stage: "status", message: event_type, severity: "warning",
+  } as EventData);
+  let parts: MessagePart[] = [{ type: "text", content: "部分正文" }];
+  for (const event of [request("agent_step_blocked", "operation-blocked"), request("cancel_requested", "cancel-intent")]) {
+    parts = processMessageEvent("run_event", event, parts, "部分正文", [], 0, [], true).parts;
+  }
+  assert.ok(parts.some((part) => part.type === "run_status" && part.event_type === "cancel_requested"));
+  const terminal: EventData = {
+    run_id: "run-cancelled-partial", projection_version: "ai-platform.chat-public-projection.v1",
+    detail_kind: "cancelled", detail_code: "run_cancelled",
+  };
+  parts = processMessageEvent("final_detail", terminal, parts, "部分正文", [], 0, [], false).parts;
+  for (const event of [request("cancel_requested", "late-cancel"), request("run_started", "late-start")]) {
+    parts = processMessageEvent("run_event", event, parts, "部分正文", [], 0, [], true).parts;
+  }
+  parts = processMessageEvent("final_detail", terminal, parts, "部分正文", [], 0, [], false).parts;
+  assert.deepEqual(parts.filter((part) => part.type === "run_status").map((part) => part.event_type),
+    ["agent_step_blocked", "run_cancelled"]);
+  assert.equal(parts[0]?.type, "text");
+});
+
 test("projects a result-unavailable terminal as a warning status without fabricating an answer", () => {
   const terminal = processMessageEvent(
     "final_detail",
@@ -1854,13 +1878,13 @@ test("projects v4 tool lifecycle into stable typed statuses", () => {
 
   const skill = processMessageEvent(
     "run_event",
-    { event_type: "public_tool_activity", operation_id: "op-skill-1", category: "skill", display_name: "QA Review", status: "started" },
+    { event_type: "public_tool_activity", operation_id: "op-skill-1", category: "skill", display_name: "qa-review", status: "started" },
     [], "", [], 0, [], true, "message-1",
   );
   assert.equal(skill.parts[0]?.type, "tool");
   assert.equal(
     skill.parts[0]?.type === "tool" ? skill.parts[0].public_display_name : null,
-    "QA Review",
+    "qa-review",
   );
 
   const completed = processMessageEvent(

@@ -9,7 +9,6 @@ import {
   getSSECloseAction,
   isNonRetryableSSEAuthenticationError,
   isSSEHeartbeatComment,
-  isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
   MAX_STATUS_QUERY_RETRIES,
   SSE_STARTUP_RETRY_BUDGET_MS,
@@ -652,28 +651,13 @@ test("retries an SSE close that arrives before a terminal stream event", () => {
   );
 });
 
-test("treats SSE close as terminal only after an explicit terminal state", () => {
-  assert.equal(isTerminalSSEEvent("message:chunk"), false);
-  assert.equal(isTerminalSSEEvent("done"), false);
-  assert.equal(isTerminalSSEEvent("done", { status: "succeeded" }), true);
-  assert.equal(isTerminalSSEEvent("complete"), true);
-  assert.equal(isTerminalSSEEvent("user:cancel"), false);
-  assert.equal(isTerminalSSEEvent("error", { type: "ValueError" }), false);
-
+test("treats SSE close as terminal only after an accepted terminal frame", () => {
   assert.equal(
     getSSECloseAction({
       receivedTerminalEvent: true,
     }),
     "terminal",
   );
-});
-
-test("classifies only explicit server-sent terminal errors as application failures", () => {
-  assert.equal(
-    isTerminalSSEEvent("error", { error: "run_failed" }),
-    true,
-  );
-  assert.equal(isTerminalSSEEvent("error", { error: "stream_timeout" }), false);
 });
 
 test("keeps a silent running heartbeat attached without projecting assistant content or resetting retries", async () => {

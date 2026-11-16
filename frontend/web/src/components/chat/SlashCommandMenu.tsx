@@ -16,11 +16,6 @@ const commandIcons: Record<
   file: FileText,
 };
 
-const commandAlias: Partial<Record<Exclude<ComposerCommandName, "menu">, string>> =
-  {
-    skill: "$",
-  };
-
 export interface SlashCommandMenuProps {
   items: SlashCommandMenuItem[];
   highlightedIndex: number;
@@ -46,7 +41,6 @@ export function SlashCommandMenu({
       {items.map((item, index) => {
         const Icon = commandIcons[item.command];
         const active = index === highlightedIndex;
-        const alias = commandAlias[item.command];
         return (
           <ComposerMenuItem key={item.command} role="option" aria-selected={active}
             data-composer-command-item={item.command} active={active}
@@ -55,7 +49,7 @@ export function SlashCommandMenu({
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-2">
                 <span className="font-medium">{t(item.labelKey)}</span>
-                <span className="font-mono text-xs">/{item.command}{alias ? ` · ${alias}` : ""}</span>
+                <span className="font-mono text-xs">/{item.command}</span>
                 {item.unavailable && <span className="text-xs text-[var(--theme-text-secondary)]">{t("composerChip.status.unavailable")}</span>}
               </span>
               <span className="block truncate text-xs text-[var(--theme-text-secondary)]">{t(item.descriptionKey)}</span>

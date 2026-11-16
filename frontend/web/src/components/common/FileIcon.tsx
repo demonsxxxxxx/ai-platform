@@ -11,8 +11,8 @@ interface FileIconProps {
 
 export function FileIcon({
   icon: Icon,
-  bg = "bg-blue-100 dark:bg-blue-900/40",
-  color = "text-blue-600 dark:text-blue-400",
+  bg = "bg-[var(--theme-info-soft)]",
+  color = "text-[var(--theme-info-text)]",
 }: FileIconProps) {
   return (
     <div
@@ -53,10 +53,10 @@ export function PreviewHeader({
         isSidebar
           ? "gap-2.5 px-3 sm:px-4 py-2.5 sm:py-3"
           : "gap-2 sm:gap-3 px-2 sm:px-4 py-2 sm:py-3"
-      } border-b border-stone-200 dark:border-stone-700/80 shrink-0 ${
+      } border-b border-neutral-200 dark:border-neutral-700/80 shrink-0 ${
         isSidebar
-          ? "bg-stone-50 dark:bg-[#1e1e1e]"
-          : "bg-stone-50/80 dark:bg-stone-800/60"
+          ? "bg-neutral-50 dark:bg-[var(--theme-bg-card)]"
+          : "bg-neutral-50/80 dark:bg-neutral-800/60"
       } whitespace-nowrap`}
     >
       <FileIcon icon={icon} bg={iconBg} color={iconColor} />
@@ -70,7 +70,7 @@ export function PreviewHeader({
             isSidebar
               ? "text-[13px] sm:text-sm font-medium"
               : "font-medium text-sm"
-          } text-stone-800 dark:text-stone-100 truncate`}
+          } text-neutral-800 dark:text-neutral-100 truncate`}
           title={title}
         >
           {title}
@@ -79,7 +79,7 @@ export function PreviewHeader({
           <p
             className={`text-xs ${
               isSidebar ? "" : "hidden sm:block"
-            } text-stone-400 dark:text-stone-500 mt-0.5`}
+            } text-neutral-400 dark:text-neutral-500 mt-0.5`}
           >
             {subtitle}
           </p>

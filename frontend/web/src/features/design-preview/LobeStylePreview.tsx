@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActionIcon, Button, Drawer, Input, Switch, Table, Tabs, Tag, TextArea } from "@lobehub/ui/base-ui";
-import { ArrowRight, ArrowUp, Bot, Check, ChevronRight, FileText, LayoutGrid, Menu, MessageSquare, Moon, Search, Settings2, Sparkles, Star, Sun } from "lucide-react";
+import { ArrowRight, ArrowUp, Bot, ChevronRight, FileText, LayoutGrid, Menu, MessageSquare, Moon, Search, Settings2, Sparkles, Star, Sun } from "lucide-react";
 import { useTheme } from "../../contexts/ThemeContext";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
 import { LobeSelectField } from "../../components/lobe-ui/LobeSelectField";
@@ -36,14 +36,12 @@ function Sidebar({ view, onNavigate }: { view: View; onNavigate: (view: View) =>
       {views.map(({ id, label, icon: Icon }) => <Button
         key={id} type="text" icon={<Icon size={18} />} data-preview-view={id}
         aria-current={view === id ? "page" : undefined}
-        onClick={() => onNavigate(id)}
-        style={{ width: "100%", justifyContent: "flex-start", height: 40, paddingInline: 12, gap: 10, background: view === id ? "var(--preview-hover)" : "transparent", color: view === id ? "var(--preview-text)" : "var(--preview-muted)", fontWeight: view === id ? 600 : 400 }}
+        onClick={() => onNavigate(id)} className={view === id ? `${styles.navItem} ${styles.navItemActive}` : styles.navItem}
       >{label}</Button>)}
     </nav>
     <div className={styles.recentSection}>
       <div className={styles.workspaceLabel}>最近使用</div>
-      <Button type="text" icon={<FileText size={16} />} onClick={() => onNavigate("chat")}
-        style={{ justifyContent: "flex-start", width: "100%", height: 40, paddingInline: 12, color: "var(--preview-muted)" }}>采购合同审核</Button>
+      <Button type="text" icon={<FileText size={16} />} onClick={() => onNavigate("chat")} className={styles.navItem}>采购合同审核</Button>
     </div>
     <div className={styles.sidebarFooter}><span className={styles.userAvatar}>预</span><div><strong>预览工作空间</strong><span>示例数据</span></div></div>
   </div>;
@@ -91,19 +89,26 @@ function Models({ onConnection }: { onConnection: () => void }) {
   const [models, setModels] = useState(initialModels);
   const [query, setQuery] = useState("");
   const [saved, setSaved] = useState(true);
+  const [compact, setCompact] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 767px)").matches);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(max-width: 767px)");
+    const update = () => setCompact(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   return <div className={styles.page} data-preview-models>
     <div className={styles.pageHeading}><div><h1>模型管理</h1><p>选择可用模型，为不同任务提供合适的能力。</p></div><Button icon={<Settings2 size={16} />} onClick={onConnection}>连接设置</Button></div>
     <div className={styles.connectionSummary}><div className={styles.inline}><span className={styles.connectionDot} /><strong>企业模型网关</strong><span className={styles.muted}>连接正常</span></div><Tag>4 个示例模型</Tag></div>
     <div className={styles.modelToolbar}><h2>可用模型 <span>{models.length}</span></h2><Input aria-label="搜索模型" placeholder="搜索模型…" value={query} onChange={event => setQuery(event.target.value)} prefix={<Search size={16} />} className={styles.search} /></div>
     <div className={styles.tableShell}>
-      <Table size="middle" rowKey="id" pagination={false} scroll={{ x: 720 }}
+      <Table size="middle" rowKey="id" pagination={false}
         dataSource={models.filter(model => `${model.name} ${model.provider}`.toLowerCase().includes(query.trim().toLowerCase()))}
         columns={[
-          { title: "模型", key: "name", width: 280, render: (_value, model) => <div className={styles.modelIdentity}><span className={styles.modelAvatar}>{model.initials}</span><div><strong>{model.name}</strong><span>{model.provider}</span></div></div> },
-          { title: "上下文窗口", dataIndex: "context", width: 150 },
-          { title: "状态", key: "status", width: 150, render: (_value, model) => model.enabled ? <Tag color="success">已启用</Tag> : <Tag>未启用</Tag> },
-          { title: "默认", key: "default", width: 90, render: (_value, model) => model.default ? <Check size={16} aria-label="默认模型" /> : <span className={styles.muted}>—</span> },
-          { title: "启用", key: "enabled", width: 90, render: (_value, model) => <><label className="sr-only" htmlFor={`preview-model-${model.id}`}>启用 {model.name}</label><Switch id={`preview-model-${model.id}`} checked={model.enabled} disabled={model.default} onChange={checked => { setModels(current => current.map(item => item.id === model.id ? { ...item, enabled: checked } : item)); setSaved(false); }} /></> },
+          { title: "模型", key: "name", render: (_value, model) => <div className={styles.modelIdentity}><span className={styles.modelAvatar}>{model.initials}</span><div><strong>{model.name}</strong><span>{model.provider}{model.default && <span className={styles.defaultMark}>默认</span>}</span></div></div> },
+          ...(compact ? [] : [{ title: "上下文窗口", dataIndex: "context" }]),
+          { title: "状态", key: "status", width: 100, render: (_value, model) => model.enabled ? <Tag color="success">已启用</Tag> : <Tag>未启用</Tag> },
+          { title: "启用", key: "enabled", width: 72, render: (_value, model) => <><label className="sr-only" htmlFor={`preview-model-${model.id}`}>启用 {model.name}</label><Switch id={`preview-model-${model.id}`} checked={model.enabled} disabled={model.default} onChange={checked => { setModels(current => current.map(item => item.id === model.id ? { ...item, enabled: checked } : item)); setSaved(false); }} /></> },
         ]} />
     </div>
     <div className={styles.modelFooter}><span role="status">{models.filter(model => model.enabled).length} 个模型已启用 · {saved ? "示例配置已保存" : "有未保存的修改"}</span><Button type="primary" size="large" disabled={saved} onClick={() => setSaved(true)}>保存修改</Button></div>

@@ -51,7 +51,7 @@ for (const [isLoading, canStop, canSend, expectedStop] of [
   test(`composer stop control: loading=${isLoading}, owner=${canStop}, permission=${canSend}`, () => {
     const noop = () => {};
     const toolbar = createElement(ChatInputToolbar, {
-      activePanel: null, onActivePanelChange: noop, canSend, isLoading, canStop,
+      activePanel: null, onActivePanelChange: noop, showPermissionLock: !canSend, isLoading, canStop,
       canSubmit: false, hasUploadingAttachment: false, enabledToolsCount: 0,
       totalToolsCount: 0, enabledSkillsCount: 0, totalSkillsCount: 0,
       availableModels: [], uploadCategories: [], uploadFiles: noop,

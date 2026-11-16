@@ -6,7 +6,7 @@ import React from "react";
 import { JSDOM } from "jsdom";
 import { authApi } from "../../services/api/auth";
 import { ThemeProvider, useTheme } from "../ThemeContext";
-import { useSidebarPreference, SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useSidebarPreference";
+import { useSidebarPreference, SIDEBAR_COLLAPSED_STORAGE_KEY, SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY } from "../../hooks/useSidebarPreference";
 import { LEGACY_THEME_STORAGE_KEY, THEME_STORAGE_KEY } from "../../utils/themeDom";
 
 async function withPreferences(
@@ -14,6 +14,7 @@ async function withPreferences(
   run: (view: {
     theme: () => ReturnType<typeof useTheme>;
     sidebar: () => ReturnType<typeof useSidebarPreference>;
+    management: () => ReturnType<typeof useSidebarPreference>;
     os: (dark: boolean) => Promise<void>;
     act: (action: () => void) => Promise<void>;
     remount: () => Promise<void>;
@@ -40,12 +41,13 @@ async function withPreferences(
   let root = createRoot(document.getElementById("root")!);
   let theme!: ReturnType<typeof useTheme>;
   let sidebar!: ReturnType<typeof useSidebarPreference>;
-  function Probe() { theme = useTheme(); sidebar = useSidebarPreference(); return null; }
+  let management!: ReturnType<typeof useSidebarPreference>;
+  function Probe() { theme = useTheme(); sidebar = useSidebarPreference(); management = useSidebarPreference(SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY); return null; }
   const render = async () => { await React.act(async () => root.render(<React.StrictMode><ThemeProvider><Probe /></ThemeProvider></React.StrictMode>)); };
   const act = async (action: () => void) => { await React.act(async () => action()); };
   try {
     await render();
-    await run({ theme: () => theme, sidebar: () => sidebar, act, storage: localStorage, listeners, requests,
+    await run({ theme: () => theme, sidebar: () => sidebar, management: () => management, act, storage: localStorage, listeners, requests,
       os: async (value) => { dark = value; await act(() => listeners.forEach(listener => listener({ matches: dark }))); },
       remount: async () => { await act(() => root.unmount()); assert.equal(listeners.size, 0); root = createRoot(document.getElementById("root")!); await render(); },
     });
@@ -85,6 +87,21 @@ test("OS-derived theme stays transient until an explicit choice; no account requ
   });
 });
 
+test("management and shell collapse choices persist independently without default writes", async () => {
+  await withPreferences({}, async ({ sidebar, management, act, storage, remount }) => {
+    assert.equal(management()[0], false, "management defaults expanded");
+    assert.equal(storage.getItem(SIDEBAR_MANAGEMENT_COLLAPSED_STORAGE_KEY), null);
+    await act(() => management()[1](true));
+    await remount();
+    assert.equal(management()[0], true);
+    assert.equal(sidebar()[0], false);
+    await act(() => { management()[1](false); sidebar()[1](true); });
+    await remount();
+    assert.equal(management()[0], false);
+    assert.equal(sidebar()[0], true);
+  });
+});
+
 test("stored and legacy theme choices retain precedence without bootstrap writes", async () => {
   for (const key of [THEME_STORAGE_KEY, LEGACY_THEME_STORAGE_KEY]) {
     await withPreferences({ [key]: "dark" }, async ({ theme, os, storage, requests }) => {
@@ -113,15 +130,16 @@ test("real principal mapping does not restore profile preferences or write them 
 });
 
 test("blocked storage does not prevent explicit local theme or sidebar changes", async () => {
-  await withPreferences({}, async ({ theme, sidebar, os, act, storage, requests }) => {
+  await withPreferences({}, async ({ theme, sidebar, management, os, act, storage, requests }) => {
     const prototype = Object.getPrototypeOf(storage) as Storage;
     const original = prototype.setItem;
     prototype.setItem = () => { throw new DOMException("blocked", "SecurityError"); };
     try {
-      await act(() => { theme().setTheme("dark"); sidebar()[1](true); });
+      await act(() => { theme().setTheme("dark"); sidebar()[1](true); management()[1](true); });
       await os(false);
       assert.equal(theme().theme, "dark");
       assert.equal(sidebar()[0], true);
+      assert.equal(management()[0], true);
       assert.deepEqual(requests, []);
     } finally {
       prototype.setItem = original;

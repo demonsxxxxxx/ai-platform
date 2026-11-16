@@ -1,3 +1,28 @@
+from app.execution.application.recovery_operations import (
+    AuthoritativeOperationStatus as AuthoritativeOperationStatus,
+    RecoveryInvocationAuthority as RecoveryInvocationAuthority,
+    RecoveryOperationsService as RecoveryOperationsService,
+)
+from app.execution.domain.recovery_operations import (
+    RECOVERY_CONFIRMATION_TIMEOUT_SECONDS as RECOVERY_CONFIRMATION_TIMEOUT_SECONDS,
+    RecoveryInvocation as RecoveryInvocation,
+    RecoverySourceConfirmation as RecoverySourceConfirmation,
+    RecoveryOperationFact as RecoveryOperationFact,
+    validate_recovery_operation_facts as validate_recovery_operation_facts,
+    RecoveryOperationError as RecoveryOperationError,
+    RecoveryOperationScope as RecoveryOperationScope,
+)
+from app.execution.application.continuation_settlement import (
+    ContinuationSettlementPorts as ContinuationSettlementPorts,
+    undispatched_cancellation_proof as undispatched_cancellation_proof,
+    undispatched_continuation_settlement as undispatched_continuation_settlement,
+)
+from app.execution.domain.document_plugin import (
+    DOCUMENT_PLUGIN_INPUT_KEY as DOCUMENT_PLUGIN_INPUT_KEY,
+    admit_document_plugin as admit_document_plugin,
+    document_plugin_skill_names as document_plugin_skill_names,
+    document_plugin_tool_subject as document_plugin_tool_subject,
+)
 from app.artifacts.api import (
     build_artifact_records as build_artifact_records,
     promote_artifact_reservations as promote_artifact_reservations,
@@ -103,12 +128,29 @@ from app.execution.domain.public_projection import (
     sdk_failure_result_fields,
 )
 
+from app.execution.domain.model_catalog import (
+    AUTO_COMPACT_WINDOW_DEFAULT_TOKENS as AUTO_COMPACT_WINDOW_DEFAULT_TOKENS,
+    AUTO_COMPACT_WINDOW_MAX_TOKENS as AUTO_COMPACT_WINDOW_MAX_TOKENS,
+    AUTO_COMPACT_WINDOW_MIN_TOKENS as AUTO_COMPACT_WINDOW_MIN_TOKENS,
+)
+from app.execution.domain.model_catalog import (
+    legacy_input_capacity_to_auto_compact_window as legacy_input_capacity_to_auto_compact_window,
+)
+
 from typing import Any
 
 from app.execution.application.follow_up_completion import (
     FollowUpSuggestionResult as FollowUpSuggestionResult,
     FollowUpSuggestionService as FollowUpSuggestionService,
     configured_follow_up_suggestions as configured_follow_up_suggestions,
+)
+from app.execution.application.model_selection_bridge import (
+    select_chat_route_model as select_chat_route_model,
+    model_selection_error_status as model_selection_error_status,
+)
+from app.execution.application.model_snapshot_projection import (
+    group_snapshot_fields as group_snapshot_fields,
+    restored_session_model_metadata as restored_session_model_metadata,
 )
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
@@ -120,23 +162,55 @@ from app.execution.application.model_selection import (
     bind_selected_run_model as bind_selected_run_model,
     parse_requested_model_selection as parse_requested_model_selection,
 )
+from app.execution.domain.office_execution_tier import (
+    route_office_execution_tier as route_office_execution_tier,
+)
+from app.execution.domain.input_limits import (
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS as MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
+    MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS as MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
+    assert_upstream_model_id as assert_upstream_model_id,
+)
 
 
-async def list_public_models(conn: Any) -> dict[str, object]:
-    return await configured_model_control_plane().public_models(conn)
+async def list_public_models(
+    conn: Any, *, user_id: str, tenant_id: str | None = None,
+    usage_scene: str = "independent", group_id: str | None = None,
+) -> dict[str, object]:
+    return await configured_model_control_plane().public_models(
+        conn, user_id=user_id, tenant_id=tenant_id, usage_scene=usage_scene,
+        group_id=group_id,
+    )
 
 
 async def resolve_chat_model_selection(
     conn: Any,
     *,
     selection: dict[str, str] | None,
+    user_id: str,
+    tenant_id: str | None = None,
+    group_id: str | None = None,
+    selection_mode: str | None = None,
+    usage_scene: str = "independent",
 ) -> RunModelSelection:
     return await configured_model_control_plane().resolve_selection(
         conn,
         selection=selection,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        group_id=group_id,
+        selection_mode=selection_mode,
+        usage_scene=usage_scene,
     )
 
 __all__ = [
+    "MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS",
+    "MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS",
+    "assert_upstream_model_id",
+    "route_office_execution_tier",
+    "AUTO_COMPACT_WINDOW_DEFAULT_TOKENS",
+    "AUTO_COMPACT_WINDOW_MAX_TOKENS",
+    "AUTO_COMPACT_WINDOW_MIN_TOKENS",
+    "legacy_input_capacity_to_auto_compact_window",
     "FollowUpSuggestionResult",
     "FollowUpSuggestionService",
     "ModelTextCheckpoint",

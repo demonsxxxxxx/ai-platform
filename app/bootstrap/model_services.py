@@ -21,6 +21,9 @@ from app.execution.infrastructure.model_upstream import ModelUpstreamAdapter
 from app.execution.transport import (
     build_model_management_router as build_execution_model_management_router,
 )
+from app.bootstrap.identity import build_company_employee_directory
+from app.identity.api import CompanyEmployeeProvisioningService
+from app.identity.infrastructure.postgres import PostgresCompanyEmployeeIdentityStore
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_for_binding,
@@ -74,6 +77,7 @@ def configure_model_services() -> None:
             transaction_factory=transaction,
             settings_provider=settings_provider,
             repository=_model_repository,
+            employee_identities=CompanyEmployeeProvisioningService(build_company_employee_directory(), PostgresCompanyEmployeeIdentityStore()),
             security=ModelEndpointSecurityAdapter(),
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,

@@ -28,6 +28,7 @@ const adminOnlyItems: WorkbenchAccessKey[] = [
   "settings",
   "models",
   "runs",
+  "usage",
   "feedback",
 ];
 
@@ -56,6 +57,9 @@ test("path policy covers nested management URLs and leaves public unknown paths 
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/users"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/runs"), false);
   assert.equal(canAccessWorkbenchPath(adminUser, "/runs"), true);
+  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/usage"), false);
+  assert.equal(canAccessWorkbenchPath(adminUser, "/usage"), true);
+  assert.equal(canAccessWorkbenchItem(null, "usage"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/plugins"), false);
   assert.equal(canAccessWorkbenchPath(adminUser, "/plugins"), true);

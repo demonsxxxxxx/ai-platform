@@ -2,19 +2,19 @@
 
 .excel-preview-scroll {
   scrollbar-width: thin;
-  scrollbar-color: #a8a29e transparent;
+  scrollbar-color: #a3a3a3 transparent;
 }
 
 .excel-preview-scroll:hover {
-  scrollbar-color: #78716c transparent;
+  scrollbar-color: #737373 transparent;
 }
 
 .dark .excel-preview-scroll {
-  scrollbar-color: #57534e transparent;
+  scrollbar-color: #525252 transparent;
 }
 
 .dark .excel-preview-scroll:hover {
-  scrollbar-color: #78716c transparent;
+  scrollbar-color: #737373 transparent;
 }
 
 /* Webkit browsers */
@@ -28,7 +28,7 @@
 }
 
 .excel-preview-scroll::-webkit-scrollbar-thumb {
-  background: #a8a29e;
+  background: #a3a3a3;
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -36,19 +36,19 @@
 }
 
 .excel-preview-scroll:hover::-webkit-scrollbar-thumb {
-  background: #78716c;
+  background: #737373;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 .dark .excel-preview-scroll::-webkit-scrollbar-thumb {
-  background: #57534e;
+  background: #525252;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 .dark .excel-preview-scroll:hover::-webkit-scrollbar-thumb {
-  background: #78716c;
+  background: #737373;
   border: 2px solid transparent;
   background-clip: content-box;
 }

@@ -225,7 +225,7 @@ export function DocumentViewerFrame({
   );
 
   return (
-    <div className="relative h-full min-h-[400px] w-full overflow-hidden bg-stone-200 dark:bg-stone-950">
+    <div className="relative h-full min-h-[400px] w-full overflow-hidden bg-neutral-200 dark:bg-neutral-950">
       <div
         ref={viewportRef}
         aria-label={ariaLabel}
@@ -242,9 +242,9 @@ export function DocumentViewerFrame({
       </div>
 
       {loading ? (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-stone-100/80 dark:bg-stone-950/80">
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-neutral-100/80 dark:bg-neutral-950/80">
           <Spin
-            className="text-stone-400 dark:text-stone-500"
+            className="text-neutral-400 dark:text-neutral-500"
             size={32}
           />
         </div>

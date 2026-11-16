@@ -7,20 +7,20 @@ export function getFileIcon(path: string) {
   const ext = name.includes(".") ? name.split(".").pop() : "";
   switch (ext?.toLowerCase()) {
     case "md":
-      return <FileText size={14} className="text-blue-400 shrink-0" />;
+      return <FileText size={14} className="text-[var(--theme-info-text)] shrink-0" />;
     case "ts":
     case "tsx":
-      return <FileCode size={14} className="text-blue-500 shrink-0" />;
+      return <FileCode size={14} className="text-[var(--theme-info-text)] shrink-0" />;
     case "js":
     case "jsx":
-      return <FileCode size={14} className="text-yellow-500 shrink-0" />;
+      return <FileCode size={14} className="text-[var(--theme-warning-text)] shrink-0" />;
     case "py":
-      return <FileCode size={14} className="text-green-500 shrink-0" />;
+      return <FileCode size={14} className="text-[var(--theme-success-text)] shrink-0" />;
     case "json":
-      return <FileCode size={14} className="text-yellow-400 shrink-0" />;
+      return <FileCode size={14} className="text-[var(--theme-warning-text)] shrink-0" />;
     case "yaml":
     case "yml":
-      return <FileCode size={14} className="text-pink-400 shrink-0" />;
+      return <FileCode size={14} className="text-[var(--theme-danger-text)] shrink-0" />;
     // Images
     case "jpg":
     case "jpeg":
@@ -32,14 +32,14 @@ export function getFileIcon(path: string) {
     case "svg":
     case "tiff":
     case "tif":
-      return <Image size={14} className="text-emerald-500 shrink-0" />;
+      return <Image size={14} className="text-[var(--theme-success-text)] shrink-0" />;
     // Video
     case "mp4":
     case "webm":
     case "mov":
     case "avi":
     case "mkv":
-      return <Film size={14} className="text-purple-500 shrink-0" />;
+      return <Film size={14} className="text-neutral-500 shrink-0" />;
     // Audio
     case "mp3":
     case "wav":
@@ -47,12 +47,12 @@ export function getFileIcon(path: string) {
     case "aac":
     case "flac":
     case "m4a":
-      return <Music size={14} className="text-pink-500 shrink-0" />;
+      return <Music size={14} className="text-[var(--theme-danger-text)] shrink-0" />;
     default:
       return (
         <File
           size={14}
-          className="text-stone-400 dark:text-stone-500 shrink-0"
+          className="text-neutral-400 dark:text-neutral-500 shrink-0"
         />
       );
   }

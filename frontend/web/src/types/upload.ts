@@ -2,6 +2,8 @@
 // File Upload Types
 // ============================================
 
+import type { ProfileDriveFileReference } from "../services/api/profileDrive";
+
 export type FileCategory = "image" | "video" | "audio" | "document";
 
 export interface MessageAttachment {
@@ -14,6 +16,8 @@ export interface MessageAttachment {
   url?: string;
   /** Independently authorized download URL when it differs from preview. */
   downloadUrl?: string;
+  /** Browser-only origin for the current composer's shared drive attachment. */
+  profileDriveReference?: ProfileDriveFileReference;
   /** Upload progress (0-100) */
   uploadProgress?: number;
   /** Whether upload is in progress */

@@ -27,6 +27,14 @@ test("translates shared backend error codes", () => {
   );
 });
 
+test("continuation admission errors use fixed reason-specific guidance without private detail", () => {
+  for (const code of ["writer_unverified", "workspace_unsaved", "native_unavailable", "capacity_exhausted"]) {
+    const message = translateChatAdmissionError({ status: 409, code, message: "private /runtime/workspace?token=secret" }, t);
+    assert.match(message, new RegExp(`chat\\.continuation\\.${code}$`));
+    assert.doesNotMatch(message, /private|runtime|token|secret/);
+  }
+});
+
 test("chat admission maps only the typed active-run 409 to actionable guidance", () => {
   assert.equal(
     translateChatAdmissionError(
@@ -159,6 +167,7 @@ test("projects stable Skill package failures to actionable Skill copy", () => {
 
 test("the shipped Chinese catalog includes fail-closed governance error copy", () => {
   const requiredKeys = [
+    "providerSessionRequiresNewConversation",
     "skillFileWriteNotBacked",
     "skillFileDeleteNotBacked",
     "skillImportNotBacked",
@@ -237,6 +246,40 @@ test("safe error projection translates only allowlisted exact detail or code", (
   );
 });
 
+test("projects structured validation failures without exposing backend messages or input", () => {
+  const nameError = { type: "value_error", loc: ["name"], msg: "Value error, mcp_server_name contains unsupported characters" };
+  for (const loc of [["name"], ["body", "name"]]) {
+    assert.deepEqual(projectSafeBackendError([{ ...nameError, loc, input: "private-secret" }], 422, t), {
+      code: "mcp_server_name_invalid",
+      message: "translated:mcp.form.validation.nameInvalid",
+    });
+  }
+  for (const detail of [
+    [{ ...nameError, loc: ["headers", "private-secret"] }],
+    [{ ...nameError, msg: "Value error, private-secret" }],
+    [{ type: "missing", loc: ["body", "private-secret"], msg: "private-secret", input: "private-secret" }],
+    { code: "unrecognized_validation_error", message: "private-secret" },
+  ]) {
+    const result = projectSafeBackendError(detail, 422, t);
+    assert.equal(result.message, "translated:backendErrors.validationFailed");
+    assert.doesNotMatch(JSON.stringify(result), /private-secret/);
+  }
+  assert.equal(projectSafeBackendError([nameError], 500, t).message, "translated:chat.requestFailed");
+});
+
+test("projects MCP lifecycle codes to actionable public copy", () => {
+  for (const [code, key] of [
+    ["mcp_server_name_invalid", "mcp.form.validation.nameInvalid"],
+    ["mcp_server_name_required", "mcp.form.validation.nameRequired"],
+    ["mcp_header_duplicate", "mcp.form.validation.duplicateHeader"],
+    ["mcp_header_conflict", "mcp.form.validation.headerConflict"],
+    ["mcp_header_invalid", "mcp.form.validation.invalidHeader"],
+    ["mcp_server_conflict", "mcp.form.validation.serverConflict"],
+  ]) {
+    assert.equal(projectSafeBackendError(code, 400, t).message, `translated:${key}`);
+  }
+});
+
 test("projects company auth rejection to specific safe Chinese guidance", () => {
   const message =
     "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。";
@@ -289,6 +332,7 @@ test("admission and shared HTTP errors preserve actionable allowlisted causes", 
   for (const [code, key] of [
     ["agent_profile_revision_stale", "backendErrors.agentProfileRevisionStale"],
     ["session_workspace_mismatch", "backendErrors.sessionWorkspaceMismatch"],
+    ["provider_session_requires_new_conversation", "backendErrors.providerSessionRequiresNewConversation"],
     ["api_response_invalid", "backendErrors.apiResponseInvalid"],
     ["required_capability_unavailable", "chat.runTerminal.requiredCapabilityUnavailable"],
     ["context_file_storage_unavailable", "chat.runTerminal.contextFileStorageUnavailable"],

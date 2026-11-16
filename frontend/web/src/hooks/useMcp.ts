@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { ApiRequestError, authFetch } from "../services/api/fetch";
+import { ApiRequestError, authFetch, publicApiErrorMessage } from "../services/api/fetch";
+import i18n from "../i18n";
 import { isPermissionError } from "../components/governance/frontendGovernanceState";
 import type {
   MCPServerResponse,
@@ -320,17 +321,21 @@ export function useMCP(options?: {
       requestEpochRef.current === request.epoch
     );
   }, []);
-  const publishFailure = useCallback((request: McpCatalogRequestToken, err: unknown, fallback: string, source: "catalog" | "operation" = "catalog") => {
+  const publishFailure = useCallback((request: McpCatalogRequestToken, err: unknown, source: "catalog" | "operation" = "catalog") => {
     updateCatalog((current) => publishMcpCatalogFailure(
       current,
       request,
       allAuthorizedCatalog,
-      err instanceof Error ? err.message : fallback,
+      publicApiErrorMessage(err, i18n.t("mcp.admin.operationFailed")),
       (err instanceof ApiRequestError && err.status === 403) ||
         (err instanceof Error && isPermissionError(err.message)),
       source,
     ));
   }, [allAuthorizedCatalog, updateCatalog]);
+  const clearOperationError = useCallback(() => {
+    updateCatalog((state) => state.errorSource === "operation"
+      ? { ...state, error: null, errorSource: undefined } : state);
+  }, [updateCatalog]);
   const visibleCatalogState = resolveVisibleMcpCatalogState(catalogState, requestScope, enabled);
   const isAvailable = enabled && !paused && isActiveCatalogRequest(catalogState.request) &&
     catalogState.request.epoch > 0 && catalogAllowsOperations(catalogState);
@@ -362,7 +367,7 @@ export function useMCP(options?: {
       return true;
     } catch (err) {
       if (!isActiveCatalogRequest(request)) return false;
-      publishFailure(request, err, "Failed to fetch MCP servers");
+      publishFailure(request, err);
       return false;
     }
   }, [enabled, requestScope, listParams, identityScope, canManageServers, allAuthorizedCatalog, beginCatalogRequest, isActiveCatalogRequest, updateCatalog, publishFailure]);
@@ -370,7 +375,7 @@ export function useMCP(options?: {
   // Details and mutations share the catalog's authorization and lifetime. A
   // new read, identity change, or failure fences every older completion.
   const requestServer = useCallback(async <T,>(
-    load: () => Promise<T>, fallback: string, mutation: boolean,
+    load: () => Promise<T>, mutation: boolean,
   ): Promise<T | null> => {
     const current = catalogStateRef.current;
     if (!mountedRef.current || pausedRef.current || !enabled || !canManageServers || activeRequestScopeRef.current !== requestScope ||
@@ -395,7 +400,7 @@ export function useMCP(options?: {
       // Advance the same request owner so concurrent old details cannot reopen
       // an editor after the backend has rejected this scope.
       const failureRequest = beginCatalogRequest(requestScope);
-      if (failureRequest) publishFailure(failureRequest, err, fallback, "operation");
+      if (failureRequest) publishFailure(failureRequest, err, "operation");
       return null;
     } finally {
       if (mutation && operationRequestRef.current === request) {
@@ -407,29 +412,29 @@ export function useMCP(options?: {
 
   const getServer = useCallback((name: string) => requestServer(
     () => authFetch<MCPServerResponse>(`${API_BASE}/${encodeURIComponent(name)}`),
-    "Failed to fetch MCP server", false,
+    false,
   ), [requestServer]);
   const createServer = useCallback((server: MCPServerCreate, isSystem = false) => requestServer(
     () => authFetch<MCPServerResponse>(`${isSystem ? "/api/admin/mcp" : API_BASE}/`, {
       method: "POST", body: JSON.stringify(server),
-    }), "Failed to create MCP server", true,
+    }), true,
   ), [requestServer]);
   const updateServer = useCallback((name: string, updates: MCPServerUpdate, isSystem = false) => requestServer(
     () => authFetch<MCPServerResponse>(`${isSystem ? "/api/admin/mcp" : API_BASE}/${encodeURIComponent(name)}`, {
       method: "PUT", body: JSON.stringify(updates),
-    }), "Failed to update MCP server", true,
+    }), true,
   ), [requestServer]);
   const deleteServer = useCallback(async (name: string, isSystem = false): Promise<boolean> => {
     const result = await requestServer(async () => {
       await authFetch(`${isSystem ? "/api/admin/mcp" : API_BASE}/${encodeURIComponent(name)}`, { method: "DELETE" });
       return true;
-    }, "Failed to delete MCP server", true);
+    }, true);
     return result === true;
   }, [requestServer]);
   const toggleServer = useCallback(async (name: string): Promise<MCPServerResponse | null> => {
     const result = await requestServer(
       () => authFetch<MCPServerToggleResponse>(`${API_BASE}/${encodeURIComponent(name)}/toggle`, { method: "PATCH" }),
-      "Failed to toggle MCP server", true,
+      true,
     );
     return result?.server ?? null;
   }, [requestServer]);
@@ -451,6 +456,7 @@ export function useMCP(options?: {
     isAvailable,
     permissionDenied: visibleCatalogState.permissionDenied === true,
     error: visibleCatalogState.error,
+    clearOperationError,
     catalogError: visibleCatalogState.errorSource === "operation" && !visibleCatalogState.permissionDenied
       ? null : visibleCatalogState.error,
     fetchServers,

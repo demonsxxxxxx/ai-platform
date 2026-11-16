@@ -181,7 +181,7 @@ function CatalogError({ error, refresh }: { error: string; refresh: () => void }
   return (
     <section
       aria-live="polite"
-      className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/40 dark:text-red-200"
+      className="rounded-lg border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] p-4 text-sm text-[var(--theme-danger-text)]"
     >
       <p>{error}</p>
       <Button type="default" className="mt-3" onClick={refresh} htmlType="button">
@@ -233,8 +233,8 @@ function ExpertMarketCard({
                     aria-label={profile.is_favorite ? `取消收藏 ${profile.name}` : `收藏 ${profile.name}`}
                     className={`rounded-full p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] ${
                       profile.is_favorite
-                        ? "text-amber-600 dark:text-amber-300"
-                        : "text-[var(--theme-text-secondary)] hover:text-amber-500"
+                        ? "text-[var(--theme-warning-text)]"
+                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-warning-text)]"
                     }`}
                     onClick={() => onToggleFavorite(profile)}
                     htmlType="button"
@@ -471,7 +471,7 @@ function AgentMarketCatalog({
             />
             <Button type="text"
               aria-label="提交搜索"
-              className="inline-flex w-12 shrink-0 items-center justify-center bg-[var(--theme-primary)] text-white transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white"
+              className="inline-flex w-12 shrink-0 items-center justify-center bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)] transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-bg-card)]"
               htmlType="submit"
             >
               <Search aria-hidden="true" size={17} />
@@ -501,7 +501,7 @@ function AgentMarketCatalog({
                   aria-pressed={activeTab === "tags" && activeTags.length === 0}
                   className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
                     activeTab === "tags" && activeTags.length === 0
-                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
                       : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
                   }`}
                   onClick={() => handleTag(null)}
@@ -514,7 +514,7 @@ function AgentMarketCatalog({
                     aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
                     className={`flex min-h-9 max-w-full items-center gap-1 rounded-md border px-3 text-xs transition-colors ${
                       activeTab === "tags" && activeTags.includes(tag)
-                        ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                        ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
                         : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
                     }`}
                     key={tag}
@@ -525,7 +525,7 @@ function AgentMarketCatalog({
                   </Button>
                 ))}
                 {activeTags.filter((tag) => !hotTags.includes(tag)).map((tag) => (
-                  <Button type="text" key={tag} aria-pressed={true} className="min-h-9 max-w-full truncate rounded-md border border-[var(--theme-primary)] bg-[var(--theme-primary)] px-3 text-xs text-white" onClick={() => handleTag(tag)} htmlType="button">
+                  <Button type="text" key={tag} aria-pressed={true} className="min-h-9 max-w-full truncate rounded-md border border-[var(--theme-primary)] bg-[var(--theme-primary)] px-3 text-xs text-[var(--theme-primary-foreground)]" onClick={() => handleTag(tag)} htmlType="button">
                     {tag}
                   </Button>
                 ))}
@@ -592,7 +592,7 @@ function AgentMarketCatalog({
                   <Button type="text"
                     aria-label="网格视图"
                     aria-pressed={view === "grid"}
-                    className={`inline-flex h-8 w-9 items-center justify-center rounded-l-md ${view === "grid" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
+                    className={`inline-flex h-8 w-9 items-center justify-center rounded-l-md ${view === "grid" ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("grid")}
                     htmlType="button"
                     icon={<Grid2X2 aria-hidden="true" size={15} />}
@@ -600,7 +600,7 @@ function AgentMarketCatalog({
                   <Button type="text"
                     aria-label="列表视图"
                     aria-pressed={view === "list"}
-                    className={`inline-flex h-8 w-9 items-center justify-center rounded-r-md border-l border-[var(--theme-border)] ${view === "list" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
+                    className={`inline-flex h-8 w-9 items-center justify-center rounded-r-md border-l border-[var(--theme-border)] ${view === "list" ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("list")}
                     htmlType="button"
                     icon={<ListIcon aria-hidden="true" size={15} />}

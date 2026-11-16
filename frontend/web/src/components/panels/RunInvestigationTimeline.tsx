@@ -31,7 +31,7 @@ export function RunInvestigationTimeline({
   if (!investigation) return (
     <section className="p-4" data-run-investigation>
       <h3 className="text-xs font-semibold text-[var(--theme-text)]">阶段调查</h3>
-      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">{error}</p> : <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">{loading ? "正在读取调查证据" : "调查证据尚未读取"}</p>}
+      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">{error}</p> : <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">{loading ? "正在读取调查证据" : "调查证据尚未读取"}</p>}
       {error ? <Button type="default" htmlType="button" className="mt-2 text-xs" onClick={onRetry}>重试调查查询</Button> : null}
     </section>
   );
@@ -51,7 +51,7 @@ export function RunInvestigationTimeline({
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">阶段调查</h3>
         <span className="text-[11px] text-[var(--theme-text-tertiary)]">点击阶段，关联调用与诊断证据</span>
       </div>
-      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">刷新失败，仍显示上次调查：{error}</p> : null}
+      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">刷新失败，仍显示上次调查：{error}</p> : null}
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         {(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>).map((name) => (
           <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-2" key={name} data-run-latency={name}>
@@ -79,7 +79,7 @@ export function RunInvestigationTimeline({
               className="w-full rounded-md border border-[var(--theme-border)] p-2 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] aria-pressed:bg-[var(--theme-info-soft)]">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <span className="min-w-0 truncate font-medium">{stage.label}</span>
-                <span className={stage.status === "failed" || stage.status === "denied" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>
+                <span className={stage.status === "failed" || stage.status === "denied" ? "text-[var(--theme-danger-text)]" : "text-[var(--theme-text-secondary)]"}>
                   {STATE_LABELS[stage.status] ?? stage.status} · {formatRunDuration(stage.duration_ms)}
                 </span>
               </div>

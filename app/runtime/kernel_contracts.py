@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.streaming.events import AGENT_EVENT_PUBLIC_CANDIDATE_TYPES
-from app.validation import assert_safe_id, assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
 # Authenticated legacy write compatibility only; the current runner never emits it.
 CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"

@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
+
+from app.runs.api import normalize_model_usage_snapshot
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -14,21 +16,12 @@ from app.context.api import (
 )
 
 from app.control_plane_contracts import normalize_thinking_effort
-# Retained imports for runtime, callback, and executor compatibility callers.
-from app.files.api import (
-    PROFILE_DRIVE_READ_TEXT_IDENTITY as PROFILE_DRIVE_READ_TEXT_IDENTITY,
-    PROFILE_DRIVE_STAGE_IDENTITY as PROFILE_DRIVE_STAGE_IDENTITY,
-    PROFILE_DRIVE_STAGE_TOOL as PROFILE_DRIVE_STAGE_TOOL,
-)
 from app.mcp.api import assert_mcp_tool_reference
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
 from app.sandbox.api import AssistantAnswerReceipt
-from app.validation import (
-    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
-    assert_safe_id,
-    assert_safe_principal_user_id,
-)
+from app.execution.api import MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS
+from app.kernel.identifiers import assert_safe_id, assert_safe_principal_user_id
 
 
 SandboxMode = Literal["ephemeral", "persistent"]
@@ -40,8 +33,6 @@ EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
 EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/mcp-credential"
-PROFILE_DRIVE_STAGE_MAX_BYTES = 512 * 1024 * 1024
-PROFILE_DRIVE_STAGE_LEASE_FLAG = "profile_drive_file_staging_authorized"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -129,6 +120,10 @@ class TrustedCallbackTarget:
     host: str
 
     @property
+    def recovery_operations_url(self) -> str:
+        return self.base_url + "/api/ai/runtime/callbacks/recovery-operation"
+
+    @property
     def mcp_credential_url(self) -> str:
         return f"{self.base_url}{EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH}"
 
@@ -202,6 +197,18 @@ def build_trusted_callback_target(
     )
 
 
+class RecoveryOperationCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+    callback_token_id: str = Field(min_length=1, max_length=128)
+    invocation_id: str = Field(min_length=1, max_length=512)
+    tool_identity: str = Field(min_length=1, max_length=512)
+    operation: Literal["query", "started", "completed", "failed", "close"]
+    reason: Literal["cancelled", "timeout", "denied", "query_failed"] | None = None
+
+
 class McpCredentialCallbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -229,6 +236,7 @@ class ProviderSessionCallbackRequest(BaseModel):
     subpath: str | None = Field(default=None, max_length=512)
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=128)
     expected_sequence: int | None = Field(default=None, ge=1)
+    provider_epoch_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("run_id", "attempt_id", "callback_token_id")
     @classmethod
@@ -266,11 +274,16 @@ class ContextRetrievalScope(BaseModel):
 
 
 class ModelTokenLimits(BaseModel):
-    """Run-frozen model budget accepted by the sandbox transport."""
+    """Run-frozen model execution limits accepted by the sandbox transport.
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    `auto_compact_window` is the window handed to the engine's automatic
+    compaction. It is not a platform-enforced input ceiling; the engine decides
+    when to compact and may compact earlier than this window.
+    """
 
-    max_input_tokens: int = Field(gt=0, le=10_000_000)
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    auto_compact_window: int = Field(ge=100_000, le=1_000_000)
     max_output_tokens: int = Field(gt=0, le=10_000_000)
 
 
@@ -286,6 +299,7 @@ class SandboxRuntimeRequest(BaseModel):
     owner_generation: int = Field(default=1, ge=1)
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
+    document_plugin_revision: str | None = None
     public_skill_metadata: dict[str, dict[str, str]] = Field(default_factory=dict)
     mcp_tool_ids: list[str] = Field(default_factory=list)
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
@@ -309,6 +323,9 @@ class SandboxRuntimeRequest(BaseModel):
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
     provider_session_resume_required: bool = False
+    provider_epoch_id: str | None = None
+    workspace_restore_receipt: dict[str, Any] | None = None
+    recovery_tool_gate: dict[str, Any] | None = None
     governed_permission_wait: bool = False
     reconciliation_context: dict[str, Any] = Field(default_factory=dict)
 
@@ -321,6 +338,13 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_user_id(cls, value: str):
         return assert_safe_principal_user_id(value)
+
+    @field_validator("document_plugin_revision")
+    @classmethod
+    def validate_document_plugin_revision(cls, value: str | None):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value)
+        return value
 
     @field_validator("skill_ids", "file_ids")
     @classmethod
@@ -513,6 +537,10 @@ class ExecutorTaskRequest(BaseModel):
     @field_validator("config")
     @classmethod
     def validate_config(cls, value: dict[str, Any]):
+        from app.execution.api import document_plugin_skill_names
+        document_plugin_skill_names(value.get("document_plugin_revision"))
+        if value.get("document_plugin_revision") is not None and value.get("skill_ids"):
+            raise ValueError("document_plugin_scope_invalid")
         if "thinking_effort" in value:
             normalize_thinking_effort(value["thinking_effort"])
         if "model_token_limits" in value:
@@ -616,6 +644,7 @@ class ExecutorTerminalResult(BaseModel):
     error_code: str | None = Field(default=None, max_length=256)
     error_message: str | None = Field(default=None, max_length=4_096)
     provider_session_final_sequence: int | None = Field(default=None, ge=1, strict=True)
+    sdk_settlement: dict[str, Any] | None = None
 
     @field_validator("answer_receipt", mode="before")
     @classmethod
@@ -702,6 +731,7 @@ _EXECUTOR_TERMINAL_RECEIPT_FIELDS = frozenset(
         "sdk_used",
         "sdk_received_structured_terminal",
         "sdk_terminal_reason",
+        "sdk_settlement",
         "executor_mode",
         "used_skills",
         "used_skills_source",
@@ -776,6 +806,24 @@ def normalize_executor_terminal_status(
     return None
 
 
+class ModelUsageSnapshotPayload(BaseModel):
+    """Private callback wire DTO; Runs receives only normalized standard values."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scope_id: str
+    observation_seq: int
+    baseline: Literal["fresh", "restored", "unknown"]
+    models: dict[str, dict[str, int]]
+    coverage: Literal["reported_final", "partial", "unavailable"]
+    provider_session_id: str | None = None
+    baseline_models: dict[str, dict[str, int]] | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_usage(self):
+        normalize_model_usage_snapshot(self.model_dump())
+        return self
+
+
 class ExecutorCallbackEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -792,6 +840,8 @@ class ExecutorCallbackEvent(BaseModel):
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list, max_length=100)
     terminal_result: ExecutorTerminalResult | None = None
+    # Private platform-to-callback carrier; never projected to public events.
+    model_usage_snapshot: ModelUsageSnapshotPayload | None = None
 
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "ExecutorCallbackEvent":
@@ -841,7 +891,6 @@ class ExecutorContextRetrievalRequest(BaseModel):
         "read_run_artifact",
         "stage_context_file_to_workspace",
         "stage_run_artifact_to_workspace",
-        "stage_profile_drive_file_to_workspace",
         "search_memory",
     ]
     arguments: dict[str, Any] = Field(default_factory=dict)

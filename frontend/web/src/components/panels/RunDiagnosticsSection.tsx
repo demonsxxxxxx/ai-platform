@@ -103,7 +103,7 @@ export function RunDiagnosticsSection({
     return (
       <section className="p-4" data-run-runtime-diagnostics>
         <h3 className="text-xs font-semibold text-[var(--theme-text)]">执行诊断</h3>
-        <div role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
+        <div role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">
           诊断读取失败：{error}
         </div>
         {onRetry ? (
@@ -173,7 +173,7 @@ export function RunDiagnosticsSection({
         </details>
       ) : null}
       {exportError ? (
-        <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
+        <p role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">
           诊断包生成失败：{exportError}
         </p>
       ) : null}
@@ -189,7 +189,7 @@ export function RunDiagnosticsSection({
         <div className="mt-3 space-y-3">
           {diagnostics.root ? (
             <div className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs">
-            <p className="font-mono font-semibold text-[var(--theme-danger)]">
+            <p className="font-mono font-semibold text-[var(--theme-danger-text)]">
               {diagnostics.root.error_code || "未分类异常"}
             </p>
             <p className="mt-1 text-[var(--theme-text-secondary)]">
@@ -284,7 +284,7 @@ export function RunDiagnosticsSection({
                     协议校验
                   </p>
                   {protocolEvidence.validation.length ? (
-                    <ul className="mt-1 space-y-1 font-mono leading-5 text-[var(--theme-danger)]">
+                    <ul className="mt-1 space-y-1 font-mono leading-5 text-[var(--theme-danger-text)]">
                       {protocolEvidence.validation.map((item, index) => (
                         <li key={`${item.location}-${item.type}-${index}`} className="break-words">
                           {item.location} · {item.type} · {item.message}

@@ -69,12 +69,12 @@ const categoryIcons: Record<string, LucideIcon> = {
 };
 
 const categoryTones = [
-  "#0f8a83",
-  "#3568c0",
-  "#8a4aa2",
-  "#c55b48",
-  "#5f7f35",
-  "#a56814",
+  "var(--theme-info)",
+  "var(--theme-info)",
+  "var(--theme-text-secondary)",
+  "var(--theme-danger)",
+  "var(--theme-success)",
+  "var(--theme-warning)",
 ];
 
 const allEntries = launchpadGroups.flatMap((group) => group.entries);
@@ -181,7 +181,7 @@ function DirectorySection({
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className="flex size-8 shrink-0 items-center justify-center rounded-lg"
-            style={{ color: tone, backgroundColor: `${tone}16` }}
+            style={{ color: tone, backgroundColor: `color-mix(in srgb, ${tone} 9%, transparent)` }}
           >
             <SectionIcon aria-hidden="true" className="size-4" />
           </span>
@@ -211,9 +211,9 @@ function DirectorySection({
           const entryContent = (
             <>
               <span
-                className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-white shadow-sm ${
+                className={`relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-sm ${
                   isFeaturedPlatform
-                    ? "motion-safe:animate-pulse shadow-[0_0_14px_rgba(139,92,246,0.42)]"
+                    ? "motion-safe:animate-pulse shadow-[0_0_14px_color-mix(in_srgb,var(--theme-info)_42%,transparent)]"
                     : ""
                 }`}
               >
@@ -225,7 +225,7 @@ function DirectorySection({
                   <img
                     src={getLaunchpadIconUrl(entry.icon)}
                     alt=""
-                    className="absolute inset-0 size-full bg-white object-contain"
+                    className="absolute inset-0 size-full bg-[var(--theme-bg-card)] object-contain"
                     loading="lazy"
                     onError={(event) => {
                       event.currentTarget.hidden = true;
@@ -299,8 +299,8 @@ function DirectorySection({
                 onClick={() => onToggleFavorite(entry.id)}
                 className={`mr-1 flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring)] disabled:cursor-wait disabled:opacity-50 ${
                   isFavorite
-                    ? "text-amber-500 hover:bg-amber-500/10"
-                    : "text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-hover)] hover:text-amber-500"
+                    ? "text-[var(--theme-warning-text)] hover:bg-[var(--theme-warning-soft)]"
+                    : "text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-warning-text)]"
                 }`}
                 icon={<Star
                   aria-hidden="true"
@@ -466,29 +466,29 @@ export function LaunchpadPanel() {
       className={workbenchSurface.page}
     >
       <div className="mx-auto w-full max-w-[1600px] flex-1 space-y-4 overflow-y-auto scroll-smooth p-3 motion-reduce:scroll-auto sm:p-5 lg:p-6">
-        <section className="relative overflow-hidden rounded-2xl border border-[#b9ded9] bg-[#edf8f6] px-4 py-5 dark:border-[#235c57] dark:bg-[#102e2b] sm:px-6 sm:py-6">
+        <section className="relative overflow-hidden rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-hover)] px-4 py-5 sm:px-6 sm:py-6">
           <div
             aria-hidden="true"
-            className="absolute -bottom-36 left-[28%] h-64 w-[62%] rounded-[50%] border border-[#66c8be]/20"
+            className="absolute -bottom-36 left-[28%] h-64 w-[62%] rounded-[50%] border border-[var(--theme-border)]"
           />
           <div
             aria-hidden="true"
-            className="absolute -bottom-28 left-[38%] h-52 w-[54%] rounded-[50%] border border-[#66c8be]/20"
+            className="absolute -bottom-28 left-[38%] h-52 w-[54%] rounded-[50%] border border-[var(--theme-border)]"
           />
           <div
             aria-hidden="true"
-            className="absolute -bottom-20 left-[48%] h-40 w-[44%] rounded-[50%] border border-[#66c8be]/20"
+            className="absolute -bottom-20 left-[48%] h-40 w-[44%] rounded-[50%] border border-[var(--theme-border)]"
           />
 
           <div className="relative grid items-center gap-5 lg:grid-cols-[minmax(0,1fr)_auto]">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold tracking-tight text-[#163b3a] dark:text-[#e8fbf8] sm:text-2xl">
+              <h1 className="text-xl font-semibold tracking-tight text-[var(--theme-text)] sm:text-2xl">
                 {t("launchpad.welcome", {
                   name: user?.username || t("launchpad.userFallback"),
                 })}{" "}
                 <span aria-hidden="true">👋</span>
               </h1>
-              <p className="mt-1.5 text-sm text-[#496968] dark:text-[#a8c7c3]">
+              <p className="mt-1.5 text-sm text-[var(--theme-text-secondary)]">
                 {t("launchpad.welcomeSubtitle")}
               </p>
 
@@ -513,7 +513,7 @@ export function LaunchpadPanel() {
               </div>
             </div>
 
-            <div className="grid grid-cols-3 divide-x divide-[var(--theme-border)] rounded-xl border border-white/80 bg-[var(--theme-bg-card)] px-1 py-3 shadow-sm dark:border-white/10 lg:min-w-[390px]">
+            <div className="grid grid-cols-3 divide-x divide-[var(--theme-border)] rounded-xl border border-[color-mix(in_srgb,var(--theme-bg-card)_80%,transparent)] bg-[var(--theme-bg-card)] px-1 py-3 shadow-sm dark:border-[color-mix(in_srgb,var(--theme-bg-card)_10%,transparent)] lg:min-w-[390px]">
               {metrics.map(({ icon: MetricIcon, label, value }) => (
                 <div key={label} className="px-2 text-center sm:px-5">
                   <span className="inline-flex items-center gap-1.5 text-[10px] text-[var(--theme-text-secondary)] sm:text-xs">
@@ -538,7 +538,7 @@ export function LaunchpadPanel() {
           {favoritesBelongToCurrentUser && favoriteEntries.length > 0 && !query ? (
             <a
               href="#launchpad-favorites"
-              className="shrink-0 text-xs font-medium text-[#0f8a83] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring)]"
+              className="shrink-0 text-xs font-medium text-[var(--theme-text)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring)]"
             >
               {t("launchpad.jumpToFavorites")}
             </a>
@@ -551,7 +551,7 @@ export function LaunchpadPanel() {
             title={t("launchpad.myFavorites")}
             entries={favoriteEntries}
             icon={Star}
-            tone="#d28a17"
+            tone="var(--theme-warning)"
             favoriteIds={favoriteIdSet}
             favoritesDisabled={favoritesDisabled}
             onOpen={openEntry}

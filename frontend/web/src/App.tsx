@@ -177,6 +177,11 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
+function UsagePage() {
+  useSEO({ title: "seo.usage.title", description: "seo.usage.description", path: "/usage" });
+  return <AppContent key="usage" activeTab="usage" />;
+}
+
 function RunsPage() {
   useSEO({
     title: "seo.runs.title",
@@ -378,6 +383,14 @@ function App() {
               element={
                 <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
                   <ModelsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path={APP_ROUTE_PATHS.usage}
+              element={
+                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                  <UsagePage />
                 </ProtectedRoute>
               }
             />
