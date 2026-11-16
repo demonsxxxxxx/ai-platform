@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import PurePosixPath
+import re
 
 PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME = "CLAUDE.md"
 WORKSPACE_RUNTIME_PRIVATE_ROOTS = frozenset({
@@ -60,7 +61,7 @@ _READ_PRIVATE_DIRECTORIES = frozenset(
 )
 
 
-def workspace_read_allowed(relative_path: str | PurePosixPath) -> bool:
+def workspace_read_allowed(relative_path: str | PurePosixPath, *, native_session_id: str | None = None) -> bool:
     """Protect platform-owned roots while allowing ordinary task directories."""
     path = PurePosixPath(relative_path)
     if path.is_absolute() or ".." in path.parts:
@@ -68,6 +69,14 @@ def workspace_read_allowed(relative_path: str | PurePosixPath) -> bool:
     if not path.parts:
         return True
     lowered = tuple(part.casefold() for part in path.parts)
+    if (
+        len(path.parts) >= 6
+        and path.parts[:3] == (".claude-config", "projects", "ai-platform")
+        and path.parts[3] == native_session_id
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", path.parts[3])
+        and path.parts[4] == "tool-results"
+    ):
+        return True
     if lowered[0] == ".claude":
         return len(lowered) >= 2 and lowered[1] == "skills"
     return lowered[0] not in _READ_PRIVATE_DIRECTORIES and not (

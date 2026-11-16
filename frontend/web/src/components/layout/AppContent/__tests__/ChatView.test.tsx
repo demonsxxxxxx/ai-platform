@@ -132,11 +132,28 @@ test("keeps active conversations wide, readable, and visually compact", () => {
     new URL("../../../chat/assistant-ui/elements/thread.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(view, /className="mx-auto max-w-\[68rem\] px-2"/);
+  const composerRoot = readFileSync(
+    new URL("../../../chat/assistant-ui/elements/composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const companionSources = [
+    "../../../chat/ChatInput.tsx",
+    "../../../chat/WelcomePage.tsx",
+    "../../../chat/assistant-ui/FollowUpSuggestionsGate.tsx",
+    "../ChatConnectionStatus.tsx",
+    "../../../skeletons/ChatSkeletons.tsx",
+  ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+
+  assert.match(view, /className="mx-auto max-w-\[var\(--chat-column-max\)\] px-2"/);
   assert.match(message, /<AssistantMessageContent/);
-  assert.match(thread, /max-w-\[68rem\]/);
-  assert.match(userMessage, /max-w-\[68rem\]/);
-  assert.match(userMessage, /sm:max-w-\[75%\]/);
+  for (const source of [view, thread, composerRoot, userMessage, ...companionSources]) {
+    assert.match(source, /max-w-\[var\(--chat-column-max\)\]/);
+    assert.doesNotMatch(source, /max-w-\[76rem\]/);
+    assert.doesNotMatch(source, /max-w-\[60rem\]/);
+  }
+  assert.match(thread, /max-w-\[var\(--chat-column-max\)\] flex-col break-words px-2/);
+  assert.match(userMessage, /max-w-\[var\(--chat-column-max\)\] justify-end px-2/);
+  assert.match(userMessage, /max-w-\[90%\][^"]*sm:max-w-\[70%\]/);
 });
 
 // Exercise the real hook while mounted: storage isolation alone is insufficient

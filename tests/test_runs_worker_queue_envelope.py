@@ -1,7 +1,7 @@
 import pytest
 
 from app.runs.api import InvalidLeasedQueueEnvelope, parse_leased_queue_envelope
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 def test_leased_queue_envelope_validates_attempt_before_parsing_business_payload():

@@ -18,20 +18,18 @@ function localized(key: string): string {
   }, zh) as string;
 }
 
-function catalog(status: ChatMcpCatalogState["status"], unavailable: string[] = []) {
+function catalog(status: ChatMcpCatalogState["status"], unavailable: ChatMcpCatalogState["unavailable"] = []) {
   return { status, unavailable } as ChatMcpCatalogState;
 }
 
-test("renders bounded Chinese catalog states and exposes retry only for errors", () => {
+test("renders compact Chinese catalog states and exposes retry for partial and full failures", () => {
   const loading = getChatMcpCatalogNotice(catalog("loading"));
   const empty = getChatMcpCatalogNotice(catalog("empty"));
   const error = getChatMcpCatalogNotice(catalog("error"));
   const degraded = getChatMcpCatalogNotice(
     catalog("degraded", [
-      "tools.catalog.unavailable.discoveryFailed",
-      "tools.catalog.unavailable.generic",
-      "tools.catalog.unavailable.discoveryFailed",
-      "tools.catalog.unavailable.noTools",
+      { label: "gateway", reasonKey: "tools.catalog.unavailable.discoveryFailed" },
+      { label: "direct", reasonKey: "tools.catalog.unavailable.noTools" },
     ]),
   );
 
@@ -39,13 +37,11 @@ test("renders bounded Chinese catalog states and exposes retry only for errors",
   assert.equal(localized(empty?.titleKey ?? ""), "当前没有可选择的 MCP 工具");
   assert.equal(localized(error?.titleKey ?? ""), "MCP 工具目录暂时无法加载");
   assert.equal(error?.retryable, true);
-  assert.equal(degraded?.retryable, false);
-  assert.equal(localized(degraded?.titleKey ?? ""), "部分 MCP 工具暂不可用");
-  assert.deepEqual(degraded?.detailKeys, [
-    "tools.catalog.unavailable.discoveryFailed",
-    "tools.catalog.unavailable.generic",
-    "tools.catalog.unavailable.noTools",
-  ]);
+  assert.equal(degraded?.retryable, true);
+  assert.equal(localized(degraded?.titleKey ?? ""), "有 {{count}} 个 MCP 服务未提供可用工具。");
+  assert.equal(localized(getChatMcpCatalogNotice(catalog("degraded", [
+    { label: "gateway", reasonKey: "tools.catalog.unavailable.discoveryFailed" },
+  ]))!.titleKey), "有 {{count}} 个 MCP 服务未加载成功。");
   assert.equal(getChatMcpCatalogNotice(catalog("ready")), null);
 });
 

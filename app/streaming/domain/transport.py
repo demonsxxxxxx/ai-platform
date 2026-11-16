@@ -65,6 +65,7 @@ class ResumeDecision:
     gap: StreamGap | None
     terminal_event_id: str | None = None
     ended: bool = False
+    replay_tail_redis_id: str | None = None
 
 
 def canonical_json_bytes(value: object) -> bytes:

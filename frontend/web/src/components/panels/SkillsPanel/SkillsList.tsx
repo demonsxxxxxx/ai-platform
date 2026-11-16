@@ -289,13 +289,13 @@ export function SkillsList({
       {error && (
         <div
           role="alert"
-          className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]"
+          className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)] ring-1 ring-[var(--theme-danger-ring)]"
         >
           <span>{error}</span>
           <Button type="text"
             aria-label={t("common.close")}
             onClick={clearError}
-            className="hover:text-[var(--theme-danger)]"
+            className="hover:text-[var(--theme-danger-text)]"
             htmlType="button"
             icon={<X size={18} />}
           />

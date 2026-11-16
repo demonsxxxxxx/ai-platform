@@ -104,9 +104,19 @@ def auth_settings(**overrides):
     return SimpleNamespace(**values)
 
 
+class _FakeAuthCursor:
+    async def fetchone(self):
+        return None
+
+
+class _FakeAuthConnection:
+    async def execute(self, _sql, _params=None):
+        return _FakeAuthCursor()
+
+
 @asynccontextmanager
 async def fake_transaction():
-    yield object()
+    yield _FakeAuthConnection()
 
 
 @pytest.fixture(autouse=True)
@@ -394,7 +404,8 @@ def test_company_credential_handoff_requires_an_authenticated_principal():
     assert "credential" not in response.text
 
 
-def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch):
+@pytest.mark.parametrize("automatic_reauthentication", [False, True])
+def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch, automatic_reauthentication):
     from app.identity.api import resolve_department_scope
 
     token = company_login_jwt()
@@ -430,7 +441,10 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
     monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", fake_store)
 
     client = browser_client()
-    response = client.post("/api/ai/auth/ad-login", json={"token": token})
+    body = {"token": token}
+    if automatic_reauthentication:
+        body["expected_principal"] = {"user_id": "ad001", "tenant_id": "default"}
+    response = client.post("/api/ai/auth/ad-login", json=body)
 
     assert response.status_code == 200
     expected_principal = {
@@ -1110,3 +1124,61 @@ def test_lambchat_oauth_providers_disable_registration():
     assert response.json()["providers"] == []
     assert response.json()["registration_enabled"] is False
     assert "ad_login_url" not in response.json()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "detail", "has_rejection_proof"),
+    [(401, "auth_context_missing", True), (409, "auth_context_stale", True),
+     (503, "auth_context_unavailable", False)],
+)
+def test_auth_dependency_marks_expiry_before_business_execution(
+    monkeypatch, status_code, detail, has_rejection_proof,
+):
+    from fastapi import HTTPException
+
+    async def reject_principal(_request):
+        raise HTTPException(status_code=status_code, detail=detail)
+
+    monkeypatch.setattr("app.auth._require_principal", reject_principal)
+    app = FastAPI()
+    business_calls = []
+
+    @app.post("/protected")
+    async def protected(_principal=Depends(require_principal)):
+        business_calls.append(True)
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.post("/protected")
+    assert response.status_code == status_code
+    assert (response.headers.get("X-Auth-Rejected-Before-Execution") == "true") is has_rejection_proof
+    assert business_calls == []
+
+
+@pytest.mark.parametrize("expected", [
+    {"user_id": "different-user", "tenant_id": "default"},
+    {"user_id": "ad001", "tenant_id": "different-tenant"},
+])
+def test_automatic_ad_login_rejects_subject_change_before_session_commit(monkeypatch, expected):
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings())
+
+    async def unexpected_write(*args, **kwargs):
+        raise AssertionError("mismatched AD subject must not be persisted or committed")
+
+    monkeypatch.setattr("app.routes.auth._persist_login_principal", unexpected_write)
+    monkeypatch.setattr("app.routes.auth.commit_auth_operation", unexpected_write)
+    monkeypatch.setattr("app.routes.auth._store_mcp_login_jwt", unexpected_write)
+    response = browser_client().post("/api/ai/auth/ad-login", json={
+        "token": company_login_jwt(), "expected_principal": expected,
+    })
+    assert response.status_code == 401
+    assert response.json() == {"detail": "company_login_failed"}
+
+
+@pytest.mark.parametrize("expected", [None, {}, "ad001", {"user_id": "ad001"},
+    {"user_id": "ad001", "tenant_id": "default", "roles": ["admin"]}])
+def test_automatic_ad_login_validates_subject_constraint(monkeypatch, expected):
+    response = browser_client().post("/api/ai/auth/ad-login", json={
+        "token": company_login_jwt(), "expected_principal": expected,
+    })
+    assert response.status_code == 422

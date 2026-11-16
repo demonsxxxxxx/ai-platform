@@ -6,9 +6,9 @@ import ipaddress
 import json
 from types import SimpleNamespace
 
-import httpx
+import httpx2 as httpx
 import pytest
-from mcp.types import LATEST_PROTOCOL_VERSION
+from mcp_types import LATEST_PROTOCOL_VERSION
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
@@ -20,9 +20,11 @@ async def _resolved(*addresses):
     return tuple(ipaddress.ip_address(address) for address in addresses)
 
 
-def _rpc_response(request, result):
+def _rpc_response(request, result=None, *, error=None):
     payload = json.loads(request.content)
-    return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
+    response = {"jsonrpc": "2.0", "id": payload["id"]}
+    response.update({"error": error} if error is not None else {"result": result})
+    return httpx.Response(200, json=response)
 
 
 def _http_peer(page_handler, *, session_id=None):
@@ -40,6 +42,8 @@ def _http_peer(page_handler, *, session_id=None):
             if session_id:
                 response.headers["Mcp-Session-Id"] = session_id
             return response
+        if payload["method"] == "server/discover":
+            return _rpc_response(request, error={"code": -32601, "message": "Method not found"})
         if payload["method"] == "notifications/initialized":
             return httpx.Response(202)
         assert payload["method"] == "tools/list"
@@ -93,11 +97,10 @@ async def test_streamable_http_discovery_uses_sdk_handshake_and_preserves_bound_
     assert [item["name"] for item in definitions] == ["search_docs", "get_doc"]
     posts = [json.loads(request.content) for request in requests if request.method == "POST"]
     assert [payload["method"] for payload in posts] == [
-        "initialize", "notifications/initialized", "tools/list", "tools/list",
+        "server/discover", "initialize", "notifications/initialized", "tools/list", "tools/list",
     ]
-    assert posts[0]["params"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
     ids = [payload["id"] for payload in posts if "id" in payload]
-    assert len(ids) == len(set(ids)) == 3
+    assert len(ids) == len(set(ids)) == 4
     assert any(request.method == "GET" for request in requests)
     for request in requests:
         assert str(request.url) == "https://8.8.8.8/tools"
@@ -106,10 +109,16 @@ async def test_streamable_http_discovery_uses_sdk_handshake_and_preserves_bound_
         assert request.headers["JWT-Authorization"] == "Bearer user.jwt"
         assert request.headers["X-Static-Key"] == "configured"
         assert request.headers["Accept-Encoding"] == "identity"
-        if request is not requests[0]:
+        method = json.loads(request.content).get("method") if request.method == "POST" else None
+        if method == "server/discover":
+            assert request.headers["Mcp-Protocol-Version"] == LATEST_PROTOCOL_VERSION
+            assert "Mcp-Session-Id" not in request.headers
+        elif method == "initialize":
+            assert "Mcp-Session-Id" not in request.headers
+        elif method is not None:
             assert request.headers["Mcp-Session-Id"] == "session-1"
-            assert request.headers["Mcp-Protocol-Version"] == "2025-03-26"
-    assert "Mcp-Session-Id" not in requests[0].headers
+            if method != "notifications/initialized":
+                assert request.headers["Mcp-Protocol-Version"] == "2025-03-26"
     assert len(clients) == 1 and clients[0].is_closed
 
 
@@ -118,7 +127,7 @@ async def test_streamable_http_discovery_uses_sdk_handshake_and_preserves_bound_
     None, {}, {"readOnlyHint": None}, {"readOnlyHint": True}, {"readOnlyHint": False},
     {"destructiveHint": True}, {"readOnlyHint": True, "custom": {"nested": [1, "value"]}},
 ])
-async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(mock_transport, annotations):
+async def test_sdk_discovery_preserves_schemas_and_known_advisory_annotations(mock_transport, annotations):
     schema = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
     async def page(request, _params):
         return _rpc_response(request, {"tools": [{
@@ -131,8 +140,12 @@ async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(mock_tra
     )
     assert definitions[0]["inputSchema"] == schema
     assert definitions[0]["description"] == "x" * catalog.MCP_TOOL_DESCRIPTION_MAX_LENGTH
+    # v2's typed projection ignores unknown keys; authority still uses exact,
+    # strictly validated standard hints, never extension-key lookalikes.
+    known_annotations = {"title", "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}
     assert definitions[0]["annotations"] == {
-        key: value for key, value in (annotations or {}).items() if value is not None
+        key: value for key, value in (annotations or {}).items()
+        if value is not None and key in known_annotations
     }
 
     async def target(*_args):
@@ -153,7 +166,7 @@ async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(mock_tra
 async def test_sdk_discovery_never_coerces_tool_authority(mock_transport, field, value):
     async def page(request, _params):
         return _rpc_response(request, {"tools": [{
-            "name": "tool", "inputSchema": {}, "annotations": {field: value},
+            "name": "tool", "inputSchema": {"type": "object"}, "annotations": {field: value},
         }]})
     mock_transport(_http_peer(page))
     with pytest.raises(McpToolDiscoveryError, match="^protocol_error$"):
@@ -170,7 +183,7 @@ async def test_sdk_discovery_rejects_incomplete_or_ambiguous_catalogs(monkeypatc
     async def page(request, params):
         pages.append(params)
         name = "duplicate" if case in {"same_page", "across_pages"} else f"tool_{len(pages)}"
-        tools = [{"name": name, "inputSchema": {}}] * (2 if case == "same_page" else 1)
+        tools = [{"name": name, "inputSchema": {"type": "object"}}] * (2 if case == "same_page" else 1)
         cursor = {"empty_cursor": "", "invalid_cursor": 1}.get(case, "same")
         if case == "page_limit":
             cursor = f"page_{len(pages)}"
@@ -191,7 +204,7 @@ async def test_sdk_discovery_rejects_incomplete_or_ambiguous_catalogs(monkeypatc
 ])
 async def test_sdk_discovery_rejects_malformed_tool_definitions(mock_transport, replacement):
     async def page(request, _params):
-        return _rpc_response(request, {"tools": [{"name": "tool", "inputSchema": {}, **replacement}]})
+        return _rpc_response(request, {"tools": [{"name": "tool", "inputSchema": {"type": "object"}, **replacement}]})
     mock_transport(_http_peer(page))
     with pytest.raises(McpToolDiscoveryError, match="^protocol_error$"):
         await McpToolDiscoveryAdapter().discover_definitions(
@@ -202,7 +215,7 @@ async def test_sdk_discovery_rejects_malformed_tool_definitions(mock_transport, 
 @pytest.mark.asyncio
 async def test_sdk_discovery_rejects_mismatched_response_id(mock_transport):
     async def page(request, _params):
-        response = _rpc_response(request, {"tools": [{"name": "unmatched", "inputSchema": {}}]})
+        response = _rpc_response(request, {"tools": [{"name": "unmatched", "inputSchema": {"type": "object"}}]})
         payload = response.json()
         payload["id"] = "unrelated"
         return httpx.Response(200, json=payload)
@@ -284,7 +297,8 @@ async def test_discovery_keeps_response_guards_beneath_sdk(mock_transport, case)
         if case == "compressed":
             return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b"secret" * 1000))
         if case in {"json_oversize", "json_stream_oversize"}:
-            response = _rpc_response(request, {"tools": [{"name": "tool", "description": "x" * 1024, "inputSchema": {}}]})
+            response = _rpc_response(request, {"tools": [{"name": "tool", "description": "x" * 1024,
+                                                              "inputSchema": {"type": "object"}}]})
             if case == "json_stream_oversize":
                 return httpx.Response(200, headers={"Content-Type": "application/json"}, stream=httpx.ByteStream(response.content))
             return response
@@ -295,7 +309,11 @@ async def test_discovery_keeps_response_guards_beneath_sdk(mock_transport, case)
         await McpToolDiscoveryAdapter(timeout_seconds=0.15, max_response_bytes=512).discover_definitions(
             "https://mcp.example/tools", jwt_authorization="Bearer user.jwt",
         )
-    assert len(requests) == 3
+    list_requests = [
+        request for request in requests
+        if request.method == "POST" and json.loads(request.content).get("method") == "tools/list"
+    ]
+    assert len(list_requests) == 1
     assert all(request.url.host == "8.8.8.8" for request in requests)
     if case.startswith("sse_"):
         assert closed.is_set()
@@ -367,7 +385,7 @@ async def test_discovery_rejects_malformed_sse_event_before_valid_result(mock_tr
         async def aclose(self):
             closed.set()
     async def page(request, _params):
-        result = _rpc_response(request, {"tools": [{"name": "must_not_accept", "inputSchema": {}}]})
+        result = _rpc_response(request, {"tools": [{"name": "must_not_accept", "inputSchema": {"type": "object"}}]})
         return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=ResponseStream(result.content))
     _requests, clients = mock_transport(_http_peer(page))
     with pytest.raises(McpToolDiscoveryError, match="^protocol_error$"):
@@ -394,16 +412,21 @@ async def test_sse_discovery_shares_sdk_pagination_headers_and_cleanup(mock_tran
             return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=EventStream())
         assert request.url.path == "/messages"
         payload = json.loads(request.content)
+        if payload["method"] == "server/discover":
+            await messages.put(_rpc_response(
+                request, error={"code": -32601, "message": "Method not found"},
+            ).content)
+            return httpx.Response(202)
         if payload["method"] == "notifications/initialized":
             return httpx.Response(202)
         if payload["method"] == "initialize":
             result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
                       "serverInfo": {"name": "synthetic", "version": "1"}}
         elif not payload.get("params"):
-            result = {"tools": [{"name": "first", "inputSchema": {}}], "nextCursor": "page-2"}
+            result = {"tools": [{"name": "first", "inputSchema": {"type": "object"}}], "nextCursor": "page-2"}
         else:
             assert payload["params"] == {"cursor": "page-2"}
-            result = {"tools": [{"name": "second", "inputSchema": {}}]}
+            result = {"tools": [{"name": "second", "inputSchema": {"type": "object"}}]}
         await messages.put(_rpc_response(request, result).content)
         return httpx.Response(202)
     requests, clients = mock_transport(handler)
@@ -412,7 +435,9 @@ async def test_sse_discovery_shares_sdk_pagination_headers_and_cleanup(mock_tran
         jwt_authorization="Bearer user.jwt",
     )
     assert [tool["name"] for tool in definitions] == ["first", "second"]
-    assert len(requests) == 5
+    assert [json.loads(request.content).get("method") for request in requests if request.method == "POST"] == [
+        "server/discover", "initialize", "notifications/initialized", "tools/list", "tools/list",
+    ]
     assert all(request.url.host == "8.8.8.8" for request in requests)
     assert all(request.headers["Host"] == "mcp.example" for request in requests)
     assert all(request.extensions["sni_hostname"] == "mcp.example" for request in requests)
@@ -449,7 +474,7 @@ async def test_discovery_does_not_ignore_a_rejected_optional_sdk_get(mock_transp
     async def page(request, _params):
         await rejected.wait()
         await asyncio.sleep(0)
-        return _rpc_response(request, {"tools": [{"name": "must_not_accept", "inputSchema": {}}]})
+        return _rpc_response(request, {"tools": [{"name": "must_not_accept", "inputSchema": {"type": "object"}}]})
     peer = _http_peer(page, session_id="session-1")
     async def handler(request):
         if request.method == "GET":

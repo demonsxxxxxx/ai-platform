@@ -6,6 +6,11 @@ from app.auth import AuthPrincipal
 from app.routes import lambchat_compat
 
 
+def test_retired_private_transport_adapters_are_absent():
+    assert not hasattr(lambchat_compat, "_V4StreamBridge")
+    assert not hasattr(lambchat_compat, "_compatibility_events_for_run")
+
+
 @pytest.mark.parametrize("role", ["user", "admin"])
 def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history(role):
     """All Chat delivery modes share one identity-safe capability projection."""
@@ -104,8 +109,14 @@ def test_capability_projection_is_safe_and_stable_for_live_reconnect_and_history
         },
     ]
 
-    live = lambchat_compat._compatibility_events_for_run(run, events, [], principal)
-    reconnect = lambchat_compat._compatibility_events_for_run(run, events, [], principal)
+    live = lambchat_compat._compatibility_events_for_run_page(
+        run, events, [], principal,
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
+    reconnect = lambchat_compat._compatibility_events_for_run_page(
+        run, events, [], principal,
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     expected = [
         ("evt-capability-selected", 11, {"kind": "skill", "name": "Document review", "status": "selected"}),
@@ -219,7 +230,10 @@ def test_strict_execution_timeline_replaces_legacy_capability_rows():
         },
     ]
 
-    records = lambchat_compat._compatibility_events_for_run(run, events, [], principal)
+    records = lambchat_compat._compatibility_events_for_run_page(
+        run, events, [], principal,
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert len(records) == 1
     record = records[0]
@@ -301,7 +315,10 @@ def test_lambchat_compat_keeps_lowest_public_lifecycle_projection_per_run():
             ("run_started", f"{run_id}-worker", 3),
         ]
 
-        records = lambchat_compat._compatibility_events_for_run(run, rows, [], principal)
+        records = lambchat_compat._compatibility_events_for_run_page(
+            run, rows, [], principal,
+            fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+        )[0]
         assert [
             (record.stream_data["event_type"], record.id, record.stream_data["sequence"])
             for record in records
@@ -395,14 +412,15 @@ def test_history_preserves_ordered_message_part_events_and_role_boundaries():
         ),
     ]
 
-    records = lambchat_compat._compatibility_events_for_run(
+    records = lambchat_compat._compatibility_events_for_run_page(
         run,
         events,
         [],
         principal,
         include_terminal=False,
         compact_answer_deltas=True,
-    )
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert [record.stream_event_type for record in records] == [
         "message.part.delta",
@@ -460,9 +478,10 @@ def test_malformed_message_part_history_fails_before_cursor_page_is_returned():
     }
 
     with pytest.raises(lambchat_compat.HTTPException) as caught:
-        lambchat_compat._compatibility_events_for_run(
-            run, [event], [], principal, include_terminal=False
-        )
+        lambchat_compat._compatibility_events_for_run_page(
+            run, [event], [], principal, include_terminal=False,
+            fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+        )[0]
 
     assert caught.value.status_code == 500
     assert caught.value.detail == "history_part_event_invalid"

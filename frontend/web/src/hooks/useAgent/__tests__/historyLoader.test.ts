@@ -40,6 +40,82 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
+test("history preserves a backend user-message timestamp prefix", () => {
+  const content = "[2026-04-28 20:00:00 +08:00 Asia/Shanghai] hello world";
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "user-event-1",
+        event_type: "user:message",
+        run_id: "run-1",
+        timestamp: "2026-04-28T12:00:01.000Z",
+        data: { content, attachments: [] },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.content, content);
+});
+
+test("history rebuilds a public answer before its later execution step", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "evt-delta-8",
+        event_type: "message:chunk",
+        run_id: "run-ordered",
+        sequence: 8,
+        timestamp: "2026-07-31T01:00:00.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          run_id: "run-ordered",
+          event_id: "evt-delta-8",
+          sequence: 8,
+          content: "B",
+        },
+      } satisfies HistoryEvent,
+      {
+        id: "evt-step-9",
+        event_type: "execution_step",
+        run_id: "run-ordered",
+        sequence: 9,
+        timestamp: "2026-07-31T01:00:01.000Z",
+        data: {
+          schema_version: PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+          event_id: "evt-step-9",
+          run_id: "run-ordered",
+          sequence: 9,
+          step_id: "step-1",
+          presentation_kind: "processing",
+          safe_label: "Data processing",
+          kind: "processing",
+          stage: "data",
+          status: "running",
+          progress: { current: 0, total: 1 },
+          created_at: "2026-07-31T01:00:00.000Z",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistant = messages.find((message) => message.runId === "run-ordered");
+  const historyProcess = getVisibleMessageParts(assistant?.parts || []).find(
+    (part) => part.type === "execution_process",
+  );
+  assert.equal(assistant?.content, "B");
+  assert.equal(historyProcess?.type, "execution_process");
+  if (historyProcess?.type !== "execution_process") {
+    throw new Error("expected a public execution process in history");
+  }
+  assert.deepEqual(historyProcess.steps.map((step) => step.step_id), ["step-1"]);
+});
+
 test("reconstructs zero model completion duration without inventing a run time", () => {
   const messages = reconstructMessagesFromEvents(
     [
@@ -1315,7 +1391,7 @@ test("failed history retains canonical public execution activity through termina
   assert.match(terminal.event_type, /failed/);
 });
 
-test("history retains only the authorized Skill display name", () => {
+test("history retains only the authorized Skill identity", () => {
   const messages = reconstructMessagesFromEvents(
     [{
       id: "skill-history-completed",
@@ -1328,7 +1404,7 @@ test("history retains only the authorized Skill display name", () => {
         event_type: "public_tool_activity",
         operation_id: "operation-skill-history",
         category: "skill",
-        display_name: "QA Review",
+        display_name: "qa-review",
         status: "completed",
         result_summary: "private result must not survive",
       },
@@ -1340,10 +1416,10 @@ test("history retains only the authorized Skill display name", () => {
   const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
   const tool = visibleParts[0];
   assert.equal(tool?.type, "tool");
-  assert.equal(tool?.type === "tool" ? tool.name : null, "QA Review");
+  assert.equal(tool?.type === "tool" ? tool.name : null, "qa-review");
   assert.equal(
     tool?.type === "tool" ? tool.public_display_name : null,
-    "QA Review",
+    "qa-review",
   );
   assert.doesNotMatch(JSON.stringify(visibleParts), /private result/);
 });

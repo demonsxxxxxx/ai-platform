@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 
 TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -26,11 +25,6 @@ class RunTerminalizationProgress:
     completed: bool
     status: str | None
     did_transition: bool = False
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return one field with mapping-style compatibility for existing callers."""
-
-        return getattr(self, key, default)
 
     def is_terminal(self, requested_status: str | None = None) -> bool:
         """Return whether the completed status is terminal and optionally requested."""

@@ -12,7 +12,8 @@ export type WorkbenchNavItem =
   | "pluginMarket"
   | "mcp"
   | "models"
-  | "runs";
+  | "runs"
+  | "usage";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/chat(?:\/|$)/, "chat"],
@@ -24,6 +25,7 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/models(?:\/|$)/, "models"],
   [/^\/runs(?:\/|$)/, "runs"],
+  [/^\/usage(?:\/|$)/, "usage"],
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
@@ -36,6 +38,7 @@ const navItemToPath: Record<WorkbenchNavItem, string> = {
   mcp: "/mcp",
   models: "/models",
   runs: "/runs",
+  usage: "/usage",
 };
 
 /** Maps authenticated workbench pathnames to their first-level sidebar item. */

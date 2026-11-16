@@ -14,6 +14,8 @@ import { createPlatformAttachmentAdapter } from "./assistant-ui/attachmentBindin
 import { submitComposerMessage } from "./assistant-ui/composerSubmission";
 import { usePlatformComposer } from "./assistant-ui/platformComposer";
 import { toast } from "@lobehub/ui/base-ui";
+import { Button } from "@lobehub/ui/base-ui";
+import { Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -27,11 +29,9 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputAttachments } from "./ChatInputAttachments";
 import {
-  parseComposerCommand,
-  clearModelCommandDraft,
   resolveComposerCommandDraft,
   resolveSlashCommandMenu,
-  type ComposerCommandPanel,
+  removeComposerCommandDraft,
   type SlashCommandMenuItem,
 } from "./chatInputCommands";
 import { ComposerChips } from "./ComposerChips";
@@ -64,6 +64,14 @@ import {
 } from "../workbench/profileDriveDrag";
 import { Composer, ComposerBar, ComposerInput } from "./assistant-ui/elements/composer";
 
+
+const SEND_BLOCKED_PLACEHOLDER = {
+  permission: "chat.noPermission",
+  loadingHistory: "chat.sendBlockedLoadingHistory",
+  synchronizing: "chat.sendBlockedSynchronizing",
+  continuation: "chat.continuation.checking",
+} as const;
+
 export type {
   ChatInputDraftSnapshot,
   ChatInputProps,
@@ -85,7 +93,9 @@ export const ChatInput = memo(function ChatInput({
   runControlKey,
   disabled,
   canSend = true,
+  sendBlockedReason = "permission",
   placeholder,
+  modelUnavailableReason,
   acceptedFileTypes,
   disableSlashCommands = false,
   tools = EMPTY_TOOLS,
@@ -110,6 +120,7 @@ export const ChatInput = memo(function ChatInput({
   availableModels = [],
   currentModelId,
   onSelectModel,
+  onModelSelectorOpen,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
   uploadControls: sharedUploadControls,
@@ -117,6 +128,8 @@ export const ChatInput = memo(function ChatInput({
   pendingInput,
   onPendingInputConsumed,
   className,
+  taskSurface,
+  questionMode = false,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const { hasPermission, user } = useAuth();
@@ -200,7 +213,7 @@ export const ChatInput = memo(function ChatInput({
 
   // Consume external pendingInput: fill textarea and focus
   useEffect(() => {
-    if (pendingInput) {
+    if (pendingInput && !questionMode) {
       setInput(pendingInput);
       onPendingInputConsumed?.();
       requestAnimationFrame(() => {
@@ -211,13 +224,10 @@ export const ChatInput = memo(function ChatInput({
         }
       });
     }
-  }, [pendingInput, onPendingInputConsumed, setInput]);
+  }, [pendingInput, onPendingInputConsumed, questionMode, setInput]);
 
   const [activePanel, setActivePanel] = useState<FeaturePanel>(null);
-  const [commandSearchSeed, setCommandSearchSeed] = useState<{
-    panel: FeaturePanel;
-    query: string;
-  } | null>(null);
+  const [commandCursor, setCommandCursor] = useState(0);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashMenuHighlight, setSlashMenuHighlight] = useState(0);
   const [internalAttachments, setInternalAttachments] = useState<
@@ -248,6 +258,15 @@ export const ChatInput = memo(function ChatInput({
   useEffect(() => {
     reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
   }, [isLoading]);
+
+  useEffect(() => {
+    // An arriving question owns the surface: no selector or command popover may
+    // stay open over it. Panel state itself is kept for the ordinary composer.
+    if (!questionMode) return;
+    setActivePanel(null);
+    setSlashMenuOpen(false);
+    setIsDraggingOver(false);
+  }, [questionMode]);
 
   const uploadCategories = (
     acceptedFileTypes?.length === 0
@@ -285,6 +304,7 @@ export const ChatInput = memo(function ChatInput({
   }), [uploadFile, getUploadHandle, releaseUploadHandle, cancelPlatformUpload, removePlatformAttachment]);
 
   const uploadFiles = useCallback((files: FileList | File[], category?: FileCategory) => {
+    if (questionMode) return;
     // Profile type/count/size validation remains in the shared upload controller.
     uploadPlatformFiles(files, category, (file) => {
       const scopeRevision = draftSnapshot.scopeRevision;
@@ -299,7 +319,7 @@ export const ChatInput = memo(function ChatInput({
         });
       }).catch(() => { /* The upload controller already reports validation/upload failures. */ });
     });
-  }, [composerRuntime, draftSnapshot, getUploadHandle, uploadPlatformFiles]);
+  }, [composerRuntime, draftSnapshot, getUploadHandle, questionMode, uploadPlatformFiles]);
 
   const removeAttachment = useCallback((attachment: MessageAttachment) => {
     const handle = getUploadHandle(attachment.id);
@@ -338,6 +358,7 @@ export const ChatInput = memo(function ChatInput({
   });
 
   useEffect(() => {
+    if (questionMode) return;
     const applySelectionActionPrompt = (prompt: string) => {
       setInput((previous) => {
         const next = previous.trim()
@@ -369,7 +390,7 @@ export const ChatInput = memo(function ChatInput({
     return () => {
       window.removeEventListener(SELECTION_ACTION_EVENT, handleSelectionAction);
     };
-  }, [scheduleTextareaResize, setInput]);
+  }, [questionMode, scheduleTextareaResize, setInput]);
 
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
 
@@ -377,7 +398,7 @@ export const ChatInput = memo(function ChatInput({
     content,
     snapshot: draftSnapshot,
     attachments,
-    allowed: canSend && !hasUploadingAttachment && !isLoading && !disabled,
+    allowed: !questionMode && canSend && !modelUnavailableReason && !hasUploadingAttachment && !isLoading && !disabled,
     lock: isSubmittingRef,
     onSend,
     agentOptionValues,
@@ -391,6 +412,7 @@ export const ChatInput = memo(function ChatInput({
   });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (questionMode) return;
     // IME candidate keys belong to the native editor, including the legacy 229
     // signal used when composition ends before the confirming keydown event.
     if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
@@ -398,7 +420,10 @@ export const ChatInput = memo(function ChatInput({
       return;
     }
 
-    if (!disableSlashCommands && slashMenuOpen) {
+    const newlineModifier = localStorage.getItem("newlineModifier") || "shift";
+    if (e.key === "Enter" && (newlineModifier === "ctrl" ? e.ctrlKey : e.shiftKey)) return;
+
+    if (!disableSlashCommands && slashMenuOpen && slashCommandItems.length > 0) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
         setSlashMenuHighlight((index) =>
@@ -417,7 +442,7 @@ export const ChatInput = memo(function ChatInput({
         );
         return;
       }
-      if (e.key === "Enter" || e.key === "Tab") {
+      if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey)) {
         e.preventDefault();
         const item =
           slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
@@ -430,8 +455,6 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
     }
-
-    const newlineModifier = localStorage.getItem("newlineModifier") || "shift";
 
     if (e.key === "Enter") {
       const needsModifier = newlineModifier === "ctrl" ? e.ctrlKey : e.shiftKey;
@@ -490,11 +513,10 @@ export const ChatInput = memo(function ChatInput({
     () => ({
       skills: skillsAvailable,
       tools: toolsAvailable,
-      models: !!availableModels?.length && !!onSelectModel,
+      models: !!onSelectModel,
       files: uploadCategories.length > 0,
     }),
     [
-      availableModels?.length,
       onSelectModel,
       skillsAvailable,
       toolsAvailable,
@@ -502,7 +524,12 @@ export const ChatInput = memo(function ChatInput({
     ],
   );
   const canSubmit =
-    hasContent && canSend && !isLoading && !hasUploadingAttachment;
+    hasContent && canSend && !modelUnavailableReason && !isLoading && !hasUploadingAttachment;
+
+  // A pending question batch owns the surface: nothing but the question card may
+  // reach the server, so the native form, Enter shortcut, drops and paste keep the
+  // ordinary draft intact while its controls stay mounted but hidden.
+  const canSubmitOrdinary = canSubmit && !questionMode;
 
   useLayoutEffect(() => registerComposer({
     send: submitToPlatform,
@@ -510,29 +537,21 @@ export const ChatInput = memo(function ChatInput({
     getText: () => draftSnapshot.value,
     setText: (text) => setInput(text),
     disabled: Boolean(disabled || !canSend),
-    sendDisabled: !canSend || isLoading || hasUploadingAttachment,
+    sendDisabled: !canSend || Boolean(modelUnavailableReason) || isLoading || hasUploadingAttachment || questionMode,
     canCancel: Boolean(canStop && isLoading),
     attachmentAdapter: uploadCategories.length > 0 ? attachmentAdapter : undefined,
   }));
 
   const upsertUnavailableCommandChip = useCallback(
-    (command: ReturnType<typeof parseComposerCommand>) => {
-      if (!command) return;
-      if (command.panel === "command-menu") return;
-      const selectionKindByPanel: Record<
-        Exclude<ComposerCommandPanel, "command-menu">,
-        ComposerSelectionKind
-      > = {
+    (command: SlashCommandMenuItem) => {
+      const selectionKindByPanel: Record<SlashCommandMenuItem["panel"], ComposerSelectionKind> = {
         skills: "skill",
         tools: "mcp",
-        thinking: "context",
         model: "model",
         file: "file",
       };
       const kind = selectionKindByPanel[command.panel];
-      const label = command.query
-        ? `${command.command}: ${command.query}`
-        : `/${command.command}`;
+      const label = `/${command.command}`;
       dispatchComposerSelection({
         type: "upsert",
         selection: {
@@ -540,12 +559,12 @@ export const ChatInput = memo(function ChatInput({
           kind,
           label,
           state: "unavailable",
-        description: t(
-          "composerChip.unavailableDescription",
-          "This command is visible in the composer, but your current workspace cannot use it yet.",
-        ),
-      },
-    });
+          description: t(
+            "composerChip.unavailableDescription",
+            "This command is visible in the composer, but your current workspace cannot use it yet.",
+          ),
+        },
+      });
     },
     [t],
   );
@@ -558,62 +577,15 @@ export const ChatInput = memo(function ChatInput({
   const executeAvailableFileCommand = useCallback(() => {
     openFileCommandRef.current?.();
     setActivePanel(null);
-    setCommandSearchSeed(null);
     closeSlashMenu();
-    setInput("");
-    requestAnimationFrame(scheduleTextareaResize);
-  }, [closeSlashMenu, scheduleTextareaResize, setInput]);
-
-  const openCommandPanel = useCallback(
-    (nextValue: string): boolean => {
-      if (disableSlashCommands) return false;
-      const draft = resolveComposerCommandDraft(
-        nextValue,
-        commandPanelAvailability,
-      );
-      if (!draft) return false;
-      if (draft.command.unavailable) {
-        upsertUnavailableCommandChip(draft.command);
-        setActivePanel(null);
-        setCommandSearchSeed(null);
-        closeSlashMenu();
-        setInput("");
-        requestAnimationFrame(scheduleTextareaResize);
-        return true;
-      }
-      if (draft.panel === "command-menu") {
-        setSlashMenuOpen(true);
-        setSlashMenuHighlight(0);
-        setActivePanel(null);
-        setCommandSearchSeed(null);
-        return true;
-      }
-      if (draft.panel) {
-        setActivePanel(draft.panel);
-        setCommandSearchSeed({
-          panel: draft.panel,
-          query: draft.selectorQuery,
-        });
-        setSlashMenuOpen(false);
-      }
-      return true;
-    },
-    [
-      closeSlashMenu,
-      commandPanelAvailability,
-      disableSlashCommands,
-      scheduleTextareaResize,
-      setInput,
-      upsertUnavailableCommandChip,
-    ],
-  );
+  }, [closeSlashMenu]);
 
   const slashCommandItems = useMemo(
     () =>
       !disableSlashCommands && slashMenuOpen
-        ? resolveSlashCommandMenu(input, commandPanelAvailability)
+        ? resolveSlashCommandMenu(input, commandPanelAvailability, commandCursor)
         : [],
-    [commandPanelAvailability, disableSlashCommands, input, slashMenuOpen],
+    [commandPanelAvailability, commandCursor, disableSlashCommands, input, slashMenuOpen],
   );
 
   useEffect(() => {
@@ -624,148 +596,59 @@ export const ChatInput = memo(function ChatInput({
 
   const handleSlashCommandSelect = useCallback(
     (item: SlashCommandMenuItem) => {
-      const nextInput = `/${item.command}${input.trimStart().slice(1).trim() ? " " : ""}`;
+      const draft = resolveComposerCommandDraft(inputRef.current, commandCursor);
+      if (!draft) return;
       closeSlashMenu();
-      if (item.command === "file" && !item.unavailable) {
-        executeAvailableFileCommand();
-        return;
-      }
       if (item.unavailable) {
-        upsertUnavailableCommandChip({
-          trigger: "/",
-          command: item.command,
-          panel: item.panel,
-          query: "",
-          unavailable: true,
-        });
+        upsertUnavailableCommandChip(item);
         setActivePanel(null);
-        setCommandSearchSeed(null);
-        setInput("");
-        requestAnimationFrame(scheduleTextareaResize);
+        requestAnimationFrame(() => {
+          const textarea = textareaRef.current;
+          textarea?.focus();
+          textarea?.setSelectionRange(commandCursor, commandCursor);
+        });
         return;
       }
-      setInput(nextInput);
-      setActivePanel(item.panel);
-      setCommandSearchSeed({
-        panel: item.panel,
-        query: "",
-      });
+      // Choosing a shortcut consumes only that token, never the surrounding task.
+      setInput(removeComposerCommandDraft(inputRef.current, draft));
+      setCommandCursor(draft.start);
       requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.selectionStart = textarea.selectionEnd = nextInput.length;
+        textareaRef.current?.setSelectionRange(draft.start, draft.start);
         scheduleTextareaResize();
       });
-    },
-    [
-      closeSlashMenu,
-      executeAvailableFileCommand,
-      input,
-      scheduleTextareaResize,
-      setInput,
-      upsertUnavailableCommandChip,
-    ],
-  );
-
-  const handleComposerCommandSubmit = useCallback(
-    (value: string): boolean => {
-      const draft = resolveComposerCommandDraft(value, commandPanelAvailability);
-      if (!draft) return false;
-      if (draft.panel === "command-menu") {
-        const item = slashCommandItems[slashMenuHighlight] ?? slashCommandItems[0];
-        if (item) {
-          handleSlashCommandSelect(item);
-        }
-        return true;
-      }
-      if (!draft.shouldExecute) {
-        if (draft.panel) {
-          setActivePanel(draft.panel);
-          setCommandSearchSeed({
-            panel: draft.panel,
-            query: draft.selectorQuery,
-          });
-        }
-        return true;
-      }
-      if (
-        draft.command.command === "file" &&
-        !draft.command.unavailable &&
-        !draft.command.query
-      ) {
+      if (item.command === "file") {
         executeAvailableFileCommand();
-        return true;
+        return;
       }
-      upsertUnavailableCommandChip(
-        draft.command.unavailable
-          ? draft.command
-          : { ...draft.command, unavailable: true },
-      );
-      setActivePanel(null);
-      setCommandSearchSeed(null);
-      closeSlashMenu();
-      setInput("");
-      requestAnimationFrame(scheduleTextareaResize);
-      return true;
+      setActivePanel(item.panel);
     },
-    [
-      commandPanelAvailability,
-      closeSlashMenu,
-      executeAvailableFileCommand,
-      handleSlashCommandSelect,
-      scheduleTextareaResize,
-      setInput,
-      slashCommandItems,
-      slashMenuHighlight,
-      upsertUnavailableCommandChip,
-    ],
+    [closeSlashMenu, commandCursor, executeAvailableFileCommand, scheduleTextareaResize, setInput, upsertUnavailableCommandChip],
   );
 
   const handlePanelChange = useCallback(
     (panel: FeaturePanel) => {
-      setCommandSearchSeed(null);
-      if (panel === null) {
-        setActivePanel(null);
-        closeSlashMenu();
-        if (activePanel !== "model" || commandSearchSeed) {
-          requestAnimationFrame(() => textareaRef.current?.focus());
-        }
-        return;
-      }
+      closeSlashMenu();
       if (panel === "file") {
         openFileCommandRef.current?.();
         return;
       }
       setActivePanel(panel);
-      closeSlashMenu();
+      if (panel === null && activePanel !== "model") requestAnimationFrame(() => textareaRef.current?.focus());
     },
-    [activePanel, closeSlashMenu, commandSearchSeed],
+    [activePanel, closeSlashMenu],
   );
+
+  useEffect(() => {
+    if (activePanel === "model") void onModelSelectorOpen?.();
+  }, [activePanel, onModelSelectorOpen]);
 
   const handleSelectTaskSkill = useCallback(
     (skill: PublicSkillResponse) => {
       onSelectSkill?.(skill);
-      const draft = resolveComposerCommandDraft(
-        input,
-        commandPanelAvailability,
-      );
-      if (draft?.panel === "skills") {
-        setInput("");
-        requestAnimationFrame(scheduleTextareaResize);
-      }
       setActivePanel(null);
-      setCommandSearchSeed(null);
       closeSlashMenu();
     },
-    [
-      closeSlashMenu,
-      commandPanelAvailability,
-      input,
-      onSelectSkill,
-      scheduleTextareaResize,
-      setInput,
-    ],
+    [closeSlashMenu, onSelectSkill],
   );
 
   useEffect(() => {
@@ -822,25 +705,12 @@ export const ChatInput = memo(function ChatInput({
     (modelId: string, modelValue: string) => {
       onSelectModel?.(modelId, modelValue);
       dispatchComposerSelection({ type: "remove", id: `unavailable:model` });
-      setInput((current) =>
-        clearModelCommandDraft(
-          current,
-          commandPanelAvailability,
-          !disableSlashCommands,
-        ),
-      );
       setActivePanel(null);
-      setCommandSearchSeed(null);
       closeSlashMenu();
-      requestAnimationFrame(scheduleTextareaResize);
     },
     [
       closeSlashMenu,
-      commandPanelAvailability,
-      disableSlashCommands,
       onSelectModel,
-      scheduleTextareaResize,
-      setInput,
     ],
   );
 
@@ -870,6 +740,11 @@ export const ChatInput = memo(function ChatInput({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (questionMode) {
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "none";
+      return;
+    }
     if (hasProfileDriveDragData(e.dataTransfer)) {
       e.dataTransfer.dropEffect = "copy";
     }
@@ -884,6 +759,10 @@ export const ChatInput = memo(function ChatInput({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
+    if (questionMode) {
+      e.stopPropagation();
+      return;
+    }
     const profileDriveReference = getProfileDriveDragReference(e.dataTransfer);
     if (profileDriveReference && onProfileDriveFileDrop) {
       e.stopPropagation();
@@ -897,21 +776,39 @@ export const ChatInput = memo(function ChatInput({
     uploadFiles(files);
   };
 
+  // The question footer reuses this Composer's own Run cancellation path
+  // (confirmation dialog, lifecycle receipt, scope guards) instead of a second
+  // controller. It appears exactly where the toolbar's Stop button would.
+  const questionStopControl = isLoading && canStop ? (
+    <Button
+      type="text"
+      htmlType="button"
+      data-run-question-stop
+      onClick={() => setStopConfirmOpen(true)}
+      icon={<Square aria-hidden size={12} fill="currentColor" />}
+      style={{ height: "auto", minHeight: 40, padding: "4px 0", color: "var(--theme-text-secondary)" }}
+    >
+      {t("chat.stop")}
+    </Button>
+  ) : null;
+
   return (
-    <div className="chat-input-shell sm:px-2" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
+    <div className="chat-input-shell" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
       <Composer
         onSubmit={(event) => {
-          if (!canSubmit || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
+          // Question mode owns the surface: the hidden ordinary form never sends.
+          if (!canSubmitOrdinary) event.preventDefault();
+          else closeSlashMenu();
         }}
         className={
-          className ?? "mx-auto max-w-[68rem] px-2"
+          className ?? "mx-auto max-w-[var(--chat-column-max)] px-2"
         }
       >
         <div
           className="relative"
           data-composer-command-menu-anchor
         >
-          {!disableSlashCommands && slashMenuOpen && (
+          {!disableSlashCommands && slashMenuOpen && !questionMode && (
             <SlashCommandMenu
               items={slashCommandItems}
               highlightedIndex={slashMenuHighlight}
@@ -923,11 +820,27 @@ export const ChatInput = memo(function ChatInput({
           <ComposerBar
             ref={containerRef}
             data-disable-global-file-drop="true"
+            data-question-mode={questionMode || undefined}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             dragActive={isDraggingOver}
           >
+            {taskSurface ? (
+              /* The task surface replaces the ordinary controls in question mode; it
+                 keeps its natural height so short questions show every choice and
+                 action without an inner scroll. */
+              <div className="flex flex-col" data-slot="composer-task-surface">
+                {taskSurface(questionStopControl)}
+              </div>
+            ) : null}
+            {/* The ordinary controls stay mounted (draft, uploads, selectors) and are
+                only hidden, so leaving question mode restores them untouched. */}
+            <div
+              className="flex flex-col gap-0"
+              style={{ display: questionMode ? "none" : undefined }}
+              data-slot="composer-ordinary-controls"
+            >
             <div data-slot="composer-attachments">
               <ChatInputAttachments
                 attachments={attachments}
@@ -976,19 +889,28 @@ export const ChatInput = memo(function ChatInput({
                 onChange={(e) => {
                   const nextValue = e.target.value;
                   setInput(nextValue);
-                  if (!openCommandPanel(nextValue)) {
-                    closeSlashMenu();
-                  }
+                  const cursor = e.target.selectionStart;
+                  setCommandCursor(cursor);
+                  setSlashMenuHighlight(0);
+                  setSlashMenuOpen(!disableSlashCommands && resolveSlashCommandMenu(nextValue, commandPanelAvailability, cursor).length > 0);
+                }}
+                onSelect={(e) => {
+                  const cursor = e.currentTarget.selectionStart;
+                  const hasSelection = cursor !== e.currentTarget.selectionEnd;
+                  if (cursor === commandCursor && !hasSelection) return;
+                  setCommandCursor(cursor);
+                  setSlashMenuHighlight(0);
+                  setSlashMenuOpen(!disableSlashCommands && !hasSelection && resolveSlashCommandMenu(input, commandPanelAvailability, cursor).length > 0);
                 }}
                 onFocus={scheduleTextareaResize}
                 onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
+                onPaste={questionMode ? undefined : handlePaste}
                 placeholder={
                   canSend
                     ? placeholder ?? t("chat.placeholder")
-                    : placeholder ?? t("chat.noPermission")
+                    : placeholder ?? t(SEND_BLOCKED_PLACEHOLDER[sendBlockedReason])
                 }
-                disabled={disabled || !canSend}
+                disabled={questionMode || disabled || !canSend}
                 rows={1}
                 />
             </div>
@@ -997,10 +919,11 @@ export const ChatInput = memo(function ChatInput({
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
-                canSend={canSend}
+                showPermissionLock={!canSend && sendBlockedReason === "permission"}
                 isLoading={isLoading}
                 canStop={canStop}
                 canSubmit={canSubmit}
+                modelUnavailableReason={modelUnavailableReason}
                 hasUploadingAttachment={hasUploadingAttachment}
                 enabledToolsCount={enabledToolsCount}
                 totalToolsCount={totalToolsCount}
@@ -1021,6 +944,7 @@ export const ChatInput = memo(function ChatInput({
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
             </div>
+            </div>
           </ComposerBar>
         </div>
       </Composer>
@@ -1028,7 +952,6 @@ export const ChatInput = memo(function ChatInput({
       <ChatInputSelectors
         activePanel={activePanel}
         onActivePanelChange={handlePanelChange}
-        commandSearchSeed={commandSearchSeed}
         tools={tools}
         onToggleTool={onToggleTool}
         onToggleCategory={onToggleCategory}

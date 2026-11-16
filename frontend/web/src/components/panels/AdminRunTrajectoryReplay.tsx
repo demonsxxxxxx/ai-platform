@@ -110,7 +110,7 @@ export function AdminRunTrajectoryReplay({
         <span className="text-[var(--theme-text-secondary)]">{position} / {events.length} 条</span>
         <Button type="text" htmlType="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={loading} onClick={() => void loadMore()}>{loading ? "读取中" : hasMore ? "加载后续事件" : "读取新事件"}</Button>
       </div>
-      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">事件读取失败；已显示的记录仍可查看。</p> : null}
+      {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">事件读取失败；已显示的记录仍可查看。</p> : null}
       {loading && !events.length ? <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">正在读取事件</p> : null}
       {!loading && !events.length && !hasMore ? <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">没有可回放的公开类型化事件</p> : null}
       {omitted > 0 ? <p className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">当前已读取范围有 {omitted} 条私有、旧版或不合规事件未进入回放；不表示运行未发生。</p> : null}

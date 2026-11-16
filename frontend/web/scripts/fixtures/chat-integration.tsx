@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { ToastHost } from "@lobehub/ui/base-ui";
 import { ChatView } from "../../src/components/layout/AppContent/ChatView";
+import { useAgentChatPresentation } from "../../src/features/agent-market/useAgentChatPresentation";
 import { WorkbenchShell } from "../../src/components/workbench/WorkbenchShell";
 import { ThemeProvider } from "../../src/contexts/ThemeContext";
 import { LobeUiProvider } from "../../src/contexts/LobeUiProvider";
@@ -68,14 +69,27 @@ const questionBatch: RunInputQuestionBatch = {
   question_id: "question-synthetic", status: "pending", created_at: "2026-01-01T00:00:00Z",
   questions: [
     { key: "priority", header: "单选", question: "选择处理优先级", multiSelect: false, options: [{ key: "normal", label: "普通", description: "按默认顺序处理", recommended: true }, { key: "urgent", label: "紧急", description: "优先处理" }] },
-    { key: "formats", header: "多选", question: "选择输出格式", multiSelect: true, options: [{ key: "pdf", label: "PDF", description: "便于归档" }, { key: "docx", label: "DOCX", description: "便于编辑" }] },
+    { key: "formats", header: "多选", question: "选择输出格式", multiSelect: true, options: [{ key: "pdf", label: "PDF", description: "便于归档" }, { key: "docx", label: "DOCX", description: "便于编辑" }, { key: "markdown", label: "Markdown", description: "便于复用" }, { key: "csv", label: "CSV", description: "便于处理数据" }] },
     { key: "note", header: "自由文本", question: "补充说明", multiSelect: false, options: [] },
   ],
 };
 const performanceToolParts: MessagePart[] = Array.from({ length: 50 }, (_, index) => ({
   ...longToolLabelParts[index % 2], id: `performance-tool-${index}`, public_operation_id: `performance-tool-${index}`,
 }));
-const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
+const LONG_RECEIPT_TEXT = "已结束任务的长回执说明：" + "这一段用于验证关闭回执在受限区域内可以滚动读取。".repeat(24) + "【回执末尾哨兵】";
+function longHistoryProjection(index: number): RunInputsProjection {
+  return {
+    run_id: `run-synthetic-history-${index}`, state: "inactive",
+    questions: [{ ...questionBatch, question_id: "question-history", status: "closed" }],
+    inputs: [
+      { input_id: "history-text", kind: "text", text: LONG_RECEIPT_TEXT, question_id: null, answers: null, status: "queued", created_at: "2026-01-01T00:00:00Z" },
+      { input_id: "history-answer", kind: "answer", text: null, question_id: "question-history",
+        answers: { priority: "normal", formats: ["pdf", "docx"], note: { text: LONG_RECEIPT_TEXT } },
+        status: "closed", source: "timeout_default", created_at: "2026-01-01T00:05:00Z" },
+    ],
+  };
+}
+const fixtureState = { sends: 0, stops: 0, lastSubmission: { content: "", attachmentCount: 0 }, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, showLongQuestion: noop, attach: noop, attachmentPreview: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, showHistoryWithReceipts: noop, clearHistory: noop, clearQuestion: noop, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -94,12 +108,15 @@ export function Fixture() {
   const [settling, setSettling] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [generic, setGeneric] = useState(false);
+  const presentation = useAgentChatPresentation(generic ? undefined : { agent_id: "agt_fixture", name: "文件整理专家", description: "整理授权文件并汇总结果。", starter_prompts: ["请整理这批文件"], avatar_ref: "builtin:assistant", avatar_seed: "fixture", market_tags: [], completed_tasks: 0, is_favorite: false, published_at: "2026-01-01T00:00:00Z" });
   const [model, setModel] = useState("model-a");
   const [questionProjection, setQuestionProjection] = useState<RunInputsProjection | null>(null);
+  const [historyProjections, setHistoryProjections] = useState<RunInputsProjection[]>([]);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const uploadControls = useFileUpload({ attachments, onAttachmentsChange: setAttachments });
   const runInputs: RunInputsController = {
-    sessionId: "session-synthetic", runId: "run-synthetic-1", projection: questionProjection, history: questionProjection ? [questionProjection] : [],
+    sessionId: "session-synthetic", runId: "run-synthetic-1", projection: questionProjection,
+    history: [...historyProjections, ...(questionProjection ? [questionProjection] : [])],
     historyIsLoading: false, loadFailed: false, historyLoadFailed: false, historyHasMore: false, isLoading: false, isClosed: false,
     submissionError: null, pendingSubmission: null, lastAcceptedSubmission: null, loadMoreHistory: async () => false, refreshHistory: async () => true,
     refresh: async () => true, retire: noop, submitText: async () => true,
@@ -143,6 +160,23 @@ export function Fixture() {
     };
     fixtureState.showGeneric = () => setGeneric(true);
     fixtureState.showQuestions = () => setQuestionProjection({ run_id: "run-synthetic-1", state: "open", inputs: [], questions: [questionBatch] });
+    // Exceptional content keeps a reachable fallback: 8 options and a long question
+    // must not promise the no-scroll behaviour that ordinary short questions have.
+    fixtureState.showLongQuestion = () => setQuestionProjection({ run_id: "run-synthetic-1", state: "open", inputs: [], questions: [{
+      ...questionBatch,
+      questions: [{ key: "long", header: "长问题", multiSelect: false, question: "请选择处理方式：" + "这是一个用于验证长问题在受限高度内仍可完整读取的问题描述。".repeat(8),
+        options: Array.from({ length: 8 }, (_, index) => ({ key: `opt-${index}`, label: `处理方式 ${index + 1}`, description: "选项说明用于填充真实高度" })) }],
+    }] });
+    fixtureState.attachmentPreview = () => setAttachments([
+      { id: "long-name", key: "long-name", name: "ECM SDK说明文档v5.17_企业集成开发指南与接口参考_最终修订版.pdf", type: "document", mimeType: "application/pdf", size: 1992294 },
+      { id: "queued-file", name: "等待上传的附件.docx", type: "document", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 2048, isUploading: true, uploadStatus: "queued" },
+      { id: "uploading-file", name: "上传中的附件.txt", type: "document", mimeType: "text/plain", size: 1024, isUploading: true, uploadStatus: "uploading", uploadProgress: 45 },
+    ]);
+    fixtureState.attach = () => setAttachments([{ id: "attachment-synthetic", key: "attachment-synthetic", name: "已确认附件.pdf", type: "document", mimeType: "application/pdf", size: 2048 }]);
+    // Multiple closed Runs must share one scroll budget, including their titles.
+    fixtureState.showHistoryWithReceipts = () => setHistoryProjections(Array.from({ length: 10 }, (_, index) => longHistoryProjection(index)));
+    fixtureState.clearHistory = () => setHistoryProjections([]);
+    fixtureState.clearQuestion = () => setQuestionProjection(null);
     fixtureState.resolveQuestions = () => setQuestionProjection((previous) => previous ? { ...previous, questions: previous.questions.map((question) => ({ ...question, status: "resolved" as const })) } : previous);
     fixtureState.performanceStream = async (count) => {
       const started = performance.now();
@@ -160,18 +194,19 @@ export function Fixture() {
     {performanceMode ? <span data-performance-ready aria-hidden="true" /> : null}
     <ChatView key={historyRevision} messages={messages} sessionId={performanceMode ? null : "session-synthetic"} conversationIdentityKey="synthetic-chat" currentRunId={running ? `run-synthetic-${fixtureState.sends}` : null}
       canStopGeneration={running && !settling} isLoading={running} isLoadingHistory={false} canSendMessage
-      agentEmptyProfile={generic ? undefined : { agent_id: "agt_fixture", expected_revision: 1, name: "文件整理专家", description: "整理授权文件并汇总结果。", starter_prompts: ["请整理这批文件"], avatar_ref: "builtin:assistant", avatar_seed: "fixture", market_tags: [], completed_tasks: 0, is_favorite: false, published_at: "2026-01-01T00:00:00Z" }}
+      presentation={presentation}
       tools={[]} onToggleTool={noop} onToggleCategory={noop} onToggleAll={noop} enabledToolsCount={0} totalToolsCount={0}
       skills={[]} taskSkills={[]} selectedSkillState={createSelectedSkillTaskState()} onSelectSkill={noop} onClearSelectedSkill={noop}
       onSelectedSkillRecoverable={ready} onSelectedSkillFilesReady={noop} skillsLoading={false} enabledSkillsCount={0} totalSkillsCount={0} enableSkills={false}
       agentOptions={{}} agentOptionValues={{}} onToggleAgentOption={noop} availableModels={generic ? [{ id: "model-a", value: "model-a", label: "合成模型甲" }, { id: "model-b", value: "model-b", label: "合成模型乙" }] : []} currentModelId={model} onSelectModel={setModel}
       onSendMessage={async (content, _options, sentAttachments) => {
         fixtureState.sends += 1;
+        fixtureState.lastSubmission = { content, attachmentCount: sentAttachments?.length ?? 0 };
         const turn = fixtureState.sends;
         setQuestionProjection(null);
         setMessages((current) => [...current,
           { id: `user-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "user", content, attachments: sentAttachments, timestamp: new Date(turn * 1000) },
-          { id: `assistant-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "assistant", content: "", timestamp: new Date(turn * 1000 + 1), isStreaming: true, parts: [...toolParts, ...(turn === 2 ? [nestedSubagentParts, todoPart, artifactPart] : [])] },
+          { id: `assistant-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "assistant", content: "", timestamp: new Date(), isStreaming: true, parts: [...toolParts, ...(turn === 2 ? [nestedSubagentParts, todoPart, artifactPart] : [])] },
         ]);
         setSettling(false);
         setRunning(true);
@@ -186,7 +221,7 @@ export function Fixture() {
         }));
         return "acknowledged";
       }}
-      onReconnect={ready} onLoadHistory={ready} runInputs={performanceMode || !questionProjection ? undefined : runInputs} attachments={attachments} onAttachmentsChange={setAttachments} uploadControls={uploadControls}
+      onReconnect={ready} onLoadHistory={ready} runInputs={performanceMode || (!questionProjection && historyProjections.length === 0) ? undefined : runInputs} attachments={attachments} onAttachmentsChange={setAttachments} uploadControls={uploadControls}
       WorkbenchShellComponent={WorkbenchShell} />
   </div>;
 }

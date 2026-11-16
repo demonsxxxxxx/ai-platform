@@ -49,7 +49,7 @@ function UserAvatar({
       <img
         src={avatarUrl}
         alt={username}
-        className="size-[22px] object-cover rounded-full ring-1 ring-white/20"
+        className="size-[22px] object-cover rounded-full ring-1 ring-[color-mix(in_srgb,var(--theme-bg-card)_20%,transparent)]"
         onError={() => setImgError(true)}
       />
     );
@@ -57,7 +57,7 @@ function UserAvatar({
 
   return (
     <div className="flex size-[22px] items-center justify-center rounded-full bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)] ring-1 ring-[var(--theme-border)]">
-      <span className="text-[10px] font-bold text-white leading-none">
+      <span className="text-[10px] font-bold text-[var(--theme-primary-foreground)] leading-none">
         {username.charAt(0).toUpperCase() || "U"}
       </span>
     </div>
@@ -71,9 +71,9 @@ function OutlineFlowNode({ data }: { data: OutlineNodeData }) {
     <div
       className={clsx(
         "px-3 py-[10px] rounded-lg w-[220px] cursor-pointer transition-all duration-200",
-        "bg-stone-100/80 dark:bg-stone-700/40 border",
-        "border-stone-200/80 dark:border-stone-600/50",
-        "hover:-translate-y-[1px] hover:shadow-lg hover:border-stone-300 dark:hover:border-stone-500",
+        "bg-neutral-100/80 dark:bg-neutral-700/40 border",
+        "border-neutral-200/80 dark:border-neutral-600/50",
+        "hover:-translate-y-[1px] hover:shadow-lg hover:border-neutral-300 dark:hover:border-neutral-500",
         data.isActive &&
           "border-[var(--theme-primary)] shadow-lg shadow-[color-mix(in_srgb,var(--theme-primary)_10%,transparent)] ring-1 ring-[color-mix(in_srgb,var(--theme-primary)_15%,transparent)] -translate-y-[1px]",
         !data.isActive && "shadow-sm",
@@ -86,7 +86,7 @@ function OutlineFlowNode({ data }: { data: OutlineNodeData }) {
           "!w-[5px] !h-[5px] !border-none !-top-[2.5px] !rounded-full transition-colors duration-200",
           data.isActive
             ? "!bg-[var(--theme-primary)]"
-            : "!bg-stone-300 dark:!bg-stone-500",
+            : "!bg-neutral-300 dark:!bg-neutral-500",
         )}
       />
       <div className="flex items-start gap-2">
@@ -95,7 +95,7 @@ function OutlineFlowNode({ data }: { data: OutlineNodeData }) {
             <UserAvatar avatarUrl={data.avatarUrl} username={data.username} />
           ) : (
             <AssistantAvatar
-              className="size-[22px] rounded-full ring-1 ring-white/20"
+              className="size-[22px] rounded-full ring-1 ring-[color-mix(in_srgb,var(--theme-bg-card)_20%,transparent)]"
             />
           )}
         </div>
@@ -118,7 +118,7 @@ function OutlineFlowNode({ data }: { data: OutlineNodeData }) {
           "!w-[5px] !h-[5px] !border-none !-bottom-[2.5px] !rounded-full transition-colors duration-200",
           data.isActive
             ? "!bg-[var(--theme-primary)]"
-            : "!bg-stone-300 dark:!bg-stone-500",
+            : "!bg-neutral-300 dark:!bg-neutral-500",
         )}
       />
     </div>

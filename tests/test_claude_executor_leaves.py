@@ -69,19 +69,3 @@ def test_leaf_import_closure_excludes_orchestration_owners() -> None:
         for dependency in json.loads(completed.stdout)
         if any(dependency == owner or dependency.startswith(f"{owner}.") for owner in forbidden)
     ]
-
-
-def test_profile_drive_capability_contract_preserves_wire_and_legacy_imports() -> None:
-    from app.files import api as files
-    from app.runtime.sandbox import contracts
-
-    expected = {
-        "PROFILE_DRIVE_STAGE_TOOL": "stage_profile_drive_file_to_workspace",
-        "PROFILE_DRIVE_STAGE_IDENTITY": "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
-        "PROFILE_DRIVE_READ_TEXT_IDENTITY": "mcp__ProfileDriveMCPServer__read_text_file",
-    }
-    for name, wire_value in expected.items():
-        assert getattr(files, name) == wire_value
-        assert getattr(contracts, name) is getattr(files, name)
-    assert capability_policy.PROFILE_DRIVE_STAGE_TOOL is files.PROFILE_DRIVE_STAGE_TOOL
-    assert capability_policy.PROFILE_DRIVE_READ_TEXT_IDENTITY is files.PROFILE_DRIVE_READ_TEXT_IDENTITY

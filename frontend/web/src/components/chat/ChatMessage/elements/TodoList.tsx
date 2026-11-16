@@ -76,7 +76,7 @@ export function TodoList({ items, isStreaming }: TodoListProps) {
                   <CheckIcon className="h-2.5 w-2.5 text-[var(--theme-text-secondary)]" />
                 </span>
               ) : item.status === "active" ? (
-                <Loader2Icon className="h-3.5 w-3.5 animate-spin text-blue-500 dark:text-blue-400 motion-reduce:animate-none" />
+                <Loader2Icon className="h-3.5 w-3.5 animate-spin text-[var(--theme-info-text)] motion-reduce:animate-none" />
               ) : (
                 <CircleIcon className="h-3.5 w-3.5 text-[var(--theme-text-tertiary)]" />
               )}

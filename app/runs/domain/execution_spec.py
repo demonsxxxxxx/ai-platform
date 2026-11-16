@@ -10,8 +10,16 @@ import math
 import re
 from typing import Any
 
+from app.runs.domain.model_group_snapshot import validate_model_group_snapshot
+
 EXECUTION_SPEC_SCHEMA_VERSION_V1 = "ai-platform.execution-spec.v1"
 EXECUTION_SPEC_SCHEMA_VERSION_V2 = "ai-platform.execution-spec.v2"
+# v3 replaces the former max-input capacity with the engine-owned compaction
+# window. v2 stays a frozen decoder: admitted attempts keep their exact
+# canonical bytes, digest, and recovery semantics.
+EXECUTION_SPEC_SCHEMA_VERSION_V3 = "ai-platform.execution-spec.v3"
+EXECUTION_SPEC_SCHEMA_VERSION_V4 = "ai-platform.execution-spec.v4"
+# v4 freezes the tenant model-group decision and trusted usage scene.
 # Keep the legacy public constant for historical readers; dispatch selects v2 explicitly.
 EXECUTION_SPEC_SCHEMA_VERSION = EXECUTION_SPEC_SCHEMA_VERSION_V1
 _RUN_PAYLOAD_SCHEMA_VERSION_V1 = "ai-platform.run-payload.v1"
@@ -113,6 +121,31 @@ _EXECUTION_SPEC_FIELDS_V2 = _EXECUTION_SPEC_FIELDS_V1 | frozenset(
         "model_gateway_revision",
         "model_max_input_tokens",
         "model_max_output_tokens",
+    }
+)
+_EXECUTION_SPEC_FIELDS_V3 = (_EXECUTION_SPEC_FIELDS_V1 - {"model_max_input_tokens"}) | frozenset(
+    {
+        "model_gateway_revision",
+        "model_auto_compact_window",
+        "model_max_output_tokens",
+    }
+)
+_EXECUTION_SPEC_FIELDS_V4 = _EXECUTION_SPEC_FIELDS_V3 | frozenset(
+    {
+        "model_group_id",
+        "model_group_code",
+        "model_group_type",
+        "model_group_revision",
+        "model_selection_mode",
+        "usage_scene",
+        "model_policy_version",
+    }
+)
+_MODEL_SPEC_SCHEMA_VERSIONS = frozenset(
+    {
+        EXECUTION_SPEC_SCHEMA_VERSION_V2,
+        EXECUTION_SPEC_SCHEMA_VERSION_V3,
+        EXECUTION_SPEC_SCHEMA_VERSION_V4,
     }
 )
 
@@ -295,12 +328,25 @@ def _required_positive_int(payload: Mapping[str, Any], field_name: str) -> int:
     return value
 
 
+def _validated_auto_compact_window(payload: Mapping[str, Any], field_name: str) -> int:
+    """Validate the frozen v3 wire range independently of live model policy."""
+
+    value = _required_positive_int(payload, field_name)
+    if not 100_000 <= value <= 1_000_000:
+        raise ExecutionSpecError(f"execution_spec_{field_name}_invalid")
+    return value
+
+
 def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
     schema_version = payload.get("schema_version")
     if schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V1:
         expected_fields = _EXECUTION_SPEC_FIELDS_V1
     elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V2:
         expected_fields = _EXECUTION_SPEC_FIELDS_V2
+    elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V3:
+        expected_fields = _EXECUTION_SPEC_FIELDS_V3
+    elif schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V4:
+        expected_fields = _EXECUTION_SPEC_FIELDS_V4
     else:
         raise ExecutionSpecError("execution_spec_schema_version_invalid")
     if set(payload) != expected_fields:
@@ -388,6 +434,41 @@ def _normalize_execution_spec(payload: Mapping[str, Any]) -> dict[str, Any]:
         normalized["model_max_output_tokens"] = _required_positive_int(
             payload, "model_max_output_tokens"
         )
+    elif schema_version in {EXECUTION_SPEC_SCHEMA_VERSION_V3, EXECUTION_SPEC_SCHEMA_VERSION_V4}:
+        normalized["model_gateway_revision"] = _required_positive_int(
+            payload, "model_gateway_revision"
+        )
+        normalized["model_auto_compact_window"] = _validated_auto_compact_window(
+            payload, "model_auto_compact_window"
+        )
+        normalized["model_max_output_tokens"] = _required_positive_int(
+            payload, "model_max_output_tokens"
+        )
+        if schema_version == EXECUTION_SPEC_SCHEMA_VERSION_V4:
+            group_id = payload.get("model_group_id")
+            group_code = payload.get("model_group_code")
+            group_type = payload.get("model_group_type")
+            group_revision = payload.get("model_group_revision")
+            selection_mode = payload.get("model_selection_mode")
+            usage_scene = payload.get("usage_scene")
+            policy_version = payload.get("model_policy_version")
+            try:
+                validate_model_group_snapshot(
+                    group_id=group_id, group_code=group_code, group_type=group_type,
+                    group_revision=group_revision, selection_mode=selection_mode,
+                    usage_scene=usage_scene, policy_version=policy_version,
+                )
+            except ValueError as exc:
+                raise ExecutionSpecError("execution_spec_model_group_snapshot_invalid") from exc
+            normalized.update({
+                "model_group_id": _safe_id(group_id, "model_group_id"),
+                "model_group_code": group_code,
+                "model_group_type": group_type,
+                "model_group_revision": group_revision,
+                "model_selection_mode": selection_mode,
+                "usage_scene": usage_scene,
+                "model_policy_version": policy_version,
+            })
     if execution_kind == _RUN_EXECUTION_KIND_HARNESS_CHAT:
         if run_payload_schema_version != _RUN_PAYLOAD_SCHEMA_VERSION_V2:
             raise ExecutionSpecError("execution_spec_harness_schema_invalid")

@@ -11,7 +11,7 @@ from app.chat_session_projection import session_response
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
 from app.models import ChatSessionsResponse
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 _SESSION_CURSOR_VERSION = 1

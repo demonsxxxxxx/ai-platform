@@ -190,7 +190,7 @@ class PostgresRunDiagnosticsRepository:
                    r.finished_at, r.error_code, r.result_json, r.agent_id,
                    r.execution_kind, r.model_id, r.model_value,
                    r.model_gateway_revision, r.admitted_agent_profile_revision,
-                   r.admitted_agent_profile_hash, r.max_input_tokens, r.max_output_tokens,
+                   r.admitted_agent_profile_hash, r.auto_compact_window, r.max_output_tokens,
                    r.input_token_count, r.output_token_count, r.total_token_count,
                    r.estimated_cost_minor, r.copied_from_run_id,
                    d.diagnostic_id, d.schema_version as diagnostic_schema_version,
@@ -248,7 +248,7 @@ class PostgresRunDiagnosticsRepository:
                     "model_value",
                     "model_gateway_revision",
                     "admitted_agent_profile_revision",
-                    "admitted_agent_profile_hash", "max_input_tokens", "max_output_tokens", "copied_from_run_id",
+                    "admitted_agent_profile_hash", "auto_compact_window", "max_output_tokens", "copied_from_run_id",
                 )
             },
             "result_json": row.get("result_json"),

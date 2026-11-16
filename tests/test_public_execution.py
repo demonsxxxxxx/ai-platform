@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
-from app.public_execution import (
+from app.streaming.domain.public_execution import (
     PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
     PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS,
     PersistablePublicExecutionStepV2,
@@ -264,6 +264,7 @@ def test_v2_projector_fails_closed_for_malformed_raw_fact_types(field, value):
     "fact",
     [
         _v2_fact(invocation_id=" private-call-1"),
+        _v2_fact(tool_name="Skill"),
         _v2_fact(
             tool_name="Skill",
             safe_label=" Document review",

@@ -49,7 +49,6 @@ export interface AppShellProps {
   activeTab: TabType;
   onNewSession: () => void;
   sidebar?: ReactNode;
-  contentSidebar?: ReactNode;
   children: ReactNode;
   // Run playback
   currentRunId?: string | null;
@@ -65,7 +64,6 @@ export function AppShell({
   activeTab,
   onNewSession,
   sidebar,
-  contentSidebar,
   children,
   currentRunId,
   onOpenRunPlayback,
@@ -261,8 +259,6 @@ export function AppShell({
         }}
       >
         {sidebar}
-
-        {contentSidebar}
 
         <div className={`relative z-0 flex min-h-0 min-w-0 flex-1 flex-col ${activeTab === "models" ? "overflow-clip" : "overflow-hidden"}`}>
           <WorkbenchMenuHost

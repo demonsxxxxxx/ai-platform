@@ -70,13 +70,13 @@ const STATUS_TONES: Record<string, string> = {
   succeeded:
     "bg-[var(--theme-success-soft)] text-[var(--theme-success)] ring-[var(--theme-success-ring)]",
   failed:
-    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-[var(--theme-danger-ring)]",
+    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-[var(--theme-danger-ring)]",
   cancelled:
     "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-[var(--theme-border)]",
   cancel_requested:
     "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
   denied:
-    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-[var(--theme-danger-ring)]",
+    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)] ring-[var(--theme-danger-ring)]",
 };
 
 function normalized(value: string | null | undefined): string {
@@ -450,7 +450,7 @@ function RunDetail({
         <div className="p-4">
           <div
             role="alert"
-            className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]"
+            className="border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]"
           >
             {error}
           </div>
@@ -472,7 +472,7 @@ function RunDetail({
               <span>估算成本 {estimatedCostLabel(detail.run.estimated_cost_minor)}</span>
             </div>
             <RuntimeHealth detail={detail} />
-            {detail.run.error_code ? <p className="mt-2 text-xs text-[var(--theme-danger)]">终态分类：{detail.run.error_code}（与最早异常分开解释）</p> : null}
+            {detail.run.error_code ? <p className="mt-2 text-xs text-[var(--theme-danger-text)]">终态分类：{detail.run.error_code}（与最早异常分开解释）</p> : null}
             {detail.run.agent_id ? <Button type="default" htmlType="button" className="mt-3 text-xs" onClick={() => onFocusAgent(detail.run.agent_id!, agentDisplayName(detail.run))}>只看这个 Agent 的任务</Button> : null}
           </section>
 
@@ -547,7 +547,7 @@ render: (_value, run) => (<>
                   ) : null}
                   {run.error_code ? (
                     <p
-                      className="mt-1.5 max-w-40 truncate font-mono text-[11px] text-[var(--theme-danger)]"
+                      className="mt-1.5 max-w-40 truncate font-mono text-[11px] text-[var(--theme-danger-text)]"
                       title={run.error_code}
                     >
                       {run.error_code}
@@ -654,7 +654,7 @@ function MobileRunList({
             <StatusBadge status={run.status} />
           </div>
           {run.error_code ? (
-            <p className="mt-2 truncate font-mono text-[11px] text-[var(--theme-danger)]">
+            <p className="mt-2 truncate font-mono text-[11px] text-[var(--theme-danger-text)]">
               {run.error_code}
             </p>
           ) : null}

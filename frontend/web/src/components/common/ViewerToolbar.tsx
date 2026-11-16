@@ -32,7 +32,7 @@ export function ViewerToolbar({
   const labelClass = "hidden sm:inline text-xs";
 
   return (
-    <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-1.5 text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] [padding-bottom:max(env(safe-area-inset-bottom),6px)] dark:bg-stone-900 sm:bottom-8 sm:gap-1 sm:px-2 sm:py-2">
+    <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-1.5 py-1.5 text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] [padding-bottom:max(env(safe-area-inset-bottom),6px)] dark:bg-neutral-900 sm:bottom-8 sm:gap-1 sm:px-2 sm:py-2">
       {showRotation && (
         <>
           <div className="flex items-center rounded-lg transition-colors">

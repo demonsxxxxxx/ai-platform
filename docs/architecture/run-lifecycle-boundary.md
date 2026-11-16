@@ -76,8 +76,8 @@ Run-only terminal paths. Source, tests, image and runtime acceptance remain sepa
 | API/worker composition | `app.bootstrap.api`, `app.bootstrap.worker` | construct concrete adapters once and inject a complete service graph | product rules, SQL, request handling, implicit global lookup |
 | Legacy import surface | temporary, explicitly inventoried compatibility only | logic-free name delegation when separately authorized | lifecycle writes, orchestration, hidden defaults, indefinite aliases |
 
-`app/repositories.py` is not a Run lifecycle owner. New Runs lifecycle code MUST
-NOT be added there. Internal callers migrate to `app.runs.api`; an external
+New Runs lifecycle code belongs to `app.runs`, and internal callers use
+`app.runs.api`; it is never added to a global repository module. An external
 compatibility claim requires named consumers and evidence, not an assumption.
 
 ## 3. Operation classification
@@ -127,6 +127,13 @@ Pure Runs policy owns:
 - typed `RunTerminalizationProgress` semantics;
 - safe terminal result/error projection rules.
 
+`RunTerminalizationProgress` exposes `completed`, `status`, and `did_transition`
+as typed fields; mapping-style `get` compatibility is retired. The Runs API
+continues to export this value. `is_terminal(requested_status)` and truthiness
+retain terminal-status checks; `did_transition` remains the separate fact that
+the current attempt won the durable transition. This is an in-process value,
+not a persisted-record or HTTP response schema.
+
 Public sanitization uses an explicit stable public contract. Raw child result,
 error, dispatch metadata, storage identity, command, secret, or private path
 never becomes a Run event merely because it was present in a database record.
@@ -160,8 +167,15 @@ The migration MUST preserve these observable semantics:
    Redis receipts enforce idempotency and callback-prefix ordering. There is no
    publication state, pending-intent drain or successor recovery. Redis failure
    cannot undo Run finalization or hide its authoritative final answer.
-9. **Sandbox cleanup remains Sandbox-owned.** After the Run cancellation fact
-   commits, orchestration calls the public Sandbox Runtime release/reconcile
+9. **Sandbox cleanup remains Sandbox-owned.** Owner and administrator cancellation
+   retain separate authorization commands, then use one Runs-owned post-cancellation
+   operation after the transaction commits. That operation admits and publishes
+   the exact Attempt stream when present, removes queued payloads only for a
+   cancelled Run, and always attempts Sandbox cleanup before reporting a queue
+   failure. Publication failures do not prevent cleanup. Bootstrap injects these
+   collaborators; neither HTTP route owns a separate cleanup implementation.
+   The routes retain their existing 404/502/503 mapping and actor/role/reason.
+   After the Run cancellation fact commits, orchestration calls the public Sandbox Runtime release/reconcile
    application API through a separate Sandbox-owned operation boundary. That authority
    owns the scoped lease and operation fence and records stop/release or cleanup
    failure. The existing stop-under-lock compatibility mechanism must remain
@@ -294,14 +308,19 @@ The barriers remain separate:
   existing stale/CAS classification; bootstrap selects the decorator without
   changing its public constructor or contract. A `skipped` status is not a newly
   written result. Existing SDK-placeholder lease bookkeeping remains inside the
-  commit; later physical reconciler sandbox stop/release is outside it.
+  commit. Continuation-capable Claude Attempts require exact provider stop and
+  private workspace save before this business transaction; Context/Run terminal
+  facts and lease release share its fence. Other cleanup-only provider work stays
+  outside the business transaction.
 
 `result_business_publication` measures Worker publication after the unchanged
 commit and release-flag update. The separate `terminal_receipt_publication` span
 observes callback-row publication only. Neither proves frontend receipt/history
 or artifact download visibility. `reconciler_provider_stop` measures provider stop
-between claim verification and lease finalization, after business terminality;
-it excludes those two transactions and can delay the next serial reconciliation.
+between claim verification and lease finalization. For continuation-capable Claude
+Attempts it precedes private save and business terminality; a later cleanup-only
+stop may follow terminality. The span excludes the surrounding transactions and
+can delay the next serial reconciliation.
 Existing `reconciler_result_conversion` remains the artifact-path screening span;
 no per-file payload, upload-only claim or new tracing system is introduced.
 
@@ -457,3 +476,9 @@ The terminal behavior change is not ready until focused evidence covers:
 Source and CI evidence do not prove a stopped deployment, production schema
 migration, Redis convergence, Sandbox cleanup, or mixed-version runtime safety.
 Those remain deployment/runtime acceptance.
+
+## Actual-model usage accounting
+
+[Actual model token usage](actual-model-token-usage.md) owns the administrator
+usage ledger. It consumes private callback snapshots in the existing fenced
+receipt transaction, independently of Run terminal state and legacy counters.

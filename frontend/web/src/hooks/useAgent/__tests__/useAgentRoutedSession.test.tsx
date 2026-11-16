@@ -1257,7 +1257,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
     purpose: "conversation",
     agent_conversation: null,
   });
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async () => ({ current_run_id: null, events: [] });
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     return {
@@ -1319,7 +1319,7 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     is_active: true,
     metadata: {},
   });
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async () => ({ current_run_id: null, events: [] });
   sessionApi.getStatus = async () => ({
     session_id: "session-owned-a",
     status: "idle",
@@ -2173,6 +2173,9 @@ test("useAgent fences send, resolver, and retry through deferred same-principal 
   authApi.login = async () => {};
 
   try {
+    // Separate initial hydration from the explicit login incarnation under test.
+    await settle(harness.act);
+    resolverCalls.length = 0;
     await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
     await settle(harness.act);
     assert.deepEqual(resolverCalls, [submissionA]);
@@ -2692,7 +2695,7 @@ test("useAgent keeps an unknown submission locked until explicit admission retry
     is_active: true,
     metadata: {},
   });
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async () => ({ current_run_id: null, events: [] });
   sessionApi.submitChat = (async () => {
     submissions += 1;
     if (submissions === 1) {
@@ -4108,8 +4111,10 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
   const originalFetch = dom.window.fetch;
   const firstRunId = "run-part-failed";
+  sessionApi.getStatus = async (sessionId, runId) => ({ session_id: sessionId, run_id: runId, status: "failed" });
   const secondRunId = "run-part-next";
   const firstMessageId = "protocol-part-failed";
   const secondMessageId = "protocol-part-next";
@@ -4356,6 +4361,7 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -4463,7 +4469,7 @@ test(`useAgent preserves terminal backfill during next admission: ${admissionOut
     assert.equal(nextAssistantBeforeBackfill?.content, "新Run输出");
     assert.equal(harness.hook.currentRunId, "run-terminal-sync-next");
     assert.equal(harness.hook.isLoading, true);
-    assert.equal(statusCalls, 0);
+    assert.equal(statusCalls, 1, "terminal continuation check is GET-only and does not wait for answer backfill");
     }
 
     await harness.act(async () => {
@@ -5532,7 +5538,10 @@ test("useAgent reconnects only the backend-selected active run after reload", as
     });
     await settle(harness.act);
 
-    assert.deepEqual(statusCalls, [["session-history-active", "run-history-active"]]);
+    assert.deepEqual(statusCalls, [
+      ["session-history-active", "run-history-active"],
+      ["session-history-active", "run-history-active"],
+    ], "history readiness and post-terminal continuation are separate reads");
     assert.equal(streamUrls.length, 1);
     assert.match(streamUrls[0] || "", /run_id=run-history-active/);
     assert.equal(harness.hook.currentRunId, null);
@@ -5731,6 +5740,271 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
     await harness.cleanup();
   }
 });
+
+for (const scenario of ["stopped", "settling", "fault", "legacy", "blocked", "capacity"] as const) {
+  test(`useAgent continuation ${scenario} enforces settlement gates and fresh submissions`, async () => {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originals = { submitChat: sessionApi.submitChat, generateTitle: sessionApi.generateTitle,
+      getEvents: sessionApi.getEvents, getStatus: sessionApi.getStatus, cancelRun: sessionApi.cancelRun };
+    const originalFetch = dom.window.fetch;
+    const firstStatus = scenario === "fault" ? "failed" : "cancelled";
+    const first = controlledPublicRunLifecycle("run-first-continuation", firstStatus);
+    const second = controlledPublicRunLifecycle("run-next-continuation");
+    const posts: unknown[][] = [];
+    let firstFinished = false;
+    let saveFinished = scenario !== "settling";
+    let cancelCalls = 0;
+    sessionApi.submitChat = (async (...args) => {
+      posts.push(args);
+      return { session_id: "session-continuation", run_id: posts.length === 1 ? "run-first-continuation" : "run-next-continuation", trace_id: "trace-safe", status: "queued" };
+    }) as typeof sessionApi.submitChat;
+    sessionApi.generateTitle = async (sessionId) => ({ session_id: sessionId, title: "Synthetic continuation" });
+    sessionApi.cancelRun = async (runId) => { cancelCalls += 1; return { run_id: runId, status: "cancel_requested" }; };
+    sessionApi.getStatus = async (sessionId, runId) => ({
+      session_id: sessionId, run_id: runId,
+      status: firstFinished ? firstStatus : "cancel_requested",
+      continuation: scenario === "legacy" ? undefined : firstFinished && (scenario === "blocked" || scenario === "capacity")
+        ? { state: scenario === "capacity" ? "capacity_exhausted" : "blocked", action: "new_conversation", reason_code: scenario === "capacity" ? "capacity_exhausted" : "workspace_unsaved", workspace_saved: false }
+        : !firstFinished || !saveFinished
+        ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false }
+        : { state: scenario === "fault" ? "recovery_candidate" : "resumable", action: "continue", reason_code: "saved", workspace_saved: true },
+    });
+    sessionApi.getEvents = async () => ({
+      current_run_id: "run-first-continuation",
+      terminal_run_statuses: firstFinished ? { "run-first-continuation": firstStatus } : undefined,
+      events: [
+        { id: "first-user", run_id: "run-first-continuation", event_type: "user:message", timestamp: "2026-10-22T00:00:00Z", data: { content: "首轮任务" } },
+        ...(firstFinished ? [{ id: "first-terminal", run_id: "run-first-continuation", event_type: firstStatus === "failed" ? "run_failed" : "run_cancelled", timestamp: "2026-10-22T00:00:01Z", data: { status: firstStatus } }] : []),
+      ],
+    });
+    dom.window.fetch = async (input) => String(input).includes("/playback")
+      ? new Response(JSON.stringify({ run_id: "run-first-continuation", run: { status: firstFinished ? firstStatus : "running" }, timeline: [], events: [], artifacts: [], steps: [] }))
+      : posts.length === 1 ? first.response : second.response;
+    try {
+      await harness.act(async () => { await harness.hook.sendMessage("首轮任务"); });
+      await settle(harness.act);
+      if (scenario === "stopped" || scenario === "settling") {
+        await harness.act(async () => { assert.equal(await harness.hook.stopGeneration(), "acknowledged"); });
+        await settle(harness.act);
+        assert.equal(cancelCalls, 1);
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("不能抢占"), { status: "failed" }); });
+        assert.equal(posts.length, 1);
+      }
+      firstFinished = true;
+      await harness.act(async () => { first.finish(); });
+      await settle(harness.act);
+      assert.equal(harness.hook.currentRunId, null);
+      if (scenario === "blocked" || scenario === "capacity") {
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("不能绕过恢复门禁"), { status: "failed" }); });
+        assert.equal(posts.length, 1);
+        assert.equal(harness.hook.continuation?.state, scenario === "capacity" ? "capacity_exhausted" : "blocked");
+        return;
+      }
+      if (scenario === "settling") {
+        assert.equal(harness.hook.continuation?.state, "settling");
+        await harness.act(async () => { await harness.hook.sendMessage("收尾中的草稿"); });
+        assert.equal(posts.length, 1);
+        saveFinished = true;
+        await harness.act(async () => { await new Promise((resolve) => setTimeout(resolve, 1650)); });
+      }
+      assert.equal(harness.hook.continuationPending, false);
+      assert.equal(harness.hook.continuation?.state, scenario === "legacy" ? undefined : scenario === "fault" ? "recovery_candidate" : "resumable");
+      await harness.act(async () => { await harness.hook.sendMessage("只发送当前新消息"); });
+      assert.equal(posts.length, 2);
+      assert.equal(posts[1][0], "只发送当前新消息");
+      assert.equal(posts[1][1], "session-continuation");
+      assert.notEqual(posts[0][7], posts[1][7]);
+      assert.equal(harness.hook.currentRunId, "run-next-continuation");
+    } finally {
+      Object.assign(sessionApi, originals); dom.window.fetch = originalFetch;
+      await harness.cleanup(); second.finish();
+    }
+  });
+}
+
+for (const priorState of ["settling", "blocked", "unknown"] as const) {
+  test(`useAgent Session continuation ${priorState} keeps events failures and ambiguous empty reads gated`, async () => {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originals = { get: sessionApi.get, getEvents: sessionApi.getEvents, getStatus: sessionApi.getStatus, submitChat: sessionApi.submitChat };
+    let mode: "known" | "failed" | "empty" | "malformed" | "foreign" | "recovered" = "known";
+    let posts = 0;
+    let statusReads = 0;
+    sessionApi.get = async (id) => ({ id, agent_id: "general-agent", is_active: true, metadata: {}, created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z" });
+    sessionApi.getEvents = async () => {
+      if (mode === "failed") throw new ApiRequestError("private events failure", 503);
+      if (mode === "empty") return { events: [] };
+      if (mode === "malformed") return undefined as unknown as Awaited<ReturnType<typeof originals.getEvents>>;
+      if (mode === "foreign") return { session_id: "foreign-session", current_run_id: null, events: [] };
+      return { current_run_id: "run-session-gate", terminal_run_statuses: { "run-session-gate": "cancelled" },
+        events: [historyUserMessage("run-session-gate", "session-gate-user", "首轮停止"),
+          { id: "session-gate-terminal", run_id: "run-session-gate", event_type: "run_cancelled", timestamp: "2026-10-22T00:00:01Z", data: { status: "cancelled" } }] };
+    };
+    sessionApi.getStatus = async (sessionId, runId) => {
+      statusReads += 1;
+      return { session_id: sessionId, run_id: runId, status: "cancelled", ...(mode === "known" ? {
+        continuation: { state: priorState === "settling" ? "settling" as const : "blocked" as const, action: "wait" as const, reason_code: "writer_unverified", workspace_saved: false },
+      } : {}) };
+    };
+    sessionApi.submitChat = (async () => { posts += 1; return { status: "needs_confirmation", suggestions: [] }; }) as typeof sessionApi.submitChat;
+    try {
+      if (priorState !== "unknown") {
+        await harness.act(async () => { await harness.hook.loadHistory("session-events-gate"); });
+        assert.equal(harness.hook.continuation?.state, priorState);
+      }
+      const confirmedReads = statusReads;
+      for (const failedMode of ["failed", "empty", "malformed", "foreign"] as const) {
+        mode = failedMode;
+        await harness.act(async () => { await harness.hook.loadHistory("session-events-gate"); });
+        assert.equal(harness.hook.isLoadingHistory, false);
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("保留草稿，不得抢占"), { status: "failed" }); });
+        assert.equal(posts, 0, `${failedMode} cannot grant Session continuation authority`);
+        assert.equal(harness.hook.continuationPending, true);
+        assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null, "no synthetic Run owner is created");
+        assert.equal(statusReads, confirmedReads, "no additional status reads before a Run is known");
+      }
+      mode = "recovered";
+      await harness.act(async () => { await harness.hook.loadHistory("session-events-gate"); });
+      assert.equal(harness.hook.continuationPending, false);
+      await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("现在只发送新消息"), { status: "accepted" }); });
+      assert.equal(posts, 1);
+      assert.equal(statusReads, confirmedReads + 1);
+    } finally { Object.assign(sessionApi, originals); await harness.cleanup(); }
+  });
+}
+
+test("useAgent Session continuation accepts explicit no-Run proof but not late navigation or authentication proof", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originals = { get: sessionApi.get, getEvents: sessionApi.getEvents, getStatus: sessionApi.getStatus, submitChat: sessionApi.submitChat };
+  let releaseOld!: (value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void;
+  let readable = false;
+  let posts = 0;
+  let statusReads = 0;
+  sessionApi.get = async (id) => ({ id, agent_id: "general-agent", is_active: true, metadata: {}, created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z" });
+  sessionApi.getEvents = async (id) => {
+    if (id === "session-old-navigation" || id === "session-old-auth") return new Promise((resolve) => { releaseOld = resolve; });
+    if (!readable) throw new ApiRequestError("events unavailable", 503);
+    return { current_run_id: null, events: [] };
+  };
+  sessionApi.getStatus = async () => { statusReads += 1; throw new Error("explicit no-Run proof requires no status GET"); };
+  sessionApi.submitChat = (async () => { posts += 1; return { status: "needs_confirmation", suggestions: [] }; }) as typeof sessionApi.submitChat;
+  try {
+    for (const retirement of ["navigation", "auth"] as const) {
+      let old!: ReturnType<typeof harness.hook.loadHistory>;
+      await harness.act(async () => { old = harness.hook.loadHistory(`session-old-${retirement}`); });
+      if (retirement === "auth") await harness.rotateAuthScope("user-after-events", "tenant-after-events");
+      await harness.act(async () => { await harness.hook.loadHistory("session-current-events"); });
+      await harness.act(async () => { releaseOld({ current_run_id: null, events: [] }); await old; });
+      assert.equal(harness.hook.sessionId, "session-current-events");
+      assert.equal(harness.hook.continuationPending, true);
+      await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("旧确认不能解锁"), { status: "failed" }); });
+      assert.equal(posts, 0);
+    }
+    readable = true;
+    await harness.act(async () => { await harness.hook.loadHistory("session-current-events"); });
+    assert.equal(harness.hook.continuationPending, false);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null);
+    await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("已确认空会话的新消息"), { status: "accepted" }); });
+    assert.equal(posts, 1);
+    assert.equal(statusReads, 0);
+  } finally { Object.assign(sessionApi, originals); await harness.cleanup(); }
+});
+
+for (const previousState of ["settling", "blocked"] as const) {
+  for (const legacyBlock of ["missing", "null"] as const) {
+    test(`useAgent history continuation ${previousState} stays gated after status failure until matching ${legacyBlock} legacy success`, async () => {
+      const harness = await loadReactHarness();
+      const { sessionApi } = await import("../../../services/api/session.ts");
+      const originals = { get: sessionApi.get, getEvents: sessionApi.getEvents,
+        getStatus: sessionApi.getStatus, submitChat: sessionApi.submitChat };
+      const originalFetch = dom.window.fetch;
+      const next = controlledPublicRunLifecycle("run-after-history-check");
+      let responseMode: "known" | "failed" | "foreign" | "legacy" = "known";
+      let posts = 0;
+      const newMessage = "刷新失败后保留的新消息草稿";
+      sessionApi.get = async (sessionId) => ({
+        id: sessionId, agent_id: "general-agent", is_active: true, metadata: {},
+        created_at: "2026-10-22T00:00:00Z", updated_at: "2026-10-22T00:00:00Z",
+      });
+      sessionApi.getEvents = async () => ({
+        current_run_id: "run-before-history-check",
+        terminal_run_statuses: { "run-before-history-check": "cancelled" },
+        events: [historyUserMessage("run-before-history-check", "history-check-user", "停止首轮任务"),
+          { id: "history-check-terminal", run_id: "run-before-history-check", event_type: "run_cancelled",
+            timestamp: "2026-10-22T00:00:01Z", data: { status: "cancelled" } }],
+      });
+      sessionApi.getStatus = async (sessionId, runId) => {
+        if (responseMode === "failed") throw new ApiRequestError("temporary status failure", 503);
+        return {
+          session_id: responseMode === "foreign" ? "foreign-session" : sessionId,
+          run_id: runId, status: "cancelled",
+          ...(responseMode === "known" ? { continuation: {
+            state: previousState, action: "wait" as const,
+            reason_code: previousState === "blocked" ? "writer_unverified" : "settling",
+            workspace_saved: false,
+          } } : legacyBlock === "null" ? { continuation: null } : {}),
+        };
+      };
+      sessionApi.submitChat = (async (...args) => {
+        posts += 1;
+        assert.equal(args[0], newMessage);
+        assert.equal(args[1], "session-history-check");
+        return { session_id: "session-history-check", run_id: "run-after-history-check", trace_id: "trace-history-check", status: "queued" };
+      }) as typeof sessionApi.submitChat;
+      dom.window.fetch = async () => next.response;
+      try {
+        await harness.act(async () => { await harness.hook.loadHistory("session-history-check"); });
+        assert.equal(harness.hook.continuation?.state, previousState);
+        responseMode = "failed";
+        let releaseStatus!: () => void;
+        let markStatusStarted!: () => void;
+        const statusStarted = new Promise<void>((resolve) => { markStatusStarted = resolve; });
+        const statusReleased = new Promise<void>((resolve) => { releaseStatus = resolve; });
+        const getStatus = sessionApi.getStatus;
+        sessionApi.getStatus = async (...args) => {
+          markStatusStarted();
+          await statusReleased;
+          return getStatus(...args);
+        };
+        let refresh!: ReturnType<typeof harness.hook.loadHistory>;
+        await harness.act(async () => {
+          refresh = harness.hook.loadHistory("session-history-check");
+          await statusStarted;
+        });
+        assert.equal(harness.hook.runControlLifecycle.getSnapshot().continuationCheckRequired, true);
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage(newMessage), { status: "failed" }); });
+        assert.equal(posts, 0, "an in-flight status read cannot admit a new submission");
+        await harness.act(async () => { releaseStatus(); await refresh; });
+        await settle(harness.act);
+        const failedOwner = harness.hook.runControlLifecycle.getSnapshot();
+        assert.equal(failedOwner.continuationCheckRequired, true);
+        assert.equal(failedOwner.continuationLoaded, false);
+        assert.equal(failedOwner.continuationCheckAutomatic, false, "history keeps its existing retry budget");
+        assert.equal(harness.hook.continuationPending, true);
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage(newMessage), { status: "failed" }); });
+        assert.equal(posts, 0, "failed status reads must not become legacy send authority");
+        responseMode = "foreign";
+        await harness.act(async () => { await harness.hook.loadHistory("session-history-check"); });
+        await settle(harness.act);
+        assert.equal(harness.hook.continuationPending, true, "a foreign success cannot authorize the current Session");
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage(newMessage), { status: "failed" }); });
+        assert.equal(posts, 0);
+        responseMode = "legacy";
+        await harness.act(async () => { await harness.hook.loadHistory("session-history-check"); });
+        assert.equal(harness.hook.continuationPending, false);
+        assert.equal(harness.hook.continuation, undefined);
+        assert.equal(harness.hook.runControlLifecycle.getSnapshot().continuationLoaded, true);
+        await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage(newMessage), { status: "accepted" }); });
+        assert.equal(posts, 1, "only matching successful legacy status unlocks a fresh user submission");
+      } finally {
+        Object.assign(sessionApi, originals); dom.window.fetch = originalFetch;
+        await harness.cleanup(); next.finish();
+      }
+    });
+  }
+}
 
 test("useAgent reloads a terminal cancelled Skill run without resubmitting or reopening SSE", async () => {
   const harness = await loadReactHarness();
@@ -8156,6 +8430,8 @@ test("useAgent keeps transient status failure recoverable and fails closed on st
     await settle(harness.act);
 
     assert.equal(statusCalls, 5);
+    assert.equal(harness.hook.continuationPending, true);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().continuationCheckAutomatic, false);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.connectionStatus, "disconnected");
     assert.equal(
@@ -9137,21 +9413,27 @@ test("history read recovery preserves authority and cannot replace a sending or 
     assert.equal(harness.hook.isLoadingHistory, false);
     const retryA = harness.hook.retryHistoryLoad;
     let pending!: ReturnType<UseAgentReturn["sendMessage"]>;
+    await harness.act(async () => { assert.deepEqual(await harness.hook.sendMessage("explicit new task"), { status: "failed" }); });
+    assert.equal(submissions, 0, "confirmed generic identity is not continuation authority after an events failure");
+    assert.equal(harness.hook.continuationPending, true);
+    sessionApi.getEvents = async () => { eventReads += 1; return { current_run_id: null, events: [] }; };
+    await harness.act(async () => { await harness.hook.retryHistoryLoad(); });
+    assert.equal(harness.hook.continuationPending, false);
+    assert.equal(Boolean(harness.hook.historyReadError), false);
     await harness.act(async () => { pending = harness.hook.sendMessage("explicit new task"); });
-    assert.equal(submissions, 1, "event-only failure must retain confirmed generic session authority");
-    assert.equal(Boolean(harness.hook.historyReadError), true, "sending does not prove the old transcript complete");
+    assert.equal(submissions, 1);
     await harness.act(async () => { await retryA(); });
-    assert.equal(eventReads, 1, "read retry must not retire an in-flight submission");
+    assert.equal(eventReads, 2, "retired read retry must not replace an in-flight submission");
     await harness.act(async () => {
       rejectSubmission(new ApiRequestError("rejected", 400, "invalid_request", "rejected_before_persist"));
       await pending;
     });
-    assert.equal(Boolean(harness.hook.historyReadError), true, "submission error cannot overwrite history incompleteness");
-    sessionApi.getEvents = async () => { eventReads += 1; return { events: [] }; };
+    assert.equal(Boolean(harness.hook.historyReadError), false, "submission failure cannot invent history incompleteness");
+    sessionApi.getEvents = async () => { eventReads += 1; return { current_run_id: null, events: [] }; };
     await harness.act(async () => { await harness.hook.loadHistory("session-b"); });
     assert.equal(Boolean(harness.hook.historyReadError), false);
     await harness.act(async () => { await retryA(); });
-    assert.equal(eventReads, 2, "retired route's button cannot load A into B");
+    assert.equal(eventReads, 3, "retired route's button cannot load A into B");
     assert.equal(harness.hook.sessionId, "session-b");
 
     sessionApi.getEvents = async () => { eventReads += 1; throw new ApiRequestError("private history error", 503); };
@@ -9159,7 +9441,7 @@ test("history read recovery preserves authority and cannot replace a sending or 
     const beforeClear = harness.hook.retryHistoryLoad;
     await harness.act(async () => { harness.hook.clearMessages(); await beforeClear(); });
     assert.equal(Boolean(harness.hook.historyReadError), false);
-    assert.equal(eventReads, 3);
+    assert.equal(eventReads, 4);
     assert.equal(harness.hook.sessionId, null);
 
     await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
@@ -9167,7 +9449,7 @@ test("history read recovery preserves authority and cannot replace a sending or 
     await harness.rotateAuthScope("user-b", "tenant-b");
     await harness.act(async () => { await beforeAuthChange(); });
     assert.equal(Boolean(harness.hook.historyReadError), false);
-    assert.equal(eventReads, 4, "auth-retired retry has no read authority");
+    assert.equal(eventReads, 5, "auth-retired retry has no read authority");
     let rejectOldAuthRead!: (error: Error) => void;
     sessionApi.getEvents = () => {
       eventReads += 1;

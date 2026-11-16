@@ -167,7 +167,7 @@ function SidebarExpandedSkeleton() {
         }}
       >
         <div className="flex items-center gap-3 px-2 py-3 rounded-xl">
-          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full shrink-0 ring-1 ring-stone-200" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full shrink-0 ring-1 ring-neutral-200" />
           <div className="flex-1 min-w-0">
             <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-16 rounded-md" />
             <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-2.5 w-12 rounded-md mt-1" />

@@ -15,7 +15,7 @@ from app.context.api import (
     ProviderSessionScope,
     claim_provider_lineage,
     read_provider_coverage,
-    make_authority_receipt,
+    make_provider_coverage_authority_receipt,
 )
 from app.context.file_continuity import MAX_PRIMARY_FILE_IDS, snapshot_file_ids
 from app.context_manifest import (
@@ -23,7 +23,7 @@ from app.context_manifest import (
     ContextPlanner,
 )
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
-from app.office_execution_tier import route_office_execution_tier
+from app.execution.api import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
 from app.public_context_keys import (
     PUBLIC_CONTEXT_FORBIDDEN_ID_KEY_ALIASES,
@@ -618,11 +618,10 @@ async def record_initial_context_snapshot(
             raise platform_errors.RepositoryConflictError("conversation_authority_current_message_invalid")
         history_candidate_count = coverage["message_count"]
         history_authorized_count = history_candidate_count
-        conversation_authority = make_authority_receipt(
+        conversation_authority = make_provider_coverage_authority_receipt(
+            coverage=coverage,
             scope=scope,
             through_session_generation=current_run.get("session_generation"),
-            message_count=history_authorized_count,
-            source_sha256=coverage["source_sha256"],
             current_message_id=included_message_ids[0] if included_message_ids else None,
         )
         remaining_history_slots = max(0, MAX_PRIMARY_FILE_IDS - len(included_file_ids))

@@ -571,6 +571,39 @@ def governed_egress_proof_from_labels(
     )
 
 
+def governed_egress_identity_proof_from_labels(
+    provider: str,
+    labels: object,
+    *,
+    signing_key: object,
+    signing_key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
+    expected_binding: Mapping[str, object] | None = None,
+    now: datetime | None = None,
+) -> dict[str, object] | None:
+    """Recover a signed proof identity for a currently owned runtime handle."""
+    if provider not in REAL_SANDBOX_PROVIDERS or not isinstance(labels, dict):
+        return None
+    encoded = labels.get(GOVERNED_EGRESS_PROOF_LABEL)
+    if not isinstance(encoded, str) or len(encoded) > 8192:
+        return None
+    try:
+        proof = json.loads(encoded)
+    except (TypeError, ValueError):
+        return None
+    return (
+        proof
+        if is_governed_egress_identity_proof(
+            proof,
+            provider=provider,
+            signing_key=signing_key,
+            signing_key_id=signing_key_id,
+            expected_binding=expected_binding,
+            now=now,
+        )
+        else None
+    )
+
+
 def _runtime_lease_expected_binding(row: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, object] | None:
     labels = payload.get("labels")
     container_id = payload.get("container_id")

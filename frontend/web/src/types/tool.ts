@@ -19,7 +19,9 @@ export interface ToolInfo {
   name: string;
   description: string;
   category: ToolCategory;
-  server?: string; // MCP server name for MCP tools
+  server?: string; // MCP connection name for MCP tools
+  /** Optional user-safe upstream source; null means the Gateway did not provide one. */
+  upstream_server?: string | null;
   parameters: ToolParamInfo[];
   system_disabled?: boolean; // Whether this tool is disabled at system level (admin controlled)
   user_disabled?: boolean; // Whether this tool is disabled by the user

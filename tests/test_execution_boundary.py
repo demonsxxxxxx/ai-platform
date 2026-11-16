@@ -551,6 +551,40 @@ def test_runtime_lease_rejects_legacy_shape_tamper_replay_and_expiry():
     assert module.is_accepted_runtime_lease(tampered, signing_key=PROOF_KEY) is False
     assert module.is_accepted_runtime_lease(replayed, signing_key=PROOF_KEY) is False
     assert module.is_accepted_runtime_lease(expired, signing_key=PROOF_KEY) is False
+    expired_proof = expired["lease_payload_json"]["governed_egress_proof"]
+    expired_labels = {
+        module.GOVERNED_EGRESS_PROOF_LABEL: module.governed_egress_proof_label(expired_proof)
+    }
+    assert module.governed_egress_identity_proof_from_labels(
+        "docker",
+        expired_labels,
+        signing_key=PROOF_KEY,
+        signing_key_id="current",
+        expected_binding={"run_id": "run-a", "attempt_id": "qat-attempt-a"},
+    ) == expired_proof
+    assert module.governed_egress_proof_from_labels(
+        "docker",
+        expired_labels,
+        signing_key=PROOF_KEY,
+        signing_key_id="current",
+        expected_binding={"run_id": "run-a", "attempt_id": "qat-attempt-a"},
+    ) is None
+    assert module.governed_egress_identity_proof_from_labels(
+        "docker",
+        expired_labels,
+        signing_key=PROOF_KEY,
+        signing_key_id="current",
+        expected_binding={"attempt_id": "attempt-other"},
+    ) is None
+    tampered_scope_proof = dict(expired_proof)
+    tampered_scope_proof["authorized_skill_scope_sha256"] = "b" * 64
+    assert module.governed_egress_identity_proof_from_labels(
+        "docker",
+        {module.GOVERNED_EGRESS_PROOF_LABEL: module.governed_egress_proof_label(tampered_scope_proof)},
+        signing_key=PROOF_KEY,
+        signing_key_id="current",
+        expected_binding={"run_id": "run-a", "attempt_id": "qat-attempt-a"},
+    ) is None
     expired["status"] = "active"
     assert module.is_accepted_runtime_lease(
         expired,

@@ -14,6 +14,11 @@ RUN printf '%s\n' "$AI_PLATFORM_BUILD_COMMIT" > /app/.ai-platform-source-revisio
 
 FROM ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded AS uv
 
+FROM node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a AS document-node
+WORKDIR /opt/ai-platform/document-dependencies
+COPY app/platform/sandbox/document_dependencies/package*.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
 FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -34,7 +39,7 @@ WORKDIR /app
 RUN APT_MIRROR="$APT_MIRROR" APT_SECURITY_MIRROR="$APT_SECURITY_MIRROR" python -c 'import os; from pathlib import Path; p = Path("/etc/apt/sources.list.d/debian.sources"); archive = os.environ.get("APT_MIRROR", ""); security = os.environ.get("APT_SECURITY_MIRROR", ""); mirrors = {key: archive for key in ("http://deb.debian.org/debian", "https://deb.debian.org/debian") if archive} | {key: security for key in ("http://deb.debian.org/debian-security", "https://deb.debian.org/debian-security", "http://security.debian.org/debian-security", "https://security.debian.org/debian-security") if security}; lines = p.read_text(encoding="utf-8").splitlines(); rewritten = [line.partition(":")[0] + ": " + " ".join(mirrors.get(uri.rstrip("/"), uri) for uri in line.partition(":")[2].split()) if line.lstrip().startswith("URIs:") else line for line in lines]; p.write_text("\n".join(rewritten) + "\n", encoding="utf-8")' \
     && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git libexpat1 libssh2-1 pandoc passwd \
+    && apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk fonts-liberation gcc libc6-dev git libexpat1 libssh2-1 libreoffice-calc libreoffice-impress libreoffice-writer pandoc passwd poppler-utils qpdf tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra unzip zip \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ai-platform \
     && useradd --uid 10001 --gid 10001 --home-dir /home/ai-platform --create-home --shell /usr/sbin/nologin ai-platform \
@@ -45,12 +50,16 @@ RUN APT_MIRROR="$APT_MIRROR" APT_SECURITY_MIRROR="$APT_SECURITY_MIRROR" python -
        /home/ai-platform/.local/share
 
 COPY --from=uv /uv /uvx /bin/
+COPY --from=document-node /usr/local/bin/node /usr/local/bin/node
+COPY --from=document-node /opt/ai-platform/document-dependencies /opt/ai-platform/document-dependencies
+ENV NODE_PATH=/opt/ai-platform/document-dependencies/node_modules
 COPY pyproject.toml uv.lock /app/
 RUN if [ -n "$PIP_INDEX_URL" ]; then export UV_DEFAULT_INDEX="$PIP_INDEX_URL"; fi \
     && if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi \
     && uv sync --locked --no-dev --no-install-project
 
 COPY app /app/app
+RUN python -c "from urllib.request import urlretrieve; from pathlib import Path; from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION; from app.execution.infrastructure.document_plugin import install_document_plugin, DOCUMENT_PLUGIN_PATH; archive = Path('/tmp/anthropic-document-skills.zip'); urlretrieve('https://codeload.github.com/anthropics/skills/zip/' + DOCUMENT_PLUGIN_REVISION, archive); install_document_plugin(archive, DOCUMENT_PLUGIN_PATH); archive.unlink()"
 COPY tools /app/tools
 COPY scripts /app/scripts
 COPY --chmod=0755 docker-entrypoint.sh /app/docker-entrypoint.sh

@@ -18,26 +18,26 @@ const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
   );
 
   return (
-    <div className="h-full w-full flex flex-col bg-white dark:bg-stone-900">
+    <div className="h-full w-full flex flex-col bg-white dark:bg-neutral-900">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-stone-50 dark:bg-stone-900 border-b border-stone-200 dark:border-stone-700 shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-neutral-50 dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-          <span className="text-xs text-stone-500 dark:text-stone-400">
+          <span className="w-2.5 h-2.5 rounded-full bg-[var(--theme-success)]" />
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">
             {t("documents.htmlDocument")}
           </span>
-          <span className="text-[11px] text-stone-400 dark:text-stone-500 tabular-nums">
+          <span className="text-[11px] text-neutral-400 dark:text-neutral-500 tabular-nums">
             {content.length.toLocaleString()} chars
           </span>
         </div>
 
-        <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-stone-800 rounded-md p-0.5">
+        <div className="flex items-center gap-0.5 bg-neutral-100 dark:bg-neutral-800 rounded-md p-0.5">
           <Button type="text"
             onClick={() => setShowSource(false)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all ${
               !showSource
-                ? "bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-200 shadow-sm"
-                : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
+                ? "bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 shadow-sm"
+                : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300"
             }`}
           >
             <Eye size={13} />
@@ -47,8 +47,8 @@ const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
             onClick={() => setShowSource(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all ${
               showSource
-                ? "bg-white dark:bg-stone-700 text-stone-700 dark:text-stone-200 shadow-sm"
-                : "text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-300"
+                ? "bg-white dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 shadow-sm"
+                : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300"
             }`}
           >
             <Code size={13} />

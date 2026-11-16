@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 import signal
 import shlex
 import sys
@@ -12,6 +13,92 @@ from fastapi.testclient import TestClient
 
 from app.executors import claude_agent_sdk_runner
 from app.runtime.sandbox import native_tool_app, native_tool_health_probe
+
+
+@pytest.mark.parametrize("link_depth", range(5))
+def test_native_result_mount_rejects_symlink_ancestors(tmp_path, link_depth):
+    from app.platform.sandbox.claude_native_filesystem import prepare_claude_tool_results
+    parts = [".claude-config", "projects", "ai-platform", "session-a", "tool-results"]
+    parent = tmp_path.joinpath(*parts[:link_depth])
+    parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (parent / parts[link_depth]).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="native_tool_results_path_invalid"):
+        prepare_claude_tool_results(tmp_path, "session-a")
+
+
+def test_native_filesystem_exposes_only_bound_cli_result_directory(tmp_path):
+    from app.platform.sandbox.docker_native_filesystem import native_container_filesystem
+    from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+    layout = native_container_filesystem(str(tmp_path), "/workspace", tmp_path / "socket",
+        read_only_paths={}, private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS, sdk_session_id="session-a")
+    native = ".claude-config/projects/ai-platform/session-a/tool-results"
+    assert layout["volumes"][str(tmp_path / native)] == {"bind": "/workspace/" + native, "mode": "ro"}
+    assert "mode=0711" in layout["tmpfs"]["/workspace/.claude-config"]
+    assert "mode=000" in layout["tmpfs"]["/workspace/.ai-platform"]
+    assert not any("other-session" in path for path in layout["volumes"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.environ.get("AI_PLATFORM_NATIVE_MCP_TEST_IMAGE"), reason="Requires a prepared native command image and local Docker")
+async def test_real_cli_file_result_is_usable_in_docker_native_sidecar(monkeypatch, tmp_path):
+    import docker
+    from app.platform.sandbox.docker_native_filesystem import native_container_filesystem
+    from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+    from tests import test_claude_mcp_registration as native_check
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o777)
+    workspace.chmod(0o777)
+    socket_parent = tmp_path / "socket"
+    socket_parent.mkdir()
+    session_id = "5e6dfc4d-1b04-4d94-80a2-719f58746ae1"
+    layout = native_container_filesystem(str(workspace), str(workspace), socket_parent,
+        read_only_paths={}, private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS, sdk_session_id=session_id)
+    real_runner = claude_agent_sdk_runner.run_claude_agent_sdk
+    async def run_bound(**kwargs):
+        return await real_runner(**{**kwargs, "session_id": session_id})
+    monkeypatch.setattr(claude_agent_sdk_runner, "run_claude_agent_sdk", run_bound)
+    await native_check.test_platform_runner_uses_native_mcp_file_with_authorized_bash(
+        monkeypatch, workspace, "http", True)
+    relative = ".claude-config/projects/ai-platform/" + session_id
+    saved = next((workspace / relative / "tool-results").glob("*.docx"))
+    (workspace / ".claude-config/settings.json").write_text("synthetic-private-config")
+    (workspace / relative / "transcript.jsonl").write_text("synthetic-private-transcript")
+    other = workspace / ".claude-config/projects/ai-platform/other-session/tool-results"
+    other.mkdir(parents=True)
+    (other / "private.txt").write_text("other session")
+    # The CLI runs on the host; the command runs under the sidecar's actual
+    # Linux identity and mount layout. Broker/UDS behavior has separate tests.
+    layout.update(user="10001:10001", cap_add=[])
+    script = f"""
+import os
+from pathlib import Path
+from docx import Document
+p = Path({str(workspace)!r})
+assert os.getuid() == os.getgid() == 10001
+source = Path({str(saved)!r})
+doc = Document(source)
+assert [doc.paragraphs[0].text, doc.tables[0].cell(0,0).text] == ['native paragraph', 'native table']
+for private in ['.claude-config/settings.json', {str(relative + '/transcript.jsonl')!r}, {str(other.relative_to(workspace) / 'private.txt')!r}]:
+    assert not (p / private).exists()
+try:
+    source.write_bytes(b'tampered')
+except OSError:
+    pass
+else:
+    raise AssertionError('native result mount is writable')
+(p / 'docker-parsed.txt').write_text('native paragraph|native table')
+"""
+    client = docker.from_env()
+    try:
+        output = client.containers.run(os.environ["AI_PLATFORM_NATIVE_MCP_TEST_IMAGE"],
+            entrypoint=["python", "-c"], command=[script], network_mode="none", remove=True, **layout)
+        assert output == b""
+        assert (workspace / "docker-parsed.txt").read_text() == "native paragraph|native table"
+    finally:
+        client.close()
 
 
 def test_native_tool_launcher_binds_then_drops_privileges_before_serving(monkeypatch):
@@ -335,7 +422,8 @@ async def test_native_tool_command_uses_minimal_environment_and_process_isolatio
     assert captured["kwargs"]["env"] == {
         "HOME": str(workspace),
         "TMPDIR": str(workspace / ".native-skill-tmp"),
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": "/app/.venv/bin:/usr/local/bin:/usr/bin:/bin",
+        "NODE_PATH": "/opt/ai-platform/document-dependencies/node_modules",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -779,9 +867,8 @@ def test_workspace_search_results_filter_private_paths_and_bound_unlimited_grep(
         "durationMs": 17,
         "numFiles": 1,
         "filenames": ["inputs/public.py"],
-        "truncated": False,
-        "totalMatches": 1,
-        "countIsComplete": True,
+        "truncated": True,
+        "countIsComplete": False,
     }
     assert claude_agent_sdk_runner._bounded_workspace_search_input(
         "Grep",
@@ -834,6 +921,237 @@ def test_workspace_search_results_filter_private_paths_and_bound_unlimited_grep(
         for item in filtered_large
         if isinstance(item, str)
     ) == claude_agent_sdk_runner._WORKSPACE_SEARCH_MAX_OUTPUT_LINES
+
+
+def test_workspace_search_projection_preserves_complete_sdk_output(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "inputs").mkdir(parents=True)
+    (workspace / "inputs" / "public.py").write_text("TODO", encoding="utf-8")
+    response = {
+        "durationMs": 4,
+        "numFiles": 1,
+        "filenames": ["inputs/public.py"],
+        "truncated": False,
+        "totalMatches": 1,
+        "countIsComplete": True,
+    }
+
+    projected, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        response,
+        tool_name="Glob",
+        tool_input={"pattern": "**/*.py", "path": "."},
+        workspace_root=workspace,
+    )
+
+    assert changed is False
+    assert projected == response
+
+
+def test_workspace_glob_budget_truncation_drops_sdk_totals(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "inputs").mkdir(parents=True)
+    filenames = [f"inputs/file-{index:04}.py" for index in range(1_001)]
+
+    projected, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        {
+            "durationMs": 5,
+            "numFiles": len(filenames),
+            "filenames": filenames,
+            "truncated": False,
+            "totalMatches": len(filenames),
+            "countIsComplete": True,
+        },
+        tool_name="Glob",
+        tool_input={"pattern": "**/*.py", "path": "."},
+        workspace_root=workspace,
+    )
+
+    assert changed is True
+    assert projected["filenames"] == filenames[:1_000]
+    assert projected["numFiles"] == 1_000
+    assert projected["truncated"] is True
+    assert "totalMatches" not in projected
+    assert projected["countIsComplete"] is False
+
+
+def test_workspace_search_retains_sdk_truncation_and_limits_byte_output(tmp_path):
+    workspace = tmp_path / "workspace"
+    public_file = workspace / "inputs" / "public.py"
+    public_file.parent.mkdir(parents=True)
+    public_file.write_text("TODO", encoding="utf-8")
+
+    sdk_truncated, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        {
+            "durationMs": 1,
+            "numFiles": 1,
+            "filenames": ["inputs/public.py"],
+            "truncated": True,
+            "totalMatches": 1_200,
+            "countIsComplete": True,
+        },
+        tool_name="Glob",
+        tool_input={"pattern": "**/*.py", "path": "."},
+        workspace_root=workspace,
+    )
+    assert changed is True
+    assert sdk_truncated["truncated"] is True
+    assert "totalMatches" not in sdk_truncated
+    assert sdk_truncated["countIsComplete"] is False
+
+    oversized_content = "\n".join(
+        f"inputs/public.py:1:{'x' * 2_000}" for _ in range(200)
+    )
+    projected, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        {
+            "mode": "content",
+            "numFiles": 0,
+            "filenames": [],
+            "content": oversized_content,
+            "numLines": 200,
+            "totalLines": 200,
+            "appliedLimit": 200,
+            "appliedOffset": 3,
+        },
+        tool_name="Grep",
+        tool_input={"pattern": "TODO", "path": ".", "output_mode": "content"},
+        workspace_root=workspace,
+    )
+
+    assert changed is True
+    assert isinstance(projected, dict)
+    assert len(json.dumps(projected, ensure_ascii=False).encode("utf-8")) <= (
+        claude_agent_sdk_runner._WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
+    )
+    assert len(projected["content"].splitlines()) < 200
+    assert "filtered or truncated" in projected["content"]
+    assert projected["appliedLimit"] == 200
+    assert projected["appliedOffset"] == 3
+    assert "totalLines" not in projected
+
+
+@pytest.mark.parametrize(
+    ("mode", "response", "expected"),
+    [
+        (
+            "files_with_matches",
+            {
+                "mode": "files_with_matches",
+                "numFiles": 1,
+                "filenames": ["inputs/public.py"],
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+            {
+                "mode": "files_with_matches",
+                "numFiles": 1,
+                "filenames": ["inputs/public.py"],
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+        ),
+        (
+            "content",
+            {
+                "mode": "content",
+                "numFiles": 0,
+                "filenames": [],
+                "content": "inputs/public.py:1:TODO",
+                "numLines": 1,
+                "totalLines": 9,
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+            {
+                "mode": "content",
+                "numFiles": 0,
+                "filenames": [],
+                "content": "inputs/public.py:1:TODO",
+                "numLines": 1,
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+        ),
+        (
+            "count",
+            {
+                "mode": "count",
+                "numFiles": 1,
+                "filenames": [],
+                "content": "inputs/public.py:2",
+                "numMatches": 2,
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+            {
+                "mode": "count",
+                "numFiles": 1,
+                "filenames": [],
+                "content": "inputs/public.py:2",
+                "numMatches": 2,
+                "appliedLimit": 5,
+                "appliedOffset": 2,
+            },
+        ),
+    ],
+)
+def test_grep_modes_keep_pagination_fields(mode, response, expected, tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "inputs").mkdir(parents=True)
+    (workspace / "inputs" / "public.py").write_text("TODO", encoding="utf-8")
+
+    projected, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        response,
+        tool_name="Grep",
+        tool_input={"pattern": "TODO", "path": ".", "output_mode": mode},
+        workspace_root=workspace,
+    )
+
+    assert changed is True if mode == "content" else changed is False
+    assert projected == expected
+
+
+def test_workspace_search_hides_other_sessions_and_symlink_targets(tmp_path):
+    workspace = tmp_path / "workspace"
+    private = workspace / ".pins" / "private.py"
+    private.parent.mkdir(parents=True)
+    private.write_text("private", encoding="utf-8")
+    public = workspace / "inputs" / "public.py"
+    public.parent.mkdir(parents=True)
+    public.write_text("public", encoding="utf-8")
+    (public.parent / "private-link.py").symlink_to(private)
+
+    session_root = workspace / ".claude-config" / "projects" / "ai-platform"
+    current_result = session_root / "session-a" / "tool-results" / "result.md"
+    current_result.parent.mkdir(parents=True)
+    current_result.write_text("visible native result", encoding="utf-8")
+    other_result = session_root / "session-b" / "tool-results" / "private.md"
+    other_result.parent.mkdir(parents=True)
+    other_result.write_text("other session", encoding="utf-8")
+
+    projected, changed = claude_agent_sdk_runner._filtered_workspace_search_output(
+        {
+            "mode": "files_with_matches",
+            "numFiles": 5,
+            "filenames": [
+                "inputs/public.py",
+                "inputs/private-link.py",
+                ".pins/private.py",
+                ".claude-config/projects/ai-platform/session-a/tool-results/result.md",
+                ".claude-config/projects/ai-platform/session-b/tool-results/private.md",
+            ],
+        },
+        tool_name="Grep",
+        tool_input={"pattern": "private", "path": "."},
+        workspace_root=workspace,
+        native_session_id="session-a",
+    )
+
+    assert changed is True
+    assert projected["filenames"] == [
+        "inputs/public.py",
+        ".claude-config/projects/ai-platform/session-a/tool-results/result.md",
+    ]
+    assert projected["numFiles"] == 2
 
 
 def test_staged_skill_paths_are_immutable_to_sdk_mutating_tools(tmp_path):

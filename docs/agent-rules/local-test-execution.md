@@ -24,12 +24,12 @@ directories, missing or duplicate selectors, external paths, and pytest flags.
 
 ## Selection Order
 
-Start with checks that can falsify the changed behavior. Expand to direct
-callers, grouped isolation checks, and real dependencies when risk requires it;
-there is no mandatory six-stage sequence. Broader coverage may be split into
-bounded explicit stages. Avoid full-repository execution as a routine ritual.
-Docs-only changes check affected links, entrypoints, and document contracts.
-Do not add permanent tests solely to lock editorial wording or line counts.
+[Change verification](change-verification.md) owns scenario selection, feedback
+order and evidence reuse; this document owns how local pytest executes. Select
+existing owning tests first and expand to direct callers, isolation checks or
+real dependencies when the changed risk requires them. Broader coverage may be
+split into bounded explicit stages. Do not add permanent tests solely to lock
+editorial wording or line counts.
 
 ## Execution Invariants
 
@@ -111,8 +111,9 @@ rendered local links/images and heading anchors. External URLs are not fetched.
 Document purpose/status and navigation remain editorial responsibilities; no fixed
 header text, line position or index entry is required by this check. The authority-map
 regression reuses this link validator for its existing direct-owner file-link scope.
-Historical release evidence, completed plans, agent-rule history and the immutable
-Harness blueprint are explicitly reported as outside this current-source check.
+Historical release evidence, completed plans (including the archived Harness
+blueprint) and agent-rule history are explicitly reported as outside this
+current-source check.
 Preserve their fixed-source provenance; inspect their owner when editing history.
 
 Backend preflight supplies the full PR-base or push-before SHA and resolves its

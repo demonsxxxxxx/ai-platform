@@ -66,12 +66,12 @@ def test_code_examples_are_not_links_and_fixed_history_is_preserved(tmp_path):
     documents(tmp_path, {
         "docs/README.md": "[owner](owner.md)\n",
         "docs/owner.md": "# Owner\n\nStatus: dated observation\n\n`[example](missing.md)`\n\n```md\n[example](missing.md)\n```\n\n[fixed history](https://github.com/example/repo/blob/0123456789/deleted.py)\n",
-        "docs/HARNESS-RULES.md": "[upstream template](not-local.md)\n",
+        "docs/exec-plans/completed/blueprint.md": "[upstream template](not-local.md)\n",
         "docs/release-evidence/old.md": "[fixed observation](deleted.py)\n",
     })
-    findings, excluded = checker.check_documents(tmp_path, ["docs/owner.md", "docs/HARNESS-RULES.md", "docs/release-evidence/old.md"])
+    findings, excluded = checker.check_documents(tmp_path, ["docs/owner.md", "docs/exec-plans/completed/blueprint.md", "docs/release-evidence/old.md"])
     assert findings == []
-    assert excluded == ["docs/HARNESS-RULES.md", "docs/release-evidence/old.md"]
+    assert excluded == ["docs/exec-plans/completed/blueprint.md", "docs/release-evidence/old.md"]
 
 
 def test_unindexed_document_does_not_require_status_or_navigation_metadata(tmp_path):

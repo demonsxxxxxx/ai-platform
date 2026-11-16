@@ -209,7 +209,7 @@ export function SearchDialog({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={t("sidebar.searchSessions") + "..."}
-            className="flex-1 min-w-0 text-[15px] bg-transparent text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none"
+            className="flex-1 min-w-0 text-[15px] bg-transparent text-neutral-800 dark:text-neutral-100 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 focus:outline-none"
           />
           {searchQuery && (
             <Button type="text"
@@ -237,7 +237,7 @@ export function SearchDialog({
           }}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLDivElement).style.scrollbarColor =
-              "rgba(168,162,158,0.3) transparent";
+              "color-mix(in srgb, var(--theme-text-tertiary) 30%, transparent) transparent";
           }}
           onMouseLeave={(e) => {
             (e.currentTarget as HTMLDivElement).style.scrollbarColor =
@@ -270,10 +270,10 @@ export function SearchDialog({
               {/* Empty search results */}
               {hasQuery && allSessions.length === 0 && (
                 <div className="px-4 py-10 text-center">
-                  <p className="text-sm text-stone-400 dark:text-stone-500">
+                  <p className="text-sm text-neutral-400 dark:text-neutral-500">
                     {t("sidebar.noSearchResults")}
                   </p>
-                  <p className="mt-1 text-xs text-stone-300 dark:text-stone-600">
+                  <p className="mt-1 text-xs text-neutral-300 dark:text-neutral-600">
                     &quot;{searchQuery}&quot;
                   </p>
                 </div>
@@ -307,13 +307,13 @@ export function SearchDialog({
                     }`}
                   >
                     <span className="flex-1 min-w-0">
-                      <span className="block text-sm text-stone-700 dark:text-stone-200 truncate leading-snug">
+                      <span className="block text-sm text-neutral-700 dark:text-neutral-200 truncate leading-snug">
                         {getSessionTitle(session, t)}
                       </span>
                       {searchMatch && (
                         <span
                           title={searchMatch}
-                          className="mt-0.5 block text-xs text-stone-400 dark:text-stone-500 truncate leading-relaxed"
+                          className="mt-0.5 block text-xs text-neutral-400 dark:text-neutral-500 truncate leading-relaxed"
                         >
                           {searchMatch}
                         </span>
@@ -345,7 +345,7 @@ export function SearchDialog({
         {!isLoading && hasQuery && allSessions.length > 0 && (
           <>
             <div className="mx-4 h-px bg-[var(--theme-border)]" />
-            <div className="flex items-center justify-between px-4 py-2 text-[11px] text-stone-400 dark:text-stone-500">
+            <div className="flex items-center justify-between px-4 py-2 text-[11px] text-neutral-400 dark:text-neutral-500">
               <span>
                 {allSessions.length} {hasMore ? "..." : ""}
               </span>

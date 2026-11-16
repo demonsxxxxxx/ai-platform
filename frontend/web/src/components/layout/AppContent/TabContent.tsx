@@ -25,6 +25,9 @@ const ModelCatalogPanel = lazy(() =>
     default: m.ModelCatalogPanel,
   })),
 );
+const UsagePage = lazy(() =>
+  import("../../../features/usage/UsagePage").then((m) => ({ default: m.UsagePage })),
+);
 const RunMonitorPanel = lazy(() =>
   import("../../panels/RunMonitorPanel").then((m) => ({
     default: m.RunMonitorPanel,
@@ -58,6 +61,7 @@ const panelMap: Record<
   mcp: MCPPanel,
   models: ModelCatalogPanel,
   runs: RunMonitorPanel,
+  usage: UsagePage,
   memory: MemoryPanel,
 };
 

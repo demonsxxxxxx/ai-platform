@@ -64,6 +64,7 @@ from app.execution.api import (
     parse_requested_model_selection,
     resolve_chat_model_selection,
 )
+from app.execution.api import model_selection_error_status, select_chat_route_model, group_snapshot_fields, admit_document_plugin
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -118,7 +119,7 @@ from app.required_tool_contract import (
     attach_required_tool_declaration,
     public_required_tool_detail,
 )
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_platform_multi_agent_control,
 )
@@ -138,9 +139,9 @@ from app.skills.infrastructure import run_snapshots_postgres as skills_run_snaps
 from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 from app.streaming.api import WorkerV4Capabilities
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_principal_user_id
 
-router = APIRouter()
+router, submission_router = APIRouter(), APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
 
 _MISSING = object()
@@ -1191,7 +1192,7 @@ async def list_messages(
     )
 
 
-@router.post("/chat/stream", response_model=ChatStreamResponse)
+@submission_router.post("/chat/stream", response_model=ChatStreamResponse)
 async def chat_stream(
     request: ChatStreamRequest,
     http_request: Request,
@@ -1352,9 +1353,7 @@ async def chat_stream(
     selected_skill_for_execution = (
         request.selected_skill if skill_selector_allowed else None
     )
-    selected_mcp_tool_ids_for_execution = (
-        request.selected_mcp_tool_ids if allowed else None
-    )
+    selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids
     if (
         selected_skill_for_execution is not None
         and selected_skill_for_execution.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
@@ -1533,15 +1532,13 @@ async def chat_stream(
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
 
             try:
-                selected_model = await resolve_chat_model_selection(
-                    conn,
-                    selection=requested_model_selection,
-                )
+                requested_model_selection, selected_model = await select_chat_route_model(conn, resolver=resolve_chat_model_selection, selection=requested_model_selection, continuation_input=continuation_latest_input_json, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="chat" if admitted_agent_profile is None else "expert")
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+                raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
             if selected_model is not None:
                 requested_model_id = selected_model.model_id
                 requested_model_value = selected_model.model_value
+                run_input.update(group_snapshot_fields(selected_model))
             if (
                 request.session_id
                 and request.selected_mcp_tool_ids is None
@@ -1828,6 +1825,7 @@ async def chat_stream(
                 }
             session_id = request.session_id or platform_values.new_id("ses")
             run_id = platform_values.new_id("run")
+            run_input = admit_document_plugin(run_input, execution_kind, agent_profile=admitted_agent_profile)
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
                     "tenant_id": principal.tenant_id,
@@ -1846,6 +1844,7 @@ async def chat_stream(
                     "skill_manifests": skill_manifest_transport,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **group_snapshot_fields(selected_model),
                     **(
                         {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                         if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -1910,6 +1909,7 @@ async def chat_stream(
                     "intent": decision_payload,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
+                    **group_snapshot_fields(selected_model),
                     "schema_version": queue_payload["schema_version"],
                     **(
                         {"agent_profile": queue_payload["agent_profile"]}
@@ -1933,9 +1933,7 @@ async def chat_stream(
                 )
             run_id = await runs_creation.create_run(conn, **run_create_kwargs)
             if selected_model is not None:
-                await bind_selected_run_model(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model,
-                )
+                await bind_selected_run_model(conn, tenant_id=principal.tenant_id, run_id=run_id, selected_model=selected_model)
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await skills_run_snapshots.insert_run_skill_snapshots_at_creation(
                     conn,
@@ -2323,14 +2321,14 @@ async def retry_chat_submission_admission(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
 
 
-router.add_api_route(
+submission_router.add_api_route(
     "/chat/submissions/{submission_id}",
     get_chat_submission,
     methods=["GET"],
     response_model=ChatSubmissionResponse,
     route_class_override=_ChatSubmissionNoStoreRoute,
 )
-router.add_api_route(
+submission_router.add_api_route(
     "/chat/submissions/{submission_id}/retry-admission",
     retry_chat_submission_admission,
     methods=["POST"],

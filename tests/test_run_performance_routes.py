@@ -92,7 +92,7 @@ def test_investigation_missing_run_is_tenant_scoped(monitor_client):
 
 
 @pytest.mark.parametrize("case", ["valid", "missing-submission", "missing-run", "wrong-run"])
-@pytest.mark.parametrize("prefix", ["/api/ai", "/api"])
+@pytest.mark.parametrize("prefix", ["/api"])
 def test_browser_latency_uses_principal_submission_and_authorized_outcome(monitor_client, monkeypatch, case, prefix):
     client, diagnostics = monitor_client
     scopes = []
@@ -150,7 +150,7 @@ def test_browser_latency_storage_failure_stays_masked_and_no_store(monitor_clien
 ])
 def test_browser_latency_validation_never_echoes_rejected_fields(monitor_client, body):
     client, diagnostics = monitor_client
-    response = client.post(f"/api/ai/chat/submissions/{UUID(SUBMISSION)}/latency", headers=headers("user"), json=body)
+    response = client.post(f"/api/chat/submissions/{UUID(SUBMISSION)}/latency", headers=headers("user"), json=body)
     assert response.status_code == 422 and response.json() == {"detail": "invalid_browser_latency"}
     assert "no-store" in response.headers["cache-control"]
     assert diagnostics.calls == []

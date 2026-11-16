@@ -51,6 +51,19 @@ from app.required_tool_contract import builtin_capability_subjects
 from app.skills.execution_profiles import effective_skill_execution_profile
 
 
+_EMPTY_PROVIDER_CONTEXT_PACK = {
+    "schema_version": "ai-platform.executor-context-pack.v1",
+    "conversation_context": {
+        "schema_version": "ai-platform.executor-conversation-context.v2",
+        "execution_mode": "empty_start",
+        "provider_epoch_id": "pe_synthetic",
+        "provider_session_id": "00000000-0000-4000-8000-000000000002",
+        "source_sha256": "a" * 64,
+        "messages": [],
+    },
+}
+
+
 def test_catalog_parser_uses_shared_run_manifest_closure_limit(monkeypatch):
     binding = AuthorizedSkillCatalogBinding(
         tenant_id="tenant-a",
@@ -800,6 +813,37 @@ async def test_prompt_treats_catalog_description_as_data_and_never_injects_skill
     assert "Skill(skill-a)" in prompt
 
 
+@pytest.mark.asyncio
+async def test_model_catalog_render_is_unicode_metadata_without_changing_snapshot(monkeypatch):
+    from dataclasses import replace
+    from app.skills.catalog import render_authorized_skill_catalog_prompt
+
+    resolution, _ = await _resolve(
+        monkeypatch,
+        rows=[_skill_row("skill-a", description="审核数值与单位")],
+        distributions=[_distribution("skill-a")],
+    )
+    snapshot = resolution.snapshot
+    before = snapshot.to_runtime_payload()
+    rendered = render_authorized_skill_catalog_prompt(snapshot)
+    metadata = json.loads(rendered.split("AUTHORIZED_SKILL_CATALOG_JSON=", 1)[1])
+    assert "审核数值与单位" in rendered
+    assert "\\u5ba1" not in rendered
+    assert metadata["skills"] == [{
+        "name": snapshot.entries[0].name,
+        "description": "审核数值与单位",
+        "availability": snapshot.entries[0].availability,
+        "invocation_handle": "Skill(skill-a)",
+    }]
+    assert snapshot.to_runtime_payload() == before
+    truncated = render_authorized_skill_catalog_prompt(
+        replace(snapshot, entries=(), truncated=True, omitted_count=3)
+    )
+    assert json.loads(truncated.split("AUTHORIZED_SKILL_CATALOG_JSON=", 1)[1]) == {
+        "skills": [], "truncated": True, "omitted_count": 3,
+    }
+
+
 @dataclass
 class _FakeQueuePayload:
     input: dict[str, Any]
@@ -1037,7 +1081,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "model_id": stored["model_id"],
         "model_value": stored["model_value"],
         "model_gateway_revision": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": ["admin"],
@@ -1114,7 +1158,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
     async def load_frozen_model(_conn, **_kwargs):
         return {key: locked_run[key] for key in (
             "model_id", "model_value", "model_gateway_revision",
-            "max_input_tokens", "max_output_tokens",
+            "auto_compact_window", "max_output_tokens",
         )}
 
     monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
@@ -1296,6 +1340,7 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
@@ -1310,6 +1355,7 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "Choose the matching skill", **resolution.runtime_input_updates()},
         skill_version=primary_version,
         release_decision={
@@ -1390,6 +1436,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     selected_manifest = _manifest_from_row(rows[1])
@@ -1409,6 +1456,7 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
         agent_id="general-agent",
         skill_id="ctd-32s73-stability-template-fill",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "Route this request", **compact_input},
         skill_version=str(selected_manifest["version"]),
         release_decision={
@@ -1481,6 +1529,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
+        sandbox_container_provider="opensandbox",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
@@ -1495,6 +1544,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
         agent_id="general-agent",
         skill_id="general-chat",
         file_ids=[],
+        context_pack=_EMPTY_PROVIDER_CONTEXT_PACK,
         input={"message": "hello", **resolution.runtime_input_updates()},
         skill_version=primary_version,
         release_decision={
@@ -1519,7 +1569,7 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     assert prepared.staged_skill_names == []
     assert list((workspace / ".claude" / "skills").iterdir()) == []
     assert prepared.prompt == "hello"
-    assert '"skills":[]' in prepared.system_prompt
+    assert "AUTHORIZED_SKILL_CATALOG_JSON=" not in prepared.system_prompt
 
 
 def _sdk_settings():

@@ -116,7 +116,8 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     ) as HTMLButtonElement;
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
     assert.equal(toggle.hasAttribute("aria-label"), false);
-    assert.match(toggle.textContent || "", /工作中.*全部收起/s);
+    assert.match(toggle.textContent || "", /工作中/);
+    assert.equal(toggle.getAttribute("title"), "全部收起");
 
     act(() => {
       root.render(
@@ -145,7 +146,8 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     const controlledIds = (toggle.getAttribute("aria-controls") || "")
       .split(" ")
       .filter(Boolean);
-    assert.equal(controlledIds.length, 2);
+    // One disclosure region holds every work item.
+    assert.equal(controlledIds.length, 1);
     controlledIds.forEach((id) => {
       assert.equal(document.getElementById(id)?.hidden, true);
     });

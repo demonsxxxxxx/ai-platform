@@ -6,7 +6,7 @@ from app.mcp import repository as _mcp_repository
 from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.errors import RepositoryNotFoundError
 from app.platform.postgres.values import _coerce_bool
-from app.tool_policy import max_risk
+from app.mcp.domain.tool_policy import max_risk
 from psycopg import AsyncConnection
 from typing import Any
 

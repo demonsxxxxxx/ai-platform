@@ -45,7 +45,6 @@ test("unimplemented feedback and announcements have no production clients or ent
     "src/components/layout/UserMenu.tsx",
     "src/components/panels/SidebarParts/SidebarRail.tsx",
     "src/components/panels/SidebarParts/SessionListContent.tsx",
-    "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/chat/AgentOptionButton.tsx",
   ]) {
     assert.doesNotMatch(read(path), /feedback|notifications|notifDialog|activeNotifCount/i, path);
@@ -84,5 +83,17 @@ test("browser smoke fixtures no longer conceal announcement API calls", () => {
     "scripts/route-layout-browser-smoke.mjs",
   ]) {
     assert.doesNotMatch(read(path), /pathname\.includes\(["']notification["']\)/);
+  }
+});
+
+test("superseded Skill, composer-help, and auth wrappers remain absent", () => {
+  for (const path of [
+    "src/components/skill/SkillCard.tsx",
+    "src/components/panels/AvailableSkillsPanel.tsx",
+    "src/components/chat/ChatInputHelpMenu.tsx",
+    "src/components/chat/ChatInputShortcuts.tsx",
+    "src/components/auth/AuthLayout.tsx",
+  ]) {
+    assert.equal(existsSync(join(root, path)), false, path);
   }
 });

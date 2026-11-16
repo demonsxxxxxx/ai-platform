@@ -34,3 +34,10 @@ test("safe navigation redirects unauthorized management destinations before rout
   assert.equal(getSafeWorkbenchNavPath("pluginMarket", { is_admin: false }), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("pluginMarket", { is_admin: true }), "/plugins");
 });
+
+test("usage navigation is admin-only and resolves the independent page", () => {
+  assert.equal(getWorkbenchNavItemFromPathname("/usage"), "usage");
+  assert.equal(getSafeWorkbenchNavPath("usage", null), "/agent-market");
+  assert.equal(getSafeWorkbenchNavPath("usage", { is_admin: false }), "/agent-market");
+  assert.equal(getSafeWorkbenchNavPath("usage", { is_admin: true }), "/usage");
+});

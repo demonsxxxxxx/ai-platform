@@ -3,11 +3,12 @@ import hashlib
 import json
 import logging
 from contextlib import nullcontext
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
+from app.bootstrap.context_artifact_transfer import build_artifact_transfer_response
+from app.context.api import ArtifactTransferError
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
 from app.bootstrap.execution import (
@@ -23,21 +24,16 @@ from app.context.retrieval import (
 )
 from app.context_manifest import available_context_retrieval_tools
 from app.db import transaction
-from app.files.api import (
-    ProfileDriveTransferError,
-    open_profile_drive_file,
-    profile_drive_streaming_response,
-)
+from app.bootstrap.provider_epoch_verification import provider_callback_transaction
 from app.mcp.api import (
     MCP_CREDENTIAL_SUBJECTS_LEASE_KEY,
     McpRuntimeContextError,
-    get_mcp_principal_jwt_store,
     read_mcp_execution_credential,
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
-from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+from app.streaming.api import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runs.api import (
     RunInputClosed,
@@ -56,14 +52,13 @@ from app.runtime.sandbox.callback_tokens import (
     callback_token_matches,
 )
 from app.runtime.sandbox.container_provider import create_container_provider
+from app.runs.api import ModelTokenUsageService, normalize_model_usage_snapshot
 from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_STAGE_LEASE_FLAG,
-    PROFILE_DRIVE_STAGE_MAX_BYTES,
-    PROFILE_DRIVE_STAGE_TOOL,
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
     McpCredentialCallbackRequest,
     ProviderSessionCallbackRequest,
+    RecoveryOperationCallbackRequest,
     ProviderSessionCallbackResponse,
     PROVIDER_SESSION_READ_VIEW_HEADER,
     PROVIDER_SESSION_CHILD_READ_VIEW,
@@ -179,6 +174,7 @@ async def record_executor_callback(
     *,
     capabilities: WorkerV4Capabilities,
     run_diagnostics: RunDiagnosticsService | None = None,
+    model_token_usage: ModelTokenUsageService | None = None,
 ) -> dict[str, object]:
     """Persist one fenced sandbox observation or terminal result."""
 
@@ -193,6 +189,8 @@ async def record_executor_callback(
         }
         for event in callback.events
     ):
+        raise HTTPException(status_code=409, detail="callback_batch_id_required")
+    if callback.model_usage_snapshot is not None and not callback.batch_id:
         raise HTTPException(status_code=409, detail="callback_batch_id_required")
     callback_for_events = callback.model_copy(update={"new_message": None})
     events = callback_event_to_run_events(callback_for_events)
@@ -335,6 +333,18 @@ async def record_executor_callback(
             callback_deduplicated = bool(
                 receipt.get("duplicate") if isinstance(receipt, dict) else False
             )
+            if callback.model_usage_snapshot is not None and not callback_deduplicated:
+                if model_token_usage is None:
+                    raise RuntimeError("model_token_usage_service_unavailable")
+                await model_token_usage.record(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    snapshot=normalize_model_usage_snapshot(callback.model_usage_snapshot.model_dump()),
+                    receipt_id=str(receipt["id"]),
+                    recorded_at=receipt["callback_received_at"],
+                )
             if v4_items:
                 try:
                     committed_rows = await append_callback_v4_rows(
@@ -463,6 +473,7 @@ async def record_executor_callback(
             run_id=callback.run_id,
             attempt_id=callback.attempt_id,
             callback_token_id=callback.callback_token_id,
+            allow_provider_tail=callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES,
         )
         return committed_rows, authority, callback_deduplicated
 
@@ -560,6 +571,7 @@ async def record_executor_callback(
                     attempt_id=callback.attempt_id,
                     callback_token_id=callback.callback_token_id,
                     session_id=callback.session_id,
+                    allow_provider_tail=callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES,
                 )
                 committed_rows, authority, callback_deduplicated = await persist_callback(
                     conn, run_identity, lease
@@ -656,15 +668,20 @@ async def run_inputs_callback(
     service = getattr(request.app.state, "run_inputs_service", None)
     if not isinstance(service, RunInputsService):
         raise HTTPException(status_code=503, detail="run_inputs_unavailable")
+    from app.execution.api import RecoveryOperationError
     try:
-        async with transaction() as conn:
+        async with provider_callback_transaction(
+            transaction, authorize=_lock_callback_authority, run_id=callback.run_id,
+            attempt_id=callback.attempt_id, callback_token_id=callback.callback_token_id,
+            allow_provider_tail=False,
+        ) as conn:
             run_identity, _lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
                 callback_token_id=callback.callback_token_id,
             )
-            return await service.callback(
+            result = await service.callback(
                 conn,
                 tenant_id=str(run_identity.get("tenant_id") or ""),
                 run=run_identity,
@@ -681,6 +698,14 @@ async def run_inputs_callback(
                 if callback.input_ids is not None
                 else None,
             )
+            if callback.operation in {"open", "poll"}:
+                from app.bootstrap.recovery_operations import publish_recovery_source_questions
+                result.update(await publish_recovery_source_questions(
+                    conn, run=run_identity, attempt_id=callback.attempt_id,
+                ))
+            return result
+    except RecoveryOperationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
     except RunInputError as exc:
         status_code = (
             409
@@ -688,6 +713,146 @@ async def run_inputs_callback(
             else 422
         )
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
+
+
+@router.post("/runtime/callbacks/recovery-operation")
+async def recovery_operation_callback(
+    callback: RecoveryOperationCallbackRequest,
+    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+) -> dict[str, Any]:
+    from app.bootstrap.recovery_operations import (
+        build_recovery_operations,
+        frozen_attempt_tool_policy_subjects,
+        trusted_capability_subject,
+    )
+    from app.execution.api import RecoveryInvocation, RecoveryOperationScope, RecoveryOperationError
+
+    _require_valid_callback_token(callback_token, callback.callback_token_id,
+                                  run_id=callback.run_id, attempt_id=callback.attempt_id)
+    try:
+        async with provider_callback_transaction(
+            transaction, authorize=_lock_callback_authority, run_id=callback.run_id,
+            attempt_id=callback.attempt_id, callback_token_id=callback.callback_token_id,
+            allow_provider_tail=callback.operation in {"completed", "failed"},
+        ) as conn:
+            run, lease = await _lock_callback_authority(
+                conn, run_id=callback.run_id, attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                allow_provider_tail=callback.operation in {"completed", "failed"},
+            )
+            generation = lease["lease_payload_json"]["owner_generation"]
+            invocation = RecoveryInvocation(
+                RecoveryOperationScope(**{key: run[key] for key in (
+                    "tenant_id", "workspace_id", "user_id", "session_id",
+                )}), callback.run_id, callback.attempt_id, generation,
+                callback.invocation_id, callback.tool_identity,
+            )
+            service, _inputs = build_recovery_operations()
+            subjects = await frozen_attempt_tool_policy_subjects(
+                conn, scope=invocation.scope, run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+            )
+            subject = trusted_capability_subject(subjects, invocation.tool_identity)
+            if subject is None:
+                raise RecoveryOperationError("recovery_operation_tool_unauthorized")
+            if subject.get("write_capable") is False:
+                # Read-only MCP calls keep their ordinary lifecycle, but never enter
+                # the external-effect recovery ledger or create owner questions.
+                if callback.operation == "query":
+                    return {
+                        "schema_version": "ai-platform.recovery-operation-evidence.v1",
+                        "run_id": invocation.run_id,
+                        "attempt_id": invocation.attempt_id,
+                        "tool_identity": invocation.tool_identity,
+                        "invocation_id": invocation.invocation_id,
+                        "decision": "deny",
+                        "reason_code": "recovery_operation_not_required",
+                    }
+                return {"accepted": True}
+            if callback.operation in {"completed", "failed"}:
+                cursor = await conn.execute(
+                    """select operation_key from execution_recovery_operations where tenant_id=%s
+                       and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s""",
+                    (run["tenant_id"], callback.run_id, callback.attempt_id, callback.invocation_id),
+                )
+                operation = await cursor.fetchone()
+                if operation is None:
+                    raise RecoveryOperationError("recovery_operation_source_invalid")
+                await service.record_reported(conn, invocation=invocation,
+                    operation_key=operation["operation_key"], status=callback.operation)
+                return {"accepted": True}
+            authority = await service._authority(conn, invocation)
+            if callback.operation == "query":
+                if not authority.requires_recovery_gate:
+                    raise RecoveryOperationError("recovery_operation_binding_invalid")
+                binding = await service.persistence.get_binding(conn, invocation=invocation)
+                operation = None
+                recovery = None
+                if binding is None:
+                    cursor = await conn.execute(
+                        """select attempt.execution_spec_json->'context_pack'->'conversation_context'->'recovery' as recovery
+                           from run_attempts attempt where tenant_id=%s and run_id=%s and id=%s""",
+                        (run["tenant_id"], callback.run_id, callback.attempt_id),
+                    )
+                    recovery = (await cursor.fetchone())["recovery"] or {}
+                    cursor = await conn.execute(
+                        """select operation_key from execution_recovery_operations
+                           where tenant_id=%s and workspace_id=%s and user_id=%s and session_id=%s
+                             and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s
+                             and tool_identity=%s""",
+                        (*invocation.scope.mapping().values(), recovery.get("source_run_id"),
+                         recovery.get("source_attempt_id"), invocation.invocation_id, invocation.tool_identity),
+                    )
+                    source_operation = await cursor.fetchone()
+                    if source_operation is None:
+                        return {"decision": "deny", "reason_code": "recovery_operation_binding_missing"}
+                    operation = await service.persistence.get_operation(
+                        conn, scope=invocation.scope, operation_key=source_operation["operation_key"],
+                    )
+                else:
+                    operation = await service.persistence.get_operation(
+                        conn, scope=invocation.scope, operation_key=binding["operation_key"],
+                    )
+                if operation is None:
+                    return {"decision": "deny", "reason_code": "recovery_operation_binding_missing"}
+                source_subjects = await frozen_attempt_tool_policy_subjects(
+                    conn, scope=invocation.scope, run_id=operation["source_run_id"],
+                    attempt_id=operation["source_attempt_id"],
+                )
+                source_subject = trusted_capability_subject(source_subjects, operation["tool_identity"])
+                if source_subject is not None and source_subject.get("write_capable") is False:
+                    # Ignore legacy rows whose sandbox-supplied facts mislabeled a read.
+                    return {"decision": "deny", "reason_code": "recovery_operation_not_required"}
+                if not authority.manual_confirmation_available and invocation.tool_identity not in service.authoritative_queries:
+                    return await service.query(conn, invocation=invocation)
+                if binding is None:
+                    await service.bind_invocation(
+                        conn, invocation=invocation, operation_key=operation["operation_key"],
+                        frozen_binding_ref=recovery["provider_epoch_id"],
+                        public_summary=authority.public_summary or "继续原生记录中尚待核实的外部操作",
+                    )
+                return await service.query(conn, invocation=invocation)
+            if callback.operation == "started":
+                return await service.record_started(
+                    conn, invocation=invocation, tool_facts={"write_capable": True},
+                    public_summary="本轮已授权外部工具操作",
+                )
+            if callback.operation == "close":
+                await service.close_invocation(conn, invocation=invocation, reason=callback.reason or "denied")
+            else:
+                cursor = await conn.execute(
+                    """select operation_key from execution_recovery_operations where tenant_id=%s
+                       and source_run_id=%s and source_attempt_id=%s and native_tool_use_id=%s""",
+                    (run["tenant_id"], callback.run_id, callback.attempt_id, callback.invocation_id),
+                )
+                operation = await cursor.fetchone()
+                if operation is None:
+                    raise RecoveryOperationError("recovery_operation_source_invalid")
+                await service.record_reported(conn, invocation=invocation,
+                                              operation_key=operation["operation_key"], status=callback.operation)
+            return {"accepted": True}
+    except RecoveryOperationError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
 
 
 @router.post("/runtime/callbacks/mcp-credential")
@@ -768,6 +933,7 @@ async def provider_session_callback(
             operation = dict(
                 **binding, run_id=callback.run_id, attempt_id=callback.attempt_id,
                 provider_session_id=callback.provider_session_id, action=callback.action,
+                **({"provider_epoch_id": callback.provider_epoch_id} if callback.provider_epoch_id is not None else {}),
                 entries=callback.entries, subpath=callback.subpath,
                 expected_sequence=callback.expected_sequence,
                 **({"include_child_entries": True} if include_children else {}),
@@ -869,97 +1035,15 @@ async def executor_callback(
         callback,
         capabilities=runtime.worker_capabilities,
         run_diagnostics=request.app.state.run_diagnostics_service,
+        model_token_usage=request.app.state.model_token_usage_service,
     )
-
-
-async def _profile_drive_file_response(
-    request: ExecutorContextRetrievalRequest,
-) -> Any:
-    arguments = request.arguments
-    path = arguments.get("path") if set(arguments) == {"path"} else None
-    if (
-        not isinstance(path, str)
-        or not path
-        or len(path) > 1024
-        or "\x00" in path
-    ):
-        raise HTTPException(status_code=422, detail="context_retrieval_parameters_invalid")
-
-    async with transaction() as conn:
-        run_identity, lease = await _lock_callback_authority(
-            conn,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            session_id=request.session_id,
-        )
-        lease_payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
-        if not isinstance(lease_payload, dict) or lease_payload.get(PROFILE_DRIVE_STAGE_LEASE_FLAG) is not True:
-            raise HTTPException(status_code=403, detail="context_retrieval_not_authorized")
-        tenant_id = str(run_identity.get("tenant_id") or "")
-        user_id = str(run_identity.get("user_id") or "")
-
-    settings = get_settings()
-    try:
-        jwt = await get_mcp_principal_jwt_store().get(
-            SimpleNamespace(tenant_id=tenant_id, user_id=user_id)
-        )
-    except McpRuntimeContextError as exc:
-        raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
-
-    try:
-        transfer = await open_profile_drive_file(
-            upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
-            ca_cert_file=str(
-                getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
-            ),
-            jwt=jwt,
-            path=path,
-            max_bytes=PROFILE_DRIVE_STAGE_MAX_BYTES,
-            require_nonempty=False,
-            not_found_status=403,
-            too_large_detail="profile_drive_file_too_large",
-            read_timeout_seconds=settings.profile_drive_transfer_read_timeout_seconds,
-            total_timeout_seconds=settings.profile_drive_transfer_total_timeout_seconds,
-        )
-    except ProfileDriveTransferError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-    try:
-        with transfer.budget():
-            async with transaction() as conn:
-                await _recheck_callback_authority(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=request.run_id,
-                    attempt_id=request.attempt_id,
-                    callback_token_id=request.callback_token_id,
-                )
-                await streaming_run_events.append_event(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=request.run_id,
-                    event_type="context_retrieved",
-                    stage="context",
-                    message="Sandbox context retrieval admitted",
-                    payload={
-                        "action": PROFILE_DRIVE_STAGE_TOOL,
-                        "result": "allowed",
-                        "visible_to_user": False,
-                    },
-                )
-        return profile_drive_streaming_response(transfer)
-    except BaseException as exc:
-        await transfer.__aexit__(type(exc), exc, exc.__traceback__)
-        if isinstance(exc, ProfileDriveTransferError):
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-        raise
 
 
 @router.post("/runtime/callbacks/context-retrieval")
 async def executor_context_retrieval_callback(
     request: ExecutorContextRetrievalRequest,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+    accept: str | None = Header(default=None),
 ) -> Any:
     """Broker one exact snapshot-authorized retrieval without exposing backend credentials."""
 
@@ -969,8 +1053,24 @@ async def executor_context_retrieval_callback(
         run_id=request.run_id,
         attempt_id=request.attempt_id,
     )
-    if request.action == PROFILE_DRIVE_STAGE_TOOL:
-        return await _profile_drive_file_response(request)
+    if request.action == "stage_run_artifact_to_workspace" and accept == "application/octet-stream":
+        try:
+            return await build_artifact_transfer_response(
+                request, transaction=transaction, lock_authority=_lock_callback_authority,
+                load_snapshot=context_snapshot.get_bound_executor_context_snapshot,
+                storage_factory=ObjectStorage, storage_io=run_storage_io,
+                tools=available_context_retrieval_tools, record_event=streaming_run_events.append_event,
+            )
+        except ContextRetrievalInputError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ArtifactTransferError, ContextRetrievalDenied) as exc:
+            reason = str(exc)
+            code = 413 if reason in {"context_artifact_too_large", "context_artifact_size_required"} else 403
+            raise HTTPException(status_code=code, detail=reason) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="context_retrieval_failed") from exc
     async with transaction() as conn:
         run_identity, _lease = await _lock_callback_authority(
             conn,

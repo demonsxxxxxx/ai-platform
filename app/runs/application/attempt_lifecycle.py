@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from app.runs.application.execution_spec import model_auto_compact_window
 from app.runs.domain.execution_spec import ExecutionSpec
+from app.runs.domain.cancel_tail import cancel_tail_receipt_allowed
 
 
 class ReconciliationAuthorityError(ValueError):
@@ -144,6 +146,7 @@ class RunAttemptLifecycleService:
     """Own attempt orchestration while a configured adapter owns SQL details."""
 
     persistence: RunAttemptPersistence
+    finalize_terminal_transition: Callable[..., Awaitable[None]] | None = None
 
     async def restore_reconciliation(
         self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
@@ -195,14 +198,46 @@ class RunAttemptLifecycleService:
                        {"tenant_id": tenant_id, "run_id": run_id, **scope}.items())
                 or any(str(frozen.get(key) or "") != str(run.get(key) or "")
                        for key in ("execution_kind", "skill_id", "executor_type", "context_snapshot_id", "model_id", "model_value"))
-                or any(frozen.get(key) != run.get(source) for key, source in (
-                    ("model_gateway_revision", "model_gateway_revision"),
-                    ("model_max_input_tokens", "max_input_tokens"),
-                    ("model_max_output_tokens", "max_output_tokens")))):
+                or frozen.get("model_gateway_revision") != run.get("model_gateway_revision")
+                # Historical v2 attempts froze an input capacity that the runner
+                # clamped into the CLI range to derive the same window.
+                or model_auto_compact_window(frozen) != run.get("auto_compact_window")
+                or frozen.get("model_max_output_tokens") != run.get("max_output_tokens")
+                or any(frozen.get(key) != run.get(key) for key in (
+                    "model_group_id", "model_group_code", "model_group_type",
+                    "model_group_revision", "model_selection_mode", "usage_scene",
+                    "model_policy_version",
+                ))):
                 raise ValueError("spec binding mismatch")
         except (ValueError, TypeError, KeyError) as exc:
             raise ReconciliationAuthorityError("run_attempt_reconciliation_spec_invalid") from exc
         return RestoredReconciliationAttempt(row, spec)
+
+    async def authorize_cancel_tail_receipt(
+        self, conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+        scope: dict[str, str], lease: dict[str, Any], owner_generation: int,
+        operation: str, now: datetime, operation_started: bool = False,
+    ) -> bool:
+        """Lease and started-operation evidence must come from platform persistence."""
+        if set(scope) != {"workspace_id", "user_id", "session_id", "agent_id"} or any(
+            not isinstance(value, str) or not value for value in scope.values()
+        ):
+            return False
+        run = await self.persistence.get_scoped_reconciliation_run(
+            conn, tenant_id=tenant_id, run_id=run_id, scope=scope,
+        )
+        if run is None:
+            return False
+        attempt = await self.persistence.get_run_attempt(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id, for_update=True,
+        )
+        if attempt is None:
+            return False
+        return cancel_tail_receipt_allowed(
+            run=run, attempt=attempt, lease=lease, tenant_id=tenant_id, run_id=run_id,
+            attempt_id=attempt_id, owner_generation=owner_generation,
+            operation=operation, now=now, operation_started=operation_started,
+        )
 
     async def get(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None:
         return await self.persistence.get_run_attempt(conn, **kwargs)
@@ -286,7 +321,15 @@ class RunAttemptLifecycleService:
         conn: Any,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        return await self.persistence.terminalize_run_attempt(conn, **kwargs)
+        previous = None
+        if self.finalize_terminal_transition is not None:
+            previous = await self.persistence.get_run_attempt(
+                conn, **{key: kwargs[key] for key in ("tenant_id", "run_id", "attempt_id")}, for_update=True,
+            )
+        terminal = await self.persistence.terminalize_run_attempt(conn, **kwargs)
+        if previous is not None and terminal is not None and self.finalize_terminal_transition is not None:
+            await self.finalize_terminal_transition(conn, previous=previous, terminal=terminal)
+        return terminal
 
     async def prepare_stale_reconciliation(
         self,
@@ -327,7 +370,7 @@ class RunAttemptLifecycleService:
             )
             if attempt is None:
                 return None
-        return await self.persistence.terminalize_run_attempt(
+        return await self.terminalize(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,

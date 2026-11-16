@@ -31,6 +31,7 @@ export interface SkillFormProps {
   onCancel: () => void;
   isLoading?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
+  submitError?: string | null;
 }
 
 export interface SkillFormActions {

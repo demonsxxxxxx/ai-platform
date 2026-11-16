@@ -64,7 +64,7 @@ export function BatchActionBar({
           <Button type="text"
             onClick={onBatchDelete}
             disabled={batchLoading}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-danger)] transition-colors hover:bg-[var(--theme-danger-soft)] disabled:opacity-40 disabled:pointer-events-none"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-danger-text)] transition-colors hover:bg-[var(--theme-danger-soft)] disabled:opacity-40 disabled:pointer-events-none"
           >
             {batchLoading ? <Spin size={12} /> : <Trash2 size={13} />}
             <span className="hidden sm:inline">{t("common.delete")}</span>

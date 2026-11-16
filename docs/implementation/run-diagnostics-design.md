@@ -1,6 +1,6 @@
 # Run 诊断字段治理技术方案
 
-状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。当前分支在主分支既有 SDK/Sandbox、Runs 私有持久化和管理查询之上，补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链、逐观察管理投影、可读运行页面和有审计的单 Run 脱敏诊断包。当前候选已实现 runtime GET 只读、离线 readiness 工具归属迁移和稳定父观察链；真实构建版本及正式环境故障语料仍待补齐。本文与本分支都不是已部署证明。
+状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。main 已在既有 SDK/Sandbox、Runs 私有持久化和管理查询之上补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链、逐观察管理投影、可读运行页面和有审计的单 Run 脱敏诊断包。并已实现 runtime GET 只读、离线 readiness 工具归属迁移和稳定父观察链；真实构建版本及正式环境故障语料仍待补齐。本文不是已部署证明。
 
 ## 1. 设计依据与决策
 
@@ -21,7 +21,7 @@
 | E07 | `app/routes/runtime_callbacks.py:255`；`app/executor_reconciler.py:335` | 终态载荷存入 lease；永久调和失败只给 Run 写通用结果，管理详情不会读取 lease 中的原诊断 |
 | E08 | `app/runs/domain/admin_diagnostics.py:6`；`app/routes/admin_runs.py:288`；`frontend/web/src/components/panels/RunMonitorPanel.tsx:408` | 只为 failed Run 从 result_json 恢复诊断，前端主要显示 JSON；非失败状态的已有异常没有这个入口 |
 | E09 | `app/runtime/sandbox/executor_app.py:3297` 附近，callback delivery | 终态回调发送错误存于 task_state；Executor 消失后不能依赖此内存恢复。平台侧可以记录已观察的未送达，但不能重建原异常 |
-| E10 | 原 `app/routes/admin_runtime.py` 的 `admin_runtime_overview` / `admin_runtime_containers` | 设计基线中两处 GET 都会触发 orphan/lease 清理；D07 已在当前候选源码迁入 Worker `sandbox_cleanup`，查询不再执行维护 |
+| E10 | 原 `app/routes/admin_runtime.py` 的 `admin_runtime_overview` / `admin_runtime_containers` | 设计基线中两处 GET 都会触发 orphan/lease 清理；D07 已在源码中迁入 Worker `sandbox_cleanup`，查询不再执行维护 |
 | E11 | `tools/trace_audit_export_readiness.py` | 已退役的 `/api/version` 固定 POC 路由不再作为版本来源；export readiness 已随组合报告迁入离线工具，仍只说明契约，真实下载由管理 API 及其测试证明 |
 
 这些是数据链路缺陷或清理候选，不说明项目缺少管理页面、完全没有日志或所有归一化均有问题。主分支已有的环境变量和假设置清理不再作为本方案待做项。
@@ -232,7 +232,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 ### 5.2 导出接口
 
-当前候选使用 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务及 5 秒 statement timeout 调用 `read_admin_debug`，读取 Run/Attempt、诊断 revision/payload、最近 500 条安全类型事件、最多 100 个冻结 Skill 快照以及 Sandbox 公共注入端口投影的最多 100 个租约；释放事务后生成 ZIP，再写响应审计。接口不执行任务或资源维护。
+当前实现使用 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务及 5 秒 statement timeout 调用 `read_admin_debug`，读取 Run/Attempt、诊断 revision/payload、最近 500 条安全类型事件、最多 100 个冻结 Skill 快照以及 Sandbox 公共注入端口投影的最多 100 个租约；释放事务后生成 ZIP，再写响应审计。接口不执行任务或资源维护。
 
 固定三文件及导出 v1 入口保留，`diagnostics.json.debug` 作为加法扩展承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
 

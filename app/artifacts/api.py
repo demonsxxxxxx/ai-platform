@@ -1,5 +1,7 @@
 """Public in-process Artifact contracts."""
 
+from app.artifacts.domain.collection_limits import ARTIFACT_MAX_FILE_BYTES as ARTIFACT_MAX_FILE_BYTES
+
 from app.artifacts.application.worker_artifact_persistence import (
     build_artifact_records as build_artifact_records,
     persist_worker_artifacts as persist_worker_artifacts,
@@ -8,4 +10,8 @@ from app.artifacts.application.worker_artifact_persistence import (
 from app.artifacts.domain.manifest_projection import (
     artifact_download_url as artifact_download_url,
     sanitize_artifact_manifest as sanitize_artifact_manifest,
+)
+from app.artifacts.domain.preview import (
+    artifact_preview_allowed as artifact_preview_allowed,
+    artifact_preview_url as artifact_preview_url,
 )

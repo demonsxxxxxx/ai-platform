@@ -21,6 +21,7 @@ import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { roleGovernanceApi } from "../../services/api/roleGovernance";
+import { publicApiErrorMessage } from "../../services/api/fetch";
 import { Permission } from "../../types";
 import type {
   RoleGovernanceAuditItem,
@@ -34,10 +35,6 @@ type OperationState = {
   kind: "role" | "department" | "approve" | "reject" | "rollback";
   id: string;
 } | null;
-
-function getRoleGovernanceLoadErrorMessage(): string {
-  return "role-governance-projection-unavailable";
-}
 
 function formatCapability(value: string): string {
   return value.replace(/[:_]/g, " ");
@@ -225,13 +222,12 @@ export function RolesPanel() {
       const response = await roleGovernanceApi.getOverview("default");
       setOverview(response);
     } catch (err) {
-      console.warn("[RolesPanel] Failed to load role governance overview:", err);
       setOverview(null);
-      setLoadError(getRoleGovernanceLoadErrorMessage());
+      setLoadError(publicApiErrorMessage(err, t("roles.plaza.degraded.detail")));
     } finally {
       setIsLoading(false);
     }
-  }, [authLoading, isAuthenticated]);
+  }, [authLoading, isAuthenticated, t]);
 
   useEffect(() => {
     void loadOverview();
@@ -288,7 +284,7 @@ export function RolesPanel() {
       await loadOverview();
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : t("roles.plaza.operationFailed"),
+        publicApiErrorMessage(err, t("roles.plaza.operationFailed")),
       );
     } finally {
       setOperation(null);
@@ -429,7 +425,7 @@ export function RolesPanel() {
               title={t("roles.plaza.degraded.title")}
               description={t("roles.plaza.degraded.description")}
               details={
-                loadError ? [t("roles.plaza.degraded.detail")] : undefined
+                loadError ? [loadError] : undefined
               }
               className="max-w-none text-left"
             />

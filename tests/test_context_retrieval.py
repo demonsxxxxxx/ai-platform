@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 
@@ -411,6 +412,7 @@ async def test_stage_context_file_to_workspace_accepts_snapshot_authorized_prior
     assert (tmp_path / "context" / "file-prior" / "source.txt").read_bytes() == b"docx!"
 
 
+@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="requires POSIX no-follow directory descriptors")
 @pytest.mark.asyncio
 async def test_stage_run_artifact_to_workspace_uses_snapshot_authorized_repository_scope(tmp_path):
     class SnapshotAuthorizedRepository:
@@ -425,6 +427,7 @@ async def test_stage_run_artifact_to_workspace_uses_snapshot_authorized_reposito
             }
             return {
                 "artifact_id": "artifact-prior",
+                "storage_key": "synthetic/artifact-prior",
                 "run_id": "run-prior",
                 "label": "translated.docx",
                 "artifact_type": "translated_docx",
@@ -432,9 +435,13 @@ async def test_stage_run_artifact_to_workspace_uses_snapshot_authorized_reposito
                 "content": b"docx!",
             }
 
-        def read_storage_bytes(self, row, *, max_bytes=None):
-            assert max_bytes == len(row["content"])
-            return row["content"]
+        async def download_artifact(self, storage_key, max_bytes):
+            import hashlib
+            from app.storage import DownloadedObject
+            path = tmp_path / "downloaded"
+            path.write_bytes(b"docx!")
+            assert max_bytes == 5
+            return DownloadedObject(str(path), hashlib.sha256(b"docx!").hexdigest(), 5)
 
     retrieval = ContextRetrieval(SnapshotAuthorizedRepository())
 

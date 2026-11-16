@@ -27,6 +27,16 @@
 }
 
 /* ── Content layers ── */
+
+/* General entry: keep the greeting, suggestions and composer together. */
+.welcome-root.chat-entry-root {
+  justify-content: flex-start;
+}
+
+.welcome-root.chat-entry-root .chat-start-surface {
+  flex: 0 0 auto;
+}
+
 .welcome-greeting,
 .welcome-subtitle,
 .welcome-suggestions {

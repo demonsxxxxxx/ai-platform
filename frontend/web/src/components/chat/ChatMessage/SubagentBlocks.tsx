@@ -227,7 +227,7 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
     >
       <div ref={contentRef} className="space-y-3">
         {panelPartEntries.length > 0 && (
-          <div className="space-y-2 pl-3 border-l-2 border-stone-200 dark:border-stone-700">
+          <div className="space-y-2 pl-3 border-l-2 border-neutral-200 dark:border-neutral-700">
             {panelPartEntries.map(({ part, index, key }, entryIndex) => (
               <MessagePartRenderer
                 key={key}
@@ -245,7 +245,7 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
           data.isPending,
           panelPartEntries.length,
         ) && (
-          <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400">
+          <div className="flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
             <Spin size={16} />
             <span className="text-sm">{t("chat.message.executing")}</span>
           </div>

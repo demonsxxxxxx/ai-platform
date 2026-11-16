@@ -598,9 +598,11 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
             *,
             capabilities,
             run_diagnostics=None,
+            model_token_usage=None,
         ):
             recorded.append(callback)
             assert run_diagnostics is not None
+            assert model_token_usage is not None
             return {"accepted": True, "event_count": 1}
 
         monkeypatch.setattr(
@@ -1214,7 +1216,10 @@ def test_executor_callback_persists_exact_timeline_for_chat_and_history(monkeypa
         user_id="user-a", display_name="User", tenant_id="tenant-a", roles=["user"]
     )
 
-    records = lambchat_compat._compatibility_events_for_run(run, [row], [], principal)
+    records = lambchat_compat._compatibility_events_for_run_page(
+        run, [row], [], principal,
+        fold_state=lambchat_compat._CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert records == []
 

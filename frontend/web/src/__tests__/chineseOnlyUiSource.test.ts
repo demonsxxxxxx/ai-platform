@@ -32,7 +32,6 @@ test("Chinese is the only shipped locale and language switching is retired", () 
 
 test("product language controls are absent from authentication and workbench surfaces", () => {
   for (const relativePath of [
-    "components/auth/AuthLayout.tsx",
     "components/auth/AuthPage.tsx",
     "components/layout/AppContent/WorkbenchMenuHost.tsx",
   ]) {

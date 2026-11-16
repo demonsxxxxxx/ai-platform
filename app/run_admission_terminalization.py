@@ -17,7 +17,7 @@ from app.sandbox.api import (
     exception_chain_from_error,
 )
 from app.streaming.api import WorkerV4Capabilities
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
 )

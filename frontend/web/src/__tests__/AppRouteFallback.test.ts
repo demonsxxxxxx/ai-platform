@@ -58,6 +58,7 @@ test("account menu has no duplicate workbench navigation or profile entry", () =
 
   assert.match(userMenu, /data-user-menu-identity/);
   assert.match(userMenu, /auth\.logout/);
+  assert.doesNotMatch(userMenu, /classNames=\{\{ (?:wrapper|panel): "workbench-account-drawer" \}\}/);
   assert.doesNotMatch(userMenu, /useNavigate|navItems|onShowProfile/);
   assert.doesNotMatch(userMenu, /["'`]\/(?:chat|skills|mcp)["'`]/);
 });
@@ -85,7 +86,7 @@ test("generic Chat creation and history are available to authenticated users", (
   const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
 
   assert.doesNotMatch(chat, /allowNewSessionAction=\{agentWorkspace !== undefined\}/);
-  assert.doesNotMatch(chat, /navigationOnly=\{agentWorkspace === undefined\}/);
+  assert.match(chat, /navigationOnly=\{false\}/);
   assert.match(chat, /newSessionActionLabel=\{agentWorkspace \? "开始新任务" : undefined\}/);
   assert.match(menuHost, /newSessionActionLabel \?\? t\("sidebar\.newChat"\)/);
 });

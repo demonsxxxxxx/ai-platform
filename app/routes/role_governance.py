@@ -41,7 +41,7 @@ from app.models import (
     WorkbenchOperationResponse,
 )
 from app.skills.infrastructure import catalog_postgres as skills_catalog
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 router = APIRouter()
 

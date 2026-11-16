@@ -1086,6 +1086,12 @@ def _test_current_principal(
 
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
+    @asynccontextmanager
+    async def verified_context_stub(*args, **kwargs):
+        # Context materialization is independently stubbed in these Worker unit tests.
+        yield
+    for module in ("worker_dispatch_binding", "worker_result_commit", "worker_execution_terminal"):
+        monkeypatch.setattr(f"app.bootstrap.{module}.provider_session_verification_scope", verified_context_stub)
     global _CURRENT_QUEUE_PAYLOAD
     global _TEST_ATTEMPT_PERSISTENCE
     global _TEST_RUN_ATTEMPT_LIFECYCLE
@@ -1201,7 +1207,7 @@ def default_cancel_not_requested(monkeypatch):
                 "model_id",
                 "model_value",
                 "model_gateway_revision",
-                "max_input_tokens",
+                "auto_compact_window",
                 "max_output_tokens",
             )
         }
@@ -1648,7 +1654,7 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         "model_id": "catalog-model",
         "model_value": "provider/catalog-model",
         "model_gateway_revision": 3,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "input_json": {
             "input": {"message": "hello"},
@@ -2069,14 +2075,14 @@ def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
         "context_snapshot_id": payload.context_snapshot_id,
         "context_snapshot": {"context_snapshot_id": payload.context_snapshot_id},
         "model_gateway_revision": model["model_gateway_revision"],
-        "model_max_input_tokens": model["max_input_tokens"],
+        "model_auto_compact_window": model["auto_compact_window"],
         "model_max_output_tokens": model["max_output_tokens"],
     })
     attempt = frozen_attempt(spec, id=lease_row["attempt_id"], queue_attempt_id="qat-attempt-a")
     lease_row.update({field: getattr(payload, field) for field in (
         "tenant_id", "workspace_id", "user_id", "session_id", "run_id",
     )})
-    lease_row["lease_payload_json"] = {"owner_generation": 4}
+    lease_row["lease_payload_json"] = {"attempt_id": lease_row["attempt_id"], "owner_generation": 4}
 
     async def run(conn, **kwargs):
         return {**model, "executor_type": payload.executor_type,
@@ -2789,7 +2795,7 @@ def locked_run_from_payload(payload):
         "model_id": validated.get("model_id"),
         "model_value": validated.get("model_value"),
         "model_gateway_revision": 1 if validated.get("model_id") and validated.get("model_value") else None,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": standard_trace_id(validated["run_id"]),
         "principal_roles": [],
@@ -3764,7 +3770,7 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
         "model_id": "pro-tier",
         "model_value": "deepseek-v4-pro",
         "model_gateway_revision": 7,
-        "max_input_tokens": 96000,
+        "auto_compact_window": 100_000,
         "max_output_tokens": 4096,
     }
     load_test_model = runs_api.load_run_model_snapshot
@@ -4360,12 +4366,33 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
 
 
 @pytest.mark.asyncio
-async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkeypatch):
+@pytest.mark.parametrize("predispatch", [False, True])
+async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkeypatch, predispatch):
     calls = []
 
     class RaisingAdapter:
         async def submit_run(self, payload, event_sink=None):
+            if predispatch:
+                from app.runtime.sandbox.runtime import SandboxRuntime
+                runtime = SandboxRuntime(workspace_root="unused")
+                def reject(_provider):
+                    raise RuntimeError("executor crashed")
+                monkeypatch.setattr(runtime, "_trusted_callback_target", reject)
+                await runtime.submit(SimpleNamespace(
+                    **{key: getattr(payload, key) for key in (
+                        "tenant_id", "run_id", "attempt_id", "owner_generation",
+                    )}, provider_epoch_id="epoch-test",
+                ))
             raise RuntimeError("executor crashed")
+
+    async def settle(conn, **kwargs):
+        calls.append(("settle", kwargs))
+
+    async def release_continuation(conn, **kwargs):
+        calls.append(("continuation_release", kwargs))
+
+    monkeypatch.setattr("app.bootstrap.worker_execution_terminal.settle_predispatch_continuation", settle)
+    monkeypatch.setattr("app.bootstrap.worker_execution_terminal.release_predispatch_continuation", release_continuation)
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
@@ -4411,6 +4438,17 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     assert next(index for index, item in enumerate(calls) if item[0] == "fail") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+    if predispatch:
+        settlement = next(item[1]["settlement"] for item in calls if item[0] == "settle")
+        assert settlement["stop_evidence"] == "provider_not_created"
+        assert settlement["sdk_settlement"]["input_accepted"] is False
+        assert settlement["attempt_id"] == next(item[1]["attempt_id"] for item in calls if item[0] == "settle")
+        assert [item[0] for item in calls if item[0] in {"settle", "fail", "lease_release", "continuation_release"}] == [
+            "settle", "fail", "lease_release", "continuation_release",
+        ]
+    else:
+        assert not any(item[0] == "settle" for item in calls)
 
 
 @pytest.mark.asyncio
@@ -5306,7 +5344,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -5410,7 +5448,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -5530,7 +5568,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
     async def load_frozen_model(_conn, **_kwargs):
         return {"model_id": "catalog-default", "model_value": "provider/catalog-default",
-                "model_gateway_revision": 1, "max_input_tokens": 32000,
+                "model_gateway_revision": 1, "auto_compact_window": 200_000,
                 "max_output_tokens": 2048}
 
     async def append_event(conn, **kwargs):
@@ -6304,7 +6342,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
                 "model_id": "platform-default",
                 "model_value": "provider/default",
                 "model_gateway_revision": 7,
-                "max_input_tokens": 32000,
+                "auto_compact_window": 200_000,
                 "max_output_tokens": 2048,
             }
 
@@ -6373,7 +6411,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     assert captured["payload"].skill_version == version
     assert captured["payload"].release_decision == release_decision(version)
     assert captured["payload"].model_id == "platform-default"
-    assert captured["payload"].model_max_input_tokens == 32000
+    assert captured["payload"].model_auto_compact_window == 200_000
     assert captured["payload"].model_max_output_tokens == 2048
     model_snapshot_call = next(item for item in calls if item[0] == "model_snapshot")
     assert model_snapshot_call[2:] == ("tenant-a", "run-a")
@@ -8652,7 +8690,7 @@ def _install_task6_worker_fakes(
         "model_id": "platform-default",
         "model_value": "provider/default",
         "model_gateway_revision": 1,
-        "max_input_tokens": 32000,
+        "auto_compact_window": 200_000,
         "max_output_tokens": 2048,
         "trace_id": "trace-run-a",
         "principal_roles": list(principal_roles or ["qa_operator"]),
