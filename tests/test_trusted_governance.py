@@ -8,6 +8,7 @@ import pytest
 
 from tools.trusted_governance import (
     BACKEND_WORKFLOW_PATH,
+    EXPECTED_GOVERNANCE_RUN,
     TRUSTED_RUNNER_PATH,
     TRUSTED_WORKFLOW_PATH,
     TrustedGovernanceError,
@@ -388,3 +389,38 @@ def test_cli_reports_a_bounded_failure(
     output = capsys.readouterr().out
     assert output.startswith("trusted_governance=failed reason=")
     assert str(tmp_path) not in output
+
+
+def test_launcher_explains_a_head_that_lacks_the_current_base(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "--initial-branch=main")
+    _git(repo, "config", "user.email", "ci@example.invalid")
+    _git(repo, "config", "user.name", "CI")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _commit(repo, "common")
+    _git(repo, "switch", "-q", "--create", "candidate")
+    (repo / "candidate.txt").write_text("candidate\n", encoding="utf-8")
+    _commit(repo, "candidate")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "-q", "main")
+    (repo / "advanced.txt").write_text("advanced base\n", encoding="utf-8")
+    _commit(repo, "advance base")
+    base = _git(repo, "rev-parse", "HEAD")
+
+    lines = EXPECTED_GOVERNANCE_RUN.splitlines()
+    guard = [line for line in lines if line.startswith("governance_fail() ")]
+    ancestry = [line for line in lines if line.startswith("git merge-base --is-ancestor ")]
+    assert len(guard) == 1 and len(ancestry) == 1
+    completed = subprocess.run(
+        ["bash", "-c", "\n".join(["set -euo pipefail", *guard, *ancestry])],
+        cwd=repo,
+        env={"PATH": "/usr/bin:/bin", "GOVERNANCE_BASE_REF": base, "GOVERNANCE_HEAD_REF": head},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout.startswith("::error title=trusted governance v2::PR head does not contain")
+    assert base in completed.stdout

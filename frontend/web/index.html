@@ -53,7 +53,7 @@
     <meta
       name="theme-color"
       media="(prefers-color-scheme: dark)"
-      content="#151210"
+      content="#000000"
     />
 
     <!-- Icons -->
@@ -186,8 +186,8 @@
     <!-- Inline critical CSS for flash-of-unstyled-content prevention -->
     <style>
       :root {
-        --boot-theme-primary: #78716c;
-        --boot-theme-border: #e7e5e4;
+        --boot-theme-primary: #737373;
+        --boot-theme-border: #e5e5e5;
         --boot-theme-bg: #eef2f6;
       }
 
@@ -208,9 +208,9 @@
 
       @media (prefers-color-scheme: dark) {
         :root {
-          --boot-theme-primary: #a8a29e;
-          --boot-theme-border: #44403c;
-          --boot-theme-bg: #151210;
+          --boot-theme-primary: #a3a3a3;
+          --boot-theme-border: #202020;
+          --boot-theme-bg: #000000;
         }
       }
 
@@ -252,7 +252,7 @@
     <script>
       (() => {
         const lightColor = "#eef2f6";
-        const darkColor = "#151210";
+        const darkColor = "#000000";
         const storageKey = "ai-platform-theme";
         const legacyStorageKey = "lamb-agent-theme";
         const storedTheme =

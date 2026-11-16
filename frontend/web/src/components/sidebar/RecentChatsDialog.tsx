@@ -1,8 +1,9 @@
 import { Skeleton, Button, PopoverRoot, PopoverPortal, PopoverPositioner, PopoverPopup } from "@lobehub/ui/base-ui";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MessageSquareText } from "lucide-react";
 import { sessionApi } from "../../services/api/session";
+import { publicApiErrorMessage } from "../../services/api/fetch";
 import { getSessionTitle } from "../panels/sessionHelpers";
 import type { BackendSession } from "../../services/api/session";
 import { formatDateTime } from "../../utils/datetime";
@@ -25,23 +26,30 @@ export function RecentChatsDialog({
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-
+  const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
 
   const loadSessions = useCallback(async () => {
+    const request = ++requestRef.current;
     setIsLoading(true);
+    setError(null);
     try {
       const response = await sessionApi.list({ limit: 20 });
+      if (request !== requestRef.current) return;
       const list = Array.isArray(response) ? response : response.sessions;
       setSessions(list);
     } catch (error) {
-      console.error("Failed to load recent sessions:", error);
+      if (request !== requestRef.current) return;
+      setSessions([]);
+      setError(publicApiErrorMessage(error, t("sidebar.recentChatsLoadFailed")));
     } finally {
-      setIsLoading(false);
+      if (request === requestRef.current) setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
-    if (isOpen) loadSessions();
+    if (isOpen) void loadSessions();
+    return () => { requestRef.current += 1; };
   }, [isOpen, loadSessions]);
 
   return (
@@ -80,6 +88,11 @@ export function RecentChatsDialog({
               </div>
             ))}
           </div>
+        ) : error ? (
+          <div role="alert" className="space-y-2 px-4 py-3 text-sm text-[var(--theme-danger-text)]">
+            <p>{error}</p>
+            <Button onClick={() => void loadSessions()}>{t("common.retry")}</Button>
+          </div>
         ) : sessions.length === 0 ? (
           <div className="py-10 text-center text-xs text-[var(--theme-text-tertiary)]">
             {t("sidebar.noSessions") || "No recent chats"}
@@ -114,7 +127,7 @@ export function RecentChatsDialog({
                 </div>
               </div>
               {session.unread_count != null && session.unread_count > 0 && (
-                <span className="shrink-0 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+                <span className="shrink-0 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
                   {session.unread_count}
                 </span>
               )}

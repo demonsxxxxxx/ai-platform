@@ -76,8 +76,5 @@ export function getRestoredModelSelection(
       ? config.agent_options.model
       : "";
 
-  return {
-    modelId,
-    modelValue,
-  };
+  return { modelId, modelValue };
 }

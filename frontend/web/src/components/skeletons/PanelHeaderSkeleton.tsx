@@ -13,7 +13,7 @@ export function PanelHeaderSkeleton({
         <div className="flex min-w-0 items-center gap-3">
           {/* Icon box — matches real PanelHeader: size-12 rounded-xl gradient + shadow + ring */}
           <div
-            className="flex size-12 flex-shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-stone-200/60 dark:ring-stone-700/50"
+            className="flex size-12 flex-shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-neutral-200/60 dark:ring-neutral-700/50"
             style={{
               background:
                 "linear-gradient(to bottom right, var(--theme-bg-card), color-mix(in srgb, var(--theme-bg) 80%, white))",

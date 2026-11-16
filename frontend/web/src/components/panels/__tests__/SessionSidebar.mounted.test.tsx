@@ -202,7 +202,6 @@ test("global-history rename updates only the global source", async () => {
                     name: "专家",
                     description: "",
                   }}
-                  agentHistoryInMainPanel
                 />
               </AuthProvider>
             </LobeUiProvider>
@@ -211,10 +210,22 @@ test("global-history rename updates only the global source", async () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
+    // One primary sidebar presents one history scope at a time; the global
+    // projection stays mounted behind the 全部对话 switch.
+    const scopeSwitch = container.querySelector<HTMLElement>(
+      "[data-history-scope-switch]",
+    );
+    assert.ok(scopeSwitch);
+    const allScope = [...scopeSwitch.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "全部对话",
+    );
+    assert.ok(allScope);
+    if (allScope.getAttribute("aria-pressed") !== "true") await click(allScope);
     const globalGroup = container.querySelector<HTMLElement>(
       "[data-workbench-global-history]",
     );
     assert.ok(globalGroup);
+    assert.equal(globalGroup.hidden, false);
     const groupButton = globalGroup.querySelector<HTMLButtonElement>(
       "button[aria-expanded]",
     );
@@ -419,6 +430,29 @@ test("delete A after selecting B and refreshing same-owner rows preserves B and 
     container.remove();
     sessionApi.delete = originalDelete;
   }
+});
+
+test("recent chats distinguishes a failed read from empty history and recovers on explicit retry", async () => {
+  const { RecentChatsDialog } = await import("../../sidebar/RecentChatsDialog");
+  const { apiRequestErrorFromResponse } = await import("../../../services/api/fetch");
+  const oldList = sessionApi.list;
+  let reads = 0;
+  const safeError = await apiRequestErrorFromResponse(new Response(JSON.stringify({ detail: "auth_refresh_unavailable" }), { status: 503 }));
+  sessionApi.list = async () => { if (++reads === 1) throw safeError; return [session("restored")]; };
+  const container = document.createElement("div"); document.body.append(container);
+  const anchor = document.createElement("button"); document.body.append(anchor);
+  const root = await createLobeTestRoot(container);
+  try {
+    await React.act(async () => root.render(React.createElement(RecentChatsDialog, {
+      isOpen: true, anchorEl: anchor, onClose: () => {}, onSelectSession: () => {},
+    })));
+    assert.match(container.querySelector('[role="alert"]')!.textContent!, /认证服务暂时不可用/);
+    assert.doesNotMatch(container.textContent!, /暂无会话/);
+    await React.act(async () => container.querySelector<HTMLButtonElement>('[role="alert"] button')!.click());
+    assert.equal(container.querySelector('[role="alert"]'), null);
+    assert.match(container.textContent!, /Session restored/);
+    assert.equal(reads, 2);
+  } finally { await React.act(async () => root.unmount()); container.remove(); anchor.remove(); sessionApi.list = oldList; }
 });
 
 test("SessionSidebar adapter publication does not loop through a parent state setter", async () => {

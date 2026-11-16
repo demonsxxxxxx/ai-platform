@@ -1,1 +1,0 @@
-"""Operator-only capacity tooling."""

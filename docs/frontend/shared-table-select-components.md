@@ -12,6 +12,21 @@ Management pages import `Table` and `Pagination` directly from `@lobehub/ui/base
 
 Complex department/role selections, market-tag autocomplete and model/Skill/MCP catalogs retain their data and authority owners while using Lobe Select/Popover/AutoComplete/Modal controls. Department selections preserve authority IDs, unresolved values, duplicate restrictions and the 128-choice limit. Expert access editing remains department-only; historical API fields are preserved.
 
+Model-group membership is separate from expert department access. Model
+administration uses `ModelGroupManagement` and `ModelGroupUserDrawer`, backed by
+revisioned group/model/member and atomic user-membership APIs. A model can belong
+to any groups; a user has one effective group. The user drawer uses LobeSelectField
+to replace that membership; per-member primary controls and multi-group checkboxes
+are retired. The group member owner composes the two-column Lobe Modal in
+`ModelGroupMemberPicker`: organization navigation, company-wide search,
+all-page employee bulk selection with mixed state, work-ID/department-path display,
+staged selections, abortable requests, retryable directory failures,
+permission gates, Escape and focus restoration stay with that owner (see
+[model groups](model-groups.md#按组织架构选人));
+model-directory ACL controls are retired. The catalog publication request does
+not send `is_default`, `access_mode`, or `allowed_user_ids`; those historical
+fields are migration-only inputs and cannot silently reset authorization.
+
 Avatar candidates remain four columns inside the editor card. Viewport width alone does not establish room for eight fixed-size avatars. Actual rendered candidates must stay within their buttons without overlap.
 
 ## Retirement and compatibility disposition
@@ -25,6 +40,7 @@ Avatar candidates remain four columns inside the editor card. Viewport width alo
 | react-hot-toast direct dependency | Removed from the package manifest and lockfile importer. Lobe ToastHost and toast own notifications, including stable queue notification identity. |
 | Handwritten department/role popups and market-tag suggestion interaction | Lobe Select/Popover/AutoComplete owns popup interaction; directory resolution, raw identity and tag normalization remain business-owned. |
 | Native-select and old table structure assertions | Owning tests use actual library controls and production providers. Business assertions for requests, publication, permissions and ownership remain required. |
+| Model catalog inline name and token inputs, always-visible save bar and duplicate reload actions | The model administration list opens the Lobe editor drawer; the existing draft, validation and publication owner remains unchanged. The action bar appears only for a changed draft. Fetch upstream models stages candidates without publishing; reading saved configuration is offered only for error recovery, explicitly discarding a dirty draft. Repeated page/list headings and persistent explanatory copy are removed. Owning mounted tests and the route-layout smoke cover the replacement; there is no compatibility inline editor or permanent reload action. |
 | `src/components/documents/previews/MermaidDiagram.tsx` | Previously retired; document Markdown uses MarkdownContent and the active chat MermaidDiagram. Keep the absence check. |
 | High-specificity Select width and viewport-based eight-column avatar grid | Caller layout and public library sizing replace the old control CSS. Route-layout smoke measures filter/search widths, visible rail icon sizes and avatar containment. |
 | Upload completion's bare `/api/ai/files/{id}` URL | Existing upload adapter contract supplies `/preview` and independent `/download`; file identity and optional download URL compatibility remain unchanged. |

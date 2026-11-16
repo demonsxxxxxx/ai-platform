@@ -74,7 +74,7 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-neutral-900"
       data-run-playback-panel
       data-run-playback-state={viewModel.state}
       aria-busy={snapshot.isBusy}
@@ -85,7 +85,7 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
         <ReadFailureNotice lifecycle={lifecycle} snapshot={snapshot} />
       )}
       {viewModel.failureGuidance ? (
-        <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3 dark:border-stone-800 sm:px-4">
+        <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3 dark:border-neutral-800 sm:px-4">
           <FailureGuidanceCard guidance={viewModel.failureGuidance} />
         </div>
       ) : null}
@@ -162,7 +162,7 @@ function ReadFailureNotice({
   const { t } = useTranslation();
   if (!snapshot.playbackReadError && !snapshot.readinessReadError) return null;
   return (
-    <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+    <div role="alert" className="shrink-0 border-b border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning-text)]">
       {snapshot.playbackReadError && (
         <div>
           <p>{t("runPlayback.stalePlayback")} {snapshot.playbackReadError.message}</p>
@@ -207,13 +207,13 @@ function RunControlActions({
   }
 
   return (
-    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 dark:border-stone-800 dark:bg-stone-950/50 sm:px-4">
+    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950/50 sm:px-4">
       {(actionMessage || snapshot.isBusy) && (
         <div
           role="status"
           aria-live="polite"
           aria-busy={snapshot.isBusy}
-          className="text-xs text-stone-600 dark:text-stone-300"
+          className="text-xs text-neutral-600 dark:text-neutral-300"
         >
           {actionMessage || t("runPlayback.actions.working")}
         </div>
@@ -221,7 +221,7 @@ function RunControlActions({
       {snapshot.rejectionMessage && (
         <div
           role="alert"
-          className="mt-1 text-xs text-red-700 dark:text-red-300"
+          className="mt-1 text-xs text-[var(--theme-danger-text)]"
         >
           {snapshot.rejectionMessage}
         </div>
@@ -291,7 +291,7 @@ function RunControlButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className="inline-flex h-8 items-center rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-stone-700 transition-colors hover:bg-[var(--theme-bg-sidebar)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
+      className="inline-flex h-8 items-center rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-[var(--theme-bg-sidebar)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800"
     >
       {label}
     </Button>
@@ -325,15 +325,15 @@ function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
   ];
 
   return (
-    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-3 dark:border-stone-800 dark:bg-stone-950/50 sm:px-4">
+    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-3 dark:border-neutral-800 dark:bg-neutral-950/50 sm:px-4">
       <div className="grid grid-cols-2 gap-x-3 gap-y-2">
         {fields.map((field) => (
           <div key={field.label} className="min-w-0">
-            <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
+            <div className="text-[10px] font-medium uppercase text-neutral-400 dark:text-neutral-500">
               {field.label}
             </div>
             <div
-              className="mt-0.5 truncate text-xs text-stone-700 dark:text-stone-200"
+              className="mt-0.5 truncate text-xs text-neutral-700 dark:text-neutral-200"
               title={field.value ?? undefined}
             >
               {field.value || "-"}
@@ -363,13 +363,13 @@ function ContextWindowSection({
     >
       <div
         data-run-context-window={contextWindow.status}
-        className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900"
+        className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900"
       >
-        <div role="status" className="text-xs font-medium text-stone-700 dark:text-stone-200">
+        <div role="status" className="text-xs font-medium text-neutral-700 dark:text-neutral-200">
           {t(`runPlayback.context.status.${contextWindow.status}`)}
         </div>
         {contextWindow.status === "degraded" && (
-          <p className="mt-1 text-xs text-stone-500">
+          <p className="mt-1 text-xs text-neutral-500">
             {t("runPlayback.context.degradedDescription")}
           </p>
         )}
@@ -377,7 +377,7 @@ function ContextWindowSection({
           {contextWindow.historyCounts.map((item) => (
             <div
               key={item.label}
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-300"
             >
               <dt>{t(`runPlayback.context.counts.${item.label}`)}</dt>
               <dd className="font-semibold tabular-nums">{item.value}</dd>
@@ -385,18 +385,18 @@ function ContextWindowSection({
           ))}
         </dl>
         {contextWindow.legacyHistoryExcluded && (
-          <p className="mt-2 text-xs text-stone-500">
+          <p className="mt-2 text-xs text-neutral-500">
             {t("runPlayback.context.legacyHistoryExcluded")}
           </p>
         )}
         {contextWindow.selectedFileNames.length > 0 && (
           <div className="mt-2 min-w-0">
-            <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
+            <div className="text-[10px] font-medium uppercase text-neutral-400 dark:text-neutral-500">
               {t("runPlayback.context.selectedFiles")}
             </div>
             <ul className="mt-1 flex flex-wrap gap-1.5">
               {contextWindow.selectedFileNames.map((name) => (
-                <li key={name} className="break-all rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[11px] text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                <li key={name} className="break-all rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
                   {name}
                 </li>
               ))}
@@ -411,7 +411,7 @@ function ContextWindowSection({
 function LoadingBlock() {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-400">
+    <div className="flex items-center gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 text-sm text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-400">
       <Spin size={16} />
       <span>{t("runPlayback.loading")}</span>
     </div>
@@ -433,17 +433,17 @@ function ErrorBlock({
 }) {
   const { t } = useTranslation();
   return (
-    <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
+    <div role="alert" className="rounded-md border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] p-3">
       <div className="flex items-start gap-2">
         <AlertTriangle
           size={16}
-          className="mt-0.5 shrink-0 text-red-500 dark:text-red-400"
+          className="mt-0.5 shrink-0 text-[var(--theme-danger-text)]"
         />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-red-700 dark:text-red-300">
+          <div className="text-sm font-medium text-[var(--theme-danger-text)]">
             {t("runPlayback.error")}
           </div>
-          <div className="mt-1 text-xs text-red-600 dark:text-red-300/80">
+          <div className="mt-1 text-xs text-[var(--theme-danger-text)]">
             {message || t("runPlayback.errorFallback")}
           </div>
           <ReadErrorDetails error={readFailure} />
@@ -459,7 +459,7 @@ function ErrorBlock({
         htmlType="button"
         onClick={onRetry}
         disabled={disabled}
-        className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
+        className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-[var(--theme-danger-ring)] bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-[var(--theme-danger-text)] transition-colors hover:bg-[var(--theme-danger-soft)]"
       >
         <RefreshCw size={13} />
         {t("runPlayback.actions.refresh")}
@@ -471,7 +471,7 @@ function ErrorBlock({
 function EmptyBlock() {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-4 text-center text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-400">
+    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-4 text-center text-sm text-neutral-500 dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-400">
       {t("runPlayback.empty")}
     </div>
   );
@@ -500,16 +500,16 @@ function TimelineSection({ items }: { items: RunPlaybackTimelineItem[] }) {
 
 function TimelineRow({ item }: { item: RunPlaybackTimelineItem }) {
   return (
-    <div className="flex gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
+    <div className="flex gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900">
       <StatusIcon status={item.status} kind={item.kind} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-xs font-medium text-stone-800 dark:text-stone-100">
+          <span className="truncate text-xs font-medium text-neutral-800 dark:text-neutral-100">
             {item.label}
           </span>
           <StatusBadge status={item.status} />
         </div>
-        <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[11px] text-stone-500 dark:text-stone-500">
+        <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-500">
           {item.sequence !== null && <span>#{item.sequence}</span>}
           <span>{item.kind}</span>
           {item.detail && <span className="truncate">{item.detail}</span>}
@@ -558,20 +558,20 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
   };
 
   return (
-    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
+    <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex min-w-0 items-start gap-2">
         <FileText
           size={15}
-          className="mt-0.5 shrink-0 text-stone-400 dark:text-stone-500"
+          className="mt-0.5 shrink-0 text-neutral-400 dark:text-neutral-500"
         />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-xs font-medium text-stone-800 dark:text-stone-100">
+            <span className="truncate text-xs font-medium text-neutral-800 dark:text-neutral-100">
               {artifact.label}
             </span>
             <StatusBadge status={artifact.status} />
           </div>
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-stone-500 dark:text-stone-500">
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-500">
             {artifact.type && <span>{artifact.type}</span>}
             {artifact.contentType && <span>{artifact.contentType}</span>}
             {artifact.sizeLabel && <span>{artifact.sizeLabel}</span>}
@@ -585,7 +585,7 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
               htmlType="button"
               onClick={handlePreview}
               aria-label={`${t("runPlayback.preview")} ${artifact.label}`}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-neutral-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >
               <ExternalLink size={12} />
               {t("runPlayback.preview")}
@@ -596,7 +596,7 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
               htmlType="button"
               onClick={handleDownload}
               aria-label={`${t("runPlayback.download")} ${artifact.label}`}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-neutral-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >
               <Download size={12} />
               {t("runPlayback.download")}
@@ -621,10 +621,10 @@ function PanelSection({
 }) {
   return (
     <section>
-      <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-stone-700 dark:text-stone-200">
-        <span className="text-stone-400 dark:text-stone-500">{icon}</span>
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-neutral-700 dark:text-neutral-200">
+        <span className="text-neutral-400 dark:text-neutral-500">{icon}</span>
         <span>{title}</span>
-        <span className="ml-auto rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+        <span className="ml-auto rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
           {count}
         </span>
       </div>
@@ -635,7 +635,7 @@ function PanelSection({
 
 function SectionEmpty({ label }: { label: string }) {
   return (
-    <div className="rounded-md border border-dashed border-stone-200 px-3 py-2 text-xs text-stone-500 dark:border-stone-800 dark:text-stone-500">
+    <div className="rounded-md border border-dashed border-neutral-200 px-3 py-2 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-500">
       {label}
     </div>
   );
@@ -707,27 +707,27 @@ function getPanelStatus(
 
 function getStatusBadgeClass(status: RunPlaybackDisplayStatus): string {
   if (status === "success") {
-    return "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300";
+    return "bg-[var(--theme-success-soft)] text-[var(--theme-success-text)]";
   }
   if (status === "error") {
-    return "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300";
+    return "bg-[var(--theme-danger-soft)] text-[var(--theme-danger-text)]";
   }
   if (status === "running" || status === "loading") {
-    return "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300";
+    return "bg-[var(--theme-warning-soft)] text-[var(--theme-warning-text)]";
   }
   if (status === "cancelled" || status === "blocked") {
-    return "bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300";
+    return "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300";
   }
-  return "bg-[var(--theme-bg-sidebar)] text-stone-500 dark:bg-stone-900 dark:text-stone-400";
+  return "bg-[var(--theme-bg-sidebar)] text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400";
 }
 
 function getStatusIconClass(status: RunPlaybackDisplayStatus): string {
-  if (status === "success") return "text-emerald-500 dark:text-emerald-400";
-  if (status === "error") return "text-red-500 dark:text-red-400";
+  if (status === "success") return "text-[var(--theme-success-text)]";
+  if (status === "error") return "text-[var(--theme-danger-text)]";
   if (status === "cancelled" || status === "blocked") {
-    return "text-stone-500 dark:text-stone-400";
+    return "text-neutral-500 dark:text-neutral-400";
   }
-  return "text-stone-400 dark:text-stone-500";
+  return "text-neutral-400 dark:text-neutral-500";
 }
 
 function translateStatus(t: TFunction, status: string): string {

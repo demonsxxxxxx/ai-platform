@@ -29,7 +29,7 @@ from app.run_projection import (
     run_step_response,
     run_step_responses,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"

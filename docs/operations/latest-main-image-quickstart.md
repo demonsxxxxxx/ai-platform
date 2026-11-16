@@ -1,8 +1,10 @@
 # Deployment package quickstart
 
-The new immutable Deployment Release contains one runtime-only test package,
-`ai-platform-internal-test.tar.gz`, with its matching manifest inside. It
-cannot be used for production or s75. Earlier production Releases are unchanged.
+The immutable Deployment Release contains one runtime-only deployment package,
+`ai-platform-internal-test.tar.gz`, with its matching manifest inside. The archive
+name is retained historical naming, not a choice between test and production
+packages. Use the [single deployment guide](../../deploy/ai-platform/README.md);
+this quickstart summarizes the same install/upgrade path and security limits.
 
 Extract the archive into a new directory and do not mix files with another
 version. The package contains the exact Compose files, immutable application and
@@ -17,7 +19,7 @@ and the already-provisioned `opensandbox.service` using Docker `bridge` and
 `runsc`. The test bridge has no dedicated host guard and can reach routable
 internal addresses; deploy only to a trusted isolated test host. Configure
 reachable callback/proxy endpoints and the existing workspace root; see the
-package `README.md`. Do not use the production host topology for this package.
+package `README.md`. The retained dedicated-network host templates are not this package’s topology.
 
 For a new installation, create the environment file in the extracted directory:
 

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import signal
 import socket
 import sys
 import time
@@ -28,6 +29,7 @@ from app.files.api import (
 from app.bootstrap.agent_profiles import configure_agent_profile_runtime
 from app.bootstrap.files import configure_file_upload_services
 from app.bootstrap.context import configure_context_services
+from app.bootstrap.conversation_continuation import build_continuation_settlement_ports
 from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.skills import configure_skill_markdown
@@ -1217,6 +1219,7 @@ async def _run_worker_process(
                     lifecycle=lifecycle,
                     run_diagnostics=build_run_diagnostics_service(),
                     concurrency=getattr(settings, "worker_finalizer_concurrency", 2),
+                    continuation_ports=build_continuation_settlement_ports(),
                 ),
                 name="ai-platform-executor-terminal-reconciler",
             ))
@@ -1281,6 +1284,44 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
         await _close_worker_runtime(worker_runtime, tasks, primary_error=sys.exception())
 
 
+async def _run_until_terminated(operation: Any) -> Any:
+    """Turn SIGTERM into the same cooperative cancellation as SIGINT.
+
+    The Worker runs as container PID 1, where the kernel never applies a
+    default signal action: without a handler ``docker stop`` waits out its
+    grace period and SIGKILLs the process. The first SIGTERM cancels the
+    owned operation so its ``finally`` cleanup releases slots, connections
+    and background owners; repeated signals never interrupt that cleanup.
+    A requested termination then returns normally (exit 0).
+    """
+
+    loop = asyncio.get_running_loop()
+    owner = asyncio.current_task()
+    terminated = False
+
+    def request_termination() -> None:
+        nonlocal terminated
+        if terminated or owner is None:
+            return
+        terminated = True
+        logger.info("worker_termination_requested", extra={"signal": "SIGTERM"})
+        owner.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, request_termination)
+    except (NotImplementedError, RuntimeError):  # Non-main thread or unsupported loop.
+        return await operation
+    try:
+        return await operation
+    except asyncio.CancelledError:
+        if not terminated or owner is None or owner.cancelling() > 1:
+            raise
+        owner.uncancel()
+        return None
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 def main() -> None:
     configure_terminal_stage_logging()
     parser = argparse.ArgumentParser(description="AI Platform worker")
@@ -1292,10 +1333,12 @@ def main() -> None:
     if args.once and _worker_role(settings) == "finalizer":
         parser.error("--once is not supported for finalizer workers")
     if args.once:
-        outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
+        outcome = asyncio.run(_run_until_terminated(run_once_and_close(timeout_seconds=args.timeout)))
         print(outcome)
         return
-    asyncio.run(run_worker_pool(worker_count=settings.worker_concurrency, poll_timeout_seconds=args.timeout))
+    asyncio.run(_run_until_terminated(
+        run_worker_pool(worker_count=settings.worker_concurrency, poll_timeout_seconds=args.timeout)
+    ))
 
 
 if __name__ == "__main__":

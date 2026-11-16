@@ -3,20 +3,20 @@ import { memo } from "react";
 import { AssistantMessageContent } from "../assistant-ui/elements/thread";
 import { MessageTiming, type TimingStat } from "../assistant-ui/elements/message-timing";
 import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
-import type { Message } from "../../../types";
+import type { Message, MessagePart } from "../../../types";
 import { useTranslation } from "react-i18next";
 import { AssistantUiMarkdownText, AssistantUiMessagePart, AssistantUiMessageStatus } from "../assistant-ui/MessageParts";
 import { getAssistantUiDisplayParts } from "../assistant-ui/externalStoreRuntime";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { createMessagePartRenderKeys } from "./MessagePartRenderer";
-import { AssistantAvatar } from "./AssistantAvatar";
 import { useModelCatalogContext } from "../../../contexts/ModelCatalogContext";
 import { resolveTokenUsageModelDetails } from "./tokenUsageModel";
 import { MessageWorkActivity } from "./MessageWorkActivity";
+import { getPublicToolActivityLabel } from "./messagePartVisibility";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
-import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
+import { formatDateTime } from "../../../utils/datetime";
 import { selectAssistantCopyText } from "../../../types/assistantTextParts";
 import {
   createArtifactDownloadScope,
@@ -36,6 +36,17 @@ function formatDurationMs(durationMs: number): string {
   return durationMs < 1000
     ? `${durationMs}毫秒`
     : `${(durationMs / 1000).toFixed(2)}秒`;
+}
+
+/** Public name of the latest step still running, for the waiting indicator. */
+function currentActivityLabel(parts: readonly MessagePart[]): string | null {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part.type === "tool" && (part.status === "started" || part.isPending) && !part.cancelled) {
+      return getPublicToolActivityLabel(part.public_category, part.public_display_name);
+    }
+  }
+  return null;
 }
 
 export const ChatMessage = memo(function ChatMessage({
@@ -85,7 +96,7 @@ export const ChatMessage = memo(function ChatMessage({
         id={createMessageAnchorId(message.id)}
         data-outline-anchor="true"
         data-outline-id={createMessageAnchorId(message.id)}
-        className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
+        className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)] dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
       >
         <UserMessageBubble
           messageId={message.id}
@@ -106,65 +117,42 @@ export const ChatMessage = memo(function ChatMessage({
     );
   };
 
-  // Assistant message: left layout
+  // Assistant message: one reading column with no per-message identity header
+  // (the workspace header names the expert), following the ChatGPT Clone layout.
   return (
     <div
       id={createMessageAnchorId(message.id)}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
-      className="group w-full animate-[fade-in_0.3s_ease-out] scroll-mt-6 rounded-lg transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-amber-50/85 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/60 dark:data-[external-navigation-highlighted=true]:bg-amber-500/12 dark:data-[external-navigation-highlighted=true]:ring-amber-400/50"
+      className="group w-full scroll-mt-6 rounded-lg py-3 transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
     >
       <AssistantMessageContent>
-        {/* Content */}
-        <div className="min-h-0 min-w-0 py-1">
-          {/* Header: Avatar + Role label + Stop button */}
-          <div className="mb-2 flex items-center gap-2">
-            <AssistantAvatar className="size-6 shrink-0 rounded-full" />
-            <span
-              className="text-sm font-semibold"
-              style={{ color: "var(--theme-text)" }}
-            >
-              {t("chat.message.assistant")}
-            </span>
-            {message.timestamp && (
-              <span
-                className="text-xs ml-2 mt-0.5 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                style={{ color: "var(--theme-text-secondary)" }}
-              >
-                {message.timestamp
-                  ? formatDateTimeShort(message.timestamp)
-                  : ""}
-              </span>
-            )}
-          </div>
-
+        <div className="min-h-0 min-w-0">
           {hasParts ? (
-            <div className="my-1.5 space-y-2">
-              <MessageWorkActivity
-                messageId={message.id}
-                isStreaming={message.isStreaming}
-                parts={visibleParts}
-                partKeys={visiblePartKeys}
-                renderPart={(part, index, withinWorkDetails) => (
-                  <AssistantUiMessagePart
-                    part={part}
-                    messageId={message.id}
-                    partIndex={index}
-                    isStreaming={message.isStreaming}
-                    isLast={index === visibleParts.length - 1}
-                    onOpenPreview={onOpenPreview}
-                    artifactDownloadScope={artifactDownloadScope}
-                    withinWorkDetails={withinWorkDetails}
-                  />
-                )}
-              />
-            </div>
+            <MessageWorkActivity
+              messageId={message.id}
+              isStreaming={message.isStreaming}
+              parts={visibleParts}
+              partKeys={visiblePartKeys}
+              renderPart={(part, index, withinWorkDetails) => (
+                <AssistantUiMessagePart
+                  part={part}
+                  messageId={message.id}
+                  partIndex={index}
+                  isStreaming={message.isStreaming}
+                  isLast={index === visibleParts.length - 1}
+                  onOpenPreview={onOpenPreview}
+                  artifactDownloadScope={artifactDownloadScope}
+                  withinWorkDetails={withinWorkDetails}
+                />
+              )}
+            />
           ) : (
             <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
           )}
-          <AssistantUiMessageStatus />
+          <AssistantUiMessageStatus activityLabel={currentActivityLabel(visibleParts)} startedAt={message.isStreaming ? message.timestamp : undefined} />
         </div>
-        {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
+        {/* Actions sit directly under the answer once it has settled. */}
         <AuiIf condition={(state) => state.message.status?.type !== "running" && !state.message.metadata.custom.isSynchronizing}>
           <AssistantUiMessageActions messageId={message.id} text={getAssistantTextContent()}>
             <MessageTiming stats={timingStats} label={t("chat.message.tokenUsage")} />

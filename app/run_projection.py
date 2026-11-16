@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 
-from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
+from app.artifacts.api import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
@@ -23,7 +23,7 @@ from app.runs.api import (
     public_terminal_detail as public_terminal_detail,
     public_terminal_projection as public_terminal_projection,
 )
-from app.public_execution import (
+from app.streaming.api import (
     PUBLIC_EXECUTION_EVENT_TYPES,
     public_execution_event_from_row,
 )

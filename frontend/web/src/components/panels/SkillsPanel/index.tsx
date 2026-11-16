@@ -407,11 +407,13 @@ export function SkillsPanel({
         isCreating={false}
         editingSkill={actions.editingSkill}
         isLoading={actions.isLoading}
+        submitError={actions.error}
         onSave={actions.handleSave}
         onCancel={actions.handleCancel}
       />
 
       <ZipUploadModal
+        error={actions.error}
         showZipModal={actions.showZipModal}
         setShowZipModal={actions.setShowZipModal}
         zipFile={actions.zipFile}
@@ -461,6 +463,7 @@ export function SkillsPanel({
         onCancel={actions.cancelDelete}
         variant="warning"
         loading={actions.isDeleting}
+        error={actions.deleteError ? actions.error || actions.deleteError : null}
       />
     </div>
   );

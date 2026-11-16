@@ -316,7 +316,7 @@ export function AgentBuilderWorkbench({
         className="flex min-h-0 flex-1 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-[var(--theme-text)] sm:px-6"
       >
         <div className="flex max-w-md items-start gap-3 border-l-2 border-l-[var(--theme-danger)] py-2 pl-4">
-          <ShieldAlert size={20} className="mt-0.5 shrink-0 text-[var(--theme-danger)]" aria-hidden="true" />
+          <ShieldAlert size={20} className="mt-0.5 shrink-0 text-[var(--theme-danger-text)]" aria-hidden="true" />
           <div>
             <h1 className="text-base font-semibold">仅管理员可访问专家管理</h1>
             <p className="mt-1 text-sm text-[var(--theme-text-secondary)]">
@@ -400,7 +400,7 @@ export function AgentBuilderWorkbench({
           </div>
 
           {workbench.listError ? (
-            <div className="mx-3 mb-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]" role="alert">
+            <div className="mx-3 mb-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger-text)]" role="alert">
               <p>{workbench.listError.message}</p>
               <Button type="text" className="mt-2 text-sm font-medium underline" onClick={refresh} htmlType="button">
                 重新加载
@@ -630,7 +630,7 @@ export function AgentBuilderWorkbench({
                       );
                       return (
                         <span
-                          className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${unavailable ? "border-[var(--theme-danger)] text-[var(--theme-danger)]" : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"}`}
+                          className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${unavailable ? "border-[var(--theme-danger)] text-[var(--theme-danger-text)]" : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"}`}
                           key={key}
                         >
                           <span className="font-medium">{selection.skill_id}</span>
@@ -706,7 +706,7 @@ export function AgentBuilderWorkbench({
                           <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${!mcpCatalogResolved ? "bg-[var(--theme-border-strong)]" : tool ? "bg-[var(--theme-success)]" : "bg-[var(--theme-danger)]"}`} aria-hidden="true" />
                           <span className="min-w-0 flex-1">
                             <span className="block break-all text-sm font-medium">{tool?.label ?? toolId}</span>
-                            <span className={`mt-1 block text-xs ${toolUnavailable ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}`}>
+                            <span className={`mt-1 block text-xs ${toolUnavailable ? "text-[var(--theme-danger-text)]" : "text-[var(--theme-text-secondary)]"}`}>
                               {!mcpCatalogResolved
                                 ? "授权 MCP 目录尚未完整加载，已保留服务端工具身份。"
                                 : tool?.description ?? "当前授权目录中不可用，未自动移除。"}
@@ -727,7 +727,7 @@ export function AgentBuilderWorkbench({
                     </div>
                   )}
                   {unavailableMcpToolIds.length > 0 ? (
-                    <p className="mt-3 text-sm text-[var(--theme-danger)]">
+                    <p className="mt-3 text-sm text-[var(--theme-danger-text)]">
                       {unavailableMcpToolIds.length} 项已选工具需要明确移除或重新授权。
                     </p>
                   ) : null}
@@ -765,7 +765,7 @@ export function AgentBuilderWorkbench({
                 <div aria-live="polite" className="mt-3 min-h-5">
                   {mutationFeedback ? (
                     <div
-                      className={`flex items-start gap-2 text-sm ${mutationFeedback.tone === "error" ? "text-[var(--theme-danger)]" : "text-[var(--theme-success)]"}`}
+                      className={`flex items-start gap-2 text-sm ${mutationFeedback.tone === "error" ? "text-[var(--theme-danger-text)]" : "text-[var(--theme-success)]"}`}
                       role={mutationFeedback.tone === "error" ? "alert" : "status"}
                     >
                       {mutationFeedback.tone === "error"
@@ -957,7 +957,7 @@ export function AgentBuilderWorkbench({
             继续编辑
           </Button>
           <Button type="default"
-            className="border-[var(--theme-danger)] text-[var(--theme-danger)]"
+            className="border-[var(--theme-danger)] text-[var(--theme-danger-text)]"
             onClick={confirmEditorAction}
             htmlType="button"
           >

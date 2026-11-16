@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Protocol
 
 from app.runs.domain.execution_spec import (
-    EXECUTION_SPEC_SCHEMA_VERSION_V2,
+    EXECUTION_SPEC_SCHEMA_VERSION_V3,
+    EXECUTION_SPEC_SCHEMA_VERSION_V4,
     ExecutionSpec,
     ExecutionSpecError,
     compile_execution_spec,
@@ -13,6 +14,19 @@ from app.runs.domain.execution_spec import (
 
 
 _dispatch_run_facts_loader: Callable[..., Any] | None = None
+
+
+def model_auto_compact_window(spec: Mapping[str, Any]) -> int | None:
+    """Project a validated frozen spec through the historical model policy."""
+
+    if spec.get("schema_version") in {EXECUTION_SPEC_SCHEMA_VERSION_V3, EXECUTION_SPEC_SCHEMA_VERSION_V4}:
+        return spec["model_auto_compact_window"]
+    # Resolve only for legacy projection; the context APIs also compose Runs.
+    from app.execution.api import legacy_input_capacity_to_auto_compact_window
+
+    return legacy_input_capacity_to_auto_compact_window(
+        spec.get("model_max_input_tokens")
+    )
 
 
 def configure_worker_dispatch_run_facts_loader(loader: Callable[..., Any]) -> None:
@@ -31,7 +45,8 @@ async def worker_dispatch_fence(
     row = await loader(
         conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"],
     )
-    if row is None or row["status"] != ("running" if reconciliation else "queued") or row["cancel_requested_at"] is not None:
+    if (row is None or row["status"] != ("running" if reconciliation else "queued")
+        or (not reconciliation and row["cancel_requested_at"] is not None)):
         return "stale"
     if any(str(row[key] or "") != run_identity[key] for key in
            ("tenant_id", "workspace_id", "user_id", "session_id", "agent_id",
@@ -41,7 +56,11 @@ async def worker_dispatch_fence(
         or row["context_snapshot_id"] != context_snapshot_id
         or any(row[key] != locked_run[key] for key in
                ("model_id", "model_value", "model_gateway_revision",
-                "max_input_tokens", "max_output_tokens"))):
+                "auto_compact_window", "max_output_tokens"))
+        or any(row.get(key) != locked_run.get(key) for key in
+               ("model_group_id", "model_group_code", "model_group_type",
+                "model_group_revision", "model_selection_mode", "usage_scene",
+                "model_policy_version"))):
         return "invalid"
     return "ready"
 
@@ -67,7 +86,7 @@ def _v2_model_snapshot(snapshot: Mapping[str, Any] | None) -> dict[str, int] | N
         return None
     values = {
         "model_gateway_revision": snapshot.get("model_gateway_revision"),
-        "model_max_input_tokens": snapshot.get("max_input_tokens"),
+        "model_auto_compact_window": snapshot.get("auto_compact_window"),
         "model_max_output_tokens": snapshot.get("max_output_tokens"),
     }
     if any(value is None for value in values.values()):
@@ -107,8 +126,17 @@ def compile_execution_spec_for_dispatch(
         or run_model_snapshot.get("model_value") != queue_payload.model_value
     ):
         raise ExecutionSpecError("execution_spec_model_snapshot_mismatch")
+    group_snapshot_keys = (
+        "model_group_id", "model_group_code", "model_group_type", "model_group_revision",
+        "model_selection_mode", "usage_scene", "model_policy_version",
+    )
+    has_group_snapshot = any(run_model_snapshot.get(key) is not None for key in group_snapshot_keys)
+    if has_group_snapshot and any(
+        run_model_snapshot.get(key) is None for key in group_snapshot_keys
+    ):
+        raise ExecutionSpecError("execution_spec_model_group_snapshot_invalid")
     spec_payload: dict[str, Any] = {
-        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V2,
+        "schema_version": EXECUTION_SPEC_SCHEMA_VERSION_V4 if has_group_snapshot else EXECUTION_SPEC_SCHEMA_VERSION_V3,
         "run_payload_schema_version": queue_payload.schema_version,
         "tenant_id": run_identity["tenant_id"],
         "workspace_id": run_identity["workspace_id"],
@@ -133,4 +161,14 @@ def compile_execution_spec_for_dispatch(
         "agent_profile": queue_payload.agent_profile or {},
     }
     spec_payload.update(model_snapshot)
+    if has_group_snapshot:
+        spec_payload.update({
+            "model_group_id": run_model_snapshot["model_group_id"],
+            "model_group_code": run_model_snapshot["model_group_code"],
+            "model_group_type": run_model_snapshot["model_group_type"],
+            "model_group_revision": run_model_snapshot["model_group_revision"],
+            "model_selection_mode": run_model_snapshot["model_selection_mode"],
+            "usage_scene": run_model_snapshot["usage_scene"],
+            "model_policy_version": run_model_snapshot["model_policy_version"],
+        })
     return compile_execution_spec(spec_payload)

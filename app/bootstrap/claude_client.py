@@ -10,8 +10,8 @@ from app.execution.infrastructure.harness.claude.typed_blocks import ClaudeTyped
 from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
 
 
-def prepare_claude_result_usage(*, session_id, prompt, resumed_entries=None):
-    return ClaudeResultUsage(session_id=session_id, prompt=prompt, resumed_entries=resumed_entries)
+def prepare_claude_result_usage(*, session_id, prompt, resumed_entries=None, scope_id=None):
+    return ClaudeResultUsage(session_id=session_id, prompt=prompt, resumed_entries=resumed_entries, scope_id=scope_id)
 
 
 def prepare_claude_typed_observations():

@@ -30,6 +30,7 @@ interface ZipUploadModalProps {
   onZipSkillToggle: (name: string) => void;
   onZipSelectAll: (names: string[]) => void;
   onZipUpload: () => void;
+  error?: string | null;
 }
 
 export function ZipUploadModal({
@@ -54,6 +55,7 @@ export function ZipUploadModal({
   onZipSkillToggle,
   onZipSelectAll,
   onZipUpload,
+  error,
 }: ZipUploadModalProps) {
   const { t } = useTranslation();
 
@@ -101,6 +103,8 @@ export function ZipUploadModal({
       icon={<UploadCloud size={16} />}
       width="wide"
       footer={
+        <div>
+          {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger-text)]">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Button type="default"
             onClick={() => setShowZipModal(false)}
@@ -132,6 +136,7 @@ export function ZipUploadModal({
             </Button>
           )}
         </div>
+        </div>
       }
     >
       <div data-disable-global-file-drop="true" className="es-form">
@@ -160,7 +165,7 @@ export function ZipUploadModal({
           <div
             className={`flex h-14 w-14 items-center justify-center rounded-lg transition-all duration-200 ${
               isDragging
-                ? "bg-[var(--theme-primary)] text-white shadow-lg shadow-[var(--theme-primary)]/20 scale-110"
+                ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)] shadow-lg shadow-[var(--theme-primary)]/20 scale-110"
                 : "bg-[var(--theme-primary-light)] text-[var(--theme-primary)] group-hover:scale-105"
             }`}
           >
@@ -219,7 +224,7 @@ export function ZipUploadModal({
                     <span
                       className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold ${
                         isComplete
-                          ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-white"
+                          ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
                           : isCurrent
                             ? "border-[var(--theme-primary)] text-[var(--theme-primary)]"
                             : "border-[var(--theme-border)]"
@@ -245,7 +250,7 @@ export function ZipUploadModal({
               })}
             </ol>
             {adminReleaseBlocked && (
-              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+              <p className="mt-3 rounded-md border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-2.5 py-2 text-xs leading-5 text-[var(--theme-warning-text)]">
                 {t("skills.adminReleaseBlocked")}
               </p>
             )}
@@ -304,7 +309,7 @@ export function ZipUploadModal({
             </p>
             {targetMissing ? (
               <p
-                className="rounded-md border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs leading-5 text-[var(--theme-danger)]"
+                className="rounded-md border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-xs leading-5 text-[var(--theme-danger-text)]"
                 role="alert"
               >
                 {t("skills.updateZipTargetMismatch", { name: targetSkillName })}
@@ -385,12 +390,12 @@ export function ZipUploadModal({
                           </span>
                         )}
                         {!skill.already_exists && adminRelease && (
-                          <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          <span className="shrink-0 rounded-full bg-[var(--theme-success-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-success-text)]">
                             {t("skills.publishNewSkill")}
                           </span>
                         )}
                         {!skill.already_exists && !adminRelease && (
-                          <span className="shrink-0 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                          <span className="shrink-0 rounded-full bg-[var(--theme-warning-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-warning-text)]">
                             {t("skills.newSkillImportUnsupported")}
                           </span>
                         )}

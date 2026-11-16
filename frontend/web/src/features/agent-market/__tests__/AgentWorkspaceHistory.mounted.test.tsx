@@ -40,6 +40,7 @@ const { authApi } = await import("../../../services/api/auth");
 const { sessionApi } = await import("../../../services/api/session");
 const { agentProfileApi } = await import("../../../services/api/agentProfile");
 const { modelPublicApi } = await import("../../../services/api/modelPublic");
+const { modelGroupsApi } = await import("../../../services/api/modelGroups");
 const { Permission } = await import("../../../types/auth");
 const { toast } = await import("@lobehub/ui/base-ui");
 const { default: i18n } = await import("../../../i18n");
@@ -102,8 +103,9 @@ async function deleteTask(scope: HTMLElement, title: string) {
   await click(button(document.querySelector('[role="dialog"]')!, i18n.t("common.delete")));
 }
 
-async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
-  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi } };
+async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}, loadGroups = modelGroupsApi.listPublic) {
+  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi }, groups: modelGroupsApi.listPublic };
+  modelGroupsApi.listPublic = loadGroups;
   const originalToastError = toast.error;
   const toastErrors: string[] = [];
   toast.error = (message) => { toastErrors.push(String(message)); return { id: "test-toast", close() {}, update() {} }; };
@@ -119,7 +121,8 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     listAuthoritative: async () => [row("session-a"), row("session-b"), row("session-c")],
     get: async (id: string) => row(id),
     getAuthoritative: async (id: string) => projection(id),
-    getEvents: async (id: string) => ({ events: [{ id: `event-${id}`, event_type: "user:message", timestamp: "2026-10-01T00:00:00Z", data: { content: `Transcript ${id}` } }] }),
+    getEvents: async (id: string) => ({ session_id: id, current_run_id: `run-${id}`, events: [{ id: `event-${id}`, run_id: `run-${id}`, event_type: "user:message", timestamp: "2026-10-01T00:00:00Z", data: { content: `Transcript ${id}` } }] }),
+    getStatus: async (id: string, runId?: string) => ({ session_id: id, run_id: runId ?? `run-${id}`, status: "completed", raw_status: "succeeded" }),
     getRunInputHistory: async (id: string) => ({ session_id: id, runs: [], has_more: false, next_before_run_id: null }),
     delete: async () => ({}),
     update: async (id: string, data: { name: string }) => ({ status: "ok", session: row(id, data.name) }),
@@ -144,13 +147,34 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     toast.error = originalToastError;
     Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
     Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
+    modelGroupsApi.listPublic = originals.groups;
     throw error;
   }
+  // One primary sidebar renders one history projection at a time; the scope
+  // switch changes presentation only and never merges the two server sources.
+  async function showScope(scope: "tasks" | "all") {
+    const label = scope === "tasks" ? "任务历史" : "全部对话";
+    const switchGroup = container.querySelector<HTMLElement>("[data-history-scope-switch]");
+    assert.ok(switchGroup, "expected the primary sidebar history scope switch");
+    const target = Array.from(switchGroup.querySelectorAll("button")).find(
+      (item) => item.textContent?.trim() === label,
+    );
+    assert.ok(target, `expected the ${label} scope control`);
+    if (target.getAttribute("aria-pressed") !== "true") await click(target);
+    assert.equal(
+      switchGroup.querySelector('[aria-pressed="true"]')?.textContent?.trim(),
+      label,
+    );
+  }
   const globalHistory = () => container.querySelector<HTMLElement>("[data-workbench-global-history]")!;
-  const agentHistory = () => container.querySelector<HTMLElement>("[data-agent-conversation-panel]")!;
+  const agentHistory = () => container.querySelector<HTMLElement>("[data-workbench-task-history]")!;
   return {
-    container, globalHistory, agentHistory, toastErrors, path: () => currentPath,
-    async expandGlobal() { const group = globalHistory()?.querySelector('button[aria-expanded="false"]'); if (group) await click(group); },
+    container, globalHistory, agentHistory, showScope, toastErrors, path: () => currentPath,
+    async expandGlobal() {
+      await showScope("all");
+      const group = globalHistory()?.querySelector('button[aria-expanded="false"]');
+      if (group) await click(group);
+    },
     async changeAccount(next: string) { account = next; await React.act(async () => { await auth.refreshUser(); }); await settle(); },
     async navigate(path: string | number) { await React.act(async () => { if (typeof path === "number") navigate(path); else navigate(path); }); await settle(); },
     async close() {
@@ -158,9 +182,24 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
       toast.error = originalToastError;
       Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
       Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
+      modelGroupsApi.listPublic = originals.groups;
     },
   };
 }
+
+test("history model restored before first membership hydration remains selected", async () => {
+  const groups = deferred<Awaited<ReturnType<typeof modelGroupsApi.listPublic>>>();
+  const view = await mountWorkspace({ get: async (id: string) => ({ ...row(id), metadata: { agent_options: { model_id: "model-history", model: "model-history", selection_mode: "explicit", group_id: "same-group" } } }) }, () => groups.promise);
+  try {
+    await expectTranscript(view.container, "session-a");
+    modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }, { id: "model-history", value: "model-history", label: "历史模型" }], count: 2, enabled_count: 2, default_model_id: "model-default" });
+    await React.act(async () => groups.resolve({ groups: [{ id: "same-group", code: "default", name: "普通默认组", type: "ordinary_default", enabled: true, revision: 1, is_primary: false, availability: "default_not_for_chat", models: [] }], count: 1, version: "model-groups.v1" }));
+    await settle();
+    const picker = view.container.querySelector('[data-composer-model-trigger]');
+    assert.match(picker?.textContent ?? "", /历史模型/);
+    assert.doesNotMatch(picker?.textContent ?? "", /Default/);
+  } finally { await view.close(); }
+});
 
 test("Agent rename and delete update both rendered history scopes without reopening the workspace", async () => {
   const view = await mountWorkspace();
@@ -295,16 +334,16 @@ test("account replacement retires a pending identity failure on the same Agent s
 });
 
 
-test("an acknowledged rename still updates both lists after its editing row is collapsed", async () => {
+test("an acknowledged rename still updates both lists after another scope is shown", async () => {
   const pending = deferred<{ status: string; session: BackendSession }>();
   const view = await mountWorkspace({ update: async () => pending.promise });
   try {
     await view.expandGlobal();
     await renameTask(view.agentHistory(), "Task B", "Collapsed rename B");
-    await click(view.agentHistory().querySelector('[aria-label="收起历史会话"]'));
+    await view.showScope("all");
     await React.act(async () => pending.resolve({ status: "ok", session: row("session-b", "Collapsed rename B") }));
     assert.ok(task(view.globalHistory(), "Collapsed rename B"));
-    await click(view.agentHistory().querySelector('[aria-label="展开历史会话"]'));
+    await view.showScope("tasks");
     assert.ok(task(view.agentHistory(), "Collapsed rename B"));
   } finally { await view.close(); }
 });

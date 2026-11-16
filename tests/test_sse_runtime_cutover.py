@@ -7,6 +7,14 @@ def test_release_atomic_cutover_has_no_pg_live_reader_or_predispatch_sdk():
     assert cutover.check() == []
 
 
+def test_cancellation_publication_inventory_tracks_the_shared_post_processor():
+    owners = cutover._publication_owner_functions(cutover.ROOT)
+    assert ("app/runs/application/cancellation.py", "RunCancellationPostProcessor.post_cancel") in owners
+    assert ("app/routes/runs.py", "cancel_run") not in owners
+    assert ("app/routes/admin_runs.py", "admin_run_cancel") not in owners
+    assert cutover._publication_owner_manifest_failures(owners) == []
+
+
 def test_release_atomic_cutover_rejects_generated_v4_contract_drift(monkeypatch):
     monkeypatch.setattr(
         cutover.generate_sse_v4_contracts,

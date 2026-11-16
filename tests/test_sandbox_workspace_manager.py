@@ -69,6 +69,12 @@ def test_prepare_creates_platform_workspace_namespace(tmp_path):
     claude_instructions = run_root / "workspace" / "CLAUDE.md"
     assert claude_instructions.read_text(encoding="utf-8") == PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
     assert "默认使用简体中文回复用户" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "用户明确指定其他语言" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "输入原件只读" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "实体、数值、单位、日期、引用" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "attach_file" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "除非用户明确要求" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
+    assert "同一助手轮次" in PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS
     assert stat.S_IMODE(claude_instructions.stat().st_mode) == 0o444
     assert (run_root / "logs").is_dir()
     assert meta_path.exists()

@@ -47,7 +47,8 @@ def chat_submission_client(monkeypatch):
         yield client
 
 
-_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api", "/api/ai")
+# Agent conversation history is served only under /api/ai.
+_CHAT_SESSION_ROUTE_PREFIXES = ("/api/ai",)
 _CHAT_SUBMISSION_CLIENT_HEADERS = {
     "x-ai-user-id": "user-a",
     "x-ai-tenant-id": "tenant-a",
@@ -442,8 +443,8 @@ async def test_list_sessions_reads_owned_history_without_current_publication_req
     assert calls == [("tenant-a", "user-a", "agt_support", None, 21)]
 
 
-@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
-def test_agent_conversation_history_contract_is_mounted_on_chat_aliases(
+@pytest.mark.parametrize("prefix", _CHAT_SESSION_ROUTE_PREFIXES)
+def test_agent_conversation_history_contract_is_mounted_once(
     monkeypatch, chat_submission_client, prefix
 ):
     from datetime import datetime, timezone

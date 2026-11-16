@@ -9,7 +9,7 @@ from app.mcp import api as mcp_api
 from app.mcp.application import runtime_registry
 from app.auth import normalize_roles
 from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
-from app.tool_policy import evaluate_tool_policy
+from app.mcp.domain.tool_policy import evaluate_tool_policy
 from app.mcp.application.selection_authorization import McpSelectionAuthorization
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 
@@ -234,7 +234,11 @@ async def test_queue_preparation_keeps_current_principal_after_source_replay(mon
     async def no_skills(*args, **kwargs):
         return []
 
+    async def no_model_reauthorization(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(runs, "authorize_selected_chat_mcp_tools", current_selection)
+    monkeypatch.setattr(runs, "reauthorize_model", no_model_reauthorization)
     monkeypatch.setattr(runs.skills_run_snapshots, "materialize_run_skill_manifests", no_skills)
     principal = AuthPrincipal(
         user_id="user-a", display_name="User", tenant_id="tenant-a",
@@ -243,7 +247,7 @@ async def test_queue_preparation_keeps_current_principal_after_source_replay(mon
     with pytest.raises(RepositoryAuthorizationError) as error:
         await runs.prepare_copied_run_for_queue(
             object(), copied={
-                "run_id": "child", "execution_kind": "harness_chat",
+                "run_id": "child", "session_id": "session-a", "execution_kind": "harness_chat",
                 "executor_type": HARNESS_CHAT_EXECUTOR_TYPE,
                 "input": {"mcp_tool_ids": ["gateway::search"]},
                 "principal_roles": ["historical-user"], "principal_department_id": "historical",

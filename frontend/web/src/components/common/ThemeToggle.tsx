@@ -16,7 +16,7 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
       onClick={toggleTheme}
       className={className}
       aria-label={theme === "light" ? t("theme.switchToDark") : t("theme.switchToLight")}
-      icon={theme === "light" ? <Moon size={20} /> : <Sun size={20} className="text-amber-400" />}
+      icon={theme === "light" ? <Moon size={20} /> : <Sun size={20} className="text-[var(--theme-warning-text)]" />}
       title={
         theme === "light" ? t("theme.switchToDark") : t("theme.switchToLight")
       }

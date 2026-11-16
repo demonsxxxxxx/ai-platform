@@ -184,7 +184,7 @@ export default function DocumentPreviewToolbar({
             {data?.content && !unsupportedPreviewFile && (
               <Button type="text"
                 htmlType="button"
-                icon={copied ? <Check size={16} className="text-green-500 dark:text-green-400" /> : <Copy size={16} />}
+                icon={copied ? <Check size={16} className="text-[var(--theme-success-text)]" /> : <Copy size={16} />}
                 aria-label={copied ? t("documents.copied") : t("documents.copy")}
                 onClick={(e) => {
                   e.stopPropagation();

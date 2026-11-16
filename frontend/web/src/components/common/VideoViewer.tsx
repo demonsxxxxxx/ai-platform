@@ -58,19 +58,19 @@ export function VideoViewer({ src, isOpen, onClose, title }: VideoViewerProps) {
   return createPortal(
     <div
       data-yields-sidebar
-      className="fixed inset-0 z-[300] flex flex-col bg-black"
+      className="fixed inset-0 z-[300] flex flex-col bg-[var(--theme-overlay-solid)]"
       onClick={handleBackgroundClick}
     >
-      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black/80 shrink-0">
+      <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-[color-mix(in_srgb,var(--theme-overlay-solid)_80%,transparent)] shrink-0">
         <Button type="text"
           htmlType="button"
           onClick={onClose}
           size="large"
-          icon={<X size={20} className="text-white/70" />}
+          icon={<X size={20} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />}
           aria-label={t("common.close")}
         />
         {title && (
-          <span className="text-sm text-white/70 truncate max-w-[60vw] hidden sm:block">
+          <span className="text-sm text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)] truncate max-w-[60vw] hidden sm:block">
             {title}
           </span>
         )}
@@ -83,8 +83,8 @@ export function VideoViewer({ src, isOpen, onClose, title }: VideoViewerProps) {
             a.click();
           }}
           size="large"
-          className="text-white/70"
-          icon={<Download size={18} className="text-white/70" />}
+          className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]"
+          icon={<Download size={18} className="text-[color-mix(in_srgb,var(--theme-on-overlay)_70%,transparent)]" />}
           aria-label={t("imageViewer.download")}
         >
           <span className="hidden sm:inline">{t("imageViewer.download")}</span>

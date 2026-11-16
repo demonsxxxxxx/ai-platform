@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -19,6 +20,11 @@ from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
 from app.path_safety import ensure_creatable_inside
 from app.storage import ObjectStorageSizeLimitError
+from app.context.api import (
+    prepare_artifact_transfer, download_artifact_transfer, ARTIFACT_STAGE_MAX_BYTES,
+    ARTIFACT_JSON_COMPAT_MAX_BYTES, ArtifactTransferError, expected_artifact_sha256,
+    ArtifactWorkspace, artifact_stage_result,
+)
 
 
 class ContextRetrievalDenied(PermissionError):
@@ -129,6 +135,9 @@ class ContextRetrievalRepository(Protocol):
 
     def read_storage_prefix(self, row: dict[str, Any], *, max_bytes: int) -> bytes:
         """Read at most max_bytes, without requiring the complete object to fit."""
+        ...
+
+    async def download_artifact(self, storage_key: str, max_bytes: int):
         ...
 
     def read_storage_bytes(
@@ -321,9 +330,12 @@ class ContextRetrievalAuthority:
         repository: ContextRetrievalRepository,
         *,
         storage_io: Callable[..., Awaitable[Any]] = asyncio.to_thread,
+        artifact_download: Callable[[str, int], Awaitable[Any]] | None = None,
         _stage_delivery: Literal["broker_export", "local_workspace"] | None = None,
         _workspace_root: str | Path | None = None,
     ) -> None:
+        self._artifact_download = artifact_download
+        self._artifact_workspace = ArtifactWorkspace()
         self._repository = repository
         self._storage_io = storage_io
         self._stage_delivery = _stage_delivery
@@ -334,8 +346,10 @@ class ContextRetrievalAuthority:
         cls,
         conn: Any,
         storage: Any,
+        *,
+        artifact_download: Callable[[str, int], Awaitable[Any]] | None = None,
     ) -> ContextRetrievalAuthority:
-        return cls(RepositoryContextRetrievalRepository(conn, storage=storage))
+        return cls(RepositoryContextRetrievalRepository(conn, storage=storage), artifact_download=artifact_download)
 
     @classmethod
     def for_broker_connection(
@@ -356,8 +370,10 @@ class ContextRetrievalAuthority:
         cls,
         transaction_factory: Callable[[], AbstractAsyncContextManager[Any]],
         storage: Any,
+        *,
+        artifact_download: Callable[[str, int], Awaitable[Any]] | None = None,
     ) -> ContextRetrievalAuthority:
-        return cls(TransactionalContextRetrievalRepository(transaction_factory, storage=storage))
+        return cls(TransactionalContextRetrievalRepository(transaction_factory, storage=storage), artifact_download=artifact_download)
 
     @classmethod
     def for_workspace_transaction(
@@ -367,10 +383,12 @@ class ContextRetrievalAuthority:
         workspace_root: str | Path,
         *,
         storage_io: Callable[..., Awaitable[Any]],
+        artifact_download: Callable[[str, int], Awaitable[Any]] | None = None,
     ) -> ContextRetrievalAuthority:
         return cls(
             TransactionalContextRetrievalRepository(transaction_factory, storage=storage),
             storage_io=storage_io,
+            artifact_download=artifact_download,
             _stage_delivery="local_workspace",
             _workspace_root=workspace_root,
         )
@@ -442,9 +460,11 @@ class ContextRetrievalAuthority:
         identifier = self._required_identifier(values, identifier_key)
         max_bytes = _bounded_int(
             values.get("max_bytes"),
-            default=(1048576 if identifier_key == "file_id" else 16777216),
+            default=(1048576 if identifier_key == "file_id" else (
+                ARTIFACT_STAGE_MAX_BYTES if self._stage_delivery == "local_workspace" else ARTIFACT_JSON_COMPAT_MAX_BYTES)),
             minimum=1,
-            maximum=(1048576 if identifier_key == "file_id" else 16777216),
+            maximum=(1048576 if identifier_key == "file_id" else (
+                ARTIFACT_STAGE_MAX_BYTES if self._stage_delivery == "local_workspace" else ARTIFACT_JSON_COMPAT_MAX_BYTES)),
         )
         if self._stage_delivery == "local_workspace" and self._workspace_root is not None:
             stage = (
@@ -643,35 +663,46 @@ class ContextRetrievalAuthority:
         run_id: str,
         artifact_id: str,
         workspace_root: str,
-        max_bytes: int = 16777216,
+        max_bytes: int = ARTIFACT_STAGE_MAX_BYTES,
     ) -> dict[str, Any]:
-        """Stage an artifact explicitly authorized by the current run snapshot."""
-
-        exported = await self.export_run_artifact_for_broker(
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            artifact_id=artifact_id,
-            max_bytes=max_bytes,
-        )
-        name = str(exported["name"])
-        artifact_segment = self._safe_id_segment(artifact_id)
-        byte_cap = int(exported["max_bytes"])
-        raw_bytes = bytes(exported["content_bytes"])
-        target_dir = Path(workspace_root) / "context" / artifact_segment
-        target_path = target_dir / name
-        ensure_creatable_inside(workspace_root, target_path, "context_artifact_workspace_escape")
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_bytes(raw_bytes)
-        return self._envelope(
-            "context_retrieval.stage_run_artifact_to_workspace",
-            artifact_id=artifact_id,
-            workspace_path=f"context/{artifact_segment}/{name}",
-            bytes_staged=len(raw_bytes),
-            max_bytes=byte_cap,
-        )
+        """Restore once per Attempt; subsequent calls preserve local edits."""
+        try:
+            source = await prepare_artifact_transfer(
+                self, dict(tenant_id=tenant_id, workspace_id=workspace_id, user_id=user_id,
+                           session_id=session_id, run_id=run_id),
+                {"artifact_id": artifact_id, "max_bytes": max_bytes},
+            )
+            async with self._artifact_workspace.lock(workspace_root, artifact_id, source.name):
+                try:
+                    download = self._artifact_download or getattr(self._repository, "download_artifact", None)
+                    if download is None:
+                        raise ArtifactTransferError("context_artifact_unavailable")
+                    downloaded = await download_artifact_transfer(source, download)
+                except ObjectStorageSizeLimitError as exc:
+                    raise ArtifactTransferError("context_artifact_identity_mismatch") from exc
+                try:
+                    current = await prepare_artifact_transfer(
+                        self, dict(tenant_id=tenant_id, workspace_id=workspace_id, user_id=user_id,
+                                   session_id=session_id, run_id=run_id),
+                        {"artifact_id": artifact_id, "max_bytes": max_bytes},
+                    )
+                    if current != source:
+                        raise ArtifactTransferError("context_artifact_identity_mismatch")
+                    metadata = source.metadata(sha256=downloaded.sha256)
+                    with self._artifact_workspace.target(workspace_root, artifact_id, source.name, source_identity=(
+                        downloaded.sha256, source.size_bytes, source.source_run_id,
+                    )) as target:
+                        reused = target.reuse()
+                        if reused is not None:
+                            return artifact_stage_result(metadata, bytes_staged=reused, reused=True)
+                        with target.output() as output, Path(downloaded.path).open("rb") as stream:
+                            while chunk := stream.read(65536):
+                                output.write(chunk)
+                        return artifact_stage_result(metadata, bytes_staged=downloaded.size_bytes, reused=False)
+                finally:
+                    Path(downloaded.path).unlink(missing_ok=True)
+        except ArtifactTransferError as exc:
+            raise ContextRetrievalDenied(str(exc)) from exc
 
     async def export_context_file_for_broker(
         self,
@@ -721,9 +752,9 @@ class ContextRetrievalAuthority:
         session_id: str,
         run_id: str,
         artifact_id: str,
-        max_bytes: int = 16777216,
+        max_bytes: int = ARTIFACT_JSON_COMPAT_MAX_BYTES,
     ) -> dict[str, Any]:
-        """Load bounded snapshot-authorized artifact bytes for a trusted runtime broker."""
+        """16 MiB JSON compatibility for deployed pre-stream sandbox executors."""
 
         row = await self._get_artifact_row(
             tenant_id=tenant_id,
@@ -735,10 +766,18 @@ class ContextRetrievalAuthority:
         )
         raw_bytes, byte_cap = await self._bounded_export_bytes(
             row,
-            max_bytes=max_bytes,
+            max_bytes=min(max_bytes, ARTIFACT_JSON_COMPAT_MAX_BYTES),
             size_required_reason="context_artifact_size_required",
             too_large_reason="context_artifact_too_large",
         )
+        try:
+            digest = expected_artifact_sha256(row)
+            if len(raw_bytes) != self._declared_size_bytes(row) or (
+                digest is not None and hashlib.sha256(raw_bytes).hexdigest() != digest
+            ):
+                raise ArtifactTransferError("context_artifact_identity_mismatch")
+        except ArtifactTransferError as exc:
+            raise ContextRetrievalDenied(str(exc)) from exc
         return {
             "artifact_id": artifact_id,
             "name": self._safe_name(row),

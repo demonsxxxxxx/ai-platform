@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { watchBrowserRunText } from "../../../hooks/useAgent/browserRunLatency";
 import {
   AlertTriangle,
-  Ban,
+  Square,
   CheckCircle,
   Clock3,
   Download,
@@ -109,6 +109,7 @@ function MessagePartRendererContent({
         part.public_category,
         part.status,
         part.duration_ms,
+        part.public_display_name,
       )
     ) {
       return null;
@@ -121,6 +122,7 @@ function MessagePartRendererContent({
         publicDisplayName={publicDisplayName}
         publicOperationId={part.public_operation_id}
         durationMs={part.duration_ms}
+        showDuration={withinWorkDetails}
       />
     );
   }
@@ -213,17 +215,12 @@ function MessagePartRendererContent({
 
   if (part.type === "cancelled") {
     return (
-      <div
-        className={clsx(
-          "flex items-center gap-2 px-4 py-2.5 rounded-lg",
-          "bg-amber-50 dark:bg-amber-950/40",
-          "border border-amber-200/60 dark:border-amber-800/60",
-          "text-amber-700 dark:text-amber-400",
-          "text-sm font-medium",
-        )}
-      >
-        <Ban size={16} className="shrink-0" />
-        <span>{t("chat.message.cancelled")}</span>
+      // Stopped-run style: a quiet reason chip under the partial answer.
+      <div className="my-1" data-message-stopped>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--theme-border)] px-2.5 py-1 text-xs text-[var(--theme-text-secondary)]">
+          <Square size={9} className="shrink-0 fill-current" aria-hidden="true" />
+          {t("chat.message.cancelled")}
+        </span>
       </div>
     );
   }
@@ -295,12 +292,14 @@ function RunStatusItem({
           : isActive
             ? LoaderCircle
             : CheckCircle;
+  // Error-state style: no border; a soft tint only for errors and warnings,
+  // and informational steps read as a plain muted line.
   const tone =
     part.severity === "error"
-      ? "border-red-200/70 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300"
+      ? "rounded-2xl bg-[var(--theme-danger-soft)] px-4 py-3 text-[var(--theme-danger-text)]"
       : part.severity === "warning"
-        ? "border-amber-200/70 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
-        : "border-stone-200/70 bg-stone-50 text-stone-700 dark:border-stone-700/60 dark:bg-stone-800/40 dark:text-stone-300";
+        ? "rounded-2xl bg-[var(--theme-warning-soft)] px-4 py-3 text-[var(--theme-warning-text)]"
+        : "py-1 text-[var(--theme-text-secondary)]";
   const terminalDefinition = getPublicTerminalPresentationDefinition(
     part.event_type,
   );
@@ -345,7 +344,7 @@ function RunStatusItem({
     <StatusRoot
       role={part.severity === "info" ? "status" : "alert"}
       className={clsx(
-        "my-1 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2 text-sm",
+        "my-1 flex min-w-0 items-start gap-2.5 text-sm",
         tone,
       )}
     >
@@ -360,7 +359,7 @@ function RunStatusItem({
         <div className="break-words font-medium leading-snug">{eventLabel}</div>
         <div
           className={clsx(
-            "mt-0.5 text-xs opacity-70",
+            "mt-0.5 text-[13px] leading-snug opacity-75",
             terminalDefinition || detailKey ? "break-words" : "truncate",
           )}
         >

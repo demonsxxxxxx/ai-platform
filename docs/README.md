@@ -43,10 +43,11 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
 | General React UI library direction and staged migration | [Lobe UI adoption](frontend/lobe-ui-adoption.md) |
 | AI chat components, runtime adaptation and retained renderers | [assistant-ui chat adoption](frontend/assistant-ui-chat-adoption.md) |
-| LobeHub-derived visual rules and style sample acceptance | [Visual guidelines](frontend/lobehub-visual-guidelines.md) |
+| Visual rules: theme tokens, chat layout (ChatGPT Clone reference), acceptance | [Visual guidelines](frontend/visual-guidelines.md) |
 | Current shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
 | Retired feedback and announcement entrypoints | [Unavailable contract](frontend/feedback-announcements-unavailable.md) |
+| Ordinary chat document processing | [Preinstalled document plugin](architecture/ordinary-chat-document-plugin.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 
 Do not duplicate these rules in an overview. When two current documents conflict,
@@ -81,6 +82,13 @@ Chat and SSE contracts until explicitly replaced.
 
 ## Delivery and operations
 
+[Frontend page and component architecture](frontend/frontend-page-component-architecture.md)
+defines page composition, shared chat capabilities, application-local components
+and incremental retirement, prioritizing the Agent chat page. It identifies the
+first source slice's Agent binding/first-send hooks and presentation slots separately
+from the remaining proposed slices. Lobe, assistant-ui, visual and platform-state
+contracts remain authoritative; source migration does not establish deployment.
+
 [Agent 流式消息与最终交付方案](implementation/streaming-message-parts-design.md)
 records the accepted #1651 source contract for incremental public text parts,
 final-answer receipt selection, history and frontend consumers, optional attachments,
@@ -102,10 +110,14 @@ performance and production acceptance remain separate from source completion
 and deployment evidence.
 
 [AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[coding standards](agent-rules/coding-standards.md),
+[change verification](agent-rules/change-verification.md),
 [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
-work, verification, and handoff. This cleanup does not add another approval system.
+work, verification, and handoff. Change verification owns scenario selection and
+evidence reuse; local test execution owns the pytest runner and isolation. These
+contracts do not add another approval system.
 
 [Release operations](operations/release-operations-runbook.md)
 remains the sole executable release procedure. [SSE cutover acceptance](operations/redis-streams-sse-cutover-acceptance.md)
@@ -118,11 +130,12 @@ and is historical unless its exact subject has been freshly verified.
 ## Repository improvement and dated inventories
 
 [Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
-link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
-measurement scope, denominators and unmeasured fields; its generated reports are
-dated observations. The [active Harness plan](exec-plans/active/harness-migration.md)
-and [debt inventory](exec-plans/tech-debt-tracker.md) own this improvement's progress
-and prerequisites, not product or release authority.
+link the existing owners. Measure current source with
+`scripts/analysis/source_quality_inventory.py`. The [debt inventory](exec-plans/tech-debt-tracker.md) lists
+known architecture debt, not product or release authority. The stopped
+[Harness migration](exec-plans/completed/harness-migration-2026-10.md), its
+blueprint and its [quality baseline](exec-plans/completed/quality-baseline-2026-10-13/QUALITY_SCORE.md)
+are historical records, not active rules.
 
 ## Document maintenance
 

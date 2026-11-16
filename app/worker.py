@@ -22,7 +22,7 @@ from app.runs.api import (
 from app.streaming.api import (
     WorkerV4Capabilities, admit_v4_stream, persist_worker_event, publish_run_event,
 )
-from app.validation import assert_safe_id
+from app.kernel.identifiers import assert_safe_id
 
 
 class WorkerDirectAssistantDeltaError(RuntimeError):
@@ -160,8 +160,8 @@ async def process_run_payload(
                 runtime_sandbox_execution_detached = True
                 return WorkerOutcome(status="running", run_id=run_payload.run_id)
             latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-        except WorkerRunCancelled:
-            return await completion.cancel()
+        except WorkerRunCancelled as exc:
+            return await completion.cancel(exc)
         except Exception as exc:  # noqa: BLE001 - worker executor boundary.
             return await completion.fail(exc)
         return await completion.complete(result, latency_ms=latency_ms)

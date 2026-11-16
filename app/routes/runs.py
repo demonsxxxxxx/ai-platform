@@ -11,7 +11,7 @@ from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.bootstrap.run_inputs import RunInputSubmissionRequest
-from app.capabilities import get_capability
+from app.agent_apps.api import get_capability
 from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
@@ -30,7 +30,12 @@ from app.control_plane_contracts import (
 )
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.db import transaction
-from app.execution.api import resolve_chat_model_selection
+from app.execution.api import resolve_chat_model_selection, group_snapshot_fields, admit_document_plugin
+from app.execution.api import model_selection_error_status
+from app.runs.api import (
+    reauthorize_model, requested_run_model_selection, selected_model_binding_fields,
+    direct_run_usage_scene,
+)
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
@@ -68,12 +73,10 @@ from app.queue import (
     get_queue_insight,
     get_run_queue_position,
     read_queue_admission,
-    remove_queued_run,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
-from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
-from app.run_admission_policy import (
+from app.runs.api import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
     contains_platform_multi_agent_control,
@@ -108,10 +111,11 @@ from app.runs.api import (
     RunInputError,
     RunInputsService,
     RunCancellationUseCase,
+    RunCancellationQueueCleanupError,
     RunDiagnosticsService,
     bind_run_model,
-    inherit_run_model,
     public_run_outcome,
+    replace_run_model_snapshot,
     run_retry_block_reason,
     run_unconfirmed_execution_block_reason,
 )
@@ -125,21 +129,25 @@ from app.runs.infrastructure import creation_postgres as runs_creation
 from app.runs.infrastructure import postgres as runs_postgres
 from app.runs.infrastructure import replay_postgres as runs_replay
 from app.runs.infrastructure import steps_postgres as runs_steps
-from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.api import admit_skill_run, pin_skill_run_mcp_tools
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots
 from app.skills.pinning import SkillVersionMaterializationError, validate_skill_manifest_refs
 from app.streaming.api import (
-    V4PublicationTransportUnavailable,
     WorkerV4Capabilities,
-    admit_v4_stream,
-    publish_run_event,
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
-from app.validation import assert_safe_principal_user_id
+from app.kernel.identifiers import assert_safe_principal_user_id
 
-_sandbox_cleanup = build_sandbox_runtime_cleanup()
+async def _require_inherited_model_access(conn, *, snapshot: dict[str, Any], principal: AuthPrincipal):
+    try:
+        return await reauthorize_model(
+            conn, snapshot=snapshot, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            load_session=conversations_postgres.get_session_for_action,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="model_not_available_to_user") from exc
+
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
@@ -204,21 +212,6 @@ async def _audit_wrapped_capability_denial(
     cause = error.__cause__
     if isinstance(cause, platform_errors.RepositoryAuthorizationError):
         await _audit_capability_denial(principal, cause, source=source)
-
-
-async def _remove_cancelled_queue_payloads(
-    *,
-    tenant_id: str,
-    run_id: str,
-    result: dict[str, Any],
-) -> list[Exception]:
-    failures: list[Exception] = []
-    if result["status"] == "cancelled":
-        try:
-            await remove_queued_run(tenant_id=tenant_id, run_id=run_id)
-        except Exception as exc:
-            failures.append(exc)
-    return failures
 
 
 def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, Any]:
@@ -635,6 +628,19 @@ async def prepare_copied_run_for_queue(
     )
     if contains_persisted_platform_multi_agent_control(copied):
         raise RepositoryConflictError(PLATFORM_MULTI_AGENT_NOT_SUPPORTED)
+    selected_model = await _require_inherited_model_access(
+        conn,
+        snapshot={**copied_snapshot, "session_id": copied["session_id"]},
+        principal=effective_principal,
+    )
+    if selected_model is not None:
+        copied_snapshot.update(group_snapshot_fields(selected_model))
+        await replace_run_model_snapshot(
+            conn,
+            tenant_id=effective_principal.tenant_id,
+            run_id=str(copied["run_id"]),
+            **selected_model_binding_fields(selected_model),
+        )
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
     skill_manifest_refs = copied_snapshot["skill_manifests"]
@@ -937,15 +943,29 @@ async def create_run(
                 skill_version = None
                 release_decision_payload = {}
                 skill_manifests = []
+            session_id = request.session_id or platform_values.new_id("ses")
             try:
-                selected_model = await resolve_chat_model_selection(conn, selection=None)
+                requested_selection = requested_run_model_selection(request)
+                usage_scene = await direct_run_usage_scene(
+                    conn, execution_kind=execution_kind, session_id=request.session_id,
+                    tenant_id=tenant_id, user_id=user_id, workspace_id=request.workspace_id,
+                    load_session=conversations_postgres.get_session_for_action,
+                )
+                selected_model = await resolve_chat_model_selection(
+                    conn,
+                    selection=requested_selection,
+                    user_id=principal.user_id,
+                    tenant_id=principal.tenant_id,
+                    usage_scene=usage_scene,
+                )
             except ValueError as exc:
-                raise HTTPException(status_code=503, detail="run_model_unavailable") from exc
+                status = model_selection_error_status(str(exc))
+                raise HTTPException(status_code=status, detail=str(exc) if status != 503 else "run_model_unavailable") from exc
             if selected_model is None:
                 raise HTTPException(status_code=503, detail="run_model_unavailable")
             skill_manifest_transport = skills_run_snapshots.skill_manifest_refs(skill_manifests)
-            session_id = request.session_id or platform_values.new_id("ses")
             run_id = platform_values.new_id("run")
+            run_input = admit_document_plugin(run_input, execution_kind)
             base_queue_payload = {
                 "tenant_id": tenant_id,
                 "workspace_id": request.workspace_id,
@@ -963,6 +983,7 @@ async def create_run(
                 "skill_manifests": skill_manifest_transport,
                 "model_id": selected_model.model_id,
                 "model_value": selected_model.model_value,
+                **group_snapshot_fields(selected_model),
                 **(
                     {"schema_version": RUN_PAYLOAD_SCHEMA_VERSION_V2}
                     if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
@@ -970,11 +991,6 @@ async def create_run(
                 ),
             }
             queue_payload = _validate_queue_payload_for_enqueue(base_queue_payload)
-            await conversations_postgres.ensure_workspace_belongs_to_tenant(
-                conn,
-                tenant_id=tenant_id,
-                workspace_id=request.workspace_id,
-            )
             await files_run_bindings.authorize_files_for_run(
                 conn,
                 tenant_id=tenant_id,
@@ -985,10 +1001,11 @@ async def create_run(
                 file_ids=request.file_ids,
                 input_modes=input_modes,
             )
+            await conversations_postgres.ensure_workspace_belongs_to_tenant(
+                conn, tenant_id=tenant_id, workspace_id=request.workspace_id,
+            )
             await identity_postgres.ensure_user(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
+                conn, tenant_id=tenant_id, user_id=user_id,
                 display_name=principal.display_name,
             )
             session_id = await conversations_postgres.create_session(
@@ -1019,6 +1036,7 @@ async def create_run(
                     "skill_manifests": queue_payload["skill_manifests"],
                     "model_id": selected_model.model_id,
                     "model_value": selected_model.model_value,
+                    **group_snapshot_fields(selected_model),
                     "schema_version": queue_payload["schema_version"],
                 },
                 principal_roles=principal.roles,
@@ -1033,11 +1051,7 @@ async def create_run(
                 conn,
                 tenant_id=tenant_id,
                 run_id=run_id,
-                model_id=selected_model.model_id,
-                model_value=selected_model.model_value,
-                connection_revision=selected_model.connection_revision,
-                max_input_tokens=selected_model.max_input_tokens,
-                max_output_tokens=selected_model.max_output_tokens,
+                **selected_model_binding_fields(selected_model),
             )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
                 await skills_run_snapshots.insert_run_skill_snapshots_at_creation(
@@ -1179,12 +1193,6 @@ async def copy_run(
                 principal_department_ids=principal.department_ids,
             )
             if copied is not None:
-                await inherit_run_model(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    source_run_id=run_id,
-                    child_run_id=str(copied["run_id"]),
-                )
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,
                     copied=copied,
@@ -1442,12 +1450,6 @@ async def _mutate_run_control_child(
                     principal_department_ids=principal.department_ids,
                 )
                 if copied is not None:
-                    await inherit_run_model(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        source_run_id=run_id,
-                        child_run_id=str(copied["run_id"]),
-                    )
                     queue_payload = await prepare_copied_run_for_queue(
                         conn,
                         copied=copied,
@@ -1740,68 +1742,29 @@ async def cancel_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     runtime = request.app.state.run_stream_runtime
-    cancellation = await _require_run_cancellation_use_case(request).request_owner_cancel(
+    use_case = _require_run_cancellation_use_case(request)
+    cancellation = await use_case.request_owner_cancel(
         tenant_id=principal.tenant_id,
         owner_user_id=principal.user_id,
         run_id=run_id,
     )
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await admit_v4_stream(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-                attempt_id=cancellation.attempt_id,
-            )
-        except V4PublicationTransportUnavailable as exc:
-            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
-        except Exception as exc:  # noqa: BLE001 - cancellation cleanup must outlive publication faults
-            logger.warning(
-                "Cancellation v4 admission deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    result = cancellation.as_route_result() if cancellation is not None else None
-    if result is not None:
-        result.pop("_terminalization_progress", None)
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await publish_run_event(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - durable publication retries after cleanup
-            logger.warning(
-                "Cancellation v4 terminal publication deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    if result is None:
-        raise HTTPException(status_code=404, detail="active_run_not_found")
-    queue_cleanup_failures = await _remove_cancelled_queue_payloads(
-        tenant_id=principal.tenant_id,
-        run_id=run_id,
-        result=result,
-    )
     try:
-        await _sandbox_cleanup.cleanup_cancelled_run_leases(
-            result.get("active_sandbox_leases"),
+        result = await use_case.post_cancel(
+            cancellation,
             tenant_id=principal.tenant_id,
-            run_id=str(result["run_id"]),
             user_id=principal.user_id,
             requested_by_role="owner",
             reason="cancel_requested",
-            trace_id=result.get("trace_id"),
-            provider_factory=create_container_provider,
-            transaction_factory=transaction,
+            worker_capabilities=runtime.worker_capabilities,
         )
     except SandboxCleanupPersistenceError as exc:
         raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from exc
     except SandboxRuntimeCleanupError as exc:
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
-    if queue_cleanup_failures:
-        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
+    except RunCancellationQueueCleanupError as exc:
+        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="active_run_not_found")
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
 
 
@@ -1991,7 +1954,7 @@ async def submit_run_input(
 ) -> dict[str, str]:
     service = _require_run_inputs_service(request)
     try:
-        async with transaction() as conn:
+        async with service.submission_transaction(transaction, tenant_id=principal.tenant_id, user_id=principal.user_id, run_id=run_id) as conn:
             result = await service.submit(
                 conn,
                 tenant_id=principal.tenant_id,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -9,8 +9,7 @@ function read(relativePath: string): string {
   return readFileSync(join(root, "src", relativePath), "utf8");
 }
 
-test("Agent chat keeps expert task history separate from workspace-wide history", () => {
-  const panel = read("features/agent-market/AgentConversationPanel.tsx");
+test("Agent chat keeps both history scopes inside one primary sidebar", () => {
   const chat = read("components/layout/AppContent/ChatAppContent.tsx");
   const shell = read("components/layout/AppContent/AppShell.tsx");
   const sidebar = read("components/panels/SidebarParts/SessionListContent.tsx");
@@ -18,12 +17,20 @@ test("Agent chat keeps expert task history separate from workspace-wide history"
   const menuHost = read("components/layout/AppContent/WorkbenchMenuHost.tsx");
   const userMenu = read("components/layout/UserMenu.tsx");
 
-  assert.match(panel, /data-agent-conversation-panel/);
-  assert.match(panel, /<AgentIdentityAvatar[\s\S]*?\{profile\.name\}/);
-  assert.match(panel, /新建会话/);
-  assert.doesNotMatch(panel, />对话<|搜索历史会话|历史会话<\/div>/);
-  assert.match(panel, /<\/header>\s*<div className="px-4 pb-3 pt-2">\s*<Button/);
-  assert.doesNotMatch(sidebar, /data-agent-workspace-identity/);
+  // One primary sidebar owns navigation and both history projections; no
+  // adjacent Agent panel takes thread width.
+  assert.doesNotMatch(shell, /contentSidebar/);
+  assert.doesNotMatch(`${chat}\n${shell}`, /<AgentConversationPanel/);
+  assert.match(sidebar, /data-history-scope-switch/);
+  assert.match(sidebar, /data-workbench-task-history/);
+  assert.match(sidebar, /data-workbench-global-history/);
+
+  // Scope selection never reclassifies a record: each projection keeps its own
+  // server source and its own selection owner.
+  assert.match(chat, /sessionSource=\{agentWorkspaceSessionSource\}/);
+  assert.match(chat, /buildSessionHistoryPath\(session\.id, session\.agent_conversation\)/);
+  assert.match(chat, /onSelectGlobalHistorySession=\{[\s\S]*handleSelectGlobalHistorySession/);
+
   assert.match(sidebar, /mt-auto flex items-center justify-between[\s\S]*<UserMenu showLabel \/>[\s\S]*<Settings/);
   assert.match(rail, /<UserMenu \/>[\s\S]*workbench-menu-open/);
   assert.match(sidebar, /workbench-menu-open/);
@@ -42,31 +49,22 @@ test("Agent chat keeps expert task history separate from workspace-wide history"
   assert.match(userMenu, /<DropdownMenu[\s\S]*placement=\{showLabel \? "topLeft" : "rightBottom"\}/);
   assert.match(userMenu, /<Drawer[\s\S]*placement="bottom"/);
   assert.doesNotMatch(userMenu, /rect\.bottom \+ 8|window\.innerWidth - rect\.right/);
-  assert.match(panel, /source\.sessions/);
-  assert.match(panel, /source\.loadMore/);
-  assert.match(panel, /source\.removeSession/);
-  assert.match(panel, /<SessionItem/);
-  assert.match(chat, /contentSidebar=\{[\s\S]*?<AgentConversationPanel/);
-  assert.match(chat, /profile=\{agentWorkspace\}/);
-  assert.match(chat, /source=\{agentWorkspaceSessionSource\}/);
-  assert.match(chat, /buildSessionHistoryPath\(session\.id, session\.agent_conversation\)/);
-  assert.match(chat, /onSelectGlobalHistorySession=\{[\s\S]*handleSelectGlobalHistorySession/);
   assert.match(shell, /<WorkbenchMenuHost/);
   assert.doesNotMatch(shell, /<Header|showHeaderUserMenu/);
-  assert.match(shell, /contentSidebar\?: ReactNode/);
-  assert.match(shell, /\{contentSidebar\}/);
 });
 
-test("Agent chat keeps task history in the workspace panel and exposes both histories on mobile", () => {
-  const sessionSidebar = read("components/panels/SidebarParts/SessionListContent.tsx");
-  const panel = read("features/agent-market/AgentConversationPanel.tsx");
+test("the retired adjacent Agent history panel has no production importer", () => {
+  const retired = "features/agent-market/AgentConversationPanel.tsx";
+  const productionSources = [
+    "components/layout/AppContent/ChatAppContent.tsx",
+    "components/layout/AppContent/AppShell.tsx",
+    "components/panels/SessionSidebar.tsx",
+    "components/panels/SidebarParts/SessionListContent.tsx",
+  ];
+  const importers = productionSources.filter((file) =>
+    /AgentConversationPanel|contentSidebar|agentHistoryInMainPanel/.test(read(file)),
+  );
 
-  assert.match(sessionSidebar, /data-workbench-global-history/);
-  assert.match(sessionSidebar, /data-workbench-mobile-history/);
-  assert.match(sessionSidebar, /agentHistoryInMainPanel \? "space-y-1 xl:hidden"/);
-  assert.match(sessionSidebar, /全部对话/);
-  assert.match(sessionSidebar, /任务历史/);
-  assert.match(panel, /xl:flex[\s\S]*w-60/);
-  assert.match(panel, /收起历史会话/);
-  assert.match(panel, /展开历史会话/);
+  assert.deepEqual(importers, [], `${retired} threading must stay unreferenced`);
+  assert.equal(existsSync(join(root, "src", retired)), false);
 });

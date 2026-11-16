@@ -157,7 +157,7 @@ function MemoryRecordRow({
           <Button type="text"
             htmlType="button"
             aria-label={t("memory.workbench.deleteRecord")}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--theme-danger-text)] transition hover:bg-[var(--theme-danger-soft)]"
             onClick={() => onDelete(record.memory_record_id)}
             title={t("common.delete")}
             icon={<Trash2 size={15} />}

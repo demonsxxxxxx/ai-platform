@@ -12,10 +12,8 @@ function readAuthSource(fileName: string): string {
 
 test("auth pages use safe centered mobile layout classes", () => {
   const authPage = readAuthSource("AuthPage.tsx");
-  const authLayout = readAuthSource("AuthLayout.tsx");
 
   assert.equal(authPage.includes("max-wfull"), false);
-  assert.equal(authLayout.includes("max-wfull"), false);
   assert.equal(authPage.includes("auth-crosshatch"), true);
   assert.equal(authPage.includes("min-h-[100dvh]"), true);
 });

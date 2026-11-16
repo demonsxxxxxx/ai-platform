@@ -37,6 +37,27 @@ test("admin Users list encodes bounded search and pagination", async () => {
   ]);
 });
 
+test("admin Users list forwards an abort signal only when one is supplied", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client: AdminUsersApiClient = {
+    async request<T>(url: string, init?: RequestInit): Promise<T> {
+      calls.push({ url, init });
+      return { users: [], total: 0, offset: 0, limit: 100 } as T;
+    },
+  };
+
+  const controller = new AbortController();
+  await fetchAdminUsers({ limit: 100, signal: controller.signal }, client);
+  // No signal keeps the request shape unchanged for existing callers.
+  await fetchAdminUsers({ limit: 100 }, client);
+
+  assert.equal(calls[0].init?.signal, controller.signal);
+  assert.ok(
+    !("signal" in (calls[1].init ?? {})),
+    "omitting the signal must not add an explicit undefined field",
+  );
+});
+
 test("admin User diagnostics encodes identity and stays read only", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const client: AdminUsersApiClient = {

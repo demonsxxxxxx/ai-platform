@@ -1,7 +1,5 @@
 // Re-export types
 export type {
-  EventType,
-  StreamEvent,
   EventData,
   UseAgentOptions,
   SubagentStackItem,

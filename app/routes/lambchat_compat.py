@@ -1,4 +1,12 @@
 # ruff: noqa: B008
+"""Current browser chat-session API: sessions, run history replay and SSE stream.
+
+The module name is historical (the frontend shell was ported from LambChat).
+These routes are the live paths used by ``frontend/web/src/services/api/session.ts``
+and ``hooks/useAgent/sseConnection.ts``; they are not a retirable compatibility
+layer. Migration into the owning contexts is tracked as TD-CONV-001 in
+``docs/exec-plans/tech-debt-tracker.md``.
+"""
 
 import asyncio
 import base64
@@ -9,10 +17,15 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+
+from app.context.api import get_session_continuation
+from app.conversations.api import (
+    normalize_session_run_status as _platform_status, browser_session_run_status as _lambchat_status,
+)
 
 from app import session_actions
 from app.artifacts.infrastructure import records_postgres as artifacts_records
@@ -24,7 +37,7 @@ from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
-from app.execution.api import list_public_models
+from app.execution.api import list_public_models, restored_session_model_metadata, model_selection_error_status
 from app.models import SessionRenameRequest
 from app.projection_redaction import (
     PUBLIC_RETIRED_AGENT_ID,
@@ -33,12 +46,6 @@ from app.projection_redaction import (
     is_retired_agent_for_projection,
     public_agent_id_for_projection,
     public_skill_display_label,
-)
-from app.public_execution import (
-    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    PUBLIC_EXECUTION_EVENT_TYPES,
-    public_execution_event_from_row,
-    validate_public_agent_progress_payload,
 )
 from app.routes.files import MAX_UPLOAD_BYTES
 from app.routes.runs import (
@@ -55,6 +62,10 @@ from app.runs import api as runs_api
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.settings import get_settings
 from app.streaming.api import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PUBLIC_EXECUTION_EVENT_TYPES,
+    public_execution_event_from_row,
+    validate_public_agent_progress_payload,
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
@@ -71,34 +82,9 @@ from app.streaming.redis import (
     StreamContractError,
     StreamTransportUnavailable,
     acquire_sse_authority_lease,
+    acquire_sse_admission_lease,
     close_sse_authority_lease,
-    get_stream_authority,
 )
-
-
-class _V4StreamBridge(Protocol):
-    async def replay_page(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        through_redis_id: str,
-    ) -> tuple[V4StreamEntry, ...]: ...
-
-    async def read_stream(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        count: int,
-        block_ms: int,
-    ) -> tuple[V4StreamEntry, ...]: ...
 
 
 router = APIRouter()
@@ -200,20 +186,27 @@ async def _await_sse_admission(
                         run_id=run_id,
                     )
                     if initial_run is not None and initial_run.get("session_id") == session_id:
-                        authority = await get_stream_authority(
-                            conn, tenant_id=principal.tenant_id, run_id=run_id
+                        def observe_authority(value: Any) -> None:
+                            nonlocal authority, startup_code
+                            authority = value
+                            if value is not None:
+                                startup_code = "sse_stream_not_confirmed"
+
+                        # The locked lookup may wait before it can return an
+                        # existing authority. Preserve the retryable
+                        # confirmation-timeout classification for that wait;
+                        # a completed lookup that finds no authority resets it
+                        # to not_admitted below.
+                        startup_code = "sse_stream_not_confirmed"
+                        authority, lease = await acquire_sse_admission_lease(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            run_id=run_id,
+                            api_instance_id=api_instance_id,
+                            connection_id=connection_id,
+                            lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
+                            on_authority_observed=observe_authority,
                         )
-                        if authority is not None:
-                            startup_code = "sse_stream_not_confirmed"
-                        if authority is not None and authority.state != "admission_pending":
-                            lease = await acquire_sse_authority_lease(
-                                conn,
-                                tenant_id=principal.tenant_id,
-                                run_id=run_id,
-                                api_instance_id=api_instance_id,
-                                connection_id=connection_id,
-                                lease_seconds=SSE_AUTHORITY_LEASE_SECONDS,
-                            )
         except TimeoutError:
             raise _sse_admission_timeout(
                 startup_code,
@@ -273,22 +266,21 @@ def _sse(event: str, data: dict[str, Any], event_id: str | None = None) -> str:
 
 
 def _session_payload(row: dict[str, Any]) -> dict[str, Any]:
-    raw_agent_id = row.get("agent_id")
     retired_agent = is_retired_agent_for_projection(
-        raw_agent_id,
+        row.get("agent_id"),
         row.get("agent_default_skill_id"),
         row.get("agent_profile_has_retired_skill"),
     )
     agent_id = (
         PUBLIC_RETIRED_AGENT_ID
         if retired_agent
-        else public_agent_id_for_projection(raw_agent_id, row.get("agent_default_skill_id"))
+        else public_agent_id_for_projection(row.get("agent_id"), row.get("agent_default_skill_id"))
     )
     return {
         "id": row["id"],
         "agent_id": agent_id,
         "name": PUBLIC_RETIRED_SESSION_TITLE if retired_agent else row.get("title") or "新会话",
-        "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"]},
+        "metadata": {"agent_id": agent_id, "workspace_id": row["workspace_id"], **restored_session_model_metadata(row.get("latest_model_selection"))},
         "is_active": row.get("status", "active") == "active",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -981,33 +973,6 @@ def _visible_assistant_artifacts(
     return visible
 
 
-def _compatibility_events_for_run(
-    run: dict[str, Any],
-    run_events: list[dict[str, Any]],
-    artifacts: list[dict[str, Any]],
-    principal: AuthPrincipal,
-    *,
-    user_messages: list[dict[str, Any]] | None = None,
-    include_terminal: bool = True,
-    compact_answer_deltas: bool = False,
-) -> list[_CompatibilityWireEvent]:
-    """Build the sole public terminal wire, ordered for live and history replay."""
-    compatibility_events, _ = _compatibility_events_for_run_page(
-        run,
-        run_events,
-        artifacts,
-        principal,
-        fold_state=_CompatibilityFoldState(
-            False,
-            frozenset(),
-        ),
-        user_messages=user_messages,
-        include_terminal=include_terminal,
-        compact_answer_deltas=compact_answer_deltas,
-    )
-    return compatibility_events
-
-
 def _compatibility_events_for_run_page(
     run: dict[str, Any],
     run_events: list[dict[str, Any]],
@@ -1446,20 +1411,6 @@ def _public_error_text(run: dict[str, Any], _principal: AuthPrincipal) -> str:
     return str(projection["message"]) if projection is not None else ""
 
 
-def _platform_status(status: str) -> str:
-    return "cancelled" if status == "canceled" else status
-
-
-def _lambchat_status(status: str) -> str:
-    status = _platform_status(status)
-    return {
-        "succeeded": "completed",
-        "failed": "error",
-        "queued": "pending",
-        "running": "running",
-    }.get(status, status)
-
-
 @router.get("/auth/oauth/providers")
 async def oauth_providers() -> dict[str, object]:
     return {
@@ -1475,33 +1426,6 @@ async def oauth_providers() -> dict[str, object]:
     }
 
 
-UI_PERMISSIONS = [
-    "agent:use",
-    "artifact:download",
-    "model:admin",
-    "settings:manage",
-    "admin:status",
-    "chat:read",
-    "chat:write",
-    "session:read",
-    "session:write",
-    "file:upload",
-    "file:upload:document",
-    "skill:read",
-    "skill:write",
-    "skill:delete",
-    "skill:admin",
-    "marketplace:read",
-    "marketplace:publish",
-    "marketplace:admin",
-    "user:read",
-    "user:admin",
-    "feedback:read",
-    "feedback:admin",
-    "notification:read",
-    "notification:admin",
-]
-
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {
     "run_succeeded",
     "run_failed",
@@ -1509,24 +1433,17 @@ CHAT_STREAM_TERMINAL_EVENT_TYPES = {
     "run_canceled",
 }
 
-@router.get("/auth/permissions")
-async def permissions() -> dict[str, object]:
-    permission_infos = [
-        {"value": item, "label": item, "description": item} for item in UI_PERMISSIONS
-    ]
-    return {
-        "groups": [{"name": "AI Platform POC", "permissions": permission_infos}],
-        "all_permissions": permission_infos,
-    }
-
 @router.get("/agent/models/available")
 async def available_models(
     response: Response,
-    _principal: AuthPrincipal = Depends(require_principal),
+    principal: AuthPrincipal = Depends(require_principal), group_id: str | None = Query(default=None, max_length=128),
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     async with transaction() as conn:
-        return await list_public_models(conn)
+        try:
+            return await list_public_models(conn, user_id=principal.user_id, tenant_id=principal.tenant_id, usage_scene="chat", group_id=group_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=model_selection_error_status(str(exc)), detail=str(exc)) from exc
 
 
 @router.get("/upload/config")
@@ -2083,6 +2000,9 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
+            "continuation": await get_session_continuation(
+                conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+            ),
         }
 
 
@@ -2115,12 +2035,6 @@ async def generate_title(
         except session_actions.SessionActionNotFoundError as exc:
             raise HTTPException(status_code=404, detail="session_not_found") from exc
     return {"session_id": session_id, "title": str(session["title"])}
-
-
-@router.post("/sessions/{session_id}/mark-read")
-async def mark_read(session_id: str) -> dict[str, bool]:
-    """Acknowledge older clients without persisting or authorizing unread state."""
-    return {"success": True}
 
 
 @router.get("/chat/sessions/{session_id}/status")
@@ -2163,12 +2077,16 @@ async def chat_status(
             target = next(
                 (row for row in rows if row.get("session_generation") is not None), None
             )
+        continuation = await get_session_continuation(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
+        )
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {
         "session_id": session_id,
         "run_id": run_id,
         "status": _lambchat_status(raw_status),
         "raw_status": raw_status,
+        "continuation": continuation,
     }
 
 
@@ -2231,17 +2149,9 @@ async def chat_session_stream(
         )
         restored_terminal_event_id = resume.terminal_event_id
         resume_already_ended = resume.ended
-        replay_tail = resume.after_redis_id or "0-0"
-        if resume.gap is None:
-            bounds = await bridge.retained_bounds(
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                stream_incarnation=authority.stream_incarnation,
-            )
-            if bounds is None:
-                raise StreamContractError("stream_replay_bounds_unavailable")
-            replay_tail = bounds[1].cursor.redis_id
+        replay_tail = resume.replay_tail_redis_id
+        if resume.gap is None and not resume_already_ended and replay_tail is None:
+            raise StreamContractError("stream_replay_bounds_unavailable")
     except StreamContractError as exc:
         await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2356,7 +2266,7 @@ async def chat_session_stream(
                 return
             if not await authorize_frame():
                 return
-            while after != replay_tail:
+            while replay_tail is not None and after != replay_tail:
                 previous_after = after
                 try:
                     entries = await bridge.replay_page(

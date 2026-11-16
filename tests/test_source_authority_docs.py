@@ -368,12 +368,7 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
         ROOT / "frontend/web/README.md",
         ROOT / "frontend/web/scripts/prd-closure-browser-smoke.mjs",
         ROOT / "app/settings.py",
-        ROOT / "app/office_context_readiness.py",
         ROOT / "deploy/ai-platform/docker-compose.yml",
-        ROOT / "scripts/generate_executor_context_pack_evidence.py",
-        ROOT / "scripts/verify_executor_context_pack.py",
-        ROOT / "scripts/generate_sandbox_runtime_evidence.py",
-        ROOT / "scripts/verify_sandbox_runtime.py",
     )
     active_text = "\n".join(read(path) for path in active_sources)
     assert retired_host not in active_text
@@ -382,20 +377,19 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
     assert "211 verified" not in active_text
 
 
-def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
-    index = read(RELEASE_EVIDENCE_INDEX)
+def test_release_evidence_index_names_its_current_readers():
+    index = " ".join(read(RELEASE_EVIDENCE_INDEX).split())
 
-    assert "not a current-status" in index
-    assert "docs/release-evidence/<gate>/<commit_sha>/<evidence_id>.json" in index
-    assert "Do not commit generated Markdown" in index
-    assert "runtime_subject_commit_sha" in index
-    assert "ordinary pull requests" in index.casefold()
+    assert "build_skill_version_release_review" in index
+    assert "skill-release/README.md" in index
+    assert "no credentials, raw environment values" in index
     assert "Actions artifacts" in index
-    assert "authorized runtime procedure" in index
-    index_flat = " ".join(index.split())
-    assert "runtime verification for its exact deployed subject" in index_flat
-    assert "Historical entries retain their original subject and labels" in index_flat
     assert "current overall status" not in index
+    assert sorted(path.name for path in RELEASE_EVIDENCE_INDEX.parent.iterdir()) == [
+        "README.md",
+        "frontend-shell-parity",
+        "skill-release",
+    ]
 
 
 def test_historical_status_and_manual_release_docs_are_not_retained():
@@ -414,13 +408,6 @@ def test_historical_status_and_manual_release_docs_are_not_retained():
 
     for relative_path in removed_paths:
         assert not (ROOT / relative_path).exists()
-
-
-def test_release_evidence_keeps_concurrency_artifacts_machine_readable():
-    evidence_root = RELEASE_EVIDENCE_INDEX.parent / "foundation-runtime-concurrency"
-
-    assert list(evidence_root.rglob("*.json"))
-    assert not list(evidence_root.rglob("*.md"))
 
 
 def test_schema_lifecycle_documents_destructive_source_contracts():

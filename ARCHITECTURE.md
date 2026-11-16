@@ -22,6 +22,7 @@ establish implemented or deployed behavior.
 | Product language and Expert Agent experience | [CONTEXT](CONTEXT.md), [Workbench](docs/architecture/expert-agent-service-workbench.md) |
 | Profile publication and authorization | [Profile boundary](docs/architecture/agent-profile-persistence-boundary.md) |
 | Conversation scope and provider continuity | [Conversation context](docs/architecture/agent-conversation-context.md), [provider continuity](docs/architecture/claude-provider-session-continuity.md) |
+| Model selection and groups | [Model group management](docs/architecture/model-group-management.md) |
 | Run outcomes and transaction ordering | [Run lifecycle](docs/architecture/run-lifecycle-boundary.md) |
 | Immutable execution input and attempt ownership | [ExecutionSpec and RunAttempt](docs/architecture/execution-spec-and-attempt-lifecycle.md) |
 | Provider lifecycle, callbacks and resource cleanup | [Sandbox Runtime](docs/architecture/sandbox-runtime-control-layer.md) |
@@ -34,7 +35,8 @@ establish implemented or deployed behavior.
 ## Repository improvement
 
 [Core beliefs](docs/design-docs/core-beliefs.md) links the existing engineering
-principles. [QUALITY_SCORE](docs/QUALITY_SCORE.md) records a dated, reproducible
-source baseline, with explicit denominators and unmeasured fields. The
-[active Harness plan](docs/exec-plans/active/harness-migration.md) owns this migration's
-scope, prerequisites and pending decisions; it does not supersede these contracts.
+principles. Source measurements (import edges, hotspots) come from running
+`scripts/analysis/source_quality_inventory.py` at the revision in question. The
+[debt inventory](docs/exec-plans/tech-debt-tracker.md) lists known architecture
+debt; it does not supersede these contracts. The stopped Harness migration, its blueprint and
+its 2026-10-13 quality baseline are archived under `docs/exec-plans/completed/`.

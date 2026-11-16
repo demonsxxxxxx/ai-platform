@@ -7,7 +7,7 @@ from app.skills.lifecycle import (
     SKILL_VERSION_REVIEWED,
     normalize_skill_version_status,
 )
-from app.tool_policy import BUILTIN_TOOL_IDENTITIES
+from app.mcp.api import BUILTIN_TOOL_IDENTITIES
 
 
 SKILL_EXECUTION_PROFILE_SCHEMA_VERSION = "ai-platform.skill-execution-profile.v1"

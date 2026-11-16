@@ -73,90 +73,90 @@ function getButtonStyles(
 ): string {
   if (variant === "thinking") {
     return clsx(
-      "bg-stone-200 dark:bg-stone-700",
-      "text-stone-600 dark:text-stone-300",
-      "hover:bg-stone-300 dark:hover:bg-stone-600",
+      "bg-neutral-200 dark:bg-neutral-700",
+      "text-neutral-600 dark:text-neutral-300",
+      "hover:bg-neutral-300 dark:hover:bg-neutral-600",
     );
   }
 
   if (variant === "tool") {
     if (status === "loading") {
       return clsx(
-        "bg-amber-100/80 dark:bg-amber-900/30",
-        "text-amber-700 dark:text-amber-300",
+        "bg-[var(--theme-warning-soft)]",
+        "text-[var(--theme-warning-text)]",
       );
     }
     if (status === "success") {
       return clsx(
-        "bg-emerald-100/80 dark:bg-emerald-900/30",
-        "text-emerald-700 dark:text-emerald-300",
+        "bg-[var(--theme-success-soft)]",
+        "text-[var(--theme-success-text)]",
       );
     }
     if (status === "error") {
       return clsx(
-        "bg-red-100/80 dark:bg-red-900/30",
-        "text-red-700 dark:text-red-300",
+        "bg-[var(--theme-danger-soft)]",
+        "text-[var(--theme-danger-text)]",
       );
     }
     if (status === "cancelled") {
       return clsx(
-        "bg-amber-100/80 dark:bg-amber-900/30",
-        "text-amber-700 dark:text-amber-300",
+        "bg-[var(--theme-warning-soft)]",
+        "text-[var(--theme-warning-text)]",
       );
     }
     return clsx(
-      "bg-stone-100 dark:bg-stone-800",
-      "text-stone-600 dark:text-stone-400",
+      "bg-neutral-100 dark:bg-neutral-800",
+      "text-neutral-600 dark:text-neutral-400",
     );
   }
 
   if (variant === "summary") {
     if (status === "loading") {
       return clsx(
-        "bg-amber-100/80 dark:bg-amber-900/30",
-        "text-amber-700 dark:text-amber-300",
+        "bg-[var(--theme-warning-soft)]",
+        "text-[var(--theme-warning-text)]",
       );
     }
     if (status === "success") {
       return clsx(
-        "bg-emerald-100/80 dark:bg-emerald-900/30",
-        "text-emerald-700 dark:text-emerald-300",
+        "bg-[var(--theme-success-soft)]",
+        "text-[var(--theme-success-text)]",
       );
     }
     if (status === "error") {
       return clsx(
-        "bg-red-100/80 dark:bg-red-900/30",
-        "text-red-700 dark:text-red-300",
+        "bg-[var(--theme-danger-soft)]",
+        "text-[var(--theme-danger-text)]",
       );
     }
     if (status === "cancelled") {
       return clsx(
-        "bg-amber-100/80 dark:bg-amber-900/30",
-        "text-amber-700 dark:text-amber-300",
+        "bg-[var(--theme-warning-soft)]",
+        "text-[var(--theme-warning-text)]",
       );
     }
     return clsx(
-      "bg-stone-100 dark:bg-stone-800",
-      "text-stone-600 dark:text-stone-400",
+      "bg-neutral-100 dark:bg-neutral-800",
+      "text-neutral-600 dark:text-neutral-400",
     );
   }
 
   // default variant (for Sandbox)
   if (status === "error") {
     return clsx(
-      "bg-red-100/80 dark:bg-red-900/30",
-      "text-red-700 dark:text-red-300",
+      "bg-[var(--theme-danger-soft)]",
+      "text-[var(--theme-danger-text)]",
     );
   }
   if (status === "cancelled") {
     return clsx(
-      "bg-amber-100/80 dark:bg-amber-900/30",
-      "text-amber-700 dark:text-amber-300",
+      "bg-[var(--theme-warning-soft)]",
+      "text-[var(--theme-warning-text)]",
     );
   }
   return clsx(
-    "bg-emerald-100/80 dark:bg-emerald-900/30",
-    "text-emerald-700 dark:text-emerald-300",
+    "bg-[var(--theme-success-soft)]",
+    "text-[var(--theme-success-text)]",
   );
 }
 

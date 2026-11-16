@@ -9,22 +9,22 @@ export function NotFoundPage() {
   const navigate = useNavigate();
 
   return (
-    <div className="flex h-screen w-full flex-col items-center justify-center bg-white dark:bg-stone-900 px-4">
+    <div className="flex h-screen w-full flex-col items-center justify-center bg-[var(--theme-bg-card)] dark:bg-neutral-900 px-4">
       <div className="flex flex-col items-center max-w-md text-center">
         {/* Title */}
-        <h1 className="text-2xl font-semibold text-stone-900 dark:text-stone-100 mb-2">
+        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100 mb-2">
           {t("errors.pageNotFound")}
         </h1>
 
         {/* Description */}
-        <p className="text-stone-500 dark:text-stone-400 mb-8 leading-relaxed">
+        <p className="text-neutral-500 dark:text-neutral-400 mb-8 leading-relaxed">
           {t("errors.pageNotFoundDesc")}
         </p>
 
         {/* Button */}
         <Button type="text"
           onClick={() => navigate("/agent-market")}
-          className="inline-flex items-center gap-2 px-6 py-4 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-sm font-medium rounded-full transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-4 bg-neutral-900 dark:bg-neutral-100 hover:bg-neutral-800 dark:hover:bg-neutral-200 text-[var(--theme-primary-foreground)] dark:text-neutral-900 text-sm font-medium rounded-full transition-colors"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

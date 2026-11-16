@@ -90,7 +90,7 @@ export function OptionList({ options, selectionMode = "single", defaultValue, va
         <Button type="primary" htmlType="button" size="small" loading={pending} disabled={locked || selectedIds.length < min || selectedIds.length > max}
           onClick={() => void commit(options.filter((option) => selectedIds.includes(option.id)).map((option) => option.id))}>{confirmLabel ?? t("common.confirm")}</Button>
       </div>}
-      {error && <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">{t("assistantUi.options.unconfirmed")}</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-[var(--theme-danger-text)]">{t("assistantUi.options.unconfirmed")}</p>}
     </>}
   </div>;
 }

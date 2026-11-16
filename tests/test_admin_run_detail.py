@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,7 +7,7 @@ from app.platform.tracing import safe_exception_log_fields
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.runs.api import RunDiagnosticsService
+from app.runs.api import RunCancellationPostProcessor, RunDiagnosticsService
 from app.sandbox.api import normalize_sdk_runtime_diagnostics
 
 
@@ -23,6 +24,23 @@ class _RouteCancellationReceipt:
 class _AdminCancellationAdapter:
     def __init__(self, handler):
         self._handler = handler
+        self.remove_queued_run = self._noop
+
+    @staticmethod
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    async def post_cancel(self, cancellation, **kwargs):
+        assert kwargs["user_id"] == "admin-a"
+        assert kwargs["requested_by_role"] == "admin"
+        assert kwargs["reason"] == "admin_cancel_requested"
+        processor = RunCancellationPostProcessor(
+            queue_cleanup=self.remove_queued_run,
+            sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=self._noop),
+            provider_factory=object(), transaction_factory=fake_transaction,
+            admit_stream=self._noop, publish_event=self._noop, warn=lambda *_args: None,
+        )
+        return await processor.post_cancel(cancellation, **kwargs)
 
     async def request_admin_cancel(self, *, tenant_id, admin_user_id, run_id):
         value = await self._handler(
@@ -40,6 +58,7 @@ def _install_admin_cancel(monkeypatch, handler):
         "app.routes.admin_runs._require_run_cancellation_use_case",
         lambda _request: adapter,
     )
+    return adapter
 
 
 def _install_admin_monitor_metadata(monkeypatch, metadata):
@@ -430,8 +449,8 @@ def test_admin_cancel_queued_run_removes_queued_payload(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
-    _install_admin_cancel(monkeypatch, fake_request_admin_run_cancel)
-    monkeypatch.setattr("app.routes.admin_runs.remove_queued_run", fake_remove_queued_run, raising=False)
+    adapter = _install_admin_cancel(monkeypatch, fake_request_admin_run_cancel)
+    monkeypatch.setattr(adapter, "remove_queued_run", fake_remove_queued_run)
     client = TestClient(create_app())
 
     response = client.post("/api/ai/admin/runs/run_queued/cancel", headers=headers())

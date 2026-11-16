@@ -31,7 +31,7 @@ class FollowUpCompletionConnection:
     model_value: str
     base_url: str
     api_key: str
-    max_input_tokens: int | None = None
+    auto_compact_window: int | None = None
     max_output_tokens: int | None = None
 
 
@@ -131,7 +131,7 @@ class FollowUpSuggestionService:
             model_value=active.model_value,
             base_url=active.base_url,
             api_key=active.api_key,
-            max_input_tokens=active.max_input_tokens,
+            auto_compact_window=active.auto_compact_window,
             max_output_tokens=active.max_output_tokens,
         )
 

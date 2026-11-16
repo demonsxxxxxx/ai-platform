@@ -11,8 +11,11 @@ RESTORE = {
 
 
 def frozen_spec(**overrides):
-    return ExecutionSpec.compile({
-        "schema_version": "ai-platform.execution-spec.v2",
+    """Compile a v3 spec; pass `legacy_v2_input_capacity` for the frozen v2 shape."""
+
+    v2_input_capacity = overrides.pop("legacy_v2_input_capacity", None)
+    payload = {
+        "schema_version": "ai-platform.execution-spec.v3",
         "run_payload_schema_version": "ai-platform.run-payload.v2",
         "tenant_id": "tenant-a", "run_id": "run-a", **SCOPE,
         "execution_kind": "harness_chat", "skill_id": None,
@@ -28,9 +31,15 @@ def frozen_spec(**overrides):
             "selected_message_count": 0, "selected_turn_count": 0,
         }},
         "model_id": "model-a", "model_value": "claude-test",
-        "model_gateway_revision": 3, "model_max_input_tokens": 200000,
-        "model_max_output_tokens": 4096, "agent_profile": {}, **overrides,
-    })
+        "model_gateway_revision": 3, "model_auto_compact_window": 200000,
+        "model_max_output_tokens": 4096, "agent_profile": {},
+    }
+    if v2_input_capacity is not None:
+        # Historical v2 attempts froze an input capacity, not a window.
+        payload.pop("model_auto_compact_window")
+        payload["schema_version"] = "ai-platform.execution-spec.v2"
+        payload["model_max_input_tokens"] = v2_input_capacity
+    return ExecutionSpec.compile({**payload, **overrides})
 
 
 def frozen_attempt(spec=None, **overrides):
@@ -47,7 +56,11 @@ def frozen_attempt(spec=None, **overrides):
             "execution_kind", "skill_id", "executor_type", "context_snapshot_id", "model_id", "model_value",
             "model_gateway_revision",
         )},
-        "run_max_input_tokens": data["model_max_input_tokens"],
+        "run_auto_compact_window": data.get(
+            "model_auto_compact_window",
+            # A historical v2 spec froze an input capacity the runner clamped.
+            min(1_000_000, max(100_000, data.get("model_max_input_tokens") or 100_000)),
+        ),
         "run_max_output_tokens": data["model_max_output_tokens"], **overrides,
     }
 

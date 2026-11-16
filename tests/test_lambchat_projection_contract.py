@@ -1,10 +1,13 @@
 from app.auth import AuthPrincipal
-from app.routes.lambchat_compat import _compatibility_events_for_run
+from app.routes.lambchat_compat import (
+    _CompatibilityFoldState,
+    _compatibility_events_for_run_page,
+)
 
 
 def test_lambchat_live_and_history_use_public_execution_event_names():
     principal = AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="default")
-    public_records = _compatibility_events_for_run(
+    public_records = _compatibility_events_for_run_page(
         {"id": "run-a", "status": "running", "trace_id": "trace-run-a"},
         [
             {
@@ -32,13 +35,14 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
         ],
         [],
         principal,
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert [(record.stream_event_type, record.history_event["event_type"]) for record in public_records] == [
         ("execution_step", "execution_step")
     ]
 
-    raw_records = _compatibility_events_for_run(
+    raw_records = _compatibility_events_for_run_page(
         {"id": "run-a", "status": "running", "trace_id": "trace-run-a"},
         [
             {
@@ -57,7 +61,8 @@ def test_lambchat_live_and_history_use_public_execution_event_names():
         ],
         [],
         principal,
-    )
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
     assert raw_records == []
 
 
@@ -190,7 +195,10 @@ def test_lambchat_history_projects_valid_v4_execution_events_and_rejects_raw_fie
         },
     ]
 
-    records = _compatibility_events_for_run(run, events, [], principal)
+    records = _compatibility_events_for_run_page(
+        run, events, [], principal,
+        fold_state=_CompatibilityFoldState(False, frozenset()),
+    )[0]
 
     assert [record.history_event["event_type"] for record in records] == [
         "agent_public_progress",
@@ -264,12 +272,13 @@ def test_lambchat_omits_legacy_capability_rows_when_strict_timeline_exists_for_e
         AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="default"),
         AuthPrincipal(user_id="admin-a", display_name="Admin A", tenant_id="default", roles=["admin"]),
     ):
-        records = _compatibility_events_for_run(
+        records = _compatibility_events_for_run_page(
             {"id": "run-a", "status": "running", "trace_id": "trace-run-a"},
             [legacy_event, public_event],
             [],
             principal,
-        )
+            fold_state=_CompatibilityFoldState(False, frozenset()),
+        )[0]
 
         assert [(record.stream_event_type, record.id) for record in records] == [
             ("execution_step", "evt-execution")

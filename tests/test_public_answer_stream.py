@@ -113,71 +113,24 @@ def _gate(**kwargs):
     )
 
 
-def test_authorized_public_skill_name_is_idempotent_across_sources_and_finish():
-    identity = "reference-search"
-    public_name = "【技能：reference-search V8】"
-    for raw_name in (identity, public_name):
-        for split in range(1, len(raw_name)):
-            gate = PublicAnswerStreamGate(
-                private_replacements={identity: public_name, "raw-secret": "█"},
-                public_replacements={identity: public_name},
-                sanitizer=_sanitize,
-            )
-            routed = [
-                *gate.accept_routed(f"Using {raw_name[:split]}", source_identity="first"),
-                *gate.accept_routed(f"{raw_name[split:]}. ", source_identity="second"),
-            ]
-            finished, tail = gate.finish_routed(final_text="", release=True)
-            visible = "".join(text for _owner, text in (*routed, *tail))
-            assert visible == f"Using {public_name}. "
-            assert finished.final_text == visible
-            if raw_name == identity:
-                assert ("first", public_name) in routed
-            assert not gate.failed
-
-
-@pytest.mark.parametrize("private_token", ["reference-search", "search", "V8"])
-def test_authorized_public_name_cannot_contain_an_independent_private_token(private_token):
-    identity = "reference-search"
-    public_name = "【技能：reference-search V8】"
-    gate = PublicAnswerStreamGate(
-        private_replacements={identity: public_name, private_token: "█"},
-        public_replacements={identity: public_name},
-        sanitizer=_sanitize,
-    )
-    assert gate.failed
-    assert gate.accept(identity) == ()
-
-
-def test_dynamic_private_token_in_published_public_name_still_fails_closed():
-    identity = "reference-search"
-    public_name = "【技能：reference-search V8】"
-    gate = PublicAnswerStreamGate(
-        private_replacements={identity: public_name},
-        public_replacements={identity: public_name},
-        sanitizer=_sanitize,
-    )
-    assert gate.accept(f"Using {identity}. ") == (f"Using {public_name}. ",)
-    gate.register_private_replacements({"V8": "█"})
-    assert gate.failed
-    assert gate.private_token_exposed
-    assert gate.accept("later text") == ()
-    assert gate.finish(final_text="", release=True).final_text == ""
-
-
-def test_public_identity_reclassified_as_private_marks_prior_disclosure():
-    identity = "reference-search"
-    public_name = "【技能：reference-search V8】"
-    gate = PublicAnswerStreamGate(
-        private_replacements={identity: public_name},
-        public_replacements={identity: public_name},
-        sanitizer=_sanitize,
-    )
-    assert gate.accept(f"Using {identity}. ") == (f"Using {public_name}. ",)
-    gate.register_private_replacements({identity: "█"})
-    assert gate.failed
-    assert gate.private_token_exposed
-    assert gate.finish(final_text="", release=True).final_text == ""
+def test_known_private_token_is_replaced_across_chunk_boundaries():
+    identity = "mcp__tenant-server__search"
+    replacement = "█"
+    text = f"Using {identity}. "
+    for split in range(1, len(text)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={identity: replacement, "raw-secret": "█"},
+            sanitizer=_sanitize,
+        )
+        routed = [
+            *gate.accept_routed(text[:split], source_identity="first"),
+            *gate.accept_routed(text[split:], source_identity="second"),
+        ]
+        finished, tail = gate.finish_routed(final_text="", release=True)
+        visible = "".join(value for _owner, value in (*routed, *tail))
+        assert visible == f"Using {replacement}. "
+        assert finished.final_text == visible
+        assert not gate.failed
 
 
 @pytest.mark.parametrize("release_tool", [False, True])
@@ -1243,23 +1196,13 @@ def test_quoted_secret_rewrite_across_sources_remains_fail_closed_after_registry
     assert gate.failed and gate.failure_reason == "upstream_projection_failed"
 
 
-@pytest.mark.parametrize(
-    "label",
-    [
-        '【技能：synthetic-skill "Catalog" V8】',
-        "【技能：synthetic-skill 'Catalog' V8】",
-        '【技能：synthetic-skill \\"Catalog\\" V8】',
-        '【技能：synthetic-skill\nCatalog V8】',
-    ],
-)
 @pytest.mark.parametrize("quote", ['"', "'"])
-def test_public_label_replacement_cannot_change_raw_secret_quote_grammar(label, quote):
-    body = f"Using synthetic-skill. password={quote}alpha synthetic-skill bravo charlie{quote} after"
-    expected = f"Using {label}. password=[redacted-secret] after"
+def test_exact_replacement_cannot_change_raw_secret_quote_grammar(quote):
+    body = f"Using synthetic-private-token. password={quote}alpha synthetic-private-token bravo charlie{quote} after"
+    expected = "Using █. password=[redacted-secret] after"
     for split in range(1, len(body)):
         gate = PublicAnswerStreamGate(
-            private_replacements={"synthetic-skill": label},
-            public_replacements={"synthetic-skill": label},
+            private_replacements={"synthetic-private-token": "█"},
             sanitizer=sanitize_public_text,
         )
         routed = [

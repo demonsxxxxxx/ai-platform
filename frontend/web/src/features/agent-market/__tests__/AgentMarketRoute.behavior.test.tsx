@@ -59,11 +59,13 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
+  const { modelGroupsApi } = await import("../../../services/api/modelGroups.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
+    listPublicGroups: modelGroupsApi.listPublic,
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -93,14 +95,20 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     limit: 20,
     has_more: false,
   });
+  modelGroupsApi.listPublic = async () => ({
+    groups: [{ id: "group-enterprise", code: "default", name: "普通默认组", type: "ordinary_default",
+      enabled: true, revision: 1, is_primary: true, availability: "available",
+      models: [{ id: "model-default", value: "model-default", label: "默认模型", enabled: true }] }],
+    count: 1, version: "model-groups.v1",
+  });
   modelPublicApi.listAvailable = async () => ({
-    models: [{
+    models: [{ id: "model-first", value: "model-first", label: "非默认模型" }, {
       id: "model-default",
       value: "model-default",
       label: "默认模型",
     }],
-    count: 1,
-    enabled_count: 1,
+    count: 2,
+    enabled_count: 2,
     default_model_id: "model-default",
   });
 
@@ -124,6 +132,7 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       authApi.getCurrentUser = originals.getCurrentUser;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
+      modelGroupsApi.listPublic = originals.listPublicGroups;
     },
   };
 }
@@ -625,7 +634,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
       category: profile.category,
     },
   });
-  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getEvents = async (sessionId) => ({ session_id: sessionId, current_run_id: null, events: [] });
   const submissions: unknown[][] = [];
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
@@ -698,6 +707,12 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     );
     assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
+    const options = submissions[expectedCount - 1]?.[2] as Record<string, unknown>;
+    assert.equal(options.group_id, "group-enterprise");
+    assert.equal(options.model_id, "model-default");
+    assert.equal(options.model, "model-default");
+    assert.equal(options.selection_mode, "explicit");
+    assert.equal(container.querySelector('[aria-label="选择模型分组"]'), null);
     assert.deepEqual(submissions[expectedCount - 1]?.[10], {
       agent_id: profile.agent_id,
     });
@@ -753,9 +768,9 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(opening.textContent, profile.description, "the opening shows the description verbatim");
     assert.equal(container.querySelectorAll("[data-agent-opening-message]").length, 1);
     assert.equal(
-      container.querySelectorAll("[data-agent-opening] h1")[0]?.textContent,
+      container.querySelector("[data-expert-workspace-name]")?.textContent,
       profile.name,
-      "the opening keeps the Agent name",
+      "the thread header keeps the public Agent name",
     );
 
     await draftStarterPrompt(0);
@@ -907,7 +922,7 @@ test("the opening shows the profile description verbatim and never replays it in
     assert.ok(opening, "a configured description becomes the opening text");
     assert.equal(opening.textContent, multiLineDescription);
     assert.match(opening.className, /whitespace-pre-wrap/);
-    assert.match(opening.className, /text-\[15px\]/);
+    assert.match(opening.className, /text-sm/);
     assert.equal(created.length, 0, "rendering the opening creates no conversation");
 
     await React.act(async () => root.render(React.createElement(React.Fragment)));
@@ -917,7 +932,11 @@ test("the opening shows the profile description verbatim and never replays it in
       null,
       "an empty description shows no invented opening",
     );
-    assert.match(container.querySelector("[data-agent-opening]")?.textContent ?? "", /agt_empty 专家/);
+    assert.equal(
+      container.querySelector("[data-expert-workspace-name]")?.textContent,
+      "agt_empty 专家",
+      "an empty description still presents the public Agent name",
+    );
     assert.ok(container.querySelector("[data-agent-starter-prompts]"), "an empty description keeps starter prompts");
 
     await React.act(async () => root.render(React.createElement(React.Fragment)));
@@ -1633,7 +1652,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
     const statusOnlyAlert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(statusOnlyAlert);
     assert.match((statusOnlyAlert.textContent ?? ""), /历史消息暂时无法读取/);
-    assert.match((statusOnlyAlert.textContent ?? ""), /加载会话失败/);
+    assert.match((statusOnlyAlert.textContent ?? ""), /请求未完成，请稍后重试/);
     assert.match((statusOnlyAlert.textContent ?? ""), /HTTP 503/);
     assert.doesNotMatch((statusOnlyAlert.textContent ?? ""), /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
     assert.equal(calls.events, statusOnlyReadCount + 1);

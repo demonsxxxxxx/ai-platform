@@ -307,12 +307,12 @@
 
 .review-page .task-card.is-running,
 .review-page .task-card.is-uploading {
-  border-color: rgb(217 119 6 / 34%);
+  border-color: color-mix(in srgb, var(--theme-warning) 34%, transparent);
   box-shadow: 0 8px 18px rgb(217 119 6 / 8%);
 }
 
 .review-page .task-card.is-failed {
-  border-color: rgb(245 108 108 / 42%);
+  border-color: color-mix(in srgb, var(--theme-danger) 42%, transparent);
 }
 
 .review-page .task-main {
@@ -479,13 +479,13 @@
   margin-bottom: 16px;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1023px) {
   .review-page .review-workbench {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 767px) {
   .review-page {
     padding: 14px;
   }
@@ -521,7 +521,7 @@
   }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 639px) {
   .review-page {
     padding: 12px;
   }

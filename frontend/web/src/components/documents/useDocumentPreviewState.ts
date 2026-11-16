@@ -597,7 +597,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
   const fileInfo = getFileTypeInfo(fileName, mimeType);
   const Icon = fileInfo.icon;
   const isSidebar = viewMode === "sidebar";
-  const centerPanelClass = `overflow-hidden shadow-2xl ring-1 ring-black/5 dark:ring-white/10 transition-all duration-300 ease-out w-full flex flex-col bg-[var(--theme-bg-card)] pointer-events-auto relative ${
+  const centerPanelClass = `overflow-hidden shadow-2xl ring-1 ring-[color-mix(in_srgb,var(--theme-overlay-solid)_5%,transparent)] dark:ring-[color-mix(in_srgb,var(--theme-on-overlay)_10%,transparent)] transition-all duration-300 ease-out w-full flex flex-col bg-[var(--theme-bg-card)] pointer-events-auto relative ${
     isFullscreen
       ? "h-full sm:h-full sm:max-w-none sm:rounded-none"
       : "sm:max-w-3xl lg:max-w-4xl xl:max-w-5xl h-full sm:h-[80vh] sm:rounded-2xl"
