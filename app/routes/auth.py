@@ -183,6 +183,21 @@ async def bootstrap(
             "generation": result.identity.generation,
         }
     except AuthContextError as exc:
+        if request.recovery_only and exc.discard_orphaned_cookie:
+            # HTTPException drops headers from the injected response; carry
+            # only this explicit login recovery's cookie retirement header.
+            failure = Response()
+            failure.delete_cookie(
+                settings.auth_context_cookie_name,
+                path="/",
+                httponly=True,
+                samesite="lax",
+                secure=bool(settings.auth_context_cookie_secure),
+            )
+            raise HTTPException(
+                status_code=exc.status_code, detail=exc.code,
+                headers={"Set-Cookie": failure.headers["set-cookie"], "Cache-Control": "no-store"},
+            ) from exc
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
 

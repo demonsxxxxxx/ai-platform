@@ -841,8 +841,7 @@ async function ensureV2BrowserAuthContext(
       if (!released) throw unavailable();
       return;
     }
-    const confirmedRecovery = recoveryOnly
-      && current.confirmedGeneration === current.currentGeneration;
+    const confirmedRecovery = current.confirmedGeneration === current.currentGeneration;
     let response: AuthContextBootstrapResponse | void;
     try {
       response = await authApi.bootstrapAuthContext(
@@ -851,23 +850,23 @@ async function ensureV2BrowserAuthContext(
           protocol_version: 2,
           browser_incarnation: current.incarnation,
           generation: current.currentGeneration,
-          ...(confirmedRecovery ? { recovery_only: true } : {}),
+          ...(recoveryOnly ? { recovery_only: true } : {}),
         },
         signal,
       );
     } catch (error) {
-      // PR #459 intentionally makes recovery_only fail closed when the exact
-      // server authority is gone. Explicit login is the one user-authorized
-      // liveness transition: only that typed missing result may atomically
-      // replace an already confirmed, non-pending local identity. Persist the
-      // replacement before its one ordinary initial bootstrap; any ambiguous
-      // result leaves that same unconfirmed identity for a successor to reuse.
-      if (!confirmedRecovery || !isAuthContextMissing(error)) throw error;
-      owned = await replaceConfirmedV2StateWithFreshIdentity(
-        { state: current, ownerToken: owned.ownerToken },
-        current,
-        signal,
-      );
+      // Only explicit login plus a typed missing result may create a new
+      // anonymous context. The server retires a signed orphaned HttpOnly
+      // cookie first. Reuse an unconfirmed replacement after an earlier failed
+      // attempt; a confirmed identity must instead be replaced atomically.
+      if (!recoveryOnly || !isAuthContextMissing(error)) throw error;
+      if (confirmedRecovery) {
+        owned = await replaceConfirmedV2StateWithFreshIdentity(
+          { state: current, ownerToken: owned.ownerToken },
+          current,
+          signal,
+        );
+      }
       const fresh = await assertV2Owner(owned, signal);
       rememberBrowserAuthIncarnation(fresh.incarnation);
       if (

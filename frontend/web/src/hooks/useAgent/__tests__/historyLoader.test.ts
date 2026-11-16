@@ -40,6 +40,52 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
+for (const status of ["succeeded", "failed", "cancelled"]) {
+  test(`terminal ${status} history retains task elapsed separately from model duration`, () => {
+    const events: HistoryEvent[] = [
+      { id: "start", event_type: "run_started", run_id: "run-timed", timestamp: "2026-11-05T00:00:00Z", data: {} },
+      { id: "answer", event_type: "message:chunk", run_id: "run-timed", timestamp: "2026-11-05T00:00:01Z", data: { content: "Accepted text" } },
+      { id: "model", event_type: "model.completed", run_id: "run-timed", timestamp: "2026-11-05T00:00:10Z", data: { duration_ms: 900 } },
+      { id: "end", event_type: "done", run_id: "run-timed", timestamp: "2026-11-05T00:00:20.250Z", data: { status } },
+      { id: "other-start", event_type: "run_started", run_id: "run-other", timestamp: "2026-11-05T00:00:30Z", data: {} },
+      { id: "other-end", event_type: "done", run_id: "run-other", timestamp: "2026-11-05T00:00:33Z", data: { status: "succeeded" } },
+    ];
+    const messages = reconstructMessagesFromEvents(events, new Set(), { activeSubagentStack: [] });
+    const assistant = messages.find(message => message.role === "assistant" && message.runId === "run-timed");
+    assert.equal(assistant?.runDurationMs, 20_250);
+    assert.equal(assistant?.duration, 900, "model timing keeps its original meaning");
+    assert.equal(messages.find(message => message.runId === "run-other")?.runDurationMs, 3000);
+    const hydrated = mergeHydratedRunSegment([{
+      id: "live", runId: "run-timed", role: "assistant", timestamp: new Date(0), content: "Live text",
+    }], messages, "run-timed");
+    assert.equal(hydrated.find(message => message.role === "assistant")?.runDurationMs, 20_250);
+  });
+}
+
+test("task elapsed uses the established UTC rule for timezone-less server timestamps", () => {
+  const messages = reconstructMessagesFromEvents([
+    { event_type: "run_started", run_id: "run-utc", timestamp: "2026-11-05T00:00:00", data: {} },
+    { event_type: "done", run_id: "run-utc", timestamp: "2026-11-05T00:00:20.250Z", data: { status: "succeeded" } },
+  ], new Set(), { activeSubagentStack: [] });
+  assert.equal(messages[0]?.runDurationMs, 20_250);
+});
+
+test("task elapsed stays unknown for missing, invalid, reversed or nonterminal boundaries", () => {
+  for (const [start, end, status] of [
+    [undefined, "2026-11-05T00:00:20Z", "succeeded"],
+    ["invalid", "2026-11-05T00:00:20Z", "succeeded"],
+    ["2026-11-05T00:00:30Z", "2026-11-05T00:00:20Z", "succeeded"],
+    ["2026-11-05T00:00:00Z", "2026-11-05T00:00:20Z", "running"],
+  ]) {
+    const messages = reconstructMessagesFromEvents([
+      { event_type: "run_started", run_id: "run-unknown", timestamp: start, data: {} },
+      { event_type: "message:chunk", run_id: "run-unknown", data: { content: "Text" } },
+      { event_type: "done", run_id: "run-unknown", timestamp: end, data: { status } },
+    ], new Set(), { activeSubagentStack: [] });
+    assert.equal(messages[0]?.runDurationMs, undefined);
+  }
+});
+
 test("history preserves a backend user-message timestamp prefix", () => {
   const content = "[2026-04-28 20:00:00 +08:00 Asia/Shanghai] hello world";
   const messages = reconstructMessagesFromEvents(
