@@ -122,16 +122,24 @@ def _answer_callback(run, attempt, batch_id, *, use_parts=False):
     from app.runtime.kernel_contracts import AgentEvent
 
     adapter = ClaudeSdkAgentEventAdapter(run_id=run, attempt_id=attempt, sanitizer=sanitize_public_text, payload_sanitizer=sanitize_public_payload)
+    candidates = adapter.accept_answer_text("answer")
+    if use_parts:
+        # Retained historical part callback compatibility, not a live Claude producer.
+        from app.execution.api import ClaudeAgentEventCandidate
+        candidates = (candidates[0], ClaudeAgentEventCandidate(
+            run_id=run, event_id=candidates[1].event_id,
+            event_type="message.part.delta", message_id=adapter.message_id,
+            causation_event_id=None,
+            payload={"schema_version": "ai-platform.assistant-text-part.v1", "part_id": "part-retained", "delta": "answer"},
+            payload_sanitizer=sanitize_public_payload,
+        ))
     return ExecutorCallbackEvent(
         session_id=f"s_{run[2:]}", run_id=run, attempt_id=attempt,
         callback_token_id=callback_token_id_for_binding(CallbackTokenBinding(
             run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
         )), batch_id=batch_id,
         status="running", progress=20, new_message=None, state_patch={},
-        events=[AgentEvent(**event.as_agent_event_fields()) for event in (
-            adapter.accept_part_text(("provider-answer", None), "answer")
-            if use_parts else adapter.accept_answer_text("answer")
-        )],
+        events=[AgentEvent(**event.as_agent_event_fields()) for event in candidates],
     )
 
 

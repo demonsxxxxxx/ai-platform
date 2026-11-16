@@ -27,7 +27,7 @@ function activateNativeButton(
   button.click();
 }
 
-test("chat work disclosure collapses on completion and keeps answer content outside", async () => {
+test("chat operation disclosures preserve live choices after completion and keep text outside", async () => {
   const environment = installSelectTestDom();
   const container = document.createElement("div");
   const root = await createLobeTestRoot(container);
@@ -116,14 +116,14 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     ) as HTMLButtonElement;
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
     assert.equal(toggle.hasAttribute("aria-label"), false);
-    assert.match(toggle.textContent || "", /工作中/);
-    assert.equal(toggle.getAttribute("title"), "全部收起");
+    assert.match(toggle.textContent || "", /执行过程/);
+    assert.equal(toggle.getAttribute("title"), "收起");
 
     act(() => {
       root.render(
         renderMessage(false, [
           { ...workTool, status: "completed", success: true, isPending: false },
-          { type: "text", content: "最终正文保持可见" },
+          { type: "text", content: "后续执行说明" },
           {
             type: "tool",
             id: "tool-public-1",
@@ -135,6 +135,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
             public_operation_id: "operation-public-1",
             public_category: "read",
           },
+          { type: "text", content: "最终正文保持可见" },
         ]),
       );
     });
@@ -142,14 +143,14 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     toggle = container.querySelector(
       "[data-message-work-details-toggle]",
     ) as HTMLButtonElement;
-    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
     const controlledIds = (toggle.getAttribute("aria-controls") || "")
       .split(" ")
       .filter(Boolean);
-    // One disclosure region holds every work item.
+
     assert.equal(controlledIds.length, 1);
     controlledIds.forEach((id) => {
-      assert.equal(document.getElementById(id)?.hidden, true);
+      assert.equal(container.querySelector(`#${id}`)?.hasAttribute("hidden"), false);
     });
     assert.equal(container.querySelector("[data-public-thinking]"), null);
     const answer = [...container.querySelectorAll("p")].find((node) =>
@@ -159,9 +160,9 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     assert.equal(answer.closest("[hidden]"), null);
 
     act(() => activateNativeButton(toggle, "Enter"));
-    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
     controlledIds.forEach((id) => {
-      assert.equal(document.getElementById(id)?.hidden, false);
+      assert.equal(container.querySelector(`#${id}`)?.hasAttribute("hidden"), true);
     });
     assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
   } finally {

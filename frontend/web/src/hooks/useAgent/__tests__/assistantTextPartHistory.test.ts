@@ -109,7 +109,7 @@ test("history applies part events in sequence, preserves IDs and roles, and clos
   const { messages, processedEventIds } = reconstruct(events.reverse());
   const assistant = messages.find((message) => message.role === "assistant");
   assert.ok(assistant);
-  assert.equal(assistant.content, "Answer part");
+  assert.equal(assistant.content, "Work detail\n\nAnswer part");
   assert.deepEqual(
     assistant.parts?.filter((part) => part.type === "text").map((part) =>
       part.type === "text"
@@ -121,7 +121,7 @@ test("history applies part events in sequence, preserves IDs and roles, and clos
       ["part_source_b", "part_source_b", "answer", "Answer part"],
     ],
   );
-  assert.equal(selectAssistantCopyText(assistant.parts), "Answer part");
+  assert.equal(selectAssistantCopyText(assistant.parts), "Work detail\n\nAnswer part");
   assert.equal(processedEventIds.has("event-b-2"), true);
   assert.equal(processedEventIds.has("event-completed"), true);
 });
@@ -211,7 +211,7 @@ test("live adapter and history payload extraction share the typed part reducer",
   assert.deepEqual(parts, history.parts);
 });
 
-test("partial history keeps an unclassified public preview visible but out of copy", () => {
+test("partial history keeps the current public preview visible and copyable", () => {
   const { messages, processedEventIds } = reconstruct([
     ...baseEvents(),
     partEvent("message.part.delta", "event-partial", 2, {
@@ -226,7 +226,7 @@ test("partial history keeps an unclassified public preview visible but out of co
   );
   assert.equal(assistant?.content, "Still being classified");
   assert.equal(partial?.type === "text" ? partial.text_role : null, "pending");
-  assert.equal(selectAssistantCopyText(assistant?.parts), "");
+  assert.equal(selectAssistantCopyText(assistant?.parts), "Still being classified");
   assert.equal(processedEventIds.has("event-partial"), true);
 });
 
@@ -468,8 +468,8 @@ test("failed partial hydration trusts same source content and role and keeps onl
       ["part_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "answer", "Missing answer"],
     ],
   );
-  assert.equal(assistant?.content, "Missing answer");
-  assert.equal(selectAssistantCopyText(assistant?.parts), "Missing answer");
+  assert.equal(assistant?.content, "Tool preamble with suffix\n\nMissing answer");
+  assert.equal(selectAssistantCopyText(assistant?.parts), "Tool preamble with suffix\n\nMissing answer");
   assert.equal(
     assistant?.parts?.some(
       (part) => part.type === "artifact" && part.artifact_id === "live-artifact",
