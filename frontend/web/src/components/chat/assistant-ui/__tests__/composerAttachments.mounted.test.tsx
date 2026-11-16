@@ -30,7 +30,7 @@ test("composer uploads once, preserves authorized files after a rejected send, a
   let aborts = 0;
   uploadApi.uploadFile = () => ({ promise: new Promise((resolve) => { uploads++; finishUpload = resolve; }), abort: () => { aborts++; } });
   const removedKeys: string[] = [];
-  uploadApi.deleteFile = async (key) => { removedKeys.push(key); return { key, deleted: true }; };
+  uploadApi.deleteFile = async (key) => { removedKeys.push(key); return { file_id: key, lifecycle_state: "deleted", deletion_state: "deleted", reconcile_required: false }; };
   let accept = false;
   let deferredSend: Promise<Awaited<ReturnType<ChatInputProps["onSend"]>>> | undefined;
   let refreshUser!: ReturnType<typeof useAuth>["refreshUser"];
@@ -149,7 +149,7 @@ test("three composer attachments render one removable presentation each", async 
   uploadApi.getConfig = async () => { throw new Error("synthetic optional limits unavailable"); };
   const pending: Array<(value: UploadResult) => void> = [];
   uploadApi.uploadFile = () => ({ promise: new Promise<UploadResult>((resolve) => { pending.push(resolve); }), abort: () => {} });
-  uploadApi.deleteFile = async (key) => ({ key, deleted: true });
+  uploadApi.deleteFile = async (key) => ({ file_id: key, lifecycle_state: "deleted", deletion_state: "deleted", reconcile_required: false });
   function Harness() {
     const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
     const controls = useFileUpload({ attachments, onAttachmentsChange: setAttachments });

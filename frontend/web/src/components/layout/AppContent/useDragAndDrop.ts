@@ -15,7 +15,7 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
     onAttachmentsChange: setPageDragAttachments,
     acceptedFileTypes,
   });
-  const { uploadFiles, validateCount } = uploadControls;
+  const { uploadFiles } = uploadControls;
   const uploadsEnabled = acceptedFileTypes === undefined || acceptedFileTypes.length > 0;
 
   const dragCounterRef = useRef(0);
@@ -68,8 +68,6 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
 
       e.preventDefault();
 
-      if (!validateCount(files.length)) return;
-
       uploadFiles(files);
     };
 
@@ -95,7 +93,7 @@ export function useDragAndDrop(acceptedFileTypes?: readonly string[]) {
       document.removeEventListener("drop", handleDrop);
       document.removeEventListener("dragover", handleDragOver);
     };
-  }, [uploadFiles, uploadsEnabled, validateCount]);
+  }, [uploadFiles, uploadsEnabled]);
 
   return {
     isPageDragging,
