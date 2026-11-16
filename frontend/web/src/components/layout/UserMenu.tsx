@@ -52,14 +52,19 @@ export function UserMenu({ showLabel = false }: { showLabel?: boolean }) {
   const leave = () => { logout(); setShowMenu(false); };
   const trigger = (
     <Button type="text" ref={buttonRef} data-user-menu-trigger aria-label={displayName}
+      aria-expanded={isMobile ? showMenu : undefined}
       onClick={isMobile ? () => setShowMenu((open) => !open) : undefined}
-      className={showLabel ? "min-w-0 px-1" : undefined} icon={renderAvatar("size-5")}
+      className={showLabel
+        ? "workbench-account-action w-full min-w-0 justify-start px-2"
+        : "workbench-account-action"}
+      icon={renderAvatar("size-5")}
     >
       {showLabel ? <span className="truncate text-xs">{displayName}</span> : null}
     </Button>
   );
   if (!isMobile) return (
     <DropdownMenu open={showMenu} onOpenChange={setShowMenu} placement={showLabel ? "topLeft" : "rightBottom"}
+      popupProps={{ className: "workbench-account-menu-popup" }}
       header={identity} items={[{ key: "logout", icon: LogOut, label: t("auth.logout"), danger: true, onClick: leave }]}
     >{trigger}</DropdownMenu>
   );

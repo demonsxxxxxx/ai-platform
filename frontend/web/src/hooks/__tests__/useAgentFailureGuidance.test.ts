@@ -66,6 +66,7 @@ for (const [status, code, expected, forbidden] of [
   [400, "input_image_invalid", /图片格式/, /服务不可用/],
   [409, "agent_profile_revision_stale", /刷新专家配置/, /修正输入/],
   [409, "session_workspace_mismatch", /工作区/, /修正输入/],
+  [409, "provider_session_requires_new_conversation", /新建对话/, /稍后重试|刷新后重试/],
   [409, "user_active_run_limit_exceeded", /等待运行中的任务/, /修正输入/],
   [401, "unauthorized", /重新登录/, /修正输入/],
   [422, "validation_error", /必填项和格式/, /重新登录/],
@@ -95,6 +96,17 @@ test("malformed success cannot become a confirmed rejection or blind retry", () 
     assert.match(guidance.nextAction, /不要重复提交/);
     assert.doesNotMatch(guidance.retained, /任务未创建/);
   }
+});
+
+test("a continuity error cannot override an uncertain submission outcome", () => {
+  const guidance = buildChatSubmissionFailureGuidance({
+    error: new ApiRequestError("private diagnostic", 409, "provider_session_requires_new_conversation"),
+    message: "safe projected copy",
+    problemNumber: "submission-safe",
+    persistedRunPossible: true,
+  });
+  assert.match(guidance.retained, /任务可能已经创建/);
+  assert.match(guidance.nextAction, /不要重复提交/);
 });
 
 test("guidance rejects an untrusted diagnostic identifier", () => {

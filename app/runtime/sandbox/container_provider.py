@@ -2324,7 +2324,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
                     read_only_paths={str(Path(workspace.workspace_host_path) / name): f"{workspace.workspace_container_path}/{name}"
                                      for name in ("inputs", "CLAUDE.md")}
                         | ({str(trusted_skill_mount.host_path): trusted_skill_mount.container_path} if trusted_skill_mount else {}),
-                    private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS | ({".claude"} if trusted_skill_mount is None else set())),
+                    private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS | ({".claude"} if trusted_skill_mount is None else set()), sdk_session_id=request.sdk_session_id),
                 environment=_native_tool_environment(token),
                 # The launcher establishes the UDS parent before Uvicorn binds
                 # it. Lifespan hooks run too late to repair a missing parent.

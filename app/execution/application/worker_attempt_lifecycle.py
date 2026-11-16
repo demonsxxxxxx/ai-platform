@@ -355,6 +355,20 @@ class WorkerAttemptLifecycle:
             )
         return progress.is_terminal("failed")
 
+    async def bind_undispatched_cancel_generation(
+        self, conn: Any, *, owner_generation: int,
+    ) -> int:
+        """Keep the original queue-worker fence across its own cancel transition."""
+        run = await self._lock_run(conn)
+        attempt = await self._current_attempt(conn)
+        if (self.is_reconciliation or attempt is None
+            or run.get("status") != "running" or run.get("cancel_requested_at") is None
+            or attempt.get("status") != "cancel_requested"
+            or type(owner_generation) is not int
+            or attempt.get("owner_generation") != owner_generation + 1):
+            raise self.ports.conflict_error("run_attempt_cancel_continuation_stale")
+        return attempt["owner_generation"]
+
     async def cancel(
         self,
         conn: Any,
@@ -375,6 +389,15 @@ class WorkerAttemptLifecycle:
                 tenant_id=self.tenant_id,
                 run_id=self.run_id,
                 attempt_id=str(attempt["id"]),
+            )
+        if (self.ports.record_result_diagnostics is not None
+            and isinstance(result_json, dict) and "runtime_diagnostics" in result_json):
+            result_json = await self.ports.record_result_diagnostics(
+                conn, tenant_id=self.tenant_id, run_id=self.run_id,
+                attempt_id=str(attempt["id"]) if attempt is not None else None,
+                source="worker_executor", stage="terminalization",
+                error_code=str(result_json.get("error_code") or "executor_cancelled"),
+                result_json=result_json,
             )
         progress = await self.ports.cancel_run(
             conn,

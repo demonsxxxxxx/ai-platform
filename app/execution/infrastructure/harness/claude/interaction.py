@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from app.execution.application.run_interaction import (
     RunInputCommand,
+    RunInputSnapshot,
     RunInteractionProtocol,
     RunQuestionNeedsInput,
 )
@@ -45,11 +46,17 @@ class ClaudeRunInteractionActor:
         self._opened = False
         self._sanitize_text = sanitize_text
 
-    async def open(self) -> None:
+    async def open(self) -> RunInputSnapshot:
         snapshot = await self._port.open()
+        while snapshot.recovery_confirmation_pending:
+            if snapshot.state != "open" or self._closed.is_set():
+                raise ClaudeRunInteractionError("run_input_session_not_open")
+            await asyncio.sleep(QUESTION_POLL_INTERVAL_SECONDS)
+            snapshot = await self._port.poll()
         if snapshot.state != "open":
             raise ClaudeRunInteractionError("run_input_session_not_open")
         self._opened = True
+        return snapshot
 
     async def initial_prompt_stream(
         self,

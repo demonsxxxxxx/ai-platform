@@ -58,6 +58,7 @@ test("account menu has no duplicate workbench navigation or profile entry", () =
 
   assert.match(userMenu, /data-user-menu-identity/);
   assert.match(userMenu, /auth\.logout/);
+  assert.doesNotMatch(userMenu, /classNames=\{\{ (?:wrapper|panel): "workbench-account-drawer" \}\}/);
   assert.doesNotMatch(userMenu, /useNavigate|navItems|onShowProfile/);
   assert.doesNotMatch(userMenu, /["'`]\/(?:chat|skills|mcp)["'`]/);
 });

@@ -180,9 +180,8 @@ authentication callbacks, so Execution adapters and transport do not import lega
 root modules. `runs` alone writes the immutable admitted model ID, upstream value,
 connection revision, and paired input/output capacity snapshot, including
 Copy/Retry/Resume inheritance, through its public application API on the caller's
-existing transaction. Nullable capacity fields are an expansion for legacy Runs;
-new execution still writes ExecutionSpec v1 until the provider count gate and
-Context mode/coverage cutover are ready. General Harness
+existing transaction. ExecutionSpec writer versions and historical readers follow
+the detailed execution specification contract linked below. General Harness
 chat and specialized Skills remain separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
 The Agent Apps application, persistence, transaction, composition, and
@@ -449,21 +448,22 @@ Every compatibility boundary MUST record in its issue/PR:
 6. removal condition and rollback constraint; and
 7. a contract test proving delegation and fail-closed behavior.
 
-For a deployed route, configuration key, import, or entrypoint, observable exit
-evidence also records the exact source/image/config subject, telemetry or
-inventory source and reproducible query, observation start/end, tenant and
-principal/consumer scope, predeclared minimum observation window, release or
-normal-use cycle covered, owner attestation, and known blind spots. The window
-MUST be chosen before collection and cover at least one normal rollout/use cycle.
-If telemetry or a complete consumer inventory is unavailable, deletion remains
-blocked.
+Internal symbols and aliases with no independently deployed consumers MAY be
+migrated and removed in the same PR using a complete caller, registration and
+dynamic-entry inventory plus affected tests under §8. They do not require a
+runtime observation window; a text-search miss alone is not a complete inventory.
 
-An internal alias with no independently deployed consumer SHOULD be migrated
-and removed in the same PR or one bounded dependent sequence. Public routes,
-environment variables, deployment entrypoints, and external Python imports may
-need a compatibility interval, but the exit gate is consumer migration plus
-observed zero use, not elapsed time. A sunset date MAY set an operational
-deadline; it MUST NOT manufacture a consumer or keep a dead alias alive.
+Public routes, deployment configuration, external scripts and independently
+deployed consumers require deployment and consumer evidence. A complete, closed
+inventory proving consumer migration and no remaining use may establish exit
+without a separate observation window. When consumers cannot be exhaustively
+inventoried, retain migration arrangements and a predeclared no-use observation
+window covering at least one normal rollout/use cycle. Evidence records the
+exact source/image/config subject, telemetry or inventory source and reproducible
+query, consumer scope, owner attestation and known blind spots; observation-based
+proof also records its start/end and covered cycle. Material blind spots block
+deletion. Elapsed time alone is not exit evidence, and a sunset date MUST NOT
+manufacture a consumer or keep a dead alias alive.
 
 A compatibility module MUST remain thinner than the canonical owner. It may
 rename fields, translate a retired wire shape, or delegate an import. It MUST
@@ -484,15 +484,15 @@ matching the real surface. Negative `rg` output is only one input.
 | Python module/package | all private-symbol proof plus imports, `__all__`, dynamic imports, package data, CLI/module execution, configuration and test fixtures |
 | CLI/script/entrypoint | module proof plus Dockerfile, Compose, CI, cron/systemd, operator docs, shell/PowerShell callers, packaging metadata, and supported external automation |
 | Provider/executor/parser/plugin | explicit registry and settings defaults, deploy configuration, image entrypoint, runtime selection evidence, persisted identities, and rollback behavior |
-| Public HTTP/SSE/callback route | server route inventory, generated/open API clients, frontend and external consumer inventory, deprecation/fail-closed contract, observed no-call window when deployed, and stable migration path |
+| Public HTTP/SSE/callback route | server route inventory, generated/open API clients, frontend and external consumer inventory, deprecation/fail-closed contract, deployed consumer exit evidence under §7, and stable migration path |
 | Environment/configuration key | every Compose/CI/operator/secret owner, canonical precedence, deployed inventory, rollback plan, and zero-use evidence; no alias solely for calendar compatibility |
 | Database column/table/state/event | forward migration, old/new reader and writer matrix, queue drain or dual-read proof, backfill bounds, rollback, retention, audit/history, and referential-integrity checks |
-| Import compatibility facade | canonical identity/delegation test, internal and external import inventory, usage evidence, and satisfied removal condition |
+| Import compatibility facade | canonical identity/delegation test, caller/registration/dynamic-entry inventory, affected tests, external consumer exit evidence under §7 when applicable, and satisfied removal condition |
 
-If an external or runtime consumer cannot be observed, deletion is **blocked**;
-it is not made safe by adding a broad exception. Material deletion evidence is
-recorded in the issue/PR under the repository workflow, not in a mutable status
-document.
+If neither a complete consumer inventory nor adequate runtime observation under
+§7 establishes safe exit, deletion is **blocked**; a broad exception cannot
+replace that proof. Material deletion evidence is recorded in the issue/PR under
+the repository workflow, not in a mutable status document.
 
 Each broad cleanup issue carries an item disposition table with `path/symbol`,
 current invocation surface, target owner or `tests/support`/`tools`/delete
@@ -526,8 +526,13 @@ Broad restructuring uses the following sequence per bounded slice:
    adapter. Do not use a repository-wide rename that hides dependency changes.
 7. **Prove absence.** Apply the deletion proof for the old surface, remove the
    facade, and keep the canonical contract test.
-8. **Change behavior separately.** Any policy, schema, wire, rollout, or runtime
-   change follows its own issue/ADR and evidence after ownership is stable.
+8. **Make behavior changes explicit.** Keep unrelated behavior changes out of
+   broad restructuring. A related fix necessary for the same outcome MAY share
+   the PR when its behavioral difference and regression evidence are explicit.
+   Ordinary fixes need no separate issue/ADR; lasting decisions update the owning
+   design and add an ADR when warranted by the
+   [delivery workflow](../agent-rules/github-issue-pr-workflow.md#decision-rationale).
+   High-risk changes retain its Change Contract and independent review requirements.
 
 Moves SHOULD preserve Git history with focused renames when practical. Copying
 then independently editing two implementations is forbidden. Dual write is

@@ -2,7 +2,7 @@
 
 状态：当前仓库编码规范的唯一入口。本文拥有命名、类型、常量、错误与日志的编码规则，以及所有编码约束的执行级别索引。
 
-包放置、分层与依赖方向归 [Source architecture](../architecture/source-code-architecture.md)；证据等级与 CI 拓扑归 [CI governance](../architecture/ci-test-readiness-governance.md)；页面视觉归 [视觉规范](../frontend/lobehub-visual-guidelines.md)。本文只索引这些规则的执行方式，不复述它们的细节。
+包放置、分层与依赖方向归 [Source architecture](../architecture/source-code-architecture.md)；证据等级与 CI 拓扑归 [CI governance](../architecture/ci-test-readiness-governance.md)；页面视觉归 [视觉规范](../frontend/visual-guidelines.md)。本文只索引这些规则的执行方式，不复述它们的细节。
 
 ## 1. 约束级别
 

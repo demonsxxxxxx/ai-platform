@@ -19,10 +19,15 @@ export function SkillForm({
   onCancel,
   isLoading = false,
   onFullscreenChange,
+  submitError,
 }: SkillFormProps) {
   const appElement = useAppElement();
   const { t } = useTranslation();
   const isEditing = !!skill;
+  const submitErrorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (submitError) submitErrorRef.current?.focus();
+  }, [submitError]);
 
   const [name, setName] = useState(skill?.name ?? "");
   const [description, setDescription] = useState(skill?.description ?? "");
@@ -279,6 +284,8 @@ export function SkillForm({
           : "skill-form flex flex-1 flex-col gap-4"
       }
     >
+      {submitError ? <p ref={submitErrorRef} role="alert" tabIndex={-1}
+        className="shrink-0 rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)]">{submitError}</p> : null}
       {isFullscreen ? (
         <SkillFormFullscreen {...formActions} />
       ) : (

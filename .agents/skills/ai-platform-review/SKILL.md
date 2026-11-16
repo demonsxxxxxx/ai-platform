@@ -19,7 +19,9 @@ rerun or inspect each verification and inventory command they cite.
 
 ## Establish the exact change
 
-1. Fetch and verify the live base (normally `origin/main`) and the exact head.
+1. Fetch and verify the PR's actual target branch and exact base/head SHAs.
+   For a stacked PR, use its target phase branch. For a local branch or diff,
+   establish the intended integration target before choosing the base.
 2. Inspect the full scope before reading hunks:
 
 ```sh
@@ -28,9 +30,45 @@ git diff --stat <base>...<head>
 git log --oneline <base>..<head>
 ```
 
-Re-establish the base and rescan after a retarget, rebase, or merge of main.
+For architecture checks, distinguish the comparison base from the trusted
+authority selected by the accepted governance workflow. The checker requires
+authority to be an ancestor of base, and base to be an ancestor of head. Report
+an invalid range and follow the owning workflow; do not substitute older refs
+just to make the check pass.
+
+Re-establish the base and rescan after a retarget, rebase, or target-branch merge.
 Flag a PR that mixes unrelated concerns or is too large to review as a whole;
 ask for a split instead of approving parts you did not read.
+
+### Migration-triggered consumer checks
+
+Choose these checks only when the changed subject reaches the named surface; do
+not turn them into a full-repository audit:
+
+- deleting or moving `tests/test_*.py`: inspect `.github/workflows/` shards,
+  package scripts, and literal lists in `tools/` or `tests/`; use the existing
+  workflow-owner contract
+  (`test_every_backend_test_file_has_one_complete_ci_owner`) for the affected
+  workflow scope;
+- changing a shared interface or injection point: search unchanged fakes,
+  mocks, fixtures, `monkeypatch` targets, and support adapters, then run or
+  inspect valid candidate-specific evidence for the owning selector reached by
+  `tools/git_hook_checks.py`/the local runner. If execution is unavailable,
+  hand the concrete command to the parent; missing mandatory evidence remains
+  blocked;
+- changing event publication or registration: inspect the existing publication
+  inventory and its owning check, such as
+  `tools/check_sse_runtime_cutover.py` and `tests/test_sse_runtime_cutover.py`;
+- changing a check command: trace its workflow, script, and traceability
+  consumers and run or inspect valid candidate-specific evidence for the
+  existing contract test for that path.
+
+Record the short consumer search and the exact owning checks used. If a named
+mandatory surface is not inspected, mark the review `INCOMPLETE`/`BLOCK` rather
+than treating a local partial review as a whole-PR conclusion. The local hook's
+affected-test selection is feedback, not proof of a GitHub push, CI, or
+end-to-end result. Reuse valid risk-selected evidence and do not rerun unaffected
+suites merely for completeness.
 
 ## Read the requirements before judging the diff
 
@@ -47,6 +85,13 @@ pass review. Load only the owners the diff reaches.
   what a local, CI, packaged, or deployed result actually proves.
 - [Web frontend instructions](../../../frontend/web/AGENTS.md) for `frontend/web/`.
 - Accepted ADRs under `docs/adr/` when the diff touches a recorded decision.
+
+Establish the observable behavior being changed or preserved. Trace the affected
+entrypoint through authority checks and durable writes to its direct consumers,
+including unchanged callers. For Run changes, follow the affected links in
+admission → dispatch → execution → settlement → delivery → cleanup → next turn.
+Use the owning tests and contracts to seek a concrete input, state, or failure
+that contradicts the intended result; choose depth by the change's risk.
 
 ## Blocking requirements
 
@@ -84,7 +129,13 @@ pass review. Load only the owners the diff reaches.
   concepts outside the model's task and verify stable text verbatim.
 - **Lifecycle and concurrency:** check lease fencing, cancellation during
   awaits, idempotency and replay, terminalization ordering, retries, and
-  cleanup on every exit path.
+  cleanup on every exit path. For affected races, interleave owners around
+  awaits and commits: can an old owner write after takeover, or a crash after
+  commit lose the next step or repeat a side effect? Check the actual write.
+- **Migration:** inspect the supported old/new reader and writer combinations,
+  persisted data, cutover order, and rollback or forward recovery. Challenge
+  compatibility after a new writer has committed facts, using the owning
+  contract's supported deployment states.
 - **Enforcement:** follow each denial to the operation that executes it, and
   try alternate callers that bypass the route, facade, prompt, or frontend.
 - **Bounds:** limits cover the final emitted or stored result; probe exact and
@@ -100,11 +151,14 @@ pass review. Load only the owners the diff reaches.
 - **Size:** flag growth of files the source-quality inventory already marks as
   hotspots; prefer extraction along an ownership boundary over appending.
 - **Evidence levels:** local, CI, packaged, deployed, and end-user results stay
-  distinct; a later fix invalidates earlier verification of the old source.
+  distinct. Later changes invalidate affected conclusions; retain the original
+  source and scope when reusing unaffected evidence. Select rechecks using
+  [change verification](../../../docs/agent-rules/change-verification.md).
 
 ## Reporting findings
 
-For each finding state the defect, location, impact, and evidence. Place
+For each finding state the trigger, expected and actual behavior, location,
+impact, and evidence. Distinguish verified facts from unverified hypotheses. Place
 localized defects inline on the tightest diff range; use a PR-level comment for
 cross-cutting scope or architecture. Separate blockers from suggestions and
 omit issues a green required check already enforces. Keep findings and their

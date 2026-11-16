@@ -24,9 +24,9 @@ export function ThreadMessage({ children }: { children: ReactNode }) {
 }
 
 export function AssistantMessageContent({ className, ...props }: ComponentProps<"div">) {
-  return <div data-slot="aui_assistant-message-content" className={clsx("mx-auto flex max-w-[76rem] flex-col break-words px-2 leading-relaxed text-[var(--theme-text)]", className)} {...props} />;
+  return <div data-slot="aui_assistant-message-content" className={clsx("mx-auto flex max-w-[var(--chat-column-max)] flex-col break-words px-2 leading-relaxed text-[var(--theme-text)]", className)} {...props} />;
 }
 
 export function UserMessageContent({ className, ...props }: ComponentProps<"div">) {
-  return <div data-slot="aui_user-message-content" className={clsx("max-w-full rounded-2xl bg-[var(--theme-bg-sidebar)] px-3.5 py-2 text-[15px] leading-relaxed text-[var(--theme-text)]", className)} {...props} />;
+  return <div data-slot="aui_user-message-content" className={clsx("max-w-full rounded-[var(--radius-user-bubble)] bg-[var(--theme-bg-sidebar)] px-4 py-2.5 text-base leading-relaxed text-[var(--theme-text)]", className)} {...props} />;
 }

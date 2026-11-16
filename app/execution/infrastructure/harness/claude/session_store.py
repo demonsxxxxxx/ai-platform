@@ -55,6 +55,7 @@ class ClaudeSessionStoreAdapter:
         run_id: str,
         attempt_id: str,
         provider_session_id: str | None = None,
+        provider_epoch_id: str | None = None,
         timeout_seconds: float = DEFAULT_PROVIDER_SESSION_TIMEOUT_SECONDS,
         max_request_bytes: int = MAX_PROVIDER_SESSION_REQUEST_BYTES,
         max_response_bytes: int = MAX_PROVIDER_SESSION_RESPONSE_BYTES,
@@ -85,6 +86,9 @@ class ClaudeSessionStoreAdapter:
             raise ValueError("provider_session_response_limit_invalid")
         if provider_session_id is not None and not provider_session_id:
             raise ValueError("provider_session_identity_invalid")
+        if provider_epoch_id is not None and (not isinstance(provider_epoch_id, str) or not provider_epoch_id):
+            raise ValueError("provider_session_epoch_invalid")
+        self._provider_epoch_id = provider_epoch_id
         self._callback_url = callback_url
         self._callback_token = callback_token
         self._callback_token_id = callback_token_id
@@ -110,6 +114,15 @@ class ClaudeSessionStoreAdapter:
     @property
     def accepted_final_sequence(self) -> int | None:
         return self._completed_sequence
+
+    @property
+    def continuation_receipt(self) -> dict[str, Any]:
+        """Report uncertain ACKs without promoting a partially mirrored SDK batch."""
+        return {
+            "final_sequence": self._completed_sequence,
+            "last_acknowledged_sequence": (self._next_sequence - 1 if self._next_sequence is not None else None),
+            "ack_unknown": self._pending_batch is not None,
+        }
 
     @staticmethod
     def _key_value(key: Mapping[str, Any] | str, name: str) -> Any:
@@ -174,6 +187,7 @@ class ClaudeSessionStoreAdapter:
             "subpath": self._subpath(key),
             "entries": encoded_entries,
             "expected_sequence": expected_sequence,
+            **({"provider_epoch_id": self._provider_epoch_id} if self._provider_epoch_id is not None else {}),
         }
         size = self._json_size(payload)
         if size > self._max_request_bytes:

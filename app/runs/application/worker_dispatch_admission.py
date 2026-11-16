@@ -167,7 +167,8 @@ class WorkerDispatchAdmissionService:
                     candidate.outcome.error_message,
                     publish=candidate.publish_after_commit, candidate=candidate,
                 )
-            if await attempt_authority.is_cancel_requested(conn):
+            # Reconciled receipts settle Context together with the terminal result CAS.
+            if reconciliation_attempt_id is None and await attempt_authority.is_cancel_requested(conn):
                 terminal_written = await attempt_authority.cancel(
                     conn, capabilities=capabilities, result_json={"message": "任务已取消"}
                 )

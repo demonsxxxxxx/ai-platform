@@ -30,6 +30,13 @@ from app.streaming.domain.protocol_v4 import (
     PUBLIC_REQUIRED_PAYLOAD_FIELDS,
     PUBLIC_TOOL_CATEGORIES,
 )
+from app.streaming.domain.public_payload_fields import (
+    bounded_public_integer,
+    bounded_public_string,
+    exact_enum_member,
+    safe_public_filename_characters,
+    safe_public_ref,
+)
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
 _BUILTIN_TOOL_CATEGORIES = {
@@ -65,6 +72,8 @@ def runtime_terminal_payload(
         "runtime_terminal_status": runtime_status,
         "answer_receipt": executor_response.get("answer_receipt"),
         "provider_session_final_sequence": executor_response.get("provider_session_final_sequence"),
+        **({"continuation_settlement": executor_response["continuation_settlement"]}
+           if "continuation_settlement" in executor_response else {}),
     }
 
 
@@ -114,7 +123,7 @@ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def _assert_safe_ref(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or _SAFE_REF_PATTERN.fullmatch(value) is None:
+    if not safe_public_ref(value):
         raise ValueError(f"{field_name} is not a safe reference")
     return value
 
@@ -358,7 +367,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     for key, value in payload.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if not any(type(value) is type(option) and value == option for option in enum_values):
+            if not exact_enum_member(value, enum_values):
                 raise ValueError(f"invalid {key}")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
@@ -383,12 +392,9 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         string_bounds = PUBLIC_PAYLOAD_STRING_BOUNDS.get((event_type, key))
         if string_bounds is not None:
             minimum, maximum = string_bounds
-            if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+            if not bounded_public_string(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
-            if key == "filename" and any(
-                ord(char) < 32 or ord(char) == 127 or char in "/\\\\"
-                for char in value
-            ):
+            if key == "filename" and not safe_public_filename_characters(value):
                 raise ValueError("invalid filename")
             continue
         integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
@@ -396,12 +402,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
             minimum, maximum = integer_bounds
             if maximum is None and key in {"delta_count", "text_length"}:
                 maximum = 2**63 - 1
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < minimum
-                or (maximum is not None and value > maximum)
-            ):
+            if not bounded_public_integer(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
             continue
         raise ValueError(f"unsupported schema field: {key}")
@@ -448,8 +449,8 @@ class ClaudeSdkAgentEventAdapter:
         attempt_id: str,
         authorized_capabilities: Mapping[str, object] | None = None,
         tool_policy_subjects: list[dict[str, Any]] | None = None,
-        public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
+        skill_name_sanitizer: Callable[[object], object] | None = None,
         payload_sanitizer: Callable[[object], object],
         tool_identity_resolver: Callable[[object], str] = str,
         clock: Callable[[], float] = time.monotonic,
@@ -460,6 +461,7 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
+        self._skill_name_sanitizer = skill_name_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
         self._tool_identity_resolver = tool_identity_resolver
         self._sealed = False
@@ -489,7 +491,7 @@ class ClaudeSdkAgentEventAdapter:
         self._policy_decisions: set[str] = set()
         self._seen_events: set[str] = set()
         self._capabilities: dict[str, tuple[str, str]] = {}
-        self._load_capabilities(authorized_capabilities, tool_policy_subjects, public_skill_metadata)
+        self._load_capabilities(authorized_capabilities, tool_policy_subjects)
 
     @property
     def sealed(self) -> bool:
@@ -532,7 +534,6 @@ class ClaudeSdkAgentEventAdapter:
         self,
         configured: Mapping[str, object] | None,
         subjects: list[dict[str, Any]] | None,
-        skill_metadata: Mapping[str, Mapping[str, str]] | None,
     ) -> None:
         if isinstance(configured, Mapping):
             for identity, value in configured.items():
@@ -546,7 +547,13 @@ class ClaudeSdkAgentEventAdapter:
                 elif isinstance(value, (tuple, list)) and len(value) >= 2:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
-                safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                display = identity if category == "skill" else label
+                sanitizer = (
+                    self._skill_name_sanitizer
+                    if category == "skill"
+                    else self._sanitizer
+                )
+                safe_label = _safe_display(display, sanitizer=sanitizer)
                 if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                     self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
@@ -558,17 +565,14 @@ class ClaudeSdkAgentEventAdapter:
             if identity == "Skill":
                 names = subject.get("allowed_skill_names")
                 if isinstance(names, list):
-                    labels = subject.get("public_skill_labels")
                     for name in names:
                         if not isinstance(name, str):
                             continue
-                        label = labels.get(name) if isinstance(labels, dict) else None
-                        safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        if not safe_label and isinstance(skill_metadata, Mapping):
-                            metadata = skill_metadata.get(name)
-                            label = metadata.get("display_name") if isinstance(metadata, Mapping) else None
-                            safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        self._capabilities[name] = ("skill", safe_label or "Skill")
+                        safe_name = _safe_display(
+                            name, sanitizer=self._skill_name_sanitizer
+                        )
+                        if safe_name:
+                            self._capabilities[name] = ("skill", safe_name)
                 continue
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
