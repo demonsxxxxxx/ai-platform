@@ -193,13 +193,23 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal(selectedCommand(), "mcp");
       assert.equal((await key("ArrowUp")).defaultPrevented, true);
       assert.equal(selectedCommand(), "skill");
-      assert.equal((await key("Tab")).defaultPrevented, true);
-      assert.equal(selectedCommand(), undefined);
-      assert.equal(sends.length, 1);
-      await type("/s");
-      assert.equal((await key("Enter")).defaultPrevented, true);
-      assert.equal(selectedCommand(), undefined);
-      assert.equal(sends.length, 1);
+      const scheduleFrame = globalThis.requestAnimationFrame;
+      const pendingFrames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = (callback) => { pendingFrames.push(callback); return pendingFrames.length; };
+      try {
+        assert.equal((await key("Tab")).defaultPrevented, true);
+        assert.equal(selectedCommand(), undefined);
+        assert.equal(sends.length, 1);
+        await type("/s");
+        await act(async () => {
+          for (const callback of pendingFrames.splice(0)) callback(0);
+          document.dispatchEvent(new dom.window.Event("selectionchange", { bubbles: true }));
+        });
+        assert.equal(textarea().selectionStart, 2, "a previous command cannot move the new draft's caret");
+        assert.equal((await key("Enter")).defaultPrevented, true);
+        assert.equal(selectedCommand(), undefined);
+        assert.equal(sends.length, 1);
+      } finally { globalThis.requestAnimationFrame = scheduleFrame; }
       await type("/");
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);

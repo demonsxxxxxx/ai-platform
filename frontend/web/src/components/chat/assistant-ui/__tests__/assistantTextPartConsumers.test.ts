@@ -33,7 +33,7 @@ function part(
   };
 }
 
-test("assistant-ui keeps work as a non-copyable business slot alongside preview and answer text", () => {
+test("assistant-ui keeps all public text in source order without data-work slots", () => {
   const converted = toAssistantUiMessage({
     id: "assistant-ui-message",
     role: "assistant",
@@ -48,15 +48,15 @@ test("assistant-ui keeps work as a non-copyable business slot alongside preview 
     ],
   });
   assert.deepEqual(converted.content, [
-    { type: "data-work", data: {} },
-    { type: "text", text: "Preview" },
+    { type: "text", text: "Work narration" },
+    { type: "text", text: "\n\nPreview" },
     { type: "text", text: "\n\nAnswer A" },
     { type: "text", text: "\n\nAnswer B" },
   ]);
-  assert.doesNotMatch(JSON.stringify(converted), /Work narration/);
+  assert.doesNotMatch(JSON.stringify(converted), /data-work/);
 });
 
-test("outline headings include preview and answer text but ignore work text", () => {
+test("outline headings include every accepted public text role", () => {
   const message: Message = {
     id: "outline-message",
     role: "assistant",
@@ -72,11 +72,11 @@ test("outline headings include preview and answer text but ignore work text", ()
     extractMessageOutline([message])
       .filter((item) => item.kind === "assistant-heading")
       .map((item) => item.label),
-    ["Preview", "Answer"],
+    ["Internal work", "Preview", "Answer"],
   );
 });
 
-test("successful task notification summarizes only classified answer sources", () => {
+test("successful task notification summarizes accepted text without role selection", () => {
   const runId = "run-notification";
   const protocolMessageId = "protocol-notification";
   const streamIncarnation = 2;
@@ -130,6 +130,5 @@ test("successful task notification summarizes only classified answer sources", (
     successLabel: "Completed",
     status: "completed",
   });
-  assert.equal(notification.body, "Final result");
-  assert.doesNotMatch(notification.body, /Work details/);
+  assert.match(notification.body, /^Work details/);
 });

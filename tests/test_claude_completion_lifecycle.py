@@ -201,7 +201,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
 
     async def on_agent_event(batch):
         public_candidates.extend(batch)
-        if any(event.event_type == "message.part.delta" for event in batch):
+        if any(event.event_type == "message.delta" for event in batch):
             before_published.set()
         return True
 
@@ -222,9 +222,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
-            yield {"type": "assistant", "uuid": "completed-before-stop", "session_id": "stable-provider-id",
-                "parent_tool_use_id": None, "message": {"id": "drained-model-response", "role": "assistant",
-                "model": "model-a", "content": [{"type": "text", "text": before_text}]}}
+            # Exercise native increments before any completed block or Result.
             for index, event in enumerate(events[:4]):
                 yield stream_event(index, event)
             receiving.set()
@@ -321,10 +319,10 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
             assert final["sha256"] == hashlib.sha256((before_text + tail_text).encode()).hexdigest()
             assert len(final["call_ref"]) == 32
             public_text = "".join(event.payload["delta"] for event in public_candidates
-                                  if event.event_type == "message.part.delta")
+                                  if event.event_type == "message.delta")
             assert before_text[:100] in public_text
             assert "Suppressed drain tail." not in public_text
-            assert public_chunks == []  # The preview remained unclassified at cancellation.
+            assert public_chunks == []  # Legacy on_text only receives successful terminal text.
             assert not any(event.event_type == "message.completed" for event in public_candidates)
     finally:
         release_tail.set()
@@ -537,9 +535,10 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         yield {"type": "assistant", "uuid": "typed-answer", "session_id": "stable-provider-id",
             "parent_tool_use_id": None, "message": {"id": "typed-response", "role": "assistant",
             "model": "synthetic", "content": [{"type": "text", "text": "done"}]}}
-        yield {"type": "stream_event", "uuid": "ignored-raw", "session_id": "stable-provider-id",
-            "parent_tool_use_id": None, "event": {"type": "content_block_delta", "index": 0,
-            "delta": {"type": "text_delta", "text": "IGNORED_RAW"}}}
+        # Child-agent prose is not part of the main assistant answer.
+        yield {"type": "stream_event", "uuid": "child-raw", "session_id": "stable-provider-id",
+            "parent_tool_use_id": "child-call", "event": {"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "PRIVATE_CHILD_TEXT"}}}
         yield {
             "type": "result", "subtype": "success", "is_error": False,
             "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
@@ -600,7 +599,7 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         assert result.provider_final_sequence == (1 if tail_failure else 2)
         assert result.sdk_settlement["mirror_complete"] is (not tail_failure)
         assert result.sdk_settlement["ack_unknown"] is tail_failure
-        assert "IGNORED_RAW" not in "".join(public_text)
+        assert "PRIVATE_CHILD_TEXT" not in "".join(public_text)
         if not tail_failure:
             assert result.message == "done" and "".join(public_text) == "done"
         assert not transport.closed.is_set() and len(cleanup_tasks) == 1
