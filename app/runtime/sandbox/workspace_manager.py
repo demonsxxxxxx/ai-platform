@@ -1,11 +1,13 @@
 import errno
 import json
 import os
+import shutil
 from pathlib import Path
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME, WORKSPACE_RUNTIME_PRIVATE_ROOTS
 from app.settings import get_settings
+from app.path_safety import ensure_creatable_inside
 
 
 PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 文件任务规则
@@ -13,8 +15,10 @@ PLATFORM_CLAUDE_PROJECT_INSTRUCTIONS = """# AI Platform 文件任务规则
 - 默认使用简体中文回复用户；用户明确指定其他语言时遵循本次要求。保留代码、命令、文件名等字面值。
 - 保留实体、数值、单位、日期、引用和用户明确的格式要求；不编造缺失资料，按改动检查受影响的内容与格式。
 - 每个新工作阶段首次调用工具时，在同一助手轮次给一句简短进度；不展示内部推理、凭据、原始工具载荷或私有运行标识。
-- 输入原件只读。仅在当前工作目录（AI_PLATFORM_WORK_DIR）生成或修改副本，使用相对路径，不修改已安装的 Skill。
-- 最终答复使用普通文本。交付文件前调用 attach_file；成功仅表示已选中，平台在答复完成后发布附件。未成功不得声称已交付，不虚构下载链接。
+- 文档依赖已预装，python、python3 均使用平台 Python 3 环境；直接 import / require，不预先安装或升级依赖。加载失败先核对解释器、模块名和调用方式。
+- 按 Skill 示例调用辅助脚本，不擅自添加 -I 等改变模块搜索路径的参数；office 是脚本自带模块，导入失败先检查调用方式，不安装同名包。
+- Skill 资源可按安装路径读取或执行，不修改已安装的 Skill。输入原件只读，仅在当前工作目录（AI_PLATFORM_WORK_DIR）生成或修改副本，使用相对路径。
+- 最终答复使用普通文本。交付前逐个调用 attach_file，path 使用工作区相对路径（如 outputs/delivery/report.xlsx），不传绝对路径。成功仅表示已选中，平台在答复完成后发布附件；未成功不得声称已交付，不虚构下载链接。
 - 不附带临时、中间、缓存、日志或诊断文件，除非用户明确要求；未选中的文件保持私有。简洁说明实际结果和未解决的问题。
 """
 
@@ -180,6 +184,34 @@ class SandboxWorkspaceManager:
         ).strip().lower()
         self._requires_secure_creation = provider in {"docker", "opensandbox"}
 
+    def reserve(self, request: SandboxRuntimeRequest) -> WorkspaceLease:
+        """Reserve a fresh Attempt namespace without creating its workspace.
+
+        Recovery restores here first; prepare then stages current configuration.
+        """
+        if os.name != "posix" and self._requires_secure_creation:
+            raise OSError("secure host-bind workspace creation is unavailable")
+        components = (
+            "tenants", request.tenant_id, "workspaces", request.workspace_id,
+            "users", request.user_id, "sessions", request.session_id,
+            "runs", request.run_id, "attempts", request.attempt_id,
+        )
+        run_root = self.root.joinpath(*components)
+        descriptor = _ensure_workspace_root(self.root)
+        try:
+            for suffix in ((), ("logs",), ("runtime",)):
+                _create_workspace_directory_tree(self.root, components + suffix, descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        workspace = run_root / "workspace"
+        return WorkspaceLease(
+            tenant_id=request.tenant_id, workspace_id=request.workspace_id,
+            user_id=request.user_id, session_id=request.session_id, run_id=request.run_id,
+            host_root=str(run_root), workspace_host_path=str(workspace),
+            inputs_host_path=str(workspace / "inputs"), logs_host_path=str(run_root / "logs"),
+        )
+
     def prepare(self, request: SandboxRuntimeRequest) -> WorkspaceLease:
         if os.name != "posix" and self._requires_secure_creation:
             raise OSError("secure host-bind workspace creation is unavailable")
@@ -249,3 +281,21 @@ class SandboxWorkspaceManager:
             inputs_host_path=str(inputs),
             logs_host_path=str(logs),
         )
+
+
+def reset_worker_workspace(workspace_root: str | Path, workspace: Path) -> None:
+    ensure_creatable_inside(
+        workspace_root,
+        workspace,
+        "run workspace must stay inside the configured workspace root",
+    )
+    if workspace.exists():
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError("run workspace must stay inside the configured workspace root")
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=False)
+    ensure_creatable_inside(
+        workspace_root,
+        workspace,
+        "run workspace must stay inside the configured workspace root",
+    )

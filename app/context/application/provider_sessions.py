@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -21,9 +22,14 @@ from app.context.domain.provider_sessions import (
 class ProviderSessionRepository(Protocol):
     async def prepare_callback_media(self, conn: Any, **scope: Any) -> ProviderMediaTransfer: ...
 
+    def verification_scope(self, transaction_factory, *, tenant_id: str, run_id: str,
+                           transfer, user_id: str | None = None): ...
+
     async def queue_images_for_deletion(self, conn: Any, **scope: Any) -> list[dict]: ...
 
     async def callback_epoch(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
+
+    async def read_verified_native_invocation(self, conn: Any, **binding: Any) -> dict[str, Any]: ...
 
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None: ...
 
@@ -34,6 +40,13 @@ class ProviderSessionRepository(Protocol):
 
     async def prepare_epoch(self, conn: Any, *, scope: ProviderSessionScope,
                             run_id: str, conversation_context: Mapping[str, Any]) -> dict[str, Any]: ...
+
+    async def settle_continuation(self, conn: Any, **settlement: Any) -> dict[str, Any]: ...
+
+    async def advance_unclaimed_terminal_generation(self, conn: Any, **transition: Any) -> None: ...
+
+    async def get_continuation(self, conn: Any, *, tenant_id: str, user_id: str,
+                               session_id: str) -> dict[str, Any]: ...
 
     async def commit_turn(self, conn: Any, *, tenant_id: str, run_id: str,
                           attempt_id: str, assistant_message_id: str, final_sequence: int) -> None: ...
@@ -65,6 +78,16 @@ class ProviderSessionUseCases:
         self._storage_factory = storage_factory
         self._storage_io = storage_io
 
+    @asynccontextmanager
+    async def verification_scope(self, transaction_factory, *, tenant_id: str, run_id: str, user_id: str | None = None):
+        if self._image_fields is None:
+            yield
+            return
+        async with self._repository.verification_scope(
+            transaction_factory, tenant_id=tenant_id, run_id=run_id, user_id=user_id, transfer=self.transfer_callback_media,
+        ):
+            yield
+
     async def prepare_callback_media(self, conn: Any, **kwargs: Any) -> ProviderMediaTransfer | None:
         if self._image_fields is None:
             return None
@@ -89,6 +112,8 @@ class ProviderSessionUseCases:
             "tenant_id", "workspace_id", "user_id", "session_id", "agent_id", "run_id",
             "attempt_id", "provider_session_id", "action", "entries", "subpath", "expected_sequence",
         )}
+        if kwargs.get("provider_epoch_id") is not None:
+            binding["provider_epoch_id"] = kwargs["provider_epoch_id"]
         return await self._repository.prepare_callback_media(conn, projection=projection, **binding)
 
     async def transfer_callback_media(self, media: ProviderMediaTransfer | None) -> None:
@@ -124,6 +149,9 @@ class ProviderSessionUseCases:
     async def queue_images_for_deletion(self, conn: Any, **kwargs: Any) -> list[dict]:
         return await self._repository.queue_images_for_deletion(conn, **kwargs)
 
+    async def read_verified_native_invocation(self, conn: Any, **binding: Any) -> dict[str, Any]:
+        return await self._repository.read_verified_native_invocation(conn, **binding)
+
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
         await self._repository.claim_lineage(conn, scope=scope, run_id=run_id)
 
@@ -149,6 +177,15 @@ class ProviderSessionUseCases:
             assistant_message_id=assistant_message_id, final_sequence=final_sequence,
         )
 
+    async def settle_continuation(self, conn: Any, **settlement: Any) -> dict[str, Any]:
+        return await self._repository.settle_continuation(conn, **settlement)
+
+    async def advance_unclaimed_terminal_generation(self, conn: Any, **transition: Any) -> None:
+        await self._repository.advance_unclaimed_terminal_generation(conn, **transition)
+
+    async def get_continuation(self, conn: Any, **scope: Any) -> dict[str, Any]:
+        return await self._repository.get_continuation(conn, **scope)
+
     async def execute_callback(
         self,
         conn: Any,
@@ -166,6 +203,7 @@ class ProviderSessionUseCases:
         subpath: str | None,
         expected_sequence: int | None,
         include_child_entries: bool = False,
+        provider_epoch_id: str | None = None,
         media: ProviderMediaTransfer | None = None,
     ) -> ProviderSessionOperationResult:
         receipt = await self._repository.callback_epoch(
@@ -175,6 +213,7 @@ class ProviderSessionUseCases:
             provider_session_id=provider_session_id, action=action,
             subpath=subpath, entries=entries, expected_sequence=expected_sequence,
             **({"include_child_entries": True} if include_child_entries else {}),
+            **({"provider_epoch_id": provider_epoch_id} if provider_epoch_id is not None else {}),
             **({"media": media} if media is not None else {}),
         )
         return ProviderSessionOperationResult(
@@ -233,6 +272,33 @@ async def commit_provider_turn(conn: Any, *, tenant_id: str, run_id: str,
     )
 
 
+async def advance_unclaimed_terminal_generation(conn: Any, **transition: Any) -> None:
+    await configured_provider_session_use_cases().advance_unclaimed_terminal_generation(conn, **transition)
+
+
+async def settle_provider_continuation(
+    conn: Any, *, tenant_id: str, run_id: str, attempt_id: str,
+    final_sequence: int | None, workspace_receipt: Mapping[str, Any] | None,
+    stop_evidence: str, sdk_settlement: Mapping[str, Any], external_effect_unknown: bool = False,
+    validate_only: bool = False,
+) -> dict[str, Any]:
+    return await configured_provider_session_use_cases().settle_continuation(
+        conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        final_sequence=final_sequence, workspace_receipt=workspace_receipt,
+        stop_evidence=stop_evidence, sdk_settlement=sdk_settlement,
+        external_effect_unknown=external_effect_unknown,
+        **({"validate_only": True} if validate_only else {}),
+    )
+
+
+async def get_session_continuation(
+    conn: Any, *, tenant_id: str, user_id: str, session_id: str,
+) -> dict[str, Any]:
+    return await configured_provider_session_use_cases().get_continuation(
+        conn, tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+    )
+
+
 async def prepare_provider_session_media(conn: Any, **kwargs: Any) -> ProviderMediaTransfer | None:
     return await configured_provider_session_use_cases().prepare_callback_media(conn, **kwargs)
 
@@ -260,8 +326,22 @@ __all__ = [
     "commit_provider_turn",
     "configure_provider_session_use_cases",
     "configured_provider_session_use_cases",
+    "settle_provider_continuation",
+    "advance_unclaimed_terminal_generation",
+    "get_session_continuation",
     "execute_provider_session_callback",
     "prepare_provider_session_media",
     "transfer_provider_session_media",
     "queue_provider_session_images_for_deletion",
 ]
+
+
+async def read_verified_native_invocation(conn: Any, **binding: Any) -> dict[str, Any]:
+    """Read one exact private invocation from a receipt-verified frozen prefix."""
+    return await configured_provider_session_use_cases().read_verified_native_invocation(conn, **binding)
+
+
+def provider_session_verification_scope(transaction_factory, *, tenant_id: str, run_id: str, user_id: str | None = None):
+    return configured_provider_session_use_cases().verification_scope(
+        transaction_factory, tenant_id=tenant_id, run_id=run_id, user_id=user_id,
+    )

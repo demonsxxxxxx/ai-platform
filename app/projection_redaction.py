@@ -48,6 +48,7 @@ def is_retired_agent_for_projection(agent_id: object, *skill_ids: object) -> boo
 
 RAW_SKILL_KEYS = {"allowed_skills", "staged_skills", "used_skills"}
 SERVER_OWNED_CONTROL_KEYS = {
+    "documentpluginrevision",
     "copiedfromrunid",
     "dispatchchildrunid",
     "dispatchclaimedat",

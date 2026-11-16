@@ -36,7 +36,7 @@ export function UserMessageBubble({
     if (!attachments || attachments.length === 0) return null;
 
     return (
-      <MessageAttachments attachments={attachments} className="mb-2 max-w-full"
+      <MessageAttachments attachments={attachments} className="mb-1.5"
         onOpen={(attachment, previewSrc) => {
           if (previewSrc) {
             sessionImageGallery?.openImage(previewSrc, attachment.name);
@@ -53,8 +53,8 @@ export function UserMessageBubble({
 
   return (
     <div className="group w-full py-2">
-      <div className="mx-auto flex max-w-[76rem] justify-end px-2">
-        <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[75%]" data-user-message-group>
+      <div className="mx-auto flex max-w-[var(--chat-column-max)] justify-end px-2">
+        <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[70%]" data-user-message-group>
           {lockedSkillLabel && (
             <div
               data-locked-skill-label={lockedSkillLabel}
@@ -64,15 +64,14 @@ export function UserMessageBubble({
             </div>
           )}
 
-          {/* One surface owns this message's files and text. */}
-          {(hasAttachments || hasContent) && (
+          {/* Files sit above the text bubble as their own right-aligned row
+              (ChatGPT Clone); the bubble holds only the typed text. */}
+          {hasAttachments ? renderAttachments() : null}
+          {hasContent && (
             <UserMessageContent className="max-w-full">
-              {renderAttachments()}
-              {hasContent && (
-                <div className="break-words">
-                  <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
-                </div>
-              )}
+              <div className="break-words">
+                <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+              </div>
             </UserMessageContent>
           )}
 

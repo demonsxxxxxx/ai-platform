@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from functools import partial
+from app.context.api import provider_session_verification_scope
 
 from app.agent_apps.capability_state import exact_invoked_skills
+from app.bootstrap.conversation_continuation import build_continuation_settlement_ports
 from app.artifacts import api as artifacts_api
 from app.artifacts.infrastructure import records_postgres as artifact_records_postgres
 from app.conversations.infrastructure import postgres as conversations_postgres
@@ -91,6 +94,7 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
             provider_final_sequence=result.executor_payload.get("provider_session_final_sequence"),
         )
 
+    continuation = build_continuation_settlement_ports()
     return TimedWorkerResultCommitService(
         transaction_factory=transaction_factory,
         lock_run=runs_postgres.get_run,
@@ -108,6 +112,9 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
             result, sanitize_text=sanitize_public_text
         ),
         prefers_cancelled=execution_api.sandbox_failure_prefers_cancelled,
+        settle_continuation=continuation.commit,
+        release_continuation_lease=continuation.release,
+        verification_scope=partial(provider_session_verification_scope, transaction_factory),
     )
 
 

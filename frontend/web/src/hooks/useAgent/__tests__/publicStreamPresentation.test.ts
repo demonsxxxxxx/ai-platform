@@ -3,12 +3,19 @@ import test from "node:test";
 import {
   EXECUTION_PROGRESS_MIN_INTERVAL_MS,
   PublicStreamPresentation,
+  projectPublicAgentProgress,
   projectPublicThinkingActivity,
+  projectValidatedPublicAgentProgress,
   upsertPublicThinkingActivity,
   type PublicStreamPresentationClock,
   type PublicStreamPresentationOwner,
 } from "../publicStreamPresentation.ts";
-import { CHAT_PUBLIC_PROJECTION_VERSION } from "../types.ts";
+import {
+  CHAT_PUBLIC_PROJECTION_VERSION,
+  PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+} from "../types.ts";
+import { processMessageEvent } from "../eventProcessor.ts";
+import { adaptPublicRunStreamEventV4 } from "../../../components/chat/assistant-ui/publicEventAdapter.ts";
 
 class FakePresentationClock implements PublicStreamPresentationClock {
   private nowValue = 0;
@@ -45,6 +52,72 @@ const owner: PublicStreamPresentationOwner = {
   assistantMessageId: "assistant-1",
   streamVersion: 3,
 };
+
+test("v4 and history progress use the same typed presentation reducer", () => {
+  const payload = {
+    schema_version: "ai-platform.public-agent-progress.v1",
+    step_id: "phase_model_wait",
+    phase: "model_wait",
+    lifecycle: "completed",
+    message: "Model response is ready",
+  } as const;
+  const historyData = {
+    projection_version: CHAT_PUBLIC_PROJECTION_VERSION,
+    event_type: PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    stage: payload.phase,
+    message: payload.message,
+    payload,
+    sequence: 12,
+    timestamp: "2026-10-09T00:00:12Z",
+  };
+  const historyPart = projectPublicAgentProgress(historyData);
+  const livePart = projectValidatedPublicAgentProgress({
+    eventType: "agent.progress",
+    payload,
+    sequence: 12,
+    timestamp: "2026-10-09T00:00:12Z",
+  });
+  assert.deepEqual(livePart, historyPart);
+
+  const adapted = adaptPublicRunStreamEventV4(
+    {
+      eventHeader: "agent.progress",
+      transportCursor: "run-progress:2:12-0",
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: "event-progress-12",
+        run_id: "run-progress",
+        message_id: null,
+        seq: 12,
+        event_type: "agent.progress",
+        stream_incarnation: 2,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: "2026-10-09T00:00:12Z",
+        payload,
+      },
+    },
+    { runId: "run-progress", streamIncarnation: 2 },
+  );
+  assert.ok(adapted);
+  const v4Result = processMessageEvent(
+    adapted, undefined, [], "", [], 0, [], true, "assistant-progress",
+  );
+  const historyResult = processMessageEvent(
+    "run_event", historyData, [], "", [], 0, [], false, "assistant-progress",
+  );
+  assert.deepEqual(v4Result.parts, historyResult.parts);
+  assert.deepEqual(v4Result.parts[0], historyPart);
+
+  assert.equal(
+    projectPublicAgentProgress({
+      ...historyData,
+      stage: "sandbox_preparation",
+    }),
+    null,
+  );
+});
 
 test("presentation lifecycle accepts only its active owner", () => {
   const presentation = new PublicStreamPresentation();

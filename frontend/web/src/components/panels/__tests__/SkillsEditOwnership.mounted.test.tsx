@@ -65,6 +65,22 @@ test("late detail cannot reopen a cancelled editor or replace a newer selection"
   } finally { await view.close(); skillApi.get = originalGet; }
 });
 
+test("failed Skill archive retains a visible confirmation error and clears it for a new action", async () => {
+  const originalDelete = skillApi.delete;
+  skillApi.delete = async () => { throw new Error("private-secret"); };
+  const view = await harness();
+  try {
+    await act(async () => view.current().handleDelete("one"));
+    await act(async () => view.current().confirmDelete());
+    assert.equal(view.current().isDeleteConfirmOpen, true);
+    assert.equal(view.current().deleteError, "Skill 归档失败");
+    assert.doesNotMatch(view.current().deleteError!, /private-secret/);
+    await act(async () => view.current().cancelDelete());
+    await act(async () => view.current().handleDelete("two"));
+    assert.equal(view.current().deleteError, null);
+  } finally { await view.close(); skillApi.delete = originalDelete; }
+});
+
 test("save passes explicit removals and leaves unwritten lazy files retained", async () => {
   const originalGet = skillApi.get; const originalUpdate = skillApi.update;
   skillApi.get = async () => ({ skill_name: "one", files: ["SKILL.md", "script.py", "image.png", "remove.txt"] });

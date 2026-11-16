@@ -1,4 +1,5 @@
 @import "./run-monitor.css";
+@import "../components/panels/ModelGroupMemberPicker.css";
 
 /* Typewriter dots animation */
 .typing-dots::after {

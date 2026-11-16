@@ -1,32 +1,13 @@
 /**
- * Stream event handlers for useAgent hook
- * Handles all incoming SSE events and updates messages accordingly.
- *
- * Message transformation logic is unified in processMessageEvent (messageParts.ts).
- * This file handles: SSE parsing, duplicate detection, subagent stack management,
- * and React state updates (side effects).
+ * Applies validated public v4 stream events to useAgent state.
+ * Wire parsing and connection identity are owned by the SSE adapter/connection.
  */
 
 import { toast } from "@lobehub/ui/base-ui";
-import type { Message, MessagePart } from "../../types";
-import { uuid } from "../../utils/uuid";
+import type { Message } from "../../types";
 import i18n from "../../i18n";
-import { translateBackendError } from "../../utils/backendErrors";
-import { parseDate } from "../../utils/datetime";
-import type {
-  StreamEvent,
-  EventData,
-  SubagentStackItem,
-  UseAgentOptions,
-} from "./types";
+import type { SubagentStackItem } from "./types";
 import {
-  isPublicExecutionEvent,
-  isSequencedPublicChatEvent,
-  PUBLIC_EXECUTION_EVENT_TYPES,
-} from "./types";
-import { clearAllLoadingStates } from "./messageParts";
-import {
-  convertAttachments,
   processMessageEvent,
   type ProcessMessageEventResult,
 } from "./eventProcessor";
@@ -52,7 +33,6 @@ import {
  * Context passed to event handler
  */
 export interface EventHandlerContext {
-  options?: UseAgentOptions;
   sessionIdRef: React.MutableRefObject<string | null>;
   currentRunIdRef: React.MutableRefObject<string | null>;
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
@@ -375,55 +355,6 @@ function compareTransportCursors(left: string, right: string): number | null {
   return leftId[1] < rightId[1] ? -1 : 1;
 }
 
-const MESSAGE_EVENTS = new Set<string>([
-  "agent:call",
-  "agent:result",
-  "thinking",
-  "message:chunk",
-  "final_detail",
-  "sandbox:starting",
-  "sandbox:ready",
-  "sandbox:error",
-  "token:usage",
-  "todo:updated",
-  "summary",
-  "run_event",
-  "execution_step",
-  "execution_progress",
-  "execution_step_completed",
-  "execution_step_failed",
-  "artifact_card",
-  "error",
-]);
-
-const SIDE_EFFECT_EVENTS = new Set<string>([
-  "metadata",
-  "user:message",
-  "user:cancel",
-  "complete",
-  "done",
-  "end",
-  "stream_open",
-  "skills:changed",
-  "heartbeat",
-]);
-
-function runEventSequence(data: EventData): number | null {
-  return typeof data.sequence === "number" &&
-    Number.isSafeInteger(data.sequence) &&
-    data.sequence >= 0
-    ? data.sequence
-    : null;
-}
-
-function dismissQueueToast(ctx: EventHandlerContext): void {
-  if (ctx.dismissQueueToast) {
-    ctx.dismissQueueToast();
-    return;
-  }
-  toast.dismiss("chat-queue");
-}
-
 /**
  * Publish a message projection without putting stream bookkeeping in a React
  * updater. The ref is the receive-time snapshot used by reconnect recovery;
@@ -439,19 +370,15 @@ export function setMessageSnapshot(
   ctx.setMessages(next);
 }
 
-/**
- * Additive v4 production seam. The existing handler remains the sole owner of
- * message, status, artifact, cursor, and terminal side effects.
- */
-export function handlePublicRunStreamEventV4(
+/** Apply one frame after its adapter/connection binding has been admitted. */
+function applyPublicRunStreamEventV4(
   event: V4PublicEvent,
   messageId: string,
   ctx: EventHandlerContext,
-  binding: StreamEventBinding | undefined,
+  binding: V4StreamEventBinding,
   onCommitted?: (semanticApplied: boolean) => void,
   onTerminalSettled?: (accepted: boolean) => void,
 ): boolean {
-  if (!isStrictV4Binding(binding)) return false;
   const terminalEventId =
     event.eventType === "stream.end" || event.eventType.startsWith("run.")
       ? ((event.event.payload as unknown as Record<string, unknown>).terminal_event_id as string | undefined)
@@ -461,31 +388,17 @@ export function handlePublicRunStreamEventV4(
     matchesV4TerminalFence(event, ctx, terminalEventId) &&
     ctx.v4TerminalFenceRef?.current?.streamVersion === binding.streamVersion;
   if (
-    event.runId !== binding.runId ||
-    (!terminalEndFenced && event.runId !== ctx.currentRunIdRef.current) ||
     ctx.sessionIdRef.current !== binding.sessionId ||
-    (!terminalEndFenced && ctx.streamVersionRef.current !== binding.streamVersion) ||
-    event.streamIncarnation !== binding.streamIncarnation ||
-    event.generation !== binding.generation
+    (!terminalEndFenced &&
+      (event.runId !== ctx.currentRunIdRef.current ||
+        ctx.streamVersionRef.current !== binding.streamVersion))
   ) {
     return false;
   }
-  const bindingMatchesCurrentOwner = terminalEndFenced || Boolean(
-    ctx.sessionIdRef.current === binding.sessionId &&
-      ctx.streamVersionRef.current === binding.streamVersion &&
-      ctx.currentRunIdRef.current === binding.runId,
-  );
-  if (!bindingMatchesCurrentOwner) return false;
   const terminalStatus = terminalRunStatusFromEvent(
     event.eventType,
     event.event as unknown as Record<string, unknown>,
   );
-  if (
-    terminalStatus &&
-    event.runId !== ctx.currentRunIdRef.current
-  ) {
-    return false;
-  }
   if (terminalStatus && event.eventType !== "stream.end") {
     if (
       !terminalEventId ||
@@ -793,9 +706,7 @@ export function handlePublicRunStreamEventV4(
   ctx.messagesRef.current = next;
   ctx.setMessages(next);
   commitV4Event();
-  const identityAccepted = true;
   if (
-    identityAccepted &&
     event.messageId &&
     isPreOwnerActivity &&
     !ownerMatchesRun &&
@@ -810,7 +721,6 @@ export function handlePublicRunStreamEventV4(
     };
   }
   if (
-    identityAccepted &&
     event.eventType === "message.started" &&
     event.messageId &&
     ctx.v4MessageOwnerRef
@@ -843,23 +753,28 @@ export interface PublicRunStreamEventV4Args {
   onTerminalSettled?: (accepted: boolean) => void;
 }
 
-/** Preserve validated event outcomes at the connection boundary. */
+/** Admit one adapter event against its connection, then apply it. */
 export function handlePublicRunStreamEventV4Result(
   args: PublicRunStreamEventV4Args,
 ): V4FrameHandlingResult {
+  const binding = args.binding;
   if (
-    !isStrictV4Binding(args.binding) ||
+    !isStrictV4Binding(binding) ||
     !Number.isSafeInteger(args.currentGeneration) ||
     args.currentGeneration < 0 ||
-    args.currentGeneration !== args.binding.generation ||
-    args.event.runId !== args.binding.runId ||
-    args.event.generation !== args.binding.generation
+    args.currentGeneration !== binding.generation ||
+    args.event.runId !== binding.runId ||
+    args.event.generation !== binding.generation ||
+    (args.event.eventType !== "stream.gap" &&
+      args.event.streamIncarnation !== binding.streamIncarnation)
   ) {
     return { kind: "invalid" };
   }
   const event = args.event;
   if (event.eventType === "stream.gap") {
-    if (!isCurrentV4GapOwner(args.ctx, args.binding, event)) {
+    // A gap advertises the replacement incarnation while binding the
+    // connection to the requested cursor's prior incarnation.
+    if (!isCurrentV4GapOwner(args.ctx, binding, event)) {
       return { kind: "invalid" };
     }
     args.onGap?.(event);
@@ -867,11 +782,11 @@ export function handlePublicRunStreamEventV4Result(
   }
   let committed: boolean | undefined;
   let terminalSettled: boolean | undefined;
-  const accepted = handlePublicRunStreamEventV4(
+  const accepted = applyPublicRunStreamEventV4(
     event,
     args.messageId,
     args.ctx,
-    args.binding,
+    binding,
     (semanticApplied) => {
       committed = semanticApplied;
       args.onCommitted?.(semanticApplied);
@@ -895,594 +810,4 @@ export function handlePublicRunStreamEventV4Result(
     return { kind: "deferred", reason: "terminal_hydration" };
   }
   return { kind: "applied" };
-}
-
-/**
- * Handle incoming SSE events
- */
-export function handleStreamEvent(
-  event: StreamEvent,
-  messageId: string,
-  eventId: string,
-  eventTimestamp: string | undefined,
-  ctx: EventHandlerContext,
-  binding?: StreamEventBinding,
-  onCommitted?: (semanticApplied: boolean) => void,
-): boolean {
-  // A bound SSE connection is the authority for both run ownership and
-  // generation. Generic callers cannot bind runless terminal frames.
-  if (
-    binding &&
-    (ctx.streamVersionRef.current !== binding.streamVersion ||
-      ctx.sessionIdRef.current !== binding.sessionId ||
-      ctx.currentRunIdRef.current !== binding.runId)
-  ) {
-    return false;
-  }
-
-  const eventType = event.event;
-  let data: EventData;
-  try {
-    const parsed = JSON.parse(event.data);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return false;
-    }
-    data = parsed as EventData;
-  } catch {
-    return false;
-  }
-
-  const eventRunId =
-    typeof data.run_id === "string" && data.run_id.trim()
-      ? data.run_id
-      : null;
-  if (eventRunId && ctx.currentRunIdRef.current !== eventRunId) {
-    return false;
-  }
-  if (binding && eventRunId && eventRunId !== binding.runId) {
-    return false;
-  }
-
-  const cursorSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
-  const cursorRunId = binding?.runId ?? eventRunId;
-  const acceptedCursorBeforeEffects = ctx.acceptedStreamCursorRef?.current;
-  if (
-    acceptedCursorBeforeEffects &&
-    acceptedCursorBeforeEffects.sessionId === cursorSessionId &&
-    acceptedCursorBeforeEffects.runId === cursorRunId &&
-    acceptedCursorBeforeEffects.eventId
-  ) {
-    const cursorComparison = compareTransportCursors(
-      eventId,
-      acceptedCursorBeforeEffects.eventId,
-    );
-    if (cursorComparison !== null && cursorComparison <= 0) {
-      return false;
-    }
-  }
-
-  const semanticEventId =
-    typeof data.event_id === "string" && data.event_id.trim()
-      ? data.event_id
-      : eventId;
-  if (ctx.processedEventIdsRef.current.has(semanticEventId)) {
-    // The reducer already owns this semantic event, but a later Redis entry is
-    // still valid transport progress and may advance Last-Event-ID.
-    onCommitted?.(false);
-    return false;
-  }
-
-  const terminalStatus = terminalRunStatusFromEvent(
-    eventType,
-    data as unknown as Record<string, unknown>,
-  );
-  // Only a generation-bound SSE connection may bind a runless terminal frame.
-  // Generic event handling, including history replay, must have an explicit id.
-  if (terminalStatus && !eventRunId) {
-    return false;
-  }
-  if (
-    PUBLIC_EXECUTION_EVENT_TYPES.has(eventType as never) &&
-    !isPublicExecutionEvent(eventType, data)
-  ) {
-    return false;
-  }
-
-  if (!SIDE_EFFECT_EVENTS.has(eventType) && !MESSAGE_EVENTS.has(eventType)) {
-    console.warn("[SSE] Unhandled event type:", eventType);
-    return false;
-  }
-
-  const sequencedPublicEvent = isSequencedPublicChatEvent(eventType, data);
-  const progressSequence = sequencedPublicEvent ? runEventSequence(data) : null;
-  const progressSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
-  const progressRunId = binding?.runId ?? eventRunId;
-  const acceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
-  // Sequenced public run/projection frames can only be accepted through the
-  // durable cursor. A partial caller without that cursor must fail closed.
-  if (sequencedPublicEvent && progressSequence !== null && !acceptedProgress) {
-    return false;
-  }
-  if (
-    sequencedPublicEvent &&
-    progressSequence !== null &&
-    progressSessionId &&
-    progressRunId &&
-    acceptedProgress &&
-    acceptedProgress.sessionId === progressSessionId &&
-    acceptedProgress.runId === progressRunId &&
-    acceptedProgress.sequence !== null &&
-    progressSequence <= acceptedProgress.sequence
-  ) {
-    if (progressSequence === acceptedProgress.sequence) {
-      onCommitted?.(false);
-    }
-    return false;
-  }
-
-  // Wall-clock history filtering is only a legacy fallback. A sequenced
-  // public frame is ordered by its durable sequence, even when its timestamp
-  // overlaps history or the client clock moved backward.
-  if (!sequencedPublicEvent && eventTimestamp && ctx.lastHistoryTimestampRef.current) {
-    const eventTime = parseDate(eventTimestamp);
-    const historyTime = ctx.lastHistoryTimestampRef.current;
-    if (eventTime <= historyTime) {
-      onCommitted?.(false);
-      return false;
-    }
-  }
-
-  let committed = false;
-  const commitAcceptedEvent = () => {
-    if (committed) return;
-    committed = true;
-    ctx.processedEventIdsRef.current.add(semanticEventId);
-    if (ctx.processedEventIdsRef.current.size > 10_000) {
-      ctx.processedEventIdsRef.current.clear();
-      ctx.processedEventIdsRef.current.add(semanticEventId);
-    }
-    if (
-      sequencedPublicEvent &&
-      progressSequence !== null &&
-      progressSessionId &&
-      progressRunId &&
-      ctx.acceptedRunEventSequenceRef
-    ) {
-      const accepted = ctx.acceptedRunEventSequenceRef.current;
-      const isSameRun =
-        accepted !== null &&
-        accepted.sessionId === progressSessionId &&
-        accepted.runId === progressRunId;
-      if (
-        isSameRun &&
-        accepted !== null &&
-        accepted.sequence !== null &&
-        progressSequence <= accepted.sequence
-      ) {
-        onCommitted?.(true);
-        return;
-      }
-      ctx.acceptedRunEventSequenceRef.current = {
-        sessionId: progressSessionId,
-        runId: progressRunId,
-        sequence: progressSequence,
-      };
-    }
-    onCommitted?.(true);
-  };
-
-  const commitTransportOnly = () => {
-    if (committed) return;
-    committed = true;
-    onCommitted?.(false);
-  };
-
-  if (terminalStatus && eventRunId) {
-    const owner = presentationOwner(binding, messageId);
-    if (owner) ctx.publicStreamPresentation?.flush(owner);
-    if (ctx.onRunTerminal?.(eventRunId, terminalStatus, messageId)) {
-      commitAcceptedEvent();
-      return true;
-    }
-  }
-
-  const depth = data.depth || 0;
-
-  // Events handled entirely by side effects (no message transformation)
-  switch (eventType) {
-    case "metadata": {
-      if (
-        data.session_id &&
-        !ctx.sessionIdRef.current &&
-        (!binding || ctx.streamVersionRef.current === binding.streamVersion)
-      ) {
-        ctx.setSessionId(data.session_id);
-      }
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "user:message": {
-      handleUserMessage(data, messageId, eventTimestamp, ctx);
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "user:cancel": {
-      dismissQueueToast(ctx);
-      const owner = presentationOwner(binding, messageId);
-      if (owner) ctx.publicStreamPresentation?.flush(owner);
-      handleError(data, messageId, ctx, true, { keepConnectionOpen: true });
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "complete":
-    case "done": {
-      dismissQueueToast(ctx);
-      const owner = presentationOwner(binding, messageId);
-      if (owner) ctx.publicStreamPresentation?.flush(owner);
-      setMessageSnapshot(ctx, (prev) =>
-        prev.map((m) =>
-          m.id === messageId
-            ? {
-                ...m,
-                isStreaming: false,
-                parts: clearAllLoadingStates(m.parts || []),
-              }
-            : m,
-        ),
-      );
-      ctx.publicStreamPresentation?.invalidate();
-      ctx.setConnectionStatus("disconnected");
-      ctx.options?.onStreamDone?.();
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "stream_open": {
-      if (ctx.dismissQueueToast) {
-        ctx.dismissQueueToast();
-      } else {
-        toast.dismiss("chat-queue");
-          toast.success({ description: i18n.t("chat.queueStart"), duration: 2000, hideCloseButton: true });
-      }
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "heartbeat": {
-      // Heartbeats have already passed the session/run/generation fence above.
-      // They are liveness signals, not assistant text or a fake progress card.
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "end": {
-      const terminalEventId =
-        typeof data.payload === "object" && data.payload !== null && !Array.isArray(data.payload) &&
-        typeof data.payload.terminal_event_id === "string"
-          ? data.payload.terminal_event_id
-          : undefined;
-      if (
-        !ctx.v4TerminalFenceRef?.current ||
-        terminalEventId !== ctx.v4TerminalFenceRef.current.terminalEventId
-      ) {
-        return false;
-      }
-      commitAcceptedEvent();
-      return true;
-    }
-
-    case "skills:changed": {
-      if (ctx.options?.onSkillAdded) {
-        const action = (data.action as string) || "updated";
-        const description =
-          action === "created"
-            ? i18n.t("chat.skillCreated")
-            : i18n.t("chat.skillUpdated");
-        ctx.options.onSkillAdded(
-          (data.skill_name as string) || "",
-          description,
-          (data.files_count as number) || 0,
-        );
-      }
-      commitAcceptedEvent();
-      return true;
-    }
-  }
-
-  // Events that transform message state via processMessageEvent
-  const subagentStack = ctx.activeSubagentStackRef.current;
-
-  // Manage subagent stack as side effect
-  if (eventType === "agent:call") {
-    const agentId = data.agent_id || "unknown";
-    subagentStack.push({ agent_id: agentId, depth, message_id: messageId });
-  }
-
-  const commitMessageEvent = (
-    committedData: EventData = data,
-    onApplied: () => void = commitAcceptedEvent,
-    publish = true,
-  ): boolean => {
-    if (
-      binding &&
-      (ctx.streamVersionRef.current !== binding.streamVersion ||
-        ctx.sessionIdRef.current !== binding.sessionId ||
-        ctx.currentRunIdRef.current !== binding.runId)
-    ) {
-      return false;
-    }
-    const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
-    if (
-      acceptedCursor &&
-      acceptedCursor.sessionId === progressSessionId &&
-      acceptedCursor.runId === progressRunId &&
-      acceptedCursor.eventId
-    ) {
-      const cursorComparison = compareTransportCursors(
-        eventId,
-        acceptedCursor.eventId,
-      );
-      if (cursorComparison !== null && cursorComparison <= 0) {
-        commitTransportOnly();
-        return false;
-      }
-    }
-    const currentAcceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
-    if (
-      progressSequence !== null &&
-      currentAcceptedProgress &&
-      currentAcceptedProgress.sessionId === progressSessionId &&
-      currentAcceptedProgress.runId === progressRunId &&
-      currentAcceptedProgress.sequence !== null &&
-      progressSequence <= currentAcceptedProgress.sequence
-    ) {
-      commitTransportOnly();
-      return false;
-    }
-    let didApply = false;
-    const next = ctx.messagesRef.current.map((m) => {
-      if (m.id !== messageId) return m;
-
-      const result = processMessageEvent(
-        eventType,
-        committedData,
-        m.parts || [],
-        m.content,
-        m.toolCalls || [],
-        depth,
-        subagentStack,
-        true, // isStreaming
-        messageId,
-      );
-      didApply = true;
-
-      const updated = {
-        ...m,
-        parts: result.parts,
-        content: result.content,
-        toolCalls: result.toolCalls,
-      };
-
-      if (result.toolResult) {
-        updated.toolResults = [...(m.toolResults || []), result.toolResult];
-      }
-      if (result.tokenUsage) {
-        updated.tokenUsage = result.tokenUsage;
-      }
-      if (result.duration !== undefined) {
-        updated.duration = result.duration;
-      }
-      if (result.cancelled) {
-        updated.isStreaming = false;
-        updated.cancelled = true;
-      }
-
-      return updated;
-    });
-    if (!didApply) return false;
-    ctx.messagesRef.current = next;
-    onApplied();
-    if (publish) ctx.setMessages(next);
-    return true;
-  };
-
-  const owner = presentationOwner(binding, messageId);
-  const executionEventType =
-    eventType === "run_event" ? String(data.event_type || "") : eventType;
-  const executionPhase =
-    executionEventType === "execution_step"
-      ? "started"
-      : executionEventType === "execution_progress"
-        ? "progress"
-        : executionEventType === "execution_step_completed" ||
-            executionEventType === "execution_step_failed"
-          ? "terminal"
-          : null;
-
-  if (
-    executionPhase &&
-    isPublicExecutionEvent(executionEventType, data) &&
-    typeof data.sequence === "number"
-  ) {
-    if (!commitMessageEvent(data, commitAcceptedEvent, false)) return true;
-    if (
-      owner &&
-      ctx.publicStreamPresentation?.enqueueExecutionUpdate(owner, {
-        stepId: data.step_id,
-        sequence: data.sequence,
-        phase: executionPhase,
-        commit: () => ctx.setMessages(ctx.messagesRef.current),
-      })
-    ) {
-      return true;
-    }
-    ctx.setMessages(ctx.messagesRef.current);
-    return true;
-  }
-
-  if (owner) ctx.publicStreamPresentation?.flush(owner);
-  const messageApplied = commitMessageEvent();
-  if (!messageApplied && eventType === "message:chunk") return false;
-  if (eventType === "agent:result") {
-    const agentId = data.agent_id || "unknown";
-    const stackIndex = subagentStack.findIndex(
-      (item) => item.agent_id === agentId && item.message_id === messageId,
-    );
-    if (stackIndex !== -1) {
-      subagentStack.splice(stackIndex, 1);
-    }
-  }
-
-  // Sandbox side effects
-  if (eventType === "sandbox:starting") {
-    ctx.setIsInitializingSandbox(true);
-    ctx.setSandboxError(null);
-  }
-  if (eventType === "sandbox:ready") {
-    ctx.setIsInitializingSandbox(false);
-  }
-  if (eventType === "sandbox:error") {
-    ctx.setIsInitializingSandbox(false);
-    ctx.setSandboxError(
-      data.error
-        ? translateBackendError(data.error, i18n.t.bind(i18n))
-        : i18n.t("chat.sandboxInitFailed"),
-    );
-  }
-
-  // Error side effects
-  if (eventType === "error") {
-    dismissQueueToast(ctx);
-    ctx.setConnectionStatus("disconnected");
-    ctx.setIsInitializingSandbox(false);
-  }
-  return true;
-}
-
-// ---- Events handled outside processMessageEvent ----
-
-function handleUserMessage(
-  data: EventData,
-  _messageId: string,
-  eventTimestamp: string | undefined,
-  ctx: EventHandlerContext,
-): void {
-  const extractOptimisticContent = (content: string): string | null => {
-    const match = content.match(/^\[[^\]]+\]\s([\s\S]*)$/);
-    return match ? match[1] : null;
-  };
-  const resolvedMessageId =
-    typeof data.message_id === "string" && data.message_id.trim()
-      ? data.message_id
-      : typeof data.run_id === "string" && data.run_id.trim()
-        ? `${data.run_id}:user`
-        : uuid();
-  const userContent = data.content || "";
-  const userAttachments = convertAttachments(data.attachments) || [];
-
-  if (userContent) {
-    setMessageSnapshot(ctx, (prev) => {
-      if (prev.length === 0) {
-        const newUserMessage: Message = {
-          id: resolvedMessageId,
-          role: "user",
-          content: userContent,
-          timestamp: eventTimestamp ? parseDate(eventTimestamp) : new Date(),
-          attachments: userAttachments,
-        };
-        return [...prev, newUserMessage];
-      }
-      const existingUserMsg = prev.find(
-        (m) => m.role === "user" && m.content === userContent,
-      );
-      if (existingUserMsg) return prev;
-
-      const optimisticContent = extractOptimisticContent(userContent);
-      if (optimisticContent) {
-        for (let index = prev.length - 1; index >= 0; index -= 1) {
-          const candidate = prev[index];
-          if (
-            candidate?.role === "user" &&
-            candidate.content === optimisticContent
-          ) {
-            const updatedMessages = [...prev];
-            updatedMessages[index] = {
-              ...candidate,
-              content: userContent,
-              attachments:
-                userAttachments.length > 0
-                  ? userAttachments
-                  : candidate.attachments,
-            };
-            return updatedMessages;
-          }
-        }
-      }
-
-      const newUserMessage: Message = {
-        id: resolvedMessageId,
-        role: "user",
-        content: userContent,
-        timestamp: eventTimestamp ? parseDate(eventTimestamp) : new Date(),
-        attachments: userAttachments,
-      };
-      const streamingAssistantIndex = prev.findIndex(
-        (m) => m.role === "assistant" && m.isStreaming,
-      );
-      if (streamingAssistantIndex !== -1) {
-        const newMessages = [...prev];
-        newMessages.splice(streamingAssistantIndex, 0, newUserMessage);
-        return newMessages;
-      }
-      return [...prev, newUserMessage];
-    });
-  }
-}
-
-function handleError(
-  data: EventData,
-  messageId: string,
-  ctx: EventHandlerContext,
-  forceCancelled?: boolean,
-  options?: { keepConnectionOpen?: boolean },
-): void {
-  const errorMsg = data.error
-    ? translateBackendError(data.error, i18n.t.bind(i18n))
-    : i18n.t("chat.unknownError");
-  const isCancelled = forceCancelled || data.type === "CancelledError";
-
-  setMessageSnapshot(ctx, (prev) =>
-    prev.map((m) => {
-      if (m.id !== messageId) return m;
-      if (isCancelled) {
-        return {
-          ...m,
-          isStreaming: false,
-          cancelled: true,
-          parts: appendCancelledPart(clearAllLoadingStates(m.parts || [])),
-        };
-      }
-      return {
-        ...m,
-        content: i18n.t("chat.errorPrefix", { error: errorMsg }),
-        isStreaming: false,
-        parts: clearAllLoadingStates(m.parts || []),
-
-      };
-    }),
-  );
-  if (!options?.keepConnectionOpen) {
-    ctx.setConnectionStatus("disconnected");
-    ctx.setIsInitializingSandbox(false);
-  }
-}
-
-function appendCancelledPart(parts: MessagePart[]): MessagePart[] {
-  if (parts.some((part) => part.type === "cancelled")) {
-    return parts;
-  }
-  return [...parts, { type: "cancelled" }];
 }

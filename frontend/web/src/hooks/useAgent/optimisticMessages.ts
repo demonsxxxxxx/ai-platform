@@ -28,7 +28,11 @@ export function createOptimisticMessagesForSend({
     role: "user",
     content: content.trim(),
     timestamp: now,
-    attachments,
+    attachments: attachments?.map((attachment) => {
+      const projected = { ...attachment };
+      delete projected.profileDriveReference;
+      return projected;
+    }),
   };
 
   const assistantMessage: Message = {

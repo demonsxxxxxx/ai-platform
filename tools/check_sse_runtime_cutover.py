@@ -24,6 +24,7 @@ V4_PUBLICATION_OWNER_MANIFEST = frozenset(
         ('app/bootstrap/worker_run_preparation.py', 'prepare_worker_run'),
         ('app/bootstrap/worker_terminal_completion.py', 'build_worker_terminal_completion_service'),
         ('app/executor_reconciler.py', '_terminalize_reconciliation_failure'),
+        ('app/executor_reconciler.py', 'repair_quarantined_executor_checkpoint'),
         ('app/runs/application/cancellation.py', 'RunCancellationPostProcessor.post_cancel'),
         ('app/routes/runtime_callbacks.py', 'record_executor_callback'),
         ('app/streaming/application/worker_publication_v4.py', 'admit_v4_stream'),

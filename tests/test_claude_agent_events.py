@@ -735,7 +735,7 @@ def test_tool_hooks_exclude_sdk_tool_payload():
     assert "sdk-tool-1" not in repr(started + completed)
 
 
-def test_skill_tool_lifecycle_exposes_only_authorized_public_label():
+def test_skill_tool_lifecycle_uses_authorized_skill_name():
     adapter = _adapter()
 
     class ToolUseBlock:
@@ -756,10 +756,71 @@ def test_skill_tool_lifecycle_exposes_only_authorized_public_label():
         "tool.completed",
     ]
     assert all(event.payload["category"] == "skill" for event in started + completed)
-    assert all(event.payload["display_name"] == "QA review" for event in started + completed)
-    assert "qa-review" not in repr(started + completed)
+    assert all(event.payload["display_name"] == "qa-review" for event in started + completed)
+    assert "qa-review" in repr(started + completed)
     assert "private_argument" not in repr(started + completed)
     assert "secret" not in repr(started + completed)
+
+
+def test_skill_policy_public_labels_do_not_override_authorized_skill_name():
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-1187",
+        attempt_id="attempt-1",
+        tool_policy_subjects=[
+            {
+                "identity": "Skill",
+                "allowed_skill_names": ["qa-review"],
+                "public_skill_labels": {"qa-review": "Confidential title"},
+            }
+        ],
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+
+    class ToolUseBlock:
+        pass
+
+    block = ToolUseBlock()
+    block.id = "skill-call-2"
+    block.name = "Skill"
+    block.input = {"skill": "qa-review"}
+    assert adapter.accept_content_block(block) == ()
+    hook = {"tool_name": "Skill", "tool_use_id": "skill-call-2"}
+    started = adapter.accept_hook("PreToolUse", hook, tool_use_id="skill-call-2")
+
+    assert [event.payload["display_name"] for event in started] == ["qa-review"]
+    assert "Confidential title" not in repr(started)
+
+
+def test_inactive_skill_identity_does_not_publish_skill_lifecycle():
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-inactive-skill",
+        attempt_id="attempt-1",
+        tool_policy_subjects=[
+            {
+                "identity": "Skill",
+                "active": False,
+                "identity_authorized": True,
+                "allowed_skill_names": ["qa-review"],
+            }
+        ],
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+
+    class ToolUseBlock:
+        pass
+
+    block = ToolUseBlock()
+    block.id = "inactive-skill-call"
+    block.name = "Skill"
+    block.input = {"skill": "qa-review"}
+    assert adapter.accept_content_block(block) == ()
+    assert adapter.accept_hook(
+        "PreToolUse",
+        {"tool_name": "Skill", "tool_use_id": "inactive-skill-call"},
+        tool_use_id="inactive-skill-call",
+    ) == ()
 
 
 def test_unknown_sdk_tool_and_mismatched_hook_fail_closed_without_public_candidate():

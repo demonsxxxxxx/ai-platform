@@ -5,7 +5,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["'Source Sans 3'", "system-ui", "sans-serif"],
+        sans: ["var(--font-ui)"],
       },
       colors: {
         theme: {

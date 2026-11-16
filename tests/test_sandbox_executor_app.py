@@ -67,6 +67,27 @@ TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
 TRUSTED_CALLBACK_URL = f"{TRUSTED_CALLBACK_BASE_URL}/api/ai/runtime/callbacks/executor"
 
 
+def test_authorized_skill_callback_uses_exact_allowlisted_name():
+    subjects = [
+        {
+            "identity": "Skill",
+            "allowed_skill_names": ["qa-review"],
+            "public_skill_labels": {"qa-review": "Confidential title"},
+        }
+    ]
+
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="qa-review",
+        subjects=subjects,
+    ) == "qa-review"
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="unlisted-skill",
+        subjects=subjects,
+    ) == ""
+
+
 def task_payload(
     callback_url: str = TRUSTED_CALLBACK_URL,
     *,
@@ -792,6 +813,35 @@ def sdk_mcp_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
     }
 
 
+def selected_skill_task_payload(skill_name: str = "qa-review") -> dict[str, object]:
+    raw = task_payload()
+    raw["config"]["skill_ids"] = [skill_name]
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Skill",
+            "active": True,
+            "identity_authorized": True,
+            "allowed_skill_names": [skill_name],
+            "public_skill_labels": {skill_name: "Untrusted alternate title"},
+        }
+    ]
+    return raw
+
+
+def sdk_skill_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=identity,
+    )
+    return {
+        "capability_kind": "skill",
+        "canonical_identity": identity,
+        "tool_call_id": call_id,
+        "lifecycle_phase": phase,
+        "declaration_sha256": declaration.declaration_sha256,
+    }
+
+
 def sdk_result(message: str = "done", **overrides):
     values = {
         "used_sdk": True,
@@ -990,9 +1040,11 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_documents", [False, True])
 async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     monkeypatch,
     tmp_path,
+    with_documents,
 ):
     captured = {}
 
@@ -1011,6 +1063,9 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     )
     raw = task_payload()
     raw["config"]["thinking_effort"] = "high"
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
+    if with_documents:
+        raw["config"]["document_plugin_revision"] = DOCUMENT_PLUGIN_REVISION
     request = ExecutorTaskRequest.model_validate(raw)
     events = []
 
@@ -1023,6 +1078,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert result["status"] == "completed"
     assert captured["skill_id"] is None
     assert captured["skills"] == []
+    assert captured["document_plugin_revision"] == (DOCUMENT_PLUGIN_REVISION if with_documents else None)
     assert captured["thinking_effort"] == "high"
     assert captured["model_auto_compact_window"] == 200_000
     assert captured["model_max_output_tokens"] == 2048
@@ -1970,6 +2026,62 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
     assert "mcp__tenant-server__search" not in json.dumps(capability_events)
     assert "tool-call-1" not in json.dumps(capability_events)
+
+
+def test_executor_emits_authorized_skill_name_in_capability_and_timeline_events(
+    tmp_path, monkeypatch
+):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        for phase in ("invocation_requested", "completed"):
+            accepted = await kwargs["on_capability_evidence"](
+                sdk_skill_evidence("qa-review", "skill-call-1", phase)
+            )
+            assert accepted is True
+        return sdk_result()
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post(
+        "/v2/tasks", json=selected_skill_task_payload(), headers=auth_headers()
+    )
+
+    assert response.status_code == 200
+    capability_batches = [
+        payload
+        for payload in callbacks
+        if any(event["type"].startswith("capability_") for event in payload.get("events", []))
+    ]
+    assert [
+        [event["type"] for event in payload["events"]]
+        for payload in capability_batches
+    ] == [
+        ["capability_invoking", "execution_step"],
+        ["capability_completed", "execution_step_completed"],
+    ]
+    assert [
+        payload["events"][0]["payload"]["capability"]
+        for payload in capability_batches
+    ] == [
+        {"kind": "skill", "name": "qa-review", "status": "invoking"},
+        {"kind": "skill", "name": "qa-review", "status": "completed"},
+    ]
+    assert [
+        payload["events"][1]["payload"]["safe_label"]
+        for payload in capability_batches
+    ] == ["qa-review", "qa-review"]
+    assert "Untrusted alternate title" not in json.dumps(capability_batches)
+    assert "skill-call-1" not in json.dumps(capability_batches)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Enforces docs/frontend/lobehub-visual-guidelines.md section 12.
+// Enforces docs/frontend/visual-guidelines.md section 12.
 // Zero-tolerance rules fail on any new violation. Ratchet rules compare each
 // file against scripts/style-rules-baseline.json and fail only when a count grows.
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";

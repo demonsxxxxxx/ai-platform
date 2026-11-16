@@ -203,7 +203,7 @@ async def _require_mutable_mcp_distribution(
     tenant_id: str,
     server_name: str,
     allow_missing: bool,
-) -> None:
+) -> dict[str, Any] | None:
     metadata = await _lock_mcp_distribution_metadata(
         conn,
         tenant_id=tenant_id,
@@ -215,6 +215,7 @@ async def _require_mutable_mcp_distribution(
         return
     if _is_archived_distribution_metadata(metadata):
         raise RepositoryConflictError("capability_distribution_archived")
+    return metadata
 
 
 async def _raise_mcp_distribution_update_failure(
@@ -278,12 +279,16 @@ async def upsert_mcp_server_distribution(
         tenant_id=tenant_id,
         server_name=server_name,
     )
-    await _require_mutable_mcp_distribution(
+    current_metadata = await _require_mutable_mcp_distribution(
         conn,
         tenant_id=tenant_id,
         server_name=server_name,
         allow_missing=True,
     )
+    metadata_json = dict(metadata_json)
+    # Omission retains the disclosure authority read under the distribution lock.
+    if "public_operation_summaries" not in metadata_json and "public_operation_summaries" in (current_metadata or {}):
+        metadata_json["public_operation_summaries"] = current_metadata["public_operation_summaries"]
     cursor = await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -468,11 +473,14 @@ async def get_mcp_tool_registry_entry(
         return None
     cursor = await conn.execute(
         """
-        select name, transport, status
-        from mcp_servers
-        where tenant_id = %s
-          and name = %s
-          and status <> 'deleted'
+        select server.name, server.transport, server.status, distribution.metadata_json
+        from mcp_servers server
+        left join tenant_capability_distributions distribution
+          on distribution.tenant_id=server.tenant_id
+         and distribution.capability_kind='mcp_server' and distribution.capability_id=server.name
+        where server.tenant_id = %s
+          and server.name = %s
+          and server.status <> 'deleted'
         """,
         (tenant_id, server_id),
     )
@@ -481,6 +489,7 @@ async def get_mcp_tool_registry_entry(
         return None
     server = dict(row)
     server_status = str(server.get("status") or "disabled")
+    declaration = _json_dict(_json_dict(server.get("metadata_json")).get("public_operation_summaries")).get(public_tool_name)
     return {
         "tool_id": build_mcp_tool_reference(server_id, public_tool_name),
         "server_id": server_id,
@@ -498,6 +507,7 @@ async def get_mcp_tool_registry_entry(
         "write_capable": True,
         "risk_level": "high",
         "discovery_state": "unresolved",
+        **({"public_operation_summary": declaration} if declaration is not None else {}),
     }
 
 

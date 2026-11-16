@@ -76,16 +76,18 @@ test("mounted work folding follows source phase while preserving manual choice w
       answerPart("The answer is ready."),
       workPart("Verifying the final detail."),
     ]));
-    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    const currentToggle = container.querySelector<HTMLButtonElement>("[data-message-work-details-toggle]");
+    assert.ok(currentToggle);
+    assert.equal(currentToggle.getAttribute("aria-expanded"), "true");
 
-    act(() => toggle.click());
-    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    act(() => currentToggle.click());
+    assert.equal(currentToggle.getAttribute("aria-expanded"), "false");
     act(() => renderActivity(root, "message-1", [
       workPart("Checking sources."),
       answerPart("The answer is ready."),
       workPart("Verifying the final detail."),
     ]));
-    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    assert.equal(container.querySelector<HTMLButtonElement>("[data-message-work-details-toggle]")?.getAttribute("aria-expanded"), "false");
   } finally {
     act(() => root.unmount());
     environment.close();

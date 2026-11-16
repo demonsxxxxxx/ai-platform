@@ -6,18 +6,17 @@ import { useTranslation } from "react-i18next";
 import type { ModelOption } from "../../../../services/api/modelPublic";
 import { ComposerMenuItem } from "./composer";
 
-export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel, searchSeed }: {
+export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChange, onSelectModel }: {
   models: ModelOption[];
   currentModelId?: string;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onSelectModel: (id: string, value: string) => void;
-  searchSeed?: string;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 640);
-  useEffect(() => { if (isOpen) setQuery(searchSeed ?? ""); }, [isOpen, searchSeed]);
+  useEffect(() => { if (isOpen) setQuery(""); }, [isOpen]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 639px)");
     const change = () => setIsMobile(media.matches);
@@ -46,7 +45,15 @@ export function ComposerModelPicker({ models, currentModelId, isOpen, onOpenChan
     extra={<Button type="text" aria-label={t("common.close")} onClick={() => onOpenChange(false)} icon={<X size={18} />} />}>
     {content}
   </Drawer>;
-  return <PopoverRoot open={isOpen} onOpenChange={onOpenChange}>
+  return <PopoverRoot open={isOpen} onOpenChange={(open, details) => {
+    // The separate toolbar button owns toggling; don't dismiss before its click.
+    if (details.reason === "outside-press" && details.event.target instanceof Element
+      && details.event.target.closest("[data-composer-model-trigger]")) {
+      details.cancel();
+      return;
+    }
+    onOpenChange(open);
+  }}>
     <PopoverPortal><PopoverPositioner placement="topLeft" anchor={() => document.querySelector<HTMLElement>("[data-composer-model-trigger]")}>
       <PopoverPopup aria-label={title} style={{ width: 320, maxWidth: "calc(100vw - 16px)" }}>{content}</PopoverPopup>
     </PopoverPositioner></PopoverPortal>

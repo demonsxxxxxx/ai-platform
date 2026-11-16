@@ -85,7 +85,7 @@ test("renders public tool metadata without raw arguments or results", () => {
       }),
     );
     assert.match(markup, new RegExp(`>${label}：${canonicalName}<`));
-    assert.match(markup, category === "skill" ? /0毫秒/ : /1\.20秒/);
+    assert.doesNotMatch(markup, /毫秒|秒/);
     assert.doesNotMatch(
       markup,
       /raw-label|workspace|private-token|private command output|command/,
@@ -125,6 +125,24 @@ test("renders public tool metadata without raw arguments or results", () => {
       "",
     );
   }
+
+  const expandedMarkup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      withinWorkDetails: true,
+      part: {
+        type: "tool",
+        name: "Execute private command",
+        args: { command: "private" },
+        public_category: "execute",
+        public_display_name: "ignored",
+        public_operation_id: "operation-expanded",
+        status: "completed",
+        duration_ms: 1200,
+      } satisfies MessagePart,
+    }),
+  );
+  assert.match(expandedMarkup, /1\.20秒/);
 });
 
 test("stops unresolved public tool presentation after terminal cleanup without changing protocol outcomes", () => {

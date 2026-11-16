@@ -10,15 +10,24 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 from typing import Any
 
-from mcp.server.lowlevel import Server
-from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
-from mcp.types import CallToolResult, ErrorData, TextContent
+from mcp.server import Server, ServerRequestContext
+from mcp.shared.exceptions import MCPError, UrlElicitationRequiredError
+from mcp_types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ErrorData,
+    InputRequiredResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+)
 
 
 _BUILTIN_SERVERS = frozenset({"ai-platform-context", "ai-platform-response"})
 _MAX_SDK_TOOL_NAME_LENGTH = 64
 _MAX_SDK_SERVER_NAME_LENGTH = 24
 _MCP_DISCOVERY_TIMEOUT_SECONDS = 10
+_MCP_TOOL_INVOCATION_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def _safe_component(value: str) -> str:
@@ -185,28 +194,34 @@ class ClaudeMcpRegistration:
 
     def _server(self, server_name, tools, session):
         selected = {alias: (tool, remote_name) for alias, tool, remote_name in tools}
-        server = Server(server_name)
 
-        @server.list_tools()
-        async def list_selected_tools():
-            return [tool for tool, _remote_name in selected.values()]
+        async def list_selected_tools(
+            _ctx: ServerRequestContext,
+            _params: PaginatedRequestParams | None,
+        ) -> ListToolsResult:
+            return ListToolsResult(
+                tools=[tool for tool, _remote_name in selected.values()]
+            )
 
-        @server.call_tool(validate_input=False)
-        @self._track_callback
-        async def call_selected_tool(name: str, arguments: dict[str, Any]):
+        async def call_selected_tool(
+            _ctx: ServerRequestContext,
+            params: CallToolRequestParams,
+        ) -> CallToolResult | InputRequiredResult:
+            name = params.name
+            arguments: dict[str, Any] = params.arguments or {}
             if name not in selected:
                 return CallToolResult(
                     content=[TextContent(type="text", text="Tool is not authorized")],
-                    isError=True,
+                    is_error=True,
                 )
             _tool, remote_name = selected[name]
-            # Preserve the original remote name, structuredContent, content and isError.
+            # Preserve the original remote tool name and typed result fields.
             try:
                 result = await session.call_tool(remote_name, arguments)
             except UrlElicitationRequiredError:
                 # Keep the MCP server's special elicitation handling unchanged.
                 raise
-            except McpError as exc:
+            except MCPError as exc:
                 # Observe only typed client evidence, never text/data or HTTP status.
                 # No native tool_use_id crosses this boundary, so no call-level join.
                 if self._failure_observer is not None:
@@ -214,7 +229,7 @@ class ClaudeMcpRegistration:
                         observation = {
                             "source": "mcp_session_call",
                             "scope": "run_attempt",
-                            "exception_type": "McpError",
+                            "exception_type": "MCPError",
                         }
                         code = exc.error.code if isinstance(exc.error, ErrorData) else None
                         # Preserve exact numbers through JSON and JavaScript consumers.
@@ -225,7 +240,7 @@ class ClaudeMcpRegistration:
                         # Diagnostics must never replace the model-facing exception.
                         pass
                 raise
-            if isinstance(result, CallToolResult) and result.isError is True:
+            if isinstance(result, CallToolResult) and result.is_error is True:
                 identity = self.canonical_identity(f"mcp__{server_name}__{name}")
                 digest = _tool_arguments_digest(arguments)
                 matching = [key for key, value in self._tool_calls.items()
@@ -234,24 +249,19 @@ class ClaudeMcpRegistration:
                 # cannot prove which admitted call received this error result.
                 if len(matching) == 1:
                     self._tool_error_results.add(matching[0])
-            # The installed Claude SDK bridge forwards MCP content and isError
-            # but drops structuredContent. Keep that data available to the model
-            # while retaining the original typed result for direct MCP callers.
-            structured = getattr(result, "structuredContent", None)
-            if isinstance(structured, dict):
-                result = result.model_copy(update={
-                    "content": [
-                        *result.content,
-                        TextContent(
-                            type="text",
-                            text="[structuredContent]\n" + json.dumps(
-                                structured, ensure_ascii=True, separators=(",", ":")
-                            ),
-                        ),
-                    ],
-                })
+            # The locked CLI forwards native structured success results, but its
+            # error branch consumes only content. Preserve that value there.
+            if isinstance(result, CallToolResult) and result.is_error and isinstance(result.structured_content, dict):
+                result = result.model_copy(update={"content": [*result.content, TextContent(
+                    type="text", text=json.dumps(result.structured_content, ensure_ascii=True, separators=(",", ":")),
+                )]})
             return result
 
+        server = Server(
+            server_name,
+            on_list_tools=list_selected_tools,
+            on_call_tool=self._track_callback(call_selected_tool),
+        )
         return {"type": "sdk", "name": server_name, "instance": server}
 
     async def _serve_server(self, server_name, names, release_event, ready):
@@ -263,37 +273,57 @@ class ClaudeMcpRegistration:
 
         try:
             async with AsyncExitStack() as stack:
-                async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
-                    credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
-                                          if self._credential_resolver is not None else {})
-                    session = await stack.enter_async_context(self._session_factory(config, **credential_options))
-                    tools = await self._list_tools(session)
-                by_name = {tool.name: tool for tool in tools}
-                available_names = names.intersection(by_name)
-                if available_names != names:
-                    self.unavailable[server_name] = "selected_tool_unavailable"
-                if not available_names:
-                    if not ready.done():
-                        ready.set_result(None)
-                    return
-
-                alias_by_remote = {
-                    remote_name: alias
-                    for (server, remote_name), alias in self._tool_aliases.items()
-                    if server == server_name
+                credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
+                                      if self._credential_resolver is not None else {})
+                discovery_config = {
+                    **config,
+                    "max_response_bytes": 1024 * 1024,
+                    "max_response_total_bytes": 1024 * 1024,
                 }
-                selected = []
-                for remote_name in sorted(available_names):
-                    alias = alias_by_remote[remote_name]
-                    tool = by_name[remote_name]
-                    if tool.name != alias:
-                        tool = tool.model_copy(update={"name": alias})
-                    selected.append((alias, tool, remote_name))
+                async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
+                    async with self._session_factory(discovery_config, **credential_options) as discovery_session:
+                        tools = await self._list_tools(discovery_session)
+                    by_name = {tool.name: tool for tool in tools}
+                    available_names = names.intersection(by_name)
+                    if available_names != names:
+                        self.unavailable[server_name] = "selected_tool_unavailable"
+                    if not available_names:
+                        if not ready.done():
+                            ready.set_result(None)
+                        return
+
+                    alias_by_remote = {
+                        remote_name: alias
+                        for (server, remote_name), alias in self._tool_aliases.items()
+                        if server == server_name
+                    }
+                    selected = []
+                    for remote_name in sorted(available_names):
+                        alias = alias_by_remote[remote_name]
+                        tool = by_name[remote_name]
+                        if tool.name != alias:
+                            tool = tool.model_copy(update={"name": alias})
+                        selected.append((alias, tool, remote_name))
+                    invocation_config = {
+                        **config,
+                        "max_response_bytes": _MCP_TOOL_INVOCATION_RESPONSE_BYTES,
+                        # SSE spans multiple calls; bound each event, not the whole session.
+                        "max_response_total_bytes": None,
+                    }
+                    invocation_session = await stack.enter_async_context(
+                        self._session_factory(invocation_config, **credential_options)
+                    )
+                    seed_tool_definition = getattr(invocation_session, "seed_tool_definition", None)
+                    if callable(seed_tool_definition):
+                        for _alias, tool, remote_name in selected:
+                            seed_tool_definition(tool.model_copy(update={"name": remote_name}))
+
                 if not ready.done():
-                    ready.set_result((selected, session))
+                    ready.set_result((selected, invocation_session))
                 # This task owns the session context until activation exits.
                 # The SDK may call the session from another task, but cleanup
-                # always runs in the task that entered the context manager.
+                # always runs in the task that entered the context manager. The
+                # preparation deadline ended before this long-lived wait.
                 await release_event.wait()
         except asyncio.CancelledError:
             if not ready.done():
@@ -309,6 +339,40 @@ class ClaudeMcpRegistration:
             self.unavailable[server_name] = reason
             if not ready.done():
                 ready.set_result(None)
+
+    def _configure_tool_search(self, options):
+        """Allow SDK catalog discovery without granting a business capability."""
+        hooks = (getattr(options, "hooks", None) or {}).get("PreToolUse", [])
+        generic_hooks = [matcher for matcher in hooks if matcher.matcher is None]
+        if not generic_hooks or not isinstance(getattr(options, "tools", None), list):
+            return
+
+        def wrap(callback):
+            async def admit_search(hook_input, tool_use_id=None, context=None):
+                if not isinstance(hook_input, dict) or hook_input.get("tool_name") != "ToolSearch":
+                    return await callback(hook_input, tool_use_id, context)
+                # Search only sees the run's registered SDK catalog. Execution of
+                # a discovered tool still passes the ordinary per-call policy.
+                value = hook_input.get("tool_input")
+                valid = (
+                    isinstance(value, dict) and not set(value) - {"query", "max_results"}
+                    and isinstance(value.get("query"), str) and 0 < len(value["query"]) <= 4096
+                    and type(value.get("max_results", 5)) is int
+                    and 1 <= value.get("max_results", 5) <= 20
+                )
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow" if valid else "deny",
+                    "permissionDecisionReason": "sdk_tool_discovery" if valid else "sdk_tool_search_input_invalid",
+                }}
+            return self._track_callback(admit_search)
+
+        for matcher in generic_hooks:
+            matcher.hooks = [wrap(callback) for callback in matcher.hooks]
+        if "ToolSearch" not in options.tools:
+            options.tools.append("ToolSearch")
+        if "ToolSearch" not in options.allowed_tools:
+            options.allowed_tools.append("ToolSearch")
 
     @asynccontextmanager
     async def activate(self, options):
@@ -337,6 +401,8 @@ class ClaudeMcpRegistration:
                 server_alias = self.server_aliases[server_name]
                 servers[server_alias] = self._server(server_alias, selected, session)
             options.mcp_servers = servers
+            if any(outcome is not None for outcome in outcomes):
+                self._configure_tool_search(options)
             yield
         finally:
             release_event.set()

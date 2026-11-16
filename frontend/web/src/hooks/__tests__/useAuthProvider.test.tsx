@@ -77,6 +77,9 @@ async function mountAuthHarness(
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     login: authApi.login,
+    getADLoginConfig: authApi.getADLoginConfig,
+    fetchCompanyADLogin: authApi.fetchCompanyADLogin,
+    loginWithAD: authApi.loginWithAD,
     logout: authApi.logout,
     beginOAuth: authApi.beginOAuth,
     handleOAuthCallback: authApi.handleOAuthCallback,
@@ -1557,6 +1560,8 @@ async function mountAuthTransportHarness(initialStatus = 200) {
     me: (_init: RequestInit): Response | Promise<Response> => initialStatus === 200 ? principal() : json({ detail: "unauthorized" }, initialStatus),
     logout: (): Response | Promise<Response> => new Response(null, { status: 204 }),
     refresh: (): Response | Promise<Response> => json({ detail: "auth_context_missing" }, 401),
+    resource: (_init: RequestInit): Response | Promise<Response> => json({ ok: true }),
+    adLogin: (_init: RequestInit): Response | Promise<Response> => json({}),
   };
   globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
@@ -1568,8 +1573,11 @@ async function mountAuthTransportHarness(initialStatus = 200) {
     if (url === "/api/ai/auth/me") return transport.me(init);
     if (url === "/api/ai/auth/refresh") return transport.refresh();
     if (url === "/api/ai/auth/logout") return transport.logout();
+    if (url === "/api/ai/auth/ad-login/config") return json({ ad_login_url: "/company/GetADName" });
+    if (url === "/api/resource") return transport.resource(init);
+    if (url === "/api/ai/auth/ad-login") return transport.adLogin(init);
     if (url === "/company/GetADName") return json([{ token: "synthetic-company-jwt" }]);
-    if (["/api/ai/auth/login", "/api/ai/auth/ad-login", "/api/ai/auth/oauth/test/callback"].includes(url)) return json({});
+    if (["/api/ai/auth/login", "/api/ai/auth/oauth/test/callback"].includes(url)) return json({});
     throw new Error(`Unexpected auth test request: ${url}`);
   }) as typeof fetch;
   windowTarget.addEventListener("auth:force-relogin", recordRecovery);
@@ -1819,3 +1827,451 @@ for (const authorizationChanged of [false, true]) {
     } finally { unregister(); await mounted.cleanup(); }
   });
 }
+
+test("expired context triggers one AD login shared by parallel reads", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const refreshResponse = deferred<Response>();
+  const refreshStarted = deferred<void>();
+  const readsStarted = deferred<void>();
+  let resourceCalls = 0;
+  let refreshCalls = 0;
+  const originalMarker = storage.get("ai_platform_session_present");
+  mounted.calls.length = 0;
+  mounted.transport.refresh = () => {
+    refreshCalls += 1;
+    refreshStarted.resolve();
+    return refreshResponse.promise;
+  };
+  mounted.transport.resource = () => {
+    resourceCalls += 1;
+    if (resourceCalls === 2) readsStarted.resolve();
+    if (resourceCalls <= 2) {
+      return mounted.json({ detail: "company_login_expired" }, 401, {
+        "X-Force-Relogin": "true",
+        "X-Auth-Rejected-Before-Execution": "true",
+      });
+    }
+    return mounted.json({ ok: true });
+  };
+
+  try {
+    let results: unknown;
+    await mounted.React.act(async () => {
+      const requests = [authFetch("/api/resource"), authFetch("/api/resource")];
+      await readsStarted.promise;
+      await refreshStarted.promise;
+      refreshResponse.resolve(mounted.json({ detail: "auth_context_missing" }, 401));
+      results = await Promise.all(requests);
+    });
+
+    assert.deepEqual(results, [{ ok: true }, { ok: true }]);
+    assert.equal(resourceCalls, 4);
+    assert.equal(refreshCalls, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/company/GetADName").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/me").length, 1);
+    assert.notEqual(storage.get("ai_platform_session_present"), originalMarker);
+    assert.equal(mounted.auth.user?.id, "transport-a");
+    assert.deepEqual(mounted.events, []);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/logout").length, 0);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("expired-context replay stays bounded after the new session is also rejected", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch, ApiRequestError } = await import("../../services/api/fetch.ts");
+  let resourceCalls = 0;
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => {
+    resourceCalls += 1;
+    return mounted.json(
+      { detail: "company_login_expired" },
+      401,
+      {
+        "X-Force-Relogin": "true",
+        ...(resourceCalls === 1 ? { "X-Auth-Rejected-Before-Execution": "true" } : {}),
+      },
+    );
+  };
+
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(authFetch("/api/resource"), ApiRequestError);
+    });
+    await mounted.flush();
+
+    assert.equal(resourceCalls, 2);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/refresh").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/company/GetADName").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/logout").length, 1);
+    assert.deepEqual(mounted.events, ["auth:force-relogin"]);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("permission and revoked-authority failures do not start automatic AD login", async () => {
+  for (const failure of ["refresh-denied", "stale-authority", "permission"] as const) {
+    const mounted = await mountAuthTransportHarness();
+    const { authFetch, ApiRequestError } = await import("../../services/api/fetch.ts");
+    let refreshCalls = 0;
+    mounted.calls.length = 0;
+    mounted.transport.refresh = () => {
+      refreshCalls += 1;
+      return mounted.json({ detail: "auth_refresh_authority_denied" }, 401, {
+        "X-Force-Relogin": "true",
+      });
+    };
+    mounted.transport.resource = () => failure === "refresh-denied"
+      ? mounted.json({ detail: "company_login_expired" }, 401, {
+        "X-Force-Relogin": "true",
+        "X-Auth-Rejected-Before-Execution": "true",
+      })
+      : mounted.json(
+        { detail: failure === "stale-authority" ? "stale_company_authority" : "permission_denied" },
+        failure === "permission" ? 403 : 401,
+        failure === "permission" ? {} : { "X-Force-Relogin": "true" },
+      );
+
+    try {
+      await mounted.React.act(async () => {
+        await assert.rejects(authFetch("/api/resource"), ApiRequestError);
+      });
+      await mounted.flush();
+
+      assert.equal(refreshCalls, failure === "refresh-denied" ? 1 : 0);
+      assert.equal(mounted.calls.some(({ url }) => url === "/api/ai/auth/ad-login/config"), false);
+      assert.equal(mounted.calls.some(({ url }) => url === "/company/GetADName"), false);
+      assert.equal(mounted.calls.some(({ url }) => url === "/api/ai/auth/ad-login"), false);
+    } finally {
+      await mounted.cleanup();
+    }
+  }
+});
+
+test("expired-session recovery does not retry across an AD identity change", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const { AuthSessionChangedError } = await import("../../services/api/tokenManager.ts");
+  let principalReads = 1;
+  let resourceCalls = 0;
+  mounted.calls.length = 0;
+  mounted.transport.me = () => {
+    principalReads += 1;
+    return mounted.principal(principalReads === 1 ? "transport-a" : "transport-b");
+  };
+  mounted.transport.resource = () => {
+    resourceCalls += 1;
+    return resourceCalls === 1
+      ? mounted.json({ detail: "company_login_expired" }, 401, {
+        "X-Force-Relogin": "true",
+        "X-Auth-Rejected-Before-Execution": "true",
+      })
+      : mounted.json({ ok: true });
+  };
+
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(authFetch("/api/resource"), AuthSessionChangedError);
+    });
+    assert.equal(resourceCalls, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/company/GetADName").length, 1);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+    assert.equal(mounted.auth.user?.id, "transport-b");
+    assert.deepEqual(mounted.events, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("request cancellation, logout, tab replacement, and unmount fence expired-session recovery", async () => {
+  for (const fence of ["request", "logout", "tab", "unmount"] as const) {
+    const mounted = await mountAuthTransportHarness();
+    const { authFetch } = await import("../../services/api/fetch.ts");
+    const { AuthSessionChangedError } = await import("../../services/api/tokenManager.ts");
+    const { authApi } = await import("../../services/api/auth.ts");
+    const originalGetADLoginConfig = authApi.getADLoginConfig;
+    const adConfig = deferred<{ ad_login_url: string | null }>();
+    const adConfigStarted = deferred<void>();
+    const abortController = new AbortController();
+    const requestAbort = new DOMException("request cancelled", "AbortError");
+    let resourceCalls = 0;
+    mounted.calls.length = 0;
+    mounted.transport.resource = () => {
+      resourceCalls += 1;
+      return mounted.json({ detail: "company_login_expired" }, 401, {
+        "X-Force-Relogin": "true",
+        "X-Auth-Rejected-Before-Execution": "true",
+      });
+    };
+    authApi.getADLoginConfig = async () => {
+      adConfigStarted.resolve();
+      return adConfig.promise;
+    };
+
+    try {
+      let requestResult: unknown;
+      let requestPromise!: Promise<unknown>;
+      await mounted.React.act(async () => {
+        requestPromise = authFetch("/api/resource", {
+          ...(fence === "request" ? { signal: abortController.signal } : {}),
+        }).catch((error: unknown) => error);
+        await adConfigStarted.promise;
+      });
+
+      assert.equal(mounted.auth.isLoading, false, "background recovery must keep the protected page mounted");
+
+      if (fence === "request") {
+        abortController.abort(requestAbort);
+        requestResult = await requestPromise;
+        assert.equal(requestResult, requestAbort);
+      } else if (fence === "logout") {
+        await mounted.React.act(async () => { await mounted.auth.logout(); });
+      } else if (fence === "tab") {
+        const previousMarker = storage.get("ai_platform_session_present");
+        storage.set("ai_platform_session_present", "marker-from-another-tab");
+        await mounted.React.act(async () => {
+          windowTarget.dispatchEvent(new windowTarget.StorageEvent("storage", {
+            key: "ai_platform_session_present",
+            oldValue: previousMarker ?? null,
+            newValue: "marker-from-another-tab",
+          }));
+          await Promise.resolve();
+        });
+      } else {
+        await mounted.unmount();
+      }
+
+      adConfig.resolve({ ad_login_url: "/company/GetADName" });
+      if (fence !== "request") requestResult = await requestPromise;
+      if (fence !== "unmount") await mounted.flush();
+
+      if (fence === "request") assert.equal(mounted.auth.isLoading, false);
+
+      if (fence !== "request") {
+        assert.ok(requestResult instanceof AuthSessionChangedError);
+      }
+      assert.equal(resourceCalls, 1);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/company/GetADName").length, 0);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 0);
+      assert.deepEqual(mounted.events, []);
+    } finally {
+      authApi.getADLoginConfig = originalGetADLoginConfig;
+      await mounted.cleanup();
+    }
+  }
+});
+
+test("failed AD recovery falls back to the login redirect with the current route retained", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const { authApi } = await import("../../services/api/auth.ts");
+  const originalGetADLoginConfig = authApi.getADLoginConfig;
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => mounted.json({ detail: "company_login_expired" }, 401, {
+    "X-Force-Relogin": "true",
+    "X-Auth-Rejected-Before-Execution": "true",
+  });
+  authApi.getADLoginConfig = async () => ({ ad_login_url: null });
+  windowTarget.history.replaceState({}, "", "/chat?draft=retained");
+
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(authFetch("/api/resource"), (error: unknown) =>
+        error instanceof Error && error.name === "ApiRequestError",
+      );
+    });
+    await mounted.flush();
+
+    assert.equal(sessionStorageValues.get("redirect_after_login"), "/chat?draft=retained");
+    assert.equal(storage.has("ai_platform_session_present"), false);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/company/GetADName").length, 0);
+    assert.deepEqual(mounted.events, ["auth:force-relogin"]);
+  } finally {
+    authApi.getADLoginConfig = originalGetADLoginConfig;
+    await mounted.cleanup();
+    windowTarget.history.replaceState({}, "", "/");
+  }
+});
+
+for (const method of ["GET", "POST"]) {
+  test(`V2 stale-context ${method} reauthenticates before replay`, async () => {
+    const mounted = await mountAuthTransportHarness();
+    const { authFetch } = await import("../../services/api/fetch.ts");
+    let calls = 0;
+    mounted.calls.length = 0;
+    mounted.transport.resource = (init) => {
+      assert.equal(init.method, method);
+      calls += 1;
+      return calls === 1
+        ? mounted.json({ detail: "auth_context_stale" }, 409, {
+          "X-Auth-Rejected-Before-Execution": "true",
+        })
+        : mounted.json({ ok: true });
+    };
+    try {
+      await mounted.React.act(async () => {
+        assert.deepEqual(await authFetch("/api/resource", { method }), { ok: true });
+      });
+      assert.equal(calls, 2);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+      assert.equal(mounted.auth.isLoading, false);
+      assert.deepEqual(mounted.events, []);
+    } finally { await mounted.cleanup(); }
+  });
+}
+
+test("failed principal hydration after automatic login clears the owned session", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => mounted.json({ detail: "auth_context_missing" }, 401);
+  mounted.transport.me = () => mounted.json({ detail: "unavailable" }, 503);
+  try {
+    await mounted.React.act(async () => { await assert.rejects(authFetch("/api/resource")); });
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(mounted.auth.isLoading, false);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/logout").length, 1);
+  } finally { await mounted.cleanup(); }
+});
+
+test("late expiry responses reuse the completed recovery without another login", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const lateResponse = deferred<Response>();
+  let calls = 0;
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => {
+    calls += 1;
+    if (calls === 1) return lateResponse.promise;
+    if (calls === 2) return mounted.json({ detail: "auth_context_missing" }, 401);
+    return mounted.json({ ok: true });
+  };
+  try {
+    await mounted.React.act(async () => {
+      const late = authFetch("/api/resource");
+      assert.deepEqual(await authFetch("/api/resource"), { ok: true });
+      lateResponse.resolve(mounted.json({ detail: "auth_context_missing" }, 401));
+      assert.deepEqual(await late, { ok: true });
+    });
+    assert.equal(calls, 4);
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+    assert.deepEqual(mounted.events, []);
+  } finally { await mounted.cleanup(); }
+});
+
+for (const recoveredId of ["transport-a", "transport-b"]) {
+  test(`business POST waits for recovery principal ${recoveredId}`, async () => {
+    const mounted = await mountAuthTransportHarness();
+    const { authFetch } = await import("../../services/api/fetch.ts");
+    const { AuthSessionChangedError } = await import("../../services/api/tokenManager.ts");
+    const hydration = deferred<Response>();
+    const hydrationStarted = deferred<void>();
+    let reads = 0;
+    let writes = 0;
+    mounted.calls.length = 0;
+    mounted.transport.me = () => { hydrationStarted.resolve(); return hydration.promise; };
+    mounted.transport.resource = (init) => {
+      if (init.method === "POST") {
+        writes += 1;
+        return mounted.json({ ok: true });
+      }
+      reads += 1;
+      return reads === 1
+        ? mounted.json({ detail: "auth_context_missing" }, 401)
+        : mounted.json({ ok: true });
+    };
+    try {
+      let read!: Promise<unknown>;
+      let write!: Promise<unknown>;
+      await mounted.React.act(async () => {
+        read = authFetch("/api/resource").catch((error: unknown) => error);
+        await hydrationStarted.promise;
+        write = authFetch("/api/resource", { method: "POST" }).catch((error: unknown) => error);
+        await Promise.resolve();
+      });
+      assert.equal(writes, 0, "business requests must wait while the UI still has the old identity");
+      assert.equal(mounted.auth.user?.id, "transport-a");
+      assert.equal(mounted.auth.isLoading, false);
+      const adCall = mounted.calls.find(({ url }) => url === "/api/ai/auth/ad-login");
+      assert.deepEqual(JSON.parse(String(adCall?.init.body)).expected_principal, {
+        user_id: "transport-a", tenant_id: "tenant-transport",
+      });
+      await mounted.React.act(async () => {
+        hydration.resolve(mounted.principal(recoveredId));
+        const results = await Promise.all([read, write]);
+        if (recoveredId === "transport-a") assert.deepEqual(results, [{ ok: true }, { ok: true }]);
+        else results.forEach((result) => assert.ok(result instanceof AuthSessionChangedError));
+      });
+      assert.equal(writes, recoveredId === "transport-a" ? 1 : 0);
+    } finally { await mounted.cleanup(); }
+  });
+}
+
+test("cancelling the last request after AD login starts still settles the verified identity", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const { waitForActiveSessionRecovery } = await import("../../services/api/expiredSessionRecovery.ts");
+  const adStarted = deferred<void>();
+  const adResponse = deferred<Response>();
+  const controller = new AbortController();
+  const oldMarker = storage.get("ai_platform_session_present")!;
+  let resourceCalls = 0;
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => {
+    resourceCalls += 1;
+    return mounted.json({ detail: "auth_context_missing" }, 401);
+  };
+  mounted.transport.adLogin = () => { adStarted.resolve(); return adResponse.promise; };
+  try {
+    await mounted.React.act(async () => {
+      const request = authFetch("/api/resource", { signal: controller.signal }).catch((error: unknown) => error);
+      await adStarted.promise;
+      controller.abort();
+      assert.equal(await request, controller.signal.reason);
+      // The cancellation has removed the last waiter. Observe the provider's
+      // existing operation without starting another recovery.
+      const settling = waitForActiveSessionRecovery(oldMarker);
+      adResponse.resolve(mounted.json({}));
+      assert.equal((await settling)?.status, "recovered");
+    });
+    assert.equal(mounted.auth.user?.id, "transport-a");
+    assert.equal(mounted.auth.isAuthenticated, true);
+    assert.equal(mounted.auth.isLoading, false);
+    assert.notEqual(storage.get("ai_platform_session_present"), oldMarker);
+    assert.equal(resourceCalls, 1, "cancelled request must not replay");
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+    assert.deepEqual(mounted.events, []);
+  } finally { await mounted.cleanup(); }
+});
+
+test("cancelling a queued recovery does not block the next expiry recovery", async () => {
+  const mounted = await mountAuthTransportHarness();
+  const { authFetch } = await import("../../services/api/fetch.ts");
+  const { recoverExpiredSession } = await import("../../services/api/expiredSessionRecovery.ts");
+  const controller = new AbortController();
+  let reads = 0;
+  mounted.calls.length = 0;
+  mounted.transport.resource = () => ++reads === 1
+    ? mounted.json({ detail: "auth_context_missing" }, 401)
+    : mounted.json({ ok: true });
+  try {
+    await mounted.React.act(async () => {
+      const pending = recoverExpiredSession(storage.get("ai_platform_session_present")!, controller.signal)
+        .catch((error: unknown) => error);
+      controller.abort();
+      assert.equal(await pending, controller.signal.reason);
+    });
+    await mounted.flush();
+    assert.equal(mounted.calls.some(({ url }) => url === "/api/ai/auth/ad-login"), false);
+    await mounted.React.act(async () => {
+      assert.deepEqual(await authFetch("/api/resource"), { ok: true });
+    });
+    assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/ad-login").length, 1);
+  } finally { await mounted.cleanup(); }
+});

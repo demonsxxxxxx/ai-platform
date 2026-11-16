@@ -38,6 +38,46 @@ def test_tmp_scratch_files_are_readable_but_stay_private_and_uncollectible():
     assert not workspace_delivery_file_allowed(scratch)
 
 
+def test_cli_native_results_are_readable_without_exposing_config_or_transcripts(tmp_path):
+    from app.platform.sandbox.claude_native_filesystem import prepare_claude_tool_results
+    relative = prepare_claude_tool_results(tmp_path, "session-a")
+    output = relative / "sample.docx"
+    (tmp_path / output).write_bytes(b"synthetic result")
+    assert _workspace_path_parameters_authorized(
+        {"workspace_contract": "ai-platform.skill-workspace.v1"}, "Read",
+        {"file_path": str(tmp_path / output)}, workspace_root=tmp_path, native_session_id="session-a",
+    )
+    assert workspace_read_allowed(output, native_session_id="session-a")
+    assert not workspace_read_allowed(output)
+    assert not workspace_read_allowed(output, native_session_id="other-session")
+    assert not workspace_mutation_allowed(output)
+    assert not workspace_collection_file_allowed(output)
+    assert not workspace_delivery_file_allowed(output)
+    for private in (".claude-config/settings.json", ".claude-config/projects/ai-platform/session-a.jsonl",
+                    str(relative.parent / "transcript.jsonl")):
+        assert not workspace_read_allowed(private)
+    (tmp_path / relative / "secret-link").symlink_to(tmp_path / ".claude-config/settings.json")
+    assert not _workspace_path_parameters_authorized(
+        {"workspace_contract": "ai-platform.skill-workspace.v1"}, "Read",
+        {"file_path": str(tmp_path / relative / "secret-link")}, workspace_root=tmp_path, native_session_id="session-a",
+    )
+
+    other = prepare_claude_tool_results(tmp_path, "other-session") / "private.txt"
+    (tmp_path / other).write_text("other-session")
+    (tmp_path / relative / "other-link").symlink_to(tmp_path / other)
+    for source in (other, relative / "other-link"):
+        assert not _workspace_path_parameters_authorized(
+            {"workspace_contract": "ai-platform.skill-workspace.v1"}, "Read",
+            {"file_path": str(tmp_path / source)}, workspace_root=tmp_path, native_session_id="session-a",
+        )
+    from app.executors.claude_agent_sdk_runner import _filtered_workspace_search_output
+    filtered, changed = _filtered_workspace_search_output(
+        {"filenames": [str(output), str(other), str(relative / "other-link")]},
+        tool_name="Glob", tool_input={"path": "."}, workspace_root=tmp_path, native_session_id="session-a",
+    )
+    assert changed and filtered["filenames"] == [str(output)]
+
+
 @pytest.mark.parametrize("pattern", ["**/*.{py,md}", "reports/result[0-9]?.txt", "outputs/logs/*.txt"])
 def test_sdk_accepts_scoped_native_glob_syntax(tmp_path, pattern):
     assert _workspace_path_parameters_authorized(
