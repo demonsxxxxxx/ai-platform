@@ -13,6 +13,7 @@ interface SkillFormSidebarProps {
   onCancel: () => void;
   createTitle?: string;
   subtitle?: string;
+  submitError?: string | null;
 }
 
 export function SkillFormSidebar({
@@ -24,6 +25,7 @@ export function SkillFormSidebar({
   onCancel,
   createTitle,
   subtitle,
+  submitError,
 }: SkillFormSidebarProps) {
   const { t } = useTranslation();
 
@@ -44,6 +46,7 @@ export function SkillFormSidebar({
         onSave={onSave}
         onCancel={onCancel}
         isLoading={isLoading}
+        submitError={submitError}
       />
     </EditorSidebar>
   );

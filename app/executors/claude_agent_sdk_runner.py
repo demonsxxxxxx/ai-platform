@@ -37,6 +37,7 @@ from app.platform.public_payload import (
 )
 from app.executors.claude.capability_policy import (
     CapabilityExecutionPlan,
+    RecoveryToolGate,
     _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
     _SDK_INTERNAL_CONTEXT_TOOLS,
     _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
@@ -51,6 +52,7 @@ from app.executors.claude.capability_policy import (
 from app.executors.claude.prompts import (
     FILE_TASK_SYSTEM_PROMPT,
     compose_system_prompt,
+    recovery_operation_facts_section,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
 )
@@ -63,8 +65,10 @@ from app.bootstrap.claude_client import (
     prepare_claude_result_usage,
 )
 from app.execution.api import (
+    RECOVERY_CONFIRMATION_TIMEOUT_SECONDS,
     AUTO_COMPACT_WINDOW_MAX_TOKENS,
     AUTO_COMPACT_WINDOW_MIN_TOKENS,
+    MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
@@ -87,7 +91,6 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -102,6 +105,7 @@ from app.sandbox.api import (
     workspace_read_allowed,
 )
 from app.settings import get_settings
+from app.platform.sandbox.claude_native_filesystem import claude_workspace_env
 from app.skills.api import is_valid_executable_skill_name
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
@@ -111,7 +115,7 @@ from app.mcp.api import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _SDK_ENV_ALLOWLIST = {
-    "PATH",
+    "PATH", "ENABLE_TOOL_SEARCH",
     "PATHEXT",
     "SYSTEMROOT",
     "COMSPEC",
@@ -191,6 +195,7 @@ _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
 _DELIVERY_MANIFEST_MAX_DESCRIPTION_CHARS = 2_000
 _SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
+_SDK_STOP_TASK_TIMEOUT_SECONDS = 2.0
 _logger = logging.getLogger(__name__)
 
 
@@ -232,6 +237,7 @@ class ClaudeAgentSdkRunResult:
     response_files: list[str] = field(default_factory=list)
     response_file_descriptors: list[dict[str, str]] = field(default_factory=list)
     provider_final_sequence: int | None = None
+    sdk_settlement: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -406,23 +412,6 @@ def _public_diagnostic_skill(
     ):
         return None
     return {"name": name, "version": version, "availability": availability}
-
-
-def _public_skill_replacement(
-    skill_id: str,
-    public_skill_metadata: dict[str, dict[str, str]] | None,
-) -> str | None:
-    metadata = (public_skill_metadata or {}).get(skill_id)
-    if not isinstance(metadata, dict):
-        return None
-    name = truncate_utf8_text(
-        str(sanitize_public_payload(metadata.get("name") or "")).strip(),
-        max_bytes=256,
-    )
-    if not name:
-        return None
-    name = "".join(character for character in name if character.isprintable())
-    return f"【技能：{name}】" if name else None
 
 
 def project_sdk_turn_diagnostics(
@@ -666,17 +655,7 @@ def build_sdk_env(*, cwd: Path | None = None, model_max_output_tokens: int | Non
         if value:
             env[key] = value
     if cwd is not None:
-        env["AI_PLATFORM_WORK_DIR"] = str(cwd)
-        home = cwd / ".home"
-        env["HOME"] = str(home)
-        env["USERPROFILE"] = str(home)
-        env["CLAUDE_CONFIG_DIR"] = str(cwd / ".claude-config")
-        env["XDG_CONFIG_HOME"] = str(home / ".config")
-        env["XDG_CACHE_HOME"] = str(home / ".cache")
-        env["XDG_DATA_HOME"] = str(home / ".local" / "share")
-        env["TMPDIR"] = str(cwd / ".tmp")
-        env["TMP"] = str(cwd / ".tmp")
-        env["TEMP"] = str(cwd / ".tmp")
+        env.update(claude_workspace_env(cwd))
     if settings.anthropic_base_url:
         env["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
     if settings.anthropic_auth_token:
@@ -811,9 +790,7 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
-    default_tool_names = (
-        name for name in _SDK_INTERNAL_CONTEXT_TOOLS if name != PROFILE_DRIVE_STAGE_TOOL
-    )
+    default_tool_names = iter(_SDK_INTERNAL_CONTEXT_TOOLS)
     selected_tool_names = {
         name
         for name in (tool_names or default_tool_names)
@@ -837,7 +814,6 @@ def _build_context_retrieval_mcp_server(
                 "context_file_too_large",
                 "context_file_size_required",
                 *ARTIFACT_TRANSFER_SAFE_ERRORS,
-                "profile_drive_file_too_large",
             }:
                 reason = "context_scope_denied"
             return _context_retrieval_tool_error(reason, action=audit_action)
@@ -880,14 +856,6 @@ def _build_context_retrieval_mcp_server(
         return await _run("stage_run_artifact_to_workspace", args)
 
     @sdk_tool(
-        PROFILE_DRIVE_STAGE_TOOL,
-        "Copy any file type from the authenticated user's Profile Desktop into the current run workspace and return a workspace-relative path.",
-        {"path": str},
-    )
-    async def stage_profile_drive_file_to_workspace(args):
-        return await _run(PROFILE_DRIVE_STAGE_TOOL, args)
-
-    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -903,7 +871,6 @@ def _build_context_retrieval_mcp_server(
         read_run_artifact,
         stage_context_file_to_workspace,
         stage_run_artifact_to_workspace,
-        stage_profile_drive_file_to_workspace,
         search_memory,
     ]
     return create_server(
@@ -1139,6 +1106,7 @@ def _workspace_path_parameters_authorized(
     tool_input: object,
     *,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     mutating_key = _WORKSPACE_MUTATING_PATH_PARAMETER.get(tool_name)
     path_bearing_tool = (
@@ -1167,7 +1135,7 @@ def _workspace_path_parameters_authorized(
         return lexical_relative, resolved_relative
 
     def readable_path_parts_authorized(relative: Path) -> bool:
-        return workspace_read_allowed(PurePosixPath(relative.as_posix()))
+        return workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
 
     def writable_path_parts_authorized(relative: Path) -> bool:
         return workspace_mutation_allowed(PurePosixPath(relative.as_posix()))
@@ -1248,6 +1216,7 @@ def _workspace_search_result_path_authorized(
     *,
     search_path: object,
     workspace_root: Path,
+    native_session_id: str | None = None,
 ) -> bool:
     if not isinstance(raw_path, str) or not raw_path.strip() or "\x00" in raw_path:
         return False
@@ -1270,7 +1239,7 @@ def _workspace_search_result_path_authorized(
             lexical_relative = Path(os.path.abspath(candidate)).relative_to(root)
             resolved_relative = candidate.resolve(strict=False).relative_to(root)
             if not all(
-                workspace_read_allowed(PurePosixPath(relative.as_posix()))
+                workspace_read_allowed(PurePosixPath(relative.as_posix()), native_session_id=native_session_id)
                 for relative in (lexical_relative, resolved_relative)
             ):
                 return False
@@ -1304,6 +1273,7 @@ def _filtered_workspace_search_text(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     budget: dict[str, int],
 ) -> tuple[str, bool]:
     output_mode = str(tool_input.get("output_mode") or "files_with_matches")
@@ -1337,7 +1307,7 @@ def _filtered_workspace_search_text(
             allowed = _workspace_search_result_path_authorized(
                 result_path,
                 search_path=search_path,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
             )
         encoded_size = len(line.encode("utf-8")) + 1
         if (
@@ -1361,6 +1331,7 @@ def _filtered_workspace_search_output(
     tool_name: str,
     tool_input: dict[str, Any],
     workspace_root: Path,
+    native_session_id: str | None = None,
     _budget: dict[str, int] | None = None,
 ) -> tuple[object, bool]:
     """Filter private paths from the SDK result before it returns to the model."""
@@ -1372,7 +1343,7 @@ def _filtered_workspace_search_output(
             tool_response,
             tool_name=tool_name,
             tool_input=tool_input,
-            workspace_root=workspace_root,
+            workspace_root=workspace_root, native_session_id=native_session_id,
             budget=budget,
         )
         if (
@@ -1393,7 +1364,7 @@ def _filtered_workspace_search_output(
                 item,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                workspace_root=workspace_root,
+                workspace_root=workspace_root, native_session_id=native_session_id,
                 _budget=budget,
             )
             filtered_items.append(filtered)
@@ -1419,116 +1390,93 @@ def _filtered_workspace_search_output(
 
     changed = False
     filenames = tool_response.get("filenames")
-    filtered_filenames: list[object] = []
+    filtered_filenames = []
     if isinstance(filenames, list):
         for path in filenames[:_WORKSPACE_SEARCH_MAX_OUTPUT_LINES]:
-            encoded_size = len(str(path).encode("utf-8")) + 1
             if not _workspace_search_result_path_authorized(
-                path,
-                search_path=tool_input.get("path") or ".",
-                workspace_root=workspace_root,
+                path, search_path=tool_input.get("path") or ".",
+                workspace_root=workspace_root, native_session_id=native_session_id,
             ):
                 continue
+            encoded_size = len(path.encode("utf-8")) + 1
             if (
                 budget["lines"] >= _WORKSPACE_SEARCH_MAX_OUTPUT_LINES
-                or budget["bytes"] + encoded_size
-                > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
+                or budget["bytes"] + encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES
             ):
                 continue
             filtered_filenames.append(path)
             budget["lines"] += 1
             budget["bytes"] += encoded_size
         changed = filtered_filenames != filenames
-    elif tool_name in {"Glob", "Grep"}:
+    elif "filenames" in tool_response:
         changed = True
 
-    filtered_values: dict[str, object] = {}
+    mode = tool_response.get("mode") or tool_input.get("output_mode") or "files_with_matches"
+    if mode not in {"content", "files_with_matches", "count"}:
+        mode = "files_with_matches"
+    filtered_values = {}
     for key in ("content", "text", "data"):
-        if key not in tool_response:
-            continue
-        filtered, item_changed = _filtered_workspace_search_output(
-            tool_response[key],
-            tool_name=tool_name,
-            tool_input=tool_input,
-            workspace_root=workspace_root,
-            _budget=budget,
-        )
-        filtered_values[key] = filtered
-        changed = changed or item_changed
+        if key in tool_response:
+            filtered, item_changed = _filtered_workspace_search_output(
+                tool_response[key], tool_name=tool_name,
+                tool_input={**tool_input, "output_mode": mode},
+                workspace_root=workspace_root, native_session_id=native_session_id,
+                _budget=budget,
+            )
+            filtered_values[key] = filtered
+            changed = changed or item_changed
 
-    if tool_name == "Glob":
-        duration_ms = tool_response.get("durationMs")
-        if not isinstance(duration_ms, (int, float)) or isinstance(duration_ms, bool):
-            duration_ms = 0
-        filtered_response: dict[str, object] = {
-            "durationMs": duration_ms,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-            "truncated": tool_response.get("truncated") is True,
-            # The SDK accepts these fields as optional; recompute them from
-            # the visible result so private paths never survive as counts.
-            "totalMatches": len(filtered_filenames),
-            "countIsComplete": True,
-        }
-    elif tool_name == "Grep":
-        mode = str(
-            tool_response.get("mode")
-            or tool_input.get("output_mode")
-            or "files_with_matches"
+    filtered_response: dict[str, object] = {
+        **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
+    }
+    if tool_name in {"Glob", "Grep"}:
+        # Retain only safe SDK scalars; path-bearing values are filtered above.
+        numeric_fields = (
+            ("durationMs", "numFiles", "totalMatches") if tool_name == "Glob"
+            else ("numFiles", "numLines", "numMatches", "totalLines", "appliedLimit", "appliedOffset")
         )
-        if mode not in {"content", "files_with_matches", "count"}:
-            mode = "files_with_matches"
-        filtered_response = {
-            "mode": mode,
-            "numFiles": len(filtered_filenames),
-            "filenames": filtered_filenames,
-        }
-        if "content" in filtered_values:
-            filtered_response["content"] = filtered_values["content"]
-        if mode == "count":
-            count_lines = (
-                filtered_values.get("content", "").splitlines()
-                if isinstance(filtered_values.get("content"), str)
-                else []
-            )
-            visible_counts = [
-                int(match.group(1))
-                for line in count_lines
-                if (
-                    match := re.fullmatch(r".+?:(\d+)", line.strip())
-                )
-                is not None
-            ]
-            filtered_response["numFiles"] = len(visible_counts)
-            filtered_response["numMatches"] = sum(visible_counts)
-        elif mode == "content" and isinstance(
-            filtered_values.get("content"), str
-        ):
-            visible_lines = sum(
-                1
-                for line in filtered_values["content"].splitlines()
-                if _workspace_search_line_path(
-                    line,
-                    tool_name="Grep",
-                    output_mode="content",
-                )
-                is not None
-            )
-            filtered_response["numLines"] = visible_lines
-            filtered_response["totalLines"] = visible_lines
-        for pagination_key in ("appliedLimit", "appliedOffset"):
-            pagination_value = tool_response.get(pagination_key)
-            if (
-                isinstance(pagination_value, int)
-                and not isinstance(pagination_value, bool)
-                and pagination_value >= 0
-            ):
-                filtered_response[pagination_key] = pagination_value
+        for key in numeric_fields:
+            value = tool_response.get(key)
+            valid = isinstance(value, int) or key == "durationMs" and isinstance(value, float)
+            if valid and not isinstance(value, bool) and value >= 0:
+                filtered_response[key] = value
+        if tool_name == "Glob":
+            for key in ("truncated", "countIsComplete"):
+                if isinstance(tool_response.get(key), bool):
+                    filtered_response[key] = tool_response[key]
+            # Never claim a complete count after either owner truncated output.
+            if changed or tool_response.get("truncated") is True or tool_response.get("countIsComplete") is False:
+                filtered_response["truncated"] = True
+                filtered_response.pop("totalMatches", None)
+                if "countIsComplete" in tool_response:
+                    filtered_response["countIsComplete"] = False
+            if changed:
+                filtered_response["numFiles"] = len(filtered_filenames)
+        else:
+            if "mode" in tool_response:
+                filtered_response["mode"] = mode
+            if "content" in filtered_values:
+                filtered_response["content"] = filtered_values["content"]
+            paginated = any(key in filtered_response for key in ("appliedLimit", "appliedOffset"))
+            if changed or paginated:
+                filtered_response.pop("totalLines", None)
+            content = filtered_values.get("content")
+            if changed and mode == "files_with_matches":
+                filtered_response["numFiles"] = len(filtered_filenames)
+            elif changed and isinstance(content, str):
+                if mode == "count":
+                    counts = [int(match.group(1)) for line in content.splitlines()
+                              if (match := re.fullmatch(r".+?:(\d+)", line.strip()))]
+                    filtered_response["numFiles"] = len(counts)
+                    if "numMatches" in tool_response:
+                        filtered_response["numMatches"] = sum(counts)
+                else:
+                    filtered_response["numLines"] = sum(
+                        _workspace_search_line_path(line, tool_name="Grep", output_mode="content") is not None
+                        for line in content.splitlines()
+                    )
     else:
-        filtered_response = {
-            **({"filenames": filtered_filenames} if isinstance(filenames, list) else {}),
-            **filtered_values,
-        }
+        filtered_response.update(filtered_values)
         for key in ("mode", "type", "tool_use_id"):
             value = tool_response.get(key)
             if isinstance(value, str):
@@ -1537,13 +1485,7 @@ def _filtered_workspace_search_output(
     changed = changed or filtered_response != tool_response
     if root_call:
         try:
-            encoded_size = len(
-                json.dumps(
-                    filtered_response,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
+            encoded_size = len(json.dumps(filtered_response, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             return _WORKSPACE_SEARCH_OUTPUT_NOTICE, True
         if encoded_size > _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES:
@@ -1602,6 +1544,7 @@ async def run_claude_agent_sdk(
     model_max_output_tokens: int | None = None,
     system_prompt: str | None = None,
     skills: list[str] | None = None,
+    document_plugin_revision: str | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_sdk_text: Callable[[dict[str, object]], None] | None = None,
@@ -1623,8 +1566,11 @@ async def run_claude_agent_sdk(
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
     thinking_effort: str = "auto",
     cleanup_tasks: set[asyncio.Task[Any]] | None = None,
+    recovery_tool_gate: dict[str, Any] | None = None,
+    recovery_tool_gate_query: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
+    recovery_gate = RecoveryToolGate.from_mapping(recovery_tool_gate)
     callback_tracker = prepare_claude_callback_tracker()
     interaction_actor = None
     if interaction_client is not None and not (run_id and attempt_id):
@@ -1995,6 +1941,10 @@ async def run_claude_agent_sdk(
 
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
+    from app.execution.api import document_plugin_skill_names, document_plugin_tool_subject
+    from app.bootstrap.claude_document_plugin import prepare_claude_document_plugin
+    plugin_skills = document_plugin_skill_names(document_plugin_revision)
+    plugin_options, document_plugin_read_allowed = prepare_claude_document_plugin(document_plugin_revision)
     configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
         not is_valid_executable_skill_name(name)
@@ -2019,6 +1969,12 @@ async def run_claude_agent_sdk(
     )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    plugin_subjects = document_plugin_tool_subject(document_plugin_revision)
+    if plugin_subjects:
+        if skill_id is not None or configured_skills:
+            raise ValueError("document_plugin_scope_invalid")
+        configured_skills = plugin_skills
+        authorized_subjects.update(_canonical_tool_policy_subjects(plugin_subjects))
     if (
         sandbox_brokered
         and set(SANDBOX_LOCAL_TOOL_IDENTITIES).intersection(authorized_subjects)
@@ -2135,9 +2091,7 @@ async def run_claude_agent_sdk(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
                 else [
-                    name
-                    for name in _SDK_INTERNAL_CONTEXT_TOOLS
-                    if name != PROFILE_DRIVE_STAGE_TOOL
+                    name for name in _SDK_INTERNAL_CONTEXT_TOOLS
                 ]
             ),
         )
@@ -2165,9 +2119,7 @@ async def run_claude_agent_sdk(
         internal_context_tools: set[str] = set()
     elif tool_policy_subjects is None:
         internal_context_tools = {
-            name
-            for name in _SDK_INTERNAL_CONTEXT_TOOLS
-            if name != PROFILE_DRIVE_STAGE_TOOL
+            name for name in _SDK_INTERNAL_CONTEXT_TOOLS
         }
     else:
         internal_context_tools = set(requested_internal_context_tools)
@@ -2353,47 +2305,16 @@ async def run_claude_agent_sdk(
         )
         if isinstance(value, str) and value
     )
-    non_skill_private_tokens = private_capability_tokens.copy()
-    private_capability_tokens.update(
-        identity for kind, identity in capability_plan.available if kind == "skill"
-    )
-    skill_subject = authorized_subjects.get("Skill")
-    if isinstance(skill_subject, dict):
-        private_capability_tokens.update(
-            name
-            for name in skill_subject.get("allowed_skill_names", [])
-            if isinstance(name, str)
-        )
     private_replacement = "\u2588"
-    private_skill_replacement = "【技能】"
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
+    private_replacements.update({plugin["path"]: private_replacement for plugin in plugin_options})
+    if document_plugin_revision is not None:
+        private_replacements[document_plugin_revision] = private_replacement
     workspace_token = str(cwd)
-    if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
-        private_replacements[workspace_token] = private_replacement
-    public_skill_replacements = {}
-    for kind, identity in capability_plan.available:
-        if kind != "skill":
-            continue
-        public_replacement = _public_skill_replacement(identity, public_skill_metadata)
-        replacement = public_replacement or private_skill_replacement
-        if (
-            any(token in replacement for token in non_skill_private_tokens)
-            or any(
-                token in replacement
-                for token in private_replacements
-                if token != identity
-            )
-            or identity == workspace_token
-        ):
-            continue
-        private_replacements[identity] = replacement
-        if public_replacement and identity in replacement:
-            public_skill_replacements[identity] = replacement
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_replacements,
-        public_replacements=public_skill_replacements,
         sanitizer=sanitize_public_answer_text,
     )
 
@@ -2401,7 +2322,22 @@ async def run_claude_agent_sdk(
         text = str(value)
         for token, replacement in private_replacements.items():
             text = text.replace(token, replacement)
+        text = sanitize_public_answer_text(text)
+        if cwd.is_absolute() and workspace_token:
+            return workspace_token.join(
+                sanitize_public_text(fragment)
+                for fragment in text.split(workspace_token)
+            )
         return sanitize_public_text(text)
+
+    def sanitize_public_skill_name(value: object) -> str:
+        text = str(value)
+        sanitized = sanitize_public_answer_text(text)
+        if sanitized != text:
+            return sanitized
+        if any(token and token in text for token in private_replacements):
+            return ""
+        return text
 
     if interaction_client is not None:
         interaction_actor = prepare_claude_run_interaction(
@@ -2412,14 +2348,14 @@ async def run_claude_agent_sdk(
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
 
-    def register_dynamic_tool_call_id(value: object) -> None:
+    def register_dynamic_tool_call_id(
+        value: object, *, skill_call: bool = False
+    ) -> None:
+        if skill_call:
+            return
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
-            replacement = (
-                private_replacement
-                if call_id in public_skill_replacements
-                else replacement_for_private_token(call_id)
-            )
+            replacement = replacement_for_private_token(call_id)
             private_replacements[call_id] = replacement
             answer_stream_gate.register_private_replacements(
                 {call_id: replacement}
@@ -2432,9 +2368,9 @@ async def run_claude_agent_sdk(
         ClaudeSdkAgentEventAdapter(
             run_id=run_id,
             attempt_id=attempt_id,
-            tool_policy_subjects=tool_policy_subjects,
-            public_skill_metadata=public_skill_metadata,
+            tool_policy_subjects=[*(tool_policy_subjects or []), *plugin_subjects],
             sanitizer=sanitize_public_answer_text,
+            skill_name_sanitizer=sanitize_public_skill_name,
             payload_sanitizer=sanitize_public_event_candidate,
             tool_identity_resolver=mcp_registration.canonical_identity,
         )
@@ -2531,11 +2467,14 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
             return reject_capability_evidence()
         if lifecycle_phase == "invocation_requested":
-            register_dynamic_tool_call_id(tool_call_id)
-            lifecycle_replacements = {
-                tool_call_id: replacement_for_private_token(tool_call_id)
-            }
-            if capability_kind in {"mcp", "skill"}:
+            if capability_kind != "skill":
+                register_dynamic_tool_call_id(tool_call_id)
+            lifecycle_replacements: dict[str, str] = {}
+            if capability_kind != "skill":
+                lifecycle_replacements[tool_call_id] = replacement_for_private_token(
+                    tool_call_id
+                )
+            if capability_kind == "mcp":
                 lifecycle_replacements[canonical_identity] = (
                     replacement_for_private_token(canonical_identity)
                 )
@@ -2757,7 +2696,11 @@ async def run_claude_agent_sdk(
                     subject,
                     subject_tool_name,
                     tool_input,
-                    workspace_root=cwd,
+                    workspace_root=cwd, native_session_id=session_id,
+                ) or (
+                    subject_tool_name == "Read"
+                    and isinstance(tool_input, dict)
+                    and document_plugin_read_allowed(tool_input.get("file_path"))
                 )
             if (
                 parameters_authorized
@@ -2855,7 +2798,54 @@ async def run_claude_agent_sdk(
             }
         )
 
+    async def recovery_gate_denial(tool_name: str, tool_input: object, invocation_id: object) -> str | None:
+        if stop_requested:
+            return "run_stop_requested"
+        if recovery_gate is None:
+            return None
+        identity = adapter_identity(tool_name)
+        subject = internal_platform_subjects.get(identity) or authorized_subjects.get(identity)
+        reason = recovery_gate.denial(identity, subject)
+        if reason != "recovery_effect_unconfirmed" or recovery_tool_gate_query is None:
+            return reason
+        call_id = canonical_tool_call_id(invocation_id)
+        if not call_id or not run_id or not attempt_id:
+            return reason
+        identity_fields = dict(run_id=run_id, attempt_id=attempt_id, tool_identity=identity, invocation_id=call_id)
+        deadline = asyncio.get_running_loop().time() + RECOVERY_CONFIRMATION_TIMEOUT_SECONDS
+        while not stop_requested:
+            try:
+                evidence = await asyncio.wait_for(recovery_tool_gate_query(
+                    **identity_fields, tool_input=tool_input,
+                ), timeout=5.0)
+            except Exception:
+                return reason
+            if stop_requested:
+                return "run_stop_requested"
+            if (recovery_gate.evidence_identity_matches(evidence, **identity_fields)
+                and evidence.get("decision") == "deny"
+                and evidence.get("reason_code") == "recovery_operation_public_object_metadata_missing"):
+                return "recovery_operation_public_object_metadata_missing：缺少可安全展示的操作对象摘要，无法请求人工确认；可继续只读检查。"
+            if recovery_gate.evidence_allows(evidence, **identity_fields):
+                return None
+            if not recovery_gate.evidence_matches(evidence, **identity_fields):
+                return reason
+            if evidence.get("decision") != "wait":
+                return ("原操作已确认完成，不会重复执行；可以继续只读检查。"
+                        if evidence.get("reason_code") == "operation_already_completed" else reason)
+            if not isinstance(evidence.get("question_id"), str):
+                return reason
+            if asyncio.get_running_loop().time() >= deadline:
+                return "operation_confirmation_expired"
+            await asyncio.sleep(0.25)
+        return "run_stop_requested"
+
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        gate_reason = await recovery_gate_denial(
+            tool_name, tool_input, permission_context_tool_use_id(_context),
+        )
+        if gate_reason is not None:
+            return PermissionResultDeny(message=gate_reason)
         decision = policy_for_tool(tool_name, tool_input)
         context_tool_use_id = permission_context_tool_use_id(_context)
         record_runtime_tool_stage(
@@ -2903,7 +2893,15 @@ async def run_claude_agent_sdk(
         nonlocal mcp_execution_conflicted
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
-        tool_name = ""
+        tool_name = str(hook_input.get("tool_name") or "")
+        gate_reason = await recovery_gate_denial(
+            tool_name, hook_input.get("tool_input"), exact_hook_tool_call_id(hook_input, tool_use_id),
+        )
+        if gate_reason is not None:
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": gate_reason,
+            }}
         if (
             interaction_actor is not None
             and hook_input_is_mapping
@@ -3298,7 +3296,7 @@ async def run_claude_agent_sdk(
                         hook_input["tool_response"],
                         tool_name=tool_name,
                         tool_input=tool_input,
-                        workspace_root=cwd,
+                        workspace_root=cwd, native_session_id=session_id,
                     )
                     if changed:
                         return {
@@ -3461,10 +3459,11 @@ async def run_claude_agent_sdk(
             else {}
         ),
         skills=configured_skills,
+        plugins=plugin_options,
         max_turns=max_turns,
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
-        include_partial_messages=False,
+        include_partial_messages=True,
         max_buffer_size=MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
         setting_sources=["project"],
         **provider_session_options,
@@ -3478,6 +3477,7 @@ async def run_claude_agent_sdk(
     last_assistant_error_text = ""
     terminal_stream_error: Exception | None = None
     terminal_result_message: object | None = None
+    provider_mirror_error_observed = False
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
@@ -3523,6 +3523,10 @@ async def run_claude_agent_sdk(
     ) -> ClaudeAgentSdkRunResult:
         """Snapshot the shared observations after the caller has closed its terminal."""
         successful_terminal = error is None and include_terminal_files
+        if terminal_reason is None and provider_mirror_error_observed:
+            terminal_reason = getattr(terminal_result_message, "terminal_reason", None)
+            if terminal_reason is None and not getattr(terminal_result_message, "is_error", True):
+                terminal_reason = getattr(terminal_result_message, "stop_reason", None)
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message=message,
@@ -3541,7 +3545,27 @@ async def run_claude_agent_sdk(
             response_files=list(response_files) if successful_terminal else [],
             response_file_descriptors=list(response_file_descriptors) if successful_terminal else [],
             provider_final_sequence=(provider_session_store.final_sequence
-                                     if successful_terminal and provider_session_store is not None else None),
+                                     if provider_session_store is not None else None),
+            sdk_settlement={
+                "schema_version": "ai-platform.sdk-settlement.v1",
+                "received_result": terminal_result_message is not None,
+                "input_accepted": prompt_dispatched,
+                "ack_unknown": (provider_session_store.ack_unknown
+                                if provider_session_store is not None else prompt_dispatched),
+                "terminal_reason": terminal_reason,
+                "error_code": _SDK_PROVIDER_SESSION_FAILED if provider_mirror_error_observed else error,
+                "mirror_complete": bool(
+                    provider_session_store is not None and receive_stream_closed
+                    and not provider_mirror_error_observed
+                    and not provider_session_store.failed
+                    and provider_session_store.main_append_acknowledged
+                    and provider_session_store.final_sequence is not None
+                ),
+                "external_effect_unknown": (
+                    error in {MCP_EXECUTION_OUTCOME_UNKNOWN, MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE}
+                    or external_write_outcome_unconfirmed()
+                ),
+            },
         )
 
     def close_failed_terminal(reason: str) -> None:
@@ -3619,11 +3643,14 @@ async def run_claude_agent_sdk(
 
     receive_stream_closed = False
     receiving_started = False
+    prompt_dispatched = False
     stop_requested = False
+    # Background agents outlive interrupt(); stop needs their IDs to end the run.
+    pending_tasks: set[str] = set()
 
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
         nonlocal continuation_usage, continuation_turns, terminal_stream_error, receive_stream_closed
-        pending_tasks: set[str] = set()
+        nonlocal terminal_result_message, provider_mirror_error_observed
         final_result = None
         mirror_error = None
         final_flush_timing: TerminalStageTiming | None = None
@@ -3659,9 +3686,16 @@ async def run_claude_agent_sdk(
                 async for message in responses:
                     if provider_session_store is not None:
                         provider_session_store.observe_public_message(is_result=isinstance(message, ResultMessage))
-                    if stop_requested:
-                        # Drain the public stream through its final mirror flush,
-                        # without processing more output or supplementary inputs.
+                    if isinstance(message, TaskStartedMessage):
+                        if message.task_type in {"local_agent", "local_workflow"}:
+                            pending_tasks.add(message.task_id)
+                    elif isinstance(message, TaskNotificationMessage):
+                        pending_tasks.discard(message.task_id)
+                    elif isinstance(message, TaskUpdatedMessage):
+                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+                            pending_tasks.discard(message.task_id)
+                    if stop_requested and not isinstance(message, (ResultMessage, MirrorErrorMessage)):
+                        # Drain terminal evidence, never supplementary inputs or public output.
                         continue
                     if isinstance(message, ResultMessage):
                         result_usage.observe_result(message)
@@ -3676,25 +3710,18 @@ async def run_claude_agent_sdk(
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)
                             for denial in permission_denials:
                                 await reconcile_sdk_permission_denial(denial)
-                    if isinstance(message, TaskStartedMessage):
-                        if message.task_type in {"local_agent", "local_workflow"}:
-                            pending_tasks.add(message.task_id)
-                    elif isinstance(message, TaskNotificationMessage):
-                        pending_tasks.discard(message.task_id)
-                    elif isinstance(message, TaskUpdatedMessage):
-                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
-                            pending_tasks.discard(message.task_id)
-                    elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
+                    if isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
                         # A background agent may wake a follow-up turn. Its first
                         # Result is not the completion of the platform Run.
                         continue
                     if isinstance(message, MirrorErrorMessage):
                         mirror_error = message
+                        provider_mirror_error_observed = True
                         if interaction_actor is not None:
                             await interaction_actor.cancel()
                         continue
                     if isinstance(message, ResultMessage):
-                        if interaction_actor is not None and not message.is_error and mirror_error is None:
+                        if interaction_actor is not None and not stop_requested and not message.is_error and mirror_error is None:
                             command = await interaction_actor.settle_at_result()
                             if command is not None:
                                 continuation_usage = _merge_sdk_usage(
@@ -3731,8 +3758,9 @@ async def run_claude_agent_sdk(
             if final_flush_timing is not None:
                 final_flush_timing.finish(sys.exception())
         if mirror_error is not None:
+            terminal_result_message = final_result
             yield mirror_error
-        elif final_result is not None and not stop_requested:
+        elif final_result is not None:
             yield final_result
 
     async def observed_model_messages(messages: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -3781,52 +3809,21 @@ async def run_claude_agent_sdk(
         nonlocal last_assistant_error_text, first_projection_failure
         typed_observations = prepare_claude_typed_observations()
         source_router = prepare_claude_text_sources()
-        pending_callback_text: dict[tuple[object, ...], list[str]] = {}
         last_callback_answer_source: tuple[object, ...] | None = None
 
-        async def deliver_answer_text(
-            source_key: tuple[object, ...],
-            chunk: str,
-        ) -> None:
-            nonlocal last_callback_answer_source
-            if (
-                last_callback_answer_source is not None
-                and last_callback_answer_source != source_key
-            ):
-                if on_text is not None:
-                    callback_result = on_text("\n\n")
-                    if isawaitable(callback_result):
-                        await callback_result
-                agent_public_answer_chunks.append("\n\n")
-            if on_text is not None:
-                callback_result = on_text(chunk)
-                if isawaitable(callback_result):
-                    await callback_result
-            agent_public_answer_chunks.append(chunk)
-            last_callback_answer_source = source_key
-
-        async def flush_classified_callback_text(
-            source_key: tuple[object, ...],
-            role: str,
-        ) -> None:
-            pending = pending_callback_text.get(source_key)
-            if role != "answer":
-                pending_callback_text.pop(source_key, None)
-                return
-            for chunk in tuple(pending or ()):
-                await deliver_answer_text(source_key, chunk)
-            pending_callback_text.pop(source_key, None)
-
-        async def publish_part_text(
+        async def publish_public_text(
             source_key: tuple[object, ...],
             value: str,
         ) -> bool:
+            nonlocal last_callback_answer_source
             if not value:
                 return True
+            if last_callback_answer_source is not None and last_callback_answer_source != source_key:
+                value = "\n\n" + value
             for offset in range(0, len(value), 8_192):
                 chunk = value[offset : offset + 8_192]
                 if agent_event_adapter is not None:
-                    candidates = agent_event_adapter.accept_part_text(source_key, chunk)
+                    candidates = agent_event_adapter.accept_answer_text(chunk)
                     if not candidates or not await publish_agent_candidates(candidates):
                         fail_stream_projection(
                             reason="agent_event_callback_not_acknowledged",
@@ -3834,51 +3831,21 @@ async def run_claude_agent_sdk(
                             location="part_delta_ack",
                         )
                         return False
-                role = source_router.role_for(source_key)
-                if role == "work":
-                    pending_callback_text.pop(source_key, None)
-                else:
-                    pending_callback_text.setdefault(source_key, []).append(chunk)
-                if agent_event_adapter is not None and role is not None:
-                    try:
-                        candidates = agent_event_adapter.classify_text_part(
-                            source_key, role,
-                        )
-                    except ValueError:
-                        fail_stream_projection(
-                            reason="assistant_part_classification_invalid",
-                            stage="message",
-                            location="part_classification",
-                        )
-                        return False
-                    if candidates and not await publish_agent_candidates(candidates):
-                        fail_stream_projection(
-                            reason="agent_event_callback_not_acknowledged",
-                            stage="message",
-                            location="part_classification_ack",
-                        )
-                        return False
+                agent_public_answer_chunks.append(chunk)
+                last_callback_answer_source = source_key
             return True
 
         async def publish_source_text(
             source_key: tuple[object, ...],
             delta: str,
         ) -> bool:
-            required_identities = {identity for _kind, identity in required_builtin_declarations}
-            required_failure = any(
-                state == "failed" and identity in required_identities
-                for (identity, _call_id), state in governed_builtin_invocation_states.items()
-            )
-            if capability_evidence_rejected or governed_builtin_lifecycle_rejected or required_failure:
-                answer_stream_gate.fail_closed()
-                return True
             for offset in range(0, len(delta), 8_192):
                 suffix = delta[offset : offset + 8_192]
                 for owner, public_text in answer_stream_gate.accept_routed(
                     suffix,
                     source_identity=source_key,
                 ):
-                    if not await publish_part_text(owner, public_text):
+                    if not await publish_public_text(owner, public_text):
                         return False
                 if answer_stream_gate.failed:
                     fail_stream_projection(
@@ -3887,67 +3854,6 @@ async def run_claude_agent_sdk(
                         location="part_text_gate",
                     )
                     return False
-            return True
-
-        async def classify_source(
-            source_key: tuple[object, ...],
-            role: str,
-        ) -> bool:
-            try:
-                if role == "work":
-                    source_router.mark_tool(source_key)
-                elif source_router.has_meaningful_text_for(source_key):
-                    source_router.mark_answer(source_key)
-                else:
-                    role = "work"
-                    source_router.mark_tool(source_key)
-            except (TypeError, ValueError):
-                fail_stream_projection(
-                    reason="assistant_part_classification_invalid",
-                    stage="message",
-                    location="part_classification",
-                )
-                return False
-            if (
-                agent_event_adapter is not None
-                and agent_event_adapter.has_text_part(source_key)
-            ):
-                try:
-                    candidates = agent_event_adapter.classify_text_part(source_key, role)
-                except ValueError:
-                    fail_stream_projection(
-                        reason="assistant_part_classification_invalid",
-                        stage="message",
-                        location="part_classification",
-                    )
-                    return False
-                if candidates and not await publish_agent_candidates(candidates):
-                    fail_stream_projection(
-                        reason="agent_event_callback_not_acknowledged",
-                        stage="message",
-                        location="part_classification_ack",
-                    )
-                    return False
-            if role == "work":
-                await flush_classified_callback_text(source_key, role)
-            return True
-
-        async def retire_source(source_key: tuple[object, ...]) -> bool:
-            metadata = source_router.take(source_key)
-            if metadata is None:
-                return True
-            if metadata.has_text and metadata.role is None:
-                return await classify_source(source_key, "answer")
-            return True
-
-        async def select_source(source_key: tuple[object, ...]) -> bool:
-            previous = source_router.message_key
-            if previous is not None and previous != source_key:
-                if not await retire_source(previous):
-                    return False
-                if source_router.message_key == previous:
-                    source_router.take(previous)
-            source_router.begin(source_key)
             return True
 
         stream_projection_failed = False
@@ -4000,14 +3906,29 @@ async def run_claude_agent_sdk(
                 )
                 continue
             if isinstance(message, StreamEvent):
-                # Completed SDK blocks are the sole public text input. Raw
-                # noise cannot publish prose or control answer completion.
+                event = message.event
+                if isinstance(event, dict) and event.get("type") == "content_block_start":
+                    block = event.get("content_block", {})
+                    if isinstance(block, dict) and block.get("type") in {"tool_use", "server_tool_use"}:
+                        register_dynamic_tool_call_id(block.get("id"), skill_call=block.get("name") == "Skill")
+                if getattr(message, "parent_tool_use_id", None) is not None or stream_projection_failed:
+                    continue
+                try:
+                    delta = source_router.accept_event(uuid=getattr(message, "uuid", None), event=event)
+                    if delta is not None:
+                        last_public_stage = "message"
+                        await publish_source_text(*delta)
+                except (TypeError, ValueError):
+                    fail_stream_projection(reason="assistant_observation_invalid", stage="message", location="assistant_observation")
                 continue
             if isinstance(message, AssistantMessage):
                 content = getattr(message, "content", None)
                 for block in content if isinstance(content, list) else ():
                     if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
-                        register_dynamic_tool_call_id(getattr(block, "id", None))
+                        register_dynamic_tool_call_id(
+                            getattr(block, "id", None),
+                            skill_call=getattr(block, "name", None) == "Skill",
+                        )
                 if getattr(message, "parent_tool_use_id", None) is not None:
                     continue
                 # Tool evidence has its own authority. Even rejected text or
@@ -4064,20 +3985,13 @@ async def run_claude_agent_sdk(
                     continue
                 if not observed or stream_projection_failed:
                     continue
-                if not await select_source(source_key):
-                    continue
-                has_tool = typed_stop_reason == "tool_use" or any(
-                    type(block).__name__ == "ToolUseBlock" for block in content
-                )
-                if has_tool and not await classify_source(source_key, "work"):
-                    continue
                 for block_index, block in enumerate(content):
                     if isinstance(block, TextBlock):
                         text = block.text
                         diagnostic_counters["text_blocks"] += 1
                         last_public_stage = "message"
                         try:
-                            text = source_router.append_text(source_key, text)
+                            text = source_router.completed_text(source_key, text)
                         except (TypeError, ValueError):
                             fail_stream_projection(
                                 reason="assistant_text_conflict",
@@ -4229,12 +4143,6 @@ async def run_claude_agent_sdk(
                     item["source_path"] for item in response_file_descriptors
                 ]
                 received_structured_terminal = True
-                if not stream_projection_failed:
-                    active_source = source_router.message_key
-                    if active_source is not None:
-                        if source_router.role_for(active_source) is None:
-                            await classify_source(active_source, "answer")
-                        source_router.take(active_source)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
                     if isinstance(stop_reason, str) and stop_reason.strip()
@@ -4246,19 +4154,9 @@ async def run_claude_agent_sdk(
             if not received_structured_terminal
             else None
         )
-        if (
-            terminal_error is None
-            and agent_event_adapter is not None
-            and agent_event_adapter.has_unclassified_text_parts
-        ):
-            fail_stream_projection(
-                reason="assistant_part_classification_pending",
-                stage="message",
-                location="terminal_part_classification",
-            )
         _finished_answer, routed_final_chunks = answer_stream_gate.finish_routed(
-            # Completed blocks already supplied all text; only the gate's
-            # bounded sanitizer tail may remain.
+            # Native deltas or their non-streamed completed blocks supplied
+            # the text; release only the sanitizer's bounded safe tail.
             final_text="",
             release=True,
             fallback_source_identity=source_router.message_key,
@@ -4272,11 +4170,11 @@ async def run_claude_agent_sdk(
             if answer_stream_gate.private_token_exposed:
                 terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
-        if not answer_stream_gate.failed and isinstance(
+        if not stop_requested and not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
         ):
             for source_key, public_text in routed_final_chunks:
-                if not isinstance(source_key, tuple) or not await publish_part_text(
+                if not isinstance(source_key, tuple) or not await publish_public_text(
                     source_key, public_text,
                 ):
                     terminal_text_acknowledged = False
@@ -4287,7 +4185,8 @@ async def run_claude_agent_sdk(
                     )
                     break
         public_terminal_allowed = (
-            terminal_error is None
+            not stop_requested
+            and terminal_error is None
             and not answer_stream_gate.failed
             and capability_completion_error() is None
             and not mcp_execution_conflict_observed()
@@ -4295,11 +4194,13 @@ async def run_claude_agent_sdk(
             and not read_only_lifecycle_rejected
             and "started" not in observed_read_only_invocation_states.values()
         )
-        if public_terminal_allowed:
-            for source_key in tuple(pending_callback_text):
-                await flush_classified_callback_text(
-                    source_key, source_router.role_for(source_key) or "pending",
-                )
+        # Legacy direct callers consume terminal text. Live output is already
+        # published through the one durable v4 event chain above.
+        if public_terminal_allowed and on_text is not None:
+            for chunk in agent_public_answer_chunks:
+                callback_result = on_text(chunk)
+                if isawaitable(callback_result):
+                    await callback_result
         delivered_final_text = "".join(agent_public_answer_chunks)
         if (
             public_terminal_allowed
@@ -4329,7 +4230,7 @@ async def run_claude_agent_sdk(
         )
         public_final_result_text = (
             ""
-            if terminal_error == "agent_event_callback_not_acknowledged"
+            if not public_terminal_allowed
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
         if (
@@ -4383,6 +4284,23 @@ async def run_claude_agent_sdk(
                 await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
             except Exception:  # noqa: BLE001 - cancellation still closes the client.
                 pass
+            await stop_background_tasks(active_client)
+
+    async def stop_background_tasks(client: Any) -> None:
+        # interrupt() ends only the foreground turn. A live background agent keeps
+        # the SDK run (and stdin) open, so public EOF and the final mirror flush
+        # would otherwise wait for the cleanup deadline and a forced disconnect.
+        stop_task = getattr(client, "stop_task", None)
+        if stop_task is None:
+            return
+
+        async def stop_one(task_id: str) -> None:
+            try:
+                await asyncio.wait_for(stop_task(task_id), timeout=_SDK_STOP_TASK_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 - the cleanup deadline still bounds stop.
+                pass
+
+        await asyncio.gather(*(stop_one(task_id) for task_id in sorted(pending_tasks)))
 
     async def protocol_closed(mirror_failed: bool) -> None:
         nonlocal cleanup_deadline
@@ -4436,22 +4354,58 @@ async def run_claude_agent_sdk(
                     provider_session_store.final_sequence if provider_session_store is not None else None
                 ),
             )
+        result = replace(result, sdk_settlement=assemble_run_result(
+            error=error, terminal_reason=result.terminal_reason,
+            received_structured_terminal=result.received_structured_terminal,
+        ).sdk_settlement)
+        if mirror_failed or error == _SDK_PROVIDER_SESSION_FAILED:
+            result = replace(result, sdk_settlement={**result.sdk_settlement, "mirror_complete": False})
         result_ready.set_result(result)
         cleanup_deadline = asyncio.get_running_loop().call_later(
             _SDK_CLEANUP_TIMEOUT_SECONDS, consume_task.cancel
         )
 
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
-        nonlocal consume_cancellation, pending_result, active_client, receiving_started
+        nonlocal consume_cancellation, pending_result, active_client, receiving_started, prompt_dispatched
         try:
             async with mcp_registration.activate(options):
-                client = client_factory(options)
+                try:
+                    composed_prompt = sdk_system_prompt["prompt"]
+                    if interaction_actor is not None:
+                        snapshot = await interaction_actor.open()
+                        facts_section = recovery_operation_facts_section(snapshot.recovery_operation_facts)
+                        if facts_section:
+                            composed_prompt = compose_system_prompt(composed_prompt, facts_section)
+                            options.system_prompt = {**sdk_system_prompt, "prompt": composed_prompt}
+                    if len(composed_prompt) > MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS:
+                        if interaction_actor is not None:
+                            await interaction_actor.cancel()
+                        await callback_tracker.seal_and_wait()
+                        seal_agent_candidates(_SDK_INPUT_CONTEXT_TOO_LARGE)
+                        result = assemble_run_result(
+                            error=_SDK_INPUT_CONTEXT_TOO_LARGE,
+                            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                                _SDK_INPUT_CONTEXT_TOO_LARGE,
+                                failure_source="recovery_facts_prompt_limit",
+                                sdk_errors="composed_system_prompt_too_large",
+                            ),
+                        )
+                        if not result_ready.done():
+                            result_ready.set_result(result)
+                        if not protocol_settled.done():
+                            protocol_settled.set_result(None)
+                        return result
+                    client = client_factory(options)
+                except BaseException:
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    await callback_tracker.seal_and_wait()
+                    raise
                 active_client = client
                 close_boundary = prepare_claude_client_close(client)
                 disconnected = False
                 try:
                     if interaction_actor is not None:
-                        await interaction_actor.open()
                         initial_prompt = interaction_actor.initial_prompt_stream({
                             "type": "user",
                             "message": {"role": "user", "content": sdk_prompt},
@@ -4460,6 +4414,16 @@ async def run_claude_agent_sdk(
                         })
                     else:
                         initial_prompt = _sdk_user_prompt_stream(sdk_prompt, session_id=session_id)
+                    prompt_source = initial_prompt
+
+                    async def observed_prompt():
+                        nonlocal prompt_dispatched
+                        async for item in prompt_source:
+                            # Once handed to the SDK, never claim the input was not accepted.
+                            prompt_dispatched = True
+                            yield item
+
+                    initial_prompt = observed_prompt()
                     # connect(stream) owns the SDK input producer and closes
                     # stdin when the stream ends. query(stream) alone does not.
                     await client.connect(initial_prompt)
@@ -4570,14 +4534,41 @@ async def run_claude_agent_sdk(
             # resource teardown to their application lifespan.
             await asyncio.wait({consume_task})
         return result
-    except asyncio.CancelledError:
-        result_ready.cancel()
-        await stop_execution()
+    except asyncio.CancelledError as exc:
+        cleanup_failed = False
+        try:
+            await stop_execution()
+        except Exception:  # A cleanup failure cannot erase the cancellation receipt.
+            cleanup_failed = True
         seal_agent_candidates("cancelled")
+        settlement = (
+            result_ready.result()
+            if result_ready.done() and not result_ready.cancelled() and result_ready.exception() is None
+            else assemble_run_result(
+                message="", error=_SDK_CANCELLED,
+                runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                    _SDK_CANCELLED, failure_source="sdk_cancelled", terminal_reason=terminal_reason,
+                ),
+            )
+        )
+        if provider_session_store is not None and provider_session_store.failed:
+            settlement = replace(
+                settlement, error=_SDK_PROVIDER_SESSION_FAILED,
+                sdk_settlement={**settlement.sdk_settlement, "mirror_complete": False,
+                                "error_code": _SDK_PROVIDER_SESSION_FAILED},
+            )
+        if cleanup_failed:
+            settlement = replace(settlement, sdk_settlement={
+                **settlement.sdk_settlement, "mirror_complete": False,
+                "cleanup_error_code": "sdk_cleanup_failed",
+            })
+        exc.sdk_settlement = settlement
+        result_ready.cancel()
         if (
             consume_cancellation is not None
             and type(consume_cancellation) is not asyncio.CancelledError
         ):
+            consume_cancellation.sdk_settlement = settlement
             raise consume_cancellation
         raise
     except RunQuestionNeedsInput:

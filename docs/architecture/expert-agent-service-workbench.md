@@ -101,11 +101,19 @@ CI lane alongside the fetch parser and history consumers.
 ### Public model catalog and selection
 
 The shared composer uses `ChatInputToolbar` and the Elements `ComposerModelPicker` to select
-an administrator-enabled public model. `ModelCatalogProvider` hydrates only
-`/api/agent/models/available`; its subject-scoped read remains abortable and
-rejects stale completions after login changes or unmount. `default_model_id`
-is the public catalog's administrator-selected default; the composer resolves
-its model value, falling back to the first available model when necessary.
+an administrator-enabled public model. `ModelCatalogProvider` reads business
+groups from `/api/ai/models/groups` before `/api/agent/models/available?group_id=...`.
+Its unified `refreshModels` refreshes both projections on picker open (including
+slash commands), visible focus/foreground return, successful admin publication,
+and same-page group changes. Concurrent reads merge; publication supersedes old
+reads. Subject/group switches and unmount abort and fence stale completions.
+Pending/transient refreshes retain same-subject options and valid selections;
+401/403 clears grants. Empty catalogs retain the picker retry entry. Lost groups
+or explicit models require reselection, never an automatic alternative; frozen
+Runs are unchanged. `default_model_id` is the public catalog's
+administrator-selected default; the composer does not substitute the first
+available model when that default is unavailable. Selection and refresh behavior
+follow the [chat UI contract](../frontend/assistant-ui-chat-adoption.md).
 
 The unmounted `components/agent/ModelSelector` and its private click-away guard
 are retired. Catalog hydration has no per-user pin read, toggle, or automatic
@@ -116,7 +124,7 @@ deleted. Shared model icons remain in use by messages and the catalog panel.
 `test:model-admin` keeps mounted catalog subject-isolation, denial/logout,
 and cancellation coverage. It also checks the real public API transport makes
 only the catalog GET, preserves historical metadata, and resolves the public
-default and fallback. Browser-route and Agent Market fixtures no longer stub
+default without silently selecting the first catalog model. Browser-route and Agent Market fixtures no longer stub
 the retired pin client; generic backend metadata compatibility tests remain.
 
 ### Agent Builder
@@ -313,7 +321,7 @@ Session isolation, authorization, and persistence are unchanged.
 | Bare `/chat` redirect and hidden generic Chat navigation | Replaced with the general entry and shared navigation; `/chat/:sessionId` identity recovery is unchanged. Owning regressions: `AppRouteFallback.test.ts`, `launchpadRoute.test.ts`, and sidebar navigation tests. |
 | One `管理` label and gear icon for every user's platform navigation group | Replaced by admin `管理` (shield) and ordinary `可用能力` (layers, Skill/MCP only). The footer settings gear and existing authorization policy are unchanged. `GeneralChatEntryReset.mounted.test.tsx` verifies each role's rendered destinations and independent gear action. |
 | Always-on empty-state mascot badge and time-of-day greeting | Removed from `WelcomePage`; the branded `/icons/icon.svg` asset is unchanged and still used elsewhere. |
-| `68rem` / `60rem` message/composer column and `288px` sidebar width | Replaced by an aligned, responsive `76rem` maximum column for messages, composer, status and skeletons; the shared sidebar remains `272px` in `librechat-ui/surface.ts`. Only visual geometry changes; chat controls and behavior are unchanged. |
+| `68rem` / `60rem` message/composer column and `288px` sidebar width | Replaced by one aligned, responsive maximum column for messages, composer, status and skeletons (`--chat-column-max`, currently 56rem per the [visual guidelines](../frontend/visual-guidelines.md) section 7); the shared sidebar remains `272px` in `librechat-ui/surface.ts`. Only visual geometry changes; chat controls and behavior are unchanged. |
 
 Verification of the retirement is the source inventory in
 `AgentConversationPanel.test.ts` plus the mounted scope-switch coverage in

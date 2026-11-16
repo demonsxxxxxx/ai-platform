@@ -53,9 +53,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage` carries independently completed blocks; several observations may share a provider message; child scope uses `parent_tool_use_id` | Only eligible main `TextBlock` content enters the public gate; Thinking, child text, raw prose and private errors are excluded; exact UUID replay is suppressed |
+| Messages | `AssistantMessage` carries independently completed blocks; several observations may share a provider message; child scope uses `parent_tool_use_id` | Main native text increments enter the public gate; completed `TextBlock` observations reconcile that stream. Thinking, child text, Tool payloads and private errors are excluded; exact UUID replay is suppressed |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Result controls SDK completion, error, session and usage, never public body repair; committed public text and receipt own the answer; Runs owns business outcome; files are selected separately |
-| Partial streaming | SDK supports `include_partial_messages=True`; the Claude adapter selects `False` | Completed main `AssistantMessage` blocks feed the existing public gate; raw/Result bodies have no public text authority. Provider-bound classification groups work without rewriting accepted rows |
+| Partial streaming | SDK supports `include_partial_messages=True`; the current adapter enables it | Native main text deltas feed the existing public gate and ordered `message.delta`; completed blocks reconcile without duplication. Result never backfills text; work/answer display classification is retired |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -91,7 +91,7 @@ bounded private model keys. They are not exposed in public Run results/events.
 The [official cost contract](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
 distinguishes turn usage from cumulative cost/model usage. The historical
 0.2.130 / CLI 2.1.222 zero-per-process assumption is superseded by the current
-0.2.165 / CLI 2.1.294 pair: native resume restores totals from the transcript's
+0.2.174 / CLI 2.1.310 pair: native resume restores totals from the transcript's
 last matching `cost-state` record. The harness subtracts that immutable preload
 baseline from subsequent cost/model snapshots before projecting this Run.
 It does not modify the stored record or calculate prices itself. Real bundled-CLI
@@ -100,7 +100,7 @@ which start at zero. An invalid baseline makes cost unavailable while retaining
 normal per-turn token usage. SDK prices remain client-side estimates, not billing
 authority; another CLI upgrade must requalify this accounting boundary.
 Current file-task composition and native-resume behavior are documented in
-[the continuity contract](claude-provider-session-continuity.md#file-task-prompt-composition-sdk-02165).
+[the continuity contract](claude-provider-session-continuity.md#file-task-prompt-composition).
 
 The single private `cost_coverage` marker is `complete`, `partial`, or
 `unavailable`. Missing/invalid latest cost does not erase an earlier observation.

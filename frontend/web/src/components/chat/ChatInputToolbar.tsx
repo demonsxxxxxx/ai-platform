@@ -5,6 +5,7 @@ import {
   Boxes,
   ChevronDown,
   Lock,
+  CircleAlert,
   Paperclip,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -16,10 +17,11 @@ import type { AgentOption, FileCategory } from "../../types";
 export interface ChatInputToolbarProps {
   activePanel: FeaturePanel;
   onActivePanelChange: (panel: FeaturePanel) => void;
-  canSend: boolean;
+  showPermissionLock: boolean;
   isLoading: boolean;
   canStop: boolean;
   canSubmit: boolean;
+  modelUnavailableReason?: string;
   hasUploadingAttachment: boolean;
   enabledToolsCount: number;
   totalToolsCount: number;
@@ -48,10 +50,11 @@ const FILE_CATEGORY_ACCEPT: Record<FileCategory, string> = {
 export function ChatInputToolbar({
   activePanel,
   onActivePanelChange,
-  canSend,
+  showPermissionLock,
   isLoading,
   canStop,
   canSubmit,
+  modelUnavailableReason,
   hasUploadingAttachment,
   enabledToolsCount,
   totalToolsCount,
@@ -98,9 +101,9 @@ export function ChatInputToolbar({
   );
 
   return (
-    <ComposerToolbar>
-      <div className="min-w-0 flex-1">
-        {showModelSelector && onSelectModel && availableModels.length > 0 ? (
+    <ComposerToolbar className="flex-wrap">
+      <div className="flex min-w-0 basis-full flex-wrap items-center gap-2 sm:basis-auto sm:flex-1">
+        {showModelSelector && onSelectModel ? (
           <Button type={activePanel === "model" ? "primary" : "default"} size="large"
             htmlType="button"
             data-composer-model-trigger
@@ -117,8 +120,7 @@ export function ChatInputToolbar({
             aria-expanded={activePanel === "model"}
           >
             <span className="truncate">
-              {currentModel?.label ??
-                t("composerCommand.modelSelector.title", "选择模型")}
+              {currentModel?.label ?? (modelUnavailableReason ? "暂无可用模型" : t("composerCommand.modelSelector.title", "选择模型"))}
             </span>
             <ChevronDown
               size={15}
@@ -128,9 +130,13 @@ export function ChatInputToolbar({
             />
           </Button>
         ) : null}
+        {modelUnavailableReason ? <div role="status" data-composer-model-status className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-[var(--theme-danger-text)]">
+          <CircleAlert aria-hidden="true" size={14} className="shrink-0" />
+          <span>{modelUnavailableReason}</span>
+        </div> : null}
       </div>
 
-      <ComposerActions>
+      <ComposerActions className="ml-auto">
         <input
           ref={fileInputRef}
           type="file"
@@ -169,7 +175,7 @@ export function ChatInputToolbar({
           />
         ) : null}
 
-        {!canSend ? (
+        {showPermissionLock ? (
           <Button type="text" shape="circle" size="large" htmlType="button"
             onClick={(event) => { event.preventDefault(); event.stopPropagation(); onNoPermissionClick(); }}
             aria-label={t("chat.noPermission")} title={t("chat.noPermission")} icon={<Lock size={18} />}

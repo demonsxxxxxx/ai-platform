@@ -34,6 +34,7 @@ test("general entry headline, guidance, and the three approved suggestions rende
     assert.match(markup, new RegExp(label));
   }
   assert.match(markup, /data-composer="stub"/);
+  assert.doesNotMatch(markup, /mt-auto|data-chat-start-suggestions[^>]*max-w-2xl/);
 });
 
 test("a suggestion carries text into the draft instead of sending it", () => {

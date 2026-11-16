@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
 
+from app.identity.api import CompanyEmployee
 from app.execution.domain.runtime_debug import normalize_execution_debug
 from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.application.model_stream_ownership import (
@@ -23,7 +25,6 @@ from app.execution.application.model_selection import (
 from app.execution.domain.model_catalog import (
     normalize_model_display_name,
     normalize_model_token_limits,
-    normalize_model_user_access,
     platform_model_id,
     public_model_projection,
 )
@@ -33,30 +34,24 @@ _ALLOWED_RUNTIME_PATHS = {
     "openai": frozenset({"v1/chat/completions", "v1/responses"}),
     "anthropic": frozenset({"v1/messages", "v1/messages/count_tokens"}),
 }
-_ANTHROPIC_BETA_ALLOWLIST = {
-    "v1/messages": frozenset({
-        "claude-code-20250219",
-        "interleaved-thinking-2025-05-14",
-        "thinking-token-count-2026-05-13",
-        "context-management-2025-06-27",
-        "prompt-caching-scope-2026-01-05",
-        "mid-conversation-system-2026-04-07",
-        "mid-conversation-tool-changes-2026-07-01",
-        "effort-2025-11-24",
-        "thinking-display-updates-2026-08-18",
-    }),
-    "v1/messages/count_tokens": frozenset({
-        "claude-code-20250219",
-        "interleaved-thinking-2025-05-14",
-        "context-management-2025-06-27",
-        "token-counting-2024-11-01",
-    }),
-}
+# Beta names are upstream-owned. Only bound and validate their HTTP wire form.
+_ANTHROPIC_BETA_POLICY_REVISION = 2
+_ANTHROPIC_BETA_MAX_HEADER_BYTES = 4096
+_ANTHROPIC_BETA_MAX_ITEMS = 16
+_ANTHROPIC_BETA_TOKEN = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}")
 
 
-def _policy_error(code: str, *, policy: str, beta_count: int = 0) -> PermissionError:
+def _policy_error(
+    code: str, *, policy: str, beta_count: int | None = 0,
+    beta_rejection: str | None = None, rejected_beta_count: int = 0,
+) -> PermissionError:
     error = PermissionError(code)
-    error.debug = {"component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected", "policy": policy, "beta_count": beta_count}
+    error.debug = {"component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected", "policy": policy}
+    if beta_count is not None:
+        error.debug["beta_count"] = beta_count
+    if policy == "anthropic_beta":
+        error.debug.update(beta_policy_revision=_ANTHROPIC_BETA_POLICY_REVISION,
+                           beta_rejection=beta_rejection, rejected_beta_count=rejected_beta_count)
     return error
 
 
@@ -69,15 +64,29 @@ def _runtime_proxy_headers(
     version = outbound.get("anthropic-version")
     if version != "2023-06-01":
         raise _policy_error("model_proxy_anthropic_version_not_allowed", policy="anthropic_version")
-    betas = outbound.get("anthropic-beta", "")
-    if betas:
-        values = [item.strip() for item in betas.split(",")]
-        if (
-            len(values) > 16
-            or any(not item for item in values)
-            or any(item not in _ANTHROPIC_BETA_ALLOWLIST[upstream_path] for item in values)
-        ):
-            raise _policy_error("model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta", beta_count=len(values))
+    betas = outbound.get("anthropic-beta")
+    if betas is not None:
+        # Accepted values are ASCII, so character and wire-byte lengths agree.
+        # Bound before splitting; an oversized field has no inspected item count.
+        if len(betas) > _ANTHROPIC_BETA_MAX_HEADER_BYTES:
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=None, beta_rejection="too_large",
+            )
+        values = [item.strip(" \t") for item in betas.split(",")]
+        if len(values) > _ANTHROPIC_BETA_MAX_ITEMS:
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=len(values), beta_rejection="too_many",
+            )
+        invalid = {item for item in values if _ANTHROPIC_BETA_TOKEN.fullmatch(item) is None}
+        if invalid:
+            # Never echo an untrusted header into logs or private diagnostics.
+            raise _policy_error(
+                "model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta",
+                beta_count=len(values), beta_rejection="empty" if "" in invalid else "invalid_format",
+                rejected_beta_count=len(invalid),
+            )
         outbound["anthropic-beta"] = ",".join(sorted(set(values)))
     return outbound
 
@@ -87,13 +96,23 @@ class TransactionFactory(Protocol):
 
 
 class ModelManagementRepository(Protocol):
-    async def connection_projection(self, conn: Any) -> dict[str, Any]: ...
+    async def connection_projection(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
 
-    async def active_connection(self, conn: Any, *, encryption_key: str) -> Any: ...
+    async def providers(self, conn: Any) -> list[dict[str, Any]]: ...
+
+    async def require_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def create_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def provider_impact(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def retire_provider(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def active_connection(self, conn: Any, *, encryption_key: str, provider_id: str = "legacy") -> Any: ...
 
     async def run_connection(self, conn: Any, **kwargs: Any) -> Any: ...
 
-    async def admin_models(self, conn: Any) -> list[dict[str, Any]]: ...
+    async def admin_models(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
 
     async def public_models(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
 
@@ -101,13 +120,41 @@ class ModelManagementRepository(Protocol):
 
     async def resolve_run_model(self, conn: Any, **kwargs: Any) -> RunModelSelection | None: ...
 
-    async def model_access_excludes_user(self, conn: Any, **kwargs: Any) -> bool: ...
 
     async def catalog_access(self, conn: Any) -> dict[str, dict[str, Any]]: ...
 
+    async def resolve_group_model(self, conn: Any, **kwargs: Any) -> Any: ...
 
-class EmployeeGrantValidator(Protocol):
-    async def validate_grants(self, *, tenant_id: str, work_ids: set[str]) -> None: ...
+    async def list_groups_for_user(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+
+    async def list_admin_groups(self, conn: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+
+    async def get_admin_group_details(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
+
+    async def create_group(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def update_group(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def archive_or_delete_group(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def set_group_models(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def require_group_member_edit(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def set_group_members(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def batch_group_models(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def get_user_group_memberships(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None: ...
+
+    async def set_user_group_memberships(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+    async def set_users_group_memberships_batch(self, conn: Any, **kwargs: Any) -> dict[str, Any]: ...
+
+class EmployeeIdentityProvisioner(Protocol):
+    async def resolve(self, *, tenant_id: str, work_ids: set[str]) -> list[CompanyEmployee]: ...
+
+    async def provision(self, conn: Any, *, tenant_id: str, employees: list[CompanyEmployee]) -> dict[str, str]: ...
 
 
 class ModelEndpointSecurity(Protocol):
@@ -186,7 +233,7 @@ class ModelControlPlaneService:
         upstream: ModelUpstream,
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
         diagnostic_recorder: Callable[..., Any] | None = None,
-        employee_directory: EmployeeGrantValidator | None = None,
+        employee_identities: EmployeeIdentityProvisioner | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -195,7 +242,7 @@ class ModelControlPlaneService:
         self._upstream = upstream
         self._attempt_capability_verifier = attempt_capability_verifier
         self._diagnostic_recorder = diagnostic_recorder
-        self._employee_directory = employee_directory
+        self._employee_identities = employee_identities
 
     async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
         facts = normalize_execution_debug(debug)
@@ -224,23 +271,39 @@ class ModelControlPlaneService:
         )
         return self._upstream.parse_model_ids(response)
 
-    async def admin_projection(self) -> dict[str, Any]:
+    async def admin_projection(self, *, provider_id: str | None = None) -> dict[str, Any]:
         async with self._transaction() as conn:
+            if provider_id is not None:
+                await self._repository.require_provider(conn, provider_id=provider_id)
             return {
-                "connection": await self._repository.connection_projection(conn),
-                "models": await self._repository.admin_models(conn),
+                "connection": await self._repository.connection_projection(conn, provider_id=provider_id or "legacy"),
+                "models": await self._repository.admin_models(conn, provider_id=provider_id),
+                "providers": await self._repository.providers(conn),
             }
 
-    async def discover(self, *, base_url: str, api_key: str | None) -> dict[str, Any]:
+    async def create_provider(self, *, name: str) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.create_provider(conn, name=name)
+
+    async def provider_impact(self, *, provider_id: str, missing_only: bool = False, tenant_id: str | None = None) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.provider_impact(conn, provider_id=provider_id, missing_only=missing_only, tenant_id=tenant_id)
+
+    async def retire_provider(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.retire_provider(conn, **kwargs)
+
+    async def discover(self, *, base_url: str, api_key: str | None, provider_id: str = "legacy") -> dict[str, Any]:
         encryption_key, _allowed_hosts = self._security_settings()
         requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
+            provider = await self._repository.require_provider(conn, provider_id=provider_id)
             current = await self._repository.active_connection(
-                conn, encryption_key=encryption_key
+                conn, encryption_key=encryption_key, provider_id=provider_id
             )
-            connection = await self._repository.connection_projection(conn)
-            existing = await self._repository.admin_models(conn)
+            connection = await self._repository.connection_projection(conn, provider_id=provider_id)
+            existing = await self._repository.admin_models(conn, provider_id=provider_id)
         if not resolved_key:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
@@ -255,7 +318,7 @@ class ModelControlPlaneService:
             "models": [
                 {
                     **(by_value.get(value) or {
-                        "id": platform_model_id(value),
+                        "id": platform_model_id(value, provider_id),
                         "value": value,
                         "label": value,
                         "provider": "compatible",
@@ -265,6 +328,8 @@ class ModelControlPlaneService:
                     }),
                     "order": order,
                     "available": True,
+                    "provider_id": provider_id,
+                    "provider_name": provider["name"],
                 }
                 for order, value in enumerate(model_ids, start=1)
             ],
@@ -279,6 +344,7 @@ class ModelControlPlaneService:
         models: list[dict[str, Any]],
         actor_user_id: str,
         tenant_id: str = "default",
+        provider_id: str = "legacy",
     ) -> dict[str, Any]:
         encryption_key, _allowed_hosts = self._security_settings()
         requested_url = self._security.normalize(base_url)
@@ -286,7 +352,7 @@ class ModelControlPlaneService:
         if not resolved_key:
             async with self._transaction() as conn:
                 current = await self._repository.active_connection(
-                    conn, encryption_key=encryption_key
+                    conn, encryption_key=encryption_key, provider_id=provider_id
                 )
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
@@ -301,14 +367,10 @@ class ModelControlPlaneService:
             raise ValueError("model_catalog_discovery_changed")
         if len({model.get("value") for model in models}) != len(models):
             raise ValueError("model_catalog_discovery_changed")
-        enabled = [model for model in models if model.get("enabled")]
-        defaults = [model for model in enabled if model.get("is_default")]
-        if not enabled or len(defaults) != 1 or any(
-            model.get("is_default") for model in models if not model.get("enabled")
-        ):
-            raise ValueError("model_catalog_default_required")
         for model in models:
-            if model.get("id") != platform_model_id(model["value"]):
+            if any(field in model for field in ("access_mode", "allowed_user_ids", "is_default")):
+                raise ValueError("model_user_access_retired")
+            if model.get("id") != platform_model_id(model["value"], provider_id):
                 raise ValueError("model_catalog_identity_collision")
             window, output_limit = normalize_model_token_limits(
                 model.get("auto_compact_window"), model.get("max_output_tokens")
@@ -326,32 +388,15 @@ class ModelControlPlaneService:
             raise ValueError("model_catalog_order_invalid")
         async with self._transaction() as conn:
             saved = await self._repository.catalog_access(conn)
-        added: set[str] = set()
         for model in models:
             previous = saved.get(model["id"])
-            previously_allowed = set(previous["allowed_user_ids"]) if previous else set()
             model["display_name"] = normalize_model_display_name(
                 model.get("display_name"),
                 fallback=model["value"],
                 current=previous["display_name"] if previous else None,
             )
-            access_mode, allowed_user_ids = normalize_model_user_access(
-                model.get("access_mode"),
-                model.get("allowed_user_ids"),
-                current=(previous["access_mode"], previous["allowed_user_ids"])
-                if previous
-                else None,
-            )
-            model["access_mode"] = access_mode
-            model["allowed_user_ids"] = allowed_user_ids
-            # Carry-over members are already bound; only newly granted users
-            # must currently exist in the trusted company directory.
-            if access_mode == "selected":
-                added.update(set(allowed_user_ids) - previously_allowed)
-        if added:
-            if self._employee_directory is None:
-                raise RuntimeError("company_employee_directory_unavailable")
-            await self._employee_directory.validate_grants(tenant_id=tenant_id, work_ids=added)
+            # Legacy ACL columns are read-only migration input. New publication
+            # cannot write or widen them; grouped admission owns authorization.
         # Network validation is outside transactions; publication still owns revision CAS.
         async with self._transaction() as conn:
             revision, published = await self._repository.publish_models(
@@ -364,15 +409,95 @@ class ModelControlPlaneService:
                 upstream_model_ids=model_ids,
                 expected_revision=expected_revision,
                 models=models,
+                provider_id=provider_id,
             )
-            connection = await self._repository.connection_projection(conn)
+            connection = await self._repository.connection_projection(conn, provider_id=provider_id)
         return {"connection": connection, "models": published, "revision": revision}
 
-    async def public_models(self, conn: Any, *, user_id: str) -> dict[str, Any]:
-        governed = await self._repository.public_models(conn, user_id=user_id)
+    async def public_models(self, conn: Any, *, user_id: str, tenant_id: str | None = None, usage_scene: str = "independent", group_id: str | None = None) -> dict[str, Any]:
+        governed = await self._repository.public_models(
+            conn, user_id=user_id, tenant_id=tenant_id, usage_scene=usage_scene,
+            group_id=group_id,
+        )
         if governed is not None:
             return governed
         return public_model_projection([])
+
+    async def groups_for_user(self, *, tenant_id: str, user_id: str) -> list[dict[str, Any]]:
+        async with self._transaction() as conn:
+            return await self._repository.list_groups_for_user(conn, tenant_id=tenant_id, user_id=user_id)
+
+    async def admin_groups(self, *, tenant_id: str) -> list[dict[str, Any]]:
+        async with self._transaction() as conn:
+            return await self._repository.list_admin_groups(conn, tenant_id=tenant_id)
+
+    async def admin_group_details(self, *, tenant_id: str, group_id: str) -> dict[str, Any] | None:
+        async with self._transaction() as conn:
+            return await self._repository.get_admin_group_details(
+                conn, tenant_id=tenant_id, group_id=group_id,
+            )
+
+    async def create_model_group(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.create_group(conn, **kwargs)
+
+    async def update_model_group(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.update_group(conn, **kwargs)
+
+    async def archive_or_delete_model_group(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.archive_or_delete_group(conn, **kwargs)
+
+    async def set_model_group_models(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.set_group_models(conn, **kwargs)
+
+    async def user_group_memberships(self, *, tenant_id: str, user_id: str) -> dict[str, Any] | None:
+        async with self._transaction() as conn:
+            return await self._repository.get_user_group_memberships(
+                conn, tenant_id=tenant_id, user_id=user_id,
+            )
+
+    async def set_user_group_memberships(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.set_user_group_memberships(conn, **kwargs)
+
+    async def set_users_group_memberships_batch(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.set_users_group_memberships_batch(conn, **kwargs)
+
+    async def batch_group_models(self, **kwargs: Any) -> dict[str, Any]:
+        async with self._transaction() as conn:
+            return await self._repository.batch_group_models(conn, **kwargs)
+
+    async def set_model_group_members(self, **kwargs: Any) -> dict[str, Any]:
+        requested = kwargs.pop("members", [])
+        for member in requested:
+            if not isinstance(member, dict):
+                raise ValueError("model_group_member_invalid")
+            if member.get("user_id") is not None and member.get("work_id") is not None:
+                raise ValueError("model_group_member_identity_conflict")
+        work_ids = {member["work_id"] for member in requested if member.get("work_id") is not None}
+        if any(not isinstance(work_id, str) or not work_id.strip() for work_id in work_ids):
+            raise ValueError("model_group_member_identity_required")
+        if work_ids and self._employee_identities is None:
+            raise RuntimeError("company_employee_directory_unavailable")
+        employees = await self._employee_identities.resolve(tenant_id=kwargs["tenant_id"], work_ids=work_ids) if work_ids else []
+        async with self._transaction() as conn:
+            await self._repository.require_group_member_edit(conn, tenant_id=kwargs["tenant_id"], group_id=kwargs["group_id"], revision=kwargs["revision"])
+            identities = await self._employee_identities.provision(conn, tenant_id=kwargs["tenant_id"], employees=employees) if employees else {}
+            members = []
+            for member in requested:
+                user_id = member.get("user_id")
+                work_id = member.get("work_id")
+                if work_id is not None:
+                    user_id = identities[work_id]
+                if not isinstance(user_id, str) or not user_id.strip():
+                    raise ValueError("model_group_member_identity_required")
+                members.append({"user_id": user_id, "is_primary": bool(member.get("is_primary"))})
+            kwargs["members"] = members
+            return await self._repository.set_group_members(conn, **kwargs)
 
     async def resolve_selection(
         self,
@@ -380,21 +505,31 @@ class ModelControlPlaneService:
         *,
         selection: dict[str, str] | None,
         user_id: str,
+        tenant_id: str | None = None,
+        group_id: str | None = None,
+        selection_mode: str | None = None,
+        usage_scene: str = "independent",
     ) -> RunModelSelection:
+        effective_group_id = group_id or (selection or {}).get("group_id")
+        selected_model = bool((selection or {}).get("id") or (selection or {}).get("value"))
+        if any(mode is not None and mode != "explicit" for mode in (selection_mode, (selection or {}).get("selection_mode"))):
+            raise ValueError("model_selection_conflict")
+        requested_mode = (selection or {}).get("selection_mode") or selection_mode
+        effective_mode = "explicit" if selected_model else requested_mode
+        async def resolve_effective(conn: Any, *, model_id: str | None, model_value: str | None, user_id: str) -> RunModelSelection | None:
+            return await self._repository.resolve_run_model(
+                conn,
+                model_id=model_id,
+                model_value=model_value,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                group_id=effective_group_id,
+                selection_mode=effective_mode,
+                usage_scene=usage_scene,
+            )
         return await resolve_chat_model_selection(
-            conn,
-            selection=selection,
-            user_id=user_id,
-            resolve_governed_model=self._repository.resolve_run_model,
-        )
-
-    async def model_access_excludes_user(
-        self, conn: Any, *, model_id: str, user_id: str
-    ) -> bool:
-        """Answer the current-list check for a Run child that inherits a model."""
-
-        return await self._repository.model_access_excludes_user(
-            conn, model_id=model_id, user_id=user_id
+            conn, selection=selection, user_id=user_id,
+            resolve_governed_model=resolve_effective,
         )
 
     async def proxy(

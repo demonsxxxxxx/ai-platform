@@ -13,6 +13,7 @@ interface ConfirmDialogProps {
   onCancel: () => void;
   variant?: "danger" | "warning" | "info";
   loading?: boolean;
+  error?: string | null;
 }
 
 export function ConfirmDialog({
@@ -25,6 +26,7 @@ export function ConfirmDialog({
   onCancel,
   variant = "danger",
   loading = false,
+  error,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -45,6 +47,7 @@ export function ConfirmDialog({
               <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger-text)]" : variant === "warning" ? "shrink-0 text-[var(--theme-warning-text)]" : "shrink-0 text-[var(--theme-primary)]"} />
               <ModalDescription className="text-sm leading-relaxed text-[var(--theme-text-secondary)]">{message}</ModalDescription>
             </div>
+            {error ? <p role="alert" className="mt-3 text-sm text-[var(--theme-danger-text)]">{error}</p> : null}
           </ModalContent>
           <ModalFooter>
             <Button disabled={loading} onClick={onCancel}>{cancelText || t("common.cancel")}</Button>

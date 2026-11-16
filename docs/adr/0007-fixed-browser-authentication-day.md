@@ -92,6 +92,64 @@ transport failures, and already-started MCP tool effects are never replayed.
 Network or service failures preserve the local session presentation; exhausted
 or revoked refresh authority enters the existing login recovery path.
 
+### Automatic company reauthentication after context expiry
+
+When an authenticated browser request reports a missing or stale platform
+context, the AuthProvider may perform one new Windows AD authentication before
+returning the expiry failure. It reads the configured `GetADName` endpoint for
+a fresh company JWT, runs the existing browser-context bootstrap/recovery, and
+submits that JWT to the platform AD login endpoint. The server verifies the
+new credential and establishes a new authentication day; this is a new login
+ceremony, not an extension of the expired grant. A revoked company authority
+or a permission denial does not trigger this recovery.
+
+Concurrent HTTP requests in one browser tab share that recovery. The existing
+page remains mounted while recovery runs; newly started business requests wait
+behind the recovery until its principal is verified. Automatic AD login includes
+an `expected_principal` constraint with the previous user and tenant. The server
+compares it with the verified JWT subject before committing a session; the
+constraint cannot supply identity or permissions. Explicit login retains its
+token-only request. Logout, identity replacement and
+unmount fence the operation; cancelling one request cannot cancel its peers.
+Once the login mutation starts, the provider settles its identity independently
+of request waiters. The server principal is read before the new local marker is
+published. Old requests may replay once only when the verified user and tenant
+match and the request is a read or carries proof of rejection before execution.
+`require_principal` marks stale-context 409 responses with the same
+`X-Auth-Rejected-Before-Execution` proof as its 401 responses. Ambiguous writes
+and streaming request bodies are not replayed. Missing AD configuration or failed
+reauthentication retains the login-page fallback and current-route redirect.
+
+This recovery is owned by the shared HTTP request transport. SSE's existing
+credential refresh/reconnect and initial login-page AD discovery keep their
+own lifecycles; the recovery does not replay started stream or tool effects.
+
+### Explicit login after authentication-store loss
+
+Identity owns the browser-context error type and store-outcome disposition in
+`identity.application.browser_auth_failures`, exposed through `identity.api`.
+The legacy `auth_sessions.AuthContextError` import remains the same class for
+existing authentication routes and consumers; its former local implementation
+and duplicate outcome mapping are retired. Redis operations, signed-cookie
+validation and key ownership remain unchanged.
+
+A signed browser Cookie does not restore a lost Redis authority or principal.
+Ordinary bootstrap continues to reject that Cookie. Explicit login first uses
+`recovery_only`, which cannot create authority, rotate, or renew a grant. When
+its requested authority is absent, a signed supplied V2 Cookie can be retired
+only after an atomic probe proves both that Cookie's own authority and context
+records are absent. The HTTP 401 `auth_context_missing` response then expires
+only the configured HttpOnly Cookie; invalid signatures, live or partially
+missing records, and unavailable storage do not clear it.
+
+The coordinator persists one fresh anonymous identity after this typed missing
+result, or reuses the unconfirmed replacement left by an earlier failed attempt.
+It performs one ordinary bootstrap and still requires normal company login.
+This recovery neither recreates the prior principal nor replays its mutations.
+The recovery-only probe also precedes retrying an unconfirmed initial identity,
+so an already-replaced browser record cannot remain blocked by an orphaned
+HttpOnly Cookie. Other origin storage and unrelated instance Cookies remain.
+
 The amended decision 4 permits transparent recovery only within this bounded
 grant. The absolute non-sliding day, expired-token
 rejection, company-authority checks, and other decisions remain in force.

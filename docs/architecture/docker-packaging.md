@@ -13,6 +13,12 @@ uv lock --check
 uv sync --locked --extra test --no-install-project
 ```
 
+The backend/executor also preinstalls the official Anthropic document suite and
+its pinned Node/Python/OS dependencies under the
+[ordinary-chat document plugin contract](ordinary-chat-document-plugin.md).
+Its fixed upstream archive is integrity-checked during image construction; the
+upstream Skill contents and licenses are preserved without source vendoring.
+
 The backend Dockerfile uses the same lock with `uv sync --locked`; it must not
 derive an unlocked requirements file from `pyproject.toml`. Keep index, proxy,
 and credential values out of Git, issue/PR text, and command output. The default
@@ -44,6 +50,9 @@ The existing APK security upgrades, libexpat minimum, proxy configuration,
 provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
 The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
 later for `CVE-2026-111497`; the base image ships `1.2.0-r1`.
+It also upgrades the installed `libxslt` package from `1.1.43-r3` to the
+repository security update (`1.1.43-r4` or later) for `CVE-2026-125350`,
+`CVE-2026-87636`, and `CVE-2026-9947`; no scanner suppression is introduced.
 
 These are multi-platform index subjects verified from the official registries;
 Docker resolves a platform manifest at build time. The Phase 1 GitHub jobs
@@ -53,7 +62,11 @@ platforms, then update the Dockerfile, version declaration, lock when applicable
 and focused tests in one review.
 
 Pull requests and `main` run the stable `backend required` and `frontend required`
-checks. Those checks include real Docker builds. The frontend workflow owns the full
+checks. PR image jobs perform real Docker builds only when the affected image
+inputs change; `not_affected` retains a successful check without a build. Main
+pushes and ordinary validation workflow dispatches delegate image builds to the
+controlled Packaging workflow described below. Their aggregate success alone is
+not image-build evidence. The frontend workflow owns the full
 audit, test, lint, type-check, and build coverage through four JS test shards, an
 independent Python audit/contract job, and the lint/build/trace job. The local
 `ci:verify` command retains the complete serial reproduction path. The frontend

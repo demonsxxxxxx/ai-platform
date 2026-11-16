@@ -30,6 +30,13 @@ from app.streaming.domain.protocol_v4 import (
     PUBLIC_REQUIRED_PAYLOAD_FIELDS,
     PUBLIC_TOOL_CATEGORIES,
 )
+from app.streaming.domain.public_payload_fields import (
+    bounded_public_integer,
+    bounded_public_string,
+    exact_enum_member,
+    safe_public_filename_characters,
+    safe_public_ref,
+)
 
 _APPLICATION_EVENT_TYPES = PUBLIC_APPLICATION_EVENT_TYPES
 _BUILTIN_TOOL_CATEGORIES = {
@@ -65,6 +72,8 @@ def runtime_terminal_payload(
         "runtime_terminal_status": runtime_status,
         "answer_receipt": executor_response.get("answer_receipt"),
         "provider_session_final_sequence": executor_response.get("provider_session_final_sequence"),
+        **({"continuation_settlement": executor_response["continuation_settlement"]}
+           if "continuation_settlement" in executor_response else {}),
     }
 
 
@@ -114,7 +123,7 @@ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def _assert_safe_ref(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or _SAFE_REF_PATTERN.fullmatch(value) is None:
+    if not safe_public_ref(value):
         raise ValueError(f"{field_name} is not a safe reference")
     return value
 
@@ -358,7 +367,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     for key, value in payload.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if not any(type(value) is type(option) and value == option for option in enum_values):
+            if not exact_enum_member(value, enum_values):
                 raise ValueError(f"invalid {key}")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
@@ -383,12 +392,9 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
         string_bounds = PUBLIC_PAYLOAD_STRING_BOUNDS.get((event_type, key))
         if string_bounds is not None:
             minimum, maximum = string_bounds
-            if not isinstance(value, str) or not minimum <= len(value) <= maximum:
+            if not bounded_public_string(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
-            if key == "filename" and any(
-                ord(char) < 32 or ord(char) == 127 or char in "/\\\\"
-                for char in value
-            ):
+            if key == "filename" and not safe_public_filename_characters(value):
                 raise ValueError("invalid filename")
             continue
         integer_bounds = PUBLIC_PAYLOAD_INTEGER_BOUNDS.get((event_type, key))
@@ -396,12 +402,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
             minimum, maximum = integer_bounds
             if maximum is None and key in {"delta_count", "text_length"}:
                 maximum = 2**63 - 1
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < minimum
-                or (maximum is not None and value > maximum)
-            ):
+            if not bounded_public_integer(value, minimum=minimum, maximum=maximum):
                 raise ValueError(f"invalid {key} bound")
             continue
         raise ValueError(f"unsupported schema field: {key}")
@@ -426,18 +427,6 @@ class _TaskState:
     started_at: float = field(default_factory=time.monotonic)
 
 
-@dataclass
-class _AssistantTextPartState:
-    part_id: str
-    first_seen: int
-    delta_count: int = 0
-    text_length: int = 0
-    role: str | None = None
-    last_delta_identity: str | None = None
-    last_delta_event_id: str | None = None
-    last_delta_sequence: int = 0
-
-
 class ClaudeSdkAgentEventAdapter:
     """Correlate Claude SDK facts into safe, ordered v4 candidates."""
 
@@ -448,8 +437,8 @@ class ClaudeSdkAgentEventAdapter:
         attempt_id: str,
         authorized_capabilities: Mapping[str, object] | None = None,
         tool_policy_subjects: list[dict[str, Any]] | None = None,
-        public_skill_metadata: Mapping[str, Mapping[str, str]] | None = None,
         sanitizer: Callable[[object], object],
+        skill_name_sanitizer: Callable[[object], object] | None = None,
         payload_sanitizer: Callable[[object], object],
         tool_identity_resolver: Callable[[object], str] = str,
         clock: Callable[[], float] = time.monotonic,
@@ -460,6 +449,7 @@ class ClaudeSdkAgentEventAdapter:
         self.attempt_id = attempt_id
         self._clock = clock
         self._sanitizer = sanitizer
+        self._skill_name_sanitizer = skill_name_sanitizer or sanitizer
         self._payload_sanitizer = payload_sanitizer
         self._tool_identity_resolver = tool_identity_resolver
         self._sealed = False
@@ -470,13 +460,6 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_identity: str | None = None
         self._last_delta_event_id: str | None = None
         self._answer_completed = False
-        self._part_mode = False
-        self._legacy_answer_mode = False
-        self._part_source_ids: dict[str, str] = {}
-        self._text_parts: dict[str, _AssistantTextPartState] = {}
-        self._next_part_sequence = 0
-        self._next_part_delta_sequence = 0
-        self._part_answer_receipt: dict[str, object] | None = None
         self._commentary_delta_counts: dict[str, int] = {}
         self._public_projection_omissions = 0
         self._task_progress_seen: set[tuple[str, str]] = set()
@@ -489,7 +472,7 @@ class ClaudeSdkAgentEventAdapter:
         self._policy_decisions: set[str] = set()
         self._seen_events: set[str] = set()
         self._capabilities: dict[str, tuple[str, str]] = {}
-        self._load_capabilities(authorized_capabilities, tool_policy_subjects, public_skill_metadata)
+        self._load_capabilities(authorized_capabilities, tool_policy_subjects)
 
     @property
     def sealed(self) -> bool:
@@ -501,8 +484,6 @@ class ClaudeSdkAgentEventAdapter:
 
     @property
     def answer_receipt(self) -> dict[str, object] | None:
-        if self._part_mode:
-            return dict(self._part_answer_receipt) if self._part_answer_receipt else None
         if not self._answer_completed or self._last_delta_event_id is None:
             return None
         return {
@@ -517,10 +498,6 @@ class ClaudeSdkAgentEventAdapter:
     def public_projection_omissions(self) -> int:
         return self._public_projection_omissions
 
-    @property
-    def has_unclassified_text_parts(self) -> bool:
-        return any(part.role is None for part in self._text_parts.values())
-
     def has_tool_block_conflict(self, tool_call_ids: set[str]) -> bool:
         return not self._tool_block_conflicts.isdisjoint(tool_call_ids)
 
@@ -532,7 +509,6 @@ class ClaudeSdkAgentEventAdapter:
         self,
         configured: Mapping[str, object] | None,
         subjects: list[dict[str, Any]] | None,
-        skill_metadata: Mapping[str, Mapping[str, str]] | None,
     ) -> None:
         if isinstance(configured, Mapping):
             for identity, value in configured.items():
@@ -546,7 +522,13 @@ class ClaudeSdkAgentEventAdapter:
                 elif isinstance(value, (tuple, list)) and len(value) >= 2:
                     category = value[0] if isinstance(value[0], str) else None
                     label = value[1]
-                safe_label = _safe_display(label, sanitizer=self._sanitizer)
+                display = identity if category == "skill" else label
+                sanitizer = (
+                    self._skill_name_sanitizer
+                    if category == "skill"
+                    else self._sanitizer
+                )
+                safe_label = _safe_display(display, sanitizer=sanitizer)
                 if category in PUBLIC_TOOL_CATEGORIES and safe_label:
                     self._capabilities[identity] = (category, safe_label)
         for subject in subjects or []:
@@ -558,17 +540,14 @@ class ClaudeSdkAgentEventAdapter:
             if identity == "Skill":
                 names = subject.get("allowed_skill_names")
                 if isinstance(names, list):
-                    labels = subject.get("public_skill_labels")
                     for name in names:
                         if not isinstance(name, str):
                             continue
-                        label = labels.get(name) if isinstance(labels, dict) else None
-                        safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        if not safe_label and isinstance(skill_metadata, Mapping):
-                            metadata = skill_metadata.get(name)
-                            label = metadata.get("display_name") if isinstance(metadata, Mapping) else None
-                            safe_label = _safe_display(label, sanitizer=self._sanitizer)
-                        self._capabilities[name] = ("skill", safe_label or "Skill")
+                        safe_name = _safe_display(
+                            name, sanitizer=self._skill_name_sanitizer
+                        )
+                        if safe_name:
+                            self._capabilities[name] = ("skill", safe_name)
                 continue
             category = _tool_category(identity, identity)
             label = subject.get("public_tool_label") or identity if category != "mcp" else subject.get("public_tool_label")
@@ -588,7 +567,7 @@ class ClaudeSdkAgentEventAdapter:
         causation_identity: str | None = None,
         message_id: str | None = None,
     ) -> ClaudeAgentEventCandidate:
-        event_id = _opaque("evt", self.run_id, event_type, identity)
+        event_id = _opaque("evt", self.run_id, event_type, f"{self.attempt_id}:{identity}")
         if event_id in self._seen_events:
             raise KeyError("duplicate semantic event")
         causation = (
@@ -650,221 +629,11 @@ class ClaudeSdkAgentEventAdapter:
             self._commit_candidate(identity, candidate)
         return candidate
 
-    @staticmethod
-    def _source_digest(source_identity: object) -> str:
-        """Hash a verified provider-message key without retaining or exposing it."""
-
-        if (
-            not isinstance(source_identity, tuple)
-            or len(source_identity) != 2
-            or not isinstance(source_identity[0], str)
-            or not source_identity[0]
-            or len(source_identity[0]) > 512
-            or (
-                source_identity[1] is not None
-                and (
-                    not isinstance(source_identity[1], str)
-                    or not source_identity[1]
-                    or len(source_identity[1]) > 512
-                )
-            )
-        ):
-            raise ValueError("assistant_part_source_invalid")
-        message_id, parent_id = source_identity
-        fields = (message_id, parent_id or "")
-        material = "".join(f"{len(value)}:{value}" for value in fields)
-        return hashlib.sha256(material.encode("utf-8")).hexdigest()
-
-    def part_id_for_source(self, source_identity: object) -> str:
-        """Return the stable opaque part ID for one verified provider message."""
-
-        source_digest = self._source_digest(source_identity)
-        existing = self._part_source_ids.get(source_digest)
-        if existing is not None:
-            return existing
-        part_id = _opaque(
-            "part",
-            self.run_id,
-            "assistant-text-part",
-            f"{self.attempt_id}\x00{source_digest}",
-        )
-        self._part_source_ids[source_digest] = part_id
-        return part_id
-
-    def has_text_part(self, source_identity: object) -> bool:
-        try:
-            part_id = self.part_id_for_source(source_identity)
-        except ValueError:
-            return False
-        part = self._text_parts.get(part_id)
-        return part is not None and part.delta_count > 0
-
-    def accept_part_text(
-        self,
-        source_identity: object,
-        value: object,
-    ) -> tuple[ClaudeAgentEventCandidate, ...]:
-        """Build unique public text-part delta candidates for a gated suffix."""
-
-        if self._sealed or not isinstance(value, str) or not value:
-            return ()
-        if self._legacy_answer_mode or self._answer_completed:
-            self._omit_public_projection()
-            return ()
-        try:
-            part_id = self.part_id_for_source(source_identity)
-        except ValueError:
-            self._omit_public_projection()
-            return ()
-        self._part_mode = True
-        part = self._text_parts.get(part_id)
-        next_part_sequence = self._next_part_sequence
-        if part is None:
-            next_part_sequence += 1
-            part = _AssistantTextPartState(
-                part_id=part_id,
-                first_seen=next_part_sequence,
-            )
-
-        next_delta_count = part.delta_count
-        next_text_length = part.text_length
-        next_delta_sequence = self._next_part_delta_sequence
-        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
-        try:
-            if not self._answer_started:
-                pending.append(
-                    (
-                        "message",
-                        self._candidate(
-                            "message.started",
-                            {},
-                            identity="message",
-                            commit=False,
-                        ),
-                    )
-                )
-            for offset in range(0, len(value), _MAX_DELTA):
-                chunk = value[offset : offset + _MAX_DELTA]
-                next_delta_count += 1
-                next_delta_sequence += 1
-                next_text_length += len(chunk)
-                identity = f"part-delta:{part_id}:{next_delta_count}"
-                pending.append(
-                    (
-                        identity,
-                        self._candidate(
-                            "message.part.delta",
-                            {
-                                "schema_version": "ai-platform.assistant-text-part.v1",
-                                "part_id": part_id,
-                                "delta": chunk,
-                            },
-                            identity=identity,
-                            commit=False,
-                        ),
-                    )
-                )
-        except Exception:  # noqa: BLE001 - no candidate state has been committed.
-            self._omit_public_projection()
-            return ()
-
-        self._commit_candidates(pending)
-        if part_id not in self._text_parts:
-            self._text_parts[part_id] = part
-            self._next_part_sequence = next_part_sequence
-        part.delta_count = next_delta_count
-        part.text_length = next_text_length
-        part.last_delta_identity = pending[-1][0]
-        part.last_delta_event_id = pending[-1][1].event_id
-        part.last_delta_sequence = next_delta_sequence
-        self._next_part_delta_sequence = next_delta_sequence
-        self._answer_started = True
-        return tuple(candidate for _identity, candidate in pending)
-
-    def classify_text_part(
-        self,
-        source_identity: object,
-        role: object,
-    ) -> tuple[ClaudeAgentEventCandidate, ...]:
-        """Add an immutable role fact for an already observed public part."""
-
-        if self._sealed or role not in {"answer", "work"}:
-            return ()
-        if self._legacy_answer_mode or self._answer_completed:
-            raise ValueError("assistant_part_classification_after_completion")
-        part_id = self.part_id_for_source(source_identity)
-        part = self._text_parts.get(part_id)
-        if part is None or part.delta_count <= 0:
-            raise ValueError("assistant_part_classification_missing")
-        if part.role == role:
-            return ()
-        if part.role == "work" and role == "answer":
-            raise ValueError("assistant_part_role_conflict")
-        identity = f"part-classified:{part_id}:{role}"
-        candidate = self._candidate(
-            "message.part.classified",
-            {
-                "schema_version": "ai-platform.assistant-text-part.v1",
-                "part_id": part_id,
-                "role": role,
-            },
-            identity=identity,
-        )
-        part.role = role
-        return (candidate,)
-
-    def _complete_part_answer(
-        self,
-        *,
-        commit: bool,
-    ) -> tuple[ClaudeAgentEventCandidate, ...]:
-        if self._sealed or not self._answer_started or self._answer_completed:
-            return ()
-        if any(part.role is None for part in self._text_parts.values()):
-            raise ValueError("assistant_part_classification_pending")
-        answer_parts = sorted(
-            (part for part in self._text_parts.values() if part.role == "answer"),
-            key=lambda part: part.first_seen,
-        )
-        if not answer_parts:
-            if commit:
-                self._answer_completed = True
-            return ()
-        delta_count = sum(part.delta_count for part in answer_parts)
-        text_length = sum(part.text_length for part in answer_parts) + 2 * (
-            len(answer_parts) - 1
-        )
-        last_part = max(answer_parts, key=lambda part: part.last_delta_sequence)
-        if last_part.last_delta_identity is None or last_part.last_delta_event_id is None:
-            raise ValueError("assistant_part_receipt_invalid")
-        completed = self._candidate(
-            "message.completed",
-            {"delta_count": delta_count, "text_length": text_length},
-            identity="message.completed",
-            causation_identity=last_part.last_delta_identity,
-            commit=commit,
-        )
-        self._part_answer_receipt = {
-            "schema_version": "ai-platform.assistant-answer-receipt.v2",
-            "message_id": self._message_id,
-            "delta_count": delta_count,
-            "text_length": text_length,
-            "last_delta_event_id": last_part.last_delta_event_id,
-        }
-        if commit:
-            self._answer_completed = True
-        return (completed,)
-
     def accept_answer_text(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
         """Build answer candidates for chunks already emitted by the run gate."""
 
         if self._sealed or not isinstance(value, str) or not value:
             return ()
-        if self._part_mode:
-            self._omit_public_projection()
-            return ()
-        self._legacy_answer_mode = True
-
         next_delta_count = self._answer_delta_count
         next_text_length = self._answer_text_length
         pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
@@ -977,12 +746,6 @@ class ClaudeSdkAgentEventAdapter:
         commit: bool = True,
     ) -> tuple[ClaudeAgentEventCandidate, ...]:
         del value
-        if self._part_mode:
-            try:
-                return self._complete_part_answer(commit=commit)
-            except Exception:  # noqa: BLE001 - preserve delivered parts without a receipt.
-                self._omit_public_projection()
-                return ()
         if self._sealed or not self._answer_started or self._answer_completed:
             return ()
         try:
@@ -1263,9 +1026,6 @@ class ClaudeSdkAgentEventAdapter:
     def accept_result(self, result: object, *, final_content: object = None, sealed: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed:
             return ()
-        if self._part_mode and self.has_unclassified_text_parts:
-            self._omit_public_projection()
-            return ()
         if sealed:
             self.seal("terminal")
             return ()
@@ -1290,10 +1050,6 @@ class ClaudeSdkAgentEventAdapter:
         )
         self._commit_candidates(pending)
         if completed:
-            self._answer_completed = True
-        elif self._part_mode:
-            # A work-only completion has no message.completed or answer receipt,
-            # but the source-role set is terminal after model.completed.
             self._answer_completed = True
         return tuple(candidate for _identity, candidate in pending)
 

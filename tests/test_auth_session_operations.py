@@ -175,6 +175,10 @@ class FakeAuthRedis:
     async def eval(self, script: str, numkeys: int, *args: object) -> str:
         self._require_available()
         with self.lock:
+            if "ai-platform:auth-context-orphaned-cookie:v2" in script:
+                return json.dumps({"status": "stale" if any(
+                    self._get(str(key), self.now) is not None for key in args
+                ) else "missing"})
             if "ai-platform:auth-context-bootstrap:v2" in script:
                 (
                     authority_key,
@@ -930,6 +934,13 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
     async def fake_ensure_user(*_args, **_kwargs):
         return None
 
+    async def fake_ensure_company_login_user(
+        _conn, *, tenant_id, user_id, work_id, display_name,
+    ):
+        assert tenant_id == settings.default_tenant_id
+        assert user_id == work_id
+        assert display_name == user_id.title()
+
     async def fake_append_audit_log(*_args, **_kwargs):
         return "audit-id"
 
@@ -940,6 +951,7 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
     monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
+    monkeypatch.setattr("app.routes.auth.ensure_company_login_user", fake_ensure_company_login_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
     return settings
 
@@ -1385,6 +1397,75 @@ def test_v2_recovery_only_route_never_creates_or_sets_a_cookie_without_exact_aut
     assert alternate.json()["detail"] == "auth_context_stale"
     assert "set-cookie" not in alternate.headers
     assert redis.values == before_repair
+
+
+@pytest.mark.parametrize("fresh_local_identity", [False, True])
+def test_login_recovery_discards_only_a_signed_cookie_whose_server_records_are_both_gone(
+    monkeypatch, fresh_local_identity,
+):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    original = {
+        "nonce": "A" * 43, "protocol_version": 2,
+        "browser_incarnation": "I" * 43, "generation": 1,
+    }
+    created = client.post("/api/ai/auth/bootstrap", json=original)
+    assert created.status_code == 200
+    old_cookie = client.cookies["ai_platform_auth_context"]
+    redis.values.clear()  # Simulate a new auth Redis, not an expired browser cookie.
+    request = ({**original, "nonce": "B" * 43, "browser_incarnation": "J" * 43}
+               if fresh_local_identity else original)
+    headers = {"Cookie": f"ai_platform_auth_context={old_cookie}"}
+    rejected = client.post("/api/ai/auth/bootstrap", json=request, headers=headers)
+    assert rejected.status_code == 409
+    assert "set-cookie" not in rejected.headers
+
+    missing = client.post("/api/ai/auth/bootstrap", json={**request, "recovery_only": True}, headers=headers)
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "auth_context_missing"
+    assert "Max-Age=0" in missing.headers["set-cookie"]
+    assert "HttpOnly" in missing.headers["set-cookie"]
+    assert redis.values == {}
+    client.cookies.clear()
+
+    fresh = {**original, "nonce": "C" * 43, "browser_incarnation": "K" * 43}
+    admitted = client.post("/api/ai/auth/bootstrap", json=fresh)
+    assert admitted.status_code == 200
+    assert client.cookies["ai_platform_auth_context"] != old_cookie
+    contexts = [json.loads(raw) for key, (raw, _expiry) in redis.values.items()
+                if key.startswith("ai-platform:auth-context:")]
+    assert len(contexts) == 1 and contexts[0]["principal"] is None
+
+
+@pytest.mark.parametrize("surviving_record", ["authority", "context", "both", "forged"])
+def test_login_recovery_keeps_live_partial_or_forged_cookies_fail_closed(monkeypatch, surviving_record):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    original = {
+        "nonce": "A" * 43, "protocol_version": 2,
+        "browser_incarnation": "I" * 43, "generation": 1,
+    }
+    assert client.post("/api/ai/auth/bootstrap", json=original).status_code == 200
+    cookie = client.cookies["ai_platform_auth_context"]
+    if surviving_record == "forged":
+        cookie = "v2.synthetic.invalid"
+        redis.values.clear()
+    elif surviving_record != "both":
+        prefix = "ai-platform:auth-context:" if surviving_record == "authority" else "ai-platform:auth-browser-authority:"
+        for key in list(redis.values):
+            if key.startswith(prefix):
+                redis.values.pop(key)
+    before = dict(redis.values)
+    rejected = client.post("/api/ai/auth/bootstrap", json={
+        **original, "nonce": "B" * 43, "browser_incarnation": "J" * 43,
+        "recovery_only": True,
+    }, headers={"Cookie": f"ai_platform_auth_context={cookie}"})
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in rejected.headers
+    assert redis.values == before
 
 
 @pytest.mark.asyncio
@@ -2131,12 +2212,21 @@ def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
     async def tracked_ensure_user(conn, *, user_id, **_kwargs):
         conn.append(("user", user_id))
 
+    async def tracked_ensure_company_login_user(
+        conn, *, tenant_id, user_id, work_id, display_name,
+    ):
+        assert tenant_id == "default"
+        assert user_id == work_id
+        assert display_name == user_id.title()
+        conn.append(("company_identity", user_id))
+
     async def tracked_append_audit_log(conn, *, user_id, **_kwargs):
         conn.append(("audit", user_id))
         return "audit-id"
 
     monkeypatch.setattr("app.routes.auth.transaction", tracked_transaction)
     monkeypatch.setattr("app.routes.auth.ensure_user", tracked_ensure_user)
+    monkeypatch.setattr("app.routes.auth.ensure_company_login_user", tracked_ensure_company_login_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", tracked_append_audit_log)
     client_a = TestClient(create_app())
     context_cookie = bootstrap(client_a)
@@ -2163,8 +2253,8 @@ def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
 
     assert response_b.status_code == 200
     assert response_a.status_code == 409
-    assert committed_effects == [("user", "user-b"), ("audit", "user-b")]
-    assert rolled_back_effects == [[("user", "user-a"), ("audit", "user-a")]]
+    assert committed_effects == [("company_identity", "user-b"), ("audit", "user-b")]
+    assert rolled_back_effects == [[("company_identity", "user-a"), ("audit", "user-a")]]
 
 
 def test_late_logout_cannot_clear_newer_login_or_context_cookie(monkeypatch):

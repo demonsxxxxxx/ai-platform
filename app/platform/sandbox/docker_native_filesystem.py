@@ -8,11 +8,13 @@ import stat
 from typing import Any
 from collections.abc import Iterable, Mapping
 
+from app.platform.sandbox.claude_native_filesystem import prepare_claude_tool_results
+
 
 NATIVE_SOCKET_DIRECTORY = "/run/ai-platform-native"
 NATIVE_SOCKET_PATH = NATIVE_SOCKET_DIRECTORY + "/native-tool.sock"
 NATIVE_FILESYSTEM_LABEL = "ai-platform.native_tool.filesystem"
-NATIVE_FILESYSTEM_VERSION = "2"
+NATIVE_FILESYSTEM_VERSION = "3"
 
 
 def native_container_filesystem(
@@ -22,6 +24,7 @@ def native_container_filesystem(
     *,
     read_only_paths: Mapping[str, str],
     private_roots: Iterable[str],
+    sdk_session_id: str | None = None,
 ) -> dict[str, Any]:
     root = Path(workspace_host)
     target = workspace_container.rstrip("/")
@@ -30,6 +33,9 @@ def native_container_filesystem(
         str(socket_parent): {"bind": NATIVE_SOCKET_DIRECTORY, "mode": "rw"},
     }
     masks = set(private_roots)
+    if sdk_session_id:
+        relative = prepare_claude_tool_results(root, sdk_session_id)
+        volumes[str(root / relative)] = {"bind": target + "/" + str(relative), "mode": "ro"}
     volumes.update(
         {
             source: {"bind": destination, "mode": "ro"}
@@ -50,7 +56,9 @@ def native_container_filesystem(
             **{
                 target
                 + "/"
-                + name: "ro,noexec,nosuid,nodev,uid=0,gid=0,mode=000,size=64k"
+                + name: "ro,noexec,nosuid,nodev,uid=0,gid=0,mode="
+                + ("0711" if sdk_session_id and name == ".claude-config" else "000")
+                + ",size=64k"
                 for name in sorted(masks)
             },
         },

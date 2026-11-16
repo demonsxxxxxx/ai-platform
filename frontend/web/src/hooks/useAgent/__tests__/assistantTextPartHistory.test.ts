@@ -7,7 +7,12 @@ import {
   mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader";
-import { selectAssistantCopyText } from "../../../types/assistantTextParts";
+import { processMessageEvent } from "../eventProcessor";
+import { adaptPublicRunStreamEventV4 } from "../../../components/chat/assistant-ui/publicEventAdapter";
+import {
+  ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+  selectAssistantCopyText,
+} from "../../../types/assistantTextParts";
 
 const runId = "run-history";
 const protocolMessageId = "protocol-history";
@@ -104,7 +109,7 @@ test("history applies part events in sequence, preserves IDs and roles, and clos
   const { messages, processedEventIds } = reconstruct(events.reverse());
   const assistant = messages.find((message) => message.role === "assistant");
   assert.ok(assistant);
-  assert.equal(assistant.content, "Answer part");
+  assert.equal(assistant.content, "Work detail\n\nAnswer part");
   assert.deepEqual(
     assistant.parts?.filter((part) => part.type === "text").map((part) =>
       part.type === "text"
@@ -116,12 +121,97 @@ test("history applies part events in sequence, preserves IDs and roles, and clos
       ["part_source_b", "part_source_b", "answer", "Answer part"],
     ],
   );
-  assert.equal(selectAssistantCopyText(assistant.parts), "Answer part");
+  assert.equal(selectAssistantCopyText(assistant.parts), "Work detail\n\nAnswer part");
   assert.equal(processedEventIds.has("event-b-2"), true);
   assert.equal(processedEventIds.has("event-completed"), true);
 });
 
-test("partial history keeps an unclassified public preview visible but out of copy", () => {
+test("live adapter and history payload extraction share the typed part reducer", () => {
+  const partId = "part_live_history_shared";
+  const events = [
+    ...baseEvents(),
+    partEvent("message.part.delta", "event-shared-delta", 2, {
+      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+      part_id: partId,
+      delta: "Shared result",
+    }),
+    partEvent("message.part.classified", "event-shared-classified", 3, {
+      schema_version: ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+      part_id: partId,
+      role: "answer",
+    }),
+  ];
+  const history = reconstruct(events).messages.find(
+    (message) => message.role === "assistant",
+  );
+  assert.ok(history);
+
+  let parts = processMessageEvent(
+    "message.started",
+    {
+      event_id: "event-started",
+      message_id: protocolMessageId,
+      sequence: 1,
+      timestamp: "2026-10-09T00:00:01Z",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "assistant-live",
+  ).parts;
+  let content = "";
+  for (const event of events.slice(1)) {
+    const eventType = event.event_type;
+    const data = event.data as Record<string, unknown>;
+    const payload = data.payload as Record<string, unknown>;
+    const sequence = event.sequence || 1;
+    const frame = {
+      eventHeader: eventType,
+      transportCursor: `${runId}:4:${sequence}-0`,
+      value: {
+        schema: "ai-platform.public-run-stream-event.v4",
+        event_id: data.event_id,
+        run_id: runId,
+        message_id: protocolMessageId,
+        seq: sequence,
+        event_type: eventType,
+        stream_incarnation: streamIncarnation,
+        replayable: true,
+        trace_ref: null,
+        causation_event_id: null,
+        emitted_at: event.timestamp,
+        payload,
+      },
+    };
+    const adapted = adaptPublicRunStreamEventV4(frame, {
+      runId,
+      streamIncarnation,
+    });
+    assert.ok(adapted);
+    const reduced = processMessageEvent(
+      adapted,
+      undefined,
+      parts,
+      content,
+      [],
+      0,
+      [],
+      true,
+      "assistant-live",
+    );
+    assert.equal(reduced.accepted, true);
+    parts = reduced.parts;
+    content = reduced.content;
+  }
+
+  assert.equal(content, history.content);
+  assert.deepEqual(parts, history.parts);
+});
+
+test("partial history keeps the current public preview visible and copyable", () => {
   const { messages, processedEventIds } = reconstruct([
     ...baseEvents(),
     partEvent("message.part.delta", "event-partial", 2, {
@@ -136,7 +226,7 @@ test("partial history keeps an unclassified public preview visible but out of co
   );
   assert.equal(assistant?.content, "Still being classified");
   assert.equal(partial?.type === "text" ? partial.text_role : null, "pending");
-  assert.equal(selectAssistantCopyText(assistant?.parts), "");
+  assert.equal(selectAssistantCopyText(assistant?.parts), "Still being classified");
   assert.equal(processedEventIds.has("event-partial"), true);
 });
 
@@ -378,8 +468,8 @@ test("failed partial hydration trusts same source content and role and keeps onl
       ["part_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "answer", "Missing answer"],
     ],
   );
-  assert.equal(assistant?.content, "Missing answer");
-  assert.equal(selectAssistantCopyText(assistant?.parts), "Missing answer");
+  assert.equal(assistant?.content, "Tool preamble with suffix\n\nMissing answer");
+  assert.equal(selectAssistantCopyText(assistant?.parts), "Tool preamble with suffix\n\nMissing answer");
   assert.equal(
     assistant?.parts?.some(
       (part) => part.type === "artifact" && part.artifact_id === "live-artifact",

@@ -1,100 +1,138 @@
-"""Provider-message roles for completed SDK blocks, without retaining text.
+"""Reconcile native text deltas with the SDK's completed content blocks.
 
-The public answer gate owns sanitization; the event adapter owns public parts.
+Text blocks retain only length/digest metadata for completion checks. Public
+sanitization and durable event identities remain with their existing owners.
 """
 
 from __future__ import annotations
 
-from collections.abc import Hashable
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True, slots=True)
-class ClassifiedAssistantText:
-    """Metadata for a retired provider source; text remains in the event ledger."""
+@dataclass
+class _StreamTextBlock:
+    digest: object = field(default_factory=hashlib.sha256)
+    text_length: int = 0
+    completed: bool = False
+    completion_digest: bytes | None = None
+    completion_length: int = 0
+    completion_published: bool = False
+    stopped: bool = False
 
-    has_text: bool
-    role: str | None = None
+    def append(self, text: str) -> None:
+        self.digest.update(text.encode("utf-8"))
+        self.text_length += len(text)
 
 
 class AssistantTextSourceBuffer:
-    """Group complete text blocks by message, then classify its public part."""
+    """Use native message/block identity to publish text exactly once, in order."""
 
     def __init__(self) -> None:
-        self._message_key: Hashable | None = None
-        self._sources: dict[Hashable, tuple[bool, str | None]] = {}
-        self._meaningful_sources: set[Hashable] = set()
+        self.message_key: tuple[str, None] | None = None
+        self._active_index: int | None = None
+        self._blocks: dict[str, list[_StreamTextBlock]] = {}
+        self._block: _StreamTextBlock | None = None
+        self._seen_frames: dict[str, str] = {}
+        self._started_messages: set[str] = set()
 
-    def _state(self, message_key: Hashable) -> tuple[bool, str | None]:
-        return self._sources.setdefault(message_key, (False, None))
+    def accept_event(self, *, uuid: object, event: object) -> tuple[tuple[str, None], str] | None:
+        """Select only main-session text; ignore tool/reasoning payloads."""
+        if not isinstance(event, dict):
+            raise ValueError("assistant_observation_invalid")
+        if isinstance(uuid, str) and uuid:
+            digest = hashlib.sha256(json.dumps(event, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            previous = self._seen_frames.get(uuid)
+            if previous is not None:
+                if previous != digest:
+                    raise ValueError("assistant_observation_invalid")
+                return None
+            self._seen_frames[uuid] = digest
+        kind = event.get("type")
+        if kind == "message_start":
+            message = event.get("message")
+            identity = message.get("id") if isinstance(message, dict) else None
+            if not isinstance(identity, str) or not 0 < len(identity) <= 512:
+                raise ValueError("assistant_observation_invalid")
+            if self.message_key is not None or identity in self._started_messages:
+                raise ValueError("assistant_observation_invalid")
+            self._started_messages.add(identity)
+            self.message_key = (identity, None)
+            self._blocks[identity] = []
+        elif kind == "content_block_start":
+            index, block = event.get("index"), event.get("content_block")
+            if self.message_key is None and isinstance(block, dict) and block.get("type") != "text":
+                return None
+            if self.message_key is None or self._active_index is not None:
+                raise ValueError("assistant_observation_invalid")
+            if isinstance(index, bool) or not isinstance(index, int) or index < 0 or not isinstance(block, dict):
+                raise ValueError("assistant_observation_invalid")
+            self._active_index = index
+            self._block = _StreamTextBlock() if block.get("type") == "text" else None
+            if self._block is not None:
+                self._blocks[self.message_key[0]].append(self._block)
+                text = block.get("text", "")
+                if not isinstance(text, str):
+                    raise ValueError("typed_text_block_invalid")
+                self._block.append(text)
+                if text:
+                    return self.message_key, text
+        elif kind == "content_block_delta":
+            delta = event.get("delta")
+            if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+                return None
+            if self.message_key is None or event.get("index") != self._active_index or self._block is None:
+                raise ValueError("assistant_observation_invalid")
+            text = delta.get("text")
+            if not isinstance(text, str):
+                raise ValueError("typed_text_block_invalid")
+            if self._block.completed and self._block.text_length + len(text) > self._block.completion_length:
+                raise ValueError("assistant_text_conflict")
+            self._block.append(text)
+            if (
+                self._block.completed
+                and self._block.text_length == self._block.completion_length
+                and self._block.digest.digest() != self._block.completion_digest
+            ):
+                raise ValueError("assistant_text_conflict")
+            if text and not self._block.completion_published:
+                return self.message_key, text
+        elif kind == "content_block_stop":
+            if event.get("index") != self._active_index or self._active_index is None:
+                raise ValueError("assistant_observation_invalid")
+            if self._block is not None:
+                self._block.stopped = True
+                if self._block.completion_digest is not None and self._block.text_length:
+                    if self._block.text_length != self._block.completion_length or self._block.digest.digest() != self._block.completion_digest:
+                        raise ValueError("assistant_text_conflict")
+            self._active_index = self._block = None
+        elif kind == "message_stop":
+            if self.message_key is None or self._active_index is not None:
+                raise ValueError("assistant_observation_invalid")
+            self.message_key = None
+        return None
 
-    @property
-    def message_key(self) -> Hashable | None:
-        return self._message_key
-
-    def begin(self, message_key: Hashable) -> None:
-        if message_key is None:
-            raise ValueError("assistant_text_source_invalid")
-        hash(message_key)
-        if self._message_key not in (None, message_key):
-            raise ValueError("assistant_text_source_not_closed")
-        self._state(message_key)
-        self._message_key = message_key
-
-    def mark_tool(self, message_key: Hashable) -> None:
-        self.begin(message_key)
-        has_text, role = self._state(message_key)
-        self._sources[message_key] = (has_text, "work")
-
-    def mark_answer(self, message_key: Hashable) -> None:
-        self.begin(message_key)
-        has_text, role = self._state(message_key)
-        if role == "work":
-            raise ValueError("assistant_text_source_role_conflict")
-        self._sources[message_key] = (has_text, "answer")
-
-    def role_for(self, message_key: Hashable) -> str | None:
-        state = self._sources.get(message_key)
-        return state[1] if state is not None else None
-
-    def has_meaningful_text_for(self, message_key: Hashable) -> bool:
-        return message_key in self._meaningful_sources
-
-    @property
-    def has_meaningful_answer_sources(self) -> bool:
-        return any(self.role_for(key) == "answer" for key in self._meaningful_sources)
-
-    def _observe_text(self, message_key: Hashable, text: str) -> None:
-        _had_text, role = self._state(message_key)
-        if text.strip() and message_key not in self._meaningful_sources:
-            self._meaningful_sources.add(message_key)
-        self._sources[message_key] = (True, role)
-
-    def append_text(self, message_key: Hashable, text: str) -> str:
-        """Record completed block text; source parts need no synthetic gaps."""
+    def completed_text(self, source_key: tuple[str, None], text: str) -> str:
+        """Confirm a streamed block, or use a complete block when no stream exists."""
         if not isinstance(text, str):
-            raise ValueError("assistant_text_delta_invalid")
-        self.begin(message_key)
-        if text:
-            self._observe_text(message_key, text)
-        return text
-
-    def take(
-        self, message_key: Hashable | None = None
-    ) -> ClassifiedAssistantText | None:
-        if self._message_key is None:
-            if message_key is not None:
-                raise ValueError("assistant_text_source_missing")
-            return None
-        if message_key is not None and self._message_key != message_key:
-            raise ValueError("assistant_text_source_mismatch")
-        key = self._message_key
-        has_text, role = self._state(key)
-        result = ClassifiedAssistantText(
-            has_text=has_text,
-            role=role,
-        )
-        self._message_key = None
-        if not has_text and role != "answer":
-            self._sources.pop(key, None)
-        return result
+            raise ValueError("typed_text_block_invalid")
+        blocks = self._blocks.get(source_key[0])
+        if blocks is None:
+            return text
+        block = next((block for block in blocks if not block.completed), None)
+        if block is None:
+            raise ValueError("assistant_text_conflict")
+        if (
+            block.text_length > len(text)
+            or (block.stopped and block.text_length and block.text_length != len(text))
+            or block.digest.digest() != hashlib.sha256(text[:block.text_length].encode("utf-8")).digest()
+        ):
+            raise ValueError("assistant_text_conflict")
+        block.completed = True
+        block.completion_digest = hashlib.sha256(text.encode("utf-8")).digest()
+        block.completion_length = len(text)
+        if block.text_length == 0:
+            block.completion_published = True
+            return text
+        return ""

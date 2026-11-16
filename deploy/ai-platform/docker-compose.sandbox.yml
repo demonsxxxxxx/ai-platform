@@ -10,6 +10,12 @@ services:
       - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:/runtime-workspaces
 
   worker:
+    network_mode: service:api
+    extra_hosts: !reset []
+    depends_on:
+      api:
+        condition: service_healthy
+        restart: true
     environment:
       SANDBOX_CONTAINER_PROVIDER: docker
     group_add:

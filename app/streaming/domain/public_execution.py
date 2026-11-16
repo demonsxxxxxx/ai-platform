@@ -64,7 +64,6 @@ _V2_PUBLIC_TOOL_CONFIG = {
 }
 _V2_PUBLIC_PRESENTATION_CONFIGS = frozenset(_V2_PUBLIC_TOOL_CONFIG.values())
 _V2_PUBLIC_TOOL_LABELS = {
-    "Skill": "Skill",
     "MCP": "MCP",
     "Read": "Reading authorized files",
     "Glob": "Finding authorized files",
@@ -473,6 +472,7 @@ class PublicExecutionV2Projector:
             or invocation_id != raw_invocation_id
             or presentation_config is None
             or lifecycle_config is None
+            or tool_name == "Skill" and not has_safe_label
             or has_safe_label
             and (safe_label is None or safe_label != fact.get("safe_label"))
             or has_safe_label and tool_name not in {"Skill", "MCP"}
@@ -498,11 +498,16 @@ class PublicExecutionV2Projector:
             next_state = state
         event_type, status, progress_current = lifecycle_config
         presentation_kind, kind, stage = presentation_config
-        public_label = (
-            safe_label
-            if tool_name in {"Skill", "MCP"} and safe_label is not None
-            else _V2_PUBLIC_TOOL_LABELS[tool_name]
-        )
+        if tool_name == "Skill":
+            # New Skill facts must carry the exact server-authorized name.
+            # Legacy persisted rows remain readable through the row validator.
+            if safe_label is None:
+                return None
+            public_label = safe_label
+        elif tool_name == "MCP" and safe_label is not None:
+            public_label = safe_label
+        else:
+            public_label = _V2_PUBLIC_TOOL_LABELS[tool_name]
         projected = _projected_public_execution_step_v2(
             event_type=event_type,
             step_id=next_state.step_id,

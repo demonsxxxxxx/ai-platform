@@ -40,6 +40,128 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.doesNotMatch(messages[0]?.content || "", /\/skill/);
 });
 
+for (const status of ["succeeded", "failed", "cancelled"]) {
+  test(`terminal ${status} history retains task elapsed separately from model duration`, () => {
+    const events: HistoryEvent[] = [
+      { id: "start", event_type: "run_started", run_id: "run-timed", timestamp: "2026-11-05T00:00:00Z", data: {} },
+      { id: "answer", event_type: "message:chunk", run_id: "run-timed", timestamp: "2026-11-05T00:00:01Z", data: { content: "Accepted text" } },
+      { id: "model", event_type: "model.completed", run_id: "run-timed", timestamp: "2026-11-05T00:00:10Z", data: { duration_ms: 900 } },
+      { id: "end", event_type: "done", run_id: "run-timed", timestamp: "2026-11-05T00:00:20.250Z", data: { status } },
+      { id: "other-start", event_type: "run_started", run_id: "run-other", timestamp: "2026-11-05T00:00:30Z", data: {} },
+      { id: "other-end", event_type: "done", run_id: "run-other", timestamp: "2026-11-05T00:00:33Z", data: { status: "succeeded" } },
+    ];
+    const messages = reconstructMessagesFromEvents(events, new Set(), { activeSubagentStack: [] });
+    const assistant = messages.find(message => message.role === "assistant" && message.runId === "run-timed");
+    assert.equal(assistant?.runDurationMs, 20_250);
+    assert.equal(assistant?.duration, 900, "model timing keeps its original meaning");
+    assert.equal(messages.find(message => message.runId === "run-other")?.runDurationMs, 3000);
+    const hydrated = mergeHydratedRunSegment([{
+      id: "live", runId: "run-timed", role: "assistant", timestamp: new Date(0), content: "Live text",
+    }], messages, "run-timed");
+    assert.equal(hydrated.find(message => message.role === "assistant")?.runDurationMs, 20_250);
+  });
+}
+
+test("task elapsed uses the established UTC rule for timezone-less server timestamps", () => {
+  const messages = reconstructMessagesFromEvents([
+    { event_type: "run_started", run_id: "run-utc", timestamp: "2026-11-05T00:00:00", data: {} },
+    { event_type: "done", run_id: "run-utc", timestamp: "2026-11-05T00:00:20.250Z", data: { status: "succeeded" } },
+  ], new Set(), { activeSubagentStack: [] });
+  assert.equal(messages[0]?.runDurationMs, 20_250);
+});
+
+test("task elapsed stays unknown for missing, invalid, reversed or nonterminal boundaries", () => {
+  for (const [start, end, status] of [
+    [undefined, "2026-11-05T00:00:20Z", "succeeded"],
+    ["invalid", "2026-11-05T00:00:20Z", "succeeded"],
+    ["2026-11-05T00:00:30Z", "2026-11-05T00:00:20Z", "succeeded"],
+    ["2026-11-05T00:00:00Z", "2026-11-05T00:00:20Z", "running"],
+  ]) {
+    const messages = reconstructMessagesFromEvents([
+      { event_type: "run_started", run_id: "run-unknown", timestamp: start, data: {} },
+      { event_type: "message:chunk", run_id: "run-unknown", data: { content: "Text" } },
+      { event_type: "done", run_id: "run-unknown", timestamp: end, data: { status } },
+    ], new Set(), { activeSubagentStack: [] });
+    assert.equal(messages[0]?.runDurationMs, undefined);
+  }
+});
+
+test("history preserves a backend user-message timestamp prefix", () => {
+  const content = "[2026-04-28 20:00:00 +08:00 Asia/Shanghai] hello world";
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "user-event-1",
+        event_type: "user:message",
+        run_id: "run-1",
+        timestamp: "2026-04-28T12:00:01.000Z",
+        data: { content, attachments: [] },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.content, content);
+});
+
+test("history rebuilds a public answer before its later execution step", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "evt-delta-8",
+        event_type: "message:chunk",
+        run_id: "run-ordered",
+        sequence: 8,
+        timestamp: "2026-07-31T01:00:00.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          run_id: "run-ordered",
+          event_id: "evt-delta-8",
+          sequence: 8,
+          content: "B",
+        },
+      } satisfies HistoryEvent,
+      {
+        id: "evt-step-9",
+        event_type: "execution_step",
+        run_id: "run-ordered",
+        sequence: 9,
+        timestamp: "2026-07-31T01:00:01.000Z",
+        data: {
+          schema_version: PUBLIC_EXECUTION_EVENT_V2_SCHEMA_VERSION,
+          event_id: "evt-step-9",
+          run_id: "run-ordered",
+          sequence: 9,
+          step_id: "step-1",
+          presentation_kind: "processing",
+          safe_label: "Data processing",
+          kind: "processing",
+          stage: "data",
+          status: "running",
+          progress: { current: 0, total: 1 },
+          created_at: "2026-07-31T01:00:00.000Z",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistant = messages.find((message) => message.runId === "run-ordered");
+  const historyProcess = getVisibleMessageParts(assistant?.parts || []).find(
+    (part) => part.type === "execution_process",
+  );
+  assert.equal(assistant?.content, "B");
+  assert.equal(historyProcess?.type, "execution_process");
+  if (historyProcess?.type !== "execution_process") {
+    throw new Error("expected a public execution process in history");
+  }
+  assert.deepEqual(historyProcess.steps.map((step) => step.step_id), ["step-1"]);
+});
+
 test("reconstructs zero model completion duration without inventing a run time", () => {
   const messages = reconstructMessagesFromEvents(
     [
@@ -1315,7 +1437,7 @@ test("failed history retains canonical public execution activity through termina
   assert.match(terminal.event_type, /failed/);
 });
 
-test("history retains only the authorized Skill display name", () => {
+test("history retains only the authorized Skill identity", () => {
   const messages = reconstructMessagesFromEvents(
     [{
       id: "skill-history-completed",
@@ -1328,7 +1450,7 @@ test("history retains only the authorized Skill display name", () => {
         event_type: "public_tool_activity",
         operation_id: "operation-skill-history",
         category: "skill",
-        display_name: "QA Review",
+        display_name: "qa-review",
         status: "completed",
         result_summary: "private result must not survive",
       },
@@ -1340,10 +1462,10 @@ test("history retains only the authorized Skill display name", () => {
   const visibleParts = getVisibleMessageParts(messages[0]?.parts || []);
   const tool = visibleParts[0];
   assert.equal(tool?.type, "tool");
-  assert.equal(tool?.type === "tool" ? tool.name : null, "QA Review");
+  assert.equal(tool?.type === "tool" ? tool.name : null, "qa-review");
   assert.equal(
     tool?.type === "tool" ? tool.public_display_name : null,
-    "QA Review",
+    "qa-review",
   );
   assert.doesNotMatch(JSON.stringify(visibleParts), /private result/);
 });

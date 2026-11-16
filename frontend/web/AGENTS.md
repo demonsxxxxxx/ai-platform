@@ -21,11 +21,23 @@ Coding rules and lint/style gates are indexed by the
   chat runtime or use Lobe chat components as a parallel interaction owner.
   Keep the platform SSE data chain; consume one runtime-bound message snapshot
   for text and business parts, with no parallel generic text/loading renderer.
-- Follow the [visual guidelines](../../docs/frontend/lobehub-visual-guidelines.md)
-  for hierarchy, spacing, typography, themes and responsive layout. Keep page CSS
+- Follow the [visual guidelines](../../docs/frontend/visual-guidelines.md)
+  for hierarchy, spacing, typography, themes and responsive layout. The chat
+  body (ordinary and expert) follows the pinned assistant-ui ChatGPT Clone
+  geometry; admin and catalog pages keep their task layouts. Keep page CSS
   scoped to its owner; use public component sizing APIs instead of global
   button/input/svg overrides. Style-preview approval and actual-page acceptance
   are separate.
+- Theme values have one source: `src/styles/base.css` variables, connected to
+  Lobe only through `src/styles/themeContract.ts` and checked by its test.
+  Reference `--theme-*`, `--radius-*` and `--chat-column-max` instead of
+  repeating colors, radii or column widths.
+- Show only operations with a real platform capability. Example-only buttons
+  (voice, share, feedback, regenerate, edit, branch) stay out until their
+  protocol exists.
+- A replacement lands with its cleanup: migrate callers and remove the old
+  implementation, exports, CSS, selectors, assertions and conflicting doc
+  clauses in the same change; keep what still has a real consumer.
 - Follow the [table and Select contract](../../docs/frontend/shared-table-select-components.md)
   for business state, renderer exceptions and retired controls. Preserve field
   values, labels, submit/disabled/loading behavior, keyboard access and focus.

@@ -49,9 +49,34 @@ interface UseMessageScrollReturn {
   handleVirtuosoAtBottomChange: (atBottom: boolean) => void;
   scrollToBottom: () => void;
   scrollToTop: () => void;
+  /** Virtuoso followOutput: no automatic follow while a sent turn is anchored. */
+  followOutput: (isAtBottom: boolean) => false | "smooth";
+  /** Index of the reply that receives the anchor min-height, or null. */
+  anchoredReplyIndex: number | null;
 }
 
 type AutoScrollMode = "default" | "history-finalize";
+
+const SEND_ANCHOR_TOP_GAP_PX = 24;
+
+type AnchorMessage = Pick<Message, "role" | "isStreaming">;
+
+/**
+ * A local send appends one user message followed by the streaming reply
+ * placeholder, or a lone user message to an existing conversation. A restored
+ * history turn (settled reply, or a list starting from empty) keeps the
+ * ordinary bottom scroll instead of being anchored.
+ */
+export function isLocalSendAppend(previous: readonly AnchorMessage[], next: readonly AnchorMessage[], loadingHistory: boolean): boolean {
+  if (loadingHistory || next.length <= previous.length || next.length - previous.length > 2) return false;
+  const [sent, reply] = next.slice(previous.length);
+  if (sent?.role !== "user") return false;
+  if (reply) return reply.role === "assistant" && reply.isStreaming === true;
+  // A lone user message counts only inside an existing conversation: a list
+  // that starts from empty is a session open or restore, not a send.
+  return previous.length > 0;
+}
+const SEND_ANCHOR_SETTLE_MS = 120;
 
 export function useMessageScroll(
   messages: Pick<Message, "id" | "role" | "isStreaming" | "parts" | "runId">[],
@@ -111,6 +136,11 @@ export function useMessageScroll(
   const historyScrollArmedRef = useRef(false);
   const isLoadingHistoryRef = useRef(isLoadingHistory);
   const handledSessionBottomScrollTokenRef = useRef<string | null>(null);
+  // ChatGPT-style send anchor: the sent message is scrolled to the top of the
+  // viewport and the reply grows below it without dragging the view along.
+  const sendAnchorActiveRef = useRef(false);
+  const sendAnchorRef = useRef<{ userIndex: number; userId: string; replyScrolled: boolean } | null>(null);
+  const [anchoredReplyIndex, setAnchoredReplyIndex] = useState<number | null>(null);
 
   const latestMessage = messages[messages.length - 1];
   const hasStreamingAssistantMessage =
@@ -148,6 +178,9 @@ export function useMessageScroll(
     scrollCleanupRef.current?.();
     scrollCleanupRef.current = null;
 
+    sendAnchorActiveRef.current = false;
+    sendAnchorRef.current = null;
+    setAnchoredReplyIndex(null);
     userScrolledUpRef.current = resetState.userScrolledUp;
     autoScrollActiveRef.current = resetState.autoScrollActive;
     streamLockActiveRef.current = resetState.streamLockActive;
@@ -275,8 +308,84 @@ export function useMessageScroll(
   );
 
   const scrollToBottom = useCallback(() => {
+    sendAnchorActiveRef.current = false;
     requestScrollToBottom("default", { clearManualDetachFromStream: true });
   }, [requestScrollToBottom]);
+
+  /** Scroll the sent message to the top of the viewport by its rendered position. */
+  const scrollSentMessageToTop = useCallback((userIndex: number, userId: string) => {
+    const scroller = virtuosoScrollerRef.current;
+    const element = document.getElementById(createMessageAnchorId(userId));
+    ignoreProgrammaticScrollUntilRef.current = Date.now() + 900;
+    if (scroller && element) {
+      // The sent message is freshly rendered; scroll by its real position.
+      // Virtuoso may remount the item, so look the element up on every read.
+      const offset = () => {
+        const current = document.getElementById(createMessageAnchorId(userId)) ?? element;
+        return current.getBoundingClientRect().top - scroller.getBoundingClientRect().top - SEND_ANCHOR_TOP_GAP_PX;
+      };
+      scroller.scrollTo({ top: scroller.scrollTop + offset(), behavior: "smooth" });
+      // Virtuoso's size compensation (scrollBy) can interrupt the smooth scroll
+      // and looks like a user scroll; settle by the anchored message identity.
+      const settle = () => {
+        if (sendAnchorRef.current?.userId !== userId || !sendAnchorActiveRef.current) return;
+        if (!document.getElementById(createMessageAnchorId(userId))) return;
+        const remaining = offset();
+        if (Math.abs(remaining) > 4) {
+          ignoreProgrammaticScrollUntilRef.current = Date.now() + 300;
+          scroller.scrollTo({ top: scroller.scrollTop + remaining, behavior: "auto" });
+        }
+      };
+      window.setTimeout(settle, 520);
+      window.setTimeout(settle, 1000);
+      return;
+    }
+    virtuosoRef.current?.scrollToIndex({ index: userIndex, align: "start", behavior: "smooth" });
+  }, []);
+
+  /** Size the reply so the sent message can reach the top, then scroll it there. */
+  const anchorSentMessage = useCallback((userIndex: number, userId: string) => {
+    scrollCleanupRef.current?.();
+    scrollCleanupRef.current = null;
+    sendAnchorActiveRef.current = true;
+    sendAnchorRef.current = { userIndex, userId, replyScrolled: false };
+    userScrolledUpRef.current = false;
+    autoScrollActiveRef.current = false;
+    streamLockActiveRef.current = false;
+    manualDetachFromStreamRef.current = false;
+    const scroller = virtuosoScrollerRef.current;
+    const measure = () => {
+      if (!scroller) return;
+      const userHeight = document.getElementById(createMessageAnchorId(userId))?.offsetHeight ?? 72;
+      const room = Math.max(0, scroller.clientHeight - userHeight - SEND_ANCHOR_TOP_GAP_PX);
+      scroller.style.setProperty("--chat-anchor-min-h", `${room}px`);
+    };
+    measure();
+    setAnchoredReplyIndex(userIndex + 1);
+    // Let Virtuoso measure the reply's new min-height first; it adjusts the
+    // scroll position itself while measuring and would override an early scroll.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      measure();
+      window.setTimeout(() => {
+        if (sendAnchorRef.current?.userId === userId) scrollSentMessageToTop(userIndex, userId);
+      }, SEND_ANCHOR_SETTLE_MS);
+    }));
+  }, [scrollSentMessageToTop]);
+
+  // Virtuoso asks before the update effect runs, so a send in this render must
+  // be recognised here too, or the list would follow to the bottom first.
+  const latestMessagesRef = useRef(messages);
+  latestMessagesRef.current = messages;
+  const followOutput = useCallback(
+    (isAtBottom: boolean) => (
+      sendAnchorActiveRef.current
+      || !isAtBottom
+      || isLocalSendAppend(previousMessagesRef.current, latestMessagesRef.current, isLoadingHistoryRef.current)
+        ? false
+        : "smooth" as const
+    ),
+    [],
+  );
 
   const scrollToTop = useCallback(() => {
     userScrolledUpRef.current = true;
@@ -323,6 +432,9 @@ export function useMessageScroll(
         streamingAssistantActive: boolean;
       }) => ReturnType<typeof createMessageScrollFollowState>,
     ) => {
+      // A real wheel/touch/keyboard gesture hands scrolling back to the user;
+      // Virtuoso's own size compensation does not pass through here.
+      sendAnchorActiveRef.current = false;
       const currentState = createMessageScrollFollowState({
         userScrolledUp: userScrolledUpRef.current,
         autoScrollActive: autoScrollActiveRef.current,
@@ -647,9 +759,19 @@ export function useMessageScroll(
     });
 
     if (messageUpdateAction === "scroll-to-bottom") {
-      scrollToBottom();
-    } else if (messageUpdateAction === "request-scroll-to-bottom") {
+      const userIndex = previousMessages.length;
+      const sent = messages[userIndex];
+      if (sent && isLocalSendAppend(previousMessages, messages, isLoadingHistory)) anchorSentMessage(userIndex, sent.id);
+      else scrollToBottom();
+    } else if (messageUpdateAction === "request-scroll-to-bottom" && !sendAnchorActiveRef.current) {
       requestScrollToBottom("default");
+    }
+    // A reply that arrives after the send needs one more pass to reach the top.
+    const anchor = sendAnchorRef.current;
+    if (anchor && sendAnchorActiveRef.current && !anchor.replyScrolled && messages.length > anchor.userIndex + 1
+      && messageUpdateAction !== "scroll-to-bottom") {
+      anchor.replyScrolled = true;
+      requestAnimationFrame(() => scrollSentMessageToTop(anchor.userIndex, anchor.userId));
     }
 
     if (
@@ -674,6 +796,8 @@ export function useMessageScroll(
     messages,
     requestScrollToBottom,
     scrollToBottom,
+    anchorSentMessage,
+    scrollSentMessageToTop,
     autoScrollResumeThresholdPx,
     hasStreamingAssistantMessage,
     isLoadingHistory,
@@ -872,5 +996,7 @@ export function useMessageScroll(
     handleVirtuosoAtBottomChange,
     scrollToBottom,
     scrollToTop,
+    followOutput,
+    anchoredReplyIndex,
   };
 }

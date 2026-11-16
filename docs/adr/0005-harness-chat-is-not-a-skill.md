@@ -45,9 +45,15 @@ enforces the execution-kind/Skill pair with a database constraint. Queue and
 worker identity locks include `execution_kind` so a caller cannot reinterpret a
 Harness run as a Skill run or vice versa.
 
-The worker must not resolve a Skill catalog, create Skill snapshots, stage Skill
-packages, register the SDK `Skill` tool, require Skill invocation evidence, or
-emit `skill_selected`/`skill_staging` facts for `harness_chat`. It may still use
+The worker must not resolve a tenant Skill catalog, create tenant Skill snapshots,
+stage tenant Skill packages, require a tenant Skill invocation, or emit
+`skill_selected`/`skill_staging` facts for `harness_chat`. New ordinary Runs may
+use the image-preinstalled official document plugin under the
+[document plugin contract](../architecture/ordinary-chat-document-plugin.md).
+Its server-admitted source revision is frozen in private Run input; only its four
+exact native SDK Skill names are enabled, and actual calls retain SDK-hook evidence.
+Historical Runs without that revision keep the original no-Skill behavior.
+Ordinary chat remains `skill_id=null`, not a synthetic Skill. It may still use
 separately authorized MCP tools, context, files, model selection, and sandbox
 policy. Attachments remain scoped data inputs; Harness chat receives authorized
 metadata plus bounded on-demand read/stage tools without turning data files into

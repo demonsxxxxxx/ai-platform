@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 import types
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -16,9 +17,9 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _canonical_sdk_error,
     _diagnostic_terminal_class,
-    _public_skill_replacement,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
+    build_sdk_env,
     run_claude_agent_sdk,
 )
 from app.executors.claude.capability_policy import (
@@ -128,22 +129,39 @@ def _settings():
     )
 
 
-def _assistant_text_part_roles(events):
-    return {
-        event.payload["part_id"]: event.payload["role"]
-        for event in events
-        if event.event_type == "message.part.classified"
-    }
+def test_sdk_env_preserves_tool_search_override_and_leaves_default_unset(monkeypatch):
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _settings
+    )
+    monkeypatch.setenv("ENABLE_TOOL_SEARCH", "false")
+    assert build_sdk_env()["ENABLE_TOOL_SEARCH"] == "false"
+
+    monkeypatch.delenv("ENABLE_TOOL_SEARCH")
+    assert "ENABLE_TOOL_SEARCH" not in build_sdk_env()
+
+
+@asynccontextmanager
+async def _mcp_client_session(server):
+    from mcp.client.session import ClientSession
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        server_task = asyncio.create_task(
+            server.run(*server_streams, server.create_initialization_options())
+        )
+        try:
+            async with ClientSession(*client_streams) as session:
+                await session.initialize()
+                yield session
+        finally:
+            if not server_task.done():
+                server_task.cancel()
+            await asyncio.gather(server_task, return_exceptions=True)
 
 
 def _assistant_text_part_deltas(events, *, role=None):
-    roles = _assistant_text_part_roles(events)
-    return [
-        event
-        for event in events
-        if event.event_type == "message.part.delta"
-        and (role is None or roles.get(event.payload["part_id"]) == role)
-    ]
+    del role  # Retained test helper name; new public text has no semantic role.
+    return [event for event in events if event.event_type == "message.delta"]
 
 
 @pytest.mark.asyncio
@@ -929,8 +947,6 @@ def _scripted_sdk(
                     )
                 yield StreamEvent(value)
             elif kind == "mcp_call":
-                from mcp.types import CallToolRequest, CallToolRequestParams
-
                 hook_input = {
                     "tool_name": value["tool_name"],
                     "tool_use_id": value["call_id"],
@@ -941,14 +957,20 @@ def _scripted_sdk(
                 if admission["permissionDecision"] != "allow":
                     continue
                 server = captured["client_options"].mcp_servers[value["server"]]["instance"]
-                reply = await server.request_handlers[CallToolRequest](CallToolRequest(
-                    method="tools/call",
-                    params=CallToolRequestParams(name=value["name"], arguments=value["arguments"]),
-                ))
-                captured.setdefault("mcp_results", []).append(reply.root)
+                from mcp import MCPError
+                failed = False
+                async with _mcp_client_session(server) as session:
+                    try:
+                        reply = await session.call_tool(value["name"], value["arguments"])
+                    except MCPError:
+                        failed = True
+                if failed:
+                    await invoke_hook(("PostToolUseFailure", hook_input, value["call_id"]))
+                    continue
+                captured.setdefault("mcp_results", []).append(reply)
                 if value.get("omit_terminal_hook"):
                     continue
-                terminal = "PostToolUseFailure" if reply.root.isError else "PostToolUse"
+                terminal = "PostToolUseFailure" if reply.is_error else "PostToolUse"
                 await invoke_hook((terminal, hook_input, value["call_id"]))
             elif kind in {"hook", "cancel_hook"}:
                 if kind == "cancel_hook":
@@ -1665,7 +1687,7 @@ async def test_sandbox_effectful_tool_streams_safe_text_across_verified_lifecycl
         on_text=deltas.append,
     )
 
-    assert captured["include_partial_messages"] is False
+    assert captured["include_partial_messages"] is True
     assert observed_before_result == []
     assert public_text.startswith("".join(observed_before_result))
     assert [fact["lifecycle"] for fact in lifecycle_facts] == [
@@ -2884,13 +2906,15 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     lifecycle = []
 
     @asynccontextmanager
-    async def session_factory(_config):
-        lifecycle.append("mcp_open")
+    async def session_factory(config):
+        phase = "catalog" if config["max_response_bytes"] == 1024 * 1024 else "mcp"
+        lifecycle.append(f"{phase}_open")
         try:
             yield types.SimpleNamespace()
         finally:
-            assert captured.get("client_disconnected") is True
-            lifecycle.append("mcp_closed")
+            if phase == "mcp":
+                assert captured.get("client_disconnected") is True
+            lifecycle.append(f"{phase}_closed")
 
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
@@ -2927,7 +2951,7 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     assert result.error == (
         "claude_agent_sdk_provider_session_failed" if mirror_error else None
     )
-    assert lifecycle == ["mcp_open", "mcp_closed"]
+    assert lifecycle == ["catalog_open", "catalog_closed", "mcp_open", "mcp_closed"]
 
 
 
@@ -3067,6 +3091,36 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_sdk_document_plugin_is_exact_and_records_native_invocation(monkeypatch, tmp_path):
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION, DOCUMENT_PLUGIN_SDK_SKILLS
+    from app.execution.infrastructure import document_plugin
+
+    plugin = tmp_path / "image-plugin"
+    plugin.mkdir()
+    (plugin / "upstream-revision").write_text(DOCUMENT_PLUGIN_REVISION)
+    monkeypatch.setattr(document_plugin, "DOCUMENT_PLUGIN_PATH", plugin)
+    captured, evidence = {}, []
+    hook_input = {"tool_name": "Skill", "tool_use_id": "document-call", "tool_input": {"skill": "document-skills:xlsx"}}
+    captured["permission_probes"] = [("Skill", {"skill": "document-skills:xlsx"}), ("Skill", {"skill": "not-authorized"})]
+    steps = [("hook", ("PreToolUse", hook_input, "document-call")), ("hook", ("PostToolUse", hook_input, "document-call")), *_completed_text_steps("done")]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    async def acknowledge(fact):
+        evidence.append(fact)
+        return True
+
+    result = await run_claude_agent_sdk(prompt="make a workbook", cwd=tmp_path, skill_id=None, skills=[], document_plugin_revision=DOCUMENT_PLUGIN_REVISION, execution_policy="sandbox_brokered", tool_policy_subjects=[], on_capability_evidence=acknowledge)
+    assert result.error is None
+    assert captured["skills"] == list(DOCUMENT_PLUGIN_SDK_SKILLS)
+    assert captured["plugins"] == [{"type": "local", "path": str(plugin)}]
+    assert captured["allowed_tools"] == [f"Skill({name})" for name in sorted(DOCUMENT_PLUGIN_SDK_SKILLS)]
+    assert [item.behavior for item in captured["permission_results"]] == ["allow", "deny"]
+    assert [item["lifecycle_phase"] for item in evidence] == ["invocation_requested", "completed"]
+    assert all(item["canonical_identity"] == "document-skills:xlsx" for item in evidence)
 
 
 @pytest.mark.asyncio
@@ -3347,7 +3401,7 @@ async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure
 
     async def acknowledge_candidates(candidates):
         event_types = {event.event_type for event in candidates}
-        if rejected_terminal_stage == "answer" and "message.part.delta" in event_types:
+        if rejected_terminal_stage == "answer" and "message.delta" in event_types:
             return False
         if rejected_terminal_stage == "result" and "model.completed" in event_types:
             return False
@@ -3970,7 +4024,7 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
     assert result.message == ""
     assert deltas == []
     assert result.answer_receipt is None
-    assert any(event.event_type == "message.part.delta" for event in candidate_events)
+    assert any(event.event_type == "message.delta" for event in candidate_events)
     assert not any(event.event_type == "message.completed" for event in candidate_events)
 
 
@@ -4132,16 +4186,6 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
 
 
 
-@pytest.mark.parametrize(
-    "public_name",
-    ["Reference Search", "input-tax-reconciliation", "进项税核对 V8"],
-)
-def test_public_skill_replacement_preserves_name_characters(public_name):
-    assert _public_skill_replacement(
-        "qa-review", {"qa-review": {"name": public_name}}
-    ) == f"【技能：{public_name}】"
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -4160,7 +4204,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "Reference Search",
-            "【技能：Reference Search】",
+            "reference-search",
             "",
         ),
         (
@@ -4169,7 +4213,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "capability",
             "Reference Search",
-            "【技能：Reference Search】",
+            "capability",
             "",
         ),
         (
@@ -4178,7 +4222,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "tool",
             "Reference Search",
-            "【技能：Reference Search】",
+            "tool",
             "",
         ),
         (
@@ -4187,7 +4231,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             True,
             "mcp__tenant-server__search",
             "Reference Search",
-            "【技能：Reference Search】",
+            "█",
             "",
         ),
         (
@@ -4196,7 +4240,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-private",
             None,
-            "【技能】",
+            "internal-reference-helper",
             "",
         ),
         (
@@ -4205,7 +4249,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "【技能：input-tax-reconciliation】",
+            "input-tax-reconciliation",
             "",
         ),
         (
@@ -4214,7 +4258,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "reference-search V8",
-            "【技能：reference-search V8】",
+            "reference-search",
             "",
         ),
         (
@@ -4223,7 +4267,7 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "进项税核对 V8",
-            "【技能：进项税核对 V8】",
+            "reference-search",
             "",
         ),
         (
@@ -4241,12 +4285,12 @@ def test_public_skill_replacement_preserves_name_characters(public_name):
             False,
             "skill-call-reference",
             "input-tax-reconciliation",
-            "█",
+            "input-█-reconciliation",
             "tax",
         ),
     ],
 )
-async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
+async def test_sdk_shows_authorized_skill_identity_unless_private_value(
     monkeypatch,
     tmp_path,
     optional_skill,
@@ -4326,31 +4370,94 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
     assert result.message == public_text
 
 
-
-
-
 @pytest.mark.asyncio
-async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_identity(
+async def test_skill_name_matching_configured_credential_stays_private_in_live_and_events(
     monkeypatch, tmp_path
 ):
-    identity = "reference-search"
-    hook_input = {
+    credential = "synthetic-anthropic-secret-token"
+    call_id = "skill-call-sensitive"
+    skill_input = {
         "tool_name": "Skill",
-        "tool_use_id": identity,
-        "tool_input": {"skill": identity},
+        "tool_use_id": call_id,
+        "tool_input": {"skill": credential},
     }
+    events, deltas = [], []
+    settings = _sandbox_brokered_settings()
+    settings.anthropic_auth_token = credential
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
         _scripted_sdk(
             {},
             [
-                *_completed_text_steps(f"Using {identity}. "),
-                ("hook", ("PreToolUse", hook_input, identity)),
-                ("hook", ("PostToolUseFailure", hook_input, identity)),
+                *_completed_text_steps(f"Using {credential}. "),
+                ("hook", ("PreToolUse", skill_input, call_id)),
+                ("hook", ("PostToolUseFailure", skill_input, call_id)),
             ],
             result_text="",
         ),
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="qa-review",
+        skills=["qa-review", credential],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[
+            {**_skill_subject("qa-review"), "allowed_skill_names": ["qa-review", credential]}
+        ],
+        run_id="run-private-skill-name",
+        attempt_id="attempt-private-skill-name",
+        on_text=deltas.append,
+        on_agent_event=lambda batch: events.extend(batch) or True,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    answer_events = _assistant_text_part_deltas(events, role="answer")
+    event_history_text = "".join(event.payload["delta"] for event in answer_events)
+    assert result.error is None
+    assert "".join(deltas) == event_history_text == "Using █. "
+    assert credential not in repr(events)
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_sdk_preserves_skill_identity_and_call_id_across_chunks(
+    monkeypatch, tmp_path
+):
+    identity = "reference-search"
+    dynamic_call_id = "hook-only-private-call"
+    identity_hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": identity,
+        "tool_input": {"skill": identity},
+    }
+    dynamic_hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": dynamic_call_id,
+        "tool_input": {"skill": identity},
+    }
+    deltas, candidates = [], []
+    steps = [
+        ("completed_text", "Using reference-"),
+        ("completed_text", "search. "),
+        ("hook", ("PreToolUse", identity_hook_input, identity)),
+        ("hook", ("PostToolUseFailure", identity_hook_input, identity)),
+        ("hook", ("PreToolUse", dynamic_hook_input, dynamic_call_id)),
+        ("hook", ("PostToolUseFailure", dynamic_hook_input, dynamic_call_id)),
+        ("completed_text", "After hook ID hook-only-"),
+        ("completed_text", "private-call. "),
+    ]
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk({}, steps, result_text=""),
     )
     monkeypatch.setattr(
         "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
@@ -4362,13 +4469,89 @@ async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_ide
         skills=[identity],
         execution_policy="sandbox_brokered",
         tool_policy_subjects=[_skill_subject(identity)],
+        on_text=deltas.append,
+        run_id="run-visible-skill",
+        attempt_id="attempt-visible-skill",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
         on_capability_evidence=_acknowledge_capability_evidence,
-        public_skill_metadata={
-            identity: {"name": f"{identity} V8", "version": "1.0.0", "availability": "available"}
-        },
     )
-    assert result.error == "claude_agent_sdk_output_validation_failed"
-    assert result.answer_receipt is None
+    assert result.error is None
+    expected_answer = "Using reference-search. After hook ID hook-only-private-call. "
+    event_history_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="answer")
+    )
+    assert "".join(deltas) == event_history_text == expected_answer
+    assert identity in event_history_text
+    assert dynamic_call_id in event_history_text
+    skill_events = [
+        candidate
+        for candidate in candidates
+        if candidate.event_type in {"tool.started", "tool.failed"}
+        and candidate.payload["category"] == "skill"
+    ]
+    assert skill_events
+    assert all(event.payload["display_name"] == identity for event in skill_events)
+
+
+@pytest.mark.asyncio
+async def test_sdk_tool_block_does_not_register_skill_call_id_for_answer_redaction(
+    monkeypatch, tmp_path
+):
+    call_id = "assistant-block-skill-call"
+    captured, candidates, deltas = {}, [], []
+    steps = []
+    sdk = _scripted_sdk(captured, steps, result_text="Final answer")
+    steps.extend(
+        [
+            (
+                "assistant_blocks",
+                [
+                    sdk.TextBlock("Skill invocation ID assistant-block-"),
+                    sdk.TextBlock("skill-call is visible."),
+                    sdk.ToolUseBlock(
+                        id=call_id,
+                        name="Skill",
+                        input={"skill": "reference-search"},
+                    ),
+                ],
+            ),
+            ("assistant", "Final answer"),
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings",
+        _sandbox_brokered_settings,
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id="reference-search",
+        skills=["reference-search"],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject("reference-search")],
+        on_text=deltas.append,
+        run_id="run-skill-tool-block",
+        attempt_id="attempt-skill-tool-block",
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        on_capability_evidence=_acknowledge_capability_evidence,
+    )
+
+    work_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="work")
+    )
+    answer_text = "".join(
+        event.payload["delta"]
+        for event in _assistant_text_part_deltas(candidates, role="answer")
+    )
+    assert result.error is None
+    expected = "Skill invocation ID assistant-block-skill-call is visible.\n\nFinal answer"
+    assert work_text == expected
+    assert call_id in work_text
+    assert "".join(deltas) == answer_text == expected
 
 
 @pytest.mark.asyncio
@@ -4522,8 +4705,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         for candidate in candidates
     ]
     assert "claude_sdk_thinking_summary" not in event_types
-    assert "message.delta" not in event_types
-    assert "message.part.delta" in event_types
+    assert "message.delta" in event_types
 
 
 
@@ -5099,7 +5281,6 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
     monkeypatch, tmp_path, select_file, publish_events
 ):
     import claude_agent_sdk as installed_sdk
-    from mcp import types as mcp_types
 
     captured, lifecycle, public_events = {}, [], []
     (tmp_path / "final.txt").write_text("synthetic deliverable", encoding="utf-8")
@@ -5113,35 +5294,30 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
 
     async def query(*, prompt, options):
         server = captured["mcp_servers"]["ai-platform-response"]["instance"]
-        listed = await server.request_handlers[mcp_types.ListToolsRequest](
-            mcp_types.ListToolsRequest()
-        )
-        assert [tool.name for tool in listed.root.tools] == ["attach_file"]
         identity = "mcp__ai-platform-response__attach_file"
         assert identity in captured["allowed_tools"]
-        if select_file:
-            args = {"path": "final.txt"}
-            allowed = await captured["can_use_tool"](
-                identity, args, installed_sdk.ToolPermissionContext(tool_use_id="file-call")
-            )
-            assert allowed.behavior == "allow"
-            hook_input = {
-                "tool_name": identity, "tool_input": args, "tool_use_id": "file-call"
-            }
-            before = captured["hooks"]["PreToolUse"][0]
-            admitted = await before.hooks[0](hook_input, "file-call", {})
-            assert admitted["hookSpecificOutput"]["permissionDecision"] == "allow"
-            called = await server.request_handlers[mcp_types.CallToolRequest](
-                mcp_types.CallToolRequest(
-                    params=mcp_types.CallToolRequestParams(name="attach_file", arguments=args)
+        async with _mcp_client_session(server) as session:
+            listed = await session.list_tools()
+            assert [tool.name for tool in listed.tools] == ["attach_file"]
+            if select_file:
+                args = {"path": "final.txt"}
+                allowed = await captured["can_use_tool"](
+                    identity, args, installed_sdk.ToolPermissionContext(tool_use_id="file-call")
                 )
-            )
-            assert called.root.isError is False
-            assert json.loads(called.root.content[0].text) == {"selected": True, "position": 0}
-            after = next(
-                item for item in captured["hooks"]["PostToolUse"] if item.matcher == "mcp__*"
-            )
-            await after.hooks[0](hook_input, "file-call", {})
+                assert allowed.behavior == "allow"
+                hook_input = {
+                    "tool_name": identity, "tool_input": args, "tool_use_id": "file-call"
+                }
+                before = captured["hooks"]["PreToolUse"][0]
+                admitted = await before.hooks[0](hook_input, "file-call", {})
+                assert admitted["hookSpecificOutput"]["permissionDecision"] == "allow"
+                called = await session.call_tool("attach_file", args)
+                assert called.is_error is False
+                assert json.loads(called.content[0].text) == {"selected": True, "position": 0}
+                after = next(
+                    item for item in captured["hooks"]["PostToolUse"] if item.matcher == "mcp__*"
+                )
+                await after.hooks[0](hook_input, "file-call", {})
         async for message in scripted_query(prompt=prompt, options=options):
             yield message
 
@@ -5390,7 +5566,7 @@ async def test_sdk_tool_narration_uses_work_trace_without_answer_receipt(
         (
             "assistant_blocks",
             [
-                sdk.TextBlock("Checking tool-private before answering."),
+                sdk.TextBlock("Checking sources before answering."),
                 sdk.ToolUseBlock(id="tool-private", name="Read", input={}),
             ],
         )
@@ -5406,14 +5582,13 @@ async def test_sdk_tool_narration_uses_work_trace_without_answer_receipt(
         run_id="run-work-trace", attempt_id="attempt-work-trace",
     )
 
-    work = _assistant_text_part_deltas(candidates, role="work")
-    answer = _assistant_text_part_deltas(candidates, role="answer")
+    answer = _assistant_text_part_deltas(candidates)
+    expected = "Checking sources before answering.\n\nFinal user answer"
     assert result.error is None
-    assert "".join(event.payload["delta"] for event in work) == "Checking █ before answering."
-    assert "".join(event.payload["delta"] for event in answer) == "Final user answer"
-    assert "".join(deltas) == "Final user answer"
+    assert "".join(event.payload["delta"] for event in answer) == expected
+    assert "".join(deltas) == expected
     assert result.answer_receipt is None
-    assert result.message == "Final user answer"
+    assert result.message == expected
 
 
 
@@ -5459,8 +5634,8 @@ async def test_sdk_tool_narration_batches_at_callback_limit(
         work = _assistant_text_part_deltas(
             [event for batch in batches for event in batch], role="work",
         )
-        assert "".join(event.payload["delta"] for event in work) == narration
-        assert deltas == ["Done."]
+        assert "".join(event.payload["delta"] for event in work) == narration + "\n\nDone."
+        assert "".join(deltas) == narration + "\n\nDone."
 
 
 
@@ -5560,14 +5735,98 @@ async def test_sdk_tool_turn_omits_unsafe_work_trace_before_result(
     )
 
     work = _assistant_text_part_deltas(candidates, role="work")
-    assert "message.part.delta" in observed_before_result
+    assert "message.delta" in observed_before_result
     assert not any(candidate.event_type == "commentary.delta" for candidate in candidates)
-    assert "Checking █ in █ before the next step." == "".join(
-        candidate.payload["delta"] for candidate in work
-    )
-    assert "".join(deltas) == "Final user answer"
+    expected = f"Checking █ in {tmp_path} before the next step.\n\nFinal user answer"
+    assert expected == "".join(candidate.payload["delta"] for candidate in work)
+    assert "".join(deltas) == expected
     assert result.error is None
-    assert result.message == "Final user answer"
+    assert result.message == expected
+
+
+@pytest.mark.asyncio
+async def test_sdk_answer_and_question_preserve_cwd_and_keep_secret_redaction(
+    monkeypatch, tmp_path
+):
+    cwd = tmp_path / "inputs" / "output"
+    cwd.mkdir(parents=True)
+    path = str(cwd)
+    credential = "synthetic-anthropic-secret-token"
+    answer = f"Workspace path: {path}/report.docx; configured credential {credential}. Done."
+    path_start = answer.index(path)
+    path_split = path_start + len(path) // 2
+    credential_start = answer.index(credential)
+    credential_split = credential_start + len(credential) // 2
+    chunks = (
+        answer[:path_split],
+        answer[path_split:credential_split],
+        answer[credential_split:],
+    )
+    live_chunks, candidates = [], []
+    settings = _settings()
+    settings.anthropic_auth_token = credential
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            {},
+            [("completed_text", chunk) for chunk in chunks],
+            result_text="",
+        ),
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="show the workspace reference",
+        cwd=cwd,
+        skill_id=None,
+        run_id="run-cwd-visible",
+        attempt_id="attempt-cwd-visible",
+        on_text=live_chunks.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+    )
+
+    expected = answer.replace(credential, "█")
+    question_sanitizers = []
+
+    def capture_question_sanitizer(_client, *, sanitize_text, **_kwargs):
+        question_sanitizers.append(sanitize_text)
+        return None
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.prepare_claude_run_interaction",
+        capture_question_sanitizer,
+    )
+    answer_deltas = _assistant_text_part_deltas(candidates, role="answer")
+    event_history_text = "".join(event.payload["delta"] for event in answer_deltas)
+    assert result.error is None
+    assert cwd.parts[-2:] == ("inputs", "output")
+    assert path in expected
+    assert credential not in expected
+    assert "".join(live_chunks) == result.message == event_history_text == expected
+
+    # Structured clarification questions use the same path/secret policy as
+    # answers: the active workspace root is visible, other private paths and
+    # configured credentials are still filtered.
+    question_result = await run_claude_agent_sdk(
+        prompt="show the workspace reference",
+        cwd=cwd,
+        skill_id=None,
+        run_id="run-cwd-question",
+        attempt_id="attempt-cwd-question",
+        interaction_client=object(),
+    )
+    assert question_result.error is None
+    assert len(question_sanitizers) == 1
+    question = question_sanitizers[0](
+        f"Workspace: {path}; credential {credential}; unrelated /var/private/file."
+    )
+    assert question == f"Workspace: {path}"
+    assert credential not in question
+    assert "/var/private/file" not in question
+    assert question_sanitizers[0](f"password={path}") == "password=[redacted-secret]"
 
 
 
@@ -5716,7 +5975,7 @@ async def test_sdk_rejected_part_candidate_cannot_be_reported_as_success(
 
     def reject_part_batch(batch):
         candidates.extend(batch)
-        if any(event.event_type == "message.part.delta" for event in batch):
+        if any(event.event_type == "message.delta" for event in batch):
             if callback_outcome == "raise":
                 raise RuntimeError("synthetic answer callback failure")
             if callback_outcome == "cancel":
@@ -5750,7 +6009,7 @@ async def test_sdk_rejected_part_candidate_cannot_be_reported_as_success(
 
     assert result.error is not None
     assert result.answer_receipt is None
-    assert any(event.event_type == "message.part.delta" for event in candidates)
+    assert any(event.event_type == "message.delta" for event in candidates)
     assert not any(event.event_type == "message.completed" for event in candidates)
     assert deltas == []
 
@@ -5810,7 +6069,7 @@ async def test_sdk_completion_projection_failure_keeps_delivered_text_without_re
     assert "".join(
         candidate.payload["delta"]
         for candidate in candidates
-        if candidate.event_type == "message.part.delta"
+        if candidate.event_type == "message.delta"
     ) == delivered
     assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
@@ -6708,7 +6967,7 @@ async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_rece
     delta_events = [
         candidate
         for candidate in message_events
-        if candidate.event_type == "message.part.delta"
+        if candidate.event_type == "message.delta"
     ]
     assert result.error is None
     assert result.received_structured_terminal is True
@@ -6718,7 +6977,7 @@ async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_rece
     assert message_events[-1].event_type == "message.completed"
     assert "".join(event.payload["delta"] for event in delta_events) == body
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": message_events[0].message_id,
         "delta_count": len(delta_events),
         "text_length": len(body),
@@ -6770,7 +7029,7 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
 @pytest.mark.parametrize("first_result", ["returned_error", "timeout", "missing_hook", "unacknowledged"])
 async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path, first_result):
     from contextlib import asynccontextmanager
-    from mcp.types import CallToolResult, TextContent, Tool
+    from mcp_types import CallToolResult, TextContent, Tool
     from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 
     captured, calls, events = {}, [], []
@@ -6780,9 +7039,13 @@ async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path,
     def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         @asynccontextmanager
         async def session_factory(config):
+            connection = {
+                key: value for key, value in config.items()
+                if key not in {"max_response_bytes", "max_response_total_bytes"}
+            }
             names = [item["mcp_tool"] for item in subjects.values()
                      if item.get("mcp_server") in configs
-                     and configs[item["mcp_server"]] == config]
+                     and configs[item["mcp_server"]] == connection]
             async def call_tool(name, arguments):
                 calls.append((name, arguments))
                 if name == "list_files" and first_result == "timeout":
@@ -7196,7 +7459,7 @@ async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_pat
     sdk = result.runtime_diagnostics["sdk"]
     assert set(sdk) == {"debug"}
     assert sdk["debug"]["component"] == "claude_executor"
-    assert sdk["debug"]["sdk_version"] == "0.2.165"
+    assert sdk["debug"]["sdk_version"] == "0.2.174"
     python_version = sdk["debug"]["python_version"]
     assert (
         isinstance(python_version, str)
@@ -7258,7 +7521,8 @@ async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkey
     assert closed.is_set()
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == "" and not result.received_structured_terminal
-    assert result.provider_final_sequence is None
+    assert result.provider_final_sequence == 1
+    assert result.sdk_settlement["mirror_complete"] is False
     assert result.response_files == [] and result.response_file_descriptors == []
     assert len(json.dumps(result.runtime_diagnostics).encode()) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
     public, private = await _persist_sdk_failure_diagnostics(result)

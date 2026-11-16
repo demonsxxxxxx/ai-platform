@@ -10,11 +10,14 @@ _LABELS = {
     "phase": {"preflight", "connect", "response", "stream", "entry_validation", "structured_entry_validation", "image_validation"},
     "failure_class": {"policy_rejected", "connect_error", "connect_timeout", "read_timeout", "write_timeout", "protocol_error", "transport_error", "http_error", "size_limit", "invalid_response"},
     "policy": {"anthropic_version", "anthropic_beta", "capacity", "request", "binding"},
+    # not_allowed is read compatibility for historical name-policy evidence.
+    "beta_rejection": {"too_many", "too_large", "empty", "invalid_format", "not_allowed"},
     "entry_kind": {"user", "assistant", "system", "summary", "file-history-snapshot", "progress", "cost-state", "queue-operation", "other"},
     "scope": {"main", "child"},
 }
 _COUNTS = {
-    "attempt_count", "beta_count", "entry_count", "entry_index", "observed_bytes", "limit_bytes",
+    "attempt_count", "beta_count", "rejected_beta_count", "beta_policy_revision",
+    "entry_count", "entry_index", "observed_bytes", "limit_bytes",
     "image_count", "encoded_image_bytes", "largest_encoded_image_bytes",
     "expected_sequence", "accepted_sequence", "timeout_ms",
 }

@@ -146,6 +146,8 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
             "file_ids": ["file-a"],
             "user_timezone": "Asia/Shanghai",
             "thinking_effort": "high",
+            "group_id": "group-second", "selection_mode": "explicit",
+            "model_id": "model-a", "model": "provider/model-a",
         },
     )
 
@@ -161,7 +163,10 @@ def test_agent_profile_favorite_uses_authenticated_principal_and_safe_projection
     assert chat_request["selected_agent_profile"] is None
     assert chat_request["selected_skill"] is None
     assert chat_request["selected_mcp_tool_ids"] is None
-    assert chat_request["agent_options"] == {"enable_thinking": "high"}
+    assert chat_request["agent_options"] == {
+        "enable_thinking": "high", "group_id": "group-second", "selection_mode": "explicit",
+        "model_id": "model-a", "model": "provider/model-a",
+    }
     assert "model_id" not in chat_request
 
 

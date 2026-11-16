@@ -67,6 +67,27 @@ TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
 TRUSTED_CALLBACK_URL = f"{TRUSTED_CALLBACK_BASE_URL}/api/ai/runtime/callbacks/executor"
 
 
+def test_authorized_skill_callback_uses_exact_allowlisted_name():
+    subjects = [
+        {
+            "identity": "Skill",
+            "allowed_skill_names": ["qa-review"],
+            "public_skill_labels": {"qa-review": "Confidential title"},
+        }
+    ]
+
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="qa-review",
+        subjects=subjects,
+    ) == "qa-review"
+    assert executor_app._public_capability_label(
+        capability_kind="skill",
+        canonical_identity="unlisted-skill",
+        subjects=subjects,
+    ) == ""
+
+
 def task_payload(
     callback_url: str = TRUSTED_CALLBACK_URL,
     *,
@@ -792,6 +813,35 @@ def sdk_mcp_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
     }
 
 
+def selected_skill_task_payload(skill_name: str = "qa-review") -> dict[str, object]:
+    raw = task_payload()
+    raw["config"]["skill_ids"] = [skill_name]
+    raw["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Skill",
+            "active": True,
+            "identity_authorized": True,
+            "allowed_skill_names": [skill_name],
+            "public_skill_labels": {skill_name: "Untrusted alternate title"},
+        }
+    ]
+    return raw
+
+
+def sdk_skill_evidence(identity: str, call_id: str, phase: str) -> dict[str, str]:
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="skill",
+        canonical_identity=identity,
+    )
+    return {
+        "capability_kind": "skill",
+        "canonical_identity": identity,
+        "tool_call_id": call_id,
+        "lifecycle_phase": phase,
+        "declaration_sha256": declaration.declaration_sha256,
+    }
+
+
 def sdk_result(message: str = "done", **overrides):
     values = {
         "used_sdk": True,
@@ -960,9 +1010,9 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
     assert all(len(callback.events) <= 100 for callback in callbacks)
 
     events = [event for callback in callbacks for event in callback.events]
-    deltas = [event for event in events if event.type == "message.part.delta"]
+    deltas = [event for event in events if event.type == "message.delta"]
     assert len(deltas) >= 101
-    assert not any(event.type == "message.delta" for event in events)
+    assert not any(event.type.startswith("message.part.") for event in events)
     assert "".join(event.payload["delta"] for event in deltas) == answer
     assert sum(len(event.payload["delta"]) for event in deltas) == len(answer)
     assert all(len(event.payload["delta"]) <= 8_192 for event in deltas)
@@ -980,7 +1030,7 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
     }
     assert completion.causation_event_id == deltas[-1].event_id
     assert result["answer_receipt"] == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "schema_version": "ai-platform.assistant-answer-receipt.v1",
         "message_id": deltas[0].message_id,
         "delta_count": len(deltas),
         "text_length": len(answer),
@@ -990,9 +1040,11 @@ async def test_sandbox_completed_block_answer_batches_executor_callback_events(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_documents", [False, True])
 async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     monkeypatch,
     tmp_path,
+    with_documents,
 ):
     captured = {}
 
@@ -1011,6 +1063,9 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     )
     raw = task_payload()
     raw["config"]["thinking_effort"] = "high"
+    from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION
+    if with_documents:
+        raw["config"]["document_plugin_revision"] = DOCUMENT_PLUGIN_REVISION
     request = ExecutorTaskRequest.model_validate(raw)
     events = []
 
@@ -1023,6 +1078,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     assert result["status"] == "completed"
     assert captured["skill_id"] is None
     assert captured["skills"] == []
+    assert captured["document_plugin_revision"] == (DOCUMENT_PLUGIN_REVISION if with_documents else None)
     assert captured["thinking_effort"] == "high"
     assert captured["model_auto_compact_window"] == 200_000
     assert captured["model_max_output_tokens"] == 2048
@@ -1970,6 +2026,62 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
     assert "mcp__tenant-server__search" not in json.dumps(capability_events)
     assert "tool-call-1" not in json.dumps(capability_events)
+
+
+def test_executor_emits_authorized_skill_name_in_capability_and_timeline_events(
+    tmp_path, monkeypatch
+):
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        for phase in ("invocation_requested", "completed"):
+            accepted = await kwargs["on_capability_evidence"](
+                sdk_skill_evidence("qa-review", "skill-call-1", phase)
+            )
+            assert accepted is True
+        return sdk_result()
+
+    def callback_sender(_url, payload, _token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post(
+        "/v2/tasks", json=selected_skill_task_payload(), headers=auth_headers()
+    )
+
+    assert response.status_code == 200
+    capability_batches = [
+        payload
+        for payload in callbacks
+        if any(event["type"].startswith("capability_") for event in payload.get("events", []))
+    ]
+    assert [
+        [event["type"] for event in payload["events"]]
+        for payload in capability_batches
+    ] == [
+        ["capability_invoking", "execution_step"],
+        ["capability_completed", "execution_step_completed"],
+    ]
+    assert [
+        payload["events"][0]["payload"]["capability"]
+        for payload in capability_batches
+    ] == [
+        {"kind": "skill", "name": "qa-review", "status": "invoking"},
+        {"kind": "skill", "name": "qa-review", "status": "completed"},
+    ]
+    assert [
+        payload["events"][1]["payload"]["safe_label"]
+        for payload in capability_batches
+    ] == ["qa-review", "qa-review"]
+    assert "Untrusted alternate title" not in json.dumps(capability_batches)
+    assert "skill-call-1" not in json.dumps(capability_batches)
 
 
 @pytest.mark.asyncio
@@ -3444,24 +3556,20 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     assert_response_checkpoints(wire_before, sdk_before, [before_text])
     assert_response_checkpoints(wire_after, sdk_after, after_chunks, complete=ending == "complete")
     assert wire_before[0]["call_ref"] != wire_after[0]["call_ref"]
-    # Raw wire/SDK observations retain their bounded hashes independently of
-    # public completed blocks. No partial raw text becomes public or requires
-    # a shared public-text ACK; callback transport batching has its own tests.
+    # Private checkpoints observe the raw wire independently of the sanitized
+    # native text deltas. Callback transport batching has its own tests.
     assert [item["events"] for item in sdk_after] == [1, 128, 256, 270]
     public_events = [event for callback in callbacks for event in callback["events"]
                      if event["type"] != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
-    parts = {}
-    for event in public_events:
-        if event["type"] == "message.part.delta":
-            parts.setdefault(event["payload"]["part_id"], []).append(event["payload"]["delta"])
-    assert len(parts) == (2 if ending == "complete" else 1)
-    public_text = "\n\n".join("".join(chunks) for chunks in parts.values())
-    assert public_text == (before_text + "\n\n" + "".join(after_chunks) if ending == "complete" else before_text)
-    roles = {event["payload"]["part_id"]: event["payload"]["role"]
-             for event in public_events if event["type"] == "message.part.classified"}
-    assert roles[next(iter(parts))] == "work"
+    public_text = "".join(event["payload"]["delta"] for event in public_events if event["type"] == "message.delta")
+    # Native partial text stays visible on failure/cancellation. Only the
+    # undecided sanitizer tail may remain unpublished on interrupted input.
+    expected = before_text + "\n\n" + "".join(after_chunks)
+    assert expected.startswith(public_text)
+    assert len(public_text) > len(before_text)
     if ending == "complete":
-        assert list(roles.values()) == ["work", "answer"]
+        assert public_text == expected
+    assert not any(event["type"].startswith("message.part.") for event in public_events)
     assert "call_ref" not in json.dumps(public_events)
     assert "private-model-before" not in caplog.text
     assert "private-model-after" not in caplog.text

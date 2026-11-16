@@ -30,11 +30,16 @@ from app.context.domain.conversation_authority import (
 )
 from app.context.application.provider_sessions import (
     ProviderSessionOperationResult,
+    read_verified_native_invocation,
     claim_provider_lineage,
     read_provider_coverage,
     release_provider_lineage,
     prepare_provider_epoch,
+    provider_session_verification_scope,
     commit_provider_turn,
+    settle_provider_continuation,
+    advance_unclaimed_terminal_generation,
+    get_session_continuation,
     execute_provider_session_callback,
     prepare_provider_session_media,
     transfer_provider_session_media,
@@ -52,6 +57,10 @@ from app.context.application.worker_snapshot import (
 from app.context.domain.file_staging import (
     context_stage_filename_fits as context_stage_filename_fits,
 )
+from app.context.domain.conversation_recovery import (
+    make_provider_coverage_authority_receipt as make_provider_coverage_authority_receipt,
+    validate_provider_authority_receipt as validate_provider_authority_receipt,
+)
 from app.context.domain.conversation import (
     EXECUTOR_CONVERSATION_CONTEXT_SCHEMA_VERSION_V2,
     empty_executor_conversation_context,
@@ -63,6 +72,7 @@ from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_ENTRY_BYTES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES,
     PROVIDER_SESSION_CONTEXT_EPOCH,
     PROVIDER_SESSION_READ_VIEW_HEADER,
     PROVIDER_SESSION_CHILD_READ_VIEW,
@@ -270,6 +280,7 @@ __all__ = [
     "context_file_failure_diagnostic",
     "empty_executor_conversation_context",
     "materialize_worker_context_snapshot",
+    "read_verified_native_invocation",
     "make_authority_receipt",
     "validate_authority_receipt",
     "normalize_context_file_error_code",
@@ -279,6 +290,7 @@ __all__ = [
     "MAX_PROVIDER_SESSION_ENTRIES",
     "MAX_PROVIDER_SESSION_ENTRY_BYTES",
     "MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES",
+    "PROVIDER_SESSION_NATIVE_RESUME_TRANSCRIPT_RESERVE_BYTES",
     "PROVIDER_SESSION_CONTEXT_EPOCH",
     "PROVIDER_SESSION_READ_VIEW_HEADER",
     "PROVIDER_SESSION_CHILD_READ_VIEW",
@@ -293,6 +305,12 @@ __all__ = [
     "read_provider_coverage",
     "release_provider_lineage",
     "prepare_provider_epoch",
+    "provider_session_verification_scope",
+    "settle_provider_continuation",
+    "advance_unclaimed_terminal_generation",
+    "get_session_continuation",
+    "make_provider_coverage_authority_receipt",
+    "validate_provider_authority_receipt",
     "commit_provider_turn",
     "ProviderSessionScope",
     "claude_provider_session_id_for_session",

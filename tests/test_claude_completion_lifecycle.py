@@ -201,7 +201,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
 
     async def on_agent_event(batch):
         public_candidates.extend(batch)
-        if any(event.event_type == "message.part.delta" for event in batch):
+        if any(event.event_type == "message.delta" for event in batch):
             before_published.set()
         return True
 
@@ -222,9 +222,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
-            yield {"type": "assistant", "uuid": "completed-before-stop", "session_id": "stable-provider-id",
-                "parent_tool_use_id": None, "message": {"id": "drained-model-response", "role": "assistant",
-                "model": "model-a", "content": [{"type": "text", "text": before_text}]}}
+            # Exercise native increments before any completed block or Result.
             for index, event in enumerate(events[:4]):
                 yield stream_event(index, event)
             receiving.set()
@@ -321,16 +319,192 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
             assert final["sha256"] == hashlib.sha256((before_text + tail_text).encode()).hexdigest()
             assert len(final["call_ref"]) == 32
             public_text = "".join(event.payload["delta"] for event in public_candidates
-                                  if event.event_type == "message.part.delta")
+                                  if event.event_type == "message.delta")
             assert before_text[:100] in public_text
             assert "Suppressed drain tail." not in public_text
-            assert public_chunks == []  # The preview remained unclassified at cancellation.
+            assert public_chunks == []  # Legacy on_text only receives successful terminal text.
             assert not any(event.event_type == "message.completed" for event in public_candidates)
     finally:
         release_tail.set()
         transport.release.set()
         await asyncio.gather(task, *list(cleanup_tasks), return_exceptions=True)
     assert transport.closed.is_set() and not cleanup_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_frame", ["notification", "updated"])
+async def test_cancel_accounts_background_completion_before_filter_and_settles_result_mirror(
+    monkeypatch, tmp_path, terminal_frame,
+):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[], append_provider_session=False)
+    started, interrupted = asyncio.Event(), asyncio.Event()
+    tail_started, release_tail = asyncio.Event(), asyncio.Event()
+    public_events = []
+
+    class TaskStartedMessage:
+        task_id = "agent-task"
+        task_type = "local_agent"
+
+    class TaskNotificationMessage:
+        task_id = "agent-task"
+        status = "completed"
+
+    class TaskUpdatedMessage:
+        task_id = "agent-task"
+        patch = {"status": "completed"}
+
+    sdk.TaskStartedMessage = TaskStartedMessage
+    sdk.TaskNotificationMessage = TaskNotificationMessage
+    sdk.TaskUpdatedMessage = TaskUpdatedMessage
+
+    class Store:
+        accepted_final_sequence = None
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, entries):
+            if entries[0]["uuid"] == "tail":
+                tail_started.set()
+                await release_tail.wait()
+                self.accepted_final_sequence = 2
+            else:
+                self.accepted_final_sequence = 1
+
+    store = Store()
+
+    def result_message():
+        message = sdk.ResultMessage()
+        message.session_id = "provider-a"
+        message.usage = {"input_tokens": 1}
+        return message
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            await self.options.session_store.append("provider-a", [{"uuid": "main"}])
+            yield TaskStartedMessage()
+            started.set()
+            await interrupted.wait()
+            # An intermediate Result is not Run completion while the agent is pending.
+            yield result_message()
+            yield TaskNotificationMessage() if terminal_frame == "notification" else TaskUpdatedMessage()
+            yield result_message()
+            await self.options.session_store.append("provider-a", [{"uuid": "tail"}])
+
+        async def interrupt(self):
+            interrupted.set()
+
+    async def on_agent_event(batch):
+        public_events.extend(event.event_type for event in batch)
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="delegate", cwd=tmp_path, skill_id=None, session_id="provider-a",
+        session_store=store, provider_session_resume_required=False,
+        run_id="run", attempt_id="attempt", on_agent_event=on_agent_event,
+        client_fn=Client,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.wait_for(tail_started.wait(), 1)
+        assert not task.done()
+        release_tail.set()
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await asyncio.wait_for(task, 2)
+        settlement = cancelled.value.sdk_settlement
+        assert settlement.provider_final_sequence == 2
+        assert settlement.sdk_settlement["received_result"] is True
+        assert settlement.sdk_settlement["mirror_complete"] is True
+        assert public_events == ["subagent.started"]
+    finally:
+        release_tail.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_live_background_agent_instead_of_waiting_for_cleanup_deadline(
+    monkeypatch, tmp_path,
+):
+    """interrupt() leaves a background agent running; stop must end it, not time out."""
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[], append_provider_session=False)
+    started, task_stopped = asyncio.Event(), asyncio.Event()
+    stopped_ids = []
+
+    class TaskStartedMessage:
+        task_id = "agent-task"
+        task_type = "local_agent"
+
+    class TaskNotificationMessage:
+        task_id = "agent-task"
+        status = "stopped"
+
+    sdk.TaskStartedMessage = TaskStartedMessage
+    sdk.TaskNotificationMessage = TaskNotificationMessage
+
+    class Store:
+        accepted_final_sequence = None
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, entries):
+            self.accepted_final_sequence = 2 if entries[0]["uuid"] == "tail" else 1
+
+    def result_message():
+        message = sdk.ResultMessage()
+        message.session_id = "provider-a"
+        message.usage = {"input_tokens": 1}
+        return message
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            await self.options.session_store.append("provider-a", [{"uuid": "main"}])
+            yield TaskStartedMessage()
+            started.set()
+            # The CLI keeps the run open until the background agent ends.
+            await task_stopped.wait()
+            yield TaskNotificationMessage()
+            yield result_message()
+            await self.options.session_store.append("provider-a", [{"uuid": "tail"}])
+
+        async def interrupt(self):
+            pass
+
+        async def stop_task(self, task_id):
+            stopped_ids.append(task_id)
+            task_stopped.set()
+
+    async def on_agent_event(_batch):
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="delegate", cwd=tmp_path, skill_id=None, session_id="provider-a",
+        session_store=Store(), provider_session_resume_required=False,
+        run_id="run", attempt_id="attempt", on_agent_event=on_agent_event,
+        client_fn=Client,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.sleep(0)
+        task.cancel()
+        # Far below the 30s cleanup deadline that previously gated settlement.
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await asyncio.wait_for(task, 2)
+        assert stopped_ids == ["agent-task"]
+        settlement = cancelled.value.sdk_settlement
+        assert settlement.provider_final_sequence == 2
+        assert settlement.sdk_settlement["mirror_complete"] is True
+    finally:
+        task_stopped.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -361,9 +535,10 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         yield {"type": "assistant", "uuid": "typed-answer", "session_id": "stable-provider-id",
             "parent_tool_use_id": None, "message": {"id": "typed-response", "role": "assistant",
             "model": "synthetic", "content": [{"type": "text", "text": "done"}]}}
-        yield {"type": "stream_event", "uuid": "ignored-raw", "session_id": "stable-provider-id",
-            "parent_tool_use_id": None, "event": {"type": "content_block_delta", "index": 0,
-            "delta": {"type": "text_delta", "text": "IGNORED_RAW"}}}
+        # Child-agent prose is not part of the main assistant answer.
+        yield {"type": "stream_event", "uuid": "child-raw", "session_id": "stable-provider-id",
+            "parent_tool_use_id": "child-call", "event": {"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "PRIVATE_CHILD_TEXT"}}}
         yield {
             "type": "result", "subtype": "success", "is_error": False,
             "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
@@ -421,8 +596,10 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         release_tail.set()
         result = await asyncio.wait_for(task, 2)
         assert result.error == ("claude_agent_sdk_provider_session_failed" if tail_failure else None)
-        assert result.provider_final_sequence == (None if tail_failure else 2)
-        assert "IGNORED_RAW" not in "".join(public_text)
+        assert result.provider_final_sequence == (1 if tail_failure else 2)
+        assert result.sdk_settlement["mirror_complete"] is (not tail_failure)
+        assert result.sdk_settlement["ack_unknown"] is tail_failure
+        assert "PRIVATE_CHILD_TEXT" not in "".join(public_text)
         if not tail_failure:
             assert result.message == "done" and "".join(public_text) == "done"
         assert not transport.closed.is_set() and len(cleanup_tasks) == 1
@@ -661,7 +838,8 @@ async def test_executor_sends_terminal_sequence_before_owned_cleanup_finishes(mo
         await release.wait()
         closed.set()
 
-    async def runner(_request, _root, _emit, *, callback_sender, sdk_cleanup_tasks):
+    async def runner(_request, _root, _emit, *, callback_sender, sdk_cleanup_tasks, recovery_tool_gate_query):
+        assert recovery_tool_gate_query is None
         cleanup = asyncio.create_task(physical_cleanup())
         sdk_cleanup_tasks.add(cleanup)
         cleanup.add_done_callback(sdk_cleanup_tasks.discard)

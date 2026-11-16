@@ -56,11 +56,13 @@ def test_requested_status_decision_maps_missing_progress_to_incomplete():
     )
 
 
-def test_progress_get_reads_known_and_default_values():
+def test_progress_exposes_typed_facts_without_retired_mapping_compatibility():
     progress = RunTerminalizationProgress(
         completed=False,
         status="running",
     )
 
-    assert progress.get("status") == "running"
-    assert progress.get("missing", "fallback") == "fallback"
+    assert progress.completed is False
+    assert progress.status == "running"
+    assert progress.did_transition is False
+    assert not hasattr(progress, "get")

@@ -165,7 +165,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
     assert (
         "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 "
-        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
+        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx "
+        "src/hooks/useAgent/__tests__/conversationContinuation.test.ts"
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse

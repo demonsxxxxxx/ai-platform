@@ -20,9 +20,8 @@ import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGo
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
-import { ApiRequestError } from "../../services/api/fetch";
-import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 import { roleGovernanceApi } from "../../services/api/roleGovernance";
+import { ApiRequestError, publicApiErrorMessage } from "../../services/api/fetch";
 import { Permission } from "../../types";
 import type {
   RoleGovernanceAuditItem,
@@ -37,11 +36,8 @@ type OperationState = {
   id: string;
 } | null;
 
-function getRoleGovernanceLoadErrorMessage(error: unknown): string {
-  if (error instanceof ApiRequestError && error.status === 403) {
-    return `missing_permission:${Permission.ROLE_READ}`;
-  }
-  return "role-governance-projection-unavailable";
+function isRoleGovernanceForbidden(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.status === 403;
 }
 
 function formatCapability(value: string): string {
@@ -230,15 +226,14 @@ export function RolesPanel() {
       const response = await roleGovernanceApi.getOverview("default");
       setOverview(response);
     } catch (err) {
-      console.warn(
-        formatSafeDiagnosticLog("[RolesPanel] Failed to load role governance overview", err),
-      );
       setOverview(null);
-      setLoadError(getRoleGovernanceLoadErrorMessage(err));
+      setLoadError(isRoleGovernanceForbidden(err)
+        ? `missing_permission:${Permission.ROLE_READ}`
+        : publicApiErrorMessage(err, t("roles.plaza.degraded.detail")));
     } finally {
       setIsLoading(false);
     }
-  }, [authLoading, isAuthenticated]);
+  }, [authLoading, isAuthenticated, t]);
 
   useEffect(() => {
     void loadOverview();
@@ -295,7 +290,7 @@ export function RolesPanel() {
       await loadOverview();
     } catch (err) {
       toast.error(
-        err instanceof Error ? err.message : t("roles.plaza.operationFailed"),
+        publicApiErrorMessage(err, t("roles.plaza.operationFailed")),
       );
     } finally {
       setOperation(null);
@@ -436,7 +431,7 @@ export function RolesPanel() {
               title={t("roles.plaza.degraded.title")}
               description={t("roles.plaza.degraded.description")}
               details={
-                loadError ? [t("roles.plaza.degraded.detail")] : undefined
+                loadError ? [loadError] : undefined
               }
               className="max-w-none text-left"
             />

@@ -30,6 +30,7 @@ interface ZipUploadModalProps {
   onZipSkillToggle: (name: string) => void;
   onZipSelectAll: (names: string[]) => void;
   onZipUpload: () => void;
+  error?: string | null;
 }
 
 export function ZipUploadModal({
@@ -54,6 +55,7 @@ export function ZipUploadModal({
   onZipSkillToggle,
   onZipSelectAll,
   onZipUpload,
+  error,
 }: ZipUploadModalProps) {
   const { t } = useTranslation();
 
@@ -101,6 +103,8 @@ export function ZipUploadModal({
       icon={<UploadCloud size={16} />}
       width="wide"
       footer={
+        <div>
+          {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger-text)]">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Button type="default"
             onClick={() => setShowZipModal(false)}
@@ -131,6 +135,7 @@ export function ZipUploadModal({
               </span>
             </Button>
           )}
+        </div>
         </div>
       }
     >

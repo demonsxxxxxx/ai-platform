@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from inspect import isawaitable
 from typing import Any, Sequence
 
 from redis.exceptions import RedisError
@@ -16,7 +17,7 @@ class RedisFollowUpSuggestionCache:
 
     async def _client(self) -> Any:
         client = self._redis_provider()
-        if hasattr(client, "__await__"):
+        if isawaitable(client):
             client = await client
         return client
 

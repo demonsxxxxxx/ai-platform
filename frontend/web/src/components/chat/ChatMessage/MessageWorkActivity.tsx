@@ -1,14 +1,105 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { MessagePart } from "../../../types";
+import type { ExecutionTimelinePart, MessagePart } from "../../../types/message";
 import { isWorkActivityPart } from "./messagePartVisibility";
 import { shouldExpandWorkActivity } from "./workActivityExpansion";
 import { RunActivity } from "./elements/RunActivity";
+import { formatTaskDuration } from "./taskDuration";
 
 export interface WorkActivityIssueCounts {
   failed: number;
   denied: number;
 }
+
+interface WorkActivityPartEntry {
+  part: MessagePart;
+  index: number;
+}
+
+
+function isExecutionStepPart(
+  part: MessagePart,
+): part is Extract<MessagePart, { type: "execution_step" }> {
+  return part.type === "execution_step";
+}
+
+function isExecutionProcessPart(
+  part: MessagePart,
+): part is Extract<MessagePart, { type: "execution_process" }> {
+  return part.type === "execution_process";
+}
+
+const ROUTINE_EXECUTION_STAGES = new Set([
+  "attachment_materialization",
+  "artifact_recovery",
+  "artifact_validation",
+  "model_response",
+  "model_wait",
+  "sandbox_preparation",
+  "sandbox_ready",
+  "sandbox_submission",
+  "skill_staging",
+  "skills_ready",
+]);
+
+function executionStepsOf(part: MessagePart): readonly ExecutionTimelinePart[] {
+  if (isExecutionStepPart(part)) return [part];
+  if (isExecutionProcessPart(part)) return part.steps;
+  return [];
+}
+
+function isRoutineExecutionStep(step: ExecutionTimelinePart): boolean {
+  return Boolean(
+    step.stage &&
+      (ROUTINE_EXECUTION_STAGES.has(step.stage) ||
+        step.stage.startsWith("sandbox_")),
+  );
+}
+
+
+/** Keep public work and active tools while collapsing routine agent phases. */
+function selectDisplayWorkParts(
+  parts: readonly MessagePart[],
+  isStreaming: boolean | undefined,
+): WorkActivityPartEntry[] {
+  let latestMeaningfulSequence = -1;
+  parts.forEach((part) => {
+    executionStepsOf(part).forEach((step) => {
+      if (!isRoutineExecutionStep(step)) {
+        latestMeaningfulSequence = Math.max(latestMeaningfulSequence, step.sequence);
+      }
+    });
+  });
+
+
+  const shouldDisplayStep = (step: ExecutionTimelinePart) =>
+    step.status === "failed" ||
+    (!isRoutineExecutionStep(step) &&
+      (isStreaming !== true || step.sequence === latestMeaningfulSequence));
+  const selected: WorkActivityPartEntry[] = [];
+
+  parts.forEach((part, index) => {
+    if (isExecutionStepPart(part)) {
+      if (shouldDisplayStep(part)) selected.push({ part, index });
+      return;
+    }
+    if (isExecutionProcessPart(part)) {
+      const steps = part.steps.filter(shouldDisplayStep);
+      if (steps.length > 0) {
+        selected.push({
+          index,
+          part: steps.length === part.steps.length ? part : { ...part, steps },
+        });
+      }
+      return;
+    }
+
+    if (isWorkActivityPart(part)) selected.push({ part, index });
+  });
+
+  return selected;
+}
+
 
 /** Count local operation problems without changing the enclosing Run status. */
 function countWorkActivityIssues(parts: readonly MessagePart[]): WorkActivityIssueCounts {
@@ -33,96 +124,75 @@ function countWorkActivityIssues(parts: readonly MessagePart[]): WorkActivityIss
   return counts;
 }
 
+function WorkActivityDisclosure({
+  messageId, entries, isStreaming, duration, children,
+}: { messageId: string; entries: WorkActivityPartEntry[]; isStreaming?: boolean; duration?: ReactNode; children: ReactNode }) {
+  const { t } = useTranslation();
+  // The one message-level disclosure retains manual choice as operations arrive.
+  const [expanded, setExpanded] = useState(() => shouldExpandWorkActivity(isStreaming));
+  const issues = countWorkActivityIssues(entries.map(({ part }) => part));
+  const hasIssues = issues.failed > 0 || issues.denied > 0;
+  return <RunActivity
+    open={expanded}
+    onOpenChange={setExpanded}
+    status={hasIssues ? "error" : isStreaming ? "running" : "complete"}
+    label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+    itemCount={t("chat.workDetails.itemCount", { count: entries.filter(({ part }) => isWorkActivityPart(part)).length })}
+    toggleLabel={t(expanded ? "chat.workDetails.collapseAll" : "chat.workDetails.expandAll")}
+    contentId={`chat-work-${messageId}`}
+    duration={duration}
+    issueSummary={hasIssues ? <span className="inline-flex flex-wrap items-center gap-x-1.5" data-work-activity-issue-summary>
+      {issues.failed > 0 ? <span className="text-[var(--theme-danger-text)]" data-work-activity-failed-count>· {issues.failed} 项失败</span> : null}
+      {issues.denied > 0 ? <span className="text-[var(--theme-warning-text)]" data-work-activity-denied-count>· {issues.denied} 项未授权</span> : null}
+    </span> : undefined}
+  >{children}</RunActivity>;
+}
+
 export function MessageWorkActivity({
-  messageId,
-  isStreaming,
-  parts,
-  partKeys,
-  renderPart,
+  messageId, isStreaming, runDurationMs, parts, partKeys, renderPart,
 }: {
   messageId: string;
   isStreaming?: boolean;
+  runDurationMs?: number;
   parts: MessagePart[];
   partKeys: string[];
-  renderPart: (
-    part: MessagePart,
-    index: number,
-    withinWorkDetails: boolean,
-  ) => ReactNode;
+  renderPart: (part: MessagePart, index: number, withinWorkDetails: boolean) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const autoExpanded = shouldExpandWorkActivity(parts, isStreaming, isWorkActivityPart);
-  const [expanded, setExpanded] = useState(autoExpanded);
-  const previousPhaseRef = useRef({ messageId, autoExpanded });
-
-  useEffect(() => {
-    const previous = previousPhaseRef.current;
-    if (previous.messageId !== messageId || previous.autoExpanded !== autoExpanded) {
-      setExpanded(autoExpanded);
+  const formattedDuration = isStreaming === true ? null : formatTaskDuration(runDurationMs);
+  const duration = formattedDuration !== null
+    ? <span data-task-duration className="tabular-nums">
+      {t("chat.message.duration")} {formattedDuration}
+    </span> : undefined;
+  const displayEntries = new Map(selectDisplayWorkParts(parts, isStreaming).map(entry => [entry.index, entry]));
+  // Actual tool/subagent events establish the process boundary. Text is never
+  // classified by wording: a later operation archives the preceding narration;
+  // text after the last operation remains the live result until another starts.
+  let lastOperation = -1;
+  parts.forEach((part, index) => {
+    if (part.type === "tool" || part.type === "subagent") lastOperation = index;
+  });
+  const process: WorkActivityPartEntry[] = [];
+  const result: WorkActivityPartEntry[] = [];
+  parts.forEach((part, index) => {
+    if (isWorkActivityPart(part)) {
+      const entry = displayEntries.get(index);
+      if (entry) process.push(entry);
+    } else if (part.type === "text" && index < lastOperation) {
+      process.push({ part, index });
+    } else {
+      result.push({ part, index });
     }
-    previousPhaseRef.current = { messageId, autoExpanded };
-  }, [messageId, autoExpanded]);
-
-  const workActivityCount = parts.filter(isWorkActivityPart).length;
-  const issueCounts = countWorkActivityIssues(parts);
-  const firstWorkActivityIndex = parts.findIndex(isWorkActivityPart);
-  const workActivityRegionIds = parts.map((part, index) =>
-    isWorkActivityPart(part) ? `chat-work-${messageId}-${index}` : "",
-  );
-  const controlledWorkActivityIds = workActivityRegionIds.filter(Boolean).join(" ");
-  const activityStatus = isStreaming
-    ? "running"
-    : issueCounts.failed > 0 || issueCounts.denied > 0
-      ? "error"
-      : "complete";
-
-  const renderResultPart = (part: MessagePart, index: number) => (
+  });
+  const renderEntry = ({ part, index }: WorkActivityPartEntry, withinWorkDetails: boolean) => (
     <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
-      {renderPart(part, index, false)}
+      {renderPart(part, index, withinWorkDetails)}
     </Fragment>
   );
-  // The visible result reads first; the process disclosure follows it so the
-  // user opens an execution trace only after reading the answer.
-  return (
-    <div data-message-work-activity-order="result-first">
-      {parts.map((part, index) =>
-        isWorkActivityPart(part) ? null : renderResultPart(part, index),
-      )}
-      {parts.map((part, index) => {
-        if (!isWorkActivityPart(part)) return null;
-        const isFirstWorkActivity = index === firstWorkActivityIndex;
-        const hasIssues = issueCounts.failed > 0 || issueCounts.denied > 0;
-        return (
-          <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
-            <RunActivity
-              open={expanded}
-              onOpenChange={setExpanded}
-              status={activityStatus}
-              label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
-              itemCount={t("chat.workDetails.itemCount", { count: workActivityCount })}
-              toggleLabel={t(
-                expanded
-                  ? "chat.workDetails.collapseAll"
-                  : "chat.workDetails.expandAll",
-              )}
-              contentId={workActivityRegionIds[index]}
-              ariaControls={controlledWorkActivityIds}
-              showTrigger={isFirstWorkActivity}
-              issueSummary={
-                isFirstWorkActivity && hasIssues ? (
-                  <span className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]" data-work-activity-issue-summary>
-                    {issueCounts.failed > 0 ? <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span> : null}
-                    {issueCounts.denied > 0 ? <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span> : null}
-                    <span>查看执行详情</span>
-                  </span>
-                ) : undefined
-              }
-            >
-              {renderPart(part, index, true)}
-            </RunActivity>
-          </Fragment>
-        );
-      })}
-    </div>
-  );
+  return <div data-message-work-activity-order="process-then-result">
+    {process.length > 0 ? <WorkActivityDisclosure key="process" messageId={messageId} entries={process} isStreaming={isStreaming} duration={duration}>
+      {process.map(entry => renderEntry(entry, true))}
+    </WorkActivityDisclosure> : duration ? <div className="py-1 text-sm text-[var(--theme-text-secondary)]">{duration}</div> : null}
+    <div data-message-result>{result.map(entry => renderEntry(entry, false))}</div>
+  </div>;
 }

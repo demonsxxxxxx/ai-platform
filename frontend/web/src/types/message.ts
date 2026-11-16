@@ -18,8 +18,10 @@ export interface Message {
   parts?: MessagePart[];
   // Token 使用统计
   tokenUsage?: TokenUsagePart;
-  // 对话耗时（毫秒）
+  // SDK/model-reported duration (milliseconds), not the whole Run.
   duration?: number;
+  /** Server run_started to finished_at span, restored by terminal history hydration. */
+  runDurationMs?: number;
   // 用户消息附件
   attachments?: MessageAttachment[];
   // 运行 ID - 用于反馈
@@ -204,7 +206,10 @@ export interface ToolPart {
   agent_id?: string;
   /** Server-authorized, non-sensitive identity used by the v4 Render Contract. */
   public_operation_id?: string;
-  /** Sanitized v4 display name retained only for public Skill presentation. */
+  /**
+   * Presentation-only Skill label. Current v4 events use the fixed "Skill"
+   * label; retained history may keep earlier labels.
+   */
   public_display_name?: string;
   public_category?: string;
   duration_ms?: number;

@@ -22,6 +22,7 @@ import {
   processMessageEvent,
 } from "./eventProcessor";
 import { clearAllLoadingStates } from "./messageParts";
+import { terminalRunStatus } from "./runLifecycle";
 import { parseDate } from "../../utils/datetime";
 import { getPublicTerminalPresentationDefinition } from "./publicTerminalPresentation";
 import { CHAT_PUBLIC_PROJECTION_VERSION } from "./types";
@@ -30,7 +31,8 @@ import {
   composeAssistantPreviewText,
   hasMarkedAssistantTextParts,
   isAssistantTextPartEventType,
-  isValidAssistantTextPartPayload,
+  validateAssistantTextPartPayload,
+  type ValidatedAssistantTextPartEvent,
 } from "../../types/assistantTextParts";
 
 function resolveUserMessageId(
@@ -119,9 +121,14 @@ function historyEventIdentity(event: HistoryEvent): string | undefined {
     : undefined;
 }
 
+interface NormalizedProtocolHistoryEventData {
+  data: HistoryEventData;
+  validatedAssistantTextPartEvent?: ValidatedAssistantTextPartEvent;
+}
+
 function normalizeProtocolHistoryEventData(
   event: HistoryEvent,
-): HistoryEventData | null {
+): NormalizedProtocolHistoryEventData | null {
   const raw = historyEventData(event);
   const nestedPayload = asRecord(raw.payload);
   const hasNestedPayload = Object.hasOwn(raw, "payload");
@@ -147,7 +154,11 @@ function normalizeProtocolHistoryEventData(
             .filter((key) => Object.hasOwn(raw, key))
             .map((key) => [key, raw[key]]),
         );
-    if (!isValidAssistantTextPartPayload(event.event_type, payload)) {
+    const validatedAssistantTextPartEvent = validateAssistantTextPartPayload(
+      event.event_type,
+      payload,
+    );
+    if (!validatedAssistantTextPartEvent) {
       return null;
     }
     const messageId = raw.message_id ?? raw.protocol_message_id;
@@ -172,19 +183,22 @@ function normalizeProtocolHistoryEventData(
       return null;
     }
     return {
-      ...(payload as HistoryEventData),
-      event_id: eventId,
-      run_id: runId,
-      message_id: messageId,
-      sequence,
-      stream_incarnation: streamIncarnation,
-      event_type: event.event_type,
-      timestamp:
-        typeof raw.timestamp === "string"
-          ? raw.timestamp
-          : typeof raw.emitted_at === "string"
-            ? raw.emitted_at
-            : event.timestamp,
+      data: {
+        ...validatedAssistantTextPartEvent.payload,
+        event_id: eventId,
+        run_id: runId,
+        message_id: messageId,
+        sequence,
+        stream_incarnation: streamIncarnation,
+        event_type: event.event_type,
+        timestamp:
+          typeof raw.timestamp === "string"
+            ? raw.timestamp
+            : typeof raw.emitted_at === "string"
+              ? raw.emitted_at
+              : event.timestamp,
+      },
+      validatedAssistantTextPartEvent,
     };
   }
 
@@ -221,7 +235,7 @@ function normalizeProtocolHistoryEventData(
     }
     merged.content = merged.delta;
   }
-  return merged as HistoryEventData;
+  return { data: merged as HistoryEventData };
 }
 
 function parseEventTimestamp(
@@ -341,7 +355,7 @@ function processHistoryEvent(
     return currentAssistantMessage;
   }
   const eventData =
-    normalizedProtocolData || (event.data as HistoryEventData);
+    normalizedProtocolData?.data || (event.data as HistoryEventData);
   const depth = eventData.depth || 0;
   const agentId = eventData.agent_id;
 
@@ -474,6 +488,7 @@ function processHistoryEvent(
     opts.activeSubagentStack,
     false, // isStreaming = false for history
     msg.id,
+    normalizedProtocolData?.validatedAssistantTextPartEvent,
   );
 
   if (result.accepted === false) {
@@ -721,6 +736,28 @@ export function reconstructMessagesFromEvents(
   );
   opts.activeProtocolMessageOwner = processingOptions.activeProtocolMessageOwner;
 
+  // Terminal hydration and page reload share this authoritative history path.
+  // Do not use model duration, grouped phase spans or the browser clock as Run time.
+  const runStarts = new Map<string, number>();
+  const runEnds = new Map<string, number>();
+  for (const event of uniqueEvents) {
+    if (!event.run_id || !event.timestamp) continue;
+    const timestamp = parseDate(event.timestamp).getTime();
+    if (!Number.isFinite(timestamp)) continue;
+    if (event.event_type === "run_started") {
+      runStarts.set(event.run_id, Math.min(runStarts.get(event.run_id) ?? timestamp, timestamp));
+    } else if (event.event_type === "done" && terminalRunStatus(asRecord(event.data).status)) {
+      runEnds.set(event.run_id, Math.min(runEnds.get(event.run_id) ?? timestamp, timestamp));
+    }
+  }
+  for (const message of reconstructedMessages) {
+    if (message.role !== "assistant" || !message.runId) continue;
+    const start = runStarts.get(message.runId);
+    const end = runEnds.get(message.runId);
+    if (start !== undefined && end !== undefined && end >= start) {
+      message.runDurationMs = end - start;
+    }
+  }
   return reconstructedMessages;
 }
 
@@ -737,9 +774,7 @@ export function hasDisplayableRunAnswer(
         part.type === "text" &&
         !part.depth &&
         Boolean(part.content.trim()) &&
-        assistantTextPartRole(part) !== null &&
-        assistantTextPartRole(part) !== "pending" &&
-        assistantTextPartRole(part) !== "work",
+        assistantTextPartRole(part) !== null,
     );
     const hasDeliverableArtifact = parts.some(
       (part) =>
@@ -915,7 +950,10 @@ export function mergeHydratedRunSegment(
   // only safe live sources that are genuinely absent from that history.
   if (
     !hasDisplayableRunAnswer(authoritativeSegment, runId) ||
-    !hasAuthoritativePublicText
+    !hasAuthoritativePublicText ||
+    authoritativeSegment.some(message => message.parts?.some(part =>
+      part.type === "run_status" && Boolean(getPublicTerminalPresentationDefinition(part.event_type)),
+    ))
   ) {
     const previous = messages.find(
       (message) => message.role === "assistant" && message.runId === runId,

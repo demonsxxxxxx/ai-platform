@@ -61,36 +61,34 @@ behavior only, not deployment or real provider acceptance.
 ## Current v4 public commentary and terminal text
 
 Execution's Claude adapter selects and sanitizes public text. Streaming owns
-the closed event schema and the frontend owns presentation. Ordinary chat uses
-`ResultMessage.result`, not a required `structured_output.answer` object.
-The SDK result is a terminal text observation; for streamed answers the
-callback-acknowledged v4 rows and validated answer receipt own stored content.
+the closed event schema and the frontend owns presentation. Ordinary chat uses main-Assistant native text increments, not a required
+`structured_output.answer` object or Result body backfill. Callback-acknowledged
+v4 rows and the validated answer receipt own stored content.
 Runs owns business success. Optional files use `attach_file` and Artifact
 validation independently of text; neither a JSON object nor prose creates an
 artifact record.
 
-The adapter reconciles raw/typed text and immediately gates each unique suffix
-before `message.part.delta`. A stable public part identifies its verified
-provider message; later `message.part.classified` facts select answer/work.
-Safe pending previews are visible before Tool/stop or Result; Thinking and raw
-Tool fields remain excluded. Work parts fold with activity and never enter the
-v2 answer receipt. Retained delta/v1 receipt and commentary/worktrace readers
-keep legacy semantics. No committed event row is rewritten.
+The adapter enables native partial messages and gates each unique text suffix
+before ordered `message.delta`. Completed blocks reconcile their own stream
+without repeating text; ordinary narration and later answers stay in event
+order. Thinking and raw Tool fields remain excluded. New output uses receipt
+v1 over all public deltas; part/v2 and commentary/worktrace readers remain for
+existing stored data. No committed event row is rewritten.
 
-The raw projector owns framing; typed blocks may arrive before block stop.
-The gate retains only necessary sensitive suffixes with their exact source
-ownership. Result adds only verified suffixes. Every callback still passes
+Native message/block identity coordinates partial and completed text, including
+completed blocks before block stop. The gate retains only necessary sensitive
+suffixes with their exact source ownership. Result never adds text. Every callback still passes
 current Attempt/lease authority and exact receipt/ACK, with <=8192 code points
 per part delta and <=100 events per batch. Tool completion evidence and Run
-success remain independent. Invalid classifications or history fail closed.
+success remain independent. Invalid historical part facts and unauthorized history still fail closed.
 
 The [streaming message design](../implementation/streaming-message-parts-design.md)
 and [wire contract](redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
-own the closed event family, receipt v2, UI phase rules, additive lookup indexes
-and coordinated release/rollback requirements. New readers must remain available
-while new rows and v2 receipts exist. This replaces classification-time whole
-source publication; selectors and owning tests now prove visible safe prefixes
-before stop, replay dedupe and final selection across live/history recovery.
+own the closed event family, ordered text/v1 receipt, historical part/v2 readers,
+stable UI order and release/rollback requirements. Keep part-capable readers
+while stored part rows/v2 receipts exist. Classification-time publication and
+text-driven fold phases are retired; regressions cover native increments before
+completed blocks/Result, replay dedupe and consistent live/history recovery.
 
 ## Change Contract: Compact terminal history hydration
 
@@ -118,7 +116,7 @@ before stop, replay dedupe and final selection across live/history recovery.
 - **Bounded paths:** `app/routes/lambchat_compat.py`, this contract, and the owning SSE route tests. Worker admission, Redis publication, frontend protocol handling, cursor recovery, and terminal hydration are outside this change.
 - **Invariants:** Run, Attempt, queue Worker lease, stream authority, authorization epoch, and SSE lease boundaries remain unchanged. Redis Streams remains the sole live/replay authority. A pending authority never receives an SSE lease, and no PostgreSQL transaction remains open across Redis I/O. SSE v4 bytes, stream incarnation, cursor semantics, and public event projection remain unchanged.
 - **Acceptance:** an authorized SSE request encountering a missing or `admission_pending` authority waits in short independent transactions for a bounded startup window; once the existing authority becomes `confirmed`, `degraded`, or `terminal`, the route acquires the existing lease and enters the unchanged replay/live path. The observed admission-confirmation race no longer produces repeated client-visible 409 responses within that window.
-- **Failure and compatibility:** a startup timeout returns the existing retryable 409 code with `Retry-After: 1`; terminal Runs without an authority remain non-retryable; malformed, revoked, unauthorized, lease, Redis, and protocol failures remain fail-closed. The previous immediate 409 behavior remains the bounded timeout fallback, not a retired protocol surface.
+- **Failure and compatibility:** a startup timeout returns the existing retryable 409 code with `Retry-After: 1`; a completed locked lookup that finds no authority remains `sse_stream_not_admitted`, while pending authority or a locked admission read that reaches the startup deadline remains `sse_stream_not_confirmed`; terminal Runs without an authority remain non-retryable; malformed, revoked, unauthorized, lease, Redis, and protocol failures remain fail-closed. The previous immediate 409 behavior remains the bounded timeout fallback, not a retired protocol surface.
 - **Regression proof:** tests cover confirmation during the wait, pending-authority timeout and `Retry-After`, slow lease acquisition at the deadline, missing or pending authority on a terminal Run, pending authority without a pending lease, and unchanged replay/live delivery after admission.
 - **Stop conditions:** do not permit pending authority leases, add readiness events or a second control plane, poll PostgreSQL during frame delivery, or change Worker timing, Redis publication, SSE schema, cursor, incarnation, or terminal ownership.
 
@@ -199,8 +197,9 @@ Callback delivery uses the existing bounded executor buffer and exact-batch
 acknowledgement. Redis retains at most the configured approximate Stream length
 and expires its data and receipt state together. The API replays retained
 records and then uses exclusive `XREAD BLOCK` on a separate bounded read pool;
-each read returns at most 128 events and blocks for at most five seconds.
-Heartbeat and gap controls are emitted by the authorized SSE connection.
+each read returns at most 128 events and blocks for at most five seconds. The
+route emits lease-checked heartbeat comments; gap controls use the public v4
+control envelope.
 
 Redis Stream is the sole live/replay transport. There is no Pub/Sub producer,
 shared subscriber hub, or PostgreSQL-to-browser polling path. Committed callback
