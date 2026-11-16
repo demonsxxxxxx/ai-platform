@@ -54,7 +54,6 @@ export function usePasteHandler({
 
       if (clipboardData.files && clipboardData.files.length > 0) {
         e.preventDefault();
-        if (!validateCount(clipboardData.files.length)) return;
         uploadFiles(clipboardData.files);
         return;
       }
@@ -100,7 +99,6 @@ export function usePasteHandler({
       input,
       setInput,
       uploadFiles,
-      validateCount,
       textAsFile,
       scheduleTextareaResize,
     ],
