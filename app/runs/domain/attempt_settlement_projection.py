@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 from typing import Any
 
 
@@ -69,3 +70,31 @@ class AttemptSettlementProjection:
 
     def to_mapping(self) -> dict[str, Any]:
         return {field: self.values.get(field) for field in ATTEMPT_SETTLEMENT_PROJECTION_FIELDS}
+
+
+def merge_accepted_context(
+    existing: Mapping[str, Any] | None, incoming: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Preserve execution facts; allow one immutable ACK timing observation.
+
+    A retry of the pre-ACK snapshot must not erase timings already observed.
+    Intent context is deliberately not handled here.
+    """
+    value = dict(incoming)
+    if "dispatch_timings" in value and not isinstance(value["dispatch_timings"], Mapping):
+        raise AttemptSettlementProjectionConflict("attempt_settlement_dispatch_timings_invalid")
+    if existing is None:
+        return value
+    current = dict(existing)
+    current_facts = {k: v for k, v in current.items() if k != "dispatch_timings"}
+    incoming_facts = {k: v for k, v in value.items() if k != "dispatch_timings"}
+    def canonical(value: Mapping[str, Any]) -> str:
+        return json.dumps(dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+    if canonical(current_facts) != canonical(incoming_facts):
+        raise AttemptSettlementProjectionConflict("attempt_settlement_accepted_context_json_conflict")
+    if "dispatch_timings" in value:
+        if "dispatch_timings" in current and canonical(current["dispatch_timings"]) != canonical(value["dispatch_timings"]):
+            raise AttemptSettlementProjectionConflict("attempt_settlement_dispatch_timings_conflict")
+        current["dispatch_timings"] = dict(value["dispatch_timings"])
+    return current

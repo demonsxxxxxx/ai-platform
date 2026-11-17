@@ -11,6 +11,7 @@ from app.runs.domain.attempt_settlement_projection import (
     AttemptSettlementProjection,
     AttemptSettlementProjectionConflict,
     CleanupObservation,
+    merge_accepted_context,
 )
 from app.runs.infrastructure.attempt_settlement_projection_postgres import (
     _ATTEMPT_FIELDS,
@@ -246,7 +247,9 @@ async def _record_owned_context(
     )
     value = dict(context)
     existing = detail.get(field)
-    if existing is not None and existing != value:
+    if field == "accepted_context_json":
+        value = merge_accepted_context(existing, value)
+    elif existing is not None and existing != value:
         raise AttemptSettlementProjectionConflict(f"attempt_settlement_{field}_conflict")
     values = dict(detail)
     values[field] = value

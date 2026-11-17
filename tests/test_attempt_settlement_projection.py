@@ -3,6 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+from copy import deepcopy
+
+
+from app.runs.domain.attempt_settlement_projection import (
+    ATTEMPT_SETTLEMENT_PROJECTION_FIELDS,
+    AttemptSettlementProjection,
+    AttemptSettlementProjectionConflict,
+    CleanupObservation,
+)
+from app.runs.infrastructure import attempt_settlement_projection_postgres as projection
+from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
+
+
 
 import pytest
 
@@ -431,3 +444,90 @@ async def test_resource_lease_reader_does_not_require_attempt_settlement_detail(
         await reader.get_sandbox_lease(None, lease_id="lease-a")
     resource = await reader.get_resource_sandbox_lease(None, lease_id="lease-a")
     assert resource["id"] == "lease-a"
+
+
+class MemoryConnection:
+    def __init__(self):
+        self.row = dict.fromkeys(ATTEMPT_SETTLEMENT_PROJECTION_FIELDS)
+        self.row.update(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a",
+                        mapping_state="mapped", settlement_attempt_count=0)
+
+    async def execute(self, sql, params=()):
+        if sql.lstrip().startswith("update run_attempt_settlements"):
+            fields = [f for f in ATTEMPT_SETTLEMENT_PROJECTION_FIELDS
+                      if f not in {"tenant_id", "run_id", "attempt_id", "schema_version"}]
+            for field, value in zip(fields, params):
+                self.row[field] = json.loads(value) if field in projection._JSON_FIELDS and value else value
+        return self
+
+    async def fetchone(self):
+        return deepcopy(self.row)
+
+
+@pytest.mark.asyncio
+async def test_writer_and_projection_allow_only_ack_timing_enrichment(monkeypatch):
+    conn = MemoryConnection()
+
+    async def no_insert(*args):
+        return False
+
+    async def detail(*args, **kwargs):
+        return {}, {}, {}, deepcopy(conn.row)
+
+    monkeypatch.setattr(projection, "_insert_projection", no_insert)
+    monkeypatch.setattr(writer, "_current_owned_detail", detail)
+    scope = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a")
+    facts = {"provider_session_id": "session-a", "snapshot": {"version": 1}}
+    enriched = {**facts, "dispatch_timings": {"schema_version": "v1", "dispatch_ms": 12}}
+    for context in (facts, enriched, enriched, facts):
+        await writer.record_attempt_settlement_accepted_context(conn, **scope, accepted_context=context)
+    assert conn.row["accepted_context_json"] == enriched
+    assert conn.row["dispatch_state"] == "accepted"
+    for context in ({**enriched, "snapshot": {"version": 2}},
+                    {**facts, "dispatch_timings": {"dispatch_ms": 13}}):
+        with pytest.raises(AttemptSettlementProjectionConflict):
+            await writer.record_attempt_settlement_accepted_context(conn, **scope, accepted_context=context)
+        # Bypassing the writer must still preserve the same immutable facts.
+        values = {**conn.row, "accepted_context_json": context}
+        with pytest.raises(AttemptSettlementProjectionConflict):
+            await projection.persist_attempt_settlement_projection(
+                conn, AttemptSettlementProjection(values, CleanupObservation()))
+    assert conn.row["accepted_context_json"] == enriched
+    await writer.record_attempt_settlement_intent(conn, **scope, intent_context=facts)
+    with pytest.raises(AttemptSettlementProjectionConflict):
+        await writer.record_attempt_settlement_intent(conn, **scope, intent_context=enriched)
+
+
+@pytest.mark.asyncio
+async def test_projection_direct_enrichment_and_stale_observation_preserve_timings(monkeypatch):
+    conn = MemoryConnection()
+    async def no_insert(*args):
+        return False
+    monkeypatch.setattr(projection, "_insert_projection", no_insert)
+    facts = {"provider_session_id": "session-a"}
+    enriched = {**facts, "dispatch_timings": {"dispatch_ms": 12}}
+    for context in (facts, enriched, facts, None):
+        await projection.persist_attempt_settlement_projection(
+            conn, AttemptSettlementProjection({**conn.row, "accepted_context_json": context}, CleanupObservation()))
+    assert conn.row["accepted_context_json"] == enriched
+
+
+@pytest.mark.parametrize("incoming", [
+    {"identity": "a", "generation": True},
+    {"identity": "a"},
+    {"identity": "a", "generation": 1, "extra": "new"},
+    {"identity": "a", "generation": 1, "dispatch_timings": None},
+    {"identity": "a", "generation": 1, "dispatch_timings": []},
+])
+def test_context_enrichment_rejects_changed_facts_or_non_object_timings(incoming):
+    from app.runs.domain.attempt_settlement_projection import merge_accepted_context
+    with pytest.raises(AttemptSettlementProjectionConflict):
+        merge_accepted_context({"identity": "a", "generation": 1}, incoming)
+
+
+def test_empty_timings_are_an_observation_not_permission_to_replace():
+    from app.runs.domain.attempt_settlement_projection import merge_accepted_context
+    original = {"identity": "a", "dispatch_timings": {}}
+    assert merge_accepted_context(original, {"identity": "a"}) == original
+    with pytest.raises(AttemptSettlementProjectionConflict):
+        merge_accepted_context(original, {"identity": "a", "dispatch_timings": {"ms": 1}})

@@ -279,11 +279,13 @@ evidence remain required before the migration can be called complete.
 | Fact | Owner and persistence |
 |---|---|
 | Terminal receipt, identity and canonical digest | Attempt detail; first content wins, conflicting duplicates fail closed; mutable root diagnostics do not change the identity digest |
-| Original dispatch intent and accepted context | Separate immutable Attempt fields; acceptance timings cannot rewrite the original intent |
+| Original dispatch intent and accepted context | Separate Attempt fields with immutable execution facts; ACK may add `dispatch_timings` once to accepted context, never rewrite the original intent |
 | Settlement claim, retry deadline/count and committed result mapping | Attempt detail; ordinary progress never advances execution `owner_generation` |
 | Run outcome | Runs lifecycle same-transaction business projection; a pre-dispatch failure may still have no Attempt |
 | Provider transcript/coverage and continuation | Context validates the exact writer, sequence, append receipts and workspace proof in the terminal transaction |
 | Resource identity, heartbeat, probe, stop/release and cleanup | Sandbox lease; independent claims and retry clocks, never settlement authority |
+
+Writer and projection share the same accepted-context rule: all fields except `dispatch_timings` remain immutable. ACK may fill the absent timing observation once; exact retries are idempotent, stale pre-ACK observations retain existing timings, and differing timing replacements fail closed. The pre-POST context remains available for cancellation recovery. This replaces whole-object equality only for accepted-context timing enrichment; no new compatibility path or schema is introduced.
 
 Callbacks and probes record observations through the composed Sandbox port into Runs' Attempt authority on the caller's transaction. An early terminal receipt remains `receipt_before_acceptance` / `awaiting_context`; accepted context makes it eligible for settlement without replacing the receipt. A probe claim cannot become an Attempt settlement claim. Missing detail raises an error; unknown or conflicting bindings are excluded from due work and remain visible to exact probe/operator recovery and administrator diagnostics. No runtime falls back to Sandbox settlement columns.
 

@@ -12,6 +12,7 @@ from app.runs.domain.attempt_settlement_projection import (
     AttemptSettlementProjection,
     AttemptSettlementProjectionConflict,
     CleanupObservation,
+    merge_accepted_context,
 )
 
 MAX_ATTEMPT_SETTLEMENT_PAGE_SIZE = 800
@@ -195,7 +196,13 @@ async def persist_attempt_settlement_projection(
             values["mapping_state"] = "mapped"
     if current.get("mapping_state") == "mapped" and values.get("mapping_state") != "mapped":
         raise AttemptSettlementProjectionConflict("attempt_settlement_projection_mapping_regressed")
+    if values.get("accepted_context_json") is not None:
+        values["accepted_context_json"] = merge_accepted_context(
+            current.get("accepted_context_json"), values["accepted_context_json"],
+        )
     for field in _IMMUTABLE_FIELDS:
+        if field == "accepted_context_json":
+            continue
         existing = current.get(field)
         incoming = values.get(field)
         if existing is not None and incoming is not None and not _same_json(existing, incoming):

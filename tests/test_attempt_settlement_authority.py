@@ -195,3 +195,35 @@ async def test_active_writer_initializes_and_merges_receipts_without_generation_
         )
         assert early_detail[3]["settlement_phase"] == "pending"
         assert early_detail[3]["accepted_context_json"] == early_context
+
+
+@pytest.mark.asyncio
+async def test_accepted_context_ack_enrichment_is_atomic_and_preserves_execution_facts(attempt_settlement_db):
+    from app.runs.domain.attempt_settlement_projection import AttemptSettlementProjectionConflict
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import (
+        _settlement_from_row, persist_attempt_settlement_projection,
+    )
+    connect, *_ = attempt_settlement_db
+    async with connect() as conn, conn.transaction():
+        attempt, lease_id = await _start_attempt_with_lease(
+            conn, run_id="run-ack-timing", context_id="context-ack-timing",
+        )
+        scope = dict(tenant_id="tenant-a", run_id="run-ack-timing", attempt_id=attempt["id"], lease_id=lease_id)
+        facts = {"provider_session_id": "session-a", "snapshot": {"version": 1}}
+        enriched = {**facts, "dispatch_timings": {"dispatch_ms": 12}}
+        for context in (facts, enriched, enriched, facts):
+            await writer.record_attempt_settlement_accepted_context(conn, **scope, accepted_context=context)
+        _, _, _, detail = await writer._current_owned_detail(
+            conn, tenant_id="tenant-a", run_id=scope["run_id"], attempt_id=attempt["id"],
+        )
+        assert detail["accepted_context_json"] == enriched
+        await persist_attempt_settlement_projection(conn, _settlement_from_row({**detail, "accepted_context_json": facts}))
+        for context in ({**facts, "snapshot": {"version": 2}},
+                        {**facts, "dispatch_timings": {"dispatch_ms": 13}}):
+            with pytest.raises(AttemptSettlementProjectionConflict):
+                async with conn.transaction():
+                    await persist_attempt_settlement_projection(conn, _settlement_from_row({**detail, "accepted_context_json": context}))
+        row = await (await conn.execute(
+            "select accepted_context_json from run_attempt_settlements where attempt_id=%s", (attempt["id"],),
+        )).fetchone()
+        assert row["accepted_context_json"] == enriched

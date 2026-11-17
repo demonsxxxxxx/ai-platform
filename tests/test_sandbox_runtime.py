@@ -3419,3 +3419,111 @@ async def test_runtime_predispatch_receipt_requires_exact_stop_and_defers_lease_
         assert caught.value.__cause__ is original
         assert not hasattr(caught.value, "predispatch_continuation_settlement")
         assert not hasattr(original, "predispatch_continuation_settlement")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_before_ack", [False, True])
+async def test_runtime_owned_context_ack_enrichment_and_preack_handoff(
+    tmp_path, monkeypatch, cancel_before_ack,
+):
+    """Use the owning writer, not an acceptance stub that hides context conflicts."""
+    from app.execution.api import ContinuationSettlementPorts
+    from app.runs.infrastructure import attempt_settlement_writer_postgres as writer
+
+    detail = {"settlement_phase": "awaiting_receipt"}
+    writes = []
+    probes = []
+    receipts = []
+    dispatched = asyncio.Event()
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "synthetic-token"
+        sandbox_lease_ttl_seconds = 600
+
+    async def current(_conn, **_scope):
+        return {}, {}, {}, detail
+
+    async def persist(_conn, projection):
+        detail.update(projection.to_mapping())
+        writes.append(dict(detail["accepted_context_json"]))
+        return True
+
+    async def create(_conn, **_kwargs):
+        return {"id": "lease-a"}
+
+    async def accept(conn, **kwargs):
+        await writer.record_attempt_settlement_accepted_context(
+            conn, tenant_id=kwargs["tenant_id"], run_id=kwargs["run_id"],
+            attempt_id=kwargs["attempt_id"], lease_id=kwargs["lease_id"],
+            accepted_context=kwargs["reconciliation_context"],
+        )
+        return {"id": "lease-a"}
+
+    async def terminal(_conn, **kwargs):
+        # The cancellation reconciler must already have the exact execution facts.
+        assert detail["accepted_context_json"] == request(attempt_id="a").reconciliation_context
+        receipts.append(kwargs["terminal_result"])
+        return {"id": "lease-a"}
+
+    async def execute(_url, task_request):
+        assert writes == [request(attempt_id="a").reconciliation_context]
+        dispatched.set()
+        if cancel_before_ack:
+            await asyncio.Event().wait()
+        return {"status": "accepted", "run_id": task_request.run_id}
+
+    async def probe(*_args, **_kwargs):
+        probes.append("probe")
+        return {"status": "accepted", "run_id": "run-a", "attempt_id": "a"}
+
+    async def unused(*_args, **_kwargs):
+        raise AssertionError("terminal handoff belongs to the reconciler")
+
+    class Client:
+        async def cancel(self, *_args, **_kwargs):
+            return {"status": "cancel_requested"}
+
+        async def get_status(self, *_args, **_kwargs):
+            return {"status": "cancelled", "run_id": "run-a", "attempt_id": "a",
+                    "terminal_result": {"status": "cancelled", "run_id": "run-a",
+                                        "error_code": "cancelled", "error_message": "Stopped"}}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr(writer, "_current_owned_detail", current)
+    monkeypatch.setattr(writer, "persist_attempt_settlement_projection", persist)
+    monkeypatch.setattr(sandbox_lease_repository, "create_sandbox_lease", create)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(sandbox_lease_repository, "record_sandbox_executor_terminal", terminal)
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute, get_executor_status=probe,
+        callback_token_resolver=lambda _id: "synthetic-token",
+        continuation_ports=ContinuationSettlementPorts(unused, unused),
+    )
+    runtime.executor_client = Client()
+    owner = RunExecutionOwner("run-a")
+    task = owner.start(runtime.submit(request(attempt_id="a"), execution_owner=owner))
+    try:
+        await asyncio.wait_for(dispatched.wait(), 2)
+        if cancel_before_ack:
+            stopped = await owner.stop(reason="cancel_requested", timeout_seconds=2)
+            assert stopped.quiescent, (receipts, detail, writes)
+            task.cancel()
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert result.status == "accepted"
+    assert probes == []
+    if cancel_before_ack:
+        assert receipts and receipts[0]["status"] == "cancelled"
+        assert len(writes) == 1
+        assert "dispatch_timings" not in detail["accepted_context_json"]
+    else:
+        assert receipts == []
+        assert len(writes) == 2
+        assert detail["accepted_context_json"]["dispatch_timings"] == result.timings
