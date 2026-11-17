@@ -246,6 +246,7 @@ test("RunControlLifecycle reports a cancel acknowledgement without inventing ter
     assert.equal(result, "acknowledged");
     assert.equal(cancelCalls, 1);
     assert.equal(lifecycle.getSnapshot().phase, "cancel_requested");
+    assert.equal(lifecycle.getSnapshot().cancelRequested, true);
     assert.equal(
       lifecycle.getSnapshot().owner?.runId,
       "run-a",
@@ -306,6 +307,9 @@ test("RunControlLifecycle reports an unconfirmed cancel request without fabricat
   try {
     assert.equal(await lifecycle.cancel(), "unconfirmed");
     assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+    assert.equal(lifecycle.getSnapshot().cancelRequested, true, "response loss cannot reopen the cancelled display");
+    lifecycle.bindParent({ ...parent(), runId: "run-next" });
+    assert.equal(lifecycle.getSnapshot().cancelRequested, false);
   } finally {
     sessionApi.cancelRun = originalCancel;
     sessionApi.getStatus = originalStatus;

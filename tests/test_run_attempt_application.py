@@ -232,3 +232,96 @@ async def test_heartbeat_worker_run_attempt_waits_for_attempt_creation():
 
     assert result is None
     assert [call[0] for call in persistence.calls] == ["assert_worker_current"]
+
+
+@pytest.mark.asyncio
+async def test_settlement_writers_lock_sources_before_updating_authoritative_detail():
+    calls = []
+    conn = object()
+
+    class Projection:
+        async def lock_sources_in_transaction(self, _conn, **_kwargs):
+            calls.append("source_locks")
+
+        async def initialize_attempt_in_transaction(self, _conn, **_kwargs):
+            calls.append("initialize")
+
+        async def refresh_snapshot_in_transaction(self, _conn, **_kwargs):
+            calls.append("refresh")
+
+    class Persistence(AttemptPersistenceStub):
+        async def get_run(self, _conn, **kwargs):
+            calls.append(("run_lock", kwargs["for_update"]))
+            return {"id": kwargs["run_id"]}
+
+        async def start_worker_run_attempt(self, _conn, **_kwargs):
+            calls.append("start_write")
+            return {"id": "rat-a", "tenant_id": "tenant-a", "run_id": "run-a"}
+
+        async def prepare_stale_run_attempt_reconciliation(self, _conn, **_kwargs):
+            calls.append("stale_write")
+            return {"id": "rat-a", "status": "expired"}
+
+        async def get_latest_run_attempt(self, _conn, **kwargs):
+            calls.append(("get_latest", kwargs.get("for_update", False)))
+            return {"id": "rat-a", "status": "running"}
+
+        async def request_run_attempt_cancel(self, _conn, **_kwargs):
+            calls.append("cancel_write")
+            return {"id": "rat-a", "status": "cancel_requested"}
+
+        async def terminalize_run_attempt(self, _conn, **kwargs):
+            calls.append("terminal_write")
+            return {"id": "rat-a", "status": kwargs["status"]}
+
+    service = RunAttemptLifecycleService(
+        persistence=Persistence({"id": "rat-a", "status": "running"}),
+        settlement_projection=Projection(),
+    )
+    common = {"tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "rat-a"}
+
+    await service.start_worker(conn, **common)
+    assert calls == [
+        "start_write", "source_locks", "initialize", "refresh",
+    ]
+
+    calls.clear()
+    await service.request_cancel(conn, **common)
+    assert calls == [
+        "source_locks", "cancel_write", "refresh",
+    ]
+
+    calls.clear()
+    await service.terminalize(
+        conn, **common, status="failed", terminal_reason="run_failed"
+    )
+    assert calls == [
+        "source_locks", "terminal_write", "refresh",
+    ]
+
+    calls.clear()
+    await service.prepare_stale_reconciliation(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        terminal_status="failed",
+        reconciler_id="stale-maintenance",
+    )
+    assert calls == [
+        ("run_lock", True), ("get_latest", False),
+        "source_locks", "stale_write", "refresh",
+    ]
+
+    calls.clear()
+    await service.terminalize_latest(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        status="failed",
+        terminal_reason="run_failed",
+    )
+    assert calls == [
+        ("run_lock", True), ("get_latest", False),
+        "source_locks", ("get_latest", True),
+        "source_locks", "terminal_write", "refresh",
+    ]

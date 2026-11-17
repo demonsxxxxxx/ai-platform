@@ -417,9 +417,24 @@ async def process_run_payload():
         await admit_v4_stream()
         return
     await admit_v4_stream()
-    await worker_execution_bootstrap.submit_worker_run_until_cancelled()
+    await worker_execution_bootstrap.execute_worker_run()
     if terminal_after_dispatch:
         await admit_v4_stream()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == []
+
+
+def test_worker_admission_guard_accepts_nested_dispatch_wrapper_after_admission():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    try:
+        await admit_v4_stream()
+        dispatch = await worker_execution_bootstrap.execute_worker_run()
+    except RuntimeError:
+        return
 """
     ).body[0]
 
@@ -433,7 +448,23 @@ async def process_run_payload():
     if terminal_before_dispatch:
         await admit_v4_stream()
         return
-    await worker_execution_bootstrap.submit_worker_run_until_cancelled()
+    await worker_execution_bootstrap.execute_worker_run()
+"""
+    ).body[0]
+
+    assert cutover._worker_admission_failures(worker) == [
+        "worker.py:v4_admission_not_before_sdk_dispatch"
+    ]
+
+
+def test_worker_admission_guard_rejects_admission_only_in_dispatch_exception_branch():
+    worker = ast.parse(
+        """
+async def process_run_payload():
+    try:
+        await worker_execution_bootstrap.execute_worker_run()
+    except RuntimeError:
+        await admit_v4_stream()
 """
     ).body[0]
 
@@ -446,7 +477,7 @@ def test_worker_admission_guard_rejects_only_postdispatch_admission():
     worker = ast.parse(
         """
 async def process_run_payload():
-    await worker_execution_bootstrap.submit_worker_run_until_cancelled()
+    await worker_execution_bootstrap.execute_worker_run()
     await admit_v4_stream()
 """
     ).body[0]

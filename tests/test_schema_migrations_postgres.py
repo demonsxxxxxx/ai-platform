@@ -2,11 +2,13 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import uuid
 
 import psycopg
@@ -17,6 +19,8 @@ import pytest
 from app import schema_migrations
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
+
+UPGRADE_CONFIRMATIONS = {"legacy_binaries_stopped": True, "runs_and_resource_claims_drained": True, "backup_restore_drill_complete": True}
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 REMOTE_RUN_ATTEMPT_RECONCILER_TAKEOVER_CHECKSUM = (
@@ -167,11 +171,11 @@ async def test_real_postgres_concurrent_migrations_use_one_global_lock_and_ledge
         index_factory = _index_connection_factory(dsn, schema_name)
 
         first, second = await asyncio.gather(
-            schema_migrations.apply_migrations(
+            schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
                 transaction_factory=factory,
                 index_connection_factory=index_factory,
             ),
-            schema_migrations.apply_migrations(
+            schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
                 transaction_factory=factory,
                 index_connection_factory=index_factory,
             ),
@@ -401,7 +405,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
             )
         ).fetchone()
 
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory, index_connection_factory=index_factory,
         )
         assert result == {
@@ -489,7 +493,7 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
             "group_id": "upgrade-group", "model_id": "upgrade-model", "priority": 3,
             "weight": 80, "revision": 4,
         }
-        assert (await schema_migrations.apply_migrations(
+        assert (await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory, index_connection_factory=index_factory,
         ))["status"] == "current"
         ledger_rows = await (
@@ -509,6 +513,54 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
         ]
     finally:
         sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_from_previous_integrated_candidate_advances_ledger_without_checksum_rewrite(tmp_path: Path):
+    """Run the actual previous package source outside this interpreter's imports."""
+    previous_sha = "8fc810389d7c2c2358c381f5ab843e726e147f17"
+    root = Path(__file__).resolve().parents[1]
+    historical = tmp_path / "historical"
+    historical.mkdir()
+    archive = subprocess.check_output(["git", "archive", "--format=tar", previous_sha, "app"], cwd=root)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as source:
+        source.extractall(historical, filter="data")
+    dsn = _postgres_dsn()
+    schema_name = f"attempt_only_integrated_upgrade_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    factory = _transaction_factory(dsn, schema_name)
+    index_factory = _index_connection_factory(dsn, schema_name)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        from psycopg.conninfo import make_conninfo
+        environment = {**os.environ, "PYTHONPATH": str(historical),
+                       "DATABASE_URL": make_conninfo(dsn, options=f"-c search_path={schema_name}")}
+        old = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "app.schema_migrations", "apply"], cwd=historical,
+            env=environment, capture_output=True, text=True, timeout=60)
+        assert old.returncode == 0, "previous candidate schema application failed"
+        old_row = await (await admin.execute("select version,checksum_sha256 from schema_migrations")).fetchone()
+        assert old_row["version"] == "2026.11.05.1"
+        with pytest.raises(RuntimeError, match="operator_confirmation_required"):
+            await schema_migrations.apply_migrations(transaction_factory=factory, index_connection_factory=index_factory)
+        await schema_migrations.apply_migrations(
+            settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert await (await admin.execute(
+            "select version,checksum_sha256 from schema_migrations where version=%s", (old_row["version"],)
+        )).fetchone() == old_row
+        assert schema_migrations.TARGET_SCHEMA_VERSION > old_row["version"]
+        async with factory() as conn:
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+        old_status = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "app.schema_migrations", "status"], cwd=historical,
+            env=environment, capture_output=True, text=True, timeout=30)
+        assert old_status.returncode != 0
+    finally:
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin.close()
 
@@ -568,7 +620,7 @@ async def test_real_postgres_enabled_default_step_follows_provider_version_and_r
             """
         )
 
-        enabled_default_result = await schema_migrations.apply_migrations(
+        enabled_default_result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory, index_connection_factory=index_factory,
         )
         assert enabled_default_result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
@@ -638,7 +690,7 @@ async def test_model_user_access_upgrade_preserves_existing_catalog(tmp_path: Pa
                 "values ('legacy-model', 'upstream-model', 'Saved display name', 'compatible', "
                 "true, true, true, 1, 1, 1, 32000, 2048)"
             )
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory, index_connection_factory=index_factory,
         )
         assert result["status"] == "applied"
@@ -660,7 +712,7 @@ async def test_model_user_access_upgrade_preserves_existing_catalog(tmp_path: Pa
                 "update model_catalog_entries set access_mode = 'selected', "
                 "allowed_user_ids = '[\"admin-a\"]'::jsonb where model_id = 'legacy-model'"
             )
-        assert (await schema_migrations.apply_migrations(
+        assert (await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory, index_connection_factory=index_factory,
         ))["status"] == "current"
         async with factory() as conn:
@@ -704,7 +756,7 @@ async def test_real_postgres_upgrade_installs_run_attempt_heartbeat_monotonicity
         )
 
         factory = _transaction_factory(dsn, schema_name)
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=_index_connection_factory(dsn, schema_name),
         )
@@ -775,7 +827,7 @@ async def test_real_postgres_cutover_rejects_an_older_binary_after_migration(
         async with factory() as conn:
             assert (await exact_base.schema_status(conn))["ready"] is True
 
-        candidate_result = await schema_migrations.apply_migrations(
+        candidate_result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1002,15 +1054,21 @@ async def test_real_postgres_schema_retirement_upgrades_exact_previous_schema_an
             "values ('legacy-open-step', 'default', 'legacy-no-attempt', 'child', 'agent', 'running')"
         )
 
-        result = await schema_migrations.apply_migrations(
-            transaction_factory=factory,
-            index_connection_factory=index_factory,
-        )
-        assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
-        assert (await schema_migrations.apply_migrations(
-            transaction_factory=factory,
-            index_connection_factory=index_factory,
-        ))["status"] == "current"
+        # The contracted settlement schema refuses the ordinary open Runs and
+        # rolls the whole migration back, even though retired multi-agent Runs
+        # can be terminalized by their historical retirement step.
+        with pytest.raises(RuntimeError, match="attempt_settlement_upgrade_requires_drain"):
+            await schema_migrations.apply_migrations(
+                settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
+                transaction_factory=factory, index_connection_factory=index_factory,
+            )
+        assert (await (await admin.execute(
+            "select status from run_attempts where id='attempt-created'"
+        )).fetchone())["status"] == "created"
+        # Exercise the prior retirement independently, preserving its original
+        # assertions below before simulating the required operator drain.
+        async with factory() as conn:
+            await conn.execute(schema_migrations.schema_sql())
 
         attempts = await (
             await admin.execute(
@@ -1100,6 +1158,19 @@ async def test_real_postgres_schema_retirement_upgrades_exact_previous_schema_an
         assert await (
             await admin.execute("select to_regclass('run_tool_permission_requests') as relation")
         ).fetchone() == {"relation": None}
+        # These four ordinary Runs have no Attempt/resource. Operator drain
+        # terminalizes them without altering the historical retirement outcomes.
+        await admin.execute("""update runs set status='cancelled',finished_at=now()
+            where id in ('ordinary-staged','ordinary-source','ordinary-copy','sdk-subagent')""")
+        result = await schema_migrations.apply_migrations(
+            settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
+            transaction_factory=factory, index_connection_factory=index_factory,
+        )
+        assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+        assert (await schema_migrations.apply_migrations(
+            settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
+            transaction_factory=factory, index_connection_factory=index_factory,
+        ))["status"] == "current"
         async with factory() as conn:
             assert (await schema_migrations.schema_status(conn))["ready"] is True
     finally:
@@ -1359,7 +1430,7 @@ async def test_real_postgres_repository_skill_retirement_upgrades_exact_main_and
             """
         )
 
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1647,7 +1718,7 @@ async def test_real_postgres_upgrade_preserves_legacy_artifact_outbox_identity()
 
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1746,7 +1817,7 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
 
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1809,7 +1880,7 @@ async def test_real_postgres_readiness_rejects_missing_critical_contract(damage_
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1882,7 +1953,7 @@ async def test_real_postgres_readiness_rejects_wrong_critical_constraint_definit
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1909,7 +1980,7 @@ async def test_real_postgres_readiness_rejects_index_ledger_checksum_drift():
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1942,7 +2013,7 @@ async def test_real_postgres_readiness_rejects_and_migration_removes_orphan_inde
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -1960,7 +2031,7 @@ async def test_real_postgres_readiness_rejects_and_migration_removes_orphan_inde
         assert damaged["ready"] is False
         assert damaged["index_ledger_current"] is False
 
-        repaired = await schema_migrations.apply_migrations(
+        repaired = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2013,7 +2084,7 @@ async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2028,7 +2099,7 @@ async def test_real_postgres_readiness_rejects_and_migration_repairs_wrong_index
         assert damaged["indexes_current"] is True
         assert damaged["concurrent_index_definitions_current"] is False
 
-        repaired = await schema_migrations.apply_migrations(
+        repaired = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2070,7 +2141,7 @@ async def test_real_postgres_readiness_rejects_wrong_static_index_definition(
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2102,7 +2173,7 @@ async def test_real_postgres_concurrent_index_phase_recovers_after_ledger_interr
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2115,7 +2186,7 @@ async def test_real_postgres_concurrent_index_phase_recovers_after_ledger_interr
             """
         )
 
-        result = await schema_migrations.apply_migrations(
+        result = await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2139,7 +2210,7 @@ async def test_real_postgres_concurrent_index_build_does_not_block_message_write
         await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
         factory = _transaction_factory(dsn, schema_name)
         index_factory = _index_connection_factory(dsn, schema_name)
-        await schema_migrations.apply_migrations(
+        await schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
             transaction_factory=factory,
             index_connection_factory=index_factory,
         )
@@ -2177,7 +2248,7 @@ async def test_real_postgres_concurrent_index_build_does_not_block_message_write
             """
         )
         migration_task = asyncio.create_task(
-            schema_migrations.apply_migrations(
+            schema_migrations.apply_migrations(settlement_upgrade_confirmations=UPGRADE_CONFIRMATIONS,
                 transaction_factory=factory,
                 index_connection_factory=index_factory,
             )

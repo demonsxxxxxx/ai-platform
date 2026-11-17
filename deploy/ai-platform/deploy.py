@@ -29,15 +29,7 @@ APPS = ("frontend", "api", "worker")
 QUIESCENCE_SQL = """select
 (select count(*) from runs where status not in ('succeeded','failed','cancelled')),
 (select count(*) from run_attempts where status not in ('succeeded','failed','cancelled')),
-(select count(*) from sandbox_leases l where status <> 'released' and not coalesce(
-  l.status = 'quarantined' and l.expires_at < CURRENT_TIMESTAMP
-  and l.executor_status in ('completed','failed')
-  and l.executor_reconciliation_status = 'failed'
-  and l.executor_reconciliation_claim_token is null
-  and coalesce(nullif(trim(l.runtime_container_id),''), nullif(trim(l.runtime_container_name),'')) is not null
-  and exists (select 1 from runs r where r.id=l.run_id and r.tenant_id=l.tenant_id
-              and r.status in ('succeeded','failed','cancelled')),
-  false));"""
+(select count(*) from sandbox_leases where status <> 'released');"""
 HEALTH_PROBE = """
 import json, sys, urllib.request
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -149,7 +141,8 @@ def snapshot(docker: list[str], resume_install: bool = False) -> dict:
     return records
 
 
-def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict, workspace_migration: bool = True) -> None:
+def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict, workspace_migration: bool = True,
+                   settlement_upgrade: bool = False) -> None:
     for service in (*DATA, *APPS):
         record = inspect(docker, f"ai-platform-{service}")
         state = record["State"]
@@ -162,7 +155,10 @@ def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict, w
             target = FRONTEND if service == "frontend" else BACKEND
             if record["Image"] != image_ids[target] or record["Config"]["Labels"].get("ai-platform.source-commit") != COMMIT:
                 raise DeploymentError("application image or commit mismatch")
-    for service in ("migrate", "workspace-init", *(("workspace-migrate",) if workspace_migration else ())):
+    # An explicitly confirmed settlement upgrade ran as a checked one-off. API
+    # readiness below independently verifies its effective schema contract.
+    for service in (*(() if settlement_upgrade else ("migrate",)), "workspace-init",
+                    *(("workspace-migrate",) if workspace_migration else ())):
         state = inspect(docker, f"ai-platform-{service}")["State"]
         if state["Status"] != "exited" or state["ExitCode"] != 0:
             raise DeploymentError("migration or workspace initialization failed")
@@ -546,7 +542,8 @@ def validate_resume_data(config: dict, before: dict, image_ids: dict[str, str]) 
 
 def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_only: bool = False,
            *, resume_install: bool = False, state_path: Path | None = None,
-           migrate_legacy: bool = False, allow_insecure_http: bool = False) -> None:
+           migrate_legacy: bool = False, allow_insecure_http: bool = False,
+           confirm_settlement_upgrade: bool = False) -> None:
     if "@@" in COMMIT + BACKEND + FRONTEND:
         raise DeploymentError("use the published deployment package, not the source template")
     compose = [*docker, "compose", "--project-name", PROJECT, "--env-file", str(env),
@@ -649,7 +646,12 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
             run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never",
                  "--exit-code-from", "workspace-migrate", "workspace-migrate"],
                 "workspace storage migration", 3600)
-        run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "migrate", "migrate"], "schema migration", 600)
+        if confirm_settlement_upgrade:
+            run([*compose, "run", "--rm", "--no-deps", "--pull", "never", "migrate",
+                 "python", "-m", "app.schema_migrations", "apply", "--confirm-settlement-upgrade"],
+                "schema migration", 600)
+        else:
+            run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "migrate", "migrate"], "schema migration", 600)
         run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "workspace-init", "workspace-init"], "workspace initialization", 180)
         services = [
             name
@@ -657,7 +659,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
             if name not in (*DATA, "migrate", "workspace-migrate", "workspace-init")
         ]
         run([*compose, "up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180", *services], "application startup", 240)
-        verify_runtime(docker, image_ids, before, workspace_migration)
+        verify_runtime(docker, image_ids, before, workspace_migration, confirm_settlement_upgrade)
     except BaseException:
         if not migration_started:
             for name in reversed(stopped):
@@ -715,6 +717,7 @@ def main() -> int:
     parser.add_argument("--resume-install", action="store_true", help="resume a recorded same-package, same-config data-only first installation; never reset data")
     parser.add_argument("--migrate-legacy-workspaces", action="store_true", help="copy retained legacy workspace storage into the approved host root")
     parser.add_argument("--allow-insecure-http", action="store_true", help="acknowledge HTTP/insecure-cookie risk on a trusted isolated intranet")
+    parser.add_argument("--confirm-settlement-upgrade", action="store_true", help="confirm recovery backup/restore drill for the one-way Attempt settlement upgrade; controller verifies stopped admission and drained work")
     args = parser.parse_args()
     env = args.env_file.absolute()
     def interrupt(_signum, _frame):
@@ -725,7 +728,8 @@ def main() -> int:
         with deployment_lock(Path("/tmp/ai-platform-internal-deploy.lock")), protected_environment(env) as snapshot_env:
             deploy(Path(__file__).resolve().parent, snapshot_env, shlex.split(args.docker_cmd), args.offline, args.check,
                    resume_install=args.resume_install, state_path=env.parent / ".ai-platform-install-state.json",
-                   migrate_legacy=args.migrate_legacy_workspaces, allow_insecure_http=args.allow_insecure_http)
+                   migrate_legacy=args.migrate_legacy_workspaces, allow_insecure_http=args.allow_insecure_http,
+                   confirm_settlement_upgrade=args.confirm_settlement_upgrade)
     except (DeploymentError, OSError, ValueError, KeyError, KeyboardInterrupt) as exc:
         print(str(exc) if isinstance(exc, DeploymentError) else "deployment failed: invalid input, lock unavailable or interrupted", file=sys.stderr)
         return 2

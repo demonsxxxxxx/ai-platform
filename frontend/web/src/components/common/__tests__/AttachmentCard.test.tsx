@@ -88,3 +88,23 @@ test("compact composer files expose full long names and visible remove actions w
   assert.doesNotMatch(markup, /sm:opacity-0|theme-info/);
   assert.ok(markup.includes(`aria-label="移除附件 ${name}"`));
 });
+
+for (const isUploading of [false, true]) {
+  test(`editable attachment ${isUploading ? "cancel" : "remove"} action keeps a 24px target`, () => {
+    const markup = renderToStaticMarkup(React.createElement(AttachmentCard, {
+      attachment: createImageAttachment({ isUploading }),
+      variant: "editable",
+      size: "compact",
+      isUploading,
+      onRemove: () => {},
+      onCancel: () => {},
+    }));
+    const label = isUploading ? "取消上传" : "移除附件 private.png";
+    const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
+    assert.ok(button, `missing ${label} action`);
+    assert.match(button, /height:24px/);
+    assert.match(button, /width:24px/);
+    assert.match(button, /min-width:24px/);
+    assert.match(button, /type="button"/);
+  });
+}

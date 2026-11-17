@@ -90,7 +90,7 @@ export const ChatMessage = memo(function ChatMessage({
   const visibleParts = getAssistantUiDisplayParts(message);
   const hasParts = visibleParts.length > 0;
   const visiblePartKeys = createMessagePartRenderKeys(message.id, visibleParts);
-  const taskDuration = message.isStreaming ? null : formatTaskDuration(message.runDurationMs);
+  const taskDuration = message.isStreaming || message.isStopping ? null : formatTaskDuration(message.runDurationMs);
   // User message: bubble style, right aligned
   if (isUser) {
     return (
@@ -124,6 +124,7 @@ export const ChatMessage = memo(function ChatMessage({
   return (
     <div
       id={createMessageAnchorId(message.id)}
+      data-message-stopping={message.isStopping || undefined}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
       className="group w-full scroll-mt-6 rounded-lg py-3 transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
@@ -133,7 +134,8 @@ export const ChatMessage = memo(function ChatMessage({
           {hasParts ? (
             <MessageWorkActivity
               messageId={message.id}
-              isStreaming={message.isStreaming}
+              isStreaming={message.isStreaming && !message.isStopping}
+              isStopping={message.isStopping}
               runDurationMs={message.runDurationMs}
               parts={visibleParts}
               partKeys={visiblePartKeys}
@@ -142,7 +144,7 @@ export const ChatMessage = memo(function ChatMessage({
                   part={part}
                   messageId={message.id}
                   partIndex={index}
-                  isStreaming={message.isStreaming}
+                  isStreaming={message.isStreaming && !message.isStopping}
                   isLast={index === visibleParts.length - 1}
                   onOpenPreview={onOpenPreview}
                   artifactDownloadScope={artifactDownloadScope}

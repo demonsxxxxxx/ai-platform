@@ -17,6 +17,7 @@ from app.streaming.domain.live import stream_key
 from app.streaming.infrastructure.callback_stream import append_callback_batch
 from app.streaming.infrastructure.v4 import V4RedisStreamBridge
 from app.streaming.redis import RedisStreamBridge, StreamTransportUnavailable
+import app.sandbox.infrastructure.leases_postgres as sandbox_lease_reader
 from tests.test_streaming_v4_durable import _authority, _row
 from tests.test_streaming_v4_redis_integration import _envelope
 
@@ -112,15 +113,15 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
     callback = ExecutorCallbackEvent.model_validate(callback_payload(batch_id="batch-direct"))
     if failure == "commit":
         with pytest.raises(RuntimeError, match="synthetic commit failure"):
-            await route.record_executor_callback(callback, capabilities=capabilities)
+            await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
         assert not committed and not delivered
     elif failure in {"redis", "predecessor", "expired_predecessor"}:
         with pytest.raises(HTTPException) as error:
-            await route.record_executor_callback(callback, capabilities=capabilities)
+            await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
         assert error.value.status_code == 503
         assert committed and len(delivered) == (1 if failure == "redis" else 0)
     else:
-        receipt = await route.record_executor_callback(callback, capabilities=capabilities)
+        receipt = await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
         assert receipt["accepted"] is True
         assert committed and len(delivered) == 1
 

@@ -8,7 +8,7 @@ from typing import Any
 
 from app.context import api as context_api
 from app.execution.api import ContinuationSettlementPorts
-from app.platform.postgres.sandbox_leases import release_sandbox_lease
+from app.bootstrap.sandbox_lease_ports import build_sandbox_lease_transport_port
 from app.platform.storage_io_completion import StorageIOCompletion
 from app.sandbox import api as sandbox_api
 from app.sandbox.infrastructure import workspace_versions
@@ -146,7 +146,7 @@ def build_continuation_settlement_ports() -> ContinuationSettlementPorts:
     return ContinuationSettlementPorts(
         save_workspace_version=_save_stopped_workspace,
         settle_provider_continuation=_settle_stopped_continuation,
-        release_runtime_lease=release_sandbox_lease,
+        release_runtime_lease=build_sandbox_lease_transport_port().release_sandbox_lease,
     )
 
 

@@ -3,9 +3,11 @@
 import pytest
 from psycopg.types.json import Jsonb
 
-from app.platform.postgres import sandbox_leases
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
 from tests.test_provider_unclaimed_continuation_postgres import unclaimed_db, prepare
 from tests.test_lifecycle_reconciliation_postgres import extend_lease
+
+sandbox_leases = build_sandbox_executor_reconciliation_port()
 
 
 @pytest.mark.asyncio
@@ -13,15 +15,6 @@ async def test_terminal_handoff_survives_release_but_rejects_foreign_stale_or_un
     async with unclaimed_db() as conn:
         await prepare(conn, "target", 1)
         await extend_lease(conn)
-        await conn.execute("""
-            alter table sandbox_leases add column executor_status text;
-            alter table sandbox_leases add column executor_terminal_json jsonb;
-            alter table sandbox_leases add column executor_terminal_received_at timestamptz;
-            alter table sandbox_leases add column executor_reconciliation_context_json jsonb;
-            alter table sandbox_leases add column executor_reconciled_at timestamptz;
-            alter table sandbox_leases add column executor_heartbeat_at timestamptz;
-            alter table sandbox_leases add column heartbeat_at timestamptz;
-        """)
         scope = dict(tenant_id="tenant", workspace_id="workspace", user_id="user", session_id="session",
                      run_id="target", attempt_id="attempt-target", lease_id="synthetic-lease", owner_generation=2)
         terminal = dict(status="cancelled", run_id="target", message="cancelled",
@@ -34,27 +27,33 @@ async def test_terminal_handoff_survives_release_but_rejects_foreign_stale_or_un
             **{key: scope[key] for key in ("tenant_id", "run_id", "attempt_id", "lease_id")},
             executor_status="cancelled", terminal_result=terminal)
         for state in ("pending", "claimed", "retry", "failed"):
-            await conn.execute("update sandbox_leases set executor_reconciliation_status=%s", (state,))
+            await conn.execute("""update run_attempt_settlements set settlement_phase=%s,
+                settlement_claim_token=case when %s='claimed' then 'synthetic-claim' end,
+                settlement_claimed_at=case when %s='claimed' then now() end,
+                next_retry_at=case when %s='retry' then now() end""", (state, state, state, state))
             row = await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope)
-            assert row["executor_terminal_json"] == terminal
+            assert row["receipt_json"] == terminal
         await conn.execute("""update sandbox_leases set status='released', released_at=now(),
-            executor_reconciliation_status='finalized', executor_reconciled_at=now()""")
+            executor_cleanup_status='finalized', executor_reconciled_at=now();
+            update run_attempt_settlements set settlement_phase='settled',
+              settlement_claim_token=null,settlement_claimed_at=null,next_retry_at=null;""")
         row = await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope)
-        assert row["executor_terminal_json"] == terminal
+        assert row["receipt_json"] == terminal
         for key in scope:
             foreign = {**scope, key: 3 if key == "owner_generation" else "foreign"}
             assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **foreign) is None, key
         # A released lease without finalized cleanup is not a responsibility handoff.
-        await conn.execute("update sandbox_leases set executor_reconciliation_status='pending'")
+        await conn.execute("update run_attempt_settlements set settlement_phase='pending'")
         assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope) is None
-        await conn.execute("""update sandbox_leases set status='active', released_at=null,
-            executor_reconciliation_status='waiting_terminal'""")
+        await conn.execute("""update sandbox_leases set status='active', released_at=null;
+            update run_attempt_settlements set settlement_phase='awaiting_context';""")
         assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope) is None
-        await conn.execute("update sandbox_leases set executor_reconciliation_status='pending', executor_reconciliation_context_json=null")
+        await conn.execute("update run_attempt_settlements set settlement_phase='pending', accepted_context_json=null")
         assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope) is None
-        await conn.execute("""update sandbox_leases set executor_reconciliation_context_json=%s,
-            lease_payload_json=jsonb_set(lease_payload_json,'{attempt_id}','\"foreign\"')""",
+        await conn.execute("update run_attempt_settlements set accepted_context_json=%s",
             (Jsonb({"adapter_name": "claude-agent-worker"}),))
+        await conn.execute("""update sandbox_leases set
+            lease_payload_json=jsonb_set(lease_payload_json,'{attempt_id}','\"foreign\"')""")
         assert await sandbox_leases.get_sandbox_executor_terminal_handoff(conn, **scope) is None
 
 
@@ -63,15 +62,6 @@ async def test_cancel_forward_lists_only_live_accepted_leases_of_cancel_requeste
     async with unclaimed_db() as conn:
         await prepare(conn, "target", 1)
         await extend_lease(conn)
-        await conn.execute("""
-            alter table sandbox_leases add column executor_status text;
-            alter table sandbox_leases add column executor_terminal_json jsonb;
-            alter table sandbox_leases add column executor_terminal_received_at timestamptz;
-            alter table sandbox_leases add column executor_reconciliation_context_json jsonb;
-            alter table sandbox_leases add column executor_reconciled_at timestamptz;
-            alter table sandbox_leases add column executor_heartbeat_at timestamptz;
-            alter table sandbox_leases add column heartbeat_at timestamptz;
-        """)
         lease = dict(tenant_id="tenant", run_id="target", attempt_id="attempt-target", lease_id="synthetic-lease")
         await sandbox_leases.record_sandbox_executor_accepted(
             conn, **lease, reconciliation_context={"adapter_name": "claude-agent-worker"})

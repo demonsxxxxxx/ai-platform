@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from app.runs.application.cancellation import (
     RunCancellationQueueCleanupError,
     RunCancellationUseCase,
 )
+from app.runs.application import run_terminalization
 
 
 class _TransactionFactory:
@@ -144,6 +146,68 @@ async def test_cancel_request_commits_authoritative_order_and_source(role, expec
         "legacy.cancel_requested",
         "v4.run.cancel_requested",
         "v4.run.cancelled",
+        "v4.run.terminal",
+        "audit",
+        "transaction.commit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_composition_uses_its_independent_terminal_append_once(monkeypatch):
+    order: list[str] = []
+    lifecycle = SimpleNamespace()
+
+    async def progress_run(conn, *, tenant_id, run_id):
+        order.append("run.progress")
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return RunTerminalizationProgress(True, "cancelled", True)
+
+    lifecycle.progress_run_terminalization = progress_run
+
+    async def release_lineage(_conn, *, tenant_id, run_id):
+        order.append("provider.release")
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+
+    async def unexpected_v4_append(*_args, **_kwargs):
+        pytest.fail("the cancellation event writer owns this terminal append")
+
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.release_provider_lineage",
+        release_lineage,
+    )
+    monkeypatch.setattr(
+        "app.runs.application.run_terminalization.append_run_terminal_v4_row",
+        unexpected_v4_append,
+    )
+
+    async def progress_terminalization(conn, *, tenant_id, run_id):
+        return await run_terminalization.progress_run_terminalization(
+            conn,
+            lifecycle=lifecycle,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        # Only a queued Run without an Attempt terminalizes inside the request (#1899).
+        persistence=_Persistence(order, _authority(attempt_id=None)),
+        event_writer=_EventWriter(order),
+        progress_terminalization=progress_terminalization,
+    )
+
+    result = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a"
+    )
+
+    assert result is not None and result.status == "cancelled"
+    assert order.count("v4.run.terminal") == 1
+    assert order == [
+        "transaction.begin",
+        "legacy.cancel_requested",
+        "v4.run.cancel_requested",
+        "run.progress",
+        "provider.release",
         "v4.run.terminal",
         "audit",
         "transaction.commit",
@@ -293,6 +357,7 @@ def _post_processor(order, *, failures=None):
         sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=operation("sandbox")),
         provider_factory=object(), transaction_factory=object(),
         admit_stream=operation("admit"), publish_event=operation("publish"), warn=warn,
+        wake_executor=operation("wake"),
     ), captured
 
 
@@ -348,6 +413,108 @@ async def test_missing_attempt_skips_publication_and_only_cancelled_status_remov
     receipt = CancelRequestResult("run-a", status, None, (), None)
     assert await processor.post_cancel(receipt, **args) == {"run_id": "run-a", "status": status}
     assert order == (["queue", "sandbox"] if status == "cancelled" else [])
+
+
+@pytest.mark.asyncio
+async def test_cancel_wake_is_after_commit_before_publication_and_failure_keeps_fallback():
+    order = []
+    processor, captured = _post_processor(order, failures={"wake": RuntimeError("redis unavailable")})
+    use_case = RunCancellationUseCase(
+        transaction_factory=_TransactionFactory(order),
+        persistence=_Persistence(order, _authority(prior_status="running")),
+        event_writer=_EventWriter(order), progress_terminalization=_Progressor(order),
+        post_processor=processor,
+    )
+    receipt = await use_case.request_owner_cancel(
+        tenant_id="tenant-a", run_id="run-a", owner_user_id="owner-a",
+    )
+    assert order[-1] == "transaction.commit"
+    result = await use_case.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert order[-4:] == ["transaction.commit", "wake", "admit", "publish"]
+    assert captured["wake"] == {"run_id": "run-a", "attempt_id": "attempt-a"}  # Local timing correlation only; Redis remains a fixed marker.
+    assert captured["warnings"][0][0] == "executor_cancel_wake_deferred"
+    assert result == {"run_id": "run-a", "status": "cancel_requested"}
+    assert "sandbox" not in order and "queue" not in order
+
+
+@pytest.mark.asyncio
+async def test_cancel_handoff_runs_after_successful_resource_release_and_not_after_stop_failure():
+    calls = []
+    handoffs = []
+
+    async def sandbox_cleanup(_leases, **_kwargs):
+        calls.append("sandbox")
+        return [{"id": "lease-a"}]
+
+    async def handoff(**kwargs):
+        calls.append("handoff")
+        handoffs.append(kwargs)
+        return True
+
+    processor = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=sandbox_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    receipt = CancelRequestResult(
+        "run-a", "cancelled", None, ({"id": "lease-a"},), None,
+        "attempt-a", 5,
+    )
+    await processor.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == ["sandbox", "handoff"]
+    assert handoffs == [{
+        "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": "attempt-a",
+        "expected_owner_generation": 5, "resource_lease_ids": ("lease-a",),
+    }]
+
+    async def repeat_cleanup(_leases, **_kwargs):
+        calls.append("repeat-sandbox")
+        return []
+
+    repeat = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=repeat_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    await repeat.post_cancel(
+        receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+        reason="cancel_requested", worker_capabilities=object(),
+    )
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
+    assert handoffs[-1]["resource_lease_ids"] == ()
+
+    async def failed_cleanup(*_args, **_kwargs):
+        raise RuntimeError("stop failed")
+
+    failed = RunCancellationPostProcessor(
+        queue_cleanup=lambda **_kwargs: asyncio.sleep(0),
+        sandbox_cleanup=SimpleNamespace(cleanup_cancelled_run_leases=failed_cleanup),
+        provider_factory=object(), transaction_factory=object(),
+        admit_stream=lambda *_args, **_kwargs: asyncio.sleep(0),
+        publish_event=lambda *_args, **_kwargs: asyncio.sleep(0),
+        warn=lambda *_args: None,
+        handoff_cancelled_attempt=handoff,
+    )
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await failed.post_cancel(
+            receipt, tenant_id="tenant-a", user_id="owner-a", requested_by_role="owner",
+            reason="cancel_requested", worker_capabilities=object(),
+        )
+    assert calls == ["sandbox", "handoff", "repeat-sandbox", "handoff"]
 
 
 @pytest.mark.asyncio

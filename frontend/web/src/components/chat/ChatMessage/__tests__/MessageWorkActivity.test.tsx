@@ -63,6 +63,25 @@ test("one collapsed process keeps aggregate failure and denial counts visible", 
   assert.doesNotMatch(markup, /查看执行详情/);
 });
 
+test("stopping work keeps its nonterminal status without an active spinner or completed claim", async () => {
+  const renderToStaticMarkup = await createLobeServerTestRoot();
+  const markup = renderToStaticMarkup(createElement(MessageWorkActivity, {
+    messageId: "message-stopping", isStreaming: false, isStopping: true, runDurationMs: 1500,
+    parts: [
+      { type: "text", content: "停止前说明" },
+      { type: "tool", name: "Read", args: {}, status: "started", public_operation_id: "stop-tool", public_category: "read" },
+      { type: "text", content: "停止前已显示正文" },
+    ],
+    partKeys: ["before-tool", "stop-tool", "after-tool"],
+    renderPart: (part) => createElement("span", null, part.type === "text" ? part.content : "保留工具记录"),
+  }));
+  assert.match(markup, /data-status="stopping"/);
+  assert.match(markup, /已请求取消/);
+  assert.doesNotMatch(markup, /animate-spin|aui-shimmer|data-status="complete"|data-task-duration/);
+  assert.match(markup, /停止前说明/);
+  assert.ok(markup.indexOf("停止前已显示正文") > markup.indexOf("data-message-result"));
+});
+
 test("streaming hides routine phases and keeps only the latest meaningful phase", async () => {
   const renderToStaticMarkup = await createLobeServerTestRoot();
   const routineStarted: Extract<MessagePart, { type: "execution_step" }> = {

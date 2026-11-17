@@ -170,6 +170,7 @@ export function toAssistantUiMessage(message: Message): ThreadMessageLike {
         runId: message.runId,
         cancelled: message.cancelled,
         isSynchronizing: message.isSynchronizing,
+        isStopping: message.isStopping,
       },
     },
   };

@@ -34,14 +34,17 @@ async def maintenance_phase_until_done(
     logger: logging.Logger,
     run_immediately: bool = True,
     repeat_on_progress: bool = False,
+    wake_event: asyncio.Event | None = None,
 ) -> None:
-    """Supervise one attempt at a time; optionally drain truthy progress results."""
+    """Supervise one attempt at a time; wake hints never overlap active work."""
 
     if not run_immediately:
         if interval_seconds <= 0:
             await asyncio.Event().wait()
         await asyncio.sleep(interval_seconds)
     while True:
+        if wake_event is not None:
+            wake_event.clear()
         phase_task = asyncio.create_task(operation(), name=f"worker-maintenance-phase-{name}")
         try:
             done, _pending = await asyncio.wait(
@@ -81,7 +84,13 @@ async def maintenance_phase_until_done(
             )
         if interval_seconds <= 0:
             await asyncio.Event().wait()
-        await asyncio.sleep(interval_seconds)
+        if wake_event is None:
+            await asyncio.sleep(interval_seconds)
+        else:
+            try:
+                await asyncio.wait_for(wake_event.wait(), interval_seconds)
+            except TimeoutError:
+                pass
 
 
 async def run_maintenance_phases(

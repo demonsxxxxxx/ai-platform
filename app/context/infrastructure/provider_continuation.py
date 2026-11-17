@@ -281,14 +281,12 @@ async def settle_provider_continuation(
 
 async def get_session_continuation(
     conn: Any, *, tenant_id: str, user_id: str, session_id: str,
+    settlement_reader: Any,
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        select head.recovery_json, head.active_run_id, head.current_epoch_id,
+        select head.recovery_json, head.active_run_id, head.active_attempt_id, head.current_epoch_id,
                owner_run.status as active_run_status, owner_run.cancel_requested_at,
-               exists (select 1 from sandbox_leases pending
-                       where pending.tenant_id = head.tenant_id and pending.run_id = head.active_run_id
-                         and pending.status = 'active' and pending.executor_terminal_json is not null) as terminal_pending,
                epoch.entry_count, epoch.transcript_bytes, epoch.structured_bytes
         from sessions session
         left join provider_session_heads head on head.tenant_id = session.tenant_id
@@ -310,8 +308,15 @@ async def get_session_continuation(
     if row is None:
         return public_continuation(None)
     recovery = row.get("recovery_json")
+    terminal_pending = False
+    if row.get("active_run_id") and row.get("active_attempt_id"):
+        detail = await settlement_reader(
+            conn, tenant_id=tenant_id, run_id=row["active_run_id"],
+            attempt_id=row["active_attempt_id"], require_mapped=True,
+        )
+        terminal_pending = detail.get("receipt_json") is not None and detail.get("settlement_phase") != "settled"
     settling = bool(row.get("active_run_id")) and (
-        row.get("cancel_requested_at") is not None or row.get("terminal_pending") is True
+        row.get("cancel_requested_at") is not None or terminal_pending
         or row.get("active_run_status") in {"succeeded", "failed", "cancelled"}
     )
     if not settling and recovery is None and row.get("current_epoch_id") is None:

@@ -167,6 +167,8 @@ interface ChatViewProps {
   continuationPending?: boolean;
   canStopGeneration: boolean;
   isLoading: boolean;
+  isStopping?: boolean;
+  stopUnconfirmed?: boolean;
   isLoadingHistory: boolean;
   historyReadError?: HistoryReadError | null;
   onRetryHistoryLoad?: () => Promise<void>;
@@ -245,6 +247,8 @@ export function ChatView({
   continuationPending = false,
   canStopGeneration,
   isLoading,
+  isStopping = false,
+  stopUnconfirmed = false,
   isLoadingHistory,
   historyReadError = null,
   onRetryHistoryLoad,
@@ -352,13 +356,15 @@ export function ChatView({
   const continuationBlocksSend = continuationPending || !canContinueConversation(continuation);
   const continuationMessage = publicContinuationMessage(continuation, continuationPending);
   const canSendInCurrentView =
-    canSendMessage && !isLoadingHistory && !terminalResultSynchronizing && !continuationBlocksSend;
+    canSendMessage && !isLoadingHistory && !isStopping && !terminalResultSynchronizing && !continuationBlocksSend;
   // A temporary wait must not read as a missing permission.
   const sendBlockedReason: ChatInputProps["sendBlockedReason"] = !canSendMessage
     ? "permission"
     : isLoadingHistory
       ? "loadingHistory"
-      : terminalResultSynchronizing
+      : isStopping
+        ? "synchronizing"
+        : terminalResultSynchronizing
         ? "synchronizing"
         : continuationBlocksSend
           ? "continuation"
@@ -367,7 +373,7 @@ export function ChatView({
   // or accepted batch leaves no pending answer, so the ordinary composer returns
   // with its draft and attachments untouched.
   const runInputQuestionMode =
-    deriveRunInputSurface(runInputs).activeBatches.length > 0;
+    !isStopping && deriveRunInputSurface(runInputs).activeBatches.length > 0;
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
   );
@@ -965,11 +971,13 @@ export function ChatView({
     onStop: onStopGeneration,
     pendingInput: starterDraft,
     onPendingInputConsumed: () => setStarterDraft(null),
-    canStop: canStopGeneration && currentRunId !== null,
+    canStop: canStopGeneration && currentRunId !== null && !isStopping,
     isLoading: sessionRunning,
+    isStopping,
+    canEdit: canSendMessage && !isLoadingHistory,
     canSend: canSendInCurrentView,
     sendBlockedReason,
-    placeholder: canSendMessage && continuationBlocksSend
+    placeholder: !isStopping && canSendMessage && continuationBlocksSend
       ? publicContinuationMessage(continuation, continuationPending) : composerPlaceholder,
     modelUnavailableReason,
     acceptedFileTypes: undefined,
@@ -1036,7 +1044,15 @@ export function ChatView({
 
   const composer = (
     <div className="relative" data-chat-shell-composer>
-      {sessionId && continuationMessage && (continuation || continuationPending || !sessionRunning) ? (
+      {isStopping ? (
+        <div role="status" aria-live="polite" data-chat-stopping
+          className="mx-auto mb-2 max-w-[var(--chat-column-max)] px-2 text-sm text-[var(--theme-text-secondary)]">
+          {stopUnconfirmed ? t("chat.stopUnconfirmed") : t("chat.stoppingAndSaving")}
+          {stopUnconfirmed ? <button type="button" className="ml-2 underline" onClick={() => void onReconnect()}>
+            {t("chat.connectionStatus.reconnect")}
+          </button> : null}
+        </div>
+      ) : sessionId && continuationMessage && (continuation || continuationPending || !sessionRunning) ? (
         <div
           role="status"
           aria-live="polite"
@@ -1167,7 +1183,7 @@ export function ChatView({
       <ChatInput
         {...chatInputProps}
         questionMode={runInputQuestionMode}
-        taskSurface={runInputs
+        taskSurface={runInputs && !isStopping
           ? (stop) => <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} stop={stop} />
           : undefined}
         className="mx-auto max-w-[var(--chat-column-max)] px-2"

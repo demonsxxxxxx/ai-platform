@@ -20,12 +20,6 @@ from psycopg import AsyncConnection
 from typing import Any
 
 
-ACTIVE_RUN_STATUSES = {"queued", "running"}
-
-
-RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
-
-
 async def allocate_session_run_generation(
     conn: AsyncConnection,
     *,

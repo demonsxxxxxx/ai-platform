@@ -69,8 +69,11 @@ async def test_success_update_is_a_scoped_terminal_and_cancellation_cas():
     sql, params = conn.calls[0]
     assert changed is True
     assert "status not in ('succeeded', 'failed', 'cancelled')" in sql
-    assert "cancel_requested_at is null" in sql
-    assert "terminalization_target is null" in sql
+    # A pending cancel request does not override an executor-reported success;
+    # a staged cancelled/failed terminal still blocks it.
+    assert "cancel_requested_at is null" not in sql
+    assert "coalesce(terminalization_target, 'cancel_requested') = 'cancel_requested'" in sql
+    assert "terminalization_target = null" in sql
     assert "run_tool_permission_requests" not in sql
     assert params[1:6] == (250, 11, 13, 24, 17)
 

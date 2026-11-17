@@ -49,7 +49,7 @@ the current transport behavior.
 `RunLifecycleService` now owns ordinary complete/fail/cancel/enqueue-failure
 transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
-`terminalization_v4` coordinates provider lineage and committed event rows.
+`run_terminalization` coordinates provider lineage and committed event rows.
 The current [application ports](../../app/runs/application/lifecycle.py) are
 `RunLifecyclePersistence`, `RunEventWriter`, and `RunAuditWriter`.
 [Lifecycle composition](../../app/bootstrap/run_lifecycle.py) injects
@@ -61,6 +61,33 @@ running writer. Worker dispatch locks the session-consistent queued Run through
 `RunAttemptLifecycleService`; the durable Attempt transition projects running in
 PostgreSQL. Pre-dispatch failures without a valid specification retain their
 Run-only terminal paths. Source, tests, image and runtime acceptance remain separate.
+
+### 1.2 Single Attempt settlement authority
+
+For an existing Attempt, the canonical `run_attempt_settlements` detail owns
+receipt/context, claim/retry and result mapping. All runtime consumers use it;
+legacy readers/writers, shadow dual-write, selection markers and separate
+cutover/retirement tools are removed. Run remains the business outcome
+projection written by Runs lifecycle in the same transaction. Pre-dispatch
+failures without an Attempt retain their Run-owned completion contract.
+
+Stopped checkpoints commit Context continuation, result facts, Run/Attempt
+terminal state, events and exact resource finalization atomically. Losing any
+claim or terminal CAS rolls the transaction back. Sandbox continues to own
+probe, stop/release evidence, cleanup claims and retries; its resource status
+cannot decide the business outcome.
+
+The only compatibility code is a one-time historical schema upgrader after
+old-binary shutdown, complete drain and backup/restore verification. It maps and
+compares all historical facts before removing old columns/indexes/constraint,
+write fence and marker tables. Expired TTLs do not establish drain. Readiness
+requires the Attempt-only layout; no binary rollback to old settlement is
+supported. Detailed contracts and evidence are owned by
+[ExecutionSpec and Attempt lifecycle](execution-spec-and-attempt-lifecycle.md)
+and the [release runbook](../operations/release-operations-runbook.md).
+
+PostgreSQL stale-Run claims retain Run → Sandbox → Attempt → claim ordering;
+queue delivery tokens, ACK/requeue and SSE remain independent transport owners.
 
 ## 2. Source ownership
 
@@ -181,12 +208,40 @@ The migration MUST preserve these observable semantics:
    failure. The existing stop-under-lock compatibility mechanism must remain
    until the Sandbox owner activates its separately proven claim/I/O/receipt
    replacement. Runs never calls a provider or marks
-   a Sandbox lease released. A cancelled Run with cleanup pending does not claim
-   that the Sandbox was released.
+   a Sandbox lease released. After Sandbox returns exact released-lease evidence,
+   Runs may perform one owner-fenced Attempt handoff only when the Run remains
+   `running` with durable cancellation requested, the Attempt is still
+   `cancel_requested` under the captured queue-worker generation, no same-Run
+   active resource remains, and no terminal receipt is pending. The handoff
+   assigns `reconciler/cancel-cleanup` and advances the execution generation,
+   preserving the monotonic heartbeat and lease timestamps. The PG stale owner
+   may consume this exact stopped-owner handoff before the old timestamp expires;
+   other live owners remain excluded. Claim and writeback still require their
+   exact Attempt, generation and claim token. A repeat cancellation can re-read
+   released evidence after an interrupted handoff. Stop failure, tenant/Attempt/
+   generation mismatch, another active resource, or a pending receipt leaves
+   the queue owner and lease untouched. A cancelled Run with cleanup pending
+   does not claim that the Sandbox was released.
 10. **Rollback is atomic.** Any exception before transaction completion rolls
     back the state transition and its event/audit facts together.
 
 ### 4.1 Asynchronous terminal consumption and elapsed metrics
+
+After an admitted Attempt's cancellation transaction commits, the existing Runs
+post-processor sends the private Redis reconciliation wake before public stream
+publication. Bootstrap bounds this optional wake to one second. The marker has
+no tenant, Run, Attempt, endpoint or stop payload and grants no authority; the
+consumer re-reads the existing scoped cancellation/lease/detail query and calls
+the same authenticated Executor cancel endpoint. Signal failure never reverses
+cancellation or prevents later publication/cleanup. The existing one-second
+cancel-forward scan and stale probe remain the recovery path, not a new queue or
+cancellation writer.
+
+The same signal now wakes the independent cancel-forward maintenance phase.
+Hints coalesce; a hint during an active operation triggers another scan only
+after that owner actually finishes, without overlapping or cancelling its I/O.
+Shutdown still cancels and joins the sole phase and its wait. The normal terminal
+consumer and cleanup owners remain independent.
 
 The terminal reconciler drains ready PostgreSQL receipts before starting idle
 maintenance. Failed-environment cleanup and suspect-executor probing each run
@@ -254,6 +309,15 @@ observations, new schema fields, public payload fields, or new telemetry backend
 
 The barriers remain separate:
 
+- `cancel_wake`: the bounded post-commit Redis hint await, not Executor receipt;
+  `executor_cancel_forward`: provider-resolved cancel HTTP await, not SDK idle;
+  `executor_cancel_to_terminal`: first authenticated Executor cancel until the
+  supervisor obtains its terminal result, including SDK/mirror/public-stream
+  drain but excluding the following terminal callback retry/ACK. Repeat cancel
+  does not reset this stopwatch or interrupt its writer;
+  `sdk_interrupt`: the existing bounded SDK interrupt RPC, excluding later EOF,
+  background-task stop, mirror flush and workspace checkpoint. These observations
+  use the existing safe logger and retain all cancellation/claim boundaries.
 - `sdk_final_flush`: accepted final SDK Result through public EOF and callback /
   provider-store settlement. Intermediate/background Results are excluded.
   The SDK flushes pending mirror entries **before** delivering public Result;
@@ -358,6 +422,25 @@ Business reconciliation remains durable; no maintenance loop scans SSE delivery
 work. Final hydration converges even when Redis publication fails. Test doubles implement
 application ports and are injected by tests; they are not production registries
 or global monkeypatch requirements.
+
+Execution supervision is composed through `bootstrap.execution_supervision`,
+which injects the PostgreSQL store and transaction boundary into the
+application-level domain scheduler. Existing delivery, probe, settlement and
+Sandbox cleanup action owners remain the only executors. Their existing loops
+keep independent scan limits, polling cadence, I/O budget and domain capacity.
+The persisted domain mode selects which owner may claim: `legacy` admits only
+the legacy path, `unified` invokes the same action owner through a unified claim,
+and `draining` admits neither path. A mode/version change fences new claims
+across replicas. An active action keeps its claim until its operation completes;
+cancellation waits for that completion before releasing the slot.
+
+Supervision and shadow observation default to disabled. Enabling the feature does
+not change domain ownership by itself; the operator must request drain and
+activate each domain separately. An expired claim is not proof that its process
+or remote I/O stopped. Claim recovery requires a human operator to supply the
+exact domain and owner versions, claim token, worker identity, operator identity
+and stop evidence; the application records that evidence but does not verify it.
+The claim TTL is not an external exactly-once guarantee.
 
 ### Forbidden dependency mechanisms
 

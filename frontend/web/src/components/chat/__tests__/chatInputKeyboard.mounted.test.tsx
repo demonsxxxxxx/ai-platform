@@ -106,6 +106,23 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal(textarea().value, "停止后的新消息草稿");
       await type("");
     });
+    await t.test("stopping keeps an editable draft and attachment while native and keyboard sends stay blocked", async () => {
+      const attachment = { id: "stop-draft-file", key: "stop-draft-file", name: "next.txt", type: "document" as const,
+        url: "/api/files/next", mimeType: "text/plain", size: 4 };
+      await render({ canSend: false, canEdit: true, isLoading: true, isStopping: true,
+        canStop: false, attachments: [attachment], sendBlockedReason: "synchronizing" });
+      await type("下一轮草稿");
+      assert.equal(textarea().disabled, false);
+      assert.ok(container.querySelector("[data-composer-file-reference]"));
+      await key("Enter");
+      await act(async () => textarea().closest("form")!.requestSubmit());
+      assert.equal(sends.length, 0);
+      assert.equal(dialogOpen(), false, "Enter cannot request another stop");
+      assert.equal(textarea().value, "下一轮草稿");
+      await render({ canSend: true, canEdit: undefined, isLoading: false, isStopping: false, attachments: [], sendBlockedReason: undefined });
+      assert.equal(textarea().value, "下一轮草稿");
+      await type("");
+    });
     await t.test("ordinary placeholder does not replace the permission reason or administrator action", async () => {
       await render({ canSend: false, placeholder: "向专家描述要完成的任务", sendBlockedReason: "permission" });
       const { default: i18n } = await import("../../../i18n");

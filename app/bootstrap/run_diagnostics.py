@@ -12,7 +12,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
-from app.sandbox.infrastructure.leases_postgres import read_run_runtime_debug
+from app.bootstrap.sandbox_lease_ports import build_sandbox_run_lease_reader
 from app.settings import get_settings
 
 _logger = logging.getLogger(__name__)
@@ -43,6 +43,6 @@ def build_run_diagnostics_service() -> RunDiagnosticsService:
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
         tool_operation_id=public_tool_operation_id,
-        runtime_debug_reader=read_run_runtime_debug,
+        runtime_debug_reader=build_sandbox_run_lease_reader().read_run_runtime_debug,
         query_runtime_commit=settings.ai_platform_runtime_commit,
     )

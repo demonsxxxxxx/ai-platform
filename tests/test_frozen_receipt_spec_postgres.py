@@ -16,12 +16,19 @@ from app.runs.api import ReconciliationAuthorityError
 from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres
 from app.sandbox.api import SandboxReconciliationReceiptAuthority
-from app.sandbox.infrastructure.leases_postgres import lock_scoped_reconciliation_receipt
+from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+from app.sandbox.infrastructure.leases_postgres import lock_scoped_reconciliation_resource
+from tests.support.settlement_authority_schema import settlement_authority_sql
 from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.support.frozen_receipts import RESTORE, SCOPE, frozen_spec
 
 
-receipt_authority = SandboxReconciliationReceiptAuthority(lock_scoped_reconciliation_receipt)
+sandbox_leases = build_sandbox_executor_reconciliation_port()
+receipt_authority = SandboxReconciliationReceiptAuthority(
+    lock_resource=lock_scoped_reconciliation_resource,
+    settlement_reader=build_attempt_settlement_projection_service(),
+)
 restore = partial(RunAttemptLifecycleService(postgres).restore_reconciliation,
                   receipt_authority=receipt_authority.is_current)
 
@@ -56,8 +63,7 @@ async def receipt_db():
                   execution_spec_canonical_json text, execution_spec_json jsonb);
                 create table sandbox_leases(id text primary key, tenant_id text, workspace_id text,
                   user_id text, session_id text, run_id text, attempt_id text, status text,
-                  executor_terminal_json jsonb, executor_reconciliation_status text,
-                  executor_reconciliation_claim_token text, lease_payload_json jsonb);
+                  lease_payload_json jsonb);
                 create table committed_facts(kind text);
             """)
             spec = frozen_spec()
@@ -72,8 +78,17 @@ async def receipt_db():
             """, (spec.to_mapping()["schema_version"], spec.spec_sha256, spec.canonical_json.decode(), Jsonb(spec.to_mapping())))
             await conn.execute("""
                 insert into sandbox_leases values('lease-a','tenant-a','workspace-a','user-a','session-a',
-                'run-a','attempt-a','active','{"status":"completed"}','claimed','claim-a','{"owner_generation":4}')
+                'run-a','attempt-a','active','{"owner_generation":4}')
             """)
+            await conn.execute(settlement_authority_sql())
+            await conn.execute("""insert into run_attempt_settlements(
+                tenant_id,run_id,attempt_id,schema_version,mapping_state,source_lease_id,
+                receipt_identity,receipt_json,receipt_sha256,receipt_owner_generation,
+                dispatch_state,attempt_status_snapshot,attempt_owner_generation_snapshot,
+                run_status_snapshot,settlement_phase,settlement_claim_token,settlement_claimed_at)
+                values('tenant-a','run-a','attempt-a','ai-platform.run-attempt-settlement.v1',
+                  'mapped','lease-a','synthetic','{"status":"completed"}',repeat('a',64),4,
+                  'accepted','running',4,'running','claimed','claim-a',now())""")
         yield connect
     finally:
         await admin.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema)))
@@ -117,9 +132,9 @@ async def test_restore_rejects_every_cross_scope_or_claim(receipt_db, key):
     "update runs set model_gateway_revision=4",
     "update runs set context_snapshot_id='other-context'",
     "update sandbox_leases set lease_payload_json='{}'",
-    "update sandbox_leases set executor_terminal_json=null",
-    "update sandbox_leases set executor_reconciliation_status='finalized'",
-    "delete from run_attempts",
+    "update run_attempt_settlements set receipt_identity=null,receipt_json=null,receipt_sha256=null,receipt_owner_generation=null",
+    "update run_attempt_settlements set settlement_phase='settled',settlement_claim_token=null,settlement_claimed_at=null",
+    "delete from run_attempt_settlements; delete from run_attempts",
 ])
 async def test_real_restore_fails_closed_on_authority_or_canonical_drift(receipt_db, change):
     async with receipt_db() as conn:
@@ -146,7 +161,7 @@ async def test_claim_lock_survives_until_transaction_and_old_claim_cannot_return
     async def take_claim():
         async with receipt_db() as conn:
             started.set()
-            await conn.execute("update sandbox_leases set executor_reconciliation_claim_token='new-claim'")
+            await conn.execute("update run_attempt_settlements set settlement_claim_token='new-claim'")
     task = None
     try:
         async with receipt_db() as conn:
@@ -228,7 +243,6 @@ async def full_receipt_db():
     deliberately includes every production constraint and lifecycle trigger.
     """
     from pathlib import Path
-    from app.platform.postgres import sandbox_leases
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN")
     if not dsn:
         pytest.skip("AI_PLATFORM_S0A_SCHEMA_TEST_DSN is not configured")
@@ -270,12 +284,20 @@ async def full_receipt_db():
             )
             assert attempt["status"] == "running" and attempt["owner_generation"] == 4
             args = {**RESTORE, "attempt_id": attempt["id"]}
+            from app.bootstrap.context import configure_context_services
+            from app.bootstrap.attempt_settlement_projection import build_attempt_settlement_projection_service
+            configure_context_services()
+            await build_attempt_settlement_projection_service().initialize_attempt_in_transaction(
+                conn,tenant_id="tenant-a",run_id="run-a",attempt_id=attempt["id"])
             await conn.execute("""
                 insert into sandbox_leases(id,tenant_id,workspace_id,user_id,session_id,run_id,
-                  attempt_id,sandbox_mode,provider,status,lease_payload_json,executor_reconciliation_context_json)
+                  attempt_id,sandbox_mode,provider,status,lease_payload_json)
                 values('lease-a','tenant-a','workspace-a','user-a','session-a','run-a',%s,
-                  'ephemeral','fake','active','{"owner_generation":4}','{}')
+                  'ephemeral','fake','active','{"owner_generation":4}')
             """, (attempt["id"],))
+            await sandbox_leases.record_sandbox_executor_accepted(
+                conn,tenant_id="tenant-a",run_id="run-a",attempt_id=attempt["id"],lease_id="lease-a",
+                reconciliation_context={})
             await sandbox_leases.record_sandbox_executor_terminal(
                 conn, tenant_id="tenant-a", run_id="run-a", attempt_id=attempt["id"], lease_id="lease-a",
                 executor_status="completed", terminal_result={"run_id": "run-a", "status": "succeeded"},
@@ -338,7 +360,6 @@ async def test_full_schema_real_cancellation_cas_rejects_old_success_and_rolls_b
 
 @pytest.mark.asyncio
 async def test_full_schema_lost_claim_cannot_adopt_new_receipt_owner_or_write_terminal(full_receipt_db):
-    from app.platform.postgres import sandbox_leases
     connect, args, _spec = full_receipt_db
     async with connect() as conn:
         await restore(conn, **args)
@@ -347,7 +368,7 @@ async def test_full_schema_lost_claim_cannot_adopt_new_receipt_owner_or_write_te
             conn, lease_id="lease-a", claim_token="claim-a", error="test-owner-loss",
         )
         # Advance the explicit retry deadline; production SQL still owns the new claim.
-        await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before=now()-interval '1 minute' where id='lease-a'")
+        await conn.execute("update run_attempt_settlements set next_retry_at=now()-interval '1 minute' where source_lease_id='lease-a'")
         claimed = await sandbox_leases.claim_sandbox_executor_reconciliations(
             conn, claim_token="claim-new", stale_after_seconds=300, limit=1,
         )
@@ -384,7 +405,7 @@ async def test_real_failure_settlement_and_frozen_restore_share_run_first_lock_o
             await postgres.get_scoped_reconciliation_run(conn, tenant_id="tenant-a", run_id="run-a", scope=SCOPE)
             task = asyncio.create_task(executor_reconciler._terminalize_reconciliation_failure(
                 {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "attempt_id": args["attempt_id"]},
-                claim_token="stale-claim", logger=logging.getLogger(__name__),
+                claim_token="stale-claim", lease_port=sandbox_leases, logger=logging.getLogger(__name__),
                 v4_capabilities=None, attempt_lifecycle=None, lifecycle=None,
                 run_diagnostics=None, reconciliation_error_code="synthetic-failure",
             ))

@@ -125,8 +125,8 @@ function countWorkActivityIssues(parts: readonly MessagePart[]): WorkActivityIss
 }
 
 function WorkActivityDisclosure({
-  messageId, entries, isStreaming, duration, children,
-}: { messageId: string; entries: WorkActivityPartEntry[]; isStreaming?: boolean; duration?: ReactNode; children: ReactNode }) {
+  messageId, entries, isStreaming, isStopping, duration, children,
+}: { messageId: string; entries: WorkActivityPartEntry[]; isStreaming?: boolean; isStopping?: boolean; duration?: ReactNode; children: ReactNode }) {
   const { t } = useTranslation();
   // The one message-level disclosure retains manual choice as operations arrive.
   const [expanded, setExpanded] = useState(() => shouldExpandWorkActivity(isStreaming));
@@ -135,8 +135,8 @@ function WorkActivityDisclosure({
   return <RunActivity
     open={expanded}
     onOpenChange={setExpanded}
-    status={hasIssues ? "error" : isStreaming ? "running" : "complete"}
-    label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+    status={isStopping ? "stopping" : hasIssues ? "error" : isStreaming ? "running" : "complete"}
+    label={t(isStopping ? "chat.runStatus.event.cancelRequested" : isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
     itemCount={t("chat.workDetails.itemCount", { count: entries.filter(({ part }) => isWorkActivityPart(part)).length })}
     toggleLabel={t(expanded ? "chat.workDetails.collapseAll" : "chat.workDetails.expandAll")}
     contentId={`chat-work-${messageId}`}
@@ -149,17 +149,18 @@ function WorkActivityDisclosure({
 }
 
 export function MessageWorkActivity({
-  messageId, isStreaming, runDurationMs, parts, partKeys, renderPart,
+  messageId, isStreaming, isStopping = false, runDurationMs, parts, partKeys, renderPart,
 }: {
   messageId: string;
   isStreaming?: boolean;
+  isStopping?: boolean;
   runDurationMs?: number;
   parts: MessagePart[];
   partKeys: string[];
   renderPart: (part: MessagePart, index: number, withinWorkDetails: boolean) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const formattedDuration = isStreaming === true ? null : formatTaskDuration(runDurationMs);
+  const formattedDuration = isStreaming === true || isStopping ? null : formatTaskDuration(runDurationMs);
   const duration = formattedDuration !== null
     ? <span data-task-duration className="tabular-nums">
       {t("chat.message.duration")} {formattedDuration}
@@ -190,7 +191,7 @@ export function MessageWorkActivity({
     </Fragment>
   );
   return <div data-message-work-activity-order="process-then-result">
-    {process.length > 0 ? <WorkActivityDisclosure key="process" messageId={messageId} entries={process} isStreaming={isStreaming} duration={duration}>
+    {process.length > 0 ? <WorkActivityDisclosure key="process" messageId={messageId} entries={process} isStreaming={isStreaming} isStopping={isStopping} duration={duration}>
       {process.map(entry => renderEntry(entry, true))}
     </WorkActivityDisclosure> : duration ? <div className="py-1 text-sm text-[var(--theme-text-secondary)]">{duration}</div> : null}
     <div data-message-result>{result.map(entry => renderEntry(entry, false))}</div>

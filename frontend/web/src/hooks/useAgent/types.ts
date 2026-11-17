@@ -613,6 +613,9 @@ export interface HistoryReadError {
 export interface UseAgentReturn {
   messages: Message[];
   isLoading: boolean;
+  /** Current owner requested cancellation; authority and receiving continue. */
+  isStopping: boolean;
+  stopUnconfirmed: boolean;
   isLoadingHistory: boolean;
   error: string | null;
   /** Current owner's transcript read failed; never means backend history deletion. */

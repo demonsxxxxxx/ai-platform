@@ -11,6 +11,21 @@ interface BrowserSubmissionTiming {
 const submissions = new Map<string, BrowserSubmissionTiming>();
 const MAX_WAIT_MS = 86_400_000;
 
+/** Browser-local User Timing only; no prompt, scope or new telemetry endpoint. */
+export function recordBrowserCancelLatency(
+  phase: "request_ack" | "terminal_observed" | "continuation_ready", startedAt: number,
+): void {
+  try {
+    const end = performance.now();
+    if (!Number.isFinite(startedAt) || startedAt > end || end - startedAt > MAX_WAIT_MS) return;
+    const name = `ai-platform.cancel.${phase}`;
+    performance.clearMeasures(name);
+    performance.measure(name, { start: startedAt, end });
+  } catch {
+    // Optional measurements never change cancellation or continuation authority.
+  }
+}
+
 function current(timing: BrowserSubmissionTiming): boolean {
   try {
     return timing.isCurrent() && performance.now() - timing.startedAt <= MAX_WAIT_MS;

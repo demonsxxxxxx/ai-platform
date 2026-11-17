@@ -101,6 +101,9 @@ export type RunControlChildAdoption =
   | "superseded";
 
 export interface RunControlLifecycleCallbacks {
+  /** Freeze only display before the current owner's cancel request is sent. */
+  onCancelRequested?: (owner: RunControlOwner) => void;
+  onCancelAcknowledged?: (owner: RunControlOwner) => void;
   /** The parent alone may load/adopt a child transcript and route. */
   adoptRunControlChild: (
     owner: RunControlOwner,
@@ -133,6 +136,8 @@ export interface RunControlSnapshot {
   revision: number;
   owner: RunControlOwner | null;
   phase: RunControlPhase;
+  /** Presentation fence only; never grants terminality or continuation. */
+  cancelRequested: boolean;
   playback: RunPlaybackResponse | null;
   readiness: ChatRunStatusResponse | null;
   continuation: PublicContinuation | undefined;
@@ -155,6 +160,7 @@ const EMPTY_SNAPSHOT: RunControlSnapshot = {
   revision: 0,
   owner: null,
   phase: "idle",
+  cancelRequested: false,
   playback: null,
   readiness: null,
   continuation: undefined,
@@ -463,6 +469,7 @@ export class RunControlLifecycle {
     this.publish({
       owner,
       phase: owner.phase,
+      cancelRequested: false,
       playback: null,
       readiness: null,
       continuation: undefined,
@@ -486,6 +493,7 @@ export class RunControlLifecycle {
     this.publish({
       owner: null,
       phase: "idle",
+      cancelRequested: false,
       playback: null,
       readiness: null,
       continuation: undefined,
@@ -765,7 +773,11 @@ export class RunControlLifecycle {
           ? "retrying"
           : "resuming";
     owner.phase = phase;
-    this.publishForOwner(owner, { phase, rejectionMessage: null });
+    if (action === "cancel") this.callbacks.onCancelRequested?.(owner);
+    this.publishForOwner(owner, {
+      phase, rejectionMessage: null,
+      ...(action === "cancel" ? { cancelRequested: true } : {}),
+    });
 
     try {
       const response = await this.requestMutation(
@@ -784,6 +796,7 @@ export class RunControlLifecycle {
         // A cancel acknowledgement is not a terminal result. SSE/reconcile and
         // terminal history hydration remain useAgent's sole convergence writer.
         owner.phase = "cancel_requested";
+        this.callbacks.onCancelAcknowledged?.(owner);
         this.publishForOwner(owner, { phase: "cancel_requested" });
         void this.refresh(owner);
         return;

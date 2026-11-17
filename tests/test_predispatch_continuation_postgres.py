@@ -19,7 +19,7 @@ from app.context.infrastructure import provider_epochs
 from app.execution.api import WorkerAttemptLifecycle
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import CallbackTargetValidationError, build_trusted_callback_target
-from app.runtime.sandbox.runtime import SandboxRuntime
+from app.bootstrap.sandbox_runtime import SandboxRuntime
 from tests.test_run_attempt_repository import _execution_spec
 from tests.test_sandbox_persistence import executor_acceptance_database
 from tests.test_sandbox_runtime import request
@@ -64,10 +64,12 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
         context_pack={"conversation_context": frozen},
     )
     attempts = build_run_attempt_lifecycle_service()
-    started = await attempts.start_worker(
-        conn, tenant_id="tenant-a", run_id="run-a", queue_attempt_id="queue-a",
-        worker_id="worker-a", execution_spec=spec,
-    )
+    async with conn.transaction():
+        # The settlement writer fence requires the caller's transaction.
+        started = await attempts.start_worker(
+            conn, tenant_id="tenant-a", run_id="run-a", queue_attempt_id="queue-a",
+            worker_id="worker-a", execution_spec=spec,
+        )
     assert started["owner_generation"] == 4
     runtime = SandboxRuntime(workspace_root="unused", provider=FakeContainerProvider())
     monkeypatch.setattr(runtime, "_trusted_callback_target", lambda _provider: build_trusted_callback_target("http://169.254.169.254"))
@@ -110,10 +112,11 @@ async def test_predispatch_failure_closes_only_unused_epoch_and_allows_next_admi
     async def release(*args, **kwargs):
         pass
     if cancelled:
-        await conn.execute("update runs set cancel_requested_at=now() where id='run-a'")
-        cancelled_attempt = await attempts.request_cancel(
-            conn, tenant_id="tenant-a", run_id="run-a", attempt_id=started["id"],
-        )
+        async with conn.transaction():
+            await conn.execute("update runs set cancel_requested_at=now() where id='run-a'")
+            cancelled_attempt = await attempts.request_cancel(
+                conn, tenant_id="tenant-a", run_id="run-a", attempt_id=started["id"],
+            )
         assert cancelled_attempt["owner_generation"] == 5
     async def terminalize():
         if cancelled:

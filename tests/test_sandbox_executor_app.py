@@ -536,9 +536,11 @@ async def test_shutdown_deadline_does_not_start_terminal_retry_after_expiry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("terminal_stage_logs")
 async def test_api_cancel_keeps_started_terminal_owned_until_shutdown_deadline(
     tmp_path,
     monkeypatch,
+    caplog,
 ):
     runner_started = asyncio.Event()
     terminal_started = asyncio.Event()
@@ -596,6 +598,11 @@ async def test_api_cancel_keeps_started_terminal_owned_until_shutdown_deadline(
         for _ in range(3):
             await asyncio.sleep(0)
         assert terminal_cancellations == 0
+        records = [record for record in caplog.records
+                   if record.msg == "run_terminal_stage" and record.terminal_phase == "executor_cancel_to_terminal"]
+        assert len(records) == 1, "repeat cancel cannot restart the timing or terminal writer"
+        assert records[0].terminal_status == "cancelled"
+        assert records[0].terminal_phase_duration_ms >= 0
 
         await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
 

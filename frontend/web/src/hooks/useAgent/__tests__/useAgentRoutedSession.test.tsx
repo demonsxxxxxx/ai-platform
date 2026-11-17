@@ -550,6 +550,8 @@ function controlledPublicRunLifecycle(
   const encoder = new TextEncoder();
   let finish: (() => void) | null = null;
   let push: ((sequence: number, delta: string) => void) | null = null;
+  let lastSequence = preceding.length;
+  let cursor = preceding.length + 1;
   const response = new Response(
     new ReadableStream({
       start(controller) {
@@ -595,6 +597,8 @@ function controlledPublicRunLifecycle(
           );
         });
         push = (sequence, delta) => {
+          lastSequence = Math.max(lastSequence, sequence);
+          cursor += 1;
           const event = {
             schema: PUBLIC_RUN_STREAM_SCHEMA,
             event_id: `future-${runId}-${sequence}`,
@@ -610,7 +614,7 @@ function controlledPublicRunLifecycle(
             payload: { delta },
           };
           controller.enqueue(encoder.encode(
-            `id: ${runId}:${streamIncarnation}:${preceding.length + 2}-0\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
+            `id: ${runId}:${streamIncarnation}:${cursor}-0\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
           ));
         };
         finish = () => {
@@ -641,7 +645,7 @@ function controlledPublicRunLifecycle(
                     terminal_event_id: terminalEventId,
                     hydrate_required: true,
                   };
-          const terminalSequence = preceding.length + 1;
+          const terminalSequence = lastSequence + 1;
           const terminal = {
             schema: PUBLIC_RUN_STREAM_SCHEMA,
             event_id: terminalEventId,
@@ -672,8 +676,8 @@ function controlledPublicRunLifecycle(
           };
           controller.enqueue(
             encoder.encode(
-              `id: ${runId}:${streamIncarnation}:${preceding.length + 2}-0\nevent: ${terminalEventType}\ndata: ${JSON.stringify(terminal)}\n\n` +
-                `id: ${runId}:${streamIncarnation}:${preceding.length + 3}-0\nevent: stream.end\ndata: ${JSON.stringify(end)}\n\n`,
+              `id: ${runId}:${streamIncarnation}:${cursor + 1}-0\nevent: ${terminalEventType}\ndata: ${JSON.stringify(terminal)}\n\n` +
+                `id: ${runId}:${streamIncarnation}:${cursor + 2}-0\nevent: stream.end\ndata: ${JSON.stringify(end)}\n\n`,
             ),
           );
           controller.close();
@@ -5741,6 +5745,65 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
   }
 });
 
+test("cancel freezes visible deltas immediately but preserves received text for terminal convergence", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originals = { submitChat: sessionApi.submitChat, generateTitle: sessionApi.generateTitle,
+    getEvents: sessionApi.getEvents, getStatus: sessionApi.getStatus, cancelRun: sessionApi.cancelRun };
+  const originalWindowFetch = dom.window.fetch;
+  const originalFetch = globalThis.fetch;
+  const stream = controlledPublicRunLifecycle("run-freeze", "cancelled", [
+    { eventType: "message.started", payload: {} },
+    { eventType: "message.delta", payload: { delta: "before stop" } },
+  ]);
+  let finishCancel!: () => void;
+  const cancel = new Promise<void>((resolve) => { finishCancel = resolve; });
+  let finished = false;
+  let submissions = 0;
+  sessionApi.submitChat = (async () => {
+    submissions += 1;
+    return { session_id: "session-freeze", run_id: "run-freeze", trace_id: "trace-freeze", status: "queued" };
+  }) as typeof sessionApi.submitChat;
+  sessionApi.generateTitle = async (sessionId) => ({ session_id: sessionId, title: "Freeze" });
+  sessionApi.cancelRun = async () => { await cancel; return { run_id: "run-freeze", status: "cancel_requested" }; };
+  sessionApi.getStatus = async () => ({ session_id: "session-freeze", run_id: "run-freeze",
+    status: finished ? "cancelled" : "running",
+    continuation: { state: finished ? "resumable" : "settling", action: finished ? "continue" : "wait",
+      reason_code: finished ? "saved" : "settling", workspace_saved: finished } });
+  sessionApi.getEvents = async () => ({ events: [] });
+  globalThis.fetch = async () => historyJsonResponse({ run: { status: "running" }, timeline: [], events: [], artifacts: [], steps: [] });
+  dom.window.fetch = async () => stream.response;
+  try {
+    await harness.act(async () => { await harness.hook.sendMessage("stop task"); });
+    await settle(harness.act);
+    const before = harness.hook.messages.find((m) => m.role === "assistant")?.content;
+    assert.equal(before, "before stop");
+    let stopping!: Promise<unknown>;
+    await harness.act(async () => { stopping = harness.hook.stopGeneration(); });
+    assert.equal(harness.hook.isStopping, true, "feedback does not wait for the POST response");
+    assert.equal(harness.hook.currentRunId, "run-freeze");
+    await harness.act(async () => { stream.push(3, " late preserved"); });
+    await settle(harness.act);
+    assert.equal(harness.hook.messages.find((m) => m.role === "assistant")?.content, before);
+    assert.equal(harness.hook.messages.find((m) => m.role === "assistant")?.isStopping, true);
+    await harness.act(async () => { await harness.hook.sendMessage("cannot overlap"); });
+    assert.equal(submissions, 1);
+    await harness.act(async () => { finishCancel(); await stopping; });
+    finished = true;
+    await harness.act(async () => { stream.finish(); });
+    await settle(harness.act);
+    assert.equal(harness.hook.isStopping, false);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.match(JSON.stringify(harness.hook.messages), /late preserved/);
+  } finally {
+    finishCancel();
+    Object.assign(sessionApi, originals);
+    dom.window.fetch = originalWindowFetch;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 for (const scenario of ["stopped", "settling", "fault", "legacy", "blocked", "capacity"] as const) {
   test(`useAgent continuation ${scenario} enforces settlement gates and fresh submissions`, async () => {
     const harness = await loadReactHarness();
@@ -9557,7 +9620,10 @@ for (const scenario of ["acknowledged", "lost-response", "missing-owner", "wrong
       assert.equal(calls.length, 1);
       assert.equal(calls[0].runId, "run-stop");
       assert.equal(calls[0].signal, owner.abortController.signal);
-      assert.deepEqual(harness.hook.messages, beforeMessages, "pending cancel cannot fabricate a terminal");
+      const stoppingMessages = beforeMessages.map((message) => message.role === "assistant"
+        ? { ...message, isStopping: true } : message);
+      assert.equal(harness.hook.isStopping, true);
+      assert.deepEqual(harness.hook.messages, stoppingMessages, "only the display fence changes; no terminal is fabricated");
       if (scenario === "clear-during-cancel") {
         await harness.act(async () => { harness.hook.clearMessages(); });
         assert.equal(calls[0].signal?.aborted, true);
@@ -9575,7 +9641,7 @@ for (const scenario of ["acknowledged", "lost-response", "missing-owner", "wrong
       } else {
         assert.equal(lifecycle.getSnapshot().phase, scenario === "acknowledged" ? "cancel_requested" : "unconfirmed");
         assert.equal(harness.hook.currentRunId, "run-stop");
-        assert.deepEqual(harness.hook.messages, beforeMessages, "acknowledgement or ambiguity is not terminal evidence");
+        assert.deepEqual(harness.hook.messages, stoppingMessages, "acknowledgement or ambiguity is not terminal evidence");
       }
       assert.equal(calls.length, 1);
     } finally {

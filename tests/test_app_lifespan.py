@@ -17,6 +17,8 @@ def test_create_app_owns_one_run_stream_runtime_and_closes_dependencies(monkeypa
     calls = []
 
     class Runtime:
+        worker_capabilities = object()
+
         async def aclose(self):
             calls.append("run_stream_runtime")
 
@@ -135,6 +137,7 @@ def test_cancel_routes_fail_closed_without_exact_lifespan_owner(getter, state_va
 class _CloseResource:
     def __init__(self, name, events, *, blocked=False, error=None):
         self.name, self.events, self.error = name, events, error
+        self.worker_capabilities = object()
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.owner = None
@@ -171,7 +174,9 @@ def _owned_stream_runtime(monkeypatch, read, publish):
             else publish
         ),
     )
-    return RunStreamRuntime(V4RedisStreamBridge(), object())
+    return RunStreamRuntime(
+        V4RedisStreamBridge(), worker_capabilities=object(),
+    )
 
 
 def _install_lifespan(monkeypatch, runtime, shared, database):
@@ -344,7 +349,8 @@ async def test_api_close_budget_joins_finite_settlement_before_next_phase(
     resources = {name: _CloseResource(name, events).aclose for name in phases}
     resources[phase] = close_timed_out_phase
     app = _install_lifespan(
-        monkeypatch, SimpleNamespace(aclose=resources["stream_runtime"]),
+        monkeypatch,
+        SimpleNamespace(worker_capabilities=object(), aclose=resources["stream_runtime"]),
         resources["redis_client"], resources["database_pool"],
     )
     monkeypatch.setattr(main, "_API_RESOURCE_CLOSE_TIMEOUT_SECONDS", 0.01)
@@ -393,7 +399,10 @@ async def test_api_cleanup_self_cancellation_is_observed_and_attempts_later_phas
     shared = _CloseResource("shared", events)
     database = _CloseResource("database", events)
     app = _install_lifespan(
-        monkeypatch, SimpleNamespace(aclose=close_stream), shared.aclose, database.aclose,
+        monkeypatch,
+        SimpleNamespace(worker_capabilities=object(), aclose=close_stream),
+        shared.aclose,
+        database.aclose,
     )
     with pytest.raises(asyncio.CancelledError) as caught:
         await asyncio.wait_for(_run_lifespan(app), timeout=0.5)
@@ -477,7 +486,9 @@ async def test_api_lifespan_keeps_injected_stream_bridge_externally_owned(monkey
     external = _CloseResource("external", events)
     shared = _CloseResource("shared", events)
     database = _CloseResource("database", events)
-    runtime = RunStreamRuntime(V4RedisStreamBridge(bridge=external), object())
+    runtime = RunStreamRuntime(
+        V4RedisStreamBridge(bridge=external), worker_capabilities=object(),
+    )
     app = _install_lifespan(monkeypatch, runtime, shared.aclose, database.aclose)
     await _run_lifespan(app)
     assert events == ["shared:start", "shared:end", "database:start", "database:end"]

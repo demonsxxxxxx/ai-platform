@@ -295,19 +295,24 @@ class WorkerResultCommitService:
         except _WorkerResultCommitBlocked:
             if result.status != "succeeded":
                 return _STALE
-            async with self._transaction_factory() as conn:
-                blocked_reason = await attempt_authority.classify_success_commit_block(conn)
-                if blocked_reason == "cancel_requested":
-                    await self._settle_provider(conn, command, status="cancelled")
-                    terminal_written = await attempt_authority.cancel(
-                        conn, capabilities=capabilities, result_json={
-                            "message": "任务已取消",
-                            **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
-                               if private_cost_observation(result_payload) else {}),
-                            **private_cost_observation(result_payload),
-                        }
-                    )
-                    if terminal_written:
+            try:
+                async with self._transaction_factory() as conn:
+                    blocked_reason = await attempt_authority.classify_success_commit_block(conn)
+                    if blocked_reason == "cancel_requested":
+                        await self._settle_provider(conn, command, status="cancelled")
+                        terminal_written = await attempt_authority.cancel(
+                            conn, capabilities=capabilities, result_json={
+                                "message": "任务已取消",
+                                **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
+                                   if private_cost_observation(result_payload) else {}),
+                                **private_cost_observation(result_payload),
+                            }
+                        )
+                        if not terminal_written:
+                            # Roll back the continuation settlement with the lost cancel CAS.
+                            raise _WorkerResultCommitBlocked()
                         await self._release_leases(conn, command, reason="run_cancelled", release_runtime_lease=release_runtime_lease)
                         return WorkerResultCommitOutcome("cancelled")
-                return _STALE
+            except _WorkerResultCommitBlocked:
+                pass
+            return _STALE

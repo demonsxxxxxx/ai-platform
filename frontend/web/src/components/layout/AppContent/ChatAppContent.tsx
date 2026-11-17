@@ -204,6 +204,8 @@ export function ChatAppContent({
     continuationPending,
     canStopGeneration,
     isLoading,
+    isStopping,
+    stopUnconfirmed,
     isLoadingHistory,
     connectionStatus,
     failureGuidance,
@@ -951,6 +953,8 @@ export function ChatAppContent({
               agentWorkspaceTranscriptReady && canStopGeneration
             }
             isLoading={isLoading}
+            isStopping={agentWorkspaceTranscriptReady && isStopping}
+            stopUnconfirmed={agentWorkspaceTranscriptReady && stopUnconfirmed}
             isLoadingHistory={isLoadingHistory}
             historyReadError={agentWorkspaceTranscriptReady ? historyReadError : null}
             onRetryHistoryLoad={retryHistoryLoad}

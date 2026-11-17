@@ -8,7 +8,7 @@ from app.execution.api import WorkerRunCancelled, submit_run_until_cancelled
 from app.executors.base import RunExecutionOwner
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.runtime.sandbox.container_provider import FakeContainerProvider
-from app.runtime.sandbox.runtime import SandboxRuntime
+from tests.test_sandbox_runtime import SandboxRuntime
 from tests.test_sandbox_runtime import request
 
 

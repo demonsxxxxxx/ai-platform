@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.agent_apps.api import (
     agent_type_requires_profile_admission,
@@ -31,6 +32,16 @@ PRINCIPAL = AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="te
 @asynccontextmanager
 async def transaction():
     yield object()
+
+
+def run_control_request() -> Request:
+    return Request({
+        "type": "http",
+        "app": SimpleNamespace(state=SimpleNamespace(
+            run_delivery_intents=None,
+            run_stream_runtime=SimpleNamespace(worker_capabilities=SimpleNamespace()),
+        )),
+    })
 
 
 def forbidden_write():
@@ -360,7 +371,8 @@ async def test_replay_unpinned_profile_rejected_by_real_owner_before_child_write
             await run_routes.copy_run("run-a", SimpleNamespace(), principal)
         else:
             await run_routes._mutate_run_control_child(
-                run_id="run-a", action=action, operation_id=uuid4(), principal=principal,
+                run_id="run-a", action=action, operation_id=uuid4(),
+                request=run_control_request(), principal=principal,
                 v4_capabilities=SimpleNamespace(),
             )
     assert (exc.value.status_code, exc.value.detail) == (409, "agent_profile_admission_required")

@@ -52,6 +52,9 @@ export interface ChatInputProps {
   ) => Promise<SubmissionOutcome>;
   onStop: () => Promise<StopGenerationResult>;
   isLoading: boolean;
+  isStopping?: boolean;
+  /** Editing a draft grants no permission to submit it. */
+  canEdit?: boolean;
   /** Stop is available only after the current run-control owner is bound. */
   canStop?: boolean;
   runControlKey?: string | null;

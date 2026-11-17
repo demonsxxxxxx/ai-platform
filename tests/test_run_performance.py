@@ -71,6 +71,12 @@ def test_pending_missing_invalid_clocks_and_actual_zero_remain_distinct():
     assert build_run_latency(run(), first_text_at=OBSERVED, observed_at=OBSERVED)["server_first_text_ms"] is None
 
 
+def test_canceled_history_alias_still_uses_terminal_timing():
+    measured = build_run_latency(run(status="canceled"), observed_at=OBSERVED)
+    assert measured["total_ms"] == 41_000
+    assert measured["elapsed_ms"] == 41_000
+
+
 def test_overlapping_tool_intervals_are_not_added_and_sdk_is_reported_separately():
     evidence = [
         event("tool.started", 12), event("tool.started", 12, operation="op-b"),

@@ -11,7 +11,8 @@ from app.context.domain.conversation_recovery import (
 )
 from app.context.domain.provider_sessions import ProviderSessionConflictError, ProviderSessionScope
 from app.context.infrastructure import provider_epochs
-from app.context.infrastructure.provider_continuation import get_session_continuation, settle_provider_continuation
+from app.context.infrastructure.provider_continuation import settle_provider_continuation
+from tests.support.attempt_settlement import read_session_continuation as get_session_continuation
 from tests.test_provider_session_recovery_postgres import (
     recovery_db as provider_recovery_db, operation, request_cancel, PROVIDER_ID, INITIAL,
 )
@@ -28,7 +29,7 @@ async def lifecycle_db(recovery_db):
     async with recovery_db() as conn:
         await conn.execute("""
             alter table sessions add column if not exists status text default 'active';
-            alter table sandbox_leases add column executor_terminal_json jsonb;
+
             alter table runs alter column workspace_id set default 'workspace';
             alter table runs alter column user_id set default 'user';
             alter table runs alter column session_id set default 'session';

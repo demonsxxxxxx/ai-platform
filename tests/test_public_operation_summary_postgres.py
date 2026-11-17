@@ -90,10 +90,6 @@ async def test_two_native_ack_objects_http_questions_authenticated_answers_and_a
             create table tenants(id text primary key);
             insert into tenants values('tenant');
             alter table run_attempts add unique(id);
-            alter table sandbox_leases add column workspace_id text default 'workspace';
-            alter table sandbox_leases add column user_id text default 'user';
-            alter table sandbox_leases add column session_id text default 'session';
-            alter table sandbox_leases add column created_at timestamptz default now();
         """)
         await conn.execute(shared[shared.index("create table if not exists mcp_servers"):shared.index("create table if not exists mcp_tools")])
         start = shared.index("create table if not exists run_input_sessions")
@@ -337,10 +333,6 @@ async def test_read_only_mcp_lifecycle_is_not_recovered_and_legacy_rows_are_filt
             create table tenants(id text primary key);
             insert into tenants values('tenant');
             alter table run_attempts add unique(id);
-            alter table sandbox_leases add column workspace_id text default 'workspace';
-            alter table sandbox_leases add column user_id text default 'user';
-            alter table sandbox_leases add column session_id text default 'session';
-            alter table sandbox_leases add column created_at timestamptz default now();
         """)
         await conn.execute(shared[shared.index("create table if not exists mcp_servers"):shared.index("create table if not exists mcp_tools")])
         start = shared.index("create table if not exists run_input_sessions")

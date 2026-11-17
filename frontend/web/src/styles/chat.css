@@ -197,6 +197,12 @@
   }
 }
 
+/* Cancellation freezes activity animation without inventing tool or Run terminality. */
+[data-message-stopping] .animate-spin,
+[data-message-stopping] .aui-shimmer {
+  animation-play-state: paused;
+}
+
 /* Stopped answer: a static bar where the text was cut off (stopped-run). */
 .markdown-stopped > :last-child:not(ul):not(ol):not(pre):not(table):not(div)::after,
 .markdown-stopped > :is(ul, ol):last-child > li:last-child::after {

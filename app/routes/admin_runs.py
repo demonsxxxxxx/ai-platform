@@ -216,7 +216,12 @@ async def admin_run_detail(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         async with transaction() as conn:
-            detail = await runs_admin_queries.get_admin_run_detail(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            detail = await runs_admin_queries.get_admin_run_detail(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                sandbox_lease_reader=request.app.state.sandbox_run_lease_reader,
+            )
             metadata = (
                 await _require_run_diagnostics_service(request).read_admin_monitor_metadata(
                     conn,

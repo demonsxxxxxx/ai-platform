@@ -1,8 +1,7 @@
 """Public terminal taxonomy owned by the Runs bounded context."""
 
 
-def normalize_run_status(status: str) -> str:
-    return "cancelled" if status == "canceled" else status
+from app.runs.domain.run_status import normalize_run_status as normalize_run_status
 
 
 PUBLIC_TERMINAL_DETAIL_MESSAGES = {

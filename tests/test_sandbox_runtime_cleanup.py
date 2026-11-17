@@ -32,6 +32,7 @@ from app.settings import (
     LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
 )
 
+
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
@@ -380,7 +381,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -410,8 +411,9 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
 
     row = expired_lease_row(
-        executor_terminal_json={"run_id": "run-a", "status": "succeeded"},
-        executor_reconciliation_status=reconciliation_status,
+        receipt_json={"run_id": "run-a", "status": "succeeded"},
+        executor_cleanup_status="cleanup_pending" if reconciliation_status == "cleanup_pending" else "waiting_settlement",
+        settlement_phase=reconciliation_status,
     )
 
     async def fake_list_expired_active_sandbox_leases(_conn, **_kwargs):
@@ -421,7 +423,7 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
         pytest.fail("a terminal receipt with recovery work must not be generically released")
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -453,8 +455,8 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
     row = expired_lease_row(
         status=lease_status,
-        executor_terminal_json={"run_id": "run-a", "status": "succeeded"},
-        executor_reconciliation_status=reconciliation_status,
+        receipt_json={"run_id": "run-a", "status": "succeeded"},
+        executor_cleanup_status=reconciliation_status,
     )
     calls = []
     transaction_active = False
@@ -487,7 +489,7 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
         calls.append(("finalize", kwargs))
         if not claim_active:
             return None
-        return {**row, "status": "released", "executor_reconciliation_status": "finalized"}
+        return {**row, "status": "released", "executor_cleanup_status": "finalized"}
 
     async def append_event(_conn, **kwargs):
         assert transaction_active is True
@@ -535,17 +537,19 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     assert calls[2] == ("stop", "exec-run-a", "executor_reconciliation_cleanup")
     assert calls[3][1]["claim_token"] == claim_token
     assert released == ([] if claim_lost_during_stop else [
-        {**row, "status": "released", "executor_reconciliation_status": "finalized"}
+        {**row, "status": "released", "executor_cleanup_status": "finalized"}
     ])
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim(monkeypatch):
+async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim(
+    monkeypatch,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        receipt_json={"run_id": "run-a", "status": "failed"},
+        executor_cleanup_status="failed",
     )
     calls = []
 
@@ -590,12 +594,14 @@ async def test_failed_reconciliation_cleanup_stop_failure_releases_cleanup_claim
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(monkeypatch):
+async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(
+    monkeypatch,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        receipt_json={"run_id": "run-a", "status": "failed"},
+        executor_cleanup_status="failed",
     )
     transaction_active = False
     transaction_count = 0
@@ -710,12 +716,14 @@ async def test_reconciliation_cleanup_owns_resistant_provider_until_it_really_st
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effect(monkeypatch):
+async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effect(
+    monkeypatch,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        receipt_json={"run_id": "run-a", "status": "failed"},
+        executor_cleanup_status="failed",
     )
     calls = []
 
@@ -747,14 +755,16 @@ async def test_failed_reconciliation_cleanup_lost_claim_has_no_runtime_side_effe
 
 
 @pytest.mark.asyncio
-async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(monkeypatch):
+async def test_failed_reconciliation_cleanup_quarantines_invalid_runtime_handle(
+    monkeypatch,
+):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
         runtime_container_id=None,
         lease_payload_json=None,
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        receipt_json={"run_id": "run-a", "status": "failed"},
+        executor_cleanup_status="failed",
     )
     calls = []
 
@@ -849,7 +859,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_and_c
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -936,7 +946,7 @@ async def test_opensandbox_cleanup_without_signed_proof_retains_db_lease(monkeyp
         return [row]
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -1065,7 +1075,7 @@ async def test_historical_internal_test_expired_lease_cleanup_stops_before_db_re
 
     monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases", list_expired
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases", list_expired
     )
     monkeypatch.setattr(
         sandbox_runtime_cleanup, "release_stopped_sandbox_leases", release_stopped
@@ -1134,7 +1144,7 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
         return [row]
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -1342,7 +1352,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
     monkeypatch.setattr("app.runtime.sandbox.container_provider.get_settings", lambda: Settings())
     monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: Settings())
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -1369,15 +1379,15 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
             return "event-a"
 
         monkeypatch.setattr(
-            "app.platform.postgres.sandbox_leases.claim_failed_sandbox_executor_reconciliation_cleanups",
+            "app.sandbox.infrastructure.leases_postgres.claim_failed_sandbox_executor_reconciliation_cleanups",
             claim_failed,
         )
         monkeypatch.setattr(
-            "app.platform.postgres.sandbox_leases.has_failed_sandbox_executor_reconciliation_cleanup_claim",
+            "app.sandbox.infrastructure.leases_postgres.has_failed_sandbox_executor_reconciliation_cleanup_claim",
             has_failed_claim,
         )
         monkeypatch.setattr(
-            "app.platform.postgres.sandbox_leases.finalize_failed_sandbox_executor_reconciliation_cleanup",
+            "app.sandbox.infrastructure.leases_postgres.finalize_failed_sandbox_executor_reconciliation_cleanup",
             finalize_failed,
         )
         monkeypatch.setattr(
@@ -1484,7 +1494,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leas
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(
@@ -1559,7 +1569,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_partial_failure_commits_un
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
-        "app.platform.postgres.sandbox_leases.list_expired_active_sandbox_leases",
+        "app.sandbox.infrastructure.leases_postgres.list_expired_active_sandbox_leases",
         fake_list_expired_active_sandbox_leases,
     )
     monkeypatch.setattr(

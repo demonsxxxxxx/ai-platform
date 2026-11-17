@@ -422,7 +422,17 @@ def test_schema_lifecycle_documents_destructive_source_contracts():
     ):
         assert retired_surface in lifecycle
         assert source_removal in schema
-    assert 'RETIRED_RELATIONS = ("run_tool_permission_requests",)' in migrations
+    from app.schema_migrations import RETIRED_RELATIONS
+
+    assert set(RETIRED_RELATIONS) == {
+        "run_tool_permission_requests", "run_attempt_settlement_storage",
+        "run_attempt_settlement_writer", "run_attempt_settlement_retirement",
+    }
+    upgrade = read(ROOT / "app/runs/infrastructure/attempt_settlement_upgrade.py")
+    for marker in RETIRED_RELATIONS[1:]:
+        assert marker in upgrade
+        assert marker in lifecycle
+    assert "drop table if exists {relation}" in upgrade
     assert "not binary rollback-compatible" in migrations
     assert "old binary fails readiness" in lifecycle
     assert "Migrations in this phase are additive" not in lifecycle

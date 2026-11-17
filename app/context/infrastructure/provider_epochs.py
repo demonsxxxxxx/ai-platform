@@ -872,6 +872,25 @@ async def prepare_provider_epoch(
     }
 
 
+def _completion_writer_generation_current(row: dict[str, Any]) -> bool:
+    """The completed turn's writer is the current Attempt owner.
+
+    A cancel request that arrives after the executor already completed bumps the
+    Attempt generation by exactly one; completion still wins that race, so the
+    writer fenced at the prior generation may commit only in that exact state.
+    """
+    writer, owner = row["writer_owner_generation"], row["owner_generation"]
+    if type(writer) is not int or type(owner) is not int:
+        return False
+    if writer == owner:
+        return True
+    return (
+        row.get("cancel_requested_at") is not None
+        and row.get("attempt_status") == "cancel_requested"
+        and writer == owner - 1
+    )
+
+
 async def commit_provider_turn(
     conn: AsyncConnection, *, tenant_id: str, run_id: str, attempt_id: str,
     assistant_message_id: str, final_sequence: int | None,
@@ -887,6 +906,7 @@ async def commit_provider_turn(
         select runs.tenant_id, runs.workspace_id, runs.user_id, runs.session_id,
                runs.agent_id, runs.session_generation, runs.context_snapshot_id,
                attempt.owner_generation, attempt.execution_spec_sha256,
+               attempt.status as attempt_status, runs.cancel_requested_at,
                attempt.execution_spec_json->'context_pack'->'conversation_context' as frozen_context,
                context_snapshot.conversation_authority_json,
                head.current_epoch_id, head.active_run_id, head.active_attempt_id,
@@ -899,7 +919,8 @@ async def commit_provider_turn(
                turn.prior_coverage_sha256, turn.start_sequence, turn.user_message_id
         from runs
         join run_attempts attempt on attempt.tenant_id = runs.tenant_id
-          and attempt.run_id = runs.id and attempt.id = %s and attempt.status = 'running'
+          and attempt.run_id = runs.id and attempt.id = %s
+          and attempt.status in ('running', 'cancel_requested')
         join run_context_snapshots context_snapshot on context_snapshot.id = runs.context_snapshot_id
           and context_snapshot.tenant_id = runs.tenant_id and context_snapshot.workspace_id = runs.workspace_id
           and context_snapshot.user_id = runs.user_id and context_snapshot.session_id = runs.session_id
@@ -917,7 +938,7 @@ async def commit_provider_turn(
         join provider_turn_receipts turn on turn.tenant_id = runs.tenant_id
           and turn.run_id = runs.id and turn.attempt_id = attempt.id and turn.epoch_id = epoch.id
         where runs.tenant_id = %s and runs.id = %s
-          and runs.status = 'running' and runs.cancel_requested_at is null
+          and runs.status = 'running'
           and attempt.execution_spec_schema_version in (
             'ai-platform.execution-spec.v2', 'ai-platform.execution-spec.v3', 'ai-platform.execution-spec.v4')
         for update of head, epoch, turn
@@ -961,7 +982,7 @@ async def commit_provider_turn(
         or frozen.get("current_message_id") != receipt["current_message_id"]
         or row["turn_state"] != "writing"
         or row["turn_spec_sha256"] != row["execution_spec_sha256"]
-        or row["writer_owner_generation"] != row["owner_generation"]
+        or not _completion_writer_generation_current(row)
         or row["epoch_state"] != "active"
         or row["next_sequence"] != final_sequence + 1
         or final_sequence < row["start_sequence"]
@@ -1051,6 +1072,14 @@ async def read_verified_native_invocation(
 
 
 class PostgresProviderEpochRepository:
+    def __init__(self, *, settlement_reader=None):
+        self._settlement_reader = settlement_reader
+
+    async def get_continuation(self, conn, **scope):
+        if self._settlement_reader is None:
+            raise RuntimeError("attempt_settlement_reader_unconfigured")
+        return await get_session_continuation(conn, **scope, settlement_reader=self._settlement_reader)
+
     verification_scope = staticmethod(provider_epoch_verification_scope)
     read_verified_native_invocation = staticmethod(read_verified_native_invocation)
     prepare_callback_media = staticmethod(prepare_callback_media)
@@ -1063,7 +1092,6 @@ class PostgresProviderEpochRepository:
     commit_turn = staticmethod(commit_provider_turn)
     settle_continuation = staticmethod(settle_provider_continuation)
     advance_unclaimed_terminal_generation = staticmethod(advance_unclaimed_terminal_generation)
-    get_continuation = staticmethod(get_session_continuation)
 
 
 async def read_usage_provider_session(conn, *, tenant_id: str, run_id: str, attempt_id: str) -> str | None:

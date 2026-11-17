@@ -192,28 +192,18 @@ def test_protected_reader_rejects_foreign_owner_and_closes_the_descriptor(tmp_pa
         fstat(descriptors[0])
 
 
-def test_quiescence_sql_only_excludes_expired_terminal_unclaimed_quarantine():
+@pytest.mark.parametrize("status", ["active", "quarantined", "released"])
+def test_quiescence_sql_requires_every_resource_to_be_released(status):
     with sqlite3.connect(":memory:") as db:
+        # No retired settlement column exists in the installed resource layout.
         db.executescript("""
             create table runs (id text, tenant_id text, status text);
             create table run_attempts (status text);
-            create table sandbox_leases (status text, expires_at text, executor_status text,
-              executor_reconciliation_status text, executor_reconciliation_claim_token text,
-              run_id text, tenant_id text, runtime_container_id text, runtime_container_name text);
+            create table sandbox_leases (status text);
             insert into runs values ('r', 't', 'failed');
-            insert into sandbox_leases values ('quarantined','2000-01-01','failed','failed',null,'r','t','synthetic-id',null);
         """)
-        assert db.execute(entry.QUIESCENCE_SQL).fetchone() == (0, 0, 0)
-        for column, value in (("status", "active"), ("expires_at", None),
-                              ("expires_at", "2999-01-01"), ("executor_status", "running"),
-                              ("executor_reconciliation_status", "claimed"),
-                              ("executor_reconciliation_claim_token", "synthetic"),
-                              ("tenant_id", "other"), ("runtime_container_id", None),
-                              ("runtime_container_id", "   ")):
-            db.execute("savepoint counterexample")
-            db.execute(f"update sandbox_leases set {column}=?", (value,))
-            assert db.execute(entry.QUIESCENCE_SQL).fetchone()[2] == 1
-            db.execute("rollback to counterexample")
+        db.execute("insert into sandbox_leases values (?)", (status,))
+        assert db.execute(entry.QUIESCENCE_SQL).fetchone() == (0, 0, int(status != "released"))
 
 
 def test_quarantine_with_existing_runtime_blocks_even_without_owner_label(monkeypatch):
@@ -571,6 +561,17 @@ def test_package_upgrade_fences_twice_and_only_preserves_data_services(harness):
             assert stage == "persistent services"
             assert command[-3:] == list(entry.DATA)
         assert "down" not in command and "--volumes" not in command
+
+
+def test_confirmed_settlement_upgrade_uses_one_off_and_verifies_matching_layout(harness, monkeypatch):
+    verified = []
+    monkeypatch.setattr(entry, "verify_runtime", lambda *args: verified.append(args))
+    harness["deploy"](confirm_settlement_upgrade=True)
+    migration = [command for stage, command in harness["calls"] if stage == "schema migration"]
+    assert len(migration) == 1
+    assert migration[0][-7:] == ["--pull", "never", "migrate", "python", "-m", "app.schema_migrations", "apply", "--confirm-settlement-upgrade"][-7:]
+    assert "--rm" in migration[0] and "run" in migration[0]
+    assert verified[0][-1] is True
 
 
 def test_check_only_never_pulls_or_mutates_services(harness):

@@ -18,6 +18,13 @@ its eventual source migration must not create a second taxonomy.
 codes. Live, historical and hydrated messages use the same presentation catalog
 and message projection semantics.
 
+Historical `done` frames with a recognized terminal status also end unresolved
+activity presentation for that Run, including after reload or terminal hydration.
+The history loader uses the same loading-state cleanup as live termination; it
+does not infer tool success/failure, alter recorded terminal tool outcomes, or
+stop activity belonging to a later Run. Missing timing fields do not keep a
+confirmed terminal Run visually active.
+
 ## Session navigation and local unread presentation
 
 History restoration starts with the existing scoped Session projections. It
@@ -232,6 +239,16 @@ and closes that transaction before enqueue. The direct Run response accepts
 Chat and Copy have no
 client-supplied operation identity; a caller that loses the HTTP response must
 use session/Run history to locate the child before repeating the request.
+
+Server-side delivery-intent recovery proceeds without a browser retry. When an
+Attempt already exists, the scanner may claim the intent only to read back the
+original persisted payload and message identity; it must not enqueue again. It
+records `delivered` and the Chat `queued` projection together only after an
+actual queue receipt is read. An absent or unavailable receipt leaves the
+intent recoverable with backoff and does not fabricate delivery. A failed
+receipt-owner transaction rolls back both projections; the scanner may retry
+after that claim expires. A stale claim cannot commit the receipt, and a
+cancelled Run without an Attempt never crosses the queue boundary.
 
 Queue metrics, scheduling limits and Redis facts remain supported. Do not
 reintroduce the retired browser `queue_update` fallback. A disconnected browser
