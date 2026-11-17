@@ -144,7 +144,7 @@ function v4Frame({
   eventType,
   payload,
   eventId = cursor,
-  seq = 1,
+  seq = Number(cursor.slice(cursor.lastIndexOf(":") + 1)),
   messageId,
   streamIncarnation = 1,
 }: {
@@ -159,7 +159,7 @@ function v4Frame({
 }) {
   const isControl = eventType.startsWith("stream.");
   return {
-    id: cursor,
+    id: isControl ? "" : cursor,
     event: eventType,
     data: JSON.stringify({
       schema: isControl
@@ -445,7 +445,7 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
     await init.onopen?.(new Response(null, { status: 200 }));
     init.onmessage?.(
       v4Frame({
-        cursor: "run-old:1:1-0",
+        cursor: "run-old:1",
         runId: "run-old",
         eventType: "message.delta",
         eventId: "delta-1",
@@ -454,7 +454,7 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
     );
     init.onmessage?.(
       v4Frame({
-        cursor: "run-old:1:2-0",
+        cursor: "run-old:2",
         runId: "run-old",
         eventType: "run.succeeded",
         eventId: "terminal-1",
@@ -495,7 +495,7 @@ test("retries startup-not-ready inside one SSE owner and persists the accepted c
   assert.equal(ownerHeaders.length, 2);
   assert.equal(ownerHeaders[0]?.["Last-Event-ID"], undefined);
   assert.equal(context.messagesRef.current[0]?.content, "accepted");
-  assert.equal(ownerHeaders[1]?.["Last-Event-ID"], "run-old:1:2-0");
+  assert.equal(ownerHeaders[1]?.["Last-Event-ID"], "run-old:2");
 });
 
 test("does not retry a hard startup conflict", async () => {
@@ -1395,7 +1395,7 @@ test("rejects a foreign v3 frame without accepting terminal state", async () => 
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
           v3Frame({
-            cursor: "run-old:1:1-0",
+            cursor: "run-old:1",
             runId: "run-old",
             eventType: "terminal",
             eventId: "old-terminal",
@@ -1504,7 +1504,7 @@ test("drops a delayed non-terminal application error after its stream generation
       try {
         init.onmessage?.({
           event: "reasoning.delta",
-          id: "run-old:1:1-0",
+          id: "run-old:1",
           data: "{}",
         } as never);
       } catch {
@@ -1624,7 +1624,7 @@ test("retries a current 401 once and aborts only its captured stream controller"
         afterOpen: async (init) => {
           init.onmessage?.(
             v4Frame({
-              cursor: "run-old:1:2-0",
+              cursor: "run-old:2",
               runId: "run-old",
               eventType: "run.succeeded",
               eventId: "terminal-after-refresh",
@@ -2383,7 +2383,7 @@ test("keeps an active run recoverable after repeated replay-only transport losse
           await init.onopen?.(new Response(null, { status: 200 }));
           init.onmessage?.(
             v4Frame({
-              cursor: `run-1:1:42-0`,
+              cursor: `run-1:42`,
               runId: "run-1",
               eventType: "agent.progress",
               eventId: "evt-replayed-progress",
@@ -2512,7 +2512,7 @@ test("recovers a terminal run after heartbeat-only losses without inventing cont
           await init.onopen?.(new Response(null, { status: 200 }));
           init.onmessage?.(
             v4Frame({
-              cursor: `run-heartbeat-loop:1:${connectCalls}-0`,
+              cursor: `run-heartbeat-loop:${connectCalls}`,
               runId: "run-heartbeat-loop",
               eventType: "stream.heartbeat",
               eventId: `heartbeat-${connectCalls}`,
@@ -2615,7 +2615,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
           v4Frame({
-            cursor: "run-1:1:43-0",
+            cursor: "run-1:43",
             runId: "run-1",
             eventType: "run.cancel_requested",
             eventId: "current-progress",
@@ -2659,7 +2659,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
           v4Frame({
-            cursor: "run-1:1:44-0",
+            cursor: "run-1:44",
             runId: "run-1",
             eventType: "message.delta",
             eventId: "current-delta",
@@ -2697,7 +2697,7 @@ test("resets reconnect budget only after a unique current-run progress frame", a
         init.onmessage?.({ event: "ping", data: "{}" } as never);
         init.onmessage?.(
           v4Frame({
-            cursor: "run-1:1:45-0",
+            cursor: "run-1:45",
             runId: "run-1",
             eventType: "stream.open",
             eventId: "stream-open-current",
@@ -2765,7 +2765,7 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:1-0",
+          cursor: "run-1:1",
           runId: "run-1",
           eventType: "run.succeeded",
           eventId: "terminal-event-1",
@@ -2774,7 +2774,7 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
       );
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:2-0",
+          cursor: "run-1:2",
           runId: "run-1",
           eventType: "run.succeeded",
           eventId: "terminal-event-1",
@@ -2783,7 +2783,7 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
       );
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:3-0",
+          cursor: "run-1:3",
           runId: "run-1",
           eventType: "stream.end",
           eventId: "stream-end-1",
@@ -2802,7 +2802,7 @@ test("holds duplicate terminal transport and immediate stream.end behind hydrati
   context.setConnectionStatus("disconnected");
   acceptTerminal?.(true);
   await Promise.resolve();
-  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:3-0");
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:2");
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
@@ -2857,7 +2857,7 @@ test("failed terminal hydration releases close without accepting its cursor", as
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:1-0",
+          cursor: "run-1:1",
           runId: "run-1",
           eventType: "run.succeeded",
           eventId: "terminal-event-1",
@@ -2880,7 +2880,7 @@ test("failed terminal hydration releases close without accepting its cursor", as
   assert.equal(connectionStates.at(-1), "disconnected");
 });
 
-test("duplicate semantic Redis entry advances only the transport cursor", async () => {
+test("duplicate persisted event advances only the transport cursor", async () => {
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -2896,7 +2896,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
       current: { sessionId: "session-1", runId: "run-1", sequence: 8 },
     },
     acceptedStreamCursorRef: {
-      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:1-0", streamIncarnation: 1 },
+      current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1", streamIncarnation: 1 },
     },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
@@ -2919,7 +2919,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.(
           v4Frame({
-            cursor: "run-1:1:2-0",
+            cursor: "run-1:9",
             runId: "run-1",
             eventType: "run.cancel_requested",
             eventId: "semantic-progress-1",
@@ -2933,7 +2933,7 @@ test("duplicate semantic Redis entry advances only the transport cursor", async 
     /SSE closed before terminal event/,
   );
 
-  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:2-0");
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:9");
   assert.equal(context.acceptedRunEventSequenceRef.current.sequence, 8);
   assert.equal(context.retryCountRef.current, MAX_CONSECUTIVE_SSE_RECONNECTS);
 });
@@ -2999,7 +2999,7 @@ test("cross-incarnation replay gap preserves partial output until terminal hydra
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:2:2-0",
+          cursor: "run-1:2",
           runId: "run-1",
           eventType: "stream.gap",
           eventId: "gap-1",
@@ -3053,7 +3053,7 @@ test("cross-incarnation replay gap preserves partial output until terminal hydra
   assert.equal(context.currentRunIdRef.current, "run-1");
 });
 
-test("active retained-history gap hydrates durable V4 state and reconnects from the latest same-incarnation anchor", async () => {
+test("legacy cursor rejection hydrates authorized snapshot and reconnects at its PG high-water", async () => {
   let hydrateCalls = 0;
   let reconnectCalls = 0;
   const connectionStates: string[] = [];
@@ -3098,7 +3098,7 @@ test("active retained-history gap hydrates durable V4 state and reconnects from 
         context.acceptedRunEventSequenceRef.current.sequence || 0,
         12,
       );
-      return "assistant-hydrated";
+      return { messageId: "assistant-hydrated", cursor: "run-1:12" };
     },
   } satisfies SSEConnectionContext;
 
@@ -3109,24 +3109,10 @@ test("active retained-history gap hydrates durable V4 state and reconnects from 
     context,
     false,
     async (_input, init) => {
-      await init.onopen?.(new Response(null, { status: 200 }));
-      init.onmessage?.(
-        v4Frame({
-          cursor: "run-1:1:2-0",
-          runId: "run-1",
-          eventType: "stream.gap",
-          eventId: "gap-active",
-          payload: {
-            reason: "retained_history_unavailable",
-            recovery: "reload_durable_state",
-            requested_event_id: "1-0",
-            requested_stream_incarnation: 1,
-            current_stream_incarnation: 1,
-            earliest_available_event_id: "2-0",
-            latest_available_event_id: "9-0",
-          },
-        }) as never,
-      );
+      await init.onopen?.(new Response(null, {
+        status: 409,
+        headers: { "X-SSE-Error-Code": "sse_cursor_snapshot_required" },
+      }));
     },
     {
       replayGapDependencies: {
@@ -3140,7 +3126,7 @@ test("active retained-history gap hydrates durable V4 state and reconnects from 
           assert.equal(messageId, "assistant-hydrated");
           assert.equal(
             nextContext.acceptedStreamCursorRef?.current.eventId,
-            "run-1:1:9-0",
+            "run-1:12",
           );
         },
       },
@@ -3154,12 +3140,11 @@ test("active retained-history gap hydrates durable V4 state and reconnects from 
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
     sessionId: "session-1",
     runId: "run-1",
-    eventId: "run-1:1:9-0",
+    eventId: "run-1:12",
     streamIncarnation: 1,
   });
   assert.deepEqual(connectionStates, [
     "connecting",
-    "connected",
     "recovering_gap",
     "reconnecting",
   ]);
@@ -3211,10 +3196,10 @@ test("active retained-history gap cannot overwrite a cursor that advances during
       context.acceptedStreamCursorRef.current = {
         sessionId: "session-1",
         runId: "run-1",
-        eventId: "run-1:1:4-0",
+        eventId: "run-1:4",
         streamIncarnation: 1,
       };
-      return "assistant-hydrated";
+      return { messageId: "assistant-hydrated", cursor: "run-1:12" };
     },
   } satisfies SSEConnectionContext;
 
@@ -3228,7 +3213,7 @@ test("active retained-history gap cannot overwrite a cursor that advances during
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:2-0",
+          cursor: "run-1:2",
           runId: "run-1",
           eventType: "stream.gap",
           eventId: "gap-cursor-race",
@@ -3263,7 +3248,7 @@ test("active retained-history gap cannot overwrite a cursor that advances during
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
     sessionId: "session-1",
     runId: "run-1",
-    eventId: "run-1:1:4-0",
+    eventId: "run-1:4",
     streamIncarnation: 1,
   });
   assert.deepEqual(connectionStates, [
@@ -3318,7 +3303,7 @@ test("fresh no-cursor gap enters durable recovery without committing its cursor"
       await init.onopen?.(new Response(null, { status: 200 }));
       init.onmessage?.(
         v4Frame({
-          cursor: "run-1:1:0-0",
+          cursor: "run-1:0",
           runId: "run-1",
           eventType: "stream.gap",
           eventId: "gap-1",
@@ -3395,7 +3380,7 @@ test("non-resumable gap preserves transient failure state and rejects status aut
       current: {
         sessionId: "session-1",
         runId: "run-1",
-        eventId: "run-1:1:8-0",
+        eventId: "run-1:8",
         streamIncarnation: 1,
       },
     },
@@ -3441,7 +3426,7 @@ test("non-resumable gap preserves transient failure state and rejects status aut
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
     sessionId: "session-1",
     runId: "run-1",
-    eventId: "run-1:1:8-0",
+    eventId: "run-1:8",
     streamIncarnation: 1,
   });
   assert.deepEqual(context.acceptedRunEventSequenceRef.current, {
@@ -3503,7 +3488,7 @@ test("drops in-flight replay-gap recovery when terminal synchronization retires 
       current: {
         sessionId: "session-1",
         runId: "run-1",
-        eventId: "run-1:1:1-0",
+        eventId: "run-1:1",
         streamIncarnation: 1,
       },
     },
@@ -3517,7 +3502,7 @@ test("drops in-flight replay-gap recovery when terminal synchronization retires 
     setSandboxError: () => undefined,
     hydrateActiveRun: async () => {
       hydrateCalls += 1;
-      return "assistant-hydrated";
+      return { messageId: "assistant-hydrated", cursor: "run-1:12" };
     },
     onRunStatusUnavailable: () => {
       unavailableCalls += 1;
@@ -3570,14 +3555,14 @@ test("drops in-flight replay-gap recovery when terminal synchronization retires 
   assert.deepEqual(context.acceptedStreamCursorRef.current, {
     sessionId: "session-1",
     runId: "run-1",
-    eventId: "run-1:1:1-0",
+    eventId: "run-1:1",
     streamIncarnation: 1,
   });
   assert.equal(context.replayGapRecoveryRef.current, null);
 });
 
 test("does not resume replay after active hydration owner is retired", async () => {
-  let resolveHydration!: (messageId: string) => void;
+  let resolveHydration!: (value: { messageId: string; cursor: string }) => void;
   let hydrateCalls = 0;
   let reconnectCalls = 0;
   let hydrationOwner: ReplayGapRecoveryOwner | undefined;
@@ -3602,7 +3587,7 @@ test("does not resume replay after active hydration owner is retired", async () 
       current: {
         sessionId: "session-1",
         runId: "run-1",
-        eventId: "run-1:1:1-0",
+        eventId: "run-1:1",
         streamIncarnation: 1,
       },
     },
@@ -3617,7 +3602,7 @@ test("does not resume replay after active hydration owner is retired", async () 
     hydrateActiveRun: async (...args: unknown[]) => {
       hydrateCalls += 1;
       hydrationOwner = args[5] as ReplayGapRecoveryOwner;
-      return new Promise<string>((resolve) => {
+      return new Promise<{ messageId: string; cursor: string }>((resolve) => {
         resolveHydration = resolve;
       });
     },
@@ -3659,12 +3644,12 @@ test("does not resume replay after active hydration owner is retired", async () 
   assert.equal(hydrateCalls, 1);
   assert.ok(hydrationOwner);
   context.replayGapRecoveryRef.current = null;
-  resolveHydration("assistant-hydrated");
+  resolveHydration({ messageId: "assistant-hydrated", cursor: "run-1:12" });
   await recovery;
 
   assert.equal(reconnectCalls, 0);
   assert.equal(context.streamingMessageIdRef.current, "assistant-1");
-  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1:1-0");
+  assert.equal(context.acceptedStreamCursorRef.current.eventId, "run-1:1");
 });
 
 test("does not mutate shared state when a stale owner receives a replay gap", async () => {
@@ -3678,7 +3663,7 @@ test("does not mutate shared state when a stale owner receives a replay gap", as
       current: {
         sessionId: "session-old",
         runId: "run-old",
-        eventId: "run-old:1:1-0",
+        eventId: "run-old:1",
         streamIncarnation: 1,
       },
     },
@@ -3700,7 +3685,7 @@ test("does not mutate shared state when a stale owner receives a replay gap", as
   });
 
   assert.deepEqual(states, []);
-  assert.equal(context.acceptedStreamCursorRef!.current.eventId, "run-old:1:1-0");
+  assert.equal(context.acceptedStreamCursorRef!.current.eventId, "run-old:1");
   assert.equal(context.acceptedRunEventSequenceRef!.current.sequence, 8);
 });
 

@@ -1720,7 +1720,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       expectedStreamIncarnation: number,
       expectedCursorEventId: string,
       replayOwner: ReplayGapRecoveryOwner,
-    ): Promise<string | null> => {
+    ): Promise<{ messageId: string; cursor: string } | null> => {
       const isCurrent = () =>
         isMountedRef.current &&
         sessionIdRef.current === targetSessionId &&
@@ -1740,6 +1740,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         replayOwner.controller.signal,
       );
       if (!isCurrent()) return null;
+      const cutpoint = eventsData.snapshot_max_sequence;
+      if (!Number.isSafeInteger(cutpoint) || cutpoint == null || cutpoint < 0) {
+        throw new Error("session_events_snapshot_unavailable");
+      }
       const events = (eventsData.events || []) as HistoryEvent[];
       let reconstructed = reconstructMessagesFromEvents(events, new Set<string>(), {
         activeSubagentStack: activeSubagentStackRef.current,
@@ -1795,7 +1799,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       }
       if (lastTimestamp) lastHistoryTimestampRef.current = lastTimestamp;
       setMessageSnapshot({ messagesRef, setMessages }, merged);
-      return hasMessageOwner ? streamingMessageId : null;
+      return hasMessageOwner ? { messageId: streamingMessageId, cursor: `${targetRunId}:${cutpoint}` } : null;
     },
     [],
   );

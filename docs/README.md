@@ -64,13 +64,16 @@ Accepted rationale is recorded in [ADR 0001](adr/0001-agent-app-revision-authori
 [ADR 0007](adr/0007-fixed-browser-authentication-day.md),
 [ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md),
 [ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md),
-[ADR 0013](adr/0013-redis-stream-only-sse.md), and
+[ADR 0013](adr/0013-redis-stream-only-sse.md),
+[ADR 0018](adr/0018-postgres-replay-redis-live.md), and
 [ADR 0015](adr/0015-agent-autonomy-and-effect-boundaries.md).
 ADR 0015 supersedes ADR 0001's conversation-wide execution pin: ordinary new
 Runs resolve the current publication, while accepted-Run replay keeps its snapshot.
 ADR 0012 owns the v4 event model; the schema and accepted Assistant-part extension
 own its current event set. ADR 0013 supersedes publication/recovery from ADR 0012
-and Pub/Sub fan-out from ADR 0009 with the sole Redis Stream transport. Earlier
+and Pub/Sub fan-out from ADR 0009; ADR 0018 amends its Redis-only replay
+and callback ACK decisions. The owning SSE contracts record the current slice
+and verification boundary. Earlier
 streaming designs and their rollback recipes are history, not selectable fallback
 runtimes. Keep historical decisions and release evidence intact.
 

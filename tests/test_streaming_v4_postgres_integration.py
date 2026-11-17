@@ -1294,24 +1294,28 @@ async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(m
 
 
 @pytest.mark.asyncio
-async def test_real_callback_handler_commits_facts_before_redis_outage_and_retries(monkeypatch):
-    from fastapi import HTTPException
-
+@pytest.mark.parametrize("transport_failure", ["failure", "timeout"])
+async def test_real_callback_handler_acknowledges_durable_facts_despite_redis_outage(monkeypatch, transport_failure):
     async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         observed = []
+        cancelled = []
         class FailingRedis:
             async def eval(self, *args):
                 async with _connection_factory(dsn, schema_name) as observer:
                     rows = await (await observer.execute("select id from run_events where visible_to_user = true and payload_json ? '__stream_v4' order by sequence for update nowait")).fetchall()
                     observed.append([row["id"] for row in rows])
+                if transport_failure == "timeout":
+                    try:
+                        await asyncio.sleep(10)
+                    finally:
+                        cancelled.append(True)
                 raise StreamTransportUnavailable("synthetic private diagnostic")
 
         callback = _answer_callback(run, attempt, "batch-handler-outage")
         monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
-        with pytest.raises(HTTPException) as caught:
-            await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=V4RedisStreamBridge(RedisStreamBridge(publish_client=FailingRedis()))), lease_port=sandbox_lease_reader)
-        assert caught.value.status_code == 503
-        assert caught.value.detail == "callback_stream_unavailable"
+        receipt = await runtime_callbacks.record_executor_callback(callback, capabilities=_callback_capabilities(dsn, schema_name, bridge=V4RedisStreamBridge(RedisStreamBridge(publish_client=FailingRedis()))), lease_port=sandbox_lease_reader)
+        assert receipt["accepted"] is True
+        assert cancelled == ([True] if transport_failure == "timeout" else [])
         assert len(observed) == 1 and len(observed[0]) == 2
         async with _connection_factory(dsn, schema_name) as conn:
             before = await (await conn.execute("select * from run_events order by sequence")).fetchall()
@@ -1399,7 +1403,7 @@ async def test_run_event_cannot_overtake_a_committed_callback_before_redis_appen
 
 
 @pytest.mark.asyncio
-async def test_callback_publishes_a_committed_cancellation_before_its_later_batch():
+async def test_callback_does_not_republish_predecessor_pg_replay_keeps_order():
     from app.streaming.application.worker_publication_v4 import publish_callback_rows
     from app.streaming.infrastructure.v4 import append_run_cancel_requested_v4_row
 
@@ -1414,7 +1418,16 @@ async def test_callback_publishes_a_committed_cancellation_before_its_later_batc
                 row = await (await conn.execute("select * from run_events where id = 'evt4_after_cancel'")).fetchone()
             await publish_callback_rows(capabilities, (row,), authority=_authority(tenant, run, attempt))
             assert [json.loads(fields["envelope"])["event_type"] for _, fields in await client.xrange(key)] == [
-                "stream.open", "run.cancel_requested", "message.delta",
+                "stream.open", "message.delta",
+            ]
+            async with _connection_factory(dsn, schema_name) as conn:
+                rows = await _owner_streaming_infrastructure_run_events_postgres.list_run_events(
+                    conn, tenant_id=tenant, run_id=run, after_sequence=0,
+                    through_sequence=2, limit=100,
+                )
+            public = [project_public_v4(item, authority=_authority(tenant, run, attempt)) for item in rows]
+            assert [item["event_type"] for item in public if item is not None] == [
+                "run.cancel_requested", "message.delta",
             ]
             assert await publish_run_event(capabilities, tenant_id=tenant, run_id=run) is True
             assert await client.xlen(key) == 3
@@ -2082,3 +2095,116 @@ async def test_assembled_callback_authority_holds_real_run_attempt_and_lease_loc
                     sql.SQL("select id from {} where id = %s for update nowait").format(sql.Identifier(table)),
                     (identifier,),
                 )
+
+
+@pytest.mark.asyncio
+async def test_callback_pg_transaction_failure_never_acknowledges_or_publishes(monkeypatch):
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (_, run, attempt)):
+        published = []
+
+        class NeverRedis:
+            async def eval(self, *args):
+                published.append(args)
+                raise AssertionError("uncommitted callback must never publish")
+
+        @asynccontextmanager
+        async def failing_transaction():
+            async with _connection_factory(dsn, schema_name) as conn:
+                yield conn
+                # PostgreSQL itself aborts the transaction before commit.
+                await conn.execute("select 1 / 0")
+
+        callback = _answer_callback(run, attempt, "batch-handler-pg-failure")
+        monkeypatch.setattr(runtime_callbacks, "transaction", failing_transaction)
+        capabilities = _callback_capabilities(
+            dsn, schema_name,
+            bridge=V4RedisStreamBridge(RedisStreamBridge(publish_client=NeverRedis())),
+        )
+        with pytest.raises(psycopg.errors.DivisionByZero):
+            await runtime_callbacks.record_executor_callback(
+                callback, capabilities=capabilities, lease_port=sandbox_lease_reader,
+            )
+        assert published == []
+        async with _connection_factory(dsn, schema_name) as conn:
+            assert (await (await conn.execute("select count(*) as count from run_events")).fetchone())["count"] == 0
+            assert (await (await conn.execute("select count(*) as count from run_event_batches")).fetchone())["count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_before_connect", [True, False])
+async def test_real_pg_sse_replays_private_pages_and_terminal_without_redis(monkeypatch, terminal_before_connect):
+    from app.auth import AuthPrincipal
+    from app.routes import lambchat_compat as gateway
+
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async def insert_terminal():
+            async with _connection_factory(dsn, schema_name) as conn:
+                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt,
+                                     sequence=206, event_id="evt4_pg_terminal", event_type="run.succeeded")
+                await conn.execute("update runs set status='succeeded' where id=%s", (run,))
+
+        async with _connection_factory(dsn, schema_name) as conn:
+            for sequence in range(1, 206):
+                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt,
+                                     sequence=sequence, event_id=f"evt4_pg_{sequence}")
+            await conn.execute("update run_events set visible_to_user=false where sequence < 205")
+        if terminal_before_connect:
+            await insert_terminal()
+
+        reads = []
+        class UnavailableRedis:
+            async def read_live_page(self, **kwargs):
+                reads.append(kwargs)
+                assert not terminal_before_connect
+                await insert_terminal()
+                raise StreamTransportUnavailable("synthetic Redis outage")
+
+        monkeypatch.setattr(gateway, "transaction", lambda: _connection_factory(dsn, schema_name))
+        response = await gateway.chat_session_stream(
+            f"s_{tenant[2:]}", run,
+            SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                run_stream_runtime=SimpleNamespace(bridge=UnavailableRedis()),
+            ))),
+            last_event_id=None,
+            principal=AuthPrincipal(user_id=f"u_{tenant[2:]}", display_name="Test", tenant_id=tenant),
+        )
+        frames = [frame async for frame in response.body_iterator]
+        assert [line for frame in frames for line in frame.splitlines() if line.startswith("id:")] == [
+            f"id: {run}:205", f"id: {run}:206",
+        ]
+        assert [line for frame in frames for line in frame.splitlines() if line.startswith("event:")] == [
+            "event: stream.open", "event: message.delta", "event: run.succeeded", "event: stream.end",
+        ]
+        assert len(reads) == (0 if terminal_before_connect else 1)
+
+
+@pytest.mark.asyncio
+async def test_real_history_snapshot_cursor_includes_private_rows_and_stays_fixed(monkeypatch):
+    from app.auth import AuthPrincipal
+    from app.routes import lambchat_compat as gateway
+
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        async with _connection_factory(dsn, schema_name) as conn:
+            for sequence in range(1, 206):
+                await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt,
+                                     sequence=sequence, event_id=f"evt4_snapshot_{sequence}")
+            await conn.execute("update run_events set visible_to_user=false")
+        monkeypatch.setattr(gateway, "transaction", lambda: _connection_factory(dsn, schema_name))
+        principal = AuthPrincipal(user_id=f"u_{tenant[2:]}", display_name="Test", tenant_id=tenant)
+        cursor = None
+        pages = []
+        while True:
+            page = await gateway.session_events(f"s_{tenant[2:]}", run_id=run,
+                                                cursor=cursor, principal=principal)
+            pages.append(page)
+            if len(pages) == 1:
+                async with _connection_factory(dsn, schema_name) as conn:
+                    await _insert_v4_row(conn, tenant=tenant, run=run, attempt=attempt,
+                                         sequence=206, event_id="evt4_after_snapshot")
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert len(pages) == 3
+        assert [page["snapshot_max_sequence"] for page in pages] == [205, 205, 205]
+        assert "evt4_after_snapshot" not in json.dumps(pages)
+        assert all(not page["events"] for page in pages)

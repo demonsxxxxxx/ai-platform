@@ -1,6 +1,6 @@
 # ADR 0013: Redis Stream-only SSE v4
 
-Status: accepted architecture and source contract; CI, release and External Acceptance require separate evidence
+Status: historical accepted decision, amended by ADR 0018; CI, release and External Acceptance require separate evidence
 
 Date: 2026-09-11
 
@@ -8,9 +8,18 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`
 
 Supersedes the publication and recovery architecture in [ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md) and the live fan-out architecture in [ADR 0009](0009-redis-streams-sse-v3-live-fanout.md). The v4 event model and existing business authorities remain in force. The generated schema and the accepted [Assistant-part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection) own the current event set and answer-receipt compatibility.
 
-## Decision
+## Amendment
 
-The production path is:
+[ADR 0018](0018-postgres-replay-redis-live.md) replaces Redis-only replay with
+PG durable replay and a coordinated durable cursor. The wire and execution
+owners describe the current candidate slice and its local ACK verification evidence.
+The decisions below record the original Redis-only design, not a selectable
+fallback. New Run admission still confirms Redis open before SDK dispatch;
+Run/Attempt/incarnation and authorization leases remain in force.
+
+## Original decision
+
+The original production path was:
 
 ```text
 Worker / Agent -> platform public projection -> Redis Stream -> API SSE

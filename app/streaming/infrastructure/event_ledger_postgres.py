@@ -715,6 +715,7 @@ async def read_event_rows(
     tenant_id: str,
     cursor: RunCursor,
     limit: int | None,
+    through_sequence: int | None = None,
 ) -> tuple[Mapping[str, object], ...]:
     """Read one incremental event page after a run-bound cursor."""
 
@@ -723,8 +724,17 @@ async def read_event_rows(
         isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
     ):
         raise ValueError("run_event_page_limit_invalid")
+    if through_sequence is not None and (
+        isinstance(through_sequence, bool)
+        or not isinstance(through_sequence, int)
+        or through_sequence < 0
+    ):
+        raise ValueError("run_event_page_through_sequence_invalid")
+    through_clause = "and event.sequence <= %s" if through_sequence is not None else ""
     limit_clause = "limit %s" if limit is not None else ""
     params: tuple[object, ...] = (tenant_id, cursor.run_id, cursor.sequence)
+    if through_sequence is not None:
+        params += (through_sequence,)
     if limit is not None:
         params += (limit,)
     result = await conn.execute(
@@ -745,6 +755,7 @@ async def read_event_rows(
                ) as v4_attempt_authorized
         from run_events as event
         where event.tenant_id = %s and event.run_id = %s and event.sequence > %s
+        {through_clause}
         order by event.sequence asc, event.created_at asc
         {limit_clause}
         """,

@@ -1,8 +1,8 @@
 import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
-import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -12,9 +12,7 @@ from fastapi import HTTPException
 from app.auth import AuthPrincipal
 from app.routes import lambchat_compat as route
 from app.streaming.api import (
-    ResumeDecision,
     StreamCursor,
-    StreamGap,
     V4StreamEntry,
     build_v4_control,
     live_redis_id_is_after,
@@ -24,7 +22,6 @@ from app.streaming.redis import (
     SseAuthorityConflictError,
     SseAuthorityLease,
     StreamAuthority,
-    StreamContractError,
     StreamTransportUnavailable,
 )
 
@@ -43,7 +40,7 @@ def authority(*, state="confirmed"):
         1,
         state,
         "sev-open",
-        "{}",
+        json.dumps(open_entry().envelope),
         "digest",
         1,
         "active",
@@ -185,91 +182,15 @@ class FakeBridge:
         self,
         rows,
         *,
-        resume=None,
-        resolve_error=None,
-        replay_error=None,
         on_read=None,
     ):
         self.rows = list(rows)
-        self.resume = resume
-        self.resolve_error = resolve_error
-        self.replay_error = replay_error
         self.on_read = on_read
         self._read_hook_called = False
         self.reader = None
         self.calls = []
 
-    async def resolve_resume(self, **kwargs):
-        self.calls.append("resolve")
-        if self.resolve_error:
-            raise self.resolve_error
-        if self.resume is not None:
-            return self.resume
-        replay_tail = self.rows[-1].cursor.redis_id if self.rows else None
-        last_event_id = kwargs["last_event_id"]
-        if last_event_id:
-            cursor = StreamCursor.parse(last_event_id, run_id="run-a")
-            return ResumeDecision(
-                cursor.redis_id, None, replay_tail_redis_id=replay_tail
-            )
-        return ResumeDecision("0-0", None, replay_tail_redis_id=replay_tail)
-
-    async def retained_bounds(self, **kwargs):
-        self.calls.append("bounds")
-        return self.rows[0], self.rows[-1]
-
-    async def build_gap(self, **kwargs):
-        self.calls.append("gap")
-        requested = kwargs["requested_event_id"]
-        if requested is None:
-            requested_redis_id = None
-        else:
-            try:
-                requested_redis_id = StreamCursor.parse(
-                    requested, run_id="run-a"
-                ).redis_id
-            except StreamContractError:
-                requested_redis_id = requested
-        last = self.rows[-1].cursor.redis_id if self.rows else None
-        envelope = build_v4_control(
-            event_id=kwargs["event_id"],
-            tenant_scope=kwargs["tenant_scope_value"],
-            run_id=kwargs["run_id"],
-            attempt_id=kwargs["attempt_id"],
-            stream_incarnation=kwargs["current_stream_incarnation"],
-            event_type="stream.gap",
-            payload={
-                "reason": kwargs["reason"],
-                "recovery": "reload_durable_state",
-                "requested_event_id": requested_redis_id,
-                "requested_stream_incarnation": kwargs[
-                    "requested_stream_incarnation"
-                ],
-                "current_stream_incarnation": kwargs[
-                    "current_stream_incarnation"
-                ],
-                "earliest_available_event_id": (
-                    self.rows[0].cursor.redis_id if self.rows else None
-                ),
-                "latest_available_event_id": last,
-            },
-            source={"kind": "stream_authority", "authority_id": kwargs["event_id"]},
-            emitted_at="2026-08-09T00:00:00Z",
-        )
-        return envelope, StreamCursor("run-a", 1, last or "0-0").event_id
-
-    async def replay_page(self, *, after_redis_id, through_redis_id, **kwargs):
-        self.calls.append(f"replay:{after_redis_id}:{through_redis_id}")
-        if self.replay_error is not None:
-            raise self.replay_error
-        return tuple(
-            row
-            for row in self.rows
-            if live_redis_id_is_after(row.cursor.redis_id, after_redis_id)
-            and not live_redis_id_is_after(row.cursor.redis_id, through_redis_id)
-        )
-
-    async def read_stream(self, **kwargs):
+    async def read_live_page(self, **kwargs):
         self.calls.append(
             f"read:{kwargs['after_redis_id']}:{kwargs['count']}:{kwargs['block_ms']}"
         )
@@ -277,7 +198,9 @@ class FakeBridge:
             self._read_hook_called = True
             self.on_read()
         if self.reader is not None:
-            return await self.reader.read_stream(**kwargs)
+            received = await self.reader.read_stream(**kwargs)
+            self.rows.extend(e for e in received if e not in self.rows)
+            return received
         after_redis_id = kwargs["after_redis_id"]
         return tuple(
             row
@@ -288,7 +211,11 @@ class FakeBridge:
 
 
 
+_active_bridge = None
+
 def request_for(bridge, *, reader=None):
+    global _active_bridge
+    _active_bridge = bridge
     bridge.reader = ClosedReader() if reader is None and bridge.on_read is None else reader
     runtime = SimpleNamespace(bridge=bridge)
     return SimpleNamespace(
@@ -321,6 +248,31 @@ def patch_authority(monkeypatch, *, run=None, close_result=True, lease_value=Non
     async def close(conn, **kwargs):
         return close_result
 
+    async def bounds(conn, **kwargs):
+        return {"run-a": max((e.envelope.get("seq") or 0 for e in _active_bridge.rows), default=0)}
+
+    async def pages(conn, *, after_sequence, through_sequence, limit, **kwargs):
+        result = []
+        for e in _active_bridge.rows:
+            env = e.envelope
+            seq = env.get("seq")
+            if seq is None or not after_sequence < seq <= through_sequence:
+                continue
+            payload = dict(env["payload"])
+            event_id = "evt4_" + env["event_id"]
+            if "terminal_event_id" in payload:
+                payload["terminal_event_id"] = event_id
+            payload["__stream_v4"] = {
+                "version": 1, "attempt_id": env["attempt_id"], "authorization_epoch": 1,
+                "stream_incarnation": env["stream_incarnation"], "message_id": env["message_id"],
+            }
+            result.append({"id": event_id, "tenant_id": "tenant-a", "run_id": "run-a",
+                "sequence": seq, "event_type": env["event_type"], "visible_to_user": True,
+                "created_at": env["emitted_at"], "payload_json": payload})
+        return result[:limit]
+
+    monkeypatch.setattr(route.streaming_run_events, "list_run_event_sequence_bounds", bounds)
+    monkeypatch.setattr(route.streaming_run_events, "list_run_events", pages)
     monkeypatch.setattr(route, "transaction", transaction)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run)
     monkeypatch.setattr(route, "acquire_sse_admission_lease", admit)
@@ -361,7 +313,7 @@ async def connect(bridge, *, last_event_id=None, reader=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_status", ["succeeded", "failed", "cancelled"])
-async def test_idle_stream_closes_when_authority_refresh_observes_terminal_run(monkeypatch, terminal_status):
+async def test_idle_stream_waits_for_terminal_event_after_authority_observes_terminal_run(monkeypatch, terminal_status):
     run = {"id": "run-a", "session_id": "session-a", "status": "running"}
     gate = FrameLeaseGate()
     patch_authority(monkeypatch, run=run, lease_value=gate)
@@ -391,10 +343,19 @@ async def test_idle_stream_closes_when_authority_refresh_observes_terminal_run(m
     monkeypatch.setattr(route, "acquire_sse_authority_lease", acquire)
     monkeypatch.setattr(route, "close_sse_authority_lease", close)
     bridge = FakeBridge([open_entry()], on_read=complete_run)
-    _, body = await asyncio.wait_for(connect(bridge, reader=SequencedReader([()])), timeout=1)
-    assert "stream.open" in body
-    assert "stream.end" not in body  # No fabricated transport receipt.
-    assert ": heartbeat" not in body
+    response = await open_response(bridge, reader=SequencedReader([()]))
+    iterator = response.body_iterator
+    assert "stream.open" in await iterator.__anext__()
+    assert ": heartbeat" in await iterator.__anext__()
+    terminal = entry("2-0", "evt4_done", f"run.{terminal_status}", {
+        "terminal_event_id": "evt4_done", "hydrate_required": True,
+        **({"reason_code": "user_cancelled"} if terminal_status == "cancelled" else {}),
+        **({"projection_version": "ai-platform.chat-public-projection.v1", "code": "failed", "default_message": "Run failed", "detail": None} if terminal_status == "failed" else {}),
+    })
+    bridge.rows.append(terminal)
+    body = "".join([frame async for frame in iterator])
+    assert f"event: run.{terminal_status}" in body
+    assert "event: stream.end" in body
     assert len(acquired) == 2
     assert closed == [{"lease_id": "lease-a", "reason": "terminal_completed"}]
 
@@ -421,121 +382,14 @@ def terminal_rows():
     )
 
 
-@pytest.mark.asyncio
-async def test_end_cursor_uses_resume_state_without_historical_scan(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        terminal_rows(),
-        resume=ResumeDecision("4-0", None, "sev-terminal", True),
-    )
-
-    _, body = await connect(bridge, last_event_id="run-a:1:4-0")
-
-    assert body == ""
-    assert not any(call.startswith("replay:") for call in bridge.calls)
 
 
-@pytest.mark.asyncio
-async def test_v4_retained_cursor_replays_after_trimmed_open(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [
-            entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
-            entry("9-0", "sev-next", "message.delta", {"delta": "new"}),
-        ],
-        resume=ResumeDecision("8-0", None, replay_tail_redis_id="9-0"),
-    )
-
-    _, body = await connect(bridge, last_event_id="run-a:1:8-0")
-
-    assert "event: stream.gap\n" not in body
-    assert '"delta": "old"' not in body
-    assert '"delta": "new"' in body
 
 
-@pytest.mark.asyncio
-async def test_v4_gap_cursor_resumes_after_hydration_with_trimmed_open(monkeypatch):
-    patch_authority(monkeypatch)
-    retained = [
-        entry("8-0", "sev-retained", "message.delta", {"delta": "old"}),
-        entry("9-0", "sev-gap-anchor", "message.delta", {"delta": "anchor"}),
-    ]
-    gap_bridge = FakeBridge(
-        retained,
-        resume=ResumeDecision(
-            None,
-            StreamGap("retained_history_unavailable", None, None, 1),
-        ),
-    )
-
-    _, gap_body = await connect(gap_bridge)
-    assert gap_body.startswith("id: run-a:1:9-0\nevent: stream.gap\n")
-
-    resumed_bridge = FakeBridge(
-        [
-            *retained,
-            entry("10-0", "sev-after-hydration", "message.delta", {"delta": "after"}),
-        ],
-        resume=ResumeDecision("9-0", None, replay_tail_redis_id="10-0"),
-    )
-    _, resumed_body = await connect(
-        resumed_bridge,
-        last_event_id="run-a:1:9-0",
-    )
-
-    assert "event: stream.gap\n" not in resumed_body
-    assert '"delta": "after"' in resumed_body
 
 
-@pytest.mark.asyncio
-async def test_v4_terminal_resume_survives_trimmed_open(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [
-            entry(
-                "8-0",
-                "sev-terminal",
-                "run.succeeded",
-                {"terminal_event_id": "sev-terminal", "hydrate_required": True},
-            ),
-            entry(
-                "9-0",
-                "sev-end",
-                "stream.end",
-                {"terminal_event_id": "sev-terminal"},
-            ),
-        ],
-        resume=ResumeDecision("8-0", None, "sev-terminal", False, "9-0"),
-    )
-
-    _, body = await connect(bridge, last_event_id="run-a:1:8-0")
-
-    assert "event: stream.gap\n" not in body
-    assert "event: stream.end\n" in body
-    assert "event: run.succeeded\n" not in body
-    assert "replay:0-0:8-0" not in bridge.calls
-    assert "replay:8-0:9-0" in bridge.calls
 
 
-@pytest.mark.asyncio
-async def test_v4_end_cursor_is_accepted_when_trimmed_suffix_starts_at_end(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [
-            entry(
-                "9-0",
-                "sev-end",
-                "stream.end",
-                {"terminal_event_id": "sev-terminal"},
-            )
-        ],
-        resume=ResumeDecision("9-0", None, "sev-terminal", True),
-    )
-
-    _, body = await connect(bridge, last_event_id="run-a:1:9-0")
-
-    assert body == ""
-    assert not any(call.startswith("replay:") for call in bridge.calls)
 
 
 async def connect_expect_conflict():
@@ -874,98 +728,19 @@ async def test_v4_missing_run_fails_closed_before_admission_wait(monkeypatch):
     assert exc_info.value.detail == "run_not_found"
 
 
-@pytest.mark.asyncio
-async def test_v4_replay_uses_native_cursor_and_schema_event(monkeypatch):
-    patch_authority(monkeypatch)
-
-    async def forbidden(*args, **kwargs):
-        raise AssertionError("PG run_events must not drive live SSE")
-
-    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'list_run_events', forbidden)
-    bridge = FakeBridge(terminal_rows())
-    response, body = await connect(bridge)
-
-    assert response.headers["cache-control"] == "no-cache, no-transform"
-    assert response.headers["x-accel-buffering"] == "no"
-    assert "id: run-a:1:2-0" in body
-    assert '"schema": "ai-platform.public-run-stream-event.v4"' in body
-    assert '"payload": {"delta": "hello "}' in body
-    assert body.index("id: run-a:1:3-0") < body.index("id: run-a:1:4-0")
 
 
-@pytest.mark.asyncio
-async def test_v4_reads_entries_added_after_replay_tail(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [open_entry()],
-        on_read=lambda: bridge.rows.extend(terminal_rows()[1:]),
-    )
-
-    _, body = await connect(bridge)
-
-    assert bridge.calls[:4] == [
-        "resolve",
-        "replay:0-0:1-0",
-        "read:1-0:128:5000",
-    ]
-    assert '"delta": "hello "' in body
-    assert "event: stream.end\n" in body
 
 
-@pytest.mark.asyncio
-async def test_v4_trim_gap_is_control_and_requests_durable_hydration(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [open_entry()],
-        resume=ResumeDecision(
-            None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
-        ),
-    )
-    _, body = await connect(bridge, last_event_id="run-a:1:1-0")
-
-    assert body.startswith("id: run-a:1:1-0\nevent: stream.gap\n")
-    assert '"schema": "ai-platform.public-run-stream-control.v4"' in body
-    assert '"recovery": "reload_durable_state"' in body
 
 
-@pytest.mark.asyncio
-async def test_v4_trim_between_resume_and_replay_emits_gap_instead_of_omitting_rows(
-    monkeypatch,
-):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [open_entry()],
-        replay_error=StreamContractError("stream_replay_continuity_unproven"),
-    )
-
-    _, body = await connect(bridge)
-
-    assert "event: stream.gap\n" in body
-    assert '"reason": "stream_continuity_unproven"' in body
-    assert "event: stream.open\n" not in body
 
 
-@pytest.mark.asyncio
-async def test_v4_trim_gap_checks_lease_immediately_before_write(monkeypatch):
-    lease_gate = FrameLeaseGate(valid=False)
-    patch_authority(monkeypatch, lease_value=lease_gate)
-    bridge = FakeBridge(
-        [open_entry()],
-        resume=ResumeDecision(
-            None, StreamGap("retained_history_unavailable", "run-a:1:1-0", 1, 1)
-        ),
-    )
-    response = await open_response(bridge, last_event_id="run-a:1:1-0")
-    deny_lease_renewal(monkeypatch)
-
-    body = "".join([chunk async for chunk in response.body_iterator])
-
-    assert body == ""
 
 
 @pytest.mark.asyncio
 async def test_v4_replay_frame_checks_lease_immediately_before_write(monkeypatch):
-    lease_gate = FrameLeaseGate(allowed_calls=1)
+    lease_gate = FrameLeaseGate(allowed_calls=0)
     patch_authority(monkeypatch, lease_value=lease_gate)
     response = await open_response(FakeBridge([open_entry()]))
     deny_lease_renewal(monkeypatch)
@@ -977,7 +752,7 @@ async def test_v4_replay_frame_checks_lease_immediately_before_write(monkeypatch
 
 @pytest.mark.asyncio
 async def test_v4_replay_frame_rejects_lease_expired_during_renewal(monkeypatch):
-    lease_gate = FrameLeaseGate(allowed_calls=1)
+    lease_gate = FrameLeaseGate(allowed_calls=0)
     patch_authority(monkeypatch, lease_value=lease_gate)
     response = await open_response(FakeBridge([open_entry()]))
 
@@ -995,21 +770,6 @@ async def test_v4_replay_frame_rejects_lease_expired_during_renewal(monkeypatch)
     assert body == ""
 
 
-@pytest.mark.asyncio
-async def test_v4_replay_gap_checks_lease_immediately_before_write(monkeypatch):
-    lease_gate = FrameLeaseGate(allowed_calls=1)
-    patch_authority(monkeypatch, lease_value=lease_gate)
-    response = await open_response(
-        FakeBridge(
-            [open_entry()],
-            replay_error=StreamContractError("stream_replay_continuity_unproven"),
-        )
-    )
-    deny_lease_renewal(monkeypatch)
-
-    body = "".join([chunk async for chunk in response.body_iterator])
-
-    assert body == ""
 
 
 @pytest.mark.asyncio
@@ -1061,41 +821,8 @@ async def test_v4_live_frame_rechecks_lease_after_blocking_read(monkeypatch):
 
 
 
-@pytest.mark.asyncio
-async def test_v4_end_before_terminal_closes_without_synthetic_error(monkeypatch):
-    patch_authority(monkeypatch)
-    rows = (
-        open_entry(),
-        entry(
-            "2-0",
-            "sev-end",
-            "stream.end",
-            {"terminal_event_id": "sev-terminal"},
-        ),
-    )
-    _, body = await connect(FakeBridge(rows))
-
-    assert "event: stream.end\n" not in body
-    assert "event: error\n" not in body
 
 
-@pytest.mark.asyncio
-async def test_v4_redis_admission_outage_fails_before_response(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge(
-        [open_entry()],
-        resolve_error=StreamTransportUnavailable("down"),
-    )
-    with pytest.raises(HTTPException) as exc:
-        await route.chat_session_stream(
-            "session-a",
-            "run-a",
-            request_for(bridge),
-            principal=AuthPrincipal(
-                user_id="user-a", display_name="User", tenant_id="tenant-a"
-            ),
-        )
-    assert exc.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -1170,24 +897,6 @@ async def test_v4_missing_runtime_after_admission_records_setup_exit_and_release
     assert "tenant-a" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_v4_blocking_read_transport_failure_records_safe_exit(monkeypatch, caplog):
-    patch_authority(monkeypatch)
-    caplog.set_level(logging.INFO, logger=route.logger.name)
-    response = await route.chat_session_stream(
-        "session-a",
-        "run-a",
-        request_for(FakeBridge([open_entry()]), reader=ClosedReader()),
-        principal=AuthPrincipal(
-            user_id="user-a", display_name="User", tenant_id="tenant-a"
-        ),
-    )
-    body = "".join([chunk async for chunk in response.body_iterator])
-    assert "event: stream.open" in body
-    records = [record for record in caplog.records if record.msg == "sse_stream_exit"]
-    assert len(records) == 1
-    assert records[0].reason == "transport_failure"
-    assert records[0].lease_released is True
 
 
 @pytest.mark.asyncio
@@ -1210,77 +919,3 @@ async def test_v4_generic_generator_failure_records_transport_exit(monkeypatch, 
     assert records[0].reason == "transport_failure"
     assert records[0].lease_released is True
     assert "private read failure" not in caplog.text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("read_error,reason", [
-    ("stream_replay_continuity_unproven", "stream_continuity_unproven"),
-    ("stream_missing", "stream_missing"),
-])
-async def test_v4_live_retention_failure_emits_gap_without_advancing_to_unread_tail(
-    monkeypatch, read_error, reason,
-):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge([open_entry()])
-
-    class RetentionFailureReader:
-        async def read_stream(self, **kwargs):
-            assert kwargs["after_redis_id"] == "1-0"
-            if read_error == "stream_missing":
-                bridge.rows.clear()
-            else:
-                bridge.rows = [entry("50-9", "evt4_unread_tail", "message.delta", {"delta": "unread"})]
-            raise StreamContractError(read_error)
-
-    _, body = await connect(bridge, reader=RetentionFailureReader())
-    assert body.count("event: stream.open\n") == 1
-    assert body.count("event: stream.gap\n") == 1
-    assert f'"reason": "{reason}"' in body
-    assert '"requested_event_id": "1-0"' in body
-    assert '"recovery": "reload_durable_state"' in body
-    assert ": heartbeat" not in body and "event: stream.end" not in body
-    assert "event: message.delta" not in body and '"delta": "unread"' not in body
-    if read_error == "stream_missing":
-        assert "id: run-a:1:0-0\nevent: stream.gap" in body
-        assert '"earliest_available_event_id": null' in body
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("read_error", ["stream_replay_continuity_unproven", "stream_missing"])
-async def test_v4_live_retention_gap_revalidates_lease_before_write(monkeypatch, read_error):
-    lease_gate = FrameLeaseGate()
-    patch_authority(monkeypatch, lease_value=lease_gate)
-    bridge = FakeBridge([open_entry()])
-
-    class ExpiredRetentionReader:
-        async def read_stream(self, **kwargs):
-            lease_gate.valid = False
-            if read_error == "stream_missing":
-                bridge.rows.clear()
-            raise StreamContractError(read_error)
-
-    response = await open_response(bridge, reader=ExpiredRetentionReader())
-    deny_lease_renewal(monkeypatch)
-    iterator = response.body_iterator
-    assert "event: stream.open" in await iterator.__anext__()
-    with pytest.raises(StopAsyncIteration):
-        await iterator.__anext__()
-    assert "gap" in bridge.calls
-
-
-@pytest.mark.asyncio
-async def test_v4_replay_stream_expiration_emits_null_bounds_gap(monkeypatch):
-    patch_authority(monkeypatch)
-    bridge = FakeBridge([open_entry()])
-
-    async def expire_before_page(**kwargs):
-        bridge.rows.clear()
-        raise StreamContractError("stream_missing")
-
-    bridge.replay_page = expire_before_page
-    _, body = await connect(bridge)
-    assert "event: stream.open" not in body
-    assert "id: run-a:1:0-0\nevent: stream.gap" in body
-    assert '"reason": "stream_missing"' in body
-    assert '"earliest_available_event_id": null' in body
-    assert '"latest_available_event_id": null' in body

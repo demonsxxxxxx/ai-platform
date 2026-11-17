@@ -101,6 +101,10 @@ _sandbox_callback_authority = build_sandbox_callback_authority()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+# Redis is only a live hint after the durable receipt commits. Bound degraded
+# batch latency without spawning background work or changing business errors.
+_CALLBACK_LIVE_PUBLICATION_TIMEOUT_SECONDS = 0.25
+
 
 
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
@@ -631,11 +635,18 @@ async def record_executor_callback(
             if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
             else nullcontext()
         ):
-            await publish_callback_rows(capabilities, committed_rows, authority=authority)
-    except V4PublicationTransportUnavailable as exc:
-        raise HTTPException(
-            status_code=503, detail="callback_stream_unavailable"
-        ) from exc
+            async with asyncio.timeout(_CALLBACK_LIVE_PUBLICATION_TIMEOUT_SECONDS):
+                await publish_callback_rows(capabilities, committed_rows, authority=authority)
+    except (V4PublicationTransportUnavailable, TimeoutError) as exc:
+        logger.warning(
+            "callback_live_publication_degraded",
+            extra={
+                "run_id": callback.run_id,
+                "attempt_id": callback.attempt_id,
+                "reason": "timeout" if isinstance(exc, TimeoutError) else "transport_unavailable",
+                "budget_ms": int(_CALLBACK_LIVE_PUBLICATION_TIMEOUT_SECONDS * 1000),
+            },
+        )
     return _executor_callback_receipt(
         callback,
         deduplicated=callback_deduplicated,

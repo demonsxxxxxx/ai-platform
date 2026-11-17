@@ -494,10 +494,10 @@ function protocolInvalidSseResponse(
   };
   const body =
     kind === "json"
-      ? `id: ${runId}:1:1-0\nevent: stream.open\ndata: {\n\n`
+      ? `event: stream.open\ndata: {\n\n`
       : kind === "event-id"
-        ? `event: stream.open\ndata: ${JSON.stringify(envelope)}\n\n`
-        : `id: ${runId}:1:1-0\nevent: stream.open\ndata: ${JSON.stringify({
+        ? `event: run.cancel_requested\ndata: ${JSON.stringify({ ...envelope, schema: PUBLIC_RUN_STREAM_SCHEMA, event_type: "run.cancel_requested", seq: 1, payload: { source: "user" } })}\n\n`
+        : `event: stream.open\ndata: ${JSON.stringify({
             ...envelope,
             schema: "invalid.public-run-stream.v4",
           })}\n\n`;
@@ -551,7 +551,6 @@ function controlledPublicRunLifecycle(
   let finish: (() => void) | null = null;
   let push: ((sequence: number, delta: string) => void) | null = null;
   let lastSequence = preceding.length;
-  let cursor = preceding.length + 1;
   const response = new Response(
     new ReadableStream({
       start(controller) {
@@ -571,7 +570,7 @@ function controlledPublicRunLifecycle(
         };
         controller.enqueue(
           encoder.encode(
-            `id: ${runId}:${streamIncarnation}:1-0\nevent: stream.open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
+            `event: stream.open\ndata: ${JSON.stringify(streamOpen)}\n\n`,
           ),
         );
         preceding.forEach((frame, index) => {
@@ -592,13 +591,12 @@ function controlledPublicRunLifecycle(
           };
           controller.enqueue(
             encoder.encode(
-              `id: ${runId}:${streamIncarnation}:${index + 2}-0\nevent: ${frame.eventType}\ndata: ${JSON.stringify(event)}\n\n`,
+              `id: ${runId}:${sequence}\nevent: ${frame.eventType}\ndata: ${JSON.stringify(event)}\n\n`,
             ),
           );
         });
         push = (sequence, delta) => {
           lastSequence = Math.max(lastSequence, sequence);
-          cursor += 1;
           const event = {
             schema: PUBLIC_RUN_STREAM_SCHEMA,
             event_id: `future-${runId}-${sequence}`,
@@ -614,7 +612,7 @@ function controlledPublicRunLifecycle(
             payload: { delta },
           };
           controller.enqueue(encoder.encode(
-            `id: ${runId}:${streamIncarnation}:${cursor}-0\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
+            `id: ${runId}:${sequence}\nevent: message.delta\ndata: ${JSON.stringify(event)}\n\n`,
           ));
         };
         finish = () => {
@@ -676,8 +674,8 @@ function controlledPublicRunLifecycle(
           };
           controller.enqueue(
             encoder.encode(
-              `id: ${runId}:${streamIncarnation}:${cursor + 1}-0\nevent: ${terminalEventType}\ndata: ${JSON.stringify(terminal)}\n\n` +
-                `id: ${runId}:${streamIncarnation}:${cursor + 2}-0\nevent: stream.end\ndata: ${JSON.stringify(end)}\n\n`,
+              `id: ${runId}:${terminalSequence}\nevent: ${terminalEventType}\ndata: ${JSON.stringify(terminal)}\n\n` +
+                `event: stream.end\ndata: ${JSON.stringify(end)}\n\n`,
             ),
           );
           controller.close();
@@ -4160,7 +4158,7 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
       emitted_at: `2026-10-09T00:00:0${cursor}Z`,
       payload,
     };
-    return `id: ${runId}:1:${cursor}-0\nevent: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
+    return `${sequence === null ? "" : `id: ${runId}:${sequence}\n`}event: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
   };
   const openedRun = (
     runId: string,
@@ -6276,13 +6274,13 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
     payload,
   });
   const frame = (
-    cursor: string,
+    _cursor: string,
     eventType: string,
     eventId: string,
     sequence: number | null,
     payload: Record<string, unknown>,
   ) =>
-    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+    `${sequence === null ? "" : `id: ${runId}:${sequence}\n`}event: ${eventType}\ndata: ${JSON.stringify(
       envelope(eventType, eventId, sequence, payload),
     )}\n\n`;
 
@@ -6316,6 +6314,7 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       return new Promise<never>(() => {});
     }
     return {
+      snapshot_max_sequence: 20,
       current_run_id: runId,
       events: [
         {
@@ -6360,24 +6359,13 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       const initialStream = controlledNonClosingSseResponse(
         frame("1-0", "stream.open", "active-gap-open", null, {
           design_id: STREAM_DESIGN_ID,
-        }) + (hasProtocolMessage ? frame("3-0", "message.started", "active-gap-started", 20, {}) : ""),
+        }) + (hasProtocolMessage ? frame("3-0", "message.started", "active-gap-started", 20, {}) : frame("3-0", "run.cancel_requested", "active-gap-progress", 20, { source: "user" })),
       );
       initialStreams.push(initialStream);
       return initialStream.response;
     }
     if (requestCursors.length === 2 || (recovery === "timeout" && requestCursors.length === 3)) {
-      return new Response(
-        frame("4-0", "stream.gap", "active-gap-gap", null, {
-          reason: "retained_history_unavailable",
-          recovery: "reload_durable_state",
-          requested_event_id: hasProtocolMessage ? "3-0" : "1-0",
-          requested_stream_incarnation: 1,
-          current_stream_incarnation: 1,
-          earliest_available_event_id: "4-0",
-          latest_available_event_id: "9-0",
-        }),
-        { headers: { "content-type": "text/event-stream" } },
-      );
+      return new Response(null, { status: 409, headers: { "X-SSE-Error-Code": "sse_cursor_snapshot_required" } });
     }
     const replacementStream = controlledNonClosingSseResponse(
       frame("10-0", "stream.open", "active-gap-reopen", null, {
@@ -6449,9 +6437,9 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       assert.equal(statusCalls, recovery === "timeout" ? 5 : 3);
       assert.deepEqual(requestCursors, [
         null,
-        `${runId}:1:3-0`,
-        ...(recovery === "timeout" ? [`${runId}:1:3-0`] : []),
-        `${runId}:1:9-0`,
+        `${runId}:20`,
+        ...(recovery === "timeout" ? [`${runId}:20`] : []),
+        `${runId}:20`,
       ]);
       assert.deepEqual(eventQueries, recovery === "timeout" ? [undefined, runId, runId, runId, runId] : [undefined, runId]);
       assert.equal(assistant?.id, runId);
@@ -6460,7 +6448,7 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       assert.equal(harness.hook.connectionStatus, "connected");
     } else {
       assert.ok(finishRun, "active Run must remain observable after hydration");
-      assert.deepEqual(requestCursors, [null, `${runId}:1:1-0`]);
+      assert.deepEqual(requestCursors, [null, `${runId}:20`]);
       assert.equal(assistant?.content, "durable-before-gap");
       assert.equal(harness.hook.currentRunId, runId);
       await harness.act(async () => { finishRun!(); });
@@ -6499,7 +6487,7 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
   let statusReads = 0;
 
   const eventFrame = (
-    cursor: string,
+    _cursor: string,
     eventType: string,
     eventId: string,
     sequence: number | null,
@@ -6523,7 +6511,7 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
       emitted_at: "2026-10-09T00:00:01Z",
       payload,
     };
-    return `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
+    return `${sequence === null ? "" : `id: ${runId}:${sequence}\n`}event: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
   };
 
   sessionApi.get = async () => ({
@@ -6537,6 +6525,7 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
   sessionApi.getEvents = (async (_sessionId, options) => {
     if (!options?.run_id) {
       return {
+      snapshot_max_sequence: 3,
         current_run_id: runId,
         events: [{
           id: "invalid-gap:user",
@@ -6549,6 +6538,7 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
     }
     exactHistoryReads += 1;
     return {
+      snapshot_max_sequence: 3,
       current_run_id: runId,
       events: [
         {
@@ -6613,6 +6603,7 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
   sessionApi.getStatus = (async () => {
     statusReads += 1;
     return {
+      snapshot_max_sequence: 3,
       session_id: "session-invalid-part-gap",
       run_id: runId,
       status: "running",
@@ -6621,20 +6612,12 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
   }) as typeof sessionApi.getStatus;
   dom.window.fetch = async (_input, init) => {
     requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    if (requestCursors.length > 1) return new Response(null, { status: 409, headers: { "X-SSE-Error-Code": "sse_cursor_snapshot_required" } });
     const body = [
       eventFrame("1-0", "stream.open", "invalid-gap-open", null, false, {
         design_id: STREAM_DESIGN_ID,
       }),
       eventFrame("2-0", "message.started", "invalid-gap-started", 1, true, {}),
-      eventFrame("3-0", "stream.gap", "invalid-gap-gap", null, false, {
-        reason: "retained_history_unavailable",
-        recovery: "reload_durable_state",
-        requested_event_id: "2-0",
-        requested_stream_incarnation: 1,
-        current_stream_incarnation: 1,
-        earliest_available_event_id: "3-0",
-        latest_available_event_id: "9-0",
-      }),
     ].join("");
     return new Response(body, {
       headers: { "content-type": "text/event-stream" },
@@ -6650,12 +6633,15 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
       () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
     );
 
+    for (let i = 0; i < 300 && exactHistoryReads < 1; i += 1) {
+      await harness.act(() => new Promise<void>(resolve => setTimeout(resolve, 10)));
+    }
     const assistant = harness.hook.messages.find(
       (message) => message.role === "assistant" && message.runId === runId,
     );
     assert.equal(exactHistoryReads, 1);
-    assert.equal(statusReads, 2);
-    assert.deepEqual(requestCursors, [null]);
+    assert.equal(statusReads, 3);
+    assert.deepEqual(requestCursors, [null, `${runId}:1`]);
     assert.equal(harness.hook.currentRunId, runId);
     assert.equal(harness.hook.connectionStatus, "disconnected");
     assert.equal(assistant?.parts?.some(
@@ -6835,13 +6821,13 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
     payload,
   });
   const frame = (
-    cursor: string,
+    _cursor: string,
     eventType: string,
     eventId: string,
     sequence: number | null,
     payload: Record<string, unknown>,
   ) =>
-    `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(
+    `${sequence === null ? "" : `id: ${runId}:${sequence}\n`}event: ${eventType}\ndata: ${JSON.stringify(
       envelope(eventType, eventId, sequence, payload),
     )}\n\n`;
 
@@ -6956,18 +6942,7 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
       initialStreams.push(initialStream);
       return initialStream.response;
     }
-    return new Response(
-      frame("5-0", "stream.gap", "stream-missing-gap", null, {
-        reason: "stream_missing",
-        recovery: "reload_durable_state",
-        requested_event_id: "4-0",
-        requested_stream_incarnation: 1,
-        current_stream_incarnation: 1,
-        earliest_available_event_id: null,
-        latest_available_event_id: null,
-      }),
-      { headers: { "content-type": "text/event-stream" } },
-    );
+    return new Response(null, { status: 409, headers: { "X-SSE-Error-Code": "sse_cursor_snapshot_required" } });
   };
 
   try {
@@ -7023,7 +6998,7 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
           part.event_id === `terminal-result-unavailable:${runId}`,
       );
 
-    assert.deepEqual(requestCursors, [null, `${runId}:1:4-0`]);
+    assert.deepEqual(requestCursors, [null, `${runId}:3`]);
     assert.deepEqual(eventQueries, [undefined, runId]);
     assert.equal(statusCalls, 3);
     assert.equal(assistant?.content, "缺失前已公开正文");

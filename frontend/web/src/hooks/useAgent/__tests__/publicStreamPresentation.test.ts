@@ -82,7 +82,7 @@ test("v4 and history progress use the same typed presentation reducer", () => {
   const adapted = adaptPublicRunStreamEventV4(
     {
       eventHeader: "agent.progress",
-      transportCursor: "run-progress:2:12-0",
+      transportCursor: "run-progress:12",
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
         event_id: "event-progress-12",

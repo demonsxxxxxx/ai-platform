@@ -30,7 +30,7 @@ function frame(eventType: string, payload: Record<string, unknown>, messageId: s
   return adaptV4Frame(
     {
       eventHeader: eventType,
-      transportCursor: "run-1:1:1-0",
+      transportCursor: "run-1:1",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
@@ -97,7 +97,7 @@ test("v4 handler is executable assembly through the existing event owner", () =>
   const accepted = handlePublicRunStreamEventV4({
     event: adaptV4Frame({
       eventHeader: "stream.open",
-      transportCursor: "run-1:1:1700000000000-0",
+      transportCursor: "",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-control.v4",
@@ -124,7 +124,7 @@ test("v4 handler is executable assembly through the existing event owner", () =>
   assert.equal(committed, 1);
 });
 
-test("v4 handler advances transport cursor for semantic duplicates without reapplying them", () => {
+test("v4 heartbeat duplicates do not acquire a durable cursor", () => {
   const ctx = {
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
@@ -142,7 +142,7 @@ test("v4 handler advances transport cursor for semantic duplicates without reapp
   const binding: StreamEventBinding = { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 };
   const first = {
     eventHeader: "stream.heartbeat",
-    transportCursor: "run-1:1:1-0",
+    transportCursor: "",
     generation: 3,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
@@ -159,21 +159,19 @@ test("v4 handler advances transport cursor for semantic duplicates without reapp
       payload: { status: "running" },
     },
   };
-  const second = { ...first, transportCursor: "run-1:1:2-0" };
+  const second = { ...first };
   let semanticCommits = 0;
   let transportOnlyCommits = 0;
   const onCommitted = (semanticApplied: boolean) => {
     if (semanticApplied) semanticCommits += 1;
     else transportOnlyCommits += 1;
-    ctx.acceptedStreamCursorRef!.current.eventId = semanticApplied
-      ? (semanticCommits === 1 ? "run-1:1:1-0" : ctx.acceptedStreamCursorRef!.current.eventId)
-      : "run-1:1:2-0";
+
   };
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(first, { runId: "run-1", streamIncarnation: 1, generation: 3 }), messageId: "message-1", ctx, binding, currentGeneration: 3, onCommitted }), true);
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(second, { runId: "run-1", streamIncarnation: 1, generation: 3 }), messageId: "message-1", ctx, binding, currentGeneration: 3, onCommitted }), false);
   assert.equal(semanticCommits, 1);
   assert.equal(transportOnlyCommits, 1);
-  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, "run-1:1:2-0");
+  assert.equal(ctx.acceptedStreamCursorRef!.current.eventId, null);
 });
 test("v4 terminal binding is checked before hydration side effects", () => {
   const ctx = {
@@ -201,7 +199,7 @@ test("v4 terminal binding is checked before hydration side effects", () => {
   assert.equal(handlePublicRunStreamEventV4({
     event: adaptV4Frame({
       eventHeader: "run.succeeded",
-      transportCursor: "run-1:1:1-0",
+      transportCursor: "run-1:1",
       generation: 4,
       value: terminal.event,
     }, { runId: "run-1", streamIncarnation: 1, generation: 4 }),
@@ -233,7 +231,7 @@ test("v4 terminal rejects a foreign Run before hydration", () => {
   const foreign = adaptPublicRunStreamEventV4(
     {
       eventHeader: "run.succeeded",
-      transportCursor: "run-2:1:1-0",
+      transportCursor: "run-2:1",
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
         event_id: "foreign-terminal",
@@ -255,7 +253,7 @@ test("v4 terminal rejects a foreign Run before hydration", () => {
   assert.equal(handlePublicRunStreamEventV4({
     event: adaptV4Frame({
       eventHeader: "run.succeeded",
-      transportCursor: "run-2:1:1-0",
+      transportCursor: "run-2:1",
       generation: 3,
       value: foreign.event,
     }, { runId: "run-2", streamIncarnation: 1, generation: 3 }),
@@ -298,7 +296,7 @@ test("v4 terminal settle fails closed when cursor incarnation changes during hyd
   assert.equal(handlePublicRunStreamEventV4({
     event: adaptV4Frame({
       eventHeader: "run.succeeded",
-      transportCursor: "run-1:1:1-0",
+      transportCursor: "run-1:1",
       generation: 3,
       value: terminal.event,
     }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
@@ -344,7 +342,7 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
   let hydrationAccepted: (() => void) | undefined;
   const terminal = {
     eventHeader: "run.succeeded",
-    transportCursor: "run-1:3:1-0",
+    transportCursor: "run-1:1",
     generation: 2,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -363,7 +361,7 @@ test("v4 terminal end waits for authoritative hydration and scopes the fence", (
   };
   const end = {
     eventHeader: "stream.end",
-    transportCursor: "run-1:3:2-0",
+    transportCursor: "",
     generation: 2,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
@@ -426,7 +424,7 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
     assert.ok(terminal);
     const end = {
       eventHeader: "stream.end",
-      transportCursor: "run-1:1:2-0",
+      transportCursor: "",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-control.v4",
@@ -447,7 +445,7 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
     assert.equal(handlePublicRunStreamEventV4({
       event: adaptV4Frame({
         eventHeader: eventType,
-        transportCursor: "run-1:1:1-0",
+        transportCursor: "run-1:1",
         generation: 3,
         value: terminal.event,
       }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
@@ -474,14 +472,14 @@ test("v4 terminal receipt survives real finalization for every terminal outcome"
   }
 });
 
-test("v4 terminal business sequence rejects lower replay despite a later transport cursor", () => {
+test("v4 terminal business sequence rejects lower replay", () => {
   let settleHigher: ((accepted: boolean) => boolean) | undefined;
   const ctx = {
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
     acceptedRunEventSequenceRef: { current: { sessionId: "session-1", runId: "run-1", sequence: 5 } },
-    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:5-0", streamIncarnation: 1 } },
+    acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:5", streamIncarnation: 1 } },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -500,7 +498,7 @@ test("v4 terminal business sequence rejects lower replay despite a later transpo
   assert.ok(adapted);
   const lower = {
     eventHeader: "run.succeeded",
-    transportCursor: "run-1:1:9-0",
+    transportCursor: "run-1:4",
     generation: 3,
     value: { ...adapted.event, event_id: "terminal-low", seq: 4, payload: { terminal_event_id: "terminal-low", hydrate_required: true } },
   };
@@ -514,7 +512,7 @@ test("v4 terminal business sequence rejects lower replay despite a later transpo
   assert.equal(ctx.acceptedRunEventSequenceRef?.current.sequence, 5);
   const higher = {
     ...lower,
-    transportCursor: "run-1:1:10-0",
+    transportCursor: "run-1:6",
     value: { ...lower.value, event_id: "terminal-high", seq: 6, payload: { terminal_event_id: "terminal-high", hydrate_required: true } },
   };
   assert.equal(handlePublicRunStreamEventV4({
@@ -559,7 +557,7 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     acceptedStreamCursorRef: { current: { sessionId: "session-1", runId: "run-1", eventId: "run-1:1:0-1", streamIncarnation: 1 } },
   } as EventHandlerContext;
   const accepted = handlePublicRunStreamEventV4({
-    event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
+    event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
     messageId: "message-1",
     ctx: currentCtx,
     binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
@@ -571,7 +569,7 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
 
   const callGap = (currentGeneration: unknown, onGap: () => void) =>
     handlePublicRunStreamEventV4({
-      event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
+      event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
       messageId: "message-1",
       ctx: currentCtx,
       binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
@@ -595,7 +593,7 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
   for (const stale of staleCases) {
     let called = false;
     assert.equal(handlePublicRunStreamEventV4({
-      event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
+      event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "", generation: 3, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 3 }),
       messageId: "message-1",
       ctx: stale.ctx as unknown as EventHandlerContext,
       binding: { sessionId: "session-1", runId: "run-1", streamVersion: 0, streamIncarnation: 1, generation: 3 },
@@ -605,7 +603,7 @@ test("v4 handler delegates stream gaps to the existing recovery owner", () => {
     assert.equal(called, false, stale.name);
   }
   assert.equal(handlePublicRunStreamEventV4({
-    event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "run-1:1:4-0", generation: 4, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 4 }),
+    event: adaptV4Frame({ eventHeader: "stream.gap", transportCursor: "", generation: 4, value: frameValue }, { runId: "run-1", streamIncarnation: 1, generation: 4 }),
     messageId: "message-1",
     ctx: {
       sessionIdRef: { current: "session-1" },

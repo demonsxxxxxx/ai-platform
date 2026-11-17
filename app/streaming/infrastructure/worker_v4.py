@@ -67,7 +67,7 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
         )
 
     async def load_latest_run_event(
-        self, *, tenant_id: str, run_id: str, before_sequence: int | None = None
+        self, *, tenant_id: str, run_id: str
     ) -> bytes | None:
         async with self._transaction_factory() as conn:
             await self.append_terminal_row(conn, tenant_id=tenant_id, run_id=run_id)
@@ -85,12 +85,11 @@ class PostgresWorkerEventPersistence(WorkerEventPersistence):
                 from run_events
                 where tenant_id = %s and run_id = %s and visible_to_user = true
                   and event_type in ('run.cancel_requested', 'run.succeeded', 'run.failed', 'run.cancelled')
-                  and (%s::bigint is null or sequence < %s)
                   and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
                   and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
                 order by sequence desc limit 1
                 """,
-                (tenant_id, run_id, before_sequence, before_sequence, authority.attempt_id, str(authority.stream_incarnation)),
+                (tenant_id, run_id, authority.attempt_id, str(authority.stream_incarnation)),
             )
             row = await result.fetchone()
             if row is None:

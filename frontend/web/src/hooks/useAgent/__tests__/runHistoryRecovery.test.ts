@@ -87,10 +87,10 @@ function gapRecoveryFixture() {
     } },
     setConnectionStatus: (status: string) => states.push(status),
     setIsInitializingSandbox: () => {},
-    hydrateActiveRun: async () => "assistant-a",
+    hydrateActiveRun: async () => ({ messageId: "assistant-a", cursor: "run-a:9" }),
   } as unknown as SSEConnectionContext;
   const gap = adaptPublicRunStreamEventV4({
-    eventHeader: "stream.gap", transportCursor: "run-a:1:9-0", generation: 1,
+    eventHeader: "stream.gap", transportCursor: "", generation: 1,
     value: {
       schema: "ai-platform.public-run-stream-control.v4", event_id: "gap-a", run_id: "run-a",
       message_id: null, seq: null, event_type: "stream.gap", stream_incarnation: 1,
@@ -132,20 +132,20 @@ test("active history timeout releases recovery ownership and permits a later ret
   assert.equal(context.acceptedStreamCursorRef?.current.eventId, "run-a:1:1-0");
   assert.equal(states.at(-1), "disconnected");
   let reconnected = false;
-  context.hydrateActiveRun = async () => "assistant-a";
+  context.hydrateActiveRun = async () => ({ messageId: "assistant-a", cursor: "run-a:9" });
   await recoverReplayGap(context, args, { ...dependencies, connect: async () => { reconnected = true; } });
   assert.equal(reconnected, true);
-  assert.equal(context.acceptedStreamCursorRef?.current.eventId, "run-a:1:9-0");
+  assert.equal(context.acceptedStreamCursorRef?.current.eventId, "run-a:9");
 });
 
 test("cancelled active history cannot mutate a replacement session", async () => {
   const { context, states, args, dependencies } = gapRecoveryFixture();
   let requestSignal: AbortSignal | undefined;
-  let finish: ((messageId: string) => void) | undefined;
+  let finish: ((value: { messageId: string; cursor: string }) => void) | undefined;
   context.hydrateActiveRun = async (_session, _run, _version, _incarnation, _cursor, owner) =>
     recoverRunHistory((signal) => {
       requestSignal = signal;
-      return new Promise<string>((resolve) => { finish = resolve; });
+      return new Promise<{ messageId: string; cursor: string }>((resolve) => { finish = resolve; });
     }, owner.controller.signal);
   const pending = recoverReplayGap(context, args, dependencies);
   await flush();
@@ -153,7 +153,7 @@ test("cancelled active history cannot mutate a replacement session", async () =>
   context.replayGapRecoveryRef?.current?.controller.abort();
   await pending;
   assert.equal(requestSignal?.aborted, true);
-  finish?.("stale-assistant");
+  finish?.({ messageId: "stale-assistant", cursor: "run-a:9" });
   await flush();
   assert.deepEqual(states, ["recovering_gap"]);
   assert.equal(context.streamingMessageIdRef.current, "assistant-a");

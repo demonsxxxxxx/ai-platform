@@ -43,8 +43,6 @@ def test_run_event_error_codes_are_normalized(value, expected) -> None:
 
 def test_public_boundary_reuses_domain_values_without_legacy_wire_types() -> None:
     assert domain_transport.StreamCursor is streaming_api.StreamCursor
-    assert domain_transport.StreamGap is streaming_api.StreamGap
-    assert domain_transport.ResumeDecision is streaming_api.ResumeDecision
     assert domain_transport.canonical_json_bytes is streaming_api.canonical_json_bytes
     assert redis_transport.canonical_json_bytes is streaming_api.canonical_json_bytes
     assert redis_transport.StreamContractError is streaming_api.StreamContractError

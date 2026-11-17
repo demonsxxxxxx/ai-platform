@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 from typing import Any
 
 from redis.exceptions import ResponseError
@@ -58,9 +57,7 @@ from app.streaming.domain.assistant_text_parts import (
     reduce_assistant_text_part_message,
 )
 from app.streaming.domain.transport import (
-    ResumeDecision,
     StreamCursor,
-    StreamGap,
     canonical_json_bytes,
 )
 from app.streaming.redis import (
@@ -95,23 +92,6 @@ def _normalize_redis_fields(fields: object) -> dict[str, str]:
             raise StreamContractError("v4_stream_fields_duplicate")
         normalized[key] = value
     return normalized
-
-
-_V4_REPLAY_PAGE_LUA = r"""
-local rows = redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[2], 'COUNT', tonumber(ARGV[3]))
-if #rows == 0 and redis.call('EXISTS', KEYS[1]) == 0 then
-  return {-1, rows}
-end
-local predecessor = ARGV[4]
-if predecessor == '' then
-  return {1, rows}
-end
-if #rows == 0 or rows[1][1] ~= predecessor then
-  return {0, rows}
-end
-table.remove(rows, 1)
-return {1, rows}
-"""
 
 
 def _prepare_application_v4_row(
@@ -1088,75 +1068,6 @@ class V4RedisStreamBridge:
                 raise
             raise StreamTransportUnavailable("v4_stream_append_unavailable") from exc
 
-    async def build_gap(
-        self,
-        *,
-        event_id: str,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        requested_event_id: str | None,
-        requested_stream_incarnation: int | None,
-        current_stream_incarnation: int,
-        reason: str,
-        emitted_at: str | datetime | None = None,
-    ) -> tuple[dict[str, object], str]:
-        """Build a gap from Redis-owned retained bounds, never caller bounds."""
-
-        requested_redis_id: str | None = None
-        if requested_event_id is not None:
-            try:
-                parsed = StreamCursor.parse(requested_event_id, run_id=run_id)
-                if requested_stream_incarnation != parsed.stream_incarnation:
-                    raise StreamContractError("v4_gap_cursor_incarnation_invalid")
-                requested_redis_id = parsed.redis_id
-            except StreamContractError:
-                try:
-                    _redis_id_tuple(requested_event_id)
-                except Exception as exc:
-                    raise StreamContractError("v4_gap_cursor_invalid") from exc
-                requested_redis_id = requested_event_id
-        bounds = await self.retained_bounds(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=current_stream_incarnation,
-        )
-        if bounds is None:
-            if reason != "stream_missing":
-                raise StreamTransportUnavailable("v4_gap_bounds_unavailable")
-            earliest_event_id = None
-            latest_event_id = None
-            cursor = StreamCursor(
-                run_id,
-                current_stream_incarnation,
-                "0-0",
-            ).event_id
-        else:
-            first, last = bounds
-            earliest_event_id = first.cursor.redis_id
-            latest_event_id = last.cursor.redis_id
-            cursor = last.cursor.event_id
-        envelope = build_v4_control(
-            event_id=event_id,
-            tenant_scope=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=current_stream_incarnation,
-            event_type="stream.gap",
-            payload={
-                "reason": reason,
-                "recovery": "reload_durable_state",
-                "requested_event_id": requested_redis_id,
-                "requested_stream_incarnation": requested_stream_incarnation,
-                "current_stream_incarnation": current_stream_incarnation,
-                "earliest_available_event_id": earliest_event_id,
-                "latest_available_event_id": latest_event_id,
-            },
-            source={"kind": "stream_authority", "authority_id": event_id},
-            emitted_at=emitted_at,
-        )
-        return envelope, cursor
 
     def _decode(
         self,
@@ -1188,220 +1099,8 @@ class V4RedisStreamBridge:
             raise StreamContractError("v4_stream_authority_mismatch")
         return V4StreamEntry(StreamCursor(run_id, stream_incarnation, redis_id), envelope)
 
-    async def retained_bounds(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-    ) -> tuple[V4StreamEntry, V4StreamEntry] | None:
-        key = stream_key(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            stream_incarnation=stream_incarnation,
-        )
-        try:
-            first = await self._bridge._publish_client.xrange(key, min="-", max="+", count=1)
-            last = await self._bridge._publish_client.xrevrange(key, max="+", min="-", count=1)
-        except Exception as exc:
-            raise StreamTransportUnavailable("v4_stream_bounds_unavailable") from exc
-        if not first and not last:
-            return None
-        if not first or not last:
-            raise StreamTransportUnavailable("v4_stream_bounds_unproven")
-        return self._decode(
-            first[0],
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-        ), self._decode(
-            last[0],
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-        )
 
-    async def resolve_resume(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        current_stream_incarnation: int,
-        last_event_id: str | None,
-    ) -> ResumeDecision:
-        cursor = StreamCursor.parse(last_event_id, run_id=run_id) if last_event_id else None
-        if cursor and cursor.stream_incarnation > current_stream_incarnation:
-            raise StreamContractError("stream_cursor_future_incarnation")
-        if cursor and cursor.stream_incarnation < current_stream_incarnation:
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "stream_incarnation_mismatch",
-                    cursor.event_id,
-                    cursor.stream_incarnation,
-                    current_stream_incarnation,
-                ),
-            )
-        bounds = await self.retained_bounds(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=current_stream_incarnation,
-        )
-        if bounds is None:
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "stream_missing",
-                    cursor.event_id if cursor else None,
-                    cursor.stream_incarnation if cursor else None,
-                    current_stream_incarnation,
-                ),
-            )
-        first, last = bounds
-        if cursor is None:
-            if first.envelope["event_type"] == "stream.open":
-                return ResumeDecision(
-                    "0-0", None, replay_tail_redis_id=last.cursor.redis_id
-                )
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "retained_history_unavailable",
-                    None,
-                    None,
-                    current_stream_incarnation,
-                    first.cursor.event_id,
-                    last.cursor.event_id,
-                ),
-            )
-        if _redis_id_tuple(cursor.redis_id) > _redis_id_tuple(last.cursor.redis_id):
-            raise StreamContractError("stream_cursor_future_redis_id")
-        if _redis_id_tuple(cursor.redis_id) < _redis_id_tuple(first.cursor.redis_id):
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "retained_history_unavailable",
-                    cursor.event_id,
-                    cursor.stream_incarnation,
-                    current_stream_incarnation,
-                    first.cursor.event_id,
-                    last.cursor.event_id,
-                ),
-            )
-        key = stream_key(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=current_stream_incarnation)
-        try:
-            exact = await self._bridge._publish_client.xrange(key, min=cursor.redis_id, max=cursor.redis_id, count=1)
-        except Exception as exc:
-            raise StreamTransportUnavailable("v4_stream_cursor_lookup_unavailable") from exc
-        if not exact:
-            return ResumeDecision(
-                None,
-                StreamGap(
-                    "stream_continuity_unproven",
-                    cursor.event_id,
-                    cursor.stream_incarnation,
-                    current_stream_incarnation,
-                    first.cursor.event_id,
-                    last.cursor.event_id,
-                ),
-            )
-        entry = self._decode(
-            exact[0],
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=current_stream_incarnation,
-        )
-        event_type = entry.envelope["event_type"]
-        if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
-            terminal_event_id = _nonempty(entry.envelope["event_id"], "event_id")
-            return ResumeDecision(
-                cursor.redis_id,
-                None,
-                terminal_event_id,
-                False,
-                last.cursor.redis_id,
-            )
-        if event_type == "stream.end":
-            payload = entry.envelope.get("payload")
-            terminal_event_id = _nonempty(
-                payload.get("terminal_event_id") if isinstance(payload, Mapping) else None,
-                "terminal_event_id",
-            )
-            return ResumeDecision(
-                cursor.redis_id,
-                None,
-                terminal_event_id,
-                True,
-                last.cursor.redis_id,
-            )
-        return ResumeDecision(
-            cursor.redis_id, None, replay_tail_redis_id=last.cursor.redis_id
-        )
-
-    async def replay_page(
-        self,
-        *,
-        tenant_scope_value: str,
-        run_id: str,
-        attempt_id: str,
-        stream_incarnation: int,
-        after_redis_id: str,
-        through_redis_id: str,
-    ) -> tuple[V4StreamEntry, ...]:
-        after = _redis_id_tuple(after_redis_id)
-        through = _redis_id_tuple(through_redis_id)
-        if after > through:
-            return ()
-        key = stream_key(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=stream_incarnation)
-        predecessor = "" if after_redis_id == "0-0" else after_redis_id
-        minimum = f"({after_redis_id}" if not predecessor else predecessor
-        count = 128 if not predecessor else 129
-        try:
-            result = await self._bridge._publish_client.eval(
-                _V4_REPLAY_PAGE_LUA,
-                1,
-                key,
-                minimum,
-                through_redis_id,
-                count,
-                predecessor,
-            )
-        except Exception as exc:
-            raise StreamTransportUnavailable("v4_stream_replay_unavailable") from exc
-        if not isinstance(result, (tuple, list)) or len(result) != 2:
-            raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
-        continuity, rows = result
-        if int(continuity) == -1:
-            raise StreamContractError("stream_missing")
-        if int(continuity) != 1:
-            raise StreamContractError("stream_replay_continuity_unproven")
-        if not isinstance(rows, (tuple, list)):
-            raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
-        entries = tuple(
-            self._decode(
-                row,
-                tenant_scope_value=tenant_scope_value,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                stream_incarnation=stream_incarnation,
-            )
-            for row in rows
-        )
-        # Validate the origin from this atomic page, not an earlier bounds read:
-        # stream.open can be trimmed between resolve_resume and initial replay.
-        if not predecessor and (
-            not entries or entries[0].envelope["event_type"] != "stream.open"
-        ):
-            raise StreamContractError("stream_replay_continuity_unproven")
-        return entries
-
-    async def read_stream(
+    async def read_live_page(
         self,
         *,
         tenant_scope_value: str,
@@ -1412,10 +1111,11 @@ class V4RedisStreamBridge:
         count: int = 128,
         block_ms: int = 5000,
     ) -> tuple[V4StreamEntry, ...]:
-        """Wait on the Stream, then prove retention before delivering a page.
+        """Read bounded live hints; PostgreSQL owns continuity and replay.
 
-        XREAD can skip a trimmed predecessor. Its result only captures the page's
-        tail; the existing atomic replay read owns delivery and continuity.
+        Every entry still passes the exact authority and envelope checks. A
+        missing/trimmed stream is not a correctness failure: the consumer scans
+        PostgreSQL on an empty page, sequence gap, or transport failure.
         """
         _redis_id_tuple(after_redis_id)
         if (
@@ -1439,16 +1139,7 @@ class V4RedisStreamBridge:
         except Exception as exc:
             raise StreamTransportUnavailable("v4_stream_read_unavailable") from exc
         if not result:
-            # An idle Stream still retains our anchor. Expiration must become a
-            # gap rather than an ordinary heartbeat on a silently missing key.
-            return await self.replay_page(
-                tenant_scope_value=tenant_scope_value,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                stream_incarnation=stream_incarnation,
-                after_redis_id=after_redis_id,
-                through_redis_id=after_redis_id,
-            )
+            return ()
         if not isinstance(result, (list, tuple)) or len(result) != 1:
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
         stream_result = result[0]
@@ -1466,23 +1157,22 @@ class V4RedisStreamBridge:
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
         if not rows or len(rows) > count:
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
-        for row in rows:
-            if not isinstance(row, (list, tuple)) or len(row) != 2:
-                raise StreamContractError("v4_stream_row_invalid")
-            _redis_id_tuple(str(row[0]))
-        tail = str(rows[-1][0])
-        if _redis_id_tuple(tail) <= _redis_id_tuple(after_redis_id):
-            raise StreamContractError("stream_replay_continuity_unproven")
-        entries = await self.replay_page(
-            tenant_scope_value=tenant_scope_value,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-            after_redis_id=after_redis_id,
-            through_redis_id=tail,
+        entries = tuple(
+            self._decode(
+                row,
+                tenant_scope_value=tenant_scope_value,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=stream_incarnation,
+            )
+            for row in rows
         )
-        if not entries or entries[-1].cursor.redis_id != tail:
-            raise StreamContractError("stream_replay_continuity_unproven")
+        previous = _redis_id_tuple(after_redis_id)
+        for entry in entries:
+            current = _redis_id_tuple(entry.cursor.redis_id)
+            if current <= previous:
+                raise StreamContractError("v4_stream_read_order_invalid")
+            previous = current
         return entries
 
 

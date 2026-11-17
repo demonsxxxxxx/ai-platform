@@ -277,6 +277,7 @@ jobs:
               tests/test_execution_worker_skill_evidence.py
               tests/test_execution_worker_terminal_projection.py
               tests/test_lambchat_sse_v21.py
+              tests/test_lambchat_pg_replay.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
               tests/test_capability_distribution_postgres.py

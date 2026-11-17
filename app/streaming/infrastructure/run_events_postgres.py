@@ -275,22 +275,12 @@ async def list_run_events(
     limit: int | None = None,
     through_sequence: int | None = None,
 ) -> list[dict[str, Any]]:
-    if through_sequence is not None and (
-        isinstance(through_sequence, bool)
-        or not isinstance(through_sequence, int)
-        or through_sequence < 0
-    ):
-        raise ValueError("run_event_page_through_sequence_invalid")
     cursor = RunCursor(run_id=run_id, sequence=0 if after_sequence is None else int(after_sequence))
     rows = await _ledger.read_event_rows(
-        conn, tenant_id=tenant_id, cursor=cursor, limit=limit
+        conn, tenant_id=tenant_id, cursor=cursor, limit=limit,
+        through_sequence=through_sequence,
     )
-    return [
-        dict(row)
-        for row in rows
-        if through_sequence is None
-        or int(row.get("sequence") or 0) <= through_sequence
-    ]
+    return [dict(row) for row in rows]
 
 
 async def list_run_event_sequence_bounds(

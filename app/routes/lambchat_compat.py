@@ -67,8 +67,11 @@ from app.streaming.api import (
     public_execution_event_from_row,
     validate_public_agent_progress_payload,
     V4ProjectionError,
-    V4StreamEntry,
-    live_redis_id_is_after,
+    StreamCursor,
+    project_public_v4,
+    build_v4_control,
+    stream_end_event_id,
+    validate_internal_envelope_v4,
     project_persisted_assistant_message_v4,
     project_persisted_message_delta_v4,
     project_persisted_message_part_v4,
@@ -1871,6 +1874,7 @@ async def session_events(
                 "events": [],
                 "next_cursor": None,
                 "terminal_run_statuses": {},
+                "snapshot_max_sequence": 0 if run_id else None,
             }
 
         index = cursor_payload["index"]
@@ -1999,6 +2003,7 @@ async def session_events(
             "events": events,
             "next_cursor": next_cursor,
             "terminal_run_statuses": terminal_run_statuses,
+            "snapshot_max_sequence": next((item["max"] for item in cursor_payload["runs"] if item["id"] == run_id), None),
             "continuation": await get_session_continuation(
                 conn, tenant_id=principal.tenant_id, user_id=principal.user_id, session_id=session_id,
             ),
@@ -2139,32 +2144,59 @@ async def chat_session_stream(
         raise HTTPException(status_code=503, detail="sse_stream_unavailable")
     bridge = runtime.bridge
     try:
-        resume = await bridge.resolve_resume(
-            tenant_scope_value=authority.tenant_scope,
-            run_id=run_id,
-            attempt_id=authority.attempt_id,
-            current_stream_incarnation=authority.stream_incarnation,
-            last_event_id=last_event_id,
-        )
-        restored_terminal_event_id = resume.terminal_event_id
-        resume_already_ended = resume.ended
-        replay_tail = resume.replay_tail_redis_id
-        if resume.gap is None and not resume_already_ended and replay_tail is None:
-            raise StreamContractError("stream_replay_bounds_unavailable")
+        after_sequence = 0
+        if last_event_id:
+            if len(last_event_id) > 256:
+                raise StreamContractError("stream_cursor_invalid")
+            parts = last_event_id.split(":")
+            if parts[0] != run_id:
+                raise StreamContractError("stream_cursor_run_mismatch")
+            if len(parts) == 2 and parts[1].isascii() and parts[1].isdigit():
+                after_sequence = int(parts[1])
+                if after_sequence > 9007199254740991:
+                    raise StreamContractError("stream_cursor_invalid")
+            elif len(parts) == 3 and last_event_id.isascii():
+                StreamCursor.parse(last_event_id, run_id=run_id)
+                raise _sse_conflict("sse_cursor_snapshot_required")
+            else:
+                raise StreamContractError("stream_cursor_invalid")
+        async with transaction() as conn:
+            bounds = await streaming_run_events.list_run_event_sequence_bounds(
+                conn, tenant_id=principal.tenant_id, run_ids=[run_id],
+            )
+        resumed_terminal = None
+        if after_sequence:
+            async with transaction() as conn:
+                previous_rows = await streaming_run_events.list_run_events(
+                    conn, tenant_id=principal.tenant_id, run_id=run_id,
+                    after_sequence=after_sequence - 1, through_sequence=after_sequence, limit=1,
+                )
+            if previous_rows:
+                previous = project_public_v4(previous_rows[0], authority=authority)
+                if previous and previous["event_type"] in {"run.succeeded", "run.failed", "run.cancelled"}:
+                    resumed_terminal = previous
+        initial_highwater = bounds.get(run_id, 0)
+        if after_sequence > initial_highwater:
+            raise StreamContractError("stream_cursor_future_sequence")
+        opening = validate_internal_envelope_v4(json.loads(authority.open_payload_bytes))
+        if (opening["run_id"], opening["attempt_id"], opening["stream_incarnation"], opening["tenant_scope"]) != (
+            run_id, authority.attempt_id, authority.stream_incarnation, authority.tenant_scope,
+        ):
+            raise StreamContractError("v4_stream_authority_mismatch")
+    except HTTPException:
+        await record_sse_exit("stream_contract_failure")
+        raise
     except StreamContractError as exc:
         await record_sse_exit("stream_contract_failure")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except StreamTransportUnavailable as exc:
-        await record_sse_exit("transport_failure")
-        raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await record_sse_exit("stream_setup_failure")
         raise HTTPException(status_code=503, detail="sse_stream_unavailable") from exc
 
     async def stream():
         nonlocal lease
-        after = resume.after_redis_id or "0-0"
-        observed_run_status = str(initial_run.get("status") or "")
+        after = "0-0"
+        scanned = after_sequence
         exit_reason = "transport_failure"
         exit_recorded = False
 
@@ -2176,7 +2208,7 @@ async def chat_session_stream(
             await record_sse_exit(exit_reason)
 
         async def refresh_lease() -> bool:
-            nonlocal lease, observed_run_status
+            nonlocal lease
             now = datetime.now(timezone.utc)
             # A committed epoch change fences renewal. This issued lease remains
             # authoritative only until its authority-clock deadline (<=15s).
@@ -2192,7 +2224,6 @@ async def chat_session_stream(
                     )
                     if run is None or run.get("session_id") != session_id:
                         return False
-                    observed_run_status = str(run.get("status") or "")
                     lease = await acquire_sse_authority_lease(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -2203,7 +2234,8 @@ async def chat_session_stream(
                     )
             except (SseAuthorityConflictError, ValueError):
                 return False
-            return lease.allows_frame(now=datetime.now(timezone.utc))
+            return (lease.authorization_epoch == authority.authorization_epoch
+                    and lease.allows_frame(now=datetime.now(timezone.utc)))
 
         async def authorize_frame() -> bool:
             nonlocal exit_reason
@@ -2212,145 +2244,107 @@ async def chat_session_stream(
             exit_reason = "transport_failure"
             return False
 
-        def project_entry(entry: V4StreamEntry) -> tuple[str | None, bool]:
-            nonlocal restored_terminal_event_id
-            envelope = _project_validated_internal_envelope_v4(entry.envelope)
-            event_type = str(envelope["event_type"])
-            if event_type in {"run.succeeded", "run.failed", "run.cancelled"}:
-                restored_terminal_event_id = str(envelope["event_id"])
-            ended = event_type == "stream.end"
-            if (
-                ended
-                and envelope["payload"].get("terminal_event_id")
-                != restored_terminal_event_id
-            ):
-                raise StreamContractError("stream_end_without_observed_terminal")
-            return _sse(event_type, envelope, entry.cursor.event_id), ended
+        def frames(envelope):
+            public = _project_validated_internal_envelope_v4(envelope)
+            yield _sse(str(public["event_type"]), public, f"{run_id}:{public['seq']}")
+            if public["event_type"] in {"run.succeeded", "run.failed", "run.cancelled"}:
+                terminal_id = str(envelope["event_id"])
+                end = build_v4_control(
+                    event_id=stream_end_event_id(terminal_id),
+                    tenant_scope=authority.tenant_scope, run_id=run_id,
+                    attempt_id=authority.attempt_id,
+                    stream_incarnation=authority.stream_incarnation,
+                    event_type="stream.end", payload={"terminal_event_id": terminal_id},
+                    source=envelope["source"], causation_event_id=terminal_id,
+                    emitted_at=envelope["emitted_at"],
+                )
+                yield _sse("stream.end", _project_validated_internal_envelope_v4(end))
 
-        async def gap_frame(
-            *,
-            reason: str,
-            requested_event_id: str | None,
-            requested_stream_incarnation: int | None,
-        ) -> str:
-            gap_envelope, gap_cursor = await bridge.build_gap(
-                event_id=f"evt4_gap_{connection_id}",
-                tenant_scope_value=authority.tenant_scope,
-                run_id=run_id,
-                attempt_id=authority.attempt_id,
-                requested_event_id=requested_event_id,
-                requested_stream_incarnation=requested_stream_incarnation,
-                current_stream_incarnation=authority.stream_incarnation,
-                reason=reason,
-            )
-            public_gap = _project_validated_internal_envelope_v4(gap_envelope)
-            return _sse("stream.gap", public_gap, gap_cursor)
+        async def catch_up(highwater):
+            nonlocal scanned
+            while scanned < highwater:
+                if not await authorize_frame():
+                    return
+                async with transaction() as conn:
+                    rows = await streaming_run_events.list_run_events(
+                        conn, tenant_id=principal.tenant_id, run_id=run_id,
+                        after_sequence=scanned, through_sequence=highwater, limit=100,
+                    )
+                if not rows:
+                    raise StreamContractError("stream_replay_history_unavailable")
+                for row in rows:
+                    sequence = int(row["sequence"])
+                    if not scanned < sequence <= highwater:
+                        raise StreamContractError("stream_replay_order_invalid")
+                    scanned = sequence
+                    envelope = project_public_v4(row, authority=authority)
+                    if envelope is not None:
+                        yield envelope
 
         try:
-            if resume.gap is not None:
-                exit_reason = "stream_contract_failure"
-                frame = await gap_frame(
-                    reason=resume.gap.reason,
-                    requested_event_id=resume.gap.requested_event_id,
-                    requested_stream_incarnation=(
-                        resume.gap.requested_stream_incarnation
-                    ),
-                )
-                if not await authorize_frame():
-                    return
-                yield frame
-                return
-            if resume_already_ended:
-                exit_reason = "terminal_completed"
-                return
             if not await authorize_frame():
                 return
-            while replay_tail is not None and after != replay_tail:
-                previous_after = after
-                try:
-                    entries = await bridge.replay_page(
-                        tenant_scope_value=authority.tenant_scope,
-                        run_id=run_id,
-                        attempt_id=authority.attempt_id,
-                        stream_incarnation=authority.stream_incarnation,
-                        after_redis_id=after,
-                        through_redis_id=replay_tail,
-                    )
-                except StreamContractError as exc:
-                    if str(exc) not in {"stream_replay_continuity_unproven", "stream_missing"}:
-                        raise
-                    exit_reason = "stream_contract_failure"
-                    frame = await gap_frame(
-                        reason=("stream_missing" if str(exc) == "stream_missing"
-                                else "stream_continuity_unproven"),
-                        requested_event_id=after,
-                        requested_stream_incarnation=authority.stream_incarnation,
-                    )
-                    if not await authorize_frame():
-                        return
-                    yield frame
-                    return
-                if not entries:
-                    raise StreamContractError("stream_replay_history_unavailable")
-                for entry in entries:
-                    after = entry.cursor.redis_id
-                    frame, ended = project_entry(entry)
-                    if frame is not None:
-                        if not await authorize_frame():
-                            return
-                        yield frame
-                    if ended:
-                        exit_reason = "terminal_completed"
-                        return
-                if after == previous_after:
-                    raise StreamContractError("stream_replay_history_unavailable")
-            while True:
+            yield _sse("stream.open", _project_validated_internal_envelope_v4(opening))
+            if resumed_terminal is not None:
+                end_frame = list(frames(resumed_terminal))[-1]
                 if not await authorize_frame():
                     return
-                try:
-                    entries = await bridge.read_stream(
-                        tenant_scope_value=authority.tenant_scope,
-                        run_id=run_id,
-                        attempt_id=authority.attempt_id,
-                        stream_incarnation=authority.stream_incarnation,
-                        after_redis_id=after,
-                        count=128,
-                        block_ms=5000,
-                    )
-                except StreamContractError as exc:
-                    if str(exc) not in {"stream_replay_continuity_unproven", "stream_missing"}:
-                        raise
-                    exit_reason = "stream_contract_failure"
-                    frame = await gap_frame(
-                        reason=("stream_missing" if str(exc) == "stream_missing"
-                                else "stream_continuity_unproven"),
-                        requested_event_id=after,
-                        requested_stream_incarnation=authority.stream_incarnation,
-                    )
-                    if not await authorize_frame():
-                        return
-                    yield frame
-                    return
-                if not entries:
-                    if not await authorize_frame():
-                        return
-                    if observed_run_status in runs_api.TERMINAL_RUN_STATUSES:
-                        exit_reason = "terminal_completed"
-                        return
-                    yield ": heartbeat\n\n"
-                    continue
-                for entry in entries:
-                    if not live_redis_id_is_after(entry.cursor.redis_id, after):
-                        continue
-                    after = entry.cursor.redis_id
-                    frame, ended = project_entry(entry)
-                    if frame is not None:
+                yield end_frame
+                exit_reason = "terminal_completed"
+                return
+            highwater = initial_highwater
+            while True:
+                async for envelope in catch_up(highwater):
+                    for frame in frames(envelope):
                         if not await authorize_frame():
                             return
                         yield frame
-                    if ended:
+                    if envelope["event_type"] in {"run.succeeded", "run.failed", "run.cancelled"}:
                         exit_reason = "terminal_completed"
                         return
+                if not await authorize_frame():
+                    return
+                started = time.monotonic()
+                try:
+                    entries = await bridge.read_live_page(
+                        tenant_scope_value=authority.tenant_scope,
+                        run_id=run_id, attempt_id=authority.attempt_id,
+                        stream_incarnation=authority.stream_incarnation,
+                        after_redis_id=after, count=128, block_ms=5000,
+                    )
+                except StreamTransportUnavailable:
+                    entries = ()
+                    await asyncio.sleep(max(0, 1 - (time.monotonic() - started)))
+                needs_catch_up = not entries
+                for entry in entries:
+                    after = entry.cursor.redis_id
+                    envelope = entry.envelope
+                    sequence = envelope.get("seq")
+                    if sequence is None or sequence <= scanned:
+                        continue
+                    if sequence != scanned + 1:
+                        needs_catch_up = True
+                        break
+                    scanned = sequence
+                    for frame in frames(envelope):
+                        if not await authorize_frame():
+                            return
+                        yield frame
+                    if envelope["event_type"] in {"run.succeeded", "run.failed", "run.cancelled"}:
+                        exit_reason = "terminal_completed"
+                        return
+                if not needs_catch_up:
+                    highwater = scanned
+                    continue
+                async with transaction() as conn:
+                    bounds = await streaming_run_events.list_run_event_sequence_bounds(
+                        conn, tenant_id=principal.tenant_id, run_ids=[run_id],
+                    )
+                highwater = bounds.get(run_id, 0)
+                if highwater <= scanned:
+                    if not await authorize_frame():
+                        return
+                    yield ": heartbeat\n\n"
         except asyncio.CancelledError:
             exit_reason = "client_disconnected"
             raise

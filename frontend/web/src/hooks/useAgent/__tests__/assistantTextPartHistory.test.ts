@@ -170,7 +170,7 @@ test("live adapter and history payload extraction share the typed part reducer",
     const sequence = event.sequence || 1;
     const frame = {
       eventHeader: eventType,
-      transportCursor: `${runId}:4:${sequence}-0`,
+      transportCursor: `${runId}:${sequence}`,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
         event_id: data.event_id,

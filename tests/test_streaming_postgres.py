@@ -399,6 +399,30 @@ async def test_postgres_read_event_rows_honors_cursor_limit_order_and_exact_scop
                 limit=None,
             )
 
+            fixed_window = await postgres.read_event_rows(
+                conn,
+                tenant_id="tenant-a",
+                cursor=postgres.RunCursor(run_id="run-a", sequence=1),
+                limit=128,
+                through_sequence=2,
+            )
+            exhausted_window = await postgres.read_event_rows(
+                conn,
+                tenant_id="tenant-a",
+                cursor=postgres.RunCursor(run_id="run-a", sequence=2),
+                limit=128,
+                through_sequence=2,
+            )
+            empty_window = await postgres.read_event_rows(
+                conn,
+                tenant_id="tenant-a",
+                cursor=postgres.RunCursor(run_id="run-a", sequence=0),
+                limit=128,
+                through_sequence=0,
+            )
+            assert [row["sequence"] for row in fixed_window] == [2]
+            assert exhausted_window == empty_window == ()
+
             assert [(row["sequence"], row["payload_json"]["delta"]) for row in bounded] == [
                 (1, "one"),
                 (2, "two"),

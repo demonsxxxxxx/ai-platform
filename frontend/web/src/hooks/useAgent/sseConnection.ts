@@ -18,7 +18,6 @@ import {
 import {
   adaptPublicRunStreamEventV4,
   comparePublicRunStreamCursors,
-  type V4PublicEvent,
   type V4SseFrame,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
 import { clearAllLoadingStates } from "./messageParts";
@@ -75,7 +74,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
     streamIncarnation: number,
     expectedCursorEventId: string,
     replayOwner: ReplayGapRecoveryOwner,
-  ) => Promise<string | null>;
+  ) => Promise<{ messageId: string; cursor: string } | null>;
 }
 
 /**
@@ -234,8 +233,10 @@ function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested
   return error instanceof RefreshRetryRequested;
 }
 
+type RecoveryGap = { streamIncarnation: number; event: { payload: unknown } };
+
 class SSEReplayGapError extends Error {
-  constructor(readonly gap: V4PublicEvent) {
+  constructor(readonly gap: RecoveryGap) {
     super("sse_replay_gap");
     this.name = "SSEReplayGapError";
   }
@@ -379,7 +380,7 @@ export async function recoverReplayGap(
     runId: string;
     messageId: string;
     streamVersion: number;
-    gap: V4PublicEvent;
+    gap: RecoveryGap;
   },
   dependencies: ReconnectDependencies = {},
 ): Promise<void> {
@@ -422,15 +423,12 @@ export async function recoverReplayGap(
     );
   };
   const canResumeActive =
-    (reason === "retained_history_unavailable" ||
+    (reason === "sse_cursor_snapshot_required" || reason === "retained_history_unavailable" ||
       reason === "stream_continuity_unproven") &&
     currentIncarnation === gap.streamIncarnation &&
     typeof expectedCursorEventId === "string" &&
-    typeof latestAvailableEventId === "string" &&
-    latestAvailableEventId.length > 0;
-  const resumeCursor = canResumeActive
-    ? `${runId}:${currentIncarnation}:${latestAvailableEventId}`
-    : null;
+    (reason === "sse_cursor_snapshot_required" ||
+      (typeof latestAvailableEventId === "string" && latestAvailableEventId.length > 0));
 
   ctx.publicStreamPresentation?.flush({
     sessionId,
@@ -536,15 +534,15 @@ export async function recoverReplayGap(
         if (!terminalStatus && isActiveRunStatus(statusResult.status)) {
           if (
             !stoppedForTerminalRecovery &&
-            resumeCursor &&
+            canResumeActive &&
             typeof expectedCursorEventId === "string" &&
             ctx.hydrateActiveRun &&
             ctx.acceptedStreamCursorRef &&
             dependencies.connect
           ) {
-            let hydratedMessageId: string | null;
+            let hydrated: { messageId: string; cursor: string } | null;
             try {
-              hydratedMessageId = await ctx.hydrateActiveRun(
+              hydrated = await ctx.hydrateActiveRun(
                 sessionId,
                 runId,
                 streamVersion,
@@ -563,7 +561,7 @@ export async function recoverReplayGap(
               return;
             }
             if (!isCurrent() || !ownsExpectedCursor()) return;
-            if (!hydratedMessageId) {
+            if (!hydrated) {
               // Durable history is useful even when it does not identify the
               // protocol message owner needed to continue this stream. Keep
               // the Run and let authoritative status/terminal history settle it.
@@ -572,14 +570,14 @@ export async function recoverReplayGap(
               ctx.acceptedStreamCursorRef.current = {
                 sessionId,
                 runId,
-                eventId: resumeCursor,
+                eventId: hydrated.cursor,
                 streamIncarnation: gap.streamIncarnation,
               };
-              ctx.streamingMessageIdRef.current = hydratedMessageId;
+              ctx.streamingMessageIdRef.current = hydrated.messageId;
               ctx.publicStreamPresentation?.activate({
                 sessionId,
                 runId,
-                assistantMessageId: hydratedMessageId,
+                assistantMessageId: hydrated.messageId,
                 streamVersion,
               });
               ctx.setConnectionStatus("reconnecting");
@@ -589,7 +587,7 @@ export async function recoverReplayGap(
               await dependencies.connect(
                 sessionId,
                 runId,
-                hydratedMessageId,
+                hydrated.messageId,
                 ctx,
                 true,
               );
@@ -820,6 +818,13 @@ export async function connectToSSE(
           if (!isCurrentStream()) {
             return;
           }
+          if (response.status === 409 && response.headers.get("X-SSE-Error-Code") === "sse_cursor_snapshot_required") {
+            if (!acceptedStreamIncarnation) throw new NonRetryableSSEConnectionError("sse_cursor_snapshot_unbound");
+            throw new SSEReplayGapError({
+              streamIncarnation: acceptedStreamIncarnation,
+              event: { payload: { reason: "sse_cursor_snapshot_required", current_stream_incarnation: acceptedStreamIncarnation } },
+            });
+          }
           if (response.status === 401) {
             if (!streamAuthMarkerIsCurrent()) {
               throw new NonRetryableSSEAuthenticationError(
@@ -906,10 +911,7 @@ export async function connectToSSE(
           } catch {
             throw new NonRetryableSSEConnectionError("sse_event_json_invalid");
           }
-          const eventId = event.id;
-          if (!eventId) {
-            throw new NonRetryableSSEConnectionError("sse_event_id_missing");
-          }
+          const eventId = event.id || "";
           const frame: V4SseFrame = {
             eventHeader: event.event || "",
             transportCursor: eventId,
@@ -1000,6 +1002,7 @@ export async function connectToSSE(
                 streamVersion,
               );
             if (!isCurrentStream() && !terminalSettlementCurrent) return;
+            if (!eventId) return;
             const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
             const ownsAcceptedCursor =
               acceptedCursor?.sessionId === targetSessionId &&

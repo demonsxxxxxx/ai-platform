@@ -80,7 +80,7 @@ test("v4 control ordering ignores wall-clock history timestamps", () => {
   const accepted = handlePublicRunStreamEventV4({
     event: adaptV4Frame({
       eventHeader: "stream.open",
-      transportCursor: "run-active:2:1-0",
+      transportCursor: "",
       generation: 7,
       value: {
         schema: "ai-platform.public-run-stream-control.v4",
@@ -244,7 +244,7 @@ test("v4 accepts correlated activity before message owner is declared", () => {
     sequence: number,
   ) => ({
     eventHeader: eventType,
-    transportCursor: `run-owner:2:${sequence}-0`,
+    transportCursor: `run-owner:${sequence}`,
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -341,7 +341,7 @@ test("v4 history-covered message.started restores ownership before live delta", 
     handlePublicRunStreamEventV4({
       event: adaptV4Frame({
         eventHeader: eventType,
-        transportCursor: `run-history:2:${sequence}-0`,
+        transportCursor: `run-history:${sequence}`,
         generation: 7,
         value: {
           schema: "ai-platform.public-run-stream-event.v4",
@@ -435,7 +435,7 @@ test("v4 rejects a message delta when its reducer message is missing", () => {
   const result = handlePublicRunStreamEventV4Result({
     event: adaptV4Frame({
       eventHeader: "message.delta",
-      transportCursor: "run-missing-message:2:2-0",
+      transportCursor: "run-missing-message:2",
       generation: 7,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
@@ -490,7 +490,7 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
     streamIncarnation = 2,
   ) => ({
     eventHeader: eventType,
-    transportCursor: `run-owner:${streamIncarnation}:${sequence}-0`,
+    transportCursor: `run-owner:${sequence}`,
     generation,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -545,7 +545,7 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
   });
   assert.equal(
     ctx.acceptedStreamCursorRef!.current.eventId,
-    "run-owner:2:1-0",
+    "run-owner:1",
   );
   assert.equal(accept(frame("message.delta", "message-1", 2, 8), 8), true);
   assert.equal(ctx.messages().length, 1);
@@ -553,7 +553,7 @@ test("v4 message ownership survives reconnect and rejects a second protocol iden
   assert.equal(ctx.messages()[0]?.content, "accepted");
   assert.equal(
     ctx.acceptedStreamCursorRef!.current.eventId,
-    "run-owner:2:2-0",
+    "run-owner:2",
   );
   assert.equal(
     rebindV4MessageOwner(
@@ -616,7 +616,7 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   };
   const terminal = {
     eventHeader: "run.succeeded",
-    transportCursor: "run-1:2:1-0",
+    transportCursor: "run-1:1",
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -635,7 +635,7 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   } as const;
   const end = {
     eventHeader: "stream.end",
-    transportCursor: "run-1:2:2-0",
+    transportCursor: "",
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
@@ -670,14 +670,14 @@ test("v4 stream.end is terminal-fenced and terminal recovery is exactly once", (
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(terminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
   const higherSequenceTerminal = {
     ...terminal,
-    transportCursor: "run-1:2:4-0",
+    transportCursor: "run-1:2",
     value: { ...terminal.value, event_id: "event-terminal-replay", seq: 2 },
   } as const;
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(higherSequenceTerminal, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(end, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), true);
   const duplicateEnd = {
     ...end,
-    transportCursor: "run-1:2:3-0",
+    transportCursor: "",
     value: { ...end.value, event_id: "event-end-duplicate" },
   } as const;
   assert.equal(handlePublicRunStreamEventV4({ event: adaptV4Frame(duplicateEnd, adapterBinding), messageId: "assistant-1", ctx, binding, currentGeneration: 7, onCommitted: (semanticApplied) => lateCommits.push(semanticApplied) }), false);
@@ -696,7 +696,7 @@ test("terminal receipt deferral keeps the terminal_hydration reason until the ow
   };
   const frame = {
     eventHeader: "run.succeeded",
-    transportCursor: "run-terminal-receipt:2:1-0",
+    transportCursor: "run-terminal-receipt:1",
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -769,7 +769,7 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
   ctx.acceptedStreamCursorRef!.current = {
     sessionId: "session-1",
     runId: "run-terminal-order",
-    eventId: "run-terminal-order:2:0-0",
+    eventId: "run-terminal-order:0",
     streamIncarnation: 2,
   };
   let settleTerminal: ((accepted: boolean) => boolean) | undefined;
@@ -791,7 +791,7 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
   } as const;
   const delta = {
     eventHeader: "message.delta",
-    transportCursor: "run-terminal-order:2:1-0",
+    transportCursor: "run-terminal-order:8",
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -810,7 +810,7 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
   } as const;
   const terminal = {
     eventHeader: "run.succeeded",
-    transportCursor: "run-terminal-order:2:2-0",
+    transportCursor: "run-terminal-order:30",
     generation: 7,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -858,7 +858,7 @@ test("v4 terminal waits for committed text before sequence and cursor acceptance
 
   const staleTerminal = {
     ...terminal,
-    transportCursor: "run-terminal-order:2:3-0",
+    transportCursor: "run-terminal-order:31",
     value: {
       ...terminal.value,
       event_id: "event-terminal-stale",
@@ -891,7 +891,7 @@ test("v4 admission rejects an application frame from another incarnation before 
   ctx.currentRunIdRef.current = "run-authority";
   const frame = {
     eventHeader: "stream.open",
-    transportCursor: "run-authority:3:1-0",
+    transportCursor: "",
     generation: 4,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
@@ -947,7 +947,7 @@ test("v4 admission retains the gap exception for a replacement incarnation", () 
   };
   const frame = {
     eventHeader: "stream.gap",
-    transportCursor: "run-authority:3:0-2",
+    transportCursor: "",
     generation: 4,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",
@@ -1005,7 +1005,7 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
   ctx.currentRunIdRef.current = "run-authority";
   const frame = {
     eventHeader: "stream.gap",
-    transportCursor: "run-authority:3:1-0",
+    transportCursor: "",
     generation: 4,
     value: {
       schema: "ai-platform.public-run-stream-control.v4",

@@ -2,13 +2,13 @@ from __future__ import annotations
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 
 import os
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 from redis.asyncio import Redis
 
 from app.streaming.application.worker_publication_v4 import publish_callback_rows
@@ -50,12 +50,12 @@ async def test_committed_callback_batch_uses_direct_transport_without_claims():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [None, "commit", "redis", "predecessor", "expired_predecessor"])
-async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypatch, failure):
+@pytest.mark.parametrize("failure", [None, "commit", "redis", "timeout", "cancel", "projection"])
+async def test_callback_ack_requires_commit_not_live_transport(monkeypatch, failure):
     from app.routes import runtime_callbacks as route
     from app.runtime.kernel_contracts import AgentEvent
     from app.runtime.sandbox.contracts import ExecutorCallbackEvent
-    from app.streaming.application.durable_v4 import V4PublicationStreamExpired, V4PublicationTransportUnavailable
+    from app.streaming.application.durable_v4 import V4PublicationTransportUnavailable
     from tests.test_runtime_callbacks import callback_payload
 
     committed = False
@@ -75,22 +75,23 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
 
     class Transport:
         async def publish(self, payload):
-            assert committed and payload == b"prior-cancellation"
-            if failure == "expired_predecessor":
-                raise V4PublicationStreamExpired
-            raise V4PublicationTransportUnavailable("synthetic predecessor outage")
+            raise AssertionError("callback must not republish predecessors")
 
         async def publish_callback_batch(self, envelopes):
             assert committed
             delivered.append(envelopes)
             if failure == "redis":
                 raise V4PublicationTransportUnavailable("synthetic Redis outage")
+            if failure == "timeout":
+                await asyncio.sleep(10)
+            if failure == "cancel":
+                raise asyncio.CancelledError
             return "1-0"
 
     capabilities = SimpleNamespace(
         event_persistence=SimpleNamespace(
             append_callback_rows=AsyncMock(return_value=(row,)),
-            load_latest_run_event=AsyncMock(return_value=b"prior-cancellation" if failure in {"predecessor", "expired_predecessor"} else None),
+            load_latest_run_event=AsyncMock(side_effect=AssertionError("no predecessor lookup")),
         ),
         publication_transport=Transport(),
     )
@@ -115,11 +116,15 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
         with pytest.raises(RuntimeError, match="synthetic commit failure"):
             await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
         assert not committed and not delivered
-    elif failure in {"redis", "predecessor", "expired_predecessor"}:
-        with pytest.raises(HTTPException) as error:
+    elif failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
             await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
-        assert error.value.status_code == 503
-        assert committed and len(delivered) == (1 if failure == "redis" else 0)
+        assert committed and len(delivered) == 1
+    elif failure == "projection":
+        row["tenant_id"] = "foreign-tenant"
+        with pytest.raises(V4ProjectionError):
+            await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
+        assert committed and not delivered
     else:
         receipt = await route.record_executor_callback(callback, capabilities=capabilities, lease_port=sandbox_lease_reader)
         assert receipt["accepted"] is True

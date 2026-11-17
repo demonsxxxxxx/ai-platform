@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
 
 from app.streaming.domain.live import (
     REDIS_ID_PATTERN,
@@ -42,30 +41,6 @@ class StreamCursor:
         if not incarnation.isdecimal() or incarnation.startswith("0"):
             raise StreamContractError("stream_cursor_incarnation_invalid")
         return cls(run_id, int(incarnation), redis_id)
-
-
-@dataclass(frozen=True, slots=True)
-class StreamGap:
-    reason: Literal[
-        "retained_history_unavailable",
-        "stream_missing",
-        "stream_continuity_unproven",
-        "stream_incarnation_mismatch",
-    ]
-    requested_event_id: str | None
-    requested_stream_incarnation: int | None
-    current_stream_incarnation: int
-    earliest_available_event_id: str | None = None
-    latest_available_event_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ResumeDecision:
-    after_redis_id: str | None
-    gap: StreamGap | None
-    terminal_event_id: str | None = None
-    ended: bool = False
-    replay_tail_redis_id: str | None = None
 
 
 def canonical_json_bytes(value: object) -> bytes:

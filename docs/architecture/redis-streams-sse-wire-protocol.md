@@ -1,13 +1,13 @@
 # Redis Streams SSE v4 Wire Protocol
 
-Status: normative contract for `ai-platform.redis-streams-sse-event-channel.v4`; External Acceptance pending
+Status: PG replay slice source contract for `ai-platform.redis-streams-sse-event-channel.v4`; candidate verification, CI and External Acceptance are separate evidence
 
 Index: [Redis Streams SSE Event Channel](redis-streams-sse-event-channel.md)
 
 ## Scope
 
 This document exclusively owns the active v4 internal/public envelopes, Redis
-key and replay/live framing, callback-protocol separation, cursor validation,
+key and PostgreSQL replay/live framing, callback-protocol separation, cursor validation,
 strict gap/end controls, and frontend cursor acceptance. Execution,
 authorization, direct committed-event publication, schema retirement, and release operations
 remain with their dedicated owners.
@@ -85,9 +85,11 @@ It binds tenant, Run, current Attempt, runtime lease, callback index, and ordere
 batch items. The v4 platform adapter validates every item before receipt,
 assigns deterministic safe identities, and commits canonical public `run_events`
 plus the receipt atomically. Exact retries reuse the same rows and identities;
-a conflicting receipt fails closed. The callback response acknowledges only
-after the PostgreSQL commit and direct Redis batch append. Redis failure leaves
-the committed facts intact and returns a callback transport error. The existing
+a conflicting receipt fails closed. After PG commit the callback makes a bounded
+250 ms best-effort Redis append, then acknowledges the durable receipt even if
+that transport attempt fails or times out. This is not zero-wait ACK or a detached
+background publish. Cancellation, projection, business, authority and database
+errors are not swallowed as transport success. The existing
 executor buffer owns exact callback retry; no publication queue or terminal
 wakeup is involved. Callback transport fields and engine SDK objects are never
 browser wire fields. The additive, admin-only
@@ -190,10 +192,9 @@ Readers may encounter transport duplicates and advance through them, while the
 frontend applies each semantic event once. A Run event source may carry
 `callback_sequence`, the highest callback sequence strictly before that event
 in the same Run/Attempt/incarnation. Redis checks its existing callback receipt
-before accepting a cancellation request or terminal event. Callback publication
-first publishes a preceding committed Run event through the same direct path,
-so a delayed cancellation cannot be overtaken by later callback text. Receipt
-state for these two producers remains separate. The derived prefix is internal,
+before accepting a cancellation request or terminal event. Callback predecessor lookup/republishing is retired; durable PG sequence order
+and catch-up prevent a missing Redis predecessor from skipping public facts.
+Direct Run-event publication and its separate receipts remain. The derived prefix is internal,
 not persisted publication state, and is stripped at the public boundary.
 
 ## Public event types
@@ -287,38 +288,39 @@ redis_bytes ~= retained_runs * min(MAXLEN, event_rate * ttl_seconds)
 
 ## Replay and blocking reads
 
-Resume resolution validates retained bounds and the accepted cursor and carries
-the observed tail into the route, so setup does not read those bounds twice. The
-route replays through that captured tail. The replay Lua operation checks that a
-nonzero predecessor still exists before removing it from the returned page. An
-initial `0-0` read uses the legal exclusive range `(0-0` and verifies
-`stream.open` in that same returned page; an earlier bounds observation cannot
-prove its origin survived. A missing Stream or lost predecessor produces a gap.
+PostgreSQL `run_events` is the durable replay authority. Each connection captures
+an authorized high-water sequence, scans ascending bounded pages (100 rows), and
+projects rows through `project_public_v4` under current Run/Attempt/incarnation
+and authorization fences. Each page is bounded by that fixed high-water;
+concurrent writes belong to a later catch-up. Transactions finish before network
+writes or Redis waits.
 
-After replay, exclusive `XREAD` waits from that tail and captures the bounded
-candidate page's Redis IDs and last ID. Its event payloads are only hints and are
-not decoded or delivered. Before delivery, the same atomic replay operation
-re-reads through that ID, validates the complete entries, and proves the
-retained predecessor. Only that verified page reaches SSE delivery. A malformed
-or foreign payload in the XREAD hint therefore has no effect when the
-authoritative replay read is valid; a malformed or foreign entry in that read
-fails closed. This may conservatively gap if trimming or deletion occurs after
-XREAD returns. The API never infers continuity from adjacent Redis IDs or
-application sequences, and the accepted cursor advances only through delivered
-rows. A retained nonzero cursor remains valid when the original open was trimmed.
+Three positions must not be confused:
 
-Each read returns at most 128 entries and blocks at most five seconds. An empty
-XREAD verifies the retained predecessor with an empty atomic page before it can
-emit an id-less heartbeat after lease revalidation; a missing key instead emits
-the existing null-bounds gap. This adds no publication state, per-browser queue,
-PostgreSQL live polling, or replacement transport.
+- **scanned sequence:** last durable row inspected, including private, historical
+  non-v4 or otherwise non-public rows;
+- **public sequence:** last projected application event sent by the gateway;
+- **consumed cursor:** last event successfully accepted by the browser reducer,
+  or a fully consumed authorized history snapshot's fixed maximum.
 
-Every browser owns its authorization lease, accepted cursor and request
-lifetime. The lifespan owns bounded read/publish pools; request cancellation
-cancels the blocked read. There is no shared feed, per-browser event queue,
-process-memory replay log, `XREADGROUP`, Pub/Sub connection or PostgreSQL live
-reader. Transport errors close the affected SSE connection without inventing
-progress; reconnect uses the last reducer-accepted cursor.
+Empty public pages still advance the scan and continue to the captured bound.
+Public sequence holes are normal, not missing history. Never test continuity
+with `last_public_sequence + 1`. Redis's strictly validated live frame may use
+`scanned_sequence + 1` as a fast path; a jump triggers PG catch-up rather than
+skipping rows or emitting a gap. Private rows never cross the public boundary.
+
+Redis `XREAD` is a bounded low-latency accelerator (128 entries, up to five
+seconds), not a prerequisite for opening an already admitted Run. Empty reads,
+sequence jumps and transport unavailability trigger another bounded PG catch-up.
+Unavailable Redis is rate-limited to at least one second per retry cycle to
+avoid busy-spin. Redis trim, loss and expiry do not imply PG history loss.
+Every live envelope still passes strict scope, identity and payload validation;
+malformed/foreign bytes do not become a fallback success.
+
+Every browser retains its own authorization lease and request lifetime.
+Cancellation cancels its wait. Lease renewal and per-frame deadline checks apply
+to both replay and live output. No subscriber hub, process-memory replay log,
+publication queue, background publisher or successor rebuild is introduced.
 
 ## Public SSE frames
 
@@ -326,16 +328,20 @@ Payload frames use the generated public event, never an independently shaped
 data object:
 
 ```text
-id: <run_id>:<stream_incarnation>:<redis-milliseconds>-<redis-sequence>
+id: <run_id>:<sequence>
 event: <public-event-type>
 data: <canonical PublicRunStreamEventV4 or PublicStreamControlV4 JSON>
 
 ```
 
 The public value omits tenant scope, Attempt ID, Redis key, credentials, and
-private identifiers. The event header equals `data.event_type`. Run-terminal
-and `stream.end` each have Redis-backed IDs; `stream.end` references the
-observed terminal semantic event ID.
+private identifiers. The event header equals `data.event_type`. Application frames carry the durable
+Run-local sequence ID. `stream.open` is reconstructed from confirmed authority's
+validated canonical `open_payload_bytes`, not invented as a `run_events` row.
+`stream.end` is derived deterministically from the observed durable terminal
+semantic event and references it in payload and causation. Both controls have
+**no SSE `id:`** and cannot advance durable progress. Reconnection at a terminal
+sequence returns the matching end without replaying terminal content.
 
 Heartbeat is a comment frame and has no `id:` or payload event:
 
@@ -344,7 +350,7 @@ Heartbeat is a comment frame and has no `id:` or payload event:
 
 ```
 
-`stream.gap` is a strict v4 control frame with a server-supplied cursor. It is
+`stream.gap` remains a strict v4 recovery control, not a durable application cursor. It is
 not committed as chat state; the client invokes authorized durable hydrate and
 does not persist the gap cursor as application progress. Heartbeat remains an
 id-less comment.
@@ -364,61 +370,42 @@ contract.
 
 ## Canonical cursor
 
-The SSE ID and `Last-Event-ID` are exactly:
+Application SSE IDs and `Last-Event-ID` use `<run_id>:<sequence>`: a Run-local
+nonnegative decimal sequence, never a Redis entry ID. `run_id:0` starts the
+available durable scan. A history handoff uses only the fully consumed,
+authorized fixed `snapshot_max_sequence`; an intermediate pagination maximum
+must not skip unread history.
 
-```text
-<run_id>:<positive-stream-incarnation>:<redis-ms>-<redis-sequence>
-```
+Malformed, foreign-Run and future sequence cursors fail closed. A well-formed
+legacy `<run_id>:<incarnation>:<redis-ms>-<redis-sequence>` cursor returns HTTP
+409 with `X-SSE-Error-Code: sse_cursor_snapshot_required`. The current frontend
+loads authorized history and resumes from its fixed snapshot maximum within
+the same incarnation. Cross-incarnation owner/message identity migration is not
+implemented: existing message-owner fences reject unsafe continuation and may
+leave only terminal observation. The adapter does
+not reinterpret Redis IDs as sequence numbers or silently reset them to zero.
 
-Numeric fields use canonical unsigned decimal with no sign, whitespace, or
-leading zero. Redis comparison occurs only after tenant/run authorization and
-after the durable/current, key, and envelope incarnations all agree.
-
-Validation results:
-
-- malformed form, foreign run, zero/negative/future incarnation, or Redis ID
-  later than the proven tail: fail closed as an invalid request without reset;
-- valid same-Run older incarnation: emit strict `stream.gap` without reading
-  either old stream;
-- valid current incarnation whose exact entry was trimmed/missing or whose
-  continuity cannot be proven: emit strict `stream.gap`;
-- valid retained cursor: resume from it even when the original `stream.open`
-  has been trimmed. The exact cursor row carries terminal/end linkage; no
-  preceding history scan is needed. Producer ordering forbids body rows after a
-  Run terminal and binds `stream.end` to that terminal.
-- no header: read from the earliest retained entry only when exact current
-  `stream.open` is still the origin; otherwise emit `stream.gap`.
-
-Native Redis IDs may overlap across incarnations. They never establish
-continuity. Public clients never send `$`.
+Incarnation is absent from the cursor but remains in the validated envelope,
+confirmed authority, Attempt binding and authorization lease. Changing cursor
+syntax does not retire these fences or allow cross-incarnation replay.
 
 ## Gap and durable hydrate
 
-The gap is a complete `PublicStreamControlV4` envelope. Its payload is:
-
-```json
-{
-  "reason": "stream_incarnation_mismatch",
-  "requested_event_id": "1700000000000-0",
-  "requested_stream_incarnation": 7,
-  "current_stream_incarnation": 8,
-  "earliest_available_event_id": "1700000000100-0",
-  "latest_available_event_id": "1700000000200-0",
-  "recovery": "reload_durable_state"
-}
-```
-
-The payload IDs are native Redis IDs; the SSE `id:` carries the complete
-Run/incarnation/Redis cursor. Bounds are null when Redis has none. A missing
-Stream, terminal or active, emits the truthful null-bounds gap with the current
-incarnation start cursor and requires durable hydrate. No successor is created.
+Redis loss alone never emits `stream.gap`. Private/non-v4 rows and sequence gaps
+between public frames are not proof of retention loss. The present product has
+no `run_events` retention/deletion policy; missing required PG history fails
+closed, rather than fabricating a retention watermark or silently skipping it.
+A future retention policy must define a trustworthy retained floor and update
+this contract and gap/hydration tests before using the existing gap control.
+The existing strict gap decoder remains compatibility support, not a second
+replay authority or a successor-creation path.
 
 ## Frontend accepted cursor
 
-The browser keeps one accepted cursor per authorized run/incarnation. Event
+The browser keeps one accepted durable cursor per authorized Run, with incarnation validation. Event
 processing order is:
 
-1. parse SSE and require a valid transport `id` for every non-heartbeat frame;
+1. parse SSE and require a valid durable `id` for application frames; `stream.open` and `stream.end` are explicitly id-less controls;
 2. validate schema, Run, incarnation, public event type, and payload bounds;
 3. classify semantic duplicates as transport-only acceptance while preserving
    chat state;
@@ -429,9 +416,9 @@ processing order is:
 
 Reducer failure leaves the previous cursor unchanged so reconnect replays the
 event. Terminal history failure displays a result-unavailable card for that Run;
-it does not reopen an accepted terminal. Missing IDs fail closed; no UUID transport fallback exists.
-Durable PostgreSQL sequence/history/status values cannot become a Redis cursor,
-reset a reconnect budget, or enter the live reducer. Reconnect sends only the
+it does not reopen an accepted terminal. Missing application IDs fail closed; no UUID transport fallback exists.
+An authorized, fully consumed history snapshot may seed the durable cursor;
+Run status alone cannot invent consumed progress or bypass the live reducer. Reconnect sends only the
 last accepted cursor in `Last-Event-ID`. Terminal hydrate reconciles the same
 Run segment and accepted source identities; it does not append duplicate answer
 text or replace unrelated narration, Tool, process, or actionable status parts.
@@ -446,31 +433,26 @@ artifacts and terminal events appear after its last page.
 status and assistant segment avoid a second exact history request. An active
 snapshot still requires reconciliation if the Run completes during the read.
 
-An active gap with no observed `message.started` may lack the protocol message
-owner needed to resume. Apply the durable history and preserve the Run, then
-observe authoritative status and terminal history instead of inventing that
-identity. Active and terminal history requests share cancellation and bounded
-timeouts. Transient exhaustion releases recovery ownership for a later retry;
-authorization failure stops access, and session changes cancel stale requests.
-Browser recovery and failed timed reconnects share one reconciliation owner.
-The status query releases that owner by identity when it settles, and a consumed
-timer clears its own reference before starting the connection attempt.
+After a complete authorized history snapshot, an active Run resumes PG replay
+at that snapshot's maximum even without a former Redis anchor. Preserve current
+message ownership and semantic dedupe; do not manufacture a message identity
+or silently fall back to status-only polling. Active and terminal history reads
+retain cancellation, bounded timeouts and stale-session fencing. Authorization
+failure stops access. One reconciliation owner coordinates history and retry.
 
 ## Required focused tests
 
-- callback response loss, exact duplicate receipt, conflicting duplicate,
-  ordered canonical rows, and stable semantic IDs;
-- transaction-scoped admission before SDK dispatch, callback commit before
-  Redis, no PostgreSQL locks during Redis I/O, and exact callback receipts;
-- atomic TTL refresh, ordinary and terminal duplicate receipts, terminal-pair
-  ordering, and publish-pool cleanup;
-- malformed/foreign/future cursor, initial replay, predecessor trim, exclusive
-  XREAD after captured tail, active/terminal missing-stream gaps and no recreation;
-- terminal/callback commit-to-append race, immutable business facts, partial
-  terminal/end retry and final hydration without successful Redis delivery;
-- schema-valid v4 gap, semantic duplicate transport acceptance, accepted cursor
-  only after reducer acceptance, matching `stream.end` fence,
-  incarnation rejection, and terminal-hydrate reconciliation;
+- callback response loss, exact/conflicting receipt and ordered canonical rows;
+- confirmed admission before SDK dispatch and no DB locks during network I/O;
+- PG fixed-high-water paging, private-only pages and public sequence holes;
+- Redis fast path, trim/absence/timeout fallback and bounded retry;
+- malformed/foreign/future durable cursor and legacy snapshot handoff;
+- snapshot completion before durable cursor storage and reducer failure replay;
+- open from confirmed authority and terminal-derived id-less end, including
+  terminal-cursor reconnect and terminal hydration without Redis;
+- public projection, incarnation/Attempt fences, per-frame lease expiry and
+  authorization revocation during catch-up or live wait;
+- callback ACK transport-only failure handling within the 250 ms budget.
 
 ## Change Contract: incremental Assistant parts and final selection
 

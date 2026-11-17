@@ -8,7 +8,7 @@ Design ID: `ai-platform.redis-streams-sse-event-channel.v4`.
 
 | Concern | Owner |
 | --- | --- |
-| Rationale and supersession | [ADR 0013](../adr/0013-redis-stream-only-sse.md) |
+| Rationale and supersession | [ADR 0013](../adr/0013-redis-stream-only-sse.md), amended by [ADR 0018](../adr/0018-postgres-replay-redis-live.md) |
 | Envelopes, SDK/callback boundary, progressive timeline, replay/live, cursor/gap and client acceptance | [Wire protocol](redis-streams-sse-wire-protocol.md) |
 | Admission, committed callback/Run publication, authorization leases and terminal convergence | [Execution control](redis-streams-sse-execution-control.md) |
 | Gateway, cutover, deployed fault injection and acceptance | [Cutover acceptance](../operations/redis-streams-sse-cutover-acceptance.md) |
@@ -22,16 +22,16 @@ schema/code and tests updated together when the wire contract changes.
 ## Architecture
 
 Safe Engine projection enters the authenticated callback boundary. Canonical
-public events and their receipt commit in PostgreSQL; the callback route then
-appends the exact batch directly to Redis Stream before acknowledging it. The
-API replays retained records and follows the same Stream with `XREAD BLOCK` to
-serve SSE. Frontend state accepts only validated events; terminal content
-converges through authorized durable hydration.
+public events and their receipt commit in PostgreSQL. PG bounded sequence replay
+is the durable authority; Redis remains a strictly validated low-latency path.
+Callbacks acknowledge committed PG receipts after a 250 ms bounded best-effort
+Redis attempt; the execution contract owns failure classification and evidence.
+Frontend state accepts only validated events and stores a consumed durable
+cursor; terminal hydration remains independently authorized.
 
-PostgreSQL owns business facts and semantic order. Redis Stream is the sole
-bounded live/replay transport. Committed Run terminal facts use direct,
-transaction-external publication. Independent terminal intents, publication
-queues/claims, background drains and successor recovery are retired.
+New Run admission still requires Redis open confirmation before dispatch.
+Already admitted Runs recover from PG even when Redis is missing. No publication
+queue, background publisher or successor recovery is introduced.
 
 ## Version distinctions
 
@@ -41,18 +41,16 @@ key compatibility; it does not enable v3 browser negotiation.
 ADR 0009 records earlier transport rationale, and earlier SSE ADRs are audit
 history. No old version is a hidden fallback or feature flag.
 
-Canonical v4 `message.delta` events are durable PostgreSQL events. The prohibition
-on a PostgreSQL text fallback forbids an alternate browser polling/streaming
-transport; it does not prohibit these canonical writes. The legacy
-`assistant_delta` projection must not become a second durable body producer.
+Canonical v4 `message.delta` events are durable PostgreSQL events. PG replay
+uses this one canonical source, not a legacy `assistant_delta` fallback.
 
 ## Recovery boundary
 
-Same-incarnation recovery requires a validated retained server anchor plus
-authorized durable hydration. A missing Stream produces a gap; it is never
-recreated under an issued incarnation, and there is no successor builder.
-SDK completion, Run completion, stream end, and final browser hydration remain
-distinct facts.
+PG replay preserves current authority, Attempt/incarnation and authorization
+lease fences. Confirmed authority supplies open; observed PG terminal supplies
+end. Redis absence is not a durable history gap. SDK completion, Run completion,
+stream end and browser hydration remain distinct facts. Source, CI and external
+acceptance are separate evidence; see the owning contracts for slice status.
 
 See the wire contract for the progressive timeline, sanitization, identity,
 body consistency, and final-hydration invariants. The streaming message design

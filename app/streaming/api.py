@@ -1,4 +1,4 @@
-"""Application boundary for the Redis Stream-only runtime."""
+"""Application boundary for durable event replay and live hints."""
 
 from app.streaming.application.assistant_text_projection import (
     AssistantTextMessageProjection,
@@ -79,9 +79,7 @@ from app.streaming.domain.run_events import (
     RunCursor,
 )
 from app.streaming.domain.transport import (
-    ResumeDecision,
     StreamCursor,
-    StreamGap,
     canonical_json_bytes,
 )
 
@@ -129,10 +127,8 @@ __all__ = [
     "stream_end_event_id",
     "validate_internal_envelope_v4",
     "validate_public_application_payload_v4",
-    "ResumeDecision",
     "StreamContractError",
     "StreamCursor",
-    "StreamGap",
     "canonical_json_bytes",
     "live_redis_id_is_after",
     "redis_id_tuple",

@@ -30,7 +30,7 @@ function frame(
 ) {
   return {
     eventHeader: eventType,
-    transportCursor: `${runId}:2:${sequence}-0`,
+    transportCursor: `${runId}:${sequence}`,
     generation: binding.generation,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -232,7 +232,7 @@ test("replayed updates use the immediate message snapshot and invalid parts do n
   assert.equal(immediatePart?.type, "text");
   assert.equal(immediatePart?.text_role, "answer");
   assert.equal(acceptedRunEventSequenceRef.current.sequence, 3);
-  assert.equal(acceptedStreamCursorRef.current.eventId, `${runId}:2:3-0`);
+  assert.equal(acceptedStreamCursorRef.current.eventId, `${runId}:3`);
 
   const invalid = applyFrame(
     ctx,
@@ -243,7 +243,7 @@ test("replayed updates use the immediate message snapshot and invalid parts do n
   );
   assert.equal(invalid.kind, "invalid");
   assert.equal(acceptedRunEventSequenceRef.current.sequence, 3);
-  assert.equal(acceptedStreamCursorRef.current.eventId, `${runId}:2:3-0`);
+  assert.equal(acceptedStreamCursorRef.current.eventId, `${runId}:3`);
 });
 
 test("part ids already owned by another message are rejected before commit", () => {

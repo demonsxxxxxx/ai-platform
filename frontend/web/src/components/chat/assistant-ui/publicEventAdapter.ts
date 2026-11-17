@@ -145,55 +145,21 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REDIS_ID_PATTERN = /^(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$/;
 const SAFE_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/;
 const SAFE_FILENAME_PATTERN = /^[^/\\]+$/;
-function parseTransportCursor(value: unknown, runId: string): { incarnation: number; redisId: string } | null {
+export function parsePublicRunStreamCursor(value: unknown): { runId: string; sequence: number } | null {
   if (typeof value !== "string") return null;
-  const prefix = `${runId}:`;
-  if (!value.startsWith(prefix)) return null;
-  const remainder = value.slice(prefix.length);
-  const separator = remainder.indexOf(":");
-  if (separator <= 0) return null;
-  const incarnationText = remainder.slice(0, separator);
-  if (!/^[1-9][0-9]*$/.test(incarnationText)) return null;
-  const incarnation = Number(incarnationText);
-  const redisId = remainder.slice(separator + 1);
-  if (!Number.isSafeInteger(incarnation) || !REDIS_ID_PATTERN.test(redisId)) return null;
-  return { incarnation, redisId };
+  const separator = value.indexOf(":");
+  const runId = value.slice(0, separator);
+  const sequenceText = value.slice(separator + 1);
+  if (separator < 1 || !RUN_ID_PATTERN.test(runId) || !/^(0|[1-9][0-9]*)$/.test(sequenceText)) return null;
+  const sequence = Number(sequenceText);
+  return Number.isSafeInteger(sequence) ? { runId, sequence } : null;
 }
 
-export function comparePublicRunStreamCursors(
-  left: string,
-  right: string,
-): number | null {
-  const parse = (value: string) => {
-    const redisSeparator = value.lastIndexOf(":");
-    const incarnationSeparator = value.lastIndexOf(":", redisSeparator - 1);
-    if (incarnationSeparator <= 0) return null;
-    const runId = value.slice(0, incarnationSeparator);
-    if (!RUN_ID_PATTERN.test(runId)) return null;
-    const parsed = parseTransportCursor(value, runId);
-    if (!parsed) return null;
-    const [redisMs, redisSequence] = parsed.redisId.split("-").map(BigInt);
-    return { runId, incarnation: parsed.incarnation, redisMs, redisSequence };
-  };
-  const leftParts = parse(left);
-  const rightParts = parse(right);
-  if (
-    !leftParts ||
-    !rightParts ||
-    leftParts.runId !== rightParts.runId ||
-    leftParts.incarnation !== rightParts.incarnation
-  ) {
-    return null;
-  }
-  if (leftParts.redisMs !== rightParts.redisMs) {
-    return leftParts.redisMs < rightParts.redisMs ? -1 : 1;
-  }
-  if (leftParts.redisSequence === rightParts.redisSequence) return 0;
-  return leftParts.redisSequence < rightParts.redisSequence ? -1 : 1;
-}
-
-function isValidTransportCursor(value: unknown, runId: string, incarnation: number): value is string {
-  return parseTransportCursor(value, runId)?.incarnation === incarnation;
+export function comparePublicRunStreamCursors(left: string, right: string): number | null {
+  const a = parsePublicRunStreamCursor(left);
+  const b = parsePublicRunStreamCursor(right);
+  if (!a || !b || a.runId !== b.runId) return null;
+  return Math.sign(a.sequence - b.sequence);
 }
 
 function isSafeFilename(value: unknown): value is string {
@@ -333,7 +299,7 @@ export function adaptPublicRunStreamEventV4(
   frame: V4SseFrame,
   binding: V4AdapterBinding,
 ): V4PublicEvent | null {
-  if (!nonEmptyString(frame.eventHeader) || !nonEmptyString(frame.transportCursor)) return null;
+  if (!nonEmptyString(frame.eventHeader)) return null;
   if (!isRecord(frame.value)) return null;
   const eventType = frame.value.event_type;
   if (typeof eventType !== "string") return null;
@@ -345,7 +311,12 @@ export function adaptPublicRunStreamEventV4(
   if (!eventShapeIsValid(frame.value, eventType as V4EventType)) return null;
   if (frame.eventHeader !== eventType || frame.value.run_id !== binding.runId) return null;
   const incarnation = frame.value.stream_incarnation as number;
-  if (!isValidTransportCursor(frame.transportCursor, binding.runId, incarnation)) return null;
+  if (CONTROL_EVENT_TYPES.has(eventType as V4ControlEventType)) {
+    if (frame.transportCursor !== "") return null;
+  } else {
+    const cursor = parsePublicRunStreamCursor(frame.transportCursor);
+    if (!cursor || cursor.runId !== binding.runId || cursor.sequence !== frame.value.seq) return null;
+  }
   const payload = frame.value.payload as Record<string, unknown>;
   const acceptedCrossIncarnationGap =
     eventType === "stream.gap" &&

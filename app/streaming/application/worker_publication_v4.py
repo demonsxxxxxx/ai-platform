@@ -75,7 +75,7 @@ class WorkerEventPersistence(Protocol):
     ) -> ReconstructedAssistantAnswer: ...
 
     async def load_latest_run_event(
-        self, *, tenant_id: str, run_id: str, before_sequence: int | None = None
+        self, *, tenant_id: str, run_id: str
     ) -> bytes | None: ...
 
     async def persist_event_and_check_cancel(
@@ -150,7 +150,7 @@ async def publish_callback_rows(
     *,
     authority: Any,
 ) -> None:
-    """Publish exactly the committed callback batch before acknowledging it."""
+    """Publish exactly the committed callback batch as a best-effort live hint."""
     if not rows:
         return
     envelopes = []
@@ -159,15 +159,6 @@ async def publish_callback_rows(
         if envelope is None:
             raise V4ProjectionError("callback_committed_batch_invalid")
         envelopes.append(envelope)
-    predecessor = await capabilities.event_persistence.load_latest_run_event(
-        tenant_id=authority.tenant_id, run_id=authority.run_id,
-        before_sequence=envelopes[0]["seq"],
-    )
-    if predecessor is not None:
-        try:
-            validate_v4_transport_receipt(await capabilities.publication_transport.publish(predecessor))
-        except V4PublicationStreamExpired as exc:
-            raise V4PublicationTransportUnavailable("callback_stream_expired") from exc
     redis_id = await capabilities.publication_transport.publish_callback_batch(tuple(envelopes))
     validate_v4_transport_receipt(redis_id)
 
@@ -242,8 +233,8 @@ async def publish_run_event(
         receipt = await capabilities.publication_transport.publish(envelope)
         validate_v4_transport_receipt(receipt)
     except (V4PublicationTransportUnavailable, V4PublicationStreamExpired):
-        # Business finalization is already committed. SSE closes on authoritative
-        # terminal state and the existing frontend hydration supplies the result.
+        # Business finalization is already committed. The SSE reader recovers
+        # this terminal row from PostgreSQL independently of Redis delivery.
         return False
     return True
 

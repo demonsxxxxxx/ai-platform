@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import pytest
 
 from app.streaming.api import (
-    ResumeDecision,
     V4ProjectionError,
     build_v4_control,
     opaque_message_id,
@@ -47,16 +46,6 @@ class FakeRedis:
 
     async def eval(self, *args: object):
         self.calls.append(args)
-        if args[0] == streaming_v4._V4_REPLAY_PAGE_LUA:
-            minimum, maximum, count, predecessor = args[3:7]
-            rows = await self.xrange(args[2], min=minimum, max=maximum, count=count)
-            if not rows and not self.rows:
-                return [-1, rows]
-            if not predecessor:
-                return [1, rows]
-            if not rows or rows[0][0] != predecessor:
-                return [0, rows]
-            return [1, rows[1:]]
         redis_id = f"1-{len(self.rows)}"
         self.rows.append((redis_id, {"envelope": str(args[6])}))
         return redis_id
@@ -257,7 +246,7 @@ def test_v4_decode_normalizes_mapping_and_lua_field_value_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v4_read_stream_uses_exclusive_xread_and_shared_authority_decode() -> None:
+async def test_v4_read_live_page_uses_exclusive_xread_and_shared_authority_decode() -> None:
     client = FakeRedis()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     envelope = control(
@@ -265,7 +254,7 @@ async def test_v4_read_stream_uses_exclusive_xread_and_shared_authority_decode()
     )
     client.rows.append(("1-0", {"envelope": canonical_json_bytes(envelope).decode()}))
 
-    entries = await bridge.read_stream(
+    entries = await bridge.read_live_page(
         tenant_scope_value="scope-a",
         run_id="run-a",
         attempt_id="attempt-a",
@@ -281,14 +270,12 @@ async def test_v4_read_stream_uses_exclusive_xread_and_shared_authority_decode()
     assert [entry.cursor.redis_id for entry in entries] == ["1-0"]
     assert entries[0].envelope == envelope
     assert client.calls[0] == ("xread", {key: "0-0"}, 7, 4500)
-    assert client.calls[1] == (
-        streaming_v4._V4_REPLAY_PAGE_LUA, 1, key, "(0-0", "1-0", 128, ""
-    )
+    assert len(client.calls) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hint_payload", ["invalid-json", "foreign-attempt"])
-async def test_v4_read_stream_revalidates_payload_from_atomic_replay_not_xread_hint(
+async def test_v4_read_live_page_rejects_invalid_xread_payload(
     hint_payload,
 ) -> None:
     class HintRedis(FakeRedis):
@@ -311,20 +298,16 @@ async def test_v4_read_stream_revalidates_payload_from_atomic_replay_not_xread_h
     )
     client.rows.append(("1-0", {"envelope": canonical_json_bytes(envelope).decode()}))
 
-    entries = await bridge.read_stream(
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        stream_incarnation=2,
-        after_redis_id="0-0",
-    )
-
-    assert [entry.envelope for entry in entries] == [envelope]
-    assert client.calls[1][0] == streaming_v4._V4_REPLAY_PAGE_LUA
+    with pytest.raises(StreamContractError, match="v4_stream_envelope_invalid|v4_stream_authority_mismatch"):
+        await bridge.read_live_page(
+            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+            stream_incarnation=2, after_redis_id="0-0",
+        )
+    assert len(client.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_v4_read_stream_rejects_foreign_stream_key_in_xread_result() -> None:
+async def test_v4_read_live_page_rejects_foreign_stream_key_in_xread_result() -> None:
     class ForeignKeyRedis(FakeRedis):
         async def xread(self, streams, *, count, block):
             result = await super().xread(streams, count=count, block=block)
@@ -338,7 +321,7 @@ async def test_v4_read_stream_rejects_foreign_stream_key_in_xread_result() -> No
     client.rows.append(("1-0", {"envelope": canonical_json_bytes(envelope).decode()}))
 
     with pytest.raises(StreamContractError, match="v4_stream_authority_mismatch"):
-        await bridge.read_stream(
+        await bridge.read_live_page(
             tenant_scope_value="scope-a",
             run_id="run-a",
             attempt_id="attempt-a",
@@ -356,7 +339,7 @@ async def test_v4_read_stream_rejects_foreign_stream_key_in_xread_result() -> No
         ([("1-0", {}), ("2-0", {})], 1, "v4_stream_read_result_invalid"),
     ],
 )
-async def test_v4_read_stream_validates_xread_row_shape_count_and_ids(
+async def test_v4_read_live_page_validates_xread_row_shape_count_and_ids(
     rows, count, error
 ) -> None:
     class InvalidHintRedis(FakeRedis):
@@ -372,7 +355,7 @@ async def test_v4_read_stream_validates_xread_row_shape_count_and_ids(
     with pytest.raises(
         (StreamContractError, StreamTransportUnavailable), match=error
     ):
-        await bridge.read_stream(
+        await bridge.read_live_page(
             tenant_scope_value="scope-a",
             run_id="run-a",
             attempt_id="attempt-a",
@@ -383,7 +366,7 @@ async def test_v4_read_stream_validates_xread_row_shape_count_and_ids(
 
 
 @pytest.mark.asyncio
-async def test_v4_read_stream_rejects_foreign_entry_authority() -> None:
+async def test_v4_read_live_page_rejects_foreign_entry_authority() -> None:
     client = FakeRedis()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     envelope = control(
@@ -394,38 +377,12 @@ async def test_v4_read_stream_rejects_foreign_entry_authority() -> None:
     client.rows.append(("1-0", {"envelope": canonical_json_bytes(foreign).decode()}))
 
     with pytest.raises(StreamContractError, match="v4_stream_authority_mismatch"):
-        await bridge.read_stream(
+        await bridge.read_live_page(
             tenant_scope_value="scope-a",
             run_id="run-a",
             attempt_id="attempt-a",
             stream_incarnation=2,
             after_redis_id="0-0",
-        )
-
-
-@pytest.mark.asyncio
-async def test_v4_resume_scope_checks_the_exact_cursor_entry() -> None:
-    client = FakeRedis()
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-    valid = control(
-        "stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"}
-    )
-    foreign = {**valid, "event_id": "evt-foreign", "attempt_id": "attempt-foreign"}
-    client.rows.extend(
-        (
-            ("1-0", {"envelope": canonical_json_bytes(valid).decode()}),
-            ("2-0", {"envelope": canonical_json_bytes(foreign).decode()}),
-            ("3-0", {"envelope": canonical_json_bytes(valid).decode()}),
-        )
-    )
-
-    with pytest.raises(StreamContractError, match="v4_stream_authority_mismatch"):
-        await bridge.resolve_resume(
-            tenant_scope_value="scope-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            current_stream_incarnation=2,
-            last_event_id="run-a:2:2-0",
         )
 
 
@@ -702,60 +659,6 @@ def test_v4_decode_rejects_foreign_tenant_and_attempt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v4_gap_uses_real_retained_cursor_bounds() -> None:
-    client = FakeRedis()
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-    await bridge.append(
-        control(
-            "stream.open",
-            {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"},
-        )
-    )
-    gap, gap_cursor = await bridge.build_gap(
-        event_id="gap4_a",
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        requested_event_id="run-a:2:1-0",
-        requested_stream_incarnation=2,
-        current_stream_incarnation=2,
-        reason="retained_history_unavailable",
-    )
-    assert gap_cursor == "run-a:2:1-0"
-    assert gap["payload"]["earliest_available_event_id"] == "1-0"
-    assert gap["payload"]["latest_available_event_id"] == "1-0"
-    assert gap["payload"]["requested_event_id"] == "1-0"
-
-
-@pytest.mark.asyncio
-async def test_v4_missing_stream_gap_uses_start_cursor_and_null_bounds() -> None:
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=FakeRedis()))
-
-    gap, gap_cursor = await bridge.build_gap(
-        event_id="gap4_missing",
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        requested_event_id=None,
-        requested_stream_incarnation=None,
-        current_stream_incarnation=2,
-        reason="stream_missing",
-    )
-
-    assert gap_cursor == "run-a:2:0-0"
-    assert gap["event_type"] == "stream.gap"
-    assert gap["payload"] == {
-        "reason": "stream_missing",
-        "recovery": "reload_durable_state",
-        "requested_event_id": None,
-        "requested_stream_incarnation": None,
-        "current_stream_incarnation": 2,
-        "earliest_available_event_id": None,
-        "latest_available_event_id": None,
-    }
-
-
-@pytest.mark.asyncio
 async def test_existing_v4_authority_requires_canonical_digest_and_identity() -> None:
     payload = _open_payload()
     base = {
@@ -815,52 +718,6 @@ async def test_existing_v4_authority_requires_canonical_digest_and_identity() ->
         }.items()})
 
 
-@pytest.mark.asyncio
-async def test_v4_replay_page_fails_closed_when_atomic_predecessor_is_trimmed():
-    class TrimmedRedis:
-        calls: list[tuple[object, ...]] = []
-
-        async def eval(self, *args: object):
-            self.calls.append(args)
-            return [0, []]
-
-    client = TrimmedRedis()
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-
-    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
-        await bridge.replay_page(
-            tenant_scope_value="scope-a",
-            run_id="run-a",
-            attempt_id="attempt-a",
-            stream_incarnation=2,
-            after_redis_id="1-0",
-            through_redis_id="2-0",
-        )
-
-    assert client.calls[0][6] == "1-0"
-
-
-@pytest.mark.asyncio
-async def test_v4_resume_accepts_exact_retained_cursor_after_open_is_trimmed():
-    client = FakeRedis()
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-    retained_end = control("stream.end", {"terminal_event_id": "terminal-a"})
-    client.rows.append(
-        ("9-0", {"envelope": canonical_json_bytes(retained_end).decode()})
-    )
-
-    resume = await bridge.resolve_resume(
-        tenant_scope_value="scope-a",
-        run_id="run-a",
-        attempt_id="attempt-a",
-        current_stream_incarnation=2,
-        last_event_id="run-a:2:9-0",
-    )
-
-    assert resume == ResumeDecision("9-0", None, "terminal-a", True, "9-0")
-
-
-
 def _retained_delta(redis_id: str, *, sequence: int):
     source = row()
     source["id"] = f"evt4_delta_{sequence}"
@@ -871,33 +728,8 @@ def _retained_delta(redis_id: str, *, sequence: int):
 
 
 @pytest.mark.asyncio
-async def test_initial_replay_proves_origin_in_the_actual_page_after_trim():
-    client = FakeRedis()
-    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-    opened = control("stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"})
-    client.rows = [
-        ("1-0", {"envelope": canonical_json_bytes(opened).decode()}),
-        _retained_delta("7-3", sequence=3),
-        _retained_delta("50-9", sequence=7),
-    ]
-    resume = await bridge.resolve_resume(
-        tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
-        current_stream_incarnation=2, last_event_id=None,
-    )
-    assert resume.after_redis_id == "0-0" and resume.gap is None
-    assert resume.replay_tail_redis_id == "50-9"
-    removed = client.rows.pop(0)
-    assert removed[0] == "1-0"
-    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
-        await bridge.replay_page(
-            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
-            stream_incarnation=2, after_redis_id="0-0", through_redis_id="50-9",
-        )
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("trim_after_xread", [False, True])
-async def test_live_read_rejects_known_trimmed_predecessor_and_unread_prefix(trim_after_xread):
+async def test_live_read_delivers_valid_hints_after_trim_for_pg_gap_repair(trim_after_xread):
     class TrimRedis(FakeRedis):
         async def xread(self, *args, **kwargs):
             result = await super().xread(*args, **kwargs)
@@ -912,49 +744,48 @@ async def test_live_read_rejects_known_trimmed_predecessor_and_unread_prefix(tri
     before = [item[0] for item in client.rows]
     if not trim_after_xread:
         client.rows = client.rows[2:]
-    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
-        await bridge.read_stream(
-            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
-            stream_incarnation=2, after_redis_id="1-0",
-        )
+    entries = await bridge.read_live_page(
+        tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+        stream_incarnation=2, after_redis_id="1-0",
+    )
+    assert [entry.cursor.redis_id for entry in entries] == (
+        ["7-3", "50-9"] if trim_after_xread else ["50-9"]
+    )
     assert before == ["1-0", "7-3", "50-9"]
     assert [item[0] for item in client.rows] == ["50-9"]
-    # The explicitly removed 7-3 was unread, not inferred from a numeric gap.
-    assert client.calls[0][0] == "xread"
-    assert client.calls[1][0] == streaming_v4._V4_REPLAY_PAGE_LUA
+    assert len(client.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_live_atomic_pages_preserve_sparse_ids_count_and_delivered_cursor():
+async def test_live_pages_preserve_sparse_ids_count_and_delivered_cursor():
     client = FakeRedis()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
-    # Open may already be trimmed. Exact retained after is the continuity anchor.
+    # Open may already be trimmed; Redis cursor only controls live hint scanning.
     client.rows = [_retained_delta(value, sequence=seq) for value, seq in
                    (("1-0", 1), ("7-3", 3), ("50-9", 7))]
     identity = dict(tenant_scope_value="scope-a", run_id="run-a",
                     attempt_id="attempt-a", stream_incarnation=2)
-    first = await bridge.read_stream(**identity, after_redis_id="1-0", count=1)
+    first = await bridge.read_live_page(**identity, after_redis_id="1-0", count=1)
     assert [item.cursor.redis_id for item in first] == ["7-3"]
-    second = await bridge.read_stream(**identity, after_redis_id=first[-1].cursor.redis_id, count=1)
+    second = await bridge.read_live_page(**identity, after_redis_id=first[-1].cursor.redis_id, count=1)
     assert [item.cursor.redis_id for item in second] == ["50-9"]
-    assert await bridge.read_stream(**identity, after_redis_id="50-9", count=1) == ()
+    assert await bridge.read_live_page(**identity, after_redis_id="50-9", count=1) == ()
 
 
 @pytest.mark.asyncio
-async def test_empty_live_read_distinguishes_retained_idle_anchor_from_missing_stream():
+async def test_empty_live_read_allows_idle_or_missing_stream_for_pg_poll():
     client = FakeRedis()
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     identity = dict(tenant_scope_value="scope-a", run_id="run-a",
                     attempt_id="attempt-a", stream_incarnation=2)
     client.rows = [_retained_delta("7-3", sequence=3)]
-    assert await bridge.read_stream(**identity, after_redis_id="7-3") == ()
+    assert await bridge.read_live_page(**identity, after_redis_id="7-3") == ()
     client.rows.clear()
-    with pytest.raises(StreamContractError, match="stream_missing"):
-        await bridge.read_stream(**identity, after_redis_id="7-3")
+    assert await bridge.read_live_page(**identity, after_redis_id="7-3") == ()
 
 
 @pytest.mark.asyncio
-async def test_live_read_does_not_deliver_a_tail_deleted_after_xread():
+async def test_live_read_keeps_valid_received_rows_when_redis_trim_races():
     class DeletedTailRedis(FakeRedis):
         async def xread(self, *args, **kwargs):
             result = await super().xread(*args, **kwargs)
@@ -965,8 +796,37 @@ async def test_live_read_does_not_deliver_a_tail_deleted_after_xread():
     bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
     client.rows = [_retained_delta(value, sequence=seq) for value, seq in
                    (("1-0", 1), ("7-3", 3), ("50-9", 7))]
-    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
-        await bridge.read_stream(
-            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
-            stream_incarnation=2, after_redis_id="1-0",
-        )
+    entries = await bridge.read_live_page(
+        tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+        stream_incarnation=2, after_redis_id="1-0",
+    )
+    assert [entry.cursor.redis_id for entry in entries] == ["7-3", "50-9"]
+
+
+@pytest.mark.asyncio
+async def test_live_page_retention_is_not_authority_and_no_replay_query():
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    identity = dict(tenant_scope_value="scope-a", run_id="run-a",
+                    attempt_id="attempt-a", stream_incarnation=2)
+    assert await bridge.read_live_page(**identity, after_redis_id="4-0") == ()
+    envelope = control("stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"})
+    client.rows.append(("9-0", {"envelope": canonical_json_bytes(envelope).decode()}))
+    page = await bridge.read_live_page(**identity, after_redis_id="4-0")
+    assert [entry.cursor.redis_id for entry in page] == ["9-0"]
+    assert all(call[0] == "xread" for call in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_live_page_rejects_nonmonotonic_redis_entries():
+    class UnorderedRedis(FakeRedis):
+        async def xread(self, streams, *, count, block):
+            envelope = control("stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"})
+            fields = {"envelope": canonical_json_bytes(envelope).decode()}
+            return [(next(iter(streams)), [("3-0", fields), ("2-0", fields)])]
+
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=UnorderedRedis()))
+    with pytest.raises(StreamContractError, match="v4_stream_read_order_invalid"):
+        await bridge.read_live_page(tenant_scope_value="scope-a", run_id="run-a",
+                                   attempt_id="attempt-a", stream_incarnation=2,
+                                   after_redis_id="0-0")

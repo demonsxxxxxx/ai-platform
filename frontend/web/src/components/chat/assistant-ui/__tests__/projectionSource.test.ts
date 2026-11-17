@@ -202,7 +202,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
   const dom = await setupDom();
   const terminalEvent = adaptPublicRunStreamEventV4({
     eventHeader: "run.succeeded",
-    transportCursor: "run-1:1:1-0",
+    transportCursor: "run-1:1",
     generation: 3,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
@@ -243,7 +243,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
     const endFrame = {
       frame: {
         eventHeader: "stream.end",
-        transportCursor: "run-1:1:2-0",
+        transportCursor: "",
         generation: 3,
         value: {
           schema: "ai-platform.public-run-stream-control.v4",
@@ -287,7 +287,7 @@ test("mounted production fence owner accepts its matching end once and rejects a
     assert.equal(handlePublicRunStreamEventV4(handlerArgs), true);
     assert.equal(handlePublicRunStreamEventV4(handlerArgs), false);
     const foreignEnd = adaptV4Frame(
-      { ...endFrame.frame, transportCursor: "run-2:1:2-0", value: { ...endFrame.frame.value, run_id: "run-2" } },
+      { ...endFrame.frame, transportCursor: "", value: { ...endFrame.frame.value, run_id: "run-2" } },
       { runId: "run-2", streamIncarnation: 1, generation: 3 },
     );
     assert.equal(handlePublicRunStreamEventV4({ ...handlerArgs, event: foreignEnd }), false);
@@ -300,7 +300,7 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
   const dom = await setupDom();
   const adapted = adaptPublicRunStreamEventV4({
     eventHeader: "artifact.failed",
-    transportCursor: "run-1:1:3-0",
+    transportCursor: "run-1:3",
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
       event_id: "artifact-failed-1",
@@ -337,7 +337,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
   try {
     const parent = adaptPublicRunStreamEventV4({
       eventHeader: "subagent.started",
-      transportCursor: "run-1:1:1-0",
+      transportCursor: "run-1:1",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
@@ -359,7 +359,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     }, { runId: "run-1", streamIncarnation: 1, generation: 3 });
     const child = adaptPublicRunStreamEventV4({
       eventHeader: "subagent.started",
-      transportCursor: "run-1:1:2-0",
+      transportCursor: "run-1:2",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",
@@ -403,7 +403,7 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     );
     const childProgress = adaptPublicRunStreamEventV4({
       eventHeader: "subagent.progress",
-      transportCursor: "run-1:1:3-0",
+      transportCursor: "run-1:3",
       generation: 3,
       value: {
         schema: "ai-platform.public-run-stream-event.v4",

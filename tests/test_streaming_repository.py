@@ -330,7 +330,8 @@ async def test_list_run_events_delegates_to_the_durable_cursor_reader_without_sq
         ),
     }
 
-    async def read_rows(received_conn, *, tenant_id, cursor, limit):
+    async def read_rows(received_conn, *, tenant_id, cursor, limit, through_sequence):
+        assert through_sequence is None
         observed.append((received_conn, tenant_id, cursor, limit))
         return adapter_rows[cursor.sequence]
 
@@ -469,3 +470,31 @@ def test_run_event_schema_retains_every_a1_ledger_written_column():
     assert "durable_committed_at = now()" in ledger_source
     assert "callback_received_at timestamptz not null default now()" in schema
     assert "durable_committed_at timestamptz" in schema
+
+
+@pytest.mark.asyncio
+async def test_list_run_events_passes_fixed_upper_bound_to_ledger(monkeypatch):
+    conn = _Connection()
+
+    async def read_rows(received_conn, *, tenant_id, cursor, limit, through_sequence):
+        assert received_conn is conn
+        assert (tenant_id, cursor, limit, through_sequence) == (
+            "tenant-a", RunCursor("run-a", 7), 128, 9,
+        )
+        return ({"sequence": 8}, {"sequence": 9})
+
+    monkeypatch.setattr(ledger, "read_event_rows", read_rows)
+    assert await _owner_streaming_infrastructure_run_events_postgres.list_run_events(
+        conn, tenant_id="tenant-a", run_id="run-a", after_sequence=7,
+        limit=128, through_sequence=9,
+    ) == [{"sequence": 8}, {"sequence": 9}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("through_sequence", [True, -1, 1.5, "9"])
+async def test_ledger_rejects_invalid_upper_bound_before_query(through_sequence):
+    with pytest.raises(ValueError, match="run_event_page_through_sequence_invalid"):
+        await ledger.read_event_rows(
+            _Connection(), tenant_id="tenant-a", cursor=RunCursor("run-a", 0),
+            limit=128, through_sequence=through_sequence,
+        )

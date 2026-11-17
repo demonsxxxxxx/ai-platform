@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adaptPublicRunStreamEventV4 } from "../publicEventAdapter";
+import { adaptPublicRunStreamEventV4, comparePublicRunStreamCursors, parsePublicRunStreamCursor } from "../publicEventAdapter";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 
 function reduce(event: NonNullable<ReturnType<typeof adaptPublicRunStreamEventV4>>, isStreaming = true) {
@@ -14,7 +14,7 @@ function frame(eventType: string, payload: Record<string, unknown> = {}, seq = 1
 } {
   return {
     eventHeader: eventType,
-    transportCursor: `run-1:2:${seq}-0`,
+    transportCursor: `run-1:${seq}`,
     value: {
       schema: "ai-platform.public-run-stream-event.v4",
       event_id: `event-${seq}`,
@@ -39,7 +39,7 @@ test("v4 adapter accepts generated message delta and retains transport identity"
   });
   assert.equal(adapted?.eventType, "message.delta");
   assert.equal(adapted?.messageId, "message-1");
-  assert.equal(adapted?.transportCursor, "run-1:2:1-0");
+  assert.equal(adapted?.transportCursor, "run-1:1");
 });
 
 test("v4 commentary becomes work summary without changing final answer text", () => {
@@ -152,8 +152,8 @@ test("v4 adapter keeps semantic identity separate from the Redis transport curso
   assert.ok(replay);
   assert.equal(first.semanticKey, "event-1");
   assert.equal(replay.semanticKey, "event-1");
-  assert.equal(first.transportCursor, "run-1:2:1-0");
-  assert.equal(replay.transportCursor, "run-1:2:2-0");
+  assert.equal(first.transportCursor, "run-1:1");
+  assert.equal(replay.transportCursor, "run-1:2");
 });
 
 test("v4 adapter enforces generated run, date-time, nullable, and exact payload rules", () => {
@@ -266,7 +266,7 @@ test("v4 adapter follows the generated valid and invalid payload matrix", () => 
     );
   });
 });
-test("v4 adapter requires a stream-incarnation Redis transport cursor", () => {
+test("v4 adapter requires a durable run sequence cursor", () => {
   const value = frame("message.delta", { delta: "hi" });
   assert.equal(
     adaptPublicRunStreamEventV4(
@@ -284,7 +284,7 @@ test("v4 adapter requires a stream-incarnation Redis transport cursor", () => {
 });
 
 test("v4 adapter preserves nullable run-level identity and projects safe activity", () => {
-  const value = frame("run.cancel_requested", { source: "user" });
+  const value = frame("run.cancel_requested", { source: "user" }, 2);
   value.value = {
     ...(value.value as Record<string, unknown>),
     message_id: null,
@@ -494,7 +494,7 @@ test("v4 thinking compatibility preserves public summary, upgrades legacy payloa
   assert.deepEqual((toolResult.parts[0] as { args: Record<string, unknown> }).args, {});
 });
 
-test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () => {
+test("v4 legacy gap metadata has no persistent SSE cursor", () => {
   const raw = frame("stream.gap", {
     reason: "stream_missing",
     recovery: "reload_durable_state",
@@ -506,7 +506,7 @@ test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () =
   }).value as Record<string, unknown>;
   const control = {
     eventHeader: "stream.gap",
-    transportCursor: "run-1:2:10-0",
+    transportCursor: "",
     value: {
       ...raw,
       schema: "ai-platform.public-run-stream-control.v4",
@@ -519,7 +519,7 @@ test("v4 gap payload uses raw Redis IDs while SSE carries the full cursor", () =
   assert.ok(adaptPublicRunStreamEventV4(control, { runId: "run-1" }));
   const successorControl = {
     ...control,
-    transportCursor: "run-1:3:10-0",
+    transportCursor: "",
     value: {
       ...(control.value as Record<string, unknown>),
       stream_incarnation: 3,
@@ -594,7 +594,7 @@ test("stream.end remains transport-only and preserves its terminal receipt", () 
   const raw = frame("stream.end", { terminal_event_id: "terminal-1" }).value as Record<string, unknown>;
   const adapted = adaptPublicRunStreamEventV4({
     eventHeader: "stream.end",
-    transportCursor: "run-1:2:1-0",
+    transportCursor: "",
     value: {
       ...raw,
       schema: "ai-platform.public-run-stream-control.v4",
@@ -608,4 +608,16 @@ test("stream.end remains transport-only and preserves its terminal receipt", () 
     (adapted.event as Record<string, unknown>).payload,
     { terminal_event_id: "terminal-1" },
   );
+});
+
+
+test("durable cursors allow private sequence gaps and reject legacy/cross-run cursors", () => {
+  assert.equal(comparePublicRunStreamCursors("run-1:500", "run-1:2"), 1);
+  assert.equal(comparePublicRunStreamCursors("run-2:3", "run-1:2"), null);
+  for (const value of ["run-1:2:1-0", "run-1:01", "run-1:-1", "run-1:9007199254740992"]) {
+    assert.equal(parsePublicRunStreamCursor(value), null);
+  }
+  const mismatch = frame("message.delta", { delta: "hi" }, 3);
+  mismatch.transportCursor = "run-1:4";
+  assert.equal(adaptPublicRunStreamEventV4(mismatch, { runId: "run-1" }), null);
 });
