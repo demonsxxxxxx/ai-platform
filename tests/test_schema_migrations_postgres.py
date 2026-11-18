@@ -44,6 +44,14 @@ ORIGIN_MAIN_MODEL_GROUPS_COMMIT = (
 ORIGIN_MAIN_MODEL_PROVIDERS_COMMIT = (
     "def30a87e87dbd721167250902b295f2ee60a353"
 )
+# The 2026.11.05.1 integrated candidate was squash-merged, so its own commit is
+# not part of main and a CI checkout only carries main history plus tags. The tag
+# keeps that exact package source available to the one-time settlement upgrade
+# regression instead of depending on an unreachable object staying fetchable.
+PREVIOUS_INTEGRATED_CANDIDATE_REF = "schema-baseline-2026.11.05.1"
+PREVIOUS_INTEGRATED_CANDIDATE_COMMIT = (
+    "8fc810389d7c2c2358c381f5ab843e726e147f17"
+)
 
 
 def _schema_source_at_commit(commit: str) -> str:
@@ -55,6 +63,38 @@ def _schema_source_at_commit(commit: str) -> str:
         stdout=subprocess.PIPE,
         text=True,
     ).stdout
+
+
+def _rev_parse_commit(ref: str) -> str | None:
+    root = Path(__file__).resolve().parents[1]
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        return None
+    return resolved.stdout.strip() or None
+
+
+def _previous_integrated_candidate_app_archive() -> bytes:
+    """Archive the previous candidate source, which main cannot reach."""
+
+    root = Path(__file__).resolve().parents[1]
+    resolved = _rev_parse_commit(PREVIOUS_INTEGRATED_CANDIDATE_REF) or _rev_parse_commit(
+        PREVIOUS_INTEGRATED_CANDIDATE_COMMIT
+    )
+    assert resolved == PREVIOUS_INTEGRATED_CANDIDATE_COMMIT, (
+        f"{PREVIOUS_INTEGRATED_CANDIDATE_COMMIT} is missing; run "
+        f"`git fetch --tags origin` to restore {PREVIOUS_INTEGRATED_CANDIDATE_REF}, "
+        "which pins the 2026.11.05.1 candidate that main cannot reach"
+    )
+    return subprocess.check_output(
+        ["git", "archive", "--format=tar", resolved, "app"], cwd=root
+    )
 
 
 def _remote_run_attempt_reconciler_takeover_schema_sql(tmp_path: Path) -> str:
@@ -520,11 +560,9 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
 @pytest.mark.asyncio
 async def test_upgrade_from_previous_integrated_candidate_advances_ledger_without_checksum_rewrite(tmp_path: Path):
     """Run the actual previous package source outside this interpreter's imports."""
-    previous_sha = "8fc810389d7c2c2358c381f5ab843e726e147f17"
-    root = Path(__file__).resolve().parents[1]
     historical = tmp_path / "historical"
     historical.mkdir()
-    archive = subprocess.check_output(["git", "archive", "--format=tar", previous_sha, "app"], cwd=root)
+    archive = _previous_integrated_candidate_app_archive()
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
         source.extractall(historical, filter="data")
     dsn = _postgres_dsn()
