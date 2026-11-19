@@ -560,6 +560,12 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
 @pytest.mark.asyncio
 async def test_upgrade_from_attempt_only_v055_preserves_existing_ledger(tmp_path: Path):
     previous = _load_schema_migrations_at_commit(tmp_path, "821f524d21636ab19a89228838c057c476d7eaf2")
+    root = Path(__file__).resolve().parents[1]
+    for fragment in ("context/infrastructure/conversation_recovery_schema.sql", "execution/infrastructure/recovery_operations_schema.sql"):
+        target = tmp_path / fragment
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = subprocess.check_output(['git','show',f'821f524d21636ab19a89228838c057c476d7eaf2:app/{fragment}'],cwd=root,text=True)
+        target.write_text(source,encoding='utf-8')
     dsn = _postgres_dsn()
     name = f"historical_attempt_schema_{uuid.uuid4().hex}"
     admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
