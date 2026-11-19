@@ -237,7 +237,7 @@ def test_legacy_finalized_runtime_requires_exact_absence_even_without_owner_labe
             statements.append(command[-1])
         if stage == "sandbox inventory":
             assert '{{.Label "opensandbox.io/id"}}' in command[-1]
-        return {"activity check": "0|0|0", "legacy finalized runtime check": recorded,
+        return {"activity check": "0|0|0", "legacy layout check": "t", "legacy finalized runtime check": recorded,
                 "sandbox inventory": inventory}.get(stage, "")
 
     monkeypatch.setattr(entry, "run", run)
@@ -247,9 +247,22 @@ def test_legacy_finalized_runtime_requires_exact_absence_even_without_owner_labe
     else:
         entry.quiescent(["docker"])
     assert len(statements) == 1
-    assert "to_jsonb(sandbox_leases)->>'executor_reconciliation_claimed_at' is not null" in statements[0]
-    assert "to_jsonb(sandbox_leases)->>'executor_reconciliation_claim_token' is null" in statements[0]
+    assert "executor_reconciliation_claimed_at is not null" in statements[0]
+    assert "executor_reconciliation_claim_token is null" in statements[0]
     assert "status='released'" in statements[0]
+
+
+@pytest.mark.parametrize('layout', ['f', 'invalid'])
+def test_current_runtime_layout_never_queries_retired_columns(monkeypatch, layout):
+    def run(command, stage, timeout=90):
+        assert stage != 'legacy finalized runtime check'
+        return {'activity check': '0|0|0', 'legacy layout check': layout}.get(stage, '')
+    monkeypatch.setattr(entry,'run',run)
+    if layout == 'f':
+        entry.quiescent(['docker'])
+    else:
+        with pytest.raises(entry.DeploymentError,match='layout cannot be verified'):
+            entry.quiescent(['docker'])
 
 
 @pytest.fixture

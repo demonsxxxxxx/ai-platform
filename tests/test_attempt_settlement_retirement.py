@@ -336,6 +336,126 @@ async def test_upgrade_finishes_previously_retired_layout_without_reconstructing
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("receiptless", [False, True])
+async def test_old_terminal_history_preserves_unknown_generation_without_runtime_authority(
+    settlement_upgrade_db, receiptless,
+):
+    from app.runs.infrastructure.attempt_settlement_projection_postgres import list_due_attempt_settlements
+    from app.runs.infrastructure.attempt_settlement_writer_postgres import refresh_attempt_settlement_snapshot
+    from app.runs.domain.attempt_settlement_projection import AttemptSettlementProjectionConflict
+
+    connect, attempt_id, _generation = settlement_upgrade_db
+    async with connect() as conn, conn.transaction():
+        await _legacy_completed_history(conn, attempt_id, cancelled=receiptless)
+        await conn.execute("""update sandbox_leases set lease_payload_json=(lease_payload_json-'owner_generation')
+            || jsonb_build_object('source','sandbox_runtime','evidence_class','runtime_lease_projection',
+              'attempt_id',attempt_id,'labels',jsonb_build_object('ai-platform.tenant_id',tenant_id,
+              'ai-platform.run_id',run_id,'ai-platform.attempt_id',attempt_id)) where id='lease-a'""")
+        if receiptless:
+            await conn.execute("""update sandbox_leases set executor_status='running',executor_terminal_json=null,
+                executor_terminal_received_at=null,executor_reconciled_at=null,
+                executor_reconciliation_status='waiting_terminal',release_reason='cancel_requested'""")
+        original = await (await conn.execute("select executor_terminal_json,lease_payload_json from sandbox_leases where id='lease-a'")).fetchone()
+    async with connect() as conn, conn.transaction():
+        await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        detail = await (await conn.execute("select * from run_attempt_settlements where attempt_id=%s", (attempt_id,))).fetchone()
+        assert detail['mapping_state'] == 'historical' and detail['settlement_phase'] == 'settled'
+        assert detail['receipt_owner_generation'] is None
+        assert detail['receipt_json'] == original['executor_terminal_json']
+        import psycopg
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with conn.transaction():
+                await conn.execute('update run_attempt_settlements set result_sha256=null')
+        assert await list_due_attempt_settlements(conn, limit=10, stale_after_seconds=0) == []
+        assert (await (await conn.execute("select lease_payload_json from sandbox_leases where id='lease-a'")).fetchone())['lease_payload_json'] == original['lease_payload_json']
+    with pytest.raises(AttemptSettlementProjectionConflict, match='historical_read_only'):
+        async with connect() as conn, conn.transaction():
+            await refresh_attempt_settlement_snapshot(conn, tenant_id='tenant-a',run_id='run-a',attempt_id=attempt_id)
+    async with connect() as conn, conn.transaction():
+        # Revalidate a partially retired installation without reconstructing receipts.
+        await conn.execute('create table run_attempt_settlement_retirement(singleton boolean)')
+        await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        assert await schema_migrations._attempt_settlement_layout_current(conn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('receiptless', [False, True])
+@pytest.mark.parametrize('blocker', [None, 'missing_release', 'scope_conflict', 'archive_conflict'])
+async def test_pre_attempt_run_preserves_legacy_receipt_without_fabricating_attempt(
+    settlement_upgrade_db, receiptless, blocker,
+):
+    connect, attempt_id, _generation = settlement_upgrade_db
+    async with connect() as conn, conn.transaction():
+        await _legacy_completed_history(conn, attempt_id)
+        await conn.execute("""update sandbox_leases set lease_payload_json=lease_payload_json ||
+            jsonb_build_object('source','sandbox_runtime','evidence_class','runtime_lease_projection','attempt_id',attempt_id,
+              'labels',jsonb_build_object('ai-platform.tenant_id',tenant_id,'ai-platform.run_id',run_id,
+                'ai-platform.attempt_id',attempt_id))""")
+        if receiptless:
+            await conn.execute("""update sandbox_leases set executor_status='pending',executor_terminal_json=null,
+                executor_terminal_received_at=null,executor_reconciled_at=null,
+                executor_reconciliation_context_json=null,executor_reconciliation_status='waiting_terminal'""")
+        original = await (await conn.execute('select executor_terminal_json from sandbox_leases')).fetchone()
+        await conn.execute('delete from run_attempts where id=%s',(attempt_id,))
+        if blocker == 'missing_release':
+            await conn.execute('update sandbox_leases set released_at=null')
+        elif blocker == 'scope_conflict':
+            await conn.execute("update sandbox_leases set lease_payload_json=jsonb_set(lease_payload_json,'{labels,ai-platform.run_id}', '\"other\"'::jsonb)")
+        elif blocker == 'archive_conflict':
+            await conn.execute("""insert into run_legacy_settlement_history(lease_id,tenant_id,run_id,legacy_attempt_id,
+                snapshot_json,run_status,result_json) values('lease-a','tenant-a','run-a',%s,'{}','succeeded','{}')""", (attempt_id,))
+    if blocker:
+        with pytest.raises(RuntimeError, match='attempt_settlement_upgrade_pre_attempt_history_'):
+            async with connect() as conn, conn.transaction():
+                await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        async with connect() as conn:
+            assert (await (await conn.execute("select executor_terminal_json from sandbox_leases")).fetchone()) == original
+            assert (await (await conn.execute('select count(*) as count from run_legacy_settlement_history')).fetchone())['count'] == int(blocker == 'archive_conflict')
+        return
+    async with connect() as conn, conn.transaction():
+        await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+        history = await (await conn.execute('select * from run_legacy_settlement_history')).fetchone()
+        assert history['legacy_attempt_id'] == attempt_id
+        assert history['snapshot_json']['executor_terminal_json'] == original['executor_terminal_json']
+        from app.bootstrap.sandbox_lease_ports import build_sandbox_executor_reconciliation_port
+        reader = build_sandbox_executor_reconciliation_port()
+        rows = await reader.list_sandbox_leases_for_run(conn, tenant_id='tenant-a',run_id='run-a')
+        assert rows[0]['settlement_mapping_state'] == 'historical'
+        assert rows[0]['receipt_json'] == original['executor_terminal_json']
+        debug = await reader.read_run_runtime_debug(conn, tenant_id='tenant-a',run_id='run-a')
+        assert debug['leases'][0]['settlement_mapping_state'] == 'historical'
+        assert (await (await conn.execute('select count(*) as count from run_attempts')).fetchone())['count'] == 0
+        assert (await (await conn.execute('select count(*) as count from run_attempt_settlements')).fetchone())['count'] == 0
+        await upgrade_attempt_settlement_authority(conn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pre_attempt', [False, True])
+@pytest.mark.parametrize('field', ['executor_terminal_json','executor_reconciliation_context_json','executor_reconciliation_intent_context_json'])
+async def test_json_null_is_not_sql_null_in_receiptless_history(settlement_upgrade_db, pre_attempt, field):
+    connect, attempt_id, _generation = settlement_upgrade_db
+    async with connect() as conn, conn.transaction():
+        await _legacy_completed_history(conn, attempt_id, cancelled=not pre_attempt)
+        await conn.execute("""alter table sandbox_leases add column executor_reconciliation_intent_context_json jsonb""")
+        await conn.execute("""update sandbox_leases set lease_payload_json=(lease_payload_json-'owner_generation')
+            || jsonb_build_object('source','sandbox_runtime','evidence_class','runtime_lease_projection',
+              'attempt_id',attempt_id,'labels',jsonb_build_object('ai-platform.tenant_id',tenant_id,
+              'ai-platform.run_id',run_id,'ai-platform.attempt_id',attempt_id)),
+            executor_terminal_json=null,executor_terminal_received_at=null,executor_reconciled_at=null,
+            executor_reconciliation_status='waiting_terminal',executor_status=%s,
+            executor_reconciliation_context_json=%s::jsonb,release_reason='cancel_requested'""",
+            ('pending' if pre_attempt else 'running', None if pre_attempt else '{}'))
+        await conn.execute(f"update sandbox_leases set {field}='null'::jsonb")
+        if pre_attempt:
+            await conn.execute('delete from run_attempts where id=%s',(attempt_id,))
+    with pytest.raises(RuntimeError, match='attempt_settlement_upgrade_'):
+        async with connect() as conn, conn.transaction():
+            await upgrade_attempt_settlement_authority(conn, confirmations=CONFIRMATIONS)
+    async with connect() as conn:
+        assert (await (await conn.execute(f"select {field} is not null as present from sandbox_leases")).fetchone())['present']
+
+
+@pytest.mark.asyncio
 async def test_fresh_schema_apply_is_idempotent_and_attempt_only(settlement_upgrade_db):
     connect, _attempt_id, _generation = settlement_upgrade_db
 

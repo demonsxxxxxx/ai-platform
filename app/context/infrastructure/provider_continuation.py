@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from app.runs.api import AttemptSettlementReadError
 from app.context.domain.conversation_authority import extend_source_digest
 from app.context.domain.conversation_recovery import (
     AUTHORITY_V3, RECOVERY_SCHEMA_VERSION, public_continuation, provider_restore_size,
@@ -312,8 +313,13 @@ async def get_session_continuation(
     if row.get("active_run_id") and row.get("active_attempt_id"):
         detail = await settlement_reader(
             conn, tenant_id=tenant_id, run_id=row["active_run_id"],
-            attempt_id=row["active_attempt_id"], require_mapped=True,
+            attempt_id=row["active_attempt_id"], require_mapped=False,
         )
+        if detail.get("mapping_state") == "historical":
+            return public_continuation({"schema_version": RECOVERY_SCHEMA_VERSION, "state": "blocked",
+                                        "reason_code": "writer_unverified", "workspace_saved": False})
+        if detail.get("mapping_state") != "mapped":
+            raise AttemptSettlementReadError("attempt_settlement_projection_unknown")
         terminal_pending = detail.get("receipt_json") is not None and detail.get("settlement_phase") != "settled"
     settling = bool(row.get("active_run_id")) and (
         row.get("cancel_requested_at") is not None or terminal_pending

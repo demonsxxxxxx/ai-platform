@@ -122,15 +122,28 @@ def quiescent(docker: list[str]) -> None:
     # A timestamp-only legacy claim may be converged by schema apply, but SQL
     # cannot prove its producer is gone. Check exact recorded handles as well
     # as owner labels, without requiring retired columns in the installed layout.
+    legacy_layout = run([
+        *docker, "exec", "ai-platform-postgres", "sh", "-ceu",
+        'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
+        "sh", "select exists(select 1 from pg_attribute where attrelid=to_regclass('sandbox_leases') "
+        "and attname='executor_reconciliation_claimed_at' and not attisdropped);",
+    ], "legacy layout check", 30)
+    if legacy_layout not in {"t", "f"}:
+        raise DeploymentError("legacy runtime layout cannot be verified")
     legacy_handles = run([
         *docker, "exec", "ai-platform-postgres", "sh", "-ceu",
         'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
         "sh", "select provider || '|' || coalesce(nullif(trim(runtime_container_id),''),'') || '|' || "
         "coalesce(nullif(trim(runtime_container_name),''),'') from sandbox_leases "
-        "where status='released' and to_jsonb(sandbox_leases)->>'executor_reconciliation_status'='finalized' "
-        "and to_jsonb(sandbox_leases)->>'executor_reconciliation_claim_token' is null "
-        "and to_jsonb(sandbox_leases)->>'executor_reconciliation_claimed_at' is not null;",
-    ], "legacy finalized runtime check", 30)
+        "where status='released' and ("
+        "(executor_reconciliation_status='finalized' "
+        "and executor_reconciliation_claim_token is null "
+        "and executor_reconciliation_claimed_at is not null) "
+        "or not (lease_payload_json ? 'owner_generation') "
+        "or executor_status in ('accepted','running') "
+        "or not exists(select 1 from run_attempts a where a.tenant_id=sandbox_leases.tenant_id "
+        "and a.run_id=sandbox_leases.run_id));",
+    ], "legacy finalized runtime check", 30) if legacy_layout == "t" else ""
     for line in legacy_handles.splitlines():
         provider, container_id, container_name = line.split("|")
         recorded = [value for value in (container_id, container_name) if value]

@@ -288,6 +288,14 @@ The core schema includes both additive changes and destructive cutovers:
   `run_attempt_settlement_retirement` after stopped-writer, drained history
   validation. Already-retired columns do not waive validation or cleanup of
   remaining marker/fence metadata. Readiness requires these relations absent.
+  The `2026.11.19.1` upgrade preserves released, proven pre-generation Attempt
+  results as non-executable `historical` details with unknown receipt generation
+  left NULL. Runs with no Attempt retain exact retired receipt/context fields in
+  Runs-owned `run_legacy_settlement_history`, without synthesizing an Attempt.
+  This private history has no ordinary-user projection, runtime writer or TTL;
+  future physical Run/lease deletion must explicitly remove its history in the
+  same authorized transaction. The detailed eligibility and retirement contract
+  remains in the linked Attempt lifecycle owner.
 - The [Agent Profile persistence](agent-profile-persistence-boundary.md) hard
   cut removes legacy profile columns, compatibility triggers and functions.
   These are committed removals, not unused additive fields.

@@ -218,6 +218,24 @@ cleanup transfer and historical validation share the core migration transaction;
 a later failure rolls all of them back. This is not a rollback after that
 transaction commits. No runtime compatibility writer or reader is retained.
 
+The `2026.11.19.1` history upgrade distinguishes immutable historical evidence
+from runtime-owned settlement. A released terminal legacy lease with exact
+Run/Attempt/label binding and accepted context can be preserved as `historical`
+when its old runtime projection omitted the executor generation, or when the
+old cancel path committed cancellation and release without a terminal receipt.
+Unknown executor generations remain NULL; missing receipts remain absent.
+Historical details are settled, excluded from due work and rejected by runtime
+writers. Malformed supplied generations, live claims, contradictory scope or
+incomplete completion evidence still block. This does not authorize continuation.
+
+Runs predating durable Attempt creation retain their original lease evidence in
+`run_legacy_settlement_history`; no Attempt is synthesized. Only fully released,
+terminal Runs with finalized receipts or a proven undispatched shape qualify.
+The original receipt/context/legacy identifier and Run result are compared before
+the same transaction retires old columns. History cannot hide a missing binding
+when any Attempt exists for that Run. The deployment gate checks the recorded
+provider identity for these older historical resources as well.
+
 Fresh databases need no confirmation. Reapplication keeps the Attempt-only
 layout and cannot recreate old columns. Verify schema readiness and preserved
 history before starting matching binaries; do not run an old settlement binary

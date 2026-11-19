@@ -525,6 +525,81 @@ def test_context_enrichment_rejects_changed_facts_or_non_object_timings(incoming
         merge_accepted_context({"identity": "a", "generation": 1}, incoming)
 
 
+def historical_lease(*, receiptless=False, **overrides):
+    value = lease(
+        status="released", generation=None, reconciliation_status="waiting_terminal" if receiptless else "finalized",
+        receipt=None if receiptless else {"run_id": "run-a", "status": "completed", "diagnostics": ["old"]},
+        context={"snapshot": "accepted"}, executor_status="running" if receiptless else "completed",
+        executor_reconciled_at=None if receiptless else NOW,
+        executor_terminal_received_at=None if receiptless else NOW,
+        release_reason="cancel_requested" if receiptless else "executor_reconciled",
+    )
+    value["lease_payload_json"] = {
+        "source": "sandbox_runtime", "evidence_class": "runtime_lease_projection", "attempt_id": "attempt-a",
+        "labels": {"ai-platform.tenant_id": "tenant-a", "ai-platform.run_id": "run-a", "ai-platform.attempt_id": "attempt-a"},
+    }
+    value.update(overrides)
+    return value
+
+
+@pytest.mark.parametrize("receiptless", [False, True])
+def test_old_terminal_history_is_read_only_without_inventing_receipt_generation(receiptless):
+    state = "cancelled" if receiptless else "succeeded"
+    old_lease = historical_lease(receiptless=receiptless)
+    values = project_legacy_attempt_settlement(
+        attempt(status=state, generation=7, finished_at=NOW),
+        run(status=state, finished_at=NOW, cancel_requested_at=NOW if receiptless else None),
+        [old_lease],
+    ).to_mapping()
+    assert values["mapping_state"] == "historical"
+    assert values["settlement_phase"] == "settled"
+    assert values["receipt_json"] == old_lease["executor_terminal_json"]
+    assert values["receipt_owner_generation"] is None
+    assert values["accepted_context_json"] == old_lease["executor_reconciliation_context_json"]
+    assert values["settlement_claim_token"] is None
+    assert "owner_generation" not in old_lease["lease_payload_json"]
+    if receiptless:
+        old_lease["lease_payload_json"]["owner_generation"] = 4
+        assert project_legacy_attempt_settlement(
+            attempt(status=state, generation=7, finished_at=NOW),
+            run(status=state, finished_at=NOW, cancel_requested_at=NOW), [old_lease],
+        ).to_mapping()["mapping_state"] == "historical"
+        old_lease["lease_payload_json"]["owner_generation"] = 999
+        assert project_legacy_attempt_settlement(
+            attempt(status=state, generation=7, finished_at=NOW),
+            run(status=state, finished_at=NOW, cancel_requested_at=NOW), [old_lease],
+        ).to_mapping()["mapping_state"] != "historical"
+
+
+@pytest.mark.parametrize("override", [
+    {"status": "active"}, {"released_at": None}, {"executor_reconciled_at": None},
+    {"executor_terminal_received_at": None}, {"executor_reconciliation_status": "failed"},
+    {"executor_reconciliation_claim_token": "owned"}, {"executor_reconciliation_claimed_at": NOW},
+    {"executor_cleanup_claim_token": "cleanup"}, {"executor_probe_claimed_at": NOW},
+    {"executor_terminal_json": {}}, {"executor_terminal_json": {"run_id": "other"}},
+    {"executor_reconciliation_context_json": None}, {"lease_payload_json": {"owner_generation": None}},
+])
+def test_incomplete_old_history_cannot_gain_historical_mapping(override):
+    values = project_legacy_attempt_settlement(
+        attempt(status="succeeded", generation=7, finished_at=NOW),
+        run(status="succeeded", finished_at=NOW), [historical_lease(**override)],
+    ).to_mapping()
+    assert values["mapping_state"] != "historical"
+
+
+@pytest.mark.asyncio
+async def test_historical_detail_cannot_be_upgraded_to_a_runtime_writer(monkeypatch):
+    conn = MemoryConnection()
+    conn.row["mapping_state"] = "historical"
+    async def no_insert(*args):
+        return False
+    monkeypatch.setattr(projection, "_insert_projection", no_insert)
+    with pytest.raises(AttemptSettlementProjectionConflict, match="historical_read_only"):
+        await projection.persist_attempt_settlement_projection(
+            conn, AttemptSettlementProjection({**conn.row, "mapping_state": "mapped"}, CleanupObservation()),
+        )
+
+
 def test_empty_timings_are_an_observation_not_permission_to_replace():
     from app.runs.domain.attempt_settlement_projection import merge_accepted_context
     original = {"identity": "a", "dispatch_timings": {}}

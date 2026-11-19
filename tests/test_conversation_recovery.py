@@ -319,6 +319,23 @@ async def test_terminal_run_with_unverified_writer_projects_blocked_instead_of_w
                           action="new_conversation")
 
 
+@pytest.mark.asyncio
+async def test_historical_head_projects_blocked_without_claiming_runtime_authority():
+    from app.context.infrastructure.provider_continuation import get_session_continuation
+
+    class Connection:
+        async def execute(self, query, values):
+            return Cursor(row=dict(active_run_id='historical-run',active_attempt_id='old-attempt',
+                                   active_run_status='succeeded',recovery_json=None,current_epoch_id='old-epoch'))
+
+    async def reader(conn, **scope):
+        assert scope['require_mapped'] is False
+        return dict(mapping_state='historical',settlement_phase='settled',receipt_json={'status':'completed'})
+
+    result = await get_session_continuation(Connection(), tenant_id='tenant',user_id='user',session_id='session',settlement_reader=reader)
+    assert result == dict(state='blocked',reason_code='writer_unverified',workspace_saved=False,action='new_conversation')
+
+
 def test_recovery_capacity_uses_verified_prefix_while_legacy_uses_whole_epoch():
     from app.context.domain.conversation_recovery import provider_restore_size
 

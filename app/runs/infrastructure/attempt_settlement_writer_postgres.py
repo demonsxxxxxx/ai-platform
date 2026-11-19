@@ -149,6 +149,8 @@ async def _current_owned_detail(
         )
         row = values
     detail = dict(row)
+    if detail.get("mapping_state") == "historical":
+        raise AttemptSettlementProjectionConflict("attempt_settlement_historical_read_only")
     if source_lease_id is not None:
         existing_source = str(detail.get("source_lease_id") or "")
         if existing_source and existing_source != source_lease_id:

@@ -9,6 +9,7 @@ from app.runs.infrastructure.attempt_settlement_projection_postgres import (
     list_due_attempt_settlements,
     next_attempt_settlement_retry_delay,
     read_attempt_settlement,
+    read_legacy_settlement_history,
 )
 from app.runs.infrastructure.attempt_settlement_writer_postgres import (
     append_attempt_settlement_diagnostics,
@@ -33,6 +34,7 @@ def build_attempt_settlement_projection_service() -> AttemptSettlementProjection
         ports=AttemptSettlementProjectionPorts(
             lock_sources=lock_attempt_settlement_projection_sources,
             read_attempt=read_attempt_settlement,
+            read_legacy_history=read_legacy_settlement_history,
             list_due=list_due_attempt_settlements,
             next_retry_delay=next_attempt_settlement_retry_delay,
             initialize_attempt=initialize_attempt_settlement_detail,

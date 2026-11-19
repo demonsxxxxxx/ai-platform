@@ -314,6 +314,24 @@ cleanup transfer and historical validation share the core migration transaction;
 a later failure rolls all of them back. This is not a rollback after that
 transaction commits. No runtime compatibility writer or reader is retained.
 
+The `2026.11.19.1` history upgrade distinguishes immutable historical evidence
+from runtime-owned settlement. A released terminal legacy lease with exact
+Run/Attempt/label binding and accepted context can be preserved as `historical`
+when its old runtime projection omitted the executor generation, or when the
+old cancel path committed cancellation and release without a terminal receipt.
+Unknown executor generations remain NULL; missing receipts remain absent.
+Historical details are settled, excluded from due work and rejected by runtime
+writers. Malformed supplied generations, live claims, contradictory scope or
+incomplete completion evidence still block. This does not authorize continuation.
+
+Runs predating durable Attempt creation retain their original lease evidence in
+`run_legacy_settlement_history`; no Attempt is synthesized. Only fully released,
+terminal Runs with finalized receipts or a proven undispatched shape qualify.
+The original receipt/context/legacy identifier and Run result are compared before
+the same transaction retires old columns. History cannot hide a missing binding
+when any Attempt exists for that Run. The deployment gate checks the recorded
+provider identity for these older historical resources as well.
+
 A database that already retired the old columns still requires the same confirmations and drain. The upgrader validates its surviving Attempt authority against Run/Attempt results and resource bindings, preserves that authority without reconstructing absent receipts, and removes remaining marker/fence/index metadata.
 
 Only after successful mapping and comparison (or validation of an already-retired layout) does that same transaction remove the eight old Sandbox settlement columns, three old indexes, old status constraint, old write-fence trigger/function and the reader/writer/retirement marker tables. It does not use `CASCADE`. New schemas contain only Attempt settlement plus Sandbox resource fields. Runtime readiness requires that layout; it cannot select an older authority. No automatic down migration exists. Recovery uses a schema-compatible corrected package or an explicitly authorized restore, not an old binary against the contracted schema. See the [release runbook](../operations/release-operations-runbook.md).

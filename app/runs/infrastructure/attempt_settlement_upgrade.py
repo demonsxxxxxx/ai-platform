@@ -17,6 +17,7 @@ from app.runs.infrastructure.attempt_settlement_upgrade_mapping import (
     backfill_attempt_settlement_projections,
     compare_attempt_settlement_projections,
 )
+from app.runs.infrastructure.legacy_settlement_history import preserve_pre_attempt_settlement_history
 
 UPGRADE_CONFIRMATIONS = (
     "legacy_binaries_stopped",
@@ -71,7 +72,8 @@ async def upgrade_attempt_settlement_authority(
     # binaries which do not know the Attempt writer protocol.
     for relation in (
         "runs", "sandbox_leases", "run_attempts", "sandbox_execution_dispatches",
-        "run_attempt_settlements", "execution_supervision_domains", "execution_supervision_claims",
+        "run_attempt_settlements", "run_legacy_settlement_history",
+        "execution_supervision_domains", "execution_supervision_claims",
         "run_stale_reconciliation_claims", "run_delivery_intents",
     ):
         await conn.execute(f"lock table {relation} in access exclusive mode")
@@ -142,6 +144,7 @@ async def upgrade_attempt_settlement_authority(
                  else 'waiting_settlement' end
                where executor_cleanup_status='not_required'"""
         )
+        await preserve_pre_attempt_settlement_history(conn)
         # No writer can change this denominator while the source tables are fenced.
         after = None
         while True:
@@ -170,7 +173,7 @@ async def upgrade_attempt_settlement_authority(
                left join sandbox_leases lease on lease.tenant_id=attempt.tenant_id
                  and lease.run_id=attempt.run_id and lease.attempt_id=attempt.id
                  and lease.id=detail.source_lease_id
-               where detail.attempt_id is null or detail.mapping_state<>'mapped'
+               where detail.attempt_id is null or detail.mapping_state not in ('mapped','historical')
                  or detail.attempt_status_snapshot is distinct from attempt.status
                  or detail.attempt_owner_generation_snapshot is distinct from attempt.owner_generation
                  or detail.run_status_snapshot is distinct from run.status
@@ -185,6 +188,9 @@ async def upgrade_attempt_settlement_authority(
                  or detail.dispatch_state='unknown'
                  or (detail.dispatch_state='accepted' and detail.accepted_context_json is null)
                  or (detail.receipt_json is not null and lease.id is null)
+                 or (detail.mapping_state='historical' and (lease.status is distinct from 'released'
+                   or lease.released_at is null or detail.accepted_context_json is null
+                   or detail.dispatch_state<>'accepted'))
                  or (lease.executor_terminal_received_at is not null and detail.receipt_json is null)""",
         )).fetchone()
         if invalid and int(invalid["count"]):
@@ -197,6 +203,21 @@ async def upgrade_attempt_settlement_authority(
                  and detail.settlement_phase='settled' and detail.receipt_json is not null
                  and lease.status='released' and lease.executor_cleanup_status='not_required'"""
         )
+    invalid_history = await (await conn.execute(
+        """select count(*) as count from run_legacy_settlement_history history
+           join runs run on run.tenant_id=history.tenant_id and run.id=history.run_id
+           left join sandbox_leases lease on lease.id=history.lease_id
+             and lease.tenant_id=history.tenant_id and lease.run_id=history.run_id
+           where lease.id is null or lease.status<>'released' or lease.released_at is null
+             or history.legacy_attempt_id is distinct from lease.attempt_id
+             or history.run_status is distinct from run.status
+             or history.result_json is distinct from run.result_json
+             or run.finished_at is null
+             or exists(select 1 from run_attempts attempt
+               where attempt.tenant_id=history.tenant_id and attempt.run_id=history.run_id)""",
+    )).fetchone()
+    if invalid_history and int(invalid_history["count"]):
+        raise RuntimeError("attempt_settlement_upgrade_pre_attempt_history_invalid")
     unbound = await (await conn.execute(
         """select count(*) as count from sandbox_leases lease
            left join run_attempt_settlements detail on detail.tenant_id=lease.tenant_id
@@ -206,7 +227,12 @@ async def upgrade_attempt_settlement_authority(
                or to_jsonb(lease)->>'executor_reconciliation_context_json' is not null
                or to_jsonb(lease)->>'executor_reconciliation_intent_context_json' is not null
                or lease.executor_terminal_received_at is not null)
-             and (detail.attempt_id is null or detail.mapping_state<>'mapped')""",
+             and (detail.attempt_id is null or detail.mapping_state not in ('mapped','historical'))
+             and not exists(select 1 from run_legacy_settlement_history history
+               where history.lease_id=lease.id and history.tenant_id=lease.tenant_id
+                 and history.run_id=lease.run_id
+                 and not exists(select 1 from run_attempts attempt
+                   where attempt.tenant_id=lease.tenant_id and attempt.run_id=lease.run_id))""",
     )).fetchone()
     if unbound and int(unbound["count"]):
         raise RuntimeError("attempt_settlement_upgrade_unbound_history")
