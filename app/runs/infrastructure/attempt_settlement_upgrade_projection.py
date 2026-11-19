@@ -95,6 +95,93 @@ def _cleanup_observation(leases: Sequence[Mapping[str, Any]], *, settled: bool) 
     )
 
 
+def _historical_terminal_values(
+    attempt: Mapping[str, Any], run: Mapping[str, Any], lease: Mapping[str, Any],
+    values: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Archive proven old terminal facts without inventing executor authority.
+
+    Pre-generation runtime projections omitted owner_generation entirely. Old
+    cancellation released the producer without synthesizing a terminal callback.
+    Neither observation can authorize runtime claims or continuation after upgrade.
+    """
+    payload = _object(lease.get("lease_payload_json"))
+    context = _object(lease.get("executor_reconciliation_context_json"))
+    labels = _object(payload.get("labels")) if payload is not None else None
+    result = _object(run.get("result_json"))
+    finished_at = run.get("finished_at") or attempt.get("finished_at")
+    if (
+        payload is None or labels is None or context is None or result is None or finished_at is None
+        or not _terminal_pair_is_consistent(str(attempt.get("status")), str(run.get("status")))
+        or _positive_int(attempt.get("owner_generation")) is None
+        or lease.get("status") != "released" or lease.get("released_at") is None
+        or payload.get("source") != "sandbox_runtime"
+        or payload.get("evidence_class") != "runtime_lease_projection"
+        or payload.get("attempt_id") != attempt.get("id")
+        or any(labels.get(f"ai-platform.{key}") != value for key, value in (
+            ("tenant_id", attempt.get("tenant_id")), ("run_id", attempt.get("run_id")),
+            ("attempt_id", attempt.get("id")),
+        ))
+        or any(lease.get(field) is not None for field in (
+            "executor_reconciliation_claim_token", "executor_reconciliation_claimed_at",
+            "executor_probe_claim_token", "executor_probe_claimed_at",
+            "executor_cleanup_claim_token", "executor_cleanup_claimed_at",
+        ))
+        or str(lease.get("dispatch_status") or "") not in {"", "accepted"}
+    ):
+        return None
+    generation = _positive_int(payload.get("owner_generation"))
+    if generation is not None and generation > int(attempt["owner_generation"]):
+        return None
+    if "owner_generation" in payload and generation is None:
+        return None  # A malformed supplied generation is not an older layout.
+    receipt = _object(lease.get("executor_terminal_json"))
+    receiptless_cancel = (
+        lease.get("executor_terminal_json") is None
+        and lease.get("executor_terminal_sql_null", True)
+        and lease.get("executor_terminal_received_at") is None
+        and attempt.get("status") == "cancelled" and run.get("cancel_requested_at") is not None
+        and lease.get("release_reason") in {"cancel_requested", "admin_cancel_requested"}
+        and lease.get("executor_status") in {"accepted", "running"}
+        and lease.get("executor_reconciliation_status") == "waiting_terminal"
+    )
+    old_finalized_receipt = (
+        "owner_generation" not in payload and receipt is not None
+        and bool({key: value for key, value in receipt.items() if key != "diagnostics"})
+        and receipt.get("run_id") == attempt.get("run_id")
+        and lease.get("executor_status") in {"completed", "failed", "cancelled"}
+        and lease.get("executor_reconciliation_status") == "finalized"
+        and lease.get("executor_terminal_received_at") is not None
+        and lease.get("executor_reconciled_at") is not None
+    )
+    if not (receiptless_cancel or old_finalized_receipt):
+        return None
+    count = lease.get("executor_terminal_reconciliation_attempt_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    intent_value = lease.get("executor_reconciliation_intent_context_json")
+    intent = _object(intent_value) if intent_value is not None else {
+        key: value for key, value in context.items() if key != "dispatch_timings"
+    }
+    if intent is None:
+        return None
+    archived = dict(values)
+    archived.update(
+        mapping_state="historical", source_lease_id=str(lease["id"]),
+        dispatch_state="accepted", intent_recovery_context_json=intent,
+        accepted_context_json=context, settlement_phase="settled", settlement_attempt_count=count,
+        result_status=run["status"], result_json=result, result_sha256=_canonical_digest(result),
+        settlement_error_code=(run.get("error_code") or attempt.get("error_code")), settled_at=finished_at,
+    )
+    if receipt is not None:
+        archived.update(
+            receipt_identity=f"sandbox_terminal:{lease['id']}:{attempt['id']}", receipt_json=receipt,
+            receipt_sha256=_canonical_digest({key: value for key, value in receipt.items() if key != "diagnostics"}),
+            receipt_owner_generation=None,
+        )
+    return archived
+
+
 def _base_values(attempt: Mapping[str, Any], run: Mapping[str, Any]) -> dict[str, Any]:
     attempt_status = str(attempt.get("status") or "")
     attempt_generation = _positive_int(attempt.get("owner_generation"))
@@ -195,6 +282,16 @@ def project_legacy_attempt_settlement(
     ):
         values["mapping_state"] = "conflict"
         return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=settled))
+
+    if any(lease.get(field) is None and lease.get(flag, True) is False for field, flag in (
+        ("executor_terminal_json", "executor_terminal_sql_null"),
+        ("executor_reconciliation_context_json", "executor_context_sql_null"),
+        ("executor_reconciliation_intent_context_json", "executor_intent_sql_null"),
+    )):
+        return AttemptSettlementProjection(values, _cleanup_observation(leases, settled=False))
+    historical = _historical_terminal_values(attempt, run, lease, values)
+    if historical is not None:
+        return AttemptSettlementProjection(historical, _cleanup_observation(leases, settled=True))
 
     attempt_generation = _positive_int(attempt.get("owner_generation"))
     lease_payload = _object(lease.get("lease_payload_json"))

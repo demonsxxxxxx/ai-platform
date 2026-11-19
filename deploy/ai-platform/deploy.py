@@ -112,10 +112,48 @@ def quiescent(docker: list[str]) -> None:
         'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
         "sh", "select coalesce(runtime_container_id,'') || '|' || coalesce(runtime_container_name,'') from sandbox_leases where status='quarantined';",
     ], "quarantined runtime check", 30)
-    inventory = run([*docker, "ps", "-a", "--no-trunc", "--format", "{{.ID}}|{{.Names}}"], "sandbox inventory")
+    inventory = run([
+        *docker, "ps", "-a", "--no-trunc", "--format",
+        '{{.ID}}|{{.Names}}|{{.Label "opensandbox.io/id"}}',
+    ], "sandbox inventory")
     existing = {value for line in inventory.splitlines() for value in line.split("|") if value}
     if any(value in existing for line in handles.splitlines() for value in line.split("|") if value):
         raise DeploymentError("quarantined sandbox still exists")
+    # A timestamp-only legacy claim may be converged by schema apply, but SQL
+    # cannot prove its producer is gone. Check exact recorded handles as well
+    # as owner labels, without requiring retired columns in the installed layout.
+    legacy_layout = run([
+        *docker, "exec", "ai-platform-postgres", "sh", "-ceu",
+        'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
+        "sh", "select exists(select 1 from pg_attribute where attrelid=to_regclass('sandbox_leases') "
+        "and attname='executor_reconciliation_claimed_at' and not attisdropped);",
+    ], "legacy layout check", 30)
+    if legacy_layout not in {"t", "f"}:
+        raise DeploymentError("legacy runtime layout cannot be verified")
+    legacy_handles = run([
+        *docker, "exec", "ai-platform-postgres", "sh", "-ceu",
+        'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
+        "sh", "select provider || '|' || coalesce(nullif(trim(runtime_container_id),''),'') || '|' || "
+        "coalesce(nullif(trim(runtime_container_name),''),'') from sandbox_leases "
+        "where status='released' and ("
+        "(executor_reconciliation_status='finalized' "
+        "and executor_reconciliation_claim_token is null "
+        "and executor_reconciliation_claimed_at is not null) "
+        "or not (lease_payload_json ? 'owner_generation') "
+        "or executor_status in ('accepted','running') "
+        "or not exists(select 1 from run_attempts a where a.tenant_id=sandbox_leases.tenant_id "
+        "and a.run_id=sandbox_leases.run_id));",
+    ], "legacy finalized runtime check", 30) if legacy_layout == "t" else ""
+    for line in legacy_handles.splitlines():
+        provider, container_id, container_name = line.split("|")
+        recorded = [value for value in (container_id, container_name) if value]
+        # OpenSandbox's persisted ID is its SDK UUID, resolved by the server's
+        # opensandbox.io/id label, not a Docker ID. Its synthetic platform name
+        # cannot establish absence when that provider ID is missing.
+        if not recorded or (provider == "opensandbox" and not container_id):
+            raise DeploymentError("legacy finalized runtime identity is missing")
+        if any(value in existing for value in recorded):
+            raise DeploymentError("legacy finalized sandbox still exists")
     for owner in ("sandbox-runtime", "sandbox-native-tool"):
         if run([*docker, "ps", "-aq", "--filter", f"label=ai-platform.owner={owner}"], "sandbox check"):
             raise DeploymentError("sandbox containers block deployment")

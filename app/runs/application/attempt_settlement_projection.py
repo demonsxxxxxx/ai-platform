@@ -34,6 +34,7 @@ class AttemptSettlementProjectionPorts:
     append_diagnostics: Callable[..., Awaitable[bool]]
     summary: Callable[..., Awaitable[dict[str, Any]]]
     claim_checkpoint_repair: Callable[..., Awaitable[bool]]
+    read_legacy_history: Callable[..., Awaitable[dict[str, Any] | None]] | None = None
 
 
 class AttemptSettlementReadError(RuntimeError):
@@ -69,6 +70,12 @@ class AttemptSettlementProjectionService:
                 state = "unknown"
             raise AttemptSettlementReadError(f"attempt_settlement_projection_{state}")
         return row
+
+    async def read_legacy_history(self, conn: Any, *, tenant_id: str, run_id: str, lease_id: str) -> dict[str, Any] | None:
+        """Read exact pre-Attempt evidence, never a substitute execution detail."""
+        if self.ports.read_legacy_history is None:
+            return None
+        return await self.ports.read_legacy_history(conn, tenant_id=tenant_id, run_id=run_id, lease_id=lease_id)
 
     async def list_due_attempts(
         self, conn: Any, *, limit: int, stale_after_seconds: int

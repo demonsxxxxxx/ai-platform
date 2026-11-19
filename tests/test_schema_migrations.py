@@ -835,7 +835,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.MODEL_GROUP_ENABLED_DEFAULT_SCHEMA_VERSION == "2026.10.29.2"
     assert schema_migrations.LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION == "2026.11.05.1"
     assert schema_migrations.ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION == "2026.11.06.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION
+    assert schema_migrations.HISTORICAL_ATTEMPT_SETTLEMENT_SCHEMA_VERSION == "2026.11.19.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == schema_migrations.HISTORICAL_ATTEMPT_SETTLEMENT_SCHEMA_VERSION
     assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_execution_dispatches", "status", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_execution_dispatches", "chk_sandbox_execution_dispatches_status") in schema_migrations.CRITICAL_CONSTRAINTS
@@ -865,6 +866,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_group_models",
         "run_attempts",
         "run_attempt_settlements",
+        "run_legacy_settlement_history",
         "run_stale_reconciliation_claims",
         "execution_supervision_domains",
         "execution_supervision_claims",
@@ -1317,7 +1319,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "chk_run_attempt_settlements_mapping_state",
             "c",
             "CHECK (mapping_state = ANY (ARRAY['mapped'::text, 'unknown'::text, "
-            "'conflict'::text]))",
+            "'conflict'::text, 'historical'::text]))",
         ),
         (
             "run_attempt_settlements",
@@ -1352,8 +1354,24 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "AND receipt_sha256 IS NULL AND receipt_owner_generation IS NULL "
             "OR receipt_identity IS NOT NULL AND receipt_identity <> ''::text "
             "AND jsonb_typeof(receipt_json) = 'object'::text "
+            "AND receipt_json IS NOT NULL AND receipt_sha256 IS NOT NULL "
             "AND receipt_sha256 ~ '^[0-9a-f]{64}$'::text "
-            "AND receipt_owner_generation > 0)",
+            "AND (receipt_owner_generation IS NOT NULL AND receipt_owner_generation > 0 "
+            "OR mapping_state = 'historical'::text AND receipt_owner_generation IS NULL))",
+        ),
+        (
+            "run_attempt_settlements",
+            "chk_run_attempt_settlements_historical",
+            "c",
+            "CHECK (mapping_state <> 'historical'::text OR "
+            "settlement_phase = 'settled'::text AND source_lease_id IS NOT NULL "
+            "AND dispatch_state = 'accepted'::text AND accepted_context_json IS NOT NULL "
+            "AND jsonb_typeof(accepted_context_json) = 'object'::text "
+            "AND result_status IS NOT NULL AND result_status = run_status_snapshot "
+            "AND result_json IS NOT NULL AND result_sha256 IS NOT NULL AND settled_at IS NOT NULL "
+            "AND (attempt_status_snapshot = 'succeeded'::text AND run_status_snapshot = 'succeeded'::text "
+            "OR attempt_status_snapshot = 'cancelled'::text AND (run_status_snapshot = ANY (ARRAY['cancelled'::text, 'canceled'::text])) "
+            "OR attempt_status_snapshot = 'failed'::text AND (run_status_snapshot = ANY (ARRAY['failed'::text, 'dead-letter'::text, 'dead_letter'::text, 'dead-lettered'::text]))))",
         ),
         (
             "run_attempt_settlements",

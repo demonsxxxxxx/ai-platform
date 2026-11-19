@@ -77,7 +77,8 @@ RUN_STALE_RECONCILIATION_CLAIMS_SCHEMA_VERSION = "2026.10.25.9"
 LIFECYCLE_CONTINUATION_INTEGRATION_SCHEMA_VERSION = "2026.11.05.1"
 ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION = "2026.11.06.1"
 # The stopped-writer settlement cutover is not binary rollback-compatible.
-TARGET_SCHEMA_VERSION = ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION
+HISTORICAL_ATTEMPT_SETTLEMENT_SCHEMA_VERSION = "2026.11.19.1"
+TARGET_SCHEMA_VERSION = HISTORICAL_ATTEMPT_SETTLEMENT_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Attempt-only upgrade retires the old Sandbox settlement indexes.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ATTEMPT_SETTLEMENT_AUTHORITY_SCHEMA_VERSION
@@ -119,6 +120,7 @@ CRITICAL_RELATIONS = (
     "model_group_models",
     "run_attempts",
     "run_attempt_settlements",
+    "run_legacy_settlement_history",
     "run_stale_reconciliation_claims",
     "execution_supervision_domains",
     "execution_supervision_claims",
@@ -275,6 +277,11 @@ CRITICAL_COLUMNS = (
     ("run_attempts", "error_code", "text", False),
     ("run_attempts", "created_at", "timestamptz", True),
     ("run_attempts", "updated_at", "timestamptz", True),
+    ("run_legacy_settlement_history", "lease_id", "text", True),
+    ("run_legacy_settlement_history", "tenant_id", "text", True),
+    ("run_legacy_settlement_history", "run_id", "text", True),
+    ("run_legacy_settlement_history", "snapshot_json", "jsonb", True),
+    ("run_legacy_settlement_history", "result_json", "jsonb", True),
     ("run_attempt_settlements", "tenant_id", "text", True),
     ("run_attempt_settlements", "run_id", "text", True),
     ("run_attempt_settlements", "attempt_id", "text", True),
@@ -583,6 +590,10 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempt_settlements", "chk_run_attempt_settlements_phase"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_identity"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_receipt"),
+    ("run_attempt_settlements", "chk_run_attempt_settlements_historical"),
+    ("run_legacy_settlement_history", "run_legacy_settlement_history_pkey"),
+    ("run_legacy_settlement_history", "fk_run_legacy_settlement_history_run"),
+    ("run_legacy_settlement_history", "chk_run_legacy_settlement_history_payload"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_claim"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_retry"),
     ("run_attempt_settlements", "chk_run_attempt_settlements_attempt_count"),
@@ -899,7 +910,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "run_attempt_settlements",
         "chk_run_attempt_settlements_mapping_state",
         "c",
-        "CHECK (mapping_state = ANY (ARRAY['mapped'::text, 'unknown'::text, 'conflict'::text]))",
+        "CHECK (mapping_state = ANY (ARRAY['mapped'::text, 'unknown'::text, 'conflict'::text, 'historical'::text]))",
     ),
     (
         "run_attempt_settlements",
@@ -934,8 +945,24 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "AND receipt_sha256 IS NULL AND receipt_owner_generation IS NULL "
         "OR receipt_identity IS NOT NULL AND receipt_identity <> ''::text "
         "AND jsonb_typeof(receipt_json) = 'object'::text "
+        "AND receipt_json IS NOT NULL AND receipt_sha256 IS NOT NULL "
         "AND receipt_sha256 ~ '^[0-9a-f]{64}$'::text "
-        "AND receipt_owner_generation > 0)",
+        "AND (receipt_owner_generation IS NOT NULL AND receipt_owner_generation > 0 "
+        "OR mapping_state = 'historical'::text AND receipt_owner_generation IS NULL))",
+    ),
+    (
+        "run_attempt_settlements",
+        "chk_run_attempt_settlements_historical",
+        "c",
+        "CHECK (mapping_state <> 'historical'::text OR "
+        "settlement_phase = 'settled'::text AND source_lease_id IS NOT NULL "
+        "AND dispatch_state = 'accepted'::text AND accepted_context_json IS NOT NULL "
+        "AND jsonb_typeof(accepted_context_json) = 'object'::text "
+        "AND result_status IS NOT NULL AND result_status = run_status_snapshot "
+        "AND result_json IS NOT NULL AND result_sha256 IS NOT NULL AND settled_at IS NOT NULL "
+        "AND (attempt_status_snapshot = 'succeeded'::text AND run_status_snapshot = 'succeeded'::text "
+        "OR attempt_status_snapshot = 'cancelled'::text AND (run_status_snapshot = ANY (ARRAY['cancelled'::text, 'canceled'::text])) "
+        "OR attempt_status_snapshot = 'failed'::text AND (run_status_snapshot = ANY (ARRAY['failed'::text, 'dead-letter'::text, 'dead_letter'::text, 'dead-lettered'::text]))))",
     ),
     (
         "run_attempt_settlements",

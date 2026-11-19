@@ -215,6 +215,56 @@ def test_quarantine_with_existing_runtime_blocks_even_without_owner_label(monkey
         entry.quiescent(["docker"])
 
 
+@pytest.mark.parametrize("recorded,inventory,error", [
+    ("docker|synthetic-id|synthetic-name", "synthetic-id|other-name|", "sandbox still exists"),
+    ("docker|synthetic-id|synthetic-name", "other-id|synthetic-name|", "sandbox still exists"),
+    ("docker||", "", "identity is missing"),
+    ("docker|synthetic-id|synthetic-name", "other-id|other-name|", None),
+    ("docker|synthetic-id|", "", None),
+    ("docker||synthetic-name", "", None),
+    ("opensandbox|sdk-uuid|synthetic-name", "docker-id|docker-name|sdk-uuid", "sandbox still exists"),
+    ("opensandbox||synthetic-name", "", "identity is missing"),
+    ("opensandbox|sdk-uuid|synthetic-name", "docker-id|docker-name|other-uuid", None),
+    ("", "", None),
+])
+def test_legacy_finalized_runtime_requires_exact_absence_even_without_owner_label(
+    monkeypatch, recorded, inventory, error,
+):
+    statements = []
+
+    def run(command, stage, timeout=90):
+        if stage == "legacy finalized runtime check":
+            statements.append(command[-1])
+        if stage == "sandbox inventory":
+            assert '{{.Label "opensandbox.io/id"}}' in command[-1]
+        return {"activity check": "0|0|0", "legacy layout check": "t", "legacy finalized runtime check": recorded,
+                "sandbox inventory": inventory}.get(stage, "")
+
+    monkeypatch.setattr(entry, "run", run)
+    if error:
+        with pytest.raises(entry.DeploymentError, match=error):
+            entry.quiescent(["docker"])
+    else:
+        entry.quiescent(["docker"])
+    assert len(statements) == 1
+    assert "executor_reconciliation_claimed_at is not null" in statements[0]
+    assert "executor_reconciliation_claim_token is null" in statements[0]
+    assert "status='released'" in statements[0]
+
+
+@pytest.mark.parametrize('layout', ['f', 'invalid'])
+def test_current_runtime_layout_never_queries_retired_columns(monkeypatch, layout):
+    def run(command, stage, timeout=90):
+        assert stage != 'legacy finalized runtime check'
+        return {'activity check': '0|0|0', 'legacy layout check': layout}.get(stage, '')
+    monkeypatch.setattr(entry,'run',run)
+    if layout == 'f':
+        entry.quiescent(['docker'])
+    else:
+        with pytest.raises(entry.DeploymentError,match='layout cannot be verified'):
+            entry.quiescent(['docker'])
+
+
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(entry, "COMMIT", "a" * 40)

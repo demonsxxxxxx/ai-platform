@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.runs.api import AttemptSettlementProjectionConflict
+from app.runs.api import AttemptSettlementProjectionConflict, AttemptSettlementReadError
 from app.sandbox.domain.lease_errors import SandboxExecutorTerminalConflictError
 
 
@@ -40,7 +40,22 @@ class AttemptSettlementLeaseRepository:
         scope = self._scope(result)
         if scope is None:
             return result
-        detail = await self._settlement.read_attempt(conn, **scope, require_mapped=require_mapped)
+        try:
+            detail = await self._settlement.read_attempt(conn, **scope, require_mapped=require_mapped)
+        except AttemptSettlementReadError as exc:
+            if require_mapped or str(exc) != "attempt_settlement_projection_missing":
+                raise
+            history = await self._settlement.read_legacy_history(
+                conn, tenant_id=scope["tenant_id"], run_id=scope["run_id"], lease_id=str(result["id"]),
+            )
+            if history is None:
+                raise
+            snapshot = history["snapshot_json"]
+            detail = dict(mapping_state="historical", settlement_phase="settled",
+                          dispatch_state="unknown", receipt_json=snapshot.get("executor_terminal_json"),
+                          accepted_context_json=snapshot.get("executor_reconciliation_context_json"),
+                          intent_recovery_context_json=snapshot.get("executor_reconciliation_intent_context_json"),
+                          settlement_attempt_count=snapshot.get("executor_terminal_reconciliation_attempt_count", 0))
         if detail is None:
             raise RuntimeError("attempt_settlement_projection_missing")
         phase = str(detail.get("settlement_phase") or "unknown")

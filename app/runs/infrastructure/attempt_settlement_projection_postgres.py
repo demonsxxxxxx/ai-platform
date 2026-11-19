@@ -186,6 +186,8 @@ async def persist_attempt_settlement_projection(
     if current is None:
         raise AttemptSettlementProjectionConflict("attempt_settlement_projection_row_missing")
     current = dict(current)
+    if current.get("mapping_state") == "historical":
+        raise AttemptSettlementProjectionConflict("attempt_settlement_historical_read_only")
     # Accepted context is immutable and cannot regress to an absent observation.
     if values.get("accepted_context_json") is None and current.get("accepted_context_json") is not None:
         values["accepted_context_json"] = current["accepted_context_json"]
@@ -256,6 +258,19 @@ async def read_attempt_settlement(
         )
     ).fetchone()
     return dict(row) if row is not None else None
+
+
+async def read_legacy_settlement_history(conn: Any, *, tenant_id: str, run_id: str, lease_id: str) -> dict[str, Any] | None:
+    row = await (await conn.execute(
+        """select history.* from run_legacy_settlement_history history
+           join sandbox_leases lease on lease.id=history.lease_id and lease.tenant_id=history.tenant_id
+             and lease.run_id=history.run_id and lease.status='released' and lease.released_at is not null
+           where history.tenant_id=%s and history.run_id=%s and history.lease_id=%s
+             and not exists(select 1 from run_attempts attempt
+               where attempt.tenant_id=history.tenant_id and attempt.run_id=history.run_id)""",
+        (tenant_id, run_id, lease_id),
+    )).fetchone()
+    return dict(row) if row else None
 
 
 async def list_due_attempt_settlements(

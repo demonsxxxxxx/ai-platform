@@ -18,6 +18,10 @@ _SOURCE_LEASE_FIELDS = (
     "attempt_id",
     "status",
     "lease_payload_json",
+    "executor_probe_claim_token",
+    "executor_probe_claimed_at",
+    "executor_cleanup_claim_token",
+    "executor_cleanup_claimed_at",
     "executor_status",
     "executor_heartbeat_at",
     "executor_terminal_json",
@@ -99,16 +103,23 @@ async def _load_locked_attempt_facts(
         )
     ).fetchone()
     lease_suffix = " for update of lease" if lock else ""
+    optional = {"executor_reconciliation_intent_context_json", "executor_reconciliation_retry_not_before"}
+    present = {row["attname"] for row in await (await conn.execute(
+        """select attname from pg_attribute where attrelid=to_regclass('sandbox_leases')
+           and attname=any(%s::text[]) and not attisdropped""", (list(optional),),
+    )).fetchall()}
+    # Select source columns directly. Repeated to_jsonb(lease) would deserialize
+    # every large private JSON field for each retired-column expression.
     leases = await (
         await conn.execute(
             f"""
             select {", ".join(
-                f"to_jsonb(lease)->'{field}' as {field}" if field in {"executor_terminal_json", "executor_reconciliation_context_json", "executor_reconciliation_intent_context_json"}
-                else f"(to_jsonb(lease)->>'{field}')::integer as {field}" if field == "executor_terminal_reconciliation_attempt_count"
-                else f"to_jsonb(lease)->>'{field}' as {field}" if field in {"executor_reconciliation_status", "executor_reconciliation_claim_token"}
-                else f"(to_jsonb(lease)->>'{field}')::timestamptz as {field}" if field in {"executor_reconciliation_claimed_at", "executor_reconciliation_retry_not_before"}
+                f"null as {field}" if field in optional and field not in present
                 else f"lease.{field}" for field in _SOURCE_LEASE_FIELDS
             )},
+                   lease.executor_terminal_json is null as executor_terminal_sql_null,
+                   lease.executor_reconciliation_context_json is null as executor_context_sql_null,
+                   {"lease.executor_reconciliation_intent_context_json is null" if "executor_reconciliation_intent_context_json" in present else "true"} as executor_intent_sql_null,
                    dispatch.status as dispatch_status
             from sandbox_leases lease
             left join sandbox_execution_dispatches dispatch
@@ -272,7 +283,7 @@ async def compare_attempt_settlement_projections(
         expected = projection.to_mapping()
         counts["unknown_count"] += expected["mapping_state"] == "unknown"
         counts["conflict_count"] += expected["mapping_state"] == "conflict"
-        if expected["mapping_state"] == "mapped":
+        if expected["mapping_state"] in {"mapped", "historical"}:
             counts["mapped_count"] += 1
         for field, observation_field in (
             ("lease_count", "cleanup_lease_count"),

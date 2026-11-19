@@ -558,6 +558,37 @@ async def test_real_postgres_upgrade_from_origin_main_preserves_model_groups_and
 
 
 @pytest.mark.asyncio
+async def test_upgrade_from_attempt_only_v055_preserves_existing_ledger(tmp_path: Path):
+    previous = _load_schema_migrations_at_commit(tmp_path, "821f524d21636ab19a89228838c057c476d7eaf2")
+    root = Path(__file__).resolve().parents[1]
+    for fragment in ("context/infrastructure/conversation_recovery_schema.sql", "execution/infrastructure/recovery_operations_schema.sql"):
+        target = tmp_path / fragment
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = subprocess.check_output(['git','show',f'821f524d21636ab19a89228838c057c476d7eaf2:app/{fragment}'],cwd=root,text=True)
+        target.write_text(source,encoding='utf-8')
+    dsn = _postgres_dsn()
+    name = f"historical_attempt_schema_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    factory = _transaction_factory(dsn, name)
+    indexes = _index_connection_factory(dsn, name)
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(name)))
+        await previous.apply_migrations(transaction_factory=factory,index_connection_factory=indexes)
+        async with factory() as conn:
+            before = await (await conn.execute("select version,checksum_sha256 from schema_migrations")).fetchall()
+        await schema_migrations.apply_migrations(transaction_factory=factory,index_connection_factory=indexes)
+        async with factory() as conn:
+            rows = await (await conn.execute("select version,checksum_sha256 from schema_migrations order by version")).fetchall()
+            assert rows[:-1] == before
+            assert rows[-1]["version"] == schema_migrations.HISTORICAL_ATTEMPT_SETTLEMENT_SCHEMA_VERSION
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+    finally:
+        sys.modules.pop(previous.__name__, None)
+        await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
 async def test_upgrade_from_previous_integrated_candidate_advances_ledger_without_checksum_rewrite(tmp_path: Path):
     """Run the actual previous package source outside this interpreter's imports."""
     historical = tmp_path / "historical"

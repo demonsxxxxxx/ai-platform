@@ -983,7 +983,7 @@ create table if not exists run_attempt_settlements (
     schema_version = 'ai-platform.run-attempt-settlement.v1'
   ),
   constraint chk_run_attempt_settlements_mapping_state check (
-    mapping_state in ('mapped', 'unknown', 'conflict')
+    mapping_state in ('mapped', 'unknown', 'conflict', 'historical')
   ),
   constraint chk_run_attempt_settlements_dispatch_state check (
     dispatch_state in ('unknown', 'accepted', 'receipt_before_acceptance')
@@ -1005,8 +1005,22 @@ create table if not exists run_attempt_settlements (
       and receipt_owner_generation is null)
     or (receipt_identity is not null and receipt_identity <> ''
       and jsonb_typeof(receipt_json) = 'object'
+      and receipt_json is not null and receipt_sha256 is not null
       and receipt_sha256 ~ '^[0-9a-f]{64}$'
-      and receipt_owner_generation > 0)
+      and ((receipt_owner_generation is not null and receipt_owner_generation > 0)
+        or (mapping_state = 'historical' and receipt_owner_generation is null)))
+  ),
+  constraint chk_run_attempt_settlements_historical check (
+    mapping_state <> 'historical' or (
+      settlement_phase = 'settled' and source_lease_id is not null
+      and dispatch_state = 'accepted' and accepted_context_json is not null
+      and jsonb_typeof(accepted_context_json) = 'object'
+      and result_status is not null and result_status = run_status_snapshot
+      and result_json is not null and result_sha256 is not null and settled_at is not null
+      and ((attempt_status_snapshot = 'succeeded' and run_status_snapshot = 'succeeded')
+        or (attempt_status_snapshot = 'cancelled' and run_status_snapshot in ('cancelled','canceled'))
+        or (attempt_status_snapshot = 'failed' and run_status_snapshot in ('failed','dead-letter','dead_letter','dead-lettered')))
+    )
   ),
   constraint chk_run_attempt_settlements_claim check (
     (settlement_phase = 'claimed'
@@ -1038,6 +1052,35 @@ alter table run_attempt_settlements
   add column if not exists receipt_recorded_at timestamptz;
 alter table run_attempt_settlements
   add column if not exists settled_claim_token text;
+
+-- Replace only the changed contracts on an already Attempt-only installation.
+alter table run_attempt_settlements drop constraint if exists chk_run_attempt_settlements_mapping_state;
+alter table run_attempt_settlements add constraint chk_run_attempt_settlements_mapping_state
+  check (mapping_state in ('mapped', 'unknown', 'conflict', 'historical'));
+alter table run_attempt_settlements drop constraint if exists chk_run_attempt_settlements_receipt;
+alter table run_attempt_settlements add constraint chk_run_attempt_settlements_receipt check (
+  (receipt_identity is null and receipt_json is null and receipt_sha256 is null
+    and receipt_owner_generation is null)
+  or (receipt_identity is not null and receipt_identity <> ''
+    and jsonb_typeof(receipt_json) = 'object'
+    and receipt_json is not null and receipt_sha256 is not null
+    and receipt_sha256 ~ '^[0-9a-f]{64}$'
+    and ((receipt_owner_generation is not null and receipt_owner_generation > 0)
+      or (mapping_state = 'historical' and receipt_owner_generation is null)))
+);
+alter table run_attempt_settlements drop constraint if exists chk_run_attempt_settlements_historical;
+alter table run_attempt_settlements add constraint chk_run_attempt_settlements_historical check (
+  mapping_state <> 'historical' or (
+    settlement_phase = 'settled' and source_lease_id is not null
+    and dispatch_state = 'accepted' and accepted_context_json is not null
+    and jsonb_typeof(accepted_context_json) = 'object'
+    and result_status is not null and result_status = run_status_snapshot
+    and result_json is not null and result_sha256 is not null and settled_at is not null
+    and ((attempt_status_snapshot = 'succeeded' and run_status_snapshot = 'succeeded')
+      or (attempt_status_snapshot = 'cancelled' and run_status_snapshot in ('cancelled','canceled'))
+      or (attempt_status_snapshot = 'failed' and run_status_snapshot in ('failed','dead-letter','dead_letter','dead-lettered')))
+  )
+);
 
 create index if not exists idx_run_attempt_settlements_mapping
   on run_attempt_settlements(mapping_state, tenant_id, run_id, attempt_id);
@@ -3238,6 +3281,24 @@ alter table sandbox_leases add constraint chk_sandbox_leases_executor_cleanup_st
   ));
 create index if not exists idx_sandbox_leases_attempt
   on sandbox_leases(tenant_id, run_id, attempt_id, status);
+
+-- Immutable pre-Attempt settlement evidence never grants execution authority.
+create table if not exists run_legacy_settlement_history (
+  lease_id text primary key references sandbox_leases(id),
+  tenant_id text not null,
+  run_id text not null,
+  legacy_attempt_id text,
+  snapshot_json jsonb not null,
+  run_status text not null,
+  result_json jsonb not null,
+  recorded_at timestamptz not null default now(),
+  constraint fk_run_legacy_settlement_history_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id),
+  constraint chk_run_legacy_settlement_history_payload check (
+    jsonb_typeof(snapshot_json) = 'object' and jsonb_typeof(result_json) = 'object'
+    and run_status in ('succeeded','failed','cancelled','canceled','dead-letter','dead_letter','dead-lettered')
+  )
+);
 
 -- Attempt-owned evidence for one exact provider dispatch. This is an
 -- observation ledger, not a second Run/Attempt execution authority.
