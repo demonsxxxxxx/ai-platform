@@ -75,11 +75,11 @@ allowlists. The former audit-only mutation success responses are replaced by
 the explicit rejections above. Old URLs are retained only as unavailable
 boundaries, not as hidden implementations or alternate clients.
 
-The legacy `/api/users` projection and audit-only user management operations
-are outside this retirement. In particular, the arbitrary administrator target
-profile projection and its user-write queue claims are not evidence of a real
-user directory or execution pipeline, and are not corrected here. The actual
-administrator diagnostics reader remains intact. [Role Governance](role-governance-public-api.md)
-has its own explicit audit-request contract and is unchanged. Shared
-`WorkbenchGovernanceResponse` and `WorkbenchOperationResponse` remain for those
-identified consumers. Historical release evidence is preserved as history.
+The legacy `/api/users` compatibility surface is governed by
+[Users compatibility and Skills retirement](users-skills-retirement.md).
+It no longer fabricates arbitrary user profiles or claims audit-only writes
+were queued. The actual administrator diagnostics reader remains intact.
+[Role Governance](role-governance-public-api.md) has its own explicit
+audit-request contract and is unchanged. Shared `WorkbenchGovernanceResponse`
+and `WorkbenchOperationResponse` remain for identified consumers. Historical
+release evidence is preserved as history.

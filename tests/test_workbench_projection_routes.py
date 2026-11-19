@@ -70,12 +70,12 @@ def install_workbench_route_fakes(monkeypatch) -> list[tuple[str, dict[str, obje
         return "audit-workbench-contract"
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr(workbench_projections, "transaction", fake_transaction)
+    monkeypatch.setattr(workbench_projections, "transaction", fake_transaction, raising=False)
     monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_audit)
     return calls
 
 
-def test_users_projection_returns_safe_directory_for_ordinary_user(monkeypatch):
+def test_users_projection_returns_only_authenticated_self(monkeypatch):
     install_workbench_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -84,7 +84,7 @@ def test_users_projection_returns_safe_directory_for_ordinary_user(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["total"] >= 1
-    assert body["governance"]["projection"] == "safe_user_directory"
+    assert body["governance"]["projection"] == "authenticated_self"
     assert body["users"][0] == {
         "id": "ordinary",
         "username": "ordinary",
@@ -102,40 +102,76 @@ def test_users_projection_returns_safe_directory_for_ordinary_user(monkeypatch):
     assert_no_sensitive_material(body)
 
 
-def test_users_admin_writes_are_permission_gated_and_audited(monkeypatch):
+def test_users_admin_writes_reject_without_audit_or_fake_queue(monkeypatch):
     calls = install_workbench_route_fakes(monkeypatch)
     client = TestClient(create_app())
-    operations = [
-        ("post", "/api/users/", {"username": "new-user", "roles": ["user"]}, "create"),
-        ("put", "/api/users/ordinary", {"full_name": "Updated", "is_active": True}, "update"),
-        ("delete", "/api/users/ordinary", {}, "delete"),
-    ]
+    for method, path in (
+        ("POST", "/api/users/"),
+        ("PUT", "/api/users/ordinary"),
+        ("DELETE", "/api/users/ordinary"),
+    ):
+        response = client.request(
+            method, path,
+            json={"username": "new-user", "full_name": "Synthetic User"},
+            headers=admin_headers(),
+        )
+        assert response.status_code == 501
+        assert response.json() == {"detail": "user_management_unavailable"}
+        assert_no_sensitive_material(response.json())
+    assert calls == []
 
-    for method, path, payload, operation in operations:
-        denied = client.request(method.upper(), path, json=payload, headers=user_headers("user:read"))
-        assert denied.status_code == 403
-        assert denied.json()["detail"] == "missing_permission:user:admin"
 
-        response = client.request(method.upper(), path, json=payload, headers=admin_headers())
-        assert response.status_code == 200
-        body = response.json()
-        assert body["operation"] == operation
-        assert body["status"] == "queued"
-        assert body["audit_id"] == "audit-workbench-contract"
-        assert_no_sensitive_material(body)
+def test_admin_cannot_project_own_profile_under_another_user_id(monkeypatch):
+    calls = install_unavailable_route_guards(monkeypatch)
+    client = TestClient(create_app())
+    response = client.get("/api/users/another-user", headers=admin_headers())
+    assert response.status_code == 501
+    assert response.json() == {"detail": "user_directory_unavailable"}
+    assert calls == []
 
-    audit_payloads = [payload for name, payload in calls if name == "audit"]
-    assert [payload["payload_json"]["operation"] for payload in audit_payloads] == ["create", "update", "delete"]
-    assert all(payload["payload_json"]["secret_material_projected"] is False for payload in audit_payloads)
-    assert_no_sensitive_material(audit_payloads)
 
-    secret_response = client.post(
-        "/api/users/",
-        json={"username": "leaky-user", "password": "sk-live-secret-value"},
-        headers=admin_headers(),
-    )
-    assert secret_response.status_code == 422
-    assert_no_sensitive_material(secret_response.json())
+@pytest.mark.parametrize("headers", [user_headers(), admin_headers()])
+def test_user_detail_self_is_preserved_and_other_users_are_not_fabricated(monkeypatch, headers):
+    install_unavailable_route_guards(monkeypatch)
+    client = TestClient(create_app())
+    user_id = headers["X-AI-User-ID"]
+    response = client.get(f"/api/users/{user_id}", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["id"] == user_id
+    assert response.json()["username"] == user_id
+    assert_no_sensitive_material(response.json())
+    if headers["X-AI-Roles"] == "user":
+        response = client.get("/api/users/another-user", headers=headers)
+        assert response.status_code == 403
+        assert response.json() == {"detail": "missing_permission:user:admin"}
+
+
+def test_self_list_honors_pagination_and_does_not_claim_full_directory(monkeypatch):
+    install_unavailable_route_guards(monkeypatch)
+    client = TestClient(create_app())
+    response = client.get("/api/users/?skip=1&limit=1", headers=admin_headers())
+    assert response.status_code == 200
+    assert response.json()["users"] == []
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 1
+    assert response.json()["governance"]["projection"] == "authenticated_self"
+    assert response.json()["governance"]["degraded"] is True
+    no_match = client.get("/api/users/?search=no-such-user", headers=admin_headers())
+    assert no_match.json()["total"] == 0
+    for query in ("skip=-1", "limit=0", "limit=101"):
+        assert client.get(f"/api/users/?{query}", headers=admin_headers()).status_code == 422
+
+
+def test_unimplemented_user_mutations_do_not_advertise_success_in_openapi(monkeypatch):
+    install_unavailable_route_guards(monkeypatch)
+    schema = create_app().openapi()
+    for path, method in (("/api/users/", "post"), ("/api/users/{user_id}", "put"), ("/api/users/{user_id}", "delete")):
+        responses = schema["paths"][path][method]["responses"]
+        assert "501" in responses
+        assert "200" not in responses
+    assert "WorkbenchUserWriteRequest" not in schema["components"]["schemas"]
+    assert "/api/ai/admin/users" in schema["paths"]
+    assert "/api/ai/admin/users/{user_id}/diagnostics" in schema["paths"]
 
 
 def test_retired_generic_settings_routes_are_absent(monkeypatch):
@@ -151,6 +187,9 @@ def test_retired_generic_settings_routes_are_absent(monkeypatch):
 
 
 RETIRED_ENDPOINTS = [
+    ("POST", "/api/users/", "user:admin", "user_management_unavailable"),
+    ("PUT", "/api/users/other-user", "user:admin", "user_management_unavailable"),
+    ("DELETE", "/api/users/other-user", "user:admin", "user_management_unavailable"),
     ("GET", "/api/feedback/?skip=10&limit=5", "feedback:read", "feedback_unavailable"),
     ("GET", "/api/feedback/stats", "feedback:read", "feedback_unavailable"),
     ("PUT", "/api/feedback/feedback-example", "feedback:admin", "feedback_unavailable"),
@@ -170,10 +209,10 @@ def install_unavailable_route_guards(monkeypatch):
 
     @asynccontextmanager
     async def unexpected_transaction():
-        raise AssertionError("Retired feedback/announcement endpoints must not open a transaction")
+        raise AssertionError("Unavailable endpoints must not open a transaction")
         yield  # pragma: no cover
 
-    monkeypatch.setattr("app.routes.workbench_projections.transaction", unexpected_transaction)
+    monkeypatch.setattr("app.routes.workbench_projections.transaction", unexpected_transaction, raising=False)
     return calls
 
 
@@ -237,6 +276,8 @@ def test_unimplemented_endpoints_preserve_deployment_tenant_scope(
 @pytest.mark.parametrize(
     "method,path,permission,field",
     [
+        ("PUT", "/api/users/bad%20id", "user:admin", "user_id"),
+        ("DELETE", "/api/users/bad%20id", "user:admin", "user_id"),
         ("PUT", "/api/feedback/bad%20id", "feedback:admin", "feedback_id"),
         ("DELETE", "/api/feedback/bad%20id", "feedback:admin", "feedback_id"),
         ("POST", "/api/notifications/bad%20id/dismiss", "notification:read", "notification_id"),
