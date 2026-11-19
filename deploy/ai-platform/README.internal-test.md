@@ -211,6 +211,19 @@ transaction drops the eight old settlement columns, old indexes/constraint,
 write-fence trigger/function and reader/writer/retirement tables. It retains
 receipt/diagnostic/context history, Run/Attempt identity/results and Sandbox
 resource evidence. Missing bindings, conflicts and unresolved claims block it.
+For released/finalized legacy rows, a timestamp-only reconciliation claim is
+cleared before drain only with release, reconciliation and terminal-receipt
+observations, a nonempty receipt object beyond diagnostics, a terminal executor,
+and no token or independent probe/cleanup claim. Other claim predicates remain
+strict, including expired tokens and incomplete evidence. The controller checks
+those rows' exact recorded runtime handles as well as owner labels. OpenSandbox
+SDK IDs are matched against the server-owned `opensandbox.io/id` container label;
+a synthetic platform name cannot replace a missing SDK ID. Missing identity or a
+surviving container blocks deployment. Timestamp convergence,
+cleanup transfer and historical validation share the core migration transaction;
+a later failure rolls all of them back. This is not a rollback after that
+transaction commits. No runtime compatibility writer or reader is retained.
+
 Fresh databases need no confirmation. Reapplication keeps the Attempt-only
 layout and cannot recreate old columns. Verify schema readiness and preserved
 history before starting matching binaries; do not run an old settlement binary

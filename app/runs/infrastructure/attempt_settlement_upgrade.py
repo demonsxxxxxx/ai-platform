@@ -76,6 +76,26 @@ async def upgrade_attempt_settlement_authority(
     ):
         await conn.execute(f"lock table {relation} in access exclusive mode")
     if columns:
+        # Old finalizers could leave only the claim timestamp behind. Clear that
+        # residue, never a live token, only with complete release/terminal evidence
+        # and no independent resource claim. Drain and history validation below
+        # remain strict; any later failure rolls this update back with the cutover.
+        await conn.execute(
+            """update sandbox_leases set executor_reconciliation_claimed_at=null
+               where status='released' and released_at is not null
+                 and executor_status in ('completed','failed','cancelled')
+                 and executor_reconciliation_status='finalized'
+                 and executor_reconciliation_claim_token is null
+                 and executor_reconciliation_claimed_at is not null
+                 and executor_reconciled_at is not null
+                 and executor_terminal_received_at is not null
+                 and case jsonb_typeof(executor_terminal_json)
+                   when 'object' then (executor_terminal_json-'diagnostics')<>'{}'::jsonb
+                   else false end
+                 and executor_cleanup_status in ('not_required','waiting_settlement','finalized')
+                 and executor_probe_claim_token is null and executor_probe_claimed_at is null
+                 and executor_cleanup_claim_token is null and executor_cleanup_claimed_at is null"""
+        )
         # Legacy finalizers could finish the receipt and release the resource
         # without advancing the newer cleanup projection. Transfer that proven
         # completion before checking drain; later history validation is in this

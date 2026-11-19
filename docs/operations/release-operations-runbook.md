@@ -205,6 +205,19 @@ unresolved claims still block the upgrade. A historical pre-dispatch cancellatio
 with a released lease, pending executor, no dispatch record/context/receipt and
 matching terminal Run/Attempt preserves its committed result without inventing
 an executor receipt or changing its unknown dispatch state.
+For released/finalized legacy rows, a timestamp-only reconciliation claim is
+cleared before drain only with release, reconciliation and terminal-receipt
+observations, a nonempty receipt object beyond diagnostics, a terminal executor,
+and no token or independent probe/cleanup claim. Other claim predicates remain
+strict, including expired tokens and incomplete evidence. The controller checks
+those rows' exact recorded runtime handles as well as owner labels. OpenSandbox
+SDK IDs are matched against the server-owned `opensandbox.io/id` container label;
+a synthetic platform name cannot replace a missing SDK ID. Missing identity or a
+surviving container blocks deployment. Timestamp convergence,
+cleanup transfer and historical validation share the core migration transaction;
+a later failure rolls all of them back. This is not a rollback after that
+transaction commits. No runtime compatibility writer or reader is retained.
+
 Fresh databases need no confirmation. Reapplication keeps the Attempt-only
 layout and cannot recreate old columns. Verify schema readiness and preserved
 history before starting matching binaries; do not run an old settlement binary
