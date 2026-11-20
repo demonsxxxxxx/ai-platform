@@ -59,6 +59,7 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then export UV_DEFAULT_INDEX="$PIP_INDEX_URL"; f
     && uv sync --locked --no-dev --no-install-project
 
 COPY app /app/app
+RUN python -m compileall -q -f --invalidation-mode checked-hash /app/app
 RUN python -c "from urllib.request import urlretrieve; from pathlib import Path; from app.execution.domain.document_plugin import DOCUMENT_PLUGIN_REVISION; from app.execution.infrastructure.document_plugin import install_document_plugin, DOCUMENT_PLUGIN_PATH; archive = Path('/tmp/anthropic-document-skills.zip'); urlretrieve('https://codeload.github.com/anthropics/skills/zip/' + DOCUMENT_PLUGIN_REVISION, archive); install_document_plugin(archive, DOCUMENT_PLUGIN_PATH); archive.unlink()"
 COPY tools /app/tools
 COPY scripts /app/scripts

@@ -4477,6 +4477,15 @@ def test_dockerfiles_install_dependencies_before_source_and_provenance_layers():
     )
 
 
+def test_backend_source_builds_precompile_the_copied_application():
+    for recipe in (
+        (ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        release_authority._backend_runtime_dockerfile(),
+    ):
+        compile_app = "RUN python -m compileall -q -f --invalidation-mode checked-hash /app/app"
+        assert recipe.index("COPY app /app/app") < recipe.index(compile_app) < recipe.index("USER 10001:10001")
+
+
 def test_auto_release_plan_uses_exact_git_pyproject_blobs_and_fails_closed(tmp_path):
     repo = tmp_path / "repo"
     _init_repo(repo)
