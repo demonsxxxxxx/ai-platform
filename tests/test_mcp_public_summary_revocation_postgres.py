@@ -1,4 +1,4 @@
-"""Two actual admin transactions cannot resurrect a revoked disclosure declaration."""
+"""Real PostgreSQL races at MCP governance and Gateway preference boundaries."""
 # ruff: noqa: F401,F811 -- imported isolated PostgreSQL fixture.
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from app.auth import AuthPrincipal
 from app.bootstrap.mcp import configure_mcp_runtime
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.test_mcp_public_operation_summary import DECLARATION
 from tests.test_recovery_operations_postgres import operation_db
 
@@ -31,7 +32,8 @@ async def prepare_registry(operation_db, monkeypatch):
             create table tenants(id text primary key);
             insert into tenants values('tenant-a');
             create table users(id text primary key, tenant_id text, display_name text,
-                auth_source text, external_id text);
+                auth_source text, external_id text, status text not null default 'active',
+                metadata_json jsonb not null default '{}'::jsonb);
             create table audit_logs(id text, tenant_id text, user_id text, action text,
                 target_type text, target_id text, trace_id text, schema_version text, payload_json jsonb);
         """)
@@ -41,6 +43,99 @@ async def prepare_registry(operation_db, monkeypatch):
         await conn.execute("""insert into tenant_capability_distributions(id,tenant_id,capability_kind,capability_id,metadata_json)
             values('distribution','tenant-a','mcp_server','vendor',%s)""", (Jsonb({"public_operation_summaries": declaration}),))
     return connect
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["revoke", "switch_mode"])
+async def test_gateway_discovery_rechecks_committed_governance_changes(operation_db, monkeypatch, change):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from app.bootstrap.mcp import _McpRuntimeServices
+    from app.department_directory import normalize_department_directory
+    from app.mcp.api import LiveMcpServerResult, LiveMcpTool
+    from app.routes import mcp
+
+    connect = await prepare_registry(operation_db, monkeypatch)
+
+    async def department_directory():
+        return normalize_department_directory([
+            {"value": "110", "parentId": "1", "label": "QA", "children": []},
+            {"value": "210", "parentId": "1", "label": "RD", "children": []},
+        ])
+
+    monkeypatch.setattr(mcp, "fetch_department_directory", department_directory)
+    owner = AuthPrincipal("user-a", "Synthetic", "tenant-a", department_ids=("110",))
+    admin = AuthPrincipal("admin-a", "Synthetic admin", "tenant-a", roles=["admin"])
+    await mcp._write_server(
+        admin, mcp.McpServerLifecycleRequest(
+            integration_kind="enterprise_gateway", url="https://synthetic.example/mcp", department_ids=["110"],
+        ), name="vendor", is_system=False, action="mcp.server.updated",
+    )
+    on = mcp.GatewayConversationPreference(use_in_conversation=True)
+    off = mcp.GatewayConversationPreference(use_in_conversation=False)
+    await mcp.update_gateway_conversation_preference("vendor", off, owner)
+
+    services = _McpRuntimeServices()
+    jwt = AsyncMock(return_value="synthetic.user.jwt")
+    monkeypatch.setattr(services, "principal_jwt_store", SimpleNamespace(get=jwt))
+    if change == "switch_mode":
+        await mcp._write_server(
+            admin, mcp.McpServerLifecycleRequest(url="https://ordinary.example/mcp"),
+            name="other", is_system=False, action="mcp.server.updated",
+        )
+    started, resume = asyncio.Event(), asyncio.Event()
+
+    async def discover(_target, *, tenant_id, user_id, server_id, jwt):
+        assert (tenant_id, user_id, server_id, jwt) == ("tenant-a", "user-a", "vendor", "synthetic.user.jwt")
+        started.set()
+        await resume.wait()
+        return LiveMcpServerResult("vendor", (LiveMcpTool("vendor::lookup", "vendor", "lookup", "lookup", ""),))
+
+    monkeypatch.setattr(services.live_catalog, "discover_gateway_task_tools", discover)
+
+    async def select():
+        async with connect() as conn, conn.transaction():
+            return await services.repository_call(
+                "get_task_gateway_mcp_selection", conn, principal=owner, selected_tool_ids=["other::stale"],
+            )
+
+    assert (await select()).tool_ids == ()
+    jwt.assert_not_awaited()
+    await mcp.update_gateway_conversation_preference("vendor", on, owner)
+    pending = asyncio.create_task(select())
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        if change == "revoke":
+            await asyncio.wait_for(mcp._write_server(
+                admin, mcp.McpServerLifecycleRequest(department_ids=["210"], credentials_action="keep"),
+                name="vendor", is_system=False, action="mcp.server.updated",
+            ), 3)
+        else:
+            await asyncio.wait_for(mcp._write_server(
+                admin, mcp.McpServerLifecycleRequest(integration_kind="enterprise_gateway", credentials_action="keep"),
+                name="other", is_system=False, action="mcp.server.updated",
+            ), 3)
+            await mcp.update_gateway_conversation_preference("other", off, owner)
+        resume.set()
+        result = await asyncio.wait_for(pending, 3)
+        if change == "revoke":
+            assert result.server_ids == {"vendor"}
+            assert result.tool_ids == ()
+            with pytest.raises(HTTPException) as denied:
+                await mcp.update_gateway_conversation_preference("vendor", on, owner)
+            assert denied.value.status_code == 404
+        else:
+            assert result.server_ids == {"vendor", "other"}
+            assert result.without_gateway(["other::stale"]) == []
+            assert result.tool_ids == ("vendor::lookup",)
+    finally:
+        resume.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 @pytest.mark.asyncio

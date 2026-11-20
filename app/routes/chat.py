@@ -76,7 +76,9 @@ from app.intent_router import (
     classify_execution_polarity,
     route_intent,
 )
-from app.mcp.api import authorize_selected_chat_mcp_tools, get_default_mcp_tool_ids
+from app.mcp.api import (
+    authorize_selected_chat_mcp_tools, get_default_mcp_tool_ids, get_task_gateway_mcp_selection,
+)
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -1288,7 +1290,6 @@ async def chat_stream(
     selected_skill_for_execution = (
         request.selected_skill if skill_selector_allowed else None
     )
-    selected_mcp_tool_ids_for_execution = request.selected_mcp_tool_ids
     if (
         selected_skill_for_execution is not None
         and selected_skill_for_execution.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
@@ -1312,8 +1313,8 @@ async def chat_stream(
         requested_agent_id, requested_skill_id = "general-agent", None
     if selected_skill_for_execution is not None:
         requested_skill_id = selected_skill_for_execution.skill_id
-    if selected_mcp_tool_ids_for_execution is not None:
-        run_input["mcp_tool_ids"] = list(selected_mcp_tool_ids_for_execution)
+    if request.selected_mcp_tool_ids is not None:
+        run_input["mcp_tool_ids"] = list(request.selected_mcp_tool_ids)
     pending_submission_response: ChatStreamResponse | None = None
     locked_skill_label: str | None = None
     effective_workspace_id = request.workspace_id
@@ -1463,7 +1464,6 @@ async def chat_stream(
                     skill_id=requested_skill_id,
                     expected_version=str(admitted_agent_profile.skill["skill_version"]),
                 )
-                selected_mcp_tool_ids_for_execution = list(admitted_agent_profile.mcp_tool_ids)
                 run_input["mcp_tool_ids"] = list(admitted_agent_profile.mcp_tool_ids)
 
             try:
@@ -1474,17 +1474,8 @@ async def chat_stream(
                 requested_model_id = selected_model.model_id
                 requested_model_value = selected_model.model_value
                 run_input.update(group_snapshot_fields(selected_model))
-            if (
-                request.session_id
-                and request.selected_mcp_tool_ids is None
-                and selected_agent_profile is None
-                and allowed
-            ):
-                prior_input = (
-                    continuation_latest_input_json.get("input")
-                    if isinstance(continuation_latest_input_json, dict)
-                    else None
-                )
+            if request.session_id and request.selected_mcp_tool_ids is None and selected_agent_profile is None and allowed:
+                prior_input = _row_value(continuation_latest_input_json, "input")
                 if isinstance(prior_input, dict) and "mcp_tool_ids" in prior_input:
                     run_input["mcp_tool_ids"] = runs_capability_admission.extract_run_mcp_tool_ids(prior_input)
             if request.session_id and admitted_agent_profile is None and (
@@ -1502,13 +1493,17 @@ async def chat_stream(
                     is_admin=is_ai_admin(principal), permissions=principal.permissions)
                 if defaults:
                     run_input["mcp_tool_ids"] = defaults
-            if "mcp_tool_ids" in run_input and admitted_agent_profile is None:
+            selected_tools = runs_capability_admission.extract_run_mcp_tool_ids(run_input) if admitted_agent_profile is None else []
+            gateway = await get_task_gateway_mcp_selection(conn, principal=principal, selected_tool_ids=selected_tools) if admitted_agent_profile is None else None
+            if gateway is not None and "mcp_tool_ids" in run_input:
+                ordinary_tools = gateway.without_gateway(selected_tools)
                 await authorize_selected_chat_mcp_tools(
                     conn,
-                    tenant_id=principal.tenant_id, tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
+                    tenant_id=principal.tenant_id, tool_ids=ordinary_tools,
                     principal_department_id=principal.department_id, principal_department_ids=principal.department_ids,
                     principal_roles=principal.roles, is_admin=is_ai_admin(principal), permissions=principal.permissions,
                 )
+                run_input["mcp_tool_ids"] = ordinary_tools
 
             if preserve_continuation_skill and admitted_agent_profile is None:
                 prior_skill_id = str(
@@ -1694,6 +1689,8 @@ async def chat_stream(
                         capability_id=runs_capability_admission.extract_run_mcp_tool_ids(run_input)[0],
                     ),
                 )
+            if gateway and gateway.tool_ids and executor_type == HARNESS_CHAT_EXECUTOR_TYPE:
+                run_input["mcp_tool_ids"] = [*run_input.get("mcp_tool_ids", []), *gateway.tool_ids]
             file_selection = await select_authorized_run_file_snapshot(
                 conn=conn,
                 tenant_id=principal.tenant_id,

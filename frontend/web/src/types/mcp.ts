@@ -22,6 +22,7 @@ export interface MCPPluginResponse {
   description: string;
   installation: "system_preinstalled";
   integration_kind?: MCPIntegrationKind;
+  use_in_conversation?: boolean;
   user_authorization: "none" | "profile_drive";
   status: "active" | "disabled";
   enabled: boolean;

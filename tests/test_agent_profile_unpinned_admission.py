@@ -46,7 +46,11 @@ def run_control_request() -> Request:
 
 @pytest.fixture(autouse=True)
 def plugin_defaults(monkeypatch):
+    from app.mcp.api import TaskGatewaySelection
+
     monkeypatch.setattr(chat_routes, "get_default_mcp_tool_ids", AsyncMock(return_value=[]))
+    for route in (chat_routes, run_routes):
+        monkeypatch.setattr(route, "get_task_gateway_mcp_selection", AsyncMock(return_value=TaskGatewaySelection(frozenset(), ())))
 
 
 def forbidden_write():

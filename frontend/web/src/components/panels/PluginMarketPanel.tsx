@@ -1,8 +1,9 @@
-import { Button } from "@lobehub/ui/base-ui";
+import { Button, SwitchRoot, SwitchThumb } from "@lobehub/ui/base-ui";
 import { KeyRound, Plug, RefreshCw, SearchX, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
+import type { MCPPluginResponse } from "../../types/mcp";
 import { profileDriveApi, PROFILE_DRIVE_CONNECTION_CHANGED_EVENT } from "../../services/api/profileDrive";
 import { PanelHeader } from "../common/PanelHeader";
 import { usePluginCatalog } from "../mcp/usePluginCatalog";
@@ -10,6 +11,39 @@ import { useMcpToolDiscovery } from "../mcp/useMcpToolDiscovery";
 import { MCPToolDrawer } from "../mcp/MCPToolDrawer";
 import { ProfileDriveAuthenticationDialog } from "../profile-drive/ProfileDriveAuthenticationDialog";
 import { workbenchSurface } from "../workbench/workbenchSurface";
+
+function GatewayConversationSwitch({ plugin, save }: {
+  plugin: MCPPluginResponse; save: (name: string, enabled: boolean) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const inFlight = useRef(false);
+  const change = async (checked: boolean) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSaving(true);
+    setFailed(false);
+    try {
+      await save(plugin.name, checked);
+    } catch {
+      setFailed(true);
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
+    }
+  };
+  return <div className="space-y-1 text-sm">
+    <div className="flex items-center gap-2">
+      <SwitchRoot aria-label={t("plugins.gateway.useLabel", { name: plugin.display_name })}
+        checked={plugin.use_in_conversation ?? false} disabled={saving || plugin.use_in_conversation === undefined}
+        onCheckedChange={checked => void change(checked)}><SwitchThumb /></SwitchRoot>
+      <span>{t("plugins.gateway.use")}</span>
+    </div>
+    <p className="text-xs text-[var(--theme-text-secondary)]">{t("plugins.gateway.newTasksOnly")}</p>
+    {failed ? <p role="alert" className="text-xs text-[var(--theme-danger-text)]">{t("plugins.gateway.saveFailed")}</p> : null}
+  </div>;
+}
 
 /** System-distributed plugins: installation is a projection, never a user write. */
 export function PluginMarketPanel() {
@@ -66,6 +100,7 @@ export function PluginMarketPanel() {
             const needsAuth = discovery.reasonsByServer.get(plugin.name) === "authorization_required" ||
               (plugin.user_authorization === "profile_drive" && connection?.scope === scope && !connection.connected);
             const label = needsAuth ? "authorization_required" : status === "gateway_managed" ? "gateway_managed" : status === "ready" ? "ready" : status === "unavailable" ? "unavailable" : "checking";
+
             return <article data-plugin-card={plugin.name} key={plugin.name} className={`${workbenchSurface.catalog.entryCard} flex min-w-0 flex-col gap-4`}>
               <div className="flex items-start gap-3">
                 <Plug size={24} className="shrink-0 text-[var(--theme-text-secondary)]" />
@@ -78,6 +113,7 @@ export function PluginMarketPanel() {
                 {t(`plugins.status.${label}`)}{status === "ready" && !needsAuth ? ` · ${t("mcp.tools.count", { count: discovery.toolsByServer.get(plugin.name)?.length ?? 0 })}` : ""}
               </p>
               <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-[var(--theme-border)] pt-3">
+                {plugin.integration_kind === "enterprise_gateway" && plugin.use_in_conversation !== undefined ? <GatewayConversationSwitch key={scope} plugin={plugin} save={catalog.saveGatewayPreference} /> : null}
                 {plugin.integration_kind !== "enterprise_gateway" ? <Button htmlType="button" type="default" size="large" onClick={event => { detailRef.current = event.currentTarget; setDetail({ name: plugin.name, scope }); }}>{t("plugins.details")}</Button> : null}
                 {plugin.user_authorization === "profile_drive" ? <Button htmlType="button" type="default" size="large" icon={<KeyRound size={16} />}
                   onClick={event => { if (event.currentTarget instanceof HTMLButtonElement) triggerRef.current = event.currentTarget; setAuthScope(scope); }}>{t(driveConnected ? "plugins.reauthorize" : "plugins.authorize")}</Button> : null}

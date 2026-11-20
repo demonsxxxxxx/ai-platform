@@ -178,8 +178,8 @@ per active, visible MCP Server distributed to the current user. It reads
 `GET /api/mcp/?view=plugins&skip=0&limit=200` and subsequent pages; the allowlisted
 item contains `name`, `display_name`, `description`, `installation`,
 `user_authorization`, `enabled`, `status` and `can_edit: false`. Gateway cards
-add `integration_kind: "enterprise_gateway"` so the client skips tool discovery
-and shows no count or tool drawer. Ordinary MCP cards retain current-account
+add `integration_kind: "enterprise_gateway"` and `use_in_conversation`. The
+client skips tool discovery and shows no count or tool drawer. Ordinary MCP cards retain current-account
 tool details. Explicit ProfileDrive authentication appears only when configured.
 Neither handshake results nor viewing a card change installation or authority.
 Ordinary `/mcp` links redirect to `/plugins`; administrators retain the separate
@@ -204,7 +204,8 @@ alone, cannot restore lifecycle authority. Retry never replays a mutation.
 Tenant/user, role/permission projection changes, auth refresh pauses, and
 unmount fence old reads, details, mutations, and retained callbacks. Ordinary
 operation failures retain the editor draft and show safe error copy; raw
-backend error details are not rendered. The ordinary directory remains read-only.
+backend error details are not rendered. Ordinary users cannot edit connections or
+distribution. They can change only their own Gateway preference.
 
 The administrator directory presents Server enablement separately from live tool
 discovery. Enabled status text, toggle icons and the checked form control use the
@@ -234,6 +235,7 @@ Backed read and server lifecycle routes:
 - `GET /api/mcp/export`
 - `POST /api/mcp/`
 - `PUT /api/mcp/{name}`
+- `PUT /api/mcp/{name}/conversation-preference` (self only; body and response contain the boolean `use_in_conversation`)
 - `DELETE /api/mcp/{name}`
 - `PATCH /api/mcp/{name}/toggle`
 - `POST /api/admin/mcp/`
@@ -266,7 +268,11 @@ and bounded public metadata, never credentials or internal IDs. The frontend
 can still read optional `upstream_server` grouping metadata from an older API
 during rollout; the current backend no longer emits it. Accepted Run inputs
 retain their exact references and execution still checks the user's live tool
-availability. Removing the directory does not automatically select a Gateway.
+availability. An enabled and distributed Gateway defaults to
+`use_in_conversation: true`. Turning it off affects new Runs, including
+follow-ups, not accepted Runs or retries. New-task admission resolves exact
+Gateway references separately from the ordinary MCP selector; its `[]` clears
+ordinary MCP only.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
 Without a Session, `/api/mcp/chat-tools` also returns `default_mcp_tool_ids`, an

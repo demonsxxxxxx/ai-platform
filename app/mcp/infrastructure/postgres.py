@@ -67,6 +67,28 @@ async def list_mcp_server_registry(
     )
 
 
+async def list_task_gateway_servers(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
+    """Include tombstones so inherited Gateway selections cannot return as defaults."""
+    cursor = await conn.execute(
+        """select name, status from mcp_servers
+        where tenant_id = %s and integration_kind = 'enterprise_gateway' order by name""",
+        (tenant_id,),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def lock_task_mcp_servers(
+    conn: AsyncConnection, *, tenant_id: str, names: list[str],
+) -> list[dict[str, Any]]:
+    """Serialize the final task classification with registry lifecycle edits."""
+    cursor = await conn.execute(
+        """select name, integration_kind from mcp_servers
+        where tenant_id = %s and name = any(%s) order by name for share""",
+        (tenant_id, names),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
 async def list_mcp_server_registry_names(
     conn: AsyncConnection,
     *,

@@ -39,7 +39,7 @@ from app.runs.api import (
 from app.files.infrastructure import run_bindings_postgres as files_run_bindings
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import postgres as identity_postgres
-from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.mcp.api import authorize_selected_chat_mcp_tools, executor_supports_external_mcp, get_task_gateway_mcp_selection
 from app.models import (
     CreateRunRequest,
     CreateRunResponse,
@@ -592,10 +592,6 @@ async def _compensate_enqueue_failure(*, principal, run_id, run_lifecycle, v4_ca
     )
 
 
-def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
-    return runs_capability_admission.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
-
-
 def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
@@ -824,13 +820,9 @@ async def create_run(
     tenant_id = principal.tenant_id
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
-    execution_kind = (
-        RUN_EXECUTION_KIND_HARNESS_CHAT
-        if resolved_skill_id is None
-        else RUN_EXECUTION_KIND_SKILL
-    )
+    execution_kind = RUN_EXECUTION_KIND_HARNESS_CHAT if resolved_skill_id is None else RUN_EXECUTION_KIND_SKILL
     try:
-        run_input = _strip_server_owned_control_metadata(
+        run_input = runs_capability_admission.normalize_run_input_for_enqueue(
             request.input,
             redact_public=not is_ai_admin(principal),
         )
@@ -839,6 +831,11 @@ async def create_run(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
+            selected_tools = runs_capability_admission.extract_run_mcp_tool_ids(run_input)
+            gateway = await get_task_gateway_mcp_selection(conn, principal=principal, selected_tool_ids=selected_tools)
+            if "mcp_tool_ids" in run_input:
+                run_input.pop("mcpToolIds", None)
+                run_input["mcp_tool_ids"] = gateway.without_gateway(selected_tools)
             if execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
                 harness_agent = await agent_apps_catalog.get_agent(
                     conn,
@@ -892,6 +889,8 @@ async def create_run(
                     raise HTTPException(status_code=409, detail="agent_profile_admission_required")
                 executor_type = str(skill["executor_type"])
                 input_modes = list(skill.get("input_modes") or [])
+            if gateway.tool_ids and executor_supports_external_mcp(executor_type):
+                run_input["mcp_tool_ids"] = [*run_input.get("mcp_tool_ids", []), *gateway.tool_ids]
             reusable_file_rows = []
             if request.session_id and not request.file_ids and has_file_input_mode(input_modes):
                 reusable_file_rows = await context_file_continuity.list_authorized_session_input_files(

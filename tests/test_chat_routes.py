@@ -140,6 +140,8 @@ def _stub_plugin_defaults(monkeypatch):
     async def no_defaults(*_args, **_kwargs):
         return []
     monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", no_defaults)
+    from app.mcp.api import TaskGatewaySelection
+    monkeypatch.setattr("app.routes.chat.get_task_gateway_mcp_selection", AsyncMock(return_value=TaskGatewaySelection(frozenset(), ())))
 
 
 @pytest.fixture(autouse=True)
@@ -900,31 +902,40 @@ def test_keyed_chat_retry_admission_route_persists_durable_receipt(
 
 @pytest.mark.parametrize("roles", [[], ["admin"]], ids=["ordinary", "admin"])
 @pytest.mark.parametrize(
-    ("message", "selected_tools", "continuation", "expected_tools"),
+    ("message", "selected_tools", "continuation", "expected_tools", "gateway_on"),
     [
         ("调用 MCP create_test_object，不要调用 Bash", [" lifecycle-recovery::create_test_object ", "lifecycle-recovery::delete_test_object"], False,
-         ["lifecycle-recovery::create_test_object", "lifecycle-recovery::delete_test_object"]),
-        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], False, ["gateway::qa-search"]),
-        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], False, ["gateway::qa-search"]),
-        ("不要调用 MCP，只解释它是什么", [], True, []),
-        ("不要调用 MCP，只解释它是什么", None, True, None),
-        ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"]),
-        ("请查找资料", None, False, ["gateway::default-search"]),
-        ("请查找资料", [], False, []),
+         ["lifecycle-recovery::create_test_object", "lifecycle-recovery::delete_test_object"], None),
+        ("不要调用 MCP，只解释它是什么", ["gateway::qa-search"], False, ["gateway::qa-search"], None),
+        ("请调用 MCP 搜索员工手册", ["gateway::qa-search"], False, ["gateway::qa-search"], None),
+        ("不要调用 MCP，只解释它是什么", [], True, [], None),
+        ("不要调用 MCP，只解释它是什么", None, True, None, None),
+        ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"], None),
+        ("请查找资料", None, False, ["gateway::default-search"], None),
+        ("请查找资料", [], False, [], None),
+        ("请查找资料", [], False, [], True),
+        ("请查找资料", ["ordinary::lookup", "enterprise::stale"], True, ["ordinary::lookup"], False),
+        ("请查找资料", None, True, None, False),
     ],
-    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative", "new-default", "new-explicit-clear"],
+    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative", "new-default", "new-explicit-clear", "gateway-default", "gateway-off-explicit", "gateway-off-inherited"],
 )
 @pytest.mark.parametrize("prior_state", ["selected", "empty-session", "legacy-no-field", "empty-selection", "legacy-null-input"])
 @pytest.mark.asyncio
 async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_polarity(
-    monkeypatch, roles, message, selected_tools, continuation, expected_tools, prior_state
+    monkeypatch, roles, message, selected_tools, continuation, expected_tools, gateway_on, prior_state
 ):
+    from app.mcp.api import TaskGatewaySelection
+
+    gateway_tools = ("enterprise::current",) if gateway_on else ()
+    prior_tools = ["gateway::prior-search"] if gateway_on is None else ["gateway::prior-search", "enterprise::stale"]
     calls = {"authorization": [], "defaults": 0}
     async def defaults(*_args, **_kwargs):
         calls["defaults"] += 1
         return ["gateway::default-search"]
     monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", defaults)
     request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
+    gateway = AsyncMock(return_value=TaskGatewaySelection(frozenset({"enterprise"}), gateway_tools))
+    monkeypatch.setattr("app.routes.chat.get_task_gateway_mcp_selection", gateway)
 
     async def authorize_tools(*_args, **kwargs):
         calls["authorization"].append(kwargs)
@@ -940,7 +951,7 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
             return None
         if prior_state == "legacy-no-field":
             return {"input": {"message": "historical task"}}
-        return {"input": {"mcp_tool_ids": [] if prior_state == "empty-selection" else ["gateway::prior-search"]}}
+        return {"input": {"mcp_tool_ids": [] if prior_state == "empty-selection" else prior_tools}}
 
     async def prior_runs(*_args, **_kwargs):
         return [] if prior_state == "empty-session" else [{"id": "prior-run", "skill_id": None}]
@@ -1034,8 +1045,10 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
         "is_admin": "admin" in roles,
         "permissions": request_principal.permissions,
     }] if expected_tools is not None else [])
-    assert calls["run_input"].get("mcp_tool_ids") == expected_tools
-    assert calls["queue_input"].get("mcp_tool_ids") == expected_tools
+    assert gateway.await_args.kwargs["principal"] == request_principal
+    expected_run_tools = [*(expected_tools or []), *gateway_tools] if gateway_tools else expected_tools
+    assert calls["run_input"].get("mcp_tool_ids") == expected_run_tools
+    assert calls["queue_input"].get("mcp_tool_ids") == expected_run_tools
     assert calls["frozen_input"] == calls["run_input"]
     assert calls["run_input"]["message"] == message
     assert "required_tool" not in calls["run_input"]

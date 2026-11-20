@@ -15,6 +15,7 @@ from app.mcp.application.worker_dispatch_authorization import (
     WorkerMcpDispatchAuthorization as WorkerMcpDispatchAuthorization,
     WorkerMcpDispatchService as WorkerMcpDispatchService,
     WorkerToolPolicyAudit as WorkerToolPolicyAudit,
+    executor_supports_external_mcp as executor_supports_external_mcp,
     project_authorized_worker_mcp_payload as project_authorized_worker_mcp_payload,
 )
 from app.mcp.application.live_catalog import (
@@ -22,6 +23,7 @@ from app.mcp.application.live_catalog import (
     McpCatalogFailure,
     LiveMcpTool,
 )
+from app.mcp.application.task_gateway_selection import TaskGatewaySelection as TaskGatewaySelection
 from app.mcp.application.runtime_registry import (
     LiveMcpCatalogProxy,
     configure_mcp_runtime_services,
@@ -149,6 +151,18 @@ async def get_default_mcp_tool_ids(conn: Any, **kwargs: Any) -> list[str]:
     return await _repository_call("get_default_mcp_tool_ids", conn, **kwargs)
 
 
+async def list_gateway_mcp_server_ids(conn: Any, *, tenant_id: str) -> frozenset[str]:
+    """Classify Gateway references without reading preferences or contacting the Gateway."""
+    return await _repository_call("list_gateway_mcp_server_ids", conn, tenant_id=tenant_id)
+
+
+async def get_task_gateway_mcp_selection(
+    conn: Any, *, principal: Any, selected_tool_ids: list[str] | tuple[str, ...] = (),
+) -> TaskGatewaySelection:
+    """Read exact live Gateway references for one new task, not a public directory."""
+    return await _repository_call("get_task_gateway_mcp_selection", conn, principal=principal, selected_tool_ids=selected_tool_ids)
+
+
 async def get_mcp_server_registry_entry(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
     return await _repository_call("get_mcp_server_registry_entry", conn, **kwargs)
 
@@ -208,6 +222,10 @@ __all__ = [
     "public_plugin_projection",
     "validate_plugin_configuration",
     "get_default_mcp_tool_ids",
+    "TaskGatewaySelection",
+    "executor_supports_external_mcp",
+    "get_task_gateway_mcp_selection",
+    "list_gateway_mcp_server_ids",
     "RISK_ORDER",
     "evaluate_tool_policy",
     "LiveMcpServerResult",

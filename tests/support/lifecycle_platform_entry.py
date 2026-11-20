@@ -15,6 +15,7 @@ from starlette.requests import Request
 from app.auth import AuthPrincipal
 from app.schema_migrations import schema_sql
 from app.bootstrap.context import configure_context_services
+from app.bootstrap.mcp import configure_mcp_runtime
 from app.bootstrap.model_services import configure_model_services
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap import run_lifecycle
@@ -38,6 +39,8 @@ async def platform_entry(monkeypatch, tmp_path):
     from app.execution.application import model_control_plane
     from app.runs.application import model_snapshot, execution_spec
     from app.context.application import provider_sessions
+    from app.mcp.application import runtime_registry
+    from app.mcp.infrastructure import runtime as mcp_runtime
 
     dsn = os.getenv("AI_PLATFORM_S0A_SCHEMA_TEST_DSN", "").strip()
     if not dsn:
@@ -56,7 +59,8 @@ async def platform_entry(monkeypatch, tmp_path):
     for module, name in ((model_control_plane, "_service"),
                          (model_snapshot, "_service"),
                          (execution_spec, "_dispatch_run_facts_loader"),
-                         (provider_sessions, "_use_cases")):
+                         (provider_sessions, "_use_cases"),
+                         (runtime_registry, "_services")):
         if hasattr(module, name):
             monkeypatch.setattr(module, name, getattr(module, name))
     settings = Settings(_env_file=None, ai_session_secret="synthetic-entry-authority-secret",
@@ -67,8 +71,11 @@ async def platform_entry(monkeypatch, tmp_path):
             monkeypatch.setattr(module, "get_settings", lambda: settings)
     monkeypatch.setattr(chat, "transaction", transaction)
     monkeypatch.setattr(run_lifecycle, "transaction", transaction)
+    for name in ("_settings_provider", "_redis_provider", "_grant_reader", "_credential_writer", "_credential_refresher"):
+        monkeypatch.setattr(mcp_runtime, name, getattr(mcp_runtime, name))
     configure_context_services()
     configure_model_services()
+    configure_mcp_runtime()
     lifecycle = run_lifecycle.build_run_lifecycle_service()
     attempts = build_run_attempt_lifecycle_service()
     capabilities = build_worker_v4_capabilities(None, transaction, lifecycle)

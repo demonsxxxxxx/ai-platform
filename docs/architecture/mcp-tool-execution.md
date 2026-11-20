@@ -197,7 +197,7 @@ connections or acquire business authority by viewing or selecting a plugin.
 ProfileDrive authorization reuses its password-only flow only when explicitly
 configured as `user_authorization: profile_drive`, never by Server name.
 
-For a new ordinary task with omitted MCP selection, admission loads all active,
+For a new ordinary task with omitted ordinary MCP selection, admission loads all active,
 visible plugin defaults and filters them through current selection authority.
 Explicit `[]` remains empty. The first task in a pre-created empty Session also
 receives defaults; existing Sessions inherit their last task selection, including
@@ -236,8 +236,8 @@ that exact pinning order rather than assuming the Run input has the same order.
   `OrdinaryMcpCatalog.test.ts` retains real shared discovery-function coverage;
   Skills retain their shared ordinary catalog policy. No bulk Profile/hash/Run rewrite.
 - **Compatibility:** `catalog_mode` is ignored on writes from older clients
-  and omitted from responses. Gateway defaults are ignored at new-task admission,
-  and the next connection save drops them from plugin metadata. No rewrite of
+  and omitted from responses. Old Gateway per-tool defaults are ignored at new-task
+  admission, and the next connection save drops them from plugin metadata. No rewrite of
   existing Profile revisions, Run snapshots or exact tool references.
 - **Verification:** route/authorization, malformed configuration, multi-plugin
   capacity, empty Session, explicit cancellation, historical snapshots, actual
@@ -265,11 +265,31 @@ Gateway form. Switching the connection to ordinary MCP retains them; reopen the
 saved connection to edit them. Admin lifecycle writes can explicitly revoke
 them with `public_operation_summaries: {}`.
 
-This is a catalog and management change, not a Server-wide runtime grant. An
-accepted Run still carries exact selections; Worker rechecks current authority
-and the executor registers only the selected tools present in the user's live
-protocol listing. Tool names removed by the Gateway are not remapped or replaced
-by other tools. No Gateway is automatically attached to an unselected Run.
+The plugin card's **在对话中使用** preference defaults on for a user when the
+Gateway is active and distributed to them. The product view requires actual
+role/department distribution even for administrators. A scoped
+`PUT /api/mcp/{name}/conversation-preference` changes one Gateway at a time,
+under the user's profile row lock. Only opt-outs are stored, so newly distributed
+Gateways default on without a backfill. The preference is not writable through
+the generic profile patch and does not change administrator governance.
+
+Each new Chat/Profile or direct API Run, including a follow-up, resolves this preference
+separately from the ordinary MCP selector. Old Gateway references supplied by
+that selector or inherited from the prior turn are not used as authority.
+Ordinary explicit selection, including `[]`, still controls ordinary MCP only.
+Only an eligible Gateway is queried with the current user's credential through
+MCP `tools/list`; no business tool is called at admission. Listing has a bounded
+budget, and unavailable Gateways are omitted. Results are discarded if the
+preference, distribution, or target no longer matches after listing. Admission
+locks the selected Server rows in name order only after discovery to prevent a
+concurrent integration-mode edit from bypassing this classification. Executors
+without external MCP support do not get the automatic Gateway selection.
+
+No Server-wide grant is made: accepted Runs retain only exact references.
+Worker and replay do not reread the personal preference, but the existing
+current authorization checks still apply. The executor registers only accepted
+references present in the current user's live listing; a removed tool is not
+replaced, and a newly listed tool cannot enter an accepted Run.
 
 Gateway sessions send the current user's JWT as standard `Authorization`,
 refreshed before each HTTP dispatch. Static Authorization, JWT-Authorization,
