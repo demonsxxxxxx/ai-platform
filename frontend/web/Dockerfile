@@ -31,7 +31,7 @@ RUN --mount=type=secret,id=VITE_RAGFLOW_SOP_SHARE_URL \
       VITE_RAGFLOW_SOP_SHARE_URL="$(cat /run/secrets/VITE_RAGFLOW_SOP_SHARE_URL 2>/dev/null || true)" \
       corepack pnpm run build
 
-FROM nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951 AS runtime
+FROM nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598 AS runtime
 
 RUN apk update \
     && apk upgrade --no-cache brotli-libs curl libcrypto3 libcurl libexpat libssl3 libuuid libx11 libxslt pcre2 tiff \
