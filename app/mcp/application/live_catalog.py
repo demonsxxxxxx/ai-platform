@@ -82,7 +82,7 @@ class LiveMcpServerResult:
 
 
 class LiveMcpCatalogService:
-    """Discover ordinary MCP tools and test saved connections."""
+    """Discover user-effective MCP tools and test saved connections."""
 
     def __init__(
         self,
@@ -114,6 +114,16 @@ class LiveMcpCatalogService:
             target, tenant_id=tenant_id, user_id=user_id, server_id=server_id, jwt=jwt,
         )
 
+    async def discover_gateway_task_tools(
+        self, target: Any, *, tenant_id: str, user_id: str, server_id: str, jwt: str,
+    ) -> LiveMcpServerResult:
+        """List the facade on a private, already authorized Gateway target."""
+        if target.integration_kind != "enterprise_gateway":
+            return LiveMcpServerResult(server_id, (), "discovery_failed")
+        return await self._discover_target(
+            target, tenant_id=tenant_id, user_id=user_id, server_id=server_id, jwt=jwt,
+        )
+
     async def test_connection(
         self, *, tenant_id: str, user_id: str, server_id: str, jwt: str,
         endpoint: str, static_headers: dict[str, str], transport: str, integration_kind: str,
@@ -123,10 +133,12 @@ class LiveMcpCatalogService:
                                  transport=transport, integration_kind=integration_kind)
         return await self._discover_target(
             target, tenant_id=tenant_id, user_id=user_id, server_id=server_id, jwt=jwt,
+            probe_only=integration_kind == "enterprise_gateway",
         )
 
     async def _discover_target(
         self, target: Any, *, tenant_id: str, user_id: str, server_id: str, jwt: str,
+        probe_only: bool = False,
     ) -> LiveMcpServerResult:
         stage = "tool_discovery"
         try:
@@ -143,10 +155,16 @@ class LiveMcpCatalogService:
                 "credential_subject": {"tenant_id": tenant_id, "user_id": user_id},
             }
             if getattr(target, "integration_kind", "mcp") == "enterprise_gateway":
-                stage = "connection_probe"
-                await discovery.probe_connection(target.endpoint, integration_kind="enterprise_gateway", **connection)
-                return LiveMcpServerResult(server_id, ())
-            definitions = await discovery.discover_definitions(target.endpoint, **connection)
+                if probe_only:
+                    stage = "connection_probe"
+                    await discovery.probe_connection(target.endpoint, integration_kind="enterprise_gateway", **connection)
+                    return LiveMcpServerResult(server_id, ())
+                stage = "gateway_tool_discovery"
+                definitions = await discovery.discover_definitions(
+                    target.endpoint, integration_kind="enterprise_gateway", **connection,
+                )
+            else:
+                definitions = await discovery.discover_definitions(target.endpoint, **connection)
             stage = "tool_projection"
             tools = tuple(
                 LiveMcpTool(

@@ -11,6 +11,12 @@
     "clearSearch": "清除搜索",
     "preinstalled": "系统预装 · 已安装",
     "details": "查看详情",
+    "gateway": {
+      "use": "在对话中使用",
+      "useLabel": "在对话中使用 {{name}}",
+      "newTasksOnly": "仅影响之后发送的消息和新建的专家任务",
+      "saveFailed": "未能保存设置，请重试或刷新插件列表。"
+    },
     "authorize": "授权连接",
     "reauthorize": "重新授权",
     "loginAgain": "请重新登录后重试",

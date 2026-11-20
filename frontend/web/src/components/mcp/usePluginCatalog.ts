@@ -51,6 +51,15 @@ export function usePluginCatalog(scope: string, enabled: boolean) {
     void refresh();
     return () => { mounted.current = false; requests.current++; };
   }, [refresh]);
+  const saveGatewayPreference = async (name: string, enabled: boolean) => {
+    const saved = await mcpApi.updateGatewayConversationPreference(name, enabled);
+    if (mounted.current && active.current && currentScope.current === scope) {
+      setState(previous => previous.scope !== scope ? previous : {
+        ...previous, plugins: previous.plugins.map(plugin => plugin.name === name
+          ? { ...plugin, use_in_conversation: saved.use_in_conversation } : plugin),
+      });
+    }
+  };
   const visible = enabled && state.scope === scope ? state : { scope, plugins: [], loading: enabled, failed: false };
-  return { ...visible, refresh };
+  return { ...visible, refresh, saveGatewayPreference };
 }

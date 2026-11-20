@@ -26,6 +26,10 @@ from app.db import transaction
 from app.department_directory import (
     DepartmentDirectoryError, fetch_department_directory, validate_distribution_department_authorities,
 )
+from app.identity.api import (
+    MCP_GATEWAY_DISABLED_SERVERS_KEY, ProfileMetadataValidationError,
+    mcp_gateway_disabled_servers, validate_profile_metadata,
+)
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import (
     capability_distributions_postgres as identity_capability_distributions,
@@ -140,6 +144,12 @@ class McpServerLifecycleRequest(BaseModel):
             if candidate not in normalized:
                 normalized.append(candidate)
         return normalized
+
+
+class GatewayConversationPreference(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    use_in_conversation: bool
 
 
 class McpServerToggleRequest(BaseModel):
@@ -434,8 +444,20 @@ async def _public_server_access(
     return row, distribution or {}, decision
 
 
+def _gateway_distributed_to_user(
+    principal: AuthPrincipal, row: dict[str, Any], distribution: dict[str, Any] | None,
+) -> bool:
+    return resolve_capability_access(
+        replace(_capability_access_context(principal), is_admin=False),
+        CapabilityDistributionSubject(
+            capability_kind="mcp_server", capability_id=_server_name(row),
+            lifecycle_status=str(row.get("status") or "disabled"), distribution=distribution,
+        ), intent="use",
+    ).usable
+
+
 async def _public_projected_servers(
-    principal: AuthPrincipal, *, management: bool = False,
+    principal: AuthPrincipal, *, management: bool = False, plugins: bool = False,
 ) -> list[dict[str, Any]]:
     async with transaction() as conn:
         rows = await mcp_repository.list_mcp_server_registry(
@@ -451,8 +473,14 @@ async def _public_projected_servers(
         )
         distribution_map = {str(row.get("capability_id") or ""): row for row in distributions}
         authorized = []
+        gateway_names = set()
         for row in rows:
             name = _server_name(row)
+            if plugins and row.get("integration_kind") == "enterprise_gateway":
+                if "::" not in name and _gateway_distributed_to_user(principal, row, distribution_map.get(name)):
+                    authorized.append(row)
+                    gateway_names.add(name)
+                continue
             decision = _mcp_server_read_decision(
                 principal=principal,
                 row=row,
@@ -463,12 +491,14 @@ async def _public_projected_servers(
                 continue
             authorized.append(row)
             await _audit_mcp_admin_bypass(conn, principal=principal, name=name, decision=decision)
+        disabled = mcp_gateway_disabled_servers(await identity_postgres.get_user_profile_metadata(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+        )) if gateway_names else frozenset()
     return [
-        _server_read_response(
-            row,
-            distribution=distribution_map.get(_server_name(row)),
-            principal=principal,
-        )
+        {
+            **_server_read_response(row, distribution=distribution_map.get(_server_name(row)), principal=principal),
+            **({"use_in_conversation": _server_name(row) not in disabled} if _server_name(row) in gateway_names else {}),
+        }
         for row in authorized
     ]
 
@@ -748,10 +778,10 @@ async def list_mcp_servers(
     """Return governed MCP tool servers without exposing unmanaged lifecycle controls."""
 
     normalized_query = (q or "").strip().lower()
-    projected = await _public_projected_servers(principal, management=True)
+    projected = await _public_projected_servers(principal, management=view == "management", plugins=view == "plugins")
     if view == "plugins":
         projected = [dict(name=server["name"], status=server["status"], enabled=server["enabled"],
-                          can_edit=False, **({"integration_kind": "enterprise_gateway"} if server.get("integration_kind") == "enterprise_gateway" else {}),
+                          can_edit=False, **({"integration_kind": "enterprise_gateway", "use_in_conversation": server["use_in_conversation"]} if server.get("integration_kind") == "enterprise_gateway" else {}),
                           **mcp_repository.public_plugin_projection(
                               server["name"], {mcp_repository.PLUGIN_METADATA_KEY: server.get("plugin", {})},
                           )) if is_ai_admin(principal) else server for server in projected if server["enabled"]]
@@ -765,6 +795,41 @@ async def list_mcp_servers(
         "skip": skip,
         "limit": limit,
     }
+
+
+@router.put("/mcp/{name}/conversation-preference")
+async def update_gateway_conversation_preference(
+    name: str, preference: GatewayConversationPreference,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> GatewayConversationPreference:
+    safe_name = _safe_name(name)
+    async with transaction() as conn:
+        row = await mcp_repository.get_mcp_server_registry_entry(
+            conn, tenant_id=principal.tenant_id, name=safe_name, for_update=True,
+        )
+        if row is None or row.get("integration_kind") != "enterprise_gateway" or "::" in safe_name:
+            raise HTTPException(status_code=404, detail="mcp_server_not_found")
+        distribution = await identity_capability_distributions.get_capability_distribution_row(
+            conn, tenant_id=principal.tenant_id, capability_kind="mcp_server", capability_id=safe_name,
+        )
+        if not _gateway_distributed_to_user(principal, row, distribution):
+            raise HTTPException(status_code=404, detail="mcp_server_not_found")
+        scope = {"tenant_id": principal.tenant_id, "user_id": principal.user_id}
+        await identity_postgres.ensure_user(conn, **scope, display_name=principal.display_name)
+        metadata = await identity_postgres.lock_user_profile_metadata(conn, **scope)
+        if metadata is None:
+            raise HTTPException(status_code=403, detail="profile_user_scope_mismatch")
+        disabled = set(mcp_gateway_disabled_servers(metadata))
+        if preference.use_in_conversation:
+            disabled.discard(safe_name)
+        else:
+            disabled.add(safe_name)
+        try:
+            updated = validate_profile_metadata({**metadata, MCP_GATEWAY_DISABLED_SERVERS_KEY: sorted(disabled)})
+        except ProfileMetadataValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        await identity_postgres.update_user_profile_metadata(conn, **scope, metadata=updated)
+    return preference
 
 
 async def _management_catalog(principal: AuthPrincipal, row: dict[str, Any]) -> LiveMcpServerResult:
@@ -939,6 +1004,12 @@ async def list_chat_mcp_tools(
                     )
                     available = {tool["tool_id"] for tool in tools}
                     selected = [tool_id for tool_id in defaults if tool_id in available]
+        # A live discovery outage must not erase an ordinary selection. Hide
+        # only Gateway references, which stay in the exact accepted Run.
+        if selected and latest_input_json is not None:
+            async with transaction() as conn:
+                gateway_ids = await mcp_repository.list_gateway_mcp_server_ids(conn, tenant_id=principal.tenant_id)
+            selected = [tool_id for tool_id in selected if tool_id.partition("::")[0] not in gateway_ids]
         response["selected_mcp_tool_ids"] = selected
     return response
 

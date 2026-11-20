@@ -765,9 +765,62 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.mcp_repository, "record_mcp_server_credential", fake_record_credential)
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', fake_ensure_user)
     monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fake_append_audit_log)
+    async def no_preferences(*_args, **_kwargs):
+        return {}
+
+    async def gateway_ids(_conn, *, tenant_id):
+        assert tenant_id == "default"
+        return frozenset(name for name, row in servers.items() if row.get("integration_kind") == "enterprise_gateway")
+
+    monkeypatch.setattr(mcp.mcp_repository, "list_gateway_mcp_server_ids", gateway_ids)
+    monkeypatch.setattr(mcp.identity_postgres, "get_user_profile_metadata", no_preferences)
     monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", lambda: FakePrincipalJwtStore())
     monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", FakeRouteLiveCatalog())
     return calls
+
+
+def test_gateway_conversation_preference_is_self_scoped_and_cannot_override_distribution(monkeypatch):
+    from app.routes import mcp
+    from app.identity.api import MCP_GATEWAY_DISABLED_SERVERS_KEY as preference_key
+
+    install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin = headers(roles="admin")
+    assert client.post("/api/admin/mcp/", headers=admin, json={
+        "name": "gateway", "integration_kind": "enterprise_gateway",
+        "url": "https://gateway.example/", "department_ids": ["110"],
+    }).status_code == 200
+    saved = {("default", "ordinary"): {"theme": "dark"}}
+
+    async def read(_conn, *, tenant_id, user_id):
+        return dict(saved.get((tenant_id, user_id), {}))
+
+    async def write(_conn, *, tenant_id, user_id, metadata):
+        saved[(tenant_id, user_id)] = metadata
+        return metadata
+
+    monkeypatch.setattr(mcp.identity_postgres, "get_user_profile_metadata", read)
+    monkeypatch.setattr(mcp.identity_postgres, "lock_user_profile_metadata", read)
+    monkeypatch.setattr(mcp.identity_postgres, "update_user_profile_metadata", write)
+    path = "/api/mcp/gateway/conversation-preference"
+    ordinary = headers()
+    outsider = headers(department_id="rd")
+
+    def plugins(who):
+        return client.get("/api/mcp/?view=plugins", headers=who).json()["servers"]
+
+    assert next(row for row in plugins(ordinary) if row["name"] == "gateway")["use_in_conversation"] is True
+    assert "gateway" not in {row["name"] for row in plugins(outsider)}
+    assert client.put(path, headers=outsider, json={"use_in_conversation": True}).status_code == 404
+    assert client.put(path, headers=ordinary, json={"use_in_conversation": False, "user_id": "other"}).status_code == 422
+    assert client.put(path, headers=ordinary, json={"use_in_conversation": False}).json() == {"use_in_conversation": False}
+    assert saved == {("default", "ordinary"): {"theme": "dark", preference_key: ["gateway"]}}
+    assert next(row for row in plugins(ordinary) if row["name"] == "gateway")["use_in_conversation"] is False
+    assert client.put(path, headers=ordinary, json={"use_in_conversation": True}).json() == {"use_in_conversation": True}
+    assert saved[("default", "ordinary")][preference_key] == []
+    assert client.put("/api/admin/mcp/gateway", headers=admin, json={"enabled": False}).status_code == 200
+    assert "gateway" not in {row["name"] for row in plugins(ordinary)}
+    assert client.put(path, headers=ordinary, json={"use_in_conversation": True}).status_code == 404
 
 
 def test_enterprise_catalog_routes_never_read_gateway_tools_or_user_credential(monkeypatch):

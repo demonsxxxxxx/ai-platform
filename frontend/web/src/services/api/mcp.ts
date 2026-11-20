@@ -12,6 +12,13 @@ export const mcpApi = {
     return authFetch(`${API_BASE}/api/mcp/?view=plugins&skip=${skip}&limit=200`);
   },
 
+  async updateGatewayConversationPreference(name: string, enabled: boolean): Promise<{ use_in_conversation: boolean }> {
+    return authFetch(`${API_BASE}/api/mcp/${encodeURIComponent(name)}/conversation-preference`, {
+      method: "PUT",
+      body: JSON.stringify({ use_in_conversation: enabled }),
+    });
+  },
+
   async testConnection(name: string): Promise<MCPConnectionTestResponse> {
     return authFetch(`${API_BASE}/api/admin/mcp/${encodeURIComponent(name)}/test`, { method: "POST" });
   },
