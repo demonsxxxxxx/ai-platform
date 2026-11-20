@@ -104,7 +104,8 @@ test("PRD closure browser smoke waits for route-specific workbench content befor
     assert.match(source, new RegExp(selector));
   }
   assert.match(source, /data-ordinary-skills-catalog/);
-  assert.match(source, /data-ordinary-mcp-catalog/);
+  assert.match(source, /data-plugin-market/);
+  assert.doesNotMatch(source, /data-ordinary-mcp-catalog/);
 
   const collectRouteSource = source.slice(
     source.indexOf("async function navigateAndCollectRoute"),

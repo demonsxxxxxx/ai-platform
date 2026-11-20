@@ -35,7 +35,8 @@ import { useMcpToolDiscovery } from "../mcp/useMcpToolDiscovery";
 import { Table } from "@lobehub/ui/base-ui";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
-import { OrdinaryMcpCatalog } from "./OrdinaryMcpCatalog";
+import { Navigate } from "react-router-dom";
+import type { MCPConnectionTestResponse } from "../../types/mcp";
 
 function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
@@ -66,6 +67,10 @@ export function MCPPanel() {
   const [editorDetailsLoading, setEditorDetailsLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MCPServerResponse | null>(null);
   const [toolTarget, setToolTarget] = useState<{ name: string; scope: string } | null>(null);
+  const [probe, setProbe] = useState<{ scope: string; name: string; configuration: string; result: MCPConnectionTestResponse } | null>(null);
+  const configurationKey = (server: MCPServerResponse) => JSON.stringify([
+    server.updated_at, server.transport, server.integration_kind,
+  ]);
   const editorPreviousFocusRef = useRef<HTMLElement | null>(null);
   const toolPreviousFocusRef = useRef<HTMLElement | null>(null);
   const editorLoadingRef = useRef(false);
@@ -106,12 +111,13 @@ export function MCPPanel() {
     isAvailable,
     fetchServers,
     getServer,
+    testConnection,
     createServer,
     updateServer,
     deleteServer,
     toggleServer,
   } = useMCP({
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && isAiAdmin,
     paused: authLoading,
     identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, user?.department_ids, user?.department_authority_status, authorityRevision]),
     listParams,
@@ -145,12 +151,13 @@ export function MCPPanel() {
     permissionDenied,
   });
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
+  const hasToolDirectory = servers.some(server => server.integration_kind !== "enterprise_gateway");
   const canManageMcpUi = canManageMcp && isAvailable;
   const discoveryEnabled = isAuthenticated && !authLoading && !isLoading && isAvailable && !catalogError;
   const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled,
     isAiAdmin ? mcpApi.getServerCatalog : mcpApi.discoverTools);
   const toolsScope = JSON.stringify([catalogRequest, authLoading, permissionDenied, isAvailable]);
-  const selectedToolServer = toolTarget?.scope === toolsScope ? servers.find((server) => server.name === toolTarget.name) : undefined;
+  const selectedToolServer = toolTarget?.scope === toolsScope ? servers.find((server) => server.name === toolTarget.name && server.integration_kind !== "enterprise_gateway") : undefined;
   useEffect(() => {
     setToolTarget((target) => target?.scope === toolsScope ? target : null);
   }, [toolsScope]);
@@ -196,6 +203,7 @@ export function MCPPanel() {
       ? await updateServer(editorServer.name, data, editorServer.is_system)
       : await createServer(data, true);
     if (saved) {
+      setProbe(null);
       setEditorOpen(false);
       toast.success(t(editorServer ? "mcp.admin.updateSuccess" : "mcp.admin.createSuccess"));
     }
@@ -212,15 +220,7 @@ export function MCPPanel() {
   };
 
   if (!isAiAdmin) {
-    return (
-      <OrdinaryMcpCatalog
-        servers={servers}
-        isLoading={directoryIsLoading}
-        listError={catalogError}
-        discovery={discovery}
-        onRetry={retryCatalog}
-      />
-    );
+    return <Navigate to="/plugins" replace />;
   }
 
   if (mcpGovernance.pageState === "loading") {
@@ -312,9 +312,9 @@ export function MCPPanel() {
         onSearchChange={setSearchQuery}
         searchPlaceholder={t("mcp.searchPlaceholder")}
         searchAccessory={<>
-          <Button type="default" htmlType="button" className="inline-flex min-h-11 items-center gap-2" data-mcp-refresh-tools onClick={discovery.refresh} disabled={!discoveryEnabled || Array.from(discovery.statusByServer.values()).includes("loading")} aria-label={t("mcp.tools.refresh")} title={t("mcp.tools.refresh")}>
+          {hasToolDirectory ? <Button type="default" htmlType="button" className="inline-flex min-h-11 items-center gap-2" data-mcp-refresh-tools onClick={discovery.refresh} disabled={!discoveryEnabled || Array.from(discovery.statusByServer.values()).includes("loading")} aria-label={t("mcp.tools.refresh")} title={t("mcp.tools.refresh")}>
             <RefreshCw size={16} /><span className="hidden sm:inline">{t("mcp.tools.refresh")}</span>
-          </Button>
+          </Button> : null}
           {canManageMcpUi ? <div data-mcp-admin-controls>
             <Button type="primary" htmlType="button" onClick={openCreate} className="inline-flex min-h-11 items-center justify-center gap-2" aria-label={t("mcp.admin.addServer")} title={t("mcp.admin.addServer")}>
               <Plus size={18} /><span className="hidden sm:inline">{t("mcp.admin.addServer")}</span>
@@ -375,29 +375,30 @@ export function MCPPanel() {
         ) : (
           <div className="overflow-x-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
             <div aria-label={t("mcp.title")} data-mcp-server-table><Table
- size="small" pagination={false} scroll={{ x: 1080 }}
+ size="small" pagination={false} scroll={{ x: hasToolDirectory ? 1080 : 960 }}
  dataSource={servers}
  rowKey={(server) => server.name}
 onRow={(server) => {  return ({ role: "row", "data-mcp-server-row": server.name }); }}
  columns={[
 { key: "name", title: t("mcp.form.serverName"), width: 180,
 render: (_value, server) => (<>
-<p className="break-words font-semibold">{server.name}</p>
+<p className="break-words font-semibold">{server.plugin?.display_name || server.name}</p>
+<p className="mt-1 break-words text-xs text-[var(--theme-text-secondary)]">{server.plugin?.description}</p>
                       <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
 </>) },
-{ key: "toolCount", title: t("mcp.tools.catalogCount"), width: 108,
-onCell: () => ({"data-mcp-tool-count": true}),
-render: (_value, server) =>  {
-const status = discovery.statusByServer.get(server.name) ?? "idle";
-return (<>
-{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.filter((tool) => tool.available !== false).length ?? 0 }) : "—"}
-</>);
-} },
+...(hasToolDirectory ? [{ key: "toolCount", title: t("mcp.tools.catalogCount"), width: 108,
+onCell: (server?: MCPServerResponse) => server?.integration_kind === "enterprise_gateway" ? {} : {"data-mcp-tool-count": true},
+render: (_value: unknown, server: MCPServerResponse) => {
+  const status = discovery.statusByServer.get(server.name);
+  if (status === "gateway_managed") return null;
+  const count = discovery.toolsByServer.get(server.name)?.filter(tool => tool.available !== false).length ?? 0;
+  return status === "ready" ? t("mcp.tools.count", { count }) : "—";
+} }] : []),
 { key: "enabled", title: t("mcp.card.statusLabel"), width: 100,
 render: (_value, server) => (<>
 <span className={server.enabled ? "text-[var(--theme-success)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
 </>) },
-{ key: "discovery", title: t("mcp.tools.discoveryStatus"), width: 120,
+{ key: "discovery", title: t(hasToolDirectory ? "mcp.tools.discoveryStatus" : "mcp.form.integrationKind"), width: 120,
 render: (_value, server) =>  {
 const status = discovery.statusByServer.get(server.name) ?? "idle";
 return (<>
@@ -420,7 +421,9 @@ return (<>
 { key: "actions", title: t("mcp.directory.actions"), width: 252,
 render: (_value, server) => (<>
 <div className="flex items-center gap-1">
-                        <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={(event) => { toolPreviousFocusRef.current = event.currentTarget; setToolTarget({ name: server.name, scope: toolsScope }); }}>{t("mcp.tools.view")}</Button>
+                        <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-test disabled={isLoading}
+                          onClick={async () => { const result = await testConnection(server.name); if (result) setProbe({ scope: catalogRequest.scope, name: server.name, configuration: configurationKey(server), result }); }}>{t("plugins.test.title")}</Button>
+                        {server.integration_kind !== "enterprise_gateway" ? <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={(event) => { toolPreviousFocusRef.current = event.currentTarget; setToolTarget({ name: server.name, scope: toolsScope }); }}>{t("mcp.tools.view")}</Button> : null}
                         {canManageMcpUi ? <div className="flex items-center gap-1" data-mcp-admin-controls>
                           <Button type="text" htmlType="button" data-mcp-admin-toggle aria-pressed={server.enabled} onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}
                             icon={server.enabled ? <ToggleRight size={18} className="text-[var(--theme-success)]" /> : <ToggleLeft size={18} className="text-[var(--theme-text-secondary)]" />}
@@ -440,6 +443,10 @@ render: (_value, server) => (<>
         )}
       </div>
 
+      {probe?.scope === catalogRequest.scope ? <div role="status" className="mx-4 mb-3 rounded-lg border border-[var(--theme-border)] p-3 text-sm">
+        {probe.name} · {t(`plugins.test.${probe.result.status}`)} · {new Date(probe.result.checked_at).toLocaleString()}
+        <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t("plugins.test.identityHint")}</p>
+      </div> : null}
       {total > pageSize && (
         <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
@@ -451,7 +458,7 @@ render: (_value, server) => (<>
           />
         </div>
       )}
-      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} fullCatalog={selectedToolServer.integration_kind === "enterprise_gateway"} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
+      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
       {canManageMcpUi ? (
         <ModalRoot open={editorOpen} onOpenChange={(open) => { if (!open) closeEditor(); }}>
           <ModalPortal>
@@ -462,7 +469,7 @@ render: (_value, server) => (<>
                 <Button type="text" data-mcp-editor-initial-focus autoFocus onClick={closeEditor} aria-label={t("common.close")} disabled={isLoading}><X size={18} /></Button>
               </ModalHeader>
               <ModalContent>
-                <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} submitError={error} isSystemServer />
+                <MCPServerForm server={editorServer} toolNames={editorServer && editorServer.integration_kind !== "enterprise_gateway" && probe?.scope === catalogRequest.scope && probe.name === editorServer.name && probe.configuration === configurationKey(editorServer) && probe.result.status === "ready" ? (probe.result.tools ?? []).map(tool => tool.name) : (editorServer ? discovery.toolsByServer.get(editorServer.name) ?? [] : []).map(tool => tool.name.slice(tool.name.indexOf("::") + 2))} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} submitError={error} isSystemServer />
               </ModalContent>
             </ModalPopup>
           </ModalPortal>

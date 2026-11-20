@@ -242,7 +242,7 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   );
   assert.match(
     toolsHook,
-    /if \(!hookEnabled\) \{[\s\S]*?setCatalog\(\{ generation, status: "empty", \.\.\.EMPTY_CATALOG \}\);[\s\S]*?return;/,
+    /if \(!hookEnabled\) \{[\s\S]*?setState\(\{ scope, snapshot: \{ generation, status: "empty", \.\.\.EMPTY_CATALOG \} \}\);[\s\S]*?return;/,
   );
   assert.match(
     toolsHook,
@@ -253,7 +253,8 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
     toolsHook,
     /const payload: unknown = await rawResponse\.json\(\);[\s\S]*?parseChatMcpCatalogResponse\(payload\)/,
   );
-  assert.match(toolsHook, /publishChatMcpCatalogFailure\(current, generation\)/);
+  assert.match(toolsHook, /publishChatMcpCatalogFailure\(previous\.snapshot, generation\)/);
+  assert.match(toolsHook, /state\.scope === scope \? state\.snapshot/);
   assert.match(
     toolsHook,
     /const authorizedIds = new Set\(tools\.map\(\(tool\) => tool\.name\)\);[\s\S]*?filter\(\(toolId\) => authorizedIds\.has\(toolId\)\)/,

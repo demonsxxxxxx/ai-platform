@@ -410,6 +410,44 @@ async def get_current_published_agent_profile(
     return dict(row) if row is not None else None
 
 
+async def get_withdrawn_agent_profile_publication(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Read the exact publication pointed to by the last withdrawal, for authoring only."""
+
+    cursor = await conn.execute(
+        f"""
+        select {_PROFILE_REVISION_COLUMNS}
+        from agent_profiles profile
+        join agents on agents.tenant_id = profile.tenant_id and agents.id = profile.agent_id
+        join lateral (
+            select withdrawn_from_revision
+            from agent_profile_revisions
+            where tenant_id = profile.tenant_id
+              and agent_id = profile.agent_id
+              and revision_status = 'withdrawn'
+              and revision <= profile.latest_revision
+            order by revision desc
+            limit 1
+        ) withdrawal on true
+        join agent_profile_revisions
+          on agent_profile_revisions.tenant_id = profile.tenant_id
+         and agent_profile_revisions.agent_id = profile.agent_id
+         and agent_profile_revisions.revision = withdrawal.withdrawn_from_revision
+         and agent_profile_revisions.revision_status = 'published'
+        where profile.tenant_id = %s and profile.agent_id = %s
+          and profile.lifecycle_status = 'withdrawn'
+          and agents.agent_type = 'profile' and agents.status = 'active'
+        """,
+        (tenant_id, agent_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
 async def get_bound_published_agent_profile(
     conn: AsyncConnection,
     *,

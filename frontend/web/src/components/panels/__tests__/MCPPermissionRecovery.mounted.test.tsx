@@ -19,6 +19,7 @@ const { act, createElement } = await import("react");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { useMCP } = await import("../../../hooks/useMcp");
 const { MCPPanel } = await import("../MCPPanel");
+const { MemoryRouter, useLocation } = await import("react-router-dom");
 await import("../../../i18n/index");
 
 function deferred<T>() {
@@ -54,9 +55,9 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
     if (fetcher) return fetcher(request);
     throw new Error(`Unexpected request ${request.url.pathname}`);
   }) as typeof fetch;
-  function Probe({ children }: { children: ReactNode }) { auth = useAuth(); return children; }
+  function Probe({ children }: { children: ReactNode }) { auth = useAuth(); const location = useLocation(); return createElement("div", { "data-test-path": location.pathname }, children); }
   const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
-  const render = async (next: ReactNode) => { await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe, { children: next }))); }); };
+  const render = async (next: ReactNode) => { await act(async () => { root.render(createElement(MemoryRouter, { initialEntries: ["/mcp"] }, createElement(AuthProvider, null, createElement(Probe, { children: next })))); }); };
   await render(child);
   assert.equal(auth.isAuthenticated, true, "real AuthProvider must authenticate synthetic principal");
   let closed = false;
@@ -125,37 +126,31 @@ test("administrator can disable and restore a server with clear enable state", a
   } finally { await view.close(); }
 });
 
-test("enterprise catalog retains missing definitions without counting them as available", async () => {
-  const tools = [
-    { name: "synthetic-mcp::ready", description: "Available synthetic tool", parameters: [], available: true },
-    { name: "synthetic-mcp::missing", description: "Missing synthetic tool", parameters: [], available: false },
-  ];
-  const view = await harness(createElement(MCPPanel), () => json({ servers: [{ ...server, integration_kind: "enterprise_gateway" }], total: 1, skip: 0, limit: 20 }),
-    () => json({ server_name: server.name, tools, count: 1, unavailable_reason: null }));
+test("enterprise-only management keeps connection testing and never requests or displays tools", async () => {
+  const gateway = { ...server, integration_kind: "enterprise_gateway" };
+  const view = await harness(createElement(MCPPanel), ({ url }) => url.pathname.endsWith("/test")
+    ? json({ status: "ready", checked_at: "2026-11-20T00:00:00Z" })
+    : json({ servers: [gateway], total: 1, skip: 0, limit: 20 }));
   try {
-    assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
-    assert.ok(view.discoveryCalls.every(call => call.url.pathname.endsWith("/catalog")));
-    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    const detail = document.querySelector("[data-mcp-tool-detail]")!;
-    assert.equal(detail.querySelectorAll("li").length, 2);
-    assert.match(detail.textContent!, /Gateway 全量目录/);
-    assert.match(detail.textContent!, /缺失或已停用/);
-    assert.doesNotMatch(detail.textContent!, /当前账户可发现/);
+    assert.match(view.container.textContent!, /由企业网关管理/);
+    assert.doesNotMatch(view.container.textContent!, /可用工具数/);
+    assert.equal(view.container.querySelector("[data-mcp-view-tools], [data-mcp-refresh-tools]"), null);
+    assert.ok(view.container.querySelector("[data-mcp-admin-edit]"));
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-test]")!);
+    assert.match(view.container.textContent!, /连接测试成功/);
+    assert.equal(view.discoveryCalls.length, 0);
+    assert.deepEqual(view.calls.filter(call => call.init.method === "POST").map(call => call.url.pathname),
+      ["/api/admin/mcp/synthetic-mcp/test"]);
   } finally { await view.close(); }
 });
 
-test("one unavailable server never hides healthy tools in the ordinary directory", async () => {
-  const view = await harness(createElement(MCPPanel), () => json({ servers: [server, { ...server, name: "broken" }], total: 2, skip: 0, limit: 200 }), ({ url }) =>
-    url.pathname.endsWith("/broken/tools")
-      ? json({ server_name: "broken", tools: [], count: 0, unavailable_reason: "discovery_failed" })
-      : json({ server_name: server.name, tools: [{ name: "alpha", description: "Healthy synthetic tool", parameters: [] }], count: 1, unavailable_reason: null }),
-  );
+test("ordinary MCP links redirect to the plugin center without further management reads", async () => {
+  const view = await harness(createElement(MCPPanel), () => page());
   try {
+    const reads = view.calls.length;
     await view.setUser(principal("ordinary", ["user"]));
-    assert.match(view.container.querySelector("[data-ordinary-mcp-catalog]")!.textContent!, /Healthy synthetic tool/);
-    assert.ok(view.discoveryCalls.slice(-2).every(call => call.url.pathname.endsWith("/tools")));
-    assert.match(view.container.textContent!, /暂时无法加载可用工具/);
-    assert.doesNotMatch(view.container.textContent!, /common\.retry|mcp\.tools\./);
+    assert.equal(view.container.querySelector("[data-test-path]")!.getAttribute("data-test-path"), "/plugins");
+    assert.equal(view.calls.length, reads);
     assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
   } finally { await view.close(); }
 });
@@ -262,6 +257,33 @@ function retry(view: Awaited<ReturnType<typeof harness>>) {
 const server = { name: "synthetic-mcp", transport: "streamable_http" as const, url: "https://example.invalid/mcp", enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: "configured" };
 const page = () => json({ servers: [server], total: 1, skip: 0, limit: 20 });
 
+test("saved connection changes invalidate prior protocol test candidates", async () => {
+  let saved = { ...server, enabled: false, updated_at: "first", plugin: { display_name: "", description: "",
+    user_authorization: "none" as const, default_tools: [] as string[] } };
+  const view = await harness(createElement(MCPPanel), ({ url, init }) => {
+    if (url.pathname.endsWith("department-directory")) return json({ departments: [] });
+    if (url.pathname.endsWith("/test")) return json({ status: "ready", checked_at: "2026-11-19T00:00:00Z", count: 1,
+      tools: [{ name: "old_target_entry", description: "Synthetic protocol entry" }] });
+    if (init.method === "PUT") {
+      saved = { ...saved, ...JSON.parse(String(init.body)), updated_at: "second" };
+      return json(saved);
+    }
+    return url.pathname === "/api/mcp/" ? json({ servers: [saved], total: 1, skip: 0, limit: 20 }) : json(saved);
+  });
+  const defaults = () => document.querySelector('[role="group"][aria-label="新任务默认选用入口"]')!;
+  try {
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-test]")!);
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-edit]")!);
+    assert.match(defaults().textContent!, /old_target_entry/);
+    const save = [...document.querySelectorAll<HTMLButtonElement>("form button")].find(button => button.type === "submit")!;
+    await click(save);
+    assert.equal(saved.updated_at, "second");
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-edit]")!);
+    assert.doesNotMatch(defaults().textContent!, /old_target_entry/);
+    assert.match(defaults().textContent!, /先保存连接/);
+  } finally { await view.close(); }
+});
+
 test("explicit retry stays unavailable until a successful read and repeated 403 never auto retries", async () => {
   const pending = deferred<Response>(); let reads = 0;
   const view = await harness(createElement(MCPPanel), () => ++reads < 3 ? forbidden() : pending.promise);
@@ -303,9 +325,8 @@ test("ordinary directory retains unavailable copy and read-only recovery", async
   const view = await harness(createElement(MCPPanel), ({ url }) => denied ? forbidden() : empty(Number(url.searchParams.get("limit"))));
   try {
     await view.setUser(principal("ordinary", ["user"]));
-    assert.ok(view.container.querySelector("[data-ordinary-mcp-catalog]"));
-    assert.ok(retry(view)); assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
-    denied = false; await click(retry(view));
+    assert.equal(view.container.querySelector("[data-test-path]")!.getAttribute("data-test-path"), "/plugins");
+    denied = false;
     assert.equal(view.container.querySelector("[data-mcp-retry]"), null);
     assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
   } finally { await view.close(); }
@@ -459,7 +480,7 @@ test("permission recovery refreshes revoked administrator roles before reopening
       return previousFetch(url, init);
     }) as typeof fetch;
     await click(retry(view));
-    assert.ok(view.container.querySelector("[data-ordinary-mcp-catalog]"));
+    assert.equal(view.container.querySelector("[data-test-path]")!.getAttribute("data-test-path"), "/plugins");
     assert.ok(!view.container.querySelector("[data-mcp-admin-controls]"));
   } finally { await view.close(); }
 });

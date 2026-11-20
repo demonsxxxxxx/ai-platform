@@ -128,6 +128,8 @@ async def _append_revision(
     status: str,
     expected_previous_revision: int,
     content_hash: str,
+    mcp_tool_ids: list[str] | None = None,
+    withdrawn_from_revision: int | None = None,
 ):
     return await profile_repository.create_agent_profile_revision(
         conn,
@@ -139,13 +141,13 @@ async def _append_revision(
         starter_prompts=["Summarize this request"],
         instructions="Use authorized information only.",
         skill_set=[{"skill_id": "support"}],
-        mcp_tool_ids=[],
+        mcp_tool_ids=mcp_tool_ids or [],
         content_hash=content_hash,
         created_by="admin-a",
         published_by="admin-a" if status == "published" else None,
         expected_previous_revision=expected_previous_revision,
         published_from_revision=1 if status == "published" else None,
-        withdrawn_from_revision=2 if status == "withdrawn" else None,
+        withdrawn_from_revision=withdrawn_from_revision,
         avatar_ref="builtin:assistant",
         avatar_seed="agt-support",
         market_tags=["support"],
@@ -157,7 +159,13 @@ async def _append_revision(
 
 
 @pytest.mark.asyncio
-async def test_canonical_profile_lifecycle_persists_and_queries_exact_publication():
+async def test_canonical_profile_lifecycle_persists_and_queries_exact_publication(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.agent_apps import authority as profile_authority
+    from app.agent_apps.authority import AgentProfileAuthority, _draft_from_row, _revision_hash
+    from app.auth import AuthPrincipal
+
     dsn = _postgres_dsn()
     schema_name = f"agent_profile_{uuid.uuid4().hex}"
     conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
@@ -198,18 +206,22 @@ async def test_canonical_profile_lifecycle_persists_and_queries_exact_publicatio
             conn, tenant_id="tenant-a", agent_id="agt_support"
         ) is None
 
+        retained_ids = ["gateway::lookup"]
+        legacy_definition = _draft_from_row(draft).model_copy(update={"mcp_tool_ids": retained_ids})
+        published_hash = _revision_hash(legacy_definition)
         published = await _append_revision(
             conn,
             status="published",
             expected_previous_revision=1,
-            content_hash="b" * 64,
+            content_hash=published_hash,
+            mcp_tool_ids=retained_ids,
         )
         await profile_repository.record_agent_profile_publication(
             conn,
             tenant_id="tenant-a",
             agent_id="agt_support",
             revision=2,
-            content_hash="b" * 64,
+            content_hash=published_hash,
         )
         current = await profile_repository.get_current_published_agent_profile(
             conn, tenant_id="tenant-a", agent_id="agt_support"
@@ -245,25 +257,81 @@ async def test_canonical_profile_lifecycle_persists_and_queries_exact_publicatio
                     purpose, status, admitted_agent_profile_revision, admitted_agent_profile_hash
                 ) values (%s, 'tenant-a', %s, 'default', 'agt_support', 'History', 'manual',
                           'conversation', 'active', 2, %s)""",
-                (session_id, user_id, "b" * 64),
+                (session_id, user_id, published_hash),
             )
 
-        withdrawn = await _append_revision(
-            conn,
-            status="withdrawn",
-            expected_previous_revision=2,
-            content_hash="c" * 64,
-        )
-        await profile_repository.record_agent_profile_withdrawal(
-            conn,
-            tenant_id="tenant-a",
-            agent_id="agt_support",
-            revision=withdrawn["revision"],
-        )
-        assert await profile_repository.get_current_published_agent_profile(
-            conn, tenant_id="tenant-a", agent_id="agt_support"
-        ) is None
+        async def authorize_skill(*_args, **_kwargs):
+            return {"skill_id": "support", "skill_version": "version-a"}
+
+        async def gateway(*_args, **_kwargs):
+            return {"name": "gateway", "integration_kind": "enterprise_gateway"}
+
+        async def audit(*_args, **_kwargs):
+            return "aud_profile"
+
+        async def ensure_user(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(profile_authority, "agent_profile_repository", profile_repository)
+        monkeypatch.setattr(profile_authority, "_authorize_current_profile_skill", authorize_skill)
+        monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry", gateway)
+        monkeypatch.setattr("app.agent_apps.authority.identity_audit_postgres.append_audit_log", audit)
+        monkeypatch.setattr(AgentProfileAuthority, "_ensure_principal_user", ensure_user)
+        authority = AgentProfileAuthority()
+        principal = AuthPrincipal(tenant_id="tenant-a", user_id="admin-a", display_name="Admin A",
+                                  roles=["admin"], source="test")
+        authoring = {"principal": principal, "agent_id": "agt_support"}
+        scope = {"tenant_id": "tenant-a", "agent_id": "agt_support"}
+        publication_source = profile_repository.get_withdrawn_agent_profile_publication
+
+        async def save(previous_revision, tool_ids):
+            definition = legacy_definition.model_copy(update={
+                "mcp_tool_ids": tool_ids, "expected_draft_revision": previous_revision,
+            })
+            async with conn.transaction():
+                saved, _ = await authority.save_draft(conn, **authoring, definition=definition)
+            return definition.model_copy(update={"expected_draft_revision": saved.revision})
+
+        async def publish(definition):
+            async with conn.transaction():
+                row, _ = await authority.publish_draft(conn, **authoring, expected_revision=definition.expected_draft_revision)
+            return row
+
+        async def withdraw(revision):
+            async with conn.transaction():
+                row, _ = await authority.unpublish(conn, **authoring, expected_revision=revision)
+            return row
+
+        # Withdrawal can copy a newer draft's content; only its link to the
+        # actual publication is allowed to preserve references.
+        await save(2, ["gateway::draft_only"])
+        withdrawal = await withdraw(2)
+        assert withdrawal.mcp_tool_ids == ["gateway::draft_only"]
+        draft = await save(withdrawal.revision, retained_ids)
+        retained = await publication_source(conn, **scope)
+        assert retained["revision"] == 2
+        assert retained["mcp_tool_ids"] == retained_ids
+        assert await publication_source(conn, **(scope | {"tenant_id": "tenant-b"})) is None
+        assert await publication_source(conn, **(scope | {"agent_id": "agt_other"})) is None
+        assert await profile_repository.get_current_published_agent_profile(conn, **scope) is None
+        async with conn.transaction():
+            await authority.validate_draft(conn, **authoring, definition=draft)
+        republished = await publish(draft)
+        assert republished.mcp_tool_ids == retained_ids
+        assert await publication_source(conn, **scope) is None
+
+        replacement = await publish(await save(republished.revision, []))
+        withdrawal = await withdraw(replacement.revision)
+        rejected = await save(withdrawal.revision, retained_ids)
+        with pytest.raises(HTTPException, match="agent_profile_capability_not_available") as exc:
+            await publish(rejected)
+        assert exc.value.status_code == 403
+        retained = await publication_source(conn, **scope)
+        assert retained["revision"] == replacement.revision
+        assert retained["mcp_tool_ids"] == []
+
         await conn.execute("update agents set status = 'inactive' where id = 'agt_support'")
+        assert await publication_source(conn, **scope) is None
         from app.conversations.infrastructure.postgres import list_authorized_agent_conversations
 
         history = await list_authorized_agent_conversations(

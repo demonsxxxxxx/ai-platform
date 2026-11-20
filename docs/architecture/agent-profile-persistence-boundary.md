@@ -109,12 +109,31 @@ publication. `agent_profile_revisions` is append-only history.
 The revision content hash is computed from the canonical profile definition only.
 Publication metadata and aggregate pointers are not hash inputs.
 
+Draft validation and publication can retain exact enterprise Gateway references
+from this Profile's current publication. After withdrawal, they use only the
+publication named by the most recent withdrawal, with its content hash checked.
+Drafts, older publications, and the tenant's Skill validation Agent cannot supply
+additional references. This authoring check does not restore admission while the
+Profile is withdrawn or grant any runtime capability.
+
 ## 5. Admission And Reauthorization
 
 Every new Run resolves the current published profile by `agent_id`. A Session
 retains expert identity and native history; its creation revision is provenance.
 Accepted Runs resolve their exact `(agent_id, revision, content_hash)` and package
 pins for dispatch, retry and resume. Current access still applies.
+
+New task admission also resolves authorized platform MCP plugin defaults, merges
+them with the published Profile and Skill declarations, de-duplicates and applies
+current MCP authority. The optional private Run snapshot field
+`platform_default_mcp_tool_ids` records the accepted default sources. It is not a
+Profile definition/revision hash field or a public projection. Defaults from
+multiple plugins are not limited to 200 in aggregate; the per-plugin configuration
+bound does not redefine the execution-input capacity contract. Accepted/replayed
+Runs and Worker read only that source list, never today's default configuration.
+Old snapshots omit the new field and retain exact historical validation. Skill
+manifests continue pinning tools in root-specific order; default-bearing replay
+compares against that actual pinning algorithm, not the different Run input order.
 The pinned-row query retains its `current_revision` publication integrity join,
 but returns only the pinned revision fields. Current ACL authority is the separate
 full current-profile read passed to `_admission_from_row`; the unused
@@ -192,8 +211,10 @@ an upgraded database exposes one write contract.
 - Visibility ACL checks fail closed.
 - Public projection is an allowlist and cannot expose executor-private data.
 - Profile admission cannot override Run-owned model selection.
-- Skill and MCP identifiers are accepted only from the immutable authorized
-  profile definition.
+- Skill identifiers come from the immutable authorized profile definition. MCP
+  identifiers come from that definition, its admitted Skill dependencies and the
+  authorized platform-default source frozen in the accepted Run; replay cannot
+  substitute current defaults.
 - Conversation provenance and accepted Run snapshots are never rewritten by a
   later publication. New Run admission independently resolves the current
   publication as specified in section 5.

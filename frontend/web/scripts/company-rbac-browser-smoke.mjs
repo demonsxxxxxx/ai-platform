@@ -120,7 +120,8 @@ function mockBootstrapSource(isAdmin) {
       });
       if (url.pathname === "/api/auth/profile") return json({ metadata: {} });
       if (url.pathname.includes("session")) return json({ sessions: [], total: 0, runs: [], events: [] });
-      if (url.pathname.includes("mcp")) return json({ servers: [] });
+      if (url.pathname === "/api/mcp/") return json({ servers: [], total: 0, skip: 0, limit: Number(url.searchParams.get("limit") || 50) });
+      if (url.pathname.includes("mcp")) return json({ tools: [], count: 0, unavailable: [] });
       if (url.pathname.startsWith("/api/")) return json({ items: [], total: 0, governance });
       return originalFetch(input, init);
     };
@@ -249,11 +250,11 @@ async function runCase(role, viewportName, viewport) {
     await client.waitFor(
       isAdmin
         ? "Boolean(document.querySelector('[data-mcp-directory-shell]'))"
-        : "Boolean(document.querySelector('[data-ordinary-mcp-catalog]'))",
+        : "location.pathname === '/plugins' && Boolean(document.querySelector('[data-plugin-market]'))",
       `${role}:${viewportName}:mcp-catalog`,
     );
     catalogRoutes.mcp = await client.evaluate(`({
-      ordinary: Boolean(document.querySelector('[data-ordinary-mcp-catalog]')),
+      ordinary: location.pathname === '/plugins' && Boolean(document.querySelector('[data-plugin-market]')),
       admin: Boolean(document.querySelector('[data-mcp-directory-shell]')),
       adminControls: Boolean(document.querySelector('[data-mcp-admin-controls]')),
     })`);

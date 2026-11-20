@@ -16,6 +16,8 @@ import { DepartmentDirectorySelector } from "../panels/DepartmentDirectorySelect
 import { resolveDepartmentSelection } from "../panels/departmentDirectorySelection";
 import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
+import { MCPPluginFields } from "./MCPPluginFields";
+import type { MCPPluginConfiguration } from "../../types/mcp";
 
 interface MCPServerFormProps {
   server?: MCPServerResponse | null;
@@ -25,6 +27,7 @@ interface MCPServerFormProps {
   allowedTransports?: Permission[];
   isSystemServer?: boolean;
   submitError?: string | null;
+  toolNames?: string[];
 }
 
 interface KeyValuePair {
@@ -89,6 +92,7 @@ export function MCPServerForm({
   ],
   isSystemServer = false,
   submitError,
+  toolNames = [],
 }: MCPServerFormProps) {
   const { t } = useTranslation();
   const isEditing = !!server;
@@ -128,7 +132,13 @@ export function MCPServerForm({
   const [transport, setTransport] = useState<MCPServerCreate["transport"]>(
     server?.transport === "sandbox" ? defaultTransport : server?.transport ?? defaultTransport,
   );
-  const [enabled, setEnabled] = useState(server?.enabled ?? true);
+  const [enabled, setEnabled] = useState(server?.enabled ?? false);
+  const initialPlugin = (current?: MCPServerResponse | null): MCPPluginConfiguration => current?.plugin ?? {
+    display_name: "", description: "",
+    default_tools: [], user_authorization: "none",
+  };
+  const [plugin, setPlugin] = useState(() => initialPlugin(server));
+  const [credentialsAction, setCredentialsAction] = useState<"keep" | "replace" | "clear">(server ? "keep" : "replace");
   const [integrationKind, setIntegrationKind] = useState<"mcp" | "enterprise_gateway">(server?.integration_kind ?? "mcp");
 
   // HTTP fields
@@ -152,6 +162,7 @@ export function MCPServerForm({
   );
 
   const [publicOperations, setPublicOperations] = useState(() => publicOperationDrafts(server));
+  const canEditPublicOperations = integrationKind === "mcp" && server?.integration_kind !== "enterprise_gateway";
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -181,7 +192,7 @@ export function MCPServerForm({
     } else {
       setName("");
       setTransport(defaultTransport);
-      setEnabled(true);
+      setEnabled(false);
       setIntegrationKind("mcp");
       setUrl("");
       setHeaders([]);
@@ -190,6 +201,8 @@ export function MCPServerForm({
       setRoleQuotas({});
     }
     setPublicOperations(publicOperationDrafts(server));
+    setPlugin(initialPlugin(server));
+    setCredentialsAction(server ? "keep" : "replace");
     setErrors({});
   }, [server, defaultTransport]);
 
@@ -231,10 +244,10 @@ export function MCPServerForm({
       newErrors.name = t("mcp.form.validation.nameInvalid");
     }
 
-    if (!url.trim()) {
+    if (credentialsAction === "replace" && !url.trim()) {
       newErrors.url = t("mcp.form.validation.urlRequired");
     }
-    const headerError = validateMcpStaticHeaderNames(headers, integrationKind);
+    const headerError = credentialsAction === "replace" ? validateMcpStaticHeaderNames(headers, integrationKind) : null;
     if (headerError === "mcp_header_conflict") {
       newErrors.headers = t(integrationKind === "enterprise_gateway"
         ? "mcp.form.validation.userIdentityHeaderConflict" : "mcp.form.validation.jwtHeaderConflict");
@@ -243,7 +256,7 @@ export function MCPServerForm({
     }
 
     const tools = new Set<string>();
-    if (publicOperations.length > 100 || publicOperations.some((row) => {
+    if (canEditPublicOperations && (publicOperations.length > 100 || publicOperations.some((row) => {
       const parts = row.path.split(".");
       const invalid = !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,383}$/.test(row.tool) || tools.has(row.tool)
         || !row.action.trim() || row.action.length > 80 || !row.object.trim() || row.object.length > 80
@@ -251,7 +264,7 @@ export function MCPServerForm({
           || /account|username|userid|email|phone|credential|password|secret|token|path|directory|filename|storage/i.test(part.replaceAll("_", "")));
       tools.add(row.tool);
       return invalid;
-    })) newErrors.publicOperations = t("mcp.form.publicSummaryInvalid");
+    }))) newErrors.publicOperations = t("mcp.form.publicSummaryInvalid");
     if (!departmentSelection.authoritative || allowedDepartments.length > 128) {
       newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
     }
@@ -270,7 +283,11 @@ export function MCPServerForm({
       transport,
       integration_kind: integrationKind,
       enabled,
-      public_operation_summaries: Object.fromEntries(publicOperations.map((row) => [row.tool, {
+      plugin: integrationKind === "enterprise_gateway" ? {
+        display_name: plugin.display_name, description: plugin.description, user_authorization: plugin.user_authorization,
+      } : plugin,
+      credentials_action: credentialsAction,
+      public_operation_summaries: !canEditPublicOperations ? undefined : Object.fromEntries(publicOperations.map((row) => [row.tool, {
         action_label: row.action.trim(), object_label: row.object.trim(), object_path: row.path.split("."),
       }])),
       allowed_roles: isSystemServer ? allowedRoles : undefined,
@@ -280,8 +297,8 @@ export function MCPServerForm({
       department_ids: allowedDepartments,
     };
 
-    data.url = url.trim();
-    if (headers.length > 0) {
+    if (credentialsAction === "replace") data.url = url.trim();
+    if (credentialsAction === "replace" && headers.length > 0) {
       data.headers = headers.reduce(
         (acc, { key, value }) => {
           if (key.trim()) acc[key.trim()] = value;
@@ -336,6 +353,9 @@ export function MCPServerForm({
         )}
       </div>
 
+      <MCPPluginFields value={plugin} onChange={setPlugin} integrationKind={integrationKind}
+        toolNames={credentialsAction === "keep" &&
+          integrationKind === (server?.integration_kind ?? "mcp") ? toolNames : []} disabled={isLoading} />
       <div className="es-field">
         <label className="es-label">{t("mcp.form.integrationKind")}</label>
         <LobeSelectField
@@ -468,12 +488,16 @@ export function MCPServerForm({
         {errors.departments ? <p className="es-hint text-[var(--theme-danger-text)]" role="alert">{errors.departments}</p> : null}
       </div>
 
-      {isEditing && (
-        <p className="es-hint">{t("mcp.form.connectionReentry")}</p>
-      )}
+      {isEditing ? <div className="es-field">
+        <span className="es-label">{t("plugins.credentials.title")}</span>
+        <LobeSelectField aria-label={t("plugins.credentials.title")} value={credentialsAction}
+          onChange={action => { setCredentialsAction(action as typeof credentialsAction);
+            setErrors(current => ({ ...current, headers: "", url: "" })); }} disabled={isLoading}
+          options={(["keep", "replace", "clear"] as const).map(action => ({ value: action, label: t(`plugins.credentials.${action}`) }))} />
+      </div> : null}
 
-      {/* HTTP/SSE connection */}
-      <>
+      {/* Connection secrets are entered only on explicit replacement. */}
+      {credentialsAction === "replace" ? <>
           {/* URL field */}
           <div className="es-field">
             <label className="es-label">{t("mcp.form.url")}</label>
@@ -519,7 +543,8 @@ export function MCPServerForm({
                     className="font-mono"
                   />
                   <Input
-                    type="text"
+                    type="password"
+                    autoComplete="new-password"
                     value={header.value}
                     onChange={(e) =>
                       updateHeader(header.id, "value", e.target.value)
@@ -546,9 +571,10 @@ export function MCPServerForm({
               )}
             </div>
           </div>
-      </>
+      </> : null}
 
-      <fieldset className="es-section" data-public-operation-summaries>
+      {integrationKind === "mcp" && !canEditPublicOperations ? <p className="es-hint">{t("mcp.form.publicSummaryAfterSwitch")}</p> : null}
+      {canEditPublicOperations ? <fieldset className="es-section" data-public-operation-summaries>
         <legend className="es-label">{t("mcp.form.publicSummaryTitle")}</legend>
         <p className="es-hint">{t("mcp.form.publicSummaryDescription")}</p>
         {publicOperations.map((row, index) => (
@@ -565,7 +591,7 @@ export function MCPServerForm({
         ))}
         {errors.publicOperations && <p className="es-hint" role="alert">{errors.publicOperations}</p>}
         <Button htmlType="button" type="default" onClick={() => setPublicOperations((rows) => [...rows, { tool: '', action: '', object: '', path: '' }])}>{t("mcp.form.publicSummaryAdd")}</Button>
-      </fieldset>
+      </fieldset> : null}
 
       {submitError ? <p ref={submitErrorRef} role="alert" tabIndex={-1}
         className="rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger-text)]">

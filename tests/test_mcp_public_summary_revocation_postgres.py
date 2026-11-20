@@ -13,11 +13,12 @@ from tests.test_mcp_public_operation_summary import DECLARATION
 from tests.test_recovery_operations_postgres import operation_db
 
 
-@pytest.mark.asyncio
-async def test_two_admin_interleaving_omitted_update_cannot_restore_committed_revocation(operation_db, monkeypatch):
+async def prepare_registry(operation_db, monkeypatch):
     from app.routes import mcp
+    from tests.test_mcp_routes import _install_mcp_test_keyring
     connect, *_ = operation_db
     configure_mcp_runtime()
+    _install_mcp_test_keyring(monkeypatch)
     @asynccontextmanager
     async def transaction():
         async with connect() as conn, conn.transaction():
@@ -39,17 +40,22 @@ async def test_two_admin_interleaving_omitted_update_cannot_restore_committed_re
         await conn.execute("insert into mcp_servers(id,tenant_id,name) values('server','tenant-a','vendor')")
         await conn.execute("""insert into tenant_capability_distributions(id,tenant_id,capability_kind,capability_id,metadata_json)
             values('distribution','tenant-a','mcp_server','vendor',%s)""", (Jsonb({"public_operation_summaries": declaration}),))
+    return connect
+
+
+@pytest.mark.asyncio
+async def test_two_admin_interleaving_omitted_update_cannot_restore_committed_revocation(operation_db, monkeypatch):
+    from app.routes import mcp
+    connect = await prepare_registry(operation_db, monkeypatch)
     read_before_revoke, resume_a = asyncio.Event(), asyncio.Event()
-    original_get = mcp.identity_capability_distributions.get_capability_distribution_row
+    original_get = mcp.mcp_repository.get_mcp_server_registry_entry
     pending_a = None
-    async def read_distribution(conn, **kwargs):
-        row = await original_get(conn, **kwargs)
+    async def read_server(conn, **kwargs):
         if asyncio.current_task() is pending_a:
-            assert row["metadata_json"]["public_operation_summaries"] == declaration
             read_before_revoke.set()
             await resume_a.wait()
-        return row
-    monkeypatch.setattr(mcp.identity_capability_distributions, "get_capability_distribution_row", read_distribution)
+        return await original_get(conn, **kwargs)
+    monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_registry_entry", read_server)
     principals = [AuthPrincipal(tenant_id="tenant-a", user_id=f"admin-{name}", display_name=name, roles=["admin"], source="test") for name in ("a", "b")]
     async def write(principal, payload):
         return await mcp._write_server(principal, mcp.McpServerLifecycleRequest.model_validate(payload),
@@ -77,3 +83,59 @@ async def test_two_admin_interleaving_omitted_update_cannot_restore_committed_re
         if not pending_a.done():
             pending_a.cancel()
         await asyncio.gather(pending_a, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["replace", "clear"])
+async def test_keep_mode_validation_reads_credentials_after_server_lock(operation_db, monkeypatch, replacement):
+    from fastapi import HTTPException
+    from app.routes import mcp
+    connect = await prepare_registry(operation_db, monkeypatch)
+    principals = [AuthPrincipal(tenant_id="tenant-a", user_id=f"admin-{name}", display_name=name,
+                                roles=["admin"], source="test") for name in ("a", "b")]
+    async def write(principal, **payload):
+        return await mcp._write_server(principal, mcp.McpServerLifecycleRequest.model_validate(payload),
+            name="vendor", is_system=False, action="mcp.server.updated")
+    await write(principals[0], url="https://synthetic.example/mcp")
+    original_get = mcp.mcp_repository.get_mcp_server_registry_entry
+    before_lock, resume = asyncio.Event(), asyncio.Event()
+    pending = None
+    async def get_server(conn, **kwargs):
+        if asyncio.current_task() is pending:
+            assert kwargs["for_update"] is True
+            before_lock.set()
+            await resume.wait()
+        return await original_get(conn, **kwargs)
+    monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_registry_entry", get_server)
+    pending = asyncio.create_task(write(principals[0], credentials_action="keep", integration_kind="enterprise_gateway"))
+    try:
+        await asyncio.wait_for(before_lock.wait(), 3)
+        payload = {"credentials_action": replacement}
+        if replacement == "replace":
+            payload.update(url="https://synthetic.example/new", headers={"Authorization": "Bearer synthetic-only"})
+        await asyncio.wait_for(write(principals[1], **payload), 3)
+        resume.set()
+        if replacement == "replace":
+            with pytest.raises(HTTPException) as raised:
+                await asyncio.wait_for(pending, 3)
+            assert raised.value.detail == "mcp_header_conflict"
+        else:
+            result = await asyncio.wait_for(pending, 3)
+            assert result["credential_state"] == "not_configured"
+        async with connect() as conn:
+            row = await (await conn.execute("""select s.integration_kind,s.credential_state,
+                s.credential_fingerprint as registry_fingerprint,c.credential_fingerprint,c.credential_envelope
+                from mcp_servers s join mcp_server_credentials c
+                on c.tenant_id=s.tenant_id and c.server_name=s.name""")).fetchone()
+        assert row["registry_fingerprint"] == row["credential_fingerprint"]
+        if replacement == "replace":
+            assert row["integration_kind"] == "mcp" and row["credential_state"] == "configured"
+            _, headers = mcp.open_mcp_server_credentials(tenant_id="tenant-a", server_id="vendor", envelope=row["credential_envelope"])
+            assert headers == {"Authorization": "Bearer synthetic-only"}
+        else:
+            assert row["integration_kind"] == "enterprise_gateway" and not row["credential_envelope"]
+    finally:
+        resume.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

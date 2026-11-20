@@ -46,6 +46,9 @@ def available_profile_mcp(monkeypatch):
     async def available(_conn, *, tool_ids, **_kwargs):
         return [{"tool_id": item} for item in tool_ids]
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
+    async def no_defaults(*_args, **_kwargs):
+        return []
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", no_defaults)
 
 
 def _principal(*, roles: list[str] | None = None, department_ids: tuple[str, ...] = ()) -> AuthPrincipal:
@@ -285,33 +288,46 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("available,unavailable,expected_status", [(True, None, None), (False, None, 403), (True, "discovery_failed", 503)])
-async def test_enterprise_profile_publish_checks_anonymous_catalog_not_admin_tool_acl(monkeypatch, available, unavailable, expected_status):
+@pytest.mark.parametrize("case,allowed", [
+    ("published", True), ("withdrawn", True), ("removed", False), ("never_published", False),
+    ("new_preview", False),
+])
+async def test_profile_publication_reuses_only_published_gateway_references_without_network(monkeypatch, case, allowed):
     from app.agent_apps import AgentProfileAuthority
-    from app.agent_apps.authority import _draft_from_row
-    from app.mcp.api import LiveMcpServerResult, LiveMcpTool
-    from types import SimpleNamespace
+    from app.agent_apps.authority import _draft_from_row, agent_profile_repository
 
-    row = _profile_row()
-    row["mcp_tool_ids"] = ["gateway::search"]
+    draft = _profile_row(status="draft", revision=9)
+    draft["mcp_tool_ids"] = ["gateway::search"]
+    previous = _profile_row(status="published", revision=7)
+    previous["mcp_tool_ids"] = [] if case == "removed" else draft["mcp_tool_ids"]
+    _seal_profile_row(previous)
     async def authorize_skill(*_args, **_kwargs):
         return {"skill_id": "general-chat", "skill_version": "version-b"}
     async def server(*_args, **_kwargs):
         return {"name": "gateway", "integration_kind": "enterprise_gateway", "status": "active"}
-    async def catalog(**kwargs):
-        assert kwargs == {"tenant_id": "tenant-a", "server_id": "gateway"}
-        return LiveMcpServerResult("gateway", (LiveMcpTool("gateway::search", "gateway", "search", "Search", "Synthetic", available=available),), unavailable)
+    async def published(*_args, **kwargs):
+        assert case != "new_preview", "a new draft must not inherit a validation Agent's publication"
+        assert kwargs == {"tenant_id": "tenant-a", "agent_id": "agt_support"}
+        return previous if case == "published" else None
+    async def withdrawn(*_args, **kwargs):
+        assert case != "published"
+        assert kwargs == {"tenant_id": "tenant-a", "agent_id": "agt_support"}
+        return previous if case in {"withdrawn", "removed"} else None
+    def forbidden():
+        raise AssertionError("publication must not load a gateway catalog")
     monkeypatch.setattr("app.agent_apps.authority._authorize_current_profile_skill", authorize_skill)
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry", server)
-    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_live_mcp_catalog", lambda: SimpleNamespace(list_server_catalog=catalog))
+    monkeypatch.setattr(agent_profile_repository, "get_current_published_agent_profile", published)
+    monkeypatch.setattr(agent_profile_repository, "get_withdrawn_agent_profile_publication", withdrawn)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_live_mcp_catalog", forbidden)
     call = AgentProfileAuthority()._validate_definition(object(), principal=_principal(), agent_id="agt_support",
-        definition=_draft_from_row(row), check_mcp_catalog=True)
-    if expected_status is None:
+        definition=_draft_from_row(draft), gateway_authoring="reject" if case == "new_preview" else "retain")
+    if allowed:
         assert (await call)[0]["skill_id"] == "general-chat"
     else:
         with pytest.raises(HTTPException) as caught:
             await call
-        assert caught.value.status_code == expected_status
+        assert caught.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -2241,3 +2257,133 @@ async def test_new_turn_uses_current_publication_and_accepted_run_replays_its_sn
     state["current"] = None
     with pytest.raises(HTTPException):
         await authority.resolve_for_admission(object(), principal=_principal(), selection=selected)
+
+
+@pytest.mark.asyncio
+async def test_new_profile_defaults_merge_once_and_bound_worker_keeps_source_defaults(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.models import SelectedAgentProfileRequest
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["gateway::declared", "gateway::shared"]
+    _seal_profile_row(row)
+    async def get_row(*_args, **_kwargs):
+        return row
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    async def defaults(*_args, **_kwargs):
+        return ["gateway::default", "gateway::shared", "gateway::denied"]
+    async def available(_conn, *, tool_ids, **_kwargs):
+        return [{"tool_id": tool} for tool in tool_ids if tool != "gateway::denied"]
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", defaults)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    admission = await authority.resolve_for_admission(object(), principal=_principal(), selection=SelectedAgentProfileRequest(agent_id="agt_support"))
+    assert admission.mcp_tool_ids == ("gateway::default", "gateway::shared", "gateway::declared")
+    assert admission.private_execution_input["platform_default_mcp_tool_ids"] == ["gateway::default", "gateway::shared"]
+    assert admission.configured_mcp_tool_ids == ("gateway::declared", "gateway::shared")
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("accepted snapshots must not resolve current defaults")
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", forbidden)
+    bound = await authority.resolve_bound_for_worker_dispatch(
+        object(), principal=_principal(), agent_id="agt_support", revision=row["revision"], content_hash=row["content_hash"],
+        pinned_skill_set=[{"skill_id": "general-chat", "expected_version": "version-a"}], pinned_manifests=[],
+        pinned_executor_type="claude-agent-worker", execution_kind="harness_chat",
+        pinned_platform_default_mcp_tool_ids=admission.private_execution_input["platform_default_mcp_tool_ids"],
+    )
+    assert bound.private_execution_input == admission.private_execution_input
+    assert bound.mcp_tool_ids == admission.mcp_tool_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [200, 201])
+async def test_multiple_plugin_defaults_fit_the_private_queue_contract(monkeypatch, count):
+    from app.agent_apps import AgentProfileAuthority
+    from app.mcp.api import default_plugin_tool_references
+    from app.models import QueueRunPayload, SelectedAgentProfileRequest
+    rows = [{"capability_id": server, "status": "active", "visible_to_user": True,
+             "metadata_json": {"mcp_plugin": {"default_tools": [f"entry_{i}" for i in range(size)]}}}
+            for server, size in (("one", 200), ("two", count - 200))]
+    defaults = default_plugin_tool_references(rows)
+    row = _profile_row()
+    async def get_row(*_args, **_kwargs):
+        return row
+    async def configured(*_args, **_kwargs):
+        return defaults
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a"},)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", configured)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    admission = await authority.resolve_for_admission(object(), principal=_principal(), selection=SelectedAgentProfileRequest(agent_id="agt_support"))
+    payload = QueueRunPayload(tenant_id="tenant-a", workspace_id="default", user_id="user-a", session_id="session-a",
+        run_id="run-a", agent_id="agt_support", execution_kind="harness_chat", executor_type="claude-agent-worker",
+        schema_version="ai-platform.run-payload.v2", input={"mcp_tool_ids": list(admission.mcp_tool_ids)},
+        agent_profile=admission.private_execution_input)
+    assert len(payload.agent_profile["platform_default_mcp_tool_ids"]) == count
+    assert len(payload.input["mcp_tool_ids"]) == count
+
+
+@pytest.mark.asyncio
+async def test_skill_profile_defaults_survive_actual_pinning_and_replay_with_root_order(monkeypatch):
+    from types import SimpleNamespace
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
+    from app.bootstrap.skills import configure_skill_services
+    from app.models import SelectedAgentProfileRequest
+    configure_skill_services()
+    from app.runs.infrastructure.capability_admission_postgres import run_mcp_tool_ids_for_skill
+    from app.skills.execution_profiles import resolve_skill_execution_profile
+    row = _profile_row()
+    row.update(skill_set=[{"skill_id": "skill-a"}, {"skill_id": "skill-b"}],
+               mcp_tool_ids=["gateway::declared", "gateway::shared"])
+    _seal_profile_row(row)
+    skills = tuple({"skill_id": f"skill-{letter}", "skill_version": letter * 64,
+                    "executor_type": "claude-agent-worker", "backing_mcp_tool_id": f"gateway::back-{letter}"}
+                   for letter in ("a", "b"))
+    async def get_row(*_args, **_kwargs):
+        return row
+    async def validate(*_args, **_kwargs):
+        return skills
+    async def defaults(*_args, **_kwargs):
+        return ["gateway::z-default", "gateway::shared"]
+    async def admit_set(*_args, **_kwargs):
+        return [SimpleNamespace(skill_version=skill["skill_version"], release_decision={"selected_version": skill["skill_version"]},
+            skill_manifests=[{"skill_id": skill["skill_id"], "version": skill["skill_version"], "content_hash": skill["skill_version"],
+                "source": {"kind": "builtin", "asset_dir": skill["skill_id"]}, "dependency_ids": [],
+                "execution_profile": resolve_skill_execution_profile(skill_id=skill["skill_id"], source_kind="builtin", lifecycle_status="released"),
+                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]}]) for skill in skills]
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", get_row)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", defaults)
+    monkeypatch.setattr("app.agent_apps.application.skill_set_pinning.admit_skill_set", admit_set)
+    authority = AgentProfileAuthority()
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    admission = await authority.resolve_for_admission(object(), principal=_principal(), selection=SelectedAgentProfileRequest(agent_id="agt_support"))
+    execution_input = {"mcp_tool_ids": list(admission.mcp_tool_ids)}
+    manifests, version, decision = await pin_agent_skill_set(object(), admission.skills, input_payload=execution_input,
+        tenant_id="tenant-a", rollout_key="user-a", mcp_tool_ids_for_skill=run_mcp_tool_ids_for_skill, conflict_error=ValueError)
+    assert manifests[0]["mcp_tool_ids"][0] == "gateway::back-a"
+    assert execution_input["mcp_tool_ids"][0] == "gateway::z-default"
+    source = {"agent_id": "agt_support", "skill_id": "skill-a", "agent_type": "profile",
+        "admitted_agent_profile_revision": row["revision"], "admitted_agent_profile_hash": row["content_hash"],
+        "input_json": {"input": execution_input, "agent_profile": admission.private_execution_input, "execution_kind": "skill",
+            "model_id": "test-model", "model_value": "provider/test-model",
+            "executor_type": "claude-agent-worker", "skill_version": version, "release_decision": decision, "skill_manifests": manifests}}
+    async def get_run(*_args, **_kwargs):
+        return source
+    async def materialize(*_args, **_kwargs):
+        return manifests
+    async def get_version(*_args, **_kwargs):
+        return None  # Exact builtin pins remain valid without a database version row.
+    async def changed_defaults(*_args, **_kwargs):
+        raise AssertionError("replay cannot load current defaults")
+    monkeypatch.setattr("app.agent_apps.authority.runs_creation_postgres.get_authorized_run", get_run)
+    monkeypatch.setattr("app.agent_apps.authority.skills_run_snapshots_postgres.materialize_run_skill_manifests", materialize)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", get_version)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", changed_defaults)
+    await authority.reauthorize_pinned_run_for_replay(object(), principal=_principal(), run_id="run-a")
+    assert source["input_json"]["input"] == execution_input

@@ -20,6 +20,8 @@ async def reauthorize_worker_locked_profile(
         pinned_manifests=payload.skill_manifests,
         pinned_executor_type=(payload.executor_type or "claude-agent-worker"),
         execution_kind=payload.execution_kind,
+        **({"pinned_platform_default_mcp_tool_ids": payload.agent_profile["platform_default_mcp_tool_ids"]}
+           if "platform_default_mcp_tool_ids" in payload.agent_profile else {}),
     )
     if admission is None:
         return payload, "profile_not_authorized"

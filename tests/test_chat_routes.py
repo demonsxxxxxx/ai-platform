@@ -136,6 +136,13 @@ async def fake_transaction():
 
 
 @pytest.fixture(autouse=True)
+def _stub_plugin_defaults(monkeypatch):
+    async def no_defaults(*_args, **_kwargs):
+        return []
+    monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", no_defaults)
+
+
+@pytest.fixture(autouse=True)
 def _stub_terminal_provider_lineage(monkeypatch):
     async def release(_conn, **_kwargs):
         return None
@@ -902,14 +909,21 @@ def test_keyed_chat_retry_admission_route_persists_durable_receipt(
         ("不要调用 MCP，只解释它是什么", [], True, []),
         ("不要调用 MCP，只解释它是什么", None, True, None),
         ("请调用 MCP 搜索员工手册", None, True, ["gateway::prior-search"]),
+        ("请查找资料", None, False, ["gateway::default-search"]),
+        ("请查找资料", [], False, []),
     ],
-    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative"],
+    ids=["negative-other-tool", "explanation-available", "affirmative", "explicit-clear", "implicit-negative", "implicit-affirmative", "new-default", "new-explicit-clear"],
 )
+@pytest.mark.parametrize("prior_state", ["selected", "empty-session", "legacy-no-field", "empty-selection", "legacy-null-input"])
 @pytest.mark.asyncio
 async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_polarity(
-    monkeypatch, roles, message, selected_tools, continuation, expected_tools
+    monkeypatch, roles, message, selected_tools, continuation, expected_tools, prior_state
 ):
-    calls = {"authorization": []}
+    calls = {"authorization": [], "defaults": 0}
+    async def defaults(*_args, **_kwargs):
+        calls["defaults"] += 1
+        return ["gateway::default-search"]
+    monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", defaults)
     request_principal = principal(roles=roles, department_id="qa", permissions=["chat:write"])
 
     async def authorize_tools(*_args, **kwargs):
@@ -922,10 +936,14 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
         return {"id": "ses-polarity", "workspace_id": "default", "agent_id": "general-agent"}
 
     async def latest_input(*_args, **_kwargs):
-        return {"input": {"mcp_tool_ids": ["gateway::prior-search"]}}
+        if prior_state in {"empty-session", "legacy-null-input"}:
+            return None
+        if prior_state == "legacy-no-field":
+            return {"input": {"message": "historical task"}}
+        return {"input": {"mcp_tool_ids": [] if prior_state == "empty-selection" else ["gateway::prior-search"]}}
 
     async def prior_runs(*_args, **_kwargs):
-        return []
+        return [] if prior_state == "empty-session" else [{"id": "prior-run", "skill_id": None}]
 
     async def create_session(*_args, **_kwargs):
         return "ses-polarity"
@@ -999,6 +1017,14 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
     )
 
     assert response.status == "queued"
+    if continuation and selected_tools is None and prior_state == "empty-session":
+        expected_tools = ["gateway::default-search"]
+    elif continuation and selected_tools is None and not message.startswith("不要"):
+        expected_tools = {"selected": ["gateway::prior-search"], "empty-session": ["gateway::default-search"],
+                          "legacy-no-field": None, "empty-selection": [], "legacy-null-input": None}[prior_state]
+    assert calls["defaults"] == (1 if selected_tools is None and (
+        not continuation or prior_state == "empty-session"
+    ) else 0)
     assert calls["authorization"] == ([{
         "tenant_id": request_principal.tenant_id,
         "tool_ids": expected_tools,

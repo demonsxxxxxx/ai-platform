@@ -151,12 +151,13 @@ function RolesPage() {
 }
 
 function MCPPage() {
+  const { user } = useAuth();
   useSEO({
     title: "seo.mcp.title",
     description: "seo.mcp.description",
     path: "/mcp",
   });
-  return <AppContent key="mcp" activeTab="mcp" />;
+  return user?.is_admin === true ? <AppContent key="mcp" activeTab="mcp" /> : <Navigate to="/plugins" replace />;
 }
 
 function FeedbackPage() {
@@ -333,7 +334,7 @@ function App() {
             <Route
               path={APP_ROUTE_PATHS.pluginMarket}
               element={
-                <ProtectedRoute requireAdmin redirectTo={APP_ROUTE_PATHS.agentMarket}>
+                <ProtectedRoute>
                   <PluginMarketPage />
                 </ProtectedRoute>
               }

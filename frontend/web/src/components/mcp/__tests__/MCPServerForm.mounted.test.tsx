@@ -53,8 +53,9 @@ for (const isSystemServer of [false, true]) {
       assert.equal(trigger.getAttribute("aria-expanded"), "false");
       await submit();
       assert.deepEqual(saved[0].department_ids, ["101"]);
-      assert.equal(saved[0].url, server.url);
-      assert.deepEqual(saved[0].headers, server.headers);
+      assert.equal(saved[0].credentials_action, "keep");
+      assert.equal(saved[0].url, undefined);
+      assert.equal(saved[0].headers, undefined);
     } finally {
       await act(async () => root.unmount()); container.remove();
     }
@@ -110,6 +111,22 @@ test("MCP form rejects unsupported names, links the field error and preserves th
   } finally { await act(async () => root.unmount()); container.remove(); }
 });
 
+async function chooseOption(container: HTMLElement, label: string, value: string) {
+  const trigger = [...container.querySelectorAll<HTMLButtonElement>('[role="combobox"]')].find(
+    node => [...(node.labels ?? [])].some(node => node.textContent === label),
+  )!;
+  assert.ok(trigger);
+  await act(async () => trigger.click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === value)!;
+  assert.ok(option);
+  await act(async () => {
+    option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  assert.equal(trigger.textContent, value);
+}
+const replaceCredentials = (container: HTMLElement) => chooseOption(container, "连接凭据", "替换连接与凭据");
+
 function change(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -137,13 +154,14 @@ for (const integrationKind of ["mcp", "enterprise_gateway"] as const) {
       const enabled = container.querySelector<HTMLElement>('[role="checkbox"]')!;
       assert.equal(enabled.style.getPropertyValue("--lobe-checkbox-bg"), "var(--theme-success)");
       assert.equal(enabled.getAttribute("aria-checked"), "true");
+      assert.equal(container.querySelector('input[type="url"]'), null);
+      await submit();
+      assert.equal(saved[0].integration_kind, integrationKind);
+      assert.equal(saved[0].credentials_action, "keep");
+      await replaceCredentials(container);
       assert.equal(container.querySelector<HTMLInputElement>('input[type="url"]')!.value, server.url);
       assert.equal(container.querySelector<HTMLInputElement>('input[placeholder="头名称"]')!.value, "X-Context");
       assert.equal(container.querySelector<HTMLInputElement>('input[placeholder="值"]')!.value, "synthetic-existing");
-      await submit();
-      assert.equal(saved[0].integration_kind, integrationKind);
-      assert.equal(saved[0].url, server.url);
-      assert.deepEqual(saved[0].headers, server.headers);
       const add = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "添加")!;
       await act(async () => add.click());
       await act(async () => {
@@ -154,6 +172,15 @@ for (const integrationKind of ["mcp", "enterprise_gateway"] as const) {
       if (integrationKind === "enterprise_gateway") {
         assert.equal(saved.length, 1);
         assert.match(container.textContent!, /请移除 Authorization/);
+        await chooseOption(container, "连接凭据", "保留现有连接与凭据");
+        await submit();
+        assert.equal(saved.at(-1)?.credentials_action, "keep");
+        assert.equal(saved.length, 2);
+        await chooseOption(container, "连接凭据", "清空连接与凭据");
+        await submit();
+        assert.equal(saved.at(-1)?.credentials_action, "clear");
+        assert.equal(saved.length, 3);
+        assert.doesNotMatch(container.textContent!, /请移除 Authorization/);
       } else {
         assert.equal(saved.length, 2);
         assert.equal(saved[1].headers?.Authorization, "Bearer synthetic");
@@ -164,6 +191,58 @@ for (const integrationKind of ["mcp", "enterprise_gateway"] as const) {
     }
   });
 }
+
+test("switching to enterprise Gateway hides old tool candidates and omits defaults from save", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const saved: MCPServerCreate[] = [];
+  const server: MCPServerResponse = { name: "gateway", transport: "streamable_http", enabled: true,
+    is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, plugin: {
+      display_name: "", description: "", user_authorization: "none", default_tools: ["business.old"],
+    } };
+  try {
+    await act(async () => root.render(createElement(MCPServerForm, { server, toolNames: ["business.old", "business.other"],
+      onSave: async data => { saved.push(data); return true; }, onCancel: () => {} })));
+    const defaults = () => container.querySelector('[role="group"][aria-label="新任务默认选用入口"]')!;
+    assert.match(defaults().textContent!, /business.old/);
+    await chooseOption(container, "接入类型", "企业 Gateway");
+    assert.equal(defaults(), null);
+    assert.equal(container.querySelector("[data-public-operation-summaries]"), null);
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    assert.equal(saved[0].integration_kind, "enterprise_gateway");
+    assert.equal(saved[0].plugin?.default_tools, undefined);
+    assert.equal(saved[0].public_operation_summaries, undefined);
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
+test("Gateway mode switch preserves hidden summaries until the ordinary MCP editor reloads", async () => {
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const saved: MCPServerCreate[] = [];
+  const gateway: MCPServerResponse = { name: "gateway", transport: "streamable_http", enabled: true,
+    integration_kind: "enterprise_gateway", is_system: true, can_edit: true, allowed_roles: [], role_quotas: {} };
+  const render = (server: MCPServerResponse) => act(async () => root.render(createElement(MCPServerForm, {
+    server, onSave: async data => { saved.push(data); return true; }, onCancel: () => {},
+  })));
+  const submit = () => act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  try {
+    await render(gateway);
+    await chooseOption(container, "接入类型", "通用 MCP");
+    assert.equal(container.querySelector("[data-public-operation-summaries]"), null);
+    assert.match(container.textContent!, /保存接入类型并重新打开/);
+    await submit();
+    assert.equal(saved[0].integration_kind, "mcp");
+    assert.equal(saved[0].public_operation_summaries, undefined);
+
+    await render({ ...gateway, integration_kind: "mcp", public_operation_summaries: {
+      lookup: { action_label: "查询", object_label: "项目", object_path: ["project", "name"] },
+    } });
+    assert.equal(container.querySelector<HTMLInputElement>('[aria-label="参数字段路径 1"]')?.value, "project.name");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="移除公开摘要 1"]')!.click());
+    await submit();
+    assert.deepEqual(saved[1].public_operation_summaries, {});
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
 
 test("MCP form replaces connection fields when switching servers and clears them for creation", async () => {
   const container = dom.document.createElement("div");
@@ -182,9 +261,13 @@ test("MCP form replaces connection fields when switching servers and clears them
   try {
     await render(null);
     await render(server);
+    assert.equal(container.querySelector('input[type="url"]'), null);
+    await replaceCredentials(container);
     assert.equal(container.querySelector<HTMLInputElement>('input[type="url"]')!.value, server.url);
     assert.equal(container.querySelector<HTMLInputElement>('input[placeholder="头名称"]')!.value, "X-First");
     await render({ ...server, name: "second", url: "https://second.example.invalid/mcp", headers: { "X-Second": "second" } });
+    assert.equal(container.querySelector('input[type="url"]'), null);
+    await replaceCredentials(container);
     assert.equal(container.querySelector<HTMLInputElement>('input[type="url"]')!.value, "https://second.example.invalid/mcp");
     assert.equal(container.querySelectorAll('input[placeholder="头名称"]').length, 1);
     assert.equal(container.querySelector<HTMLInputElement>('input[placeholder="头名称"]')!.value, "X-Second");

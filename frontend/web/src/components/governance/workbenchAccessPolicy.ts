@@ -20,7 +20,6 @@ export type WorkbenchAccessKey =
   | "feedback";
 
 const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
-  "pluginMarket",
   "users",
   "roles",
   "settings",

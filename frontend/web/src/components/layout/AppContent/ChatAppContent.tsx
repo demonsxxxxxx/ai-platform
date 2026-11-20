@@ -142,7 +142,7 @@ export function ChatAppContent({
     selectionError: catalogSelectionError,
     isLoading: modelsLoading,
   } = useModelCatalogContext();
-  const { user, hasPermission, isAuthenticated } = useAuth();
+  const { user, hasPermission, isAuthenticated, isLoading: authLoading } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
     catalogEffectivePermissions: [],
@@ -289,8 +289,10 @@ export function ChatAppContent({
     catalogState: mcpCatalogState,
     refreshTools,
   } = useTools({
-    enabled: sessionToolAccess.enabled,
+    enabled: sessionToolAccess.enabled && !isLoadingHistory && !authLoading,
     sessionId: sessionToolAccess.sessionId,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin,
+      user?.department_ids, user?.department_authority_status]),
   });
 
   const filteredModels = availableModels ?? null;
@@ -333,13 +335,13 @@ export function ChatAppContent({
       return;
 
     const serverSelection =
-      sessionId && serverSelectedToolIds !== undefined
-        ? serverSelectedToolIds
-        : undefined;
+      serverSelectedToolIds !== undefined ? serverSelectedToolIds : undefined;
     const restoreKey =
       serverSelection === undefined ? null : `${sessionId}:${JSON.stringify(serverSelection)}`;
     const shouldRestoreServerSelection =
-      restoreKey !== null && restoredMcpSelectionRef.current !== restoreKey;
+      restoreKey !== null && (sessionId
+        ? restoredMcpSelectionRef.current !== restoreKey
+        : sessionConfig.selectedMcpToolIds === undefined);
     if (shouldRestoreServerSelection) {
       restoredMcpSelectionRef.current = restoreKey;
     }

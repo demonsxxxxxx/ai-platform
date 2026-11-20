@@ -39,7 +39,8 @@ const ROUTE_CONTENT_SELECTORS = new Map([
     "/skills",
     "[data-skill-workbench-shell], [data-ordinary-skills-catalog], [data-frontend-governance-state]",
   ],
-  ["/mcp", "[data-mcp-directory-shell], [data-ordinary-mcp-catalog]"],
+  ["/mcp", "[data-mcp-directory-shell], [data-plugin-market]"],
+  ["/plugins", "[data-plugin-market]"],
   ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
 ]);
 

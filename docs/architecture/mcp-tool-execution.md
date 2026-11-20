@@ -180,53 +180,102 @@ the dependency manifest, lockfile and both adapter migrations together; no data
 migration or new public API is involved. Local evidence and independent review
 remain separate from deployment and production acceptance.
 
-## Enterprise Gateway catalog and user identity
+## System-preinstalled plugins and new-task defaults
 
-Server `integration_kind` defaults to `mcp`, preserving existing generic MCP
-connections. `enterprise_gateway` separates anonymous directory reads from
-user-authenticated MCP sessions; it is explicit, never inferred from a server
-name or URL. The schema change is additive and preserves existing tool IDs.
+MCP owns one plugin per registered Server/Gateway connection. The existing tenant
+capability distribution stores `metadata_json.mcp_plugin`: public `display_name`
+(up to 128 characters), `description` (1000), and `user_authorization`.
+Ordinary MCP connections can also record up to 200 names in `default_tools`.
+No per-user installation record or separate plugin registry is introduced.
 
-The ordinary Chat catalog keeps `server` as the stable MCP connection source and
-may expose an optional `upstream_server` display label for enterprise Gateway
-tools. The label is obtained by one bounded anonymous Gateway catalog read and
-is attached only for an exact, unique public tool-name intersection with the
-user-authenticated `tools/list` result. Missing, malformed, duplicate, or failed
-metadata leaves the user-authorized tool unchanged and uses the connection or
-explicit unknown-source fallback in the selector. This is display metadata only:
-it does not grant ACL access, alter `tool_id`, route calls, enter model input, or
-expose Gateway IDs, endpoints, headers, or credentials. Generic MCP connections
-do not perform the anonymous read. Group identity remains connection plus source,
-so the same upstream label on two connections cannot collide.
+The authenticated `/plugins` page reads the safe, permission-filtered
+`GET /api/mcp/?view=plugins` projection. Active, visible, distributed Servers
+appear as `installation: system_preinstalled`; live discovery failure does not
+uninstall a plugin. Installation, current-account authentication, connection
+health and task selection are separate facts. Ordinary users cannot edit
+connections or acquire business authority by viewing or selecting a plugin.
+ProfileDrive authorization reuses its password-only flow only when explicitly
+configured as `user_authorization: profile_drive`, never by Server name.
 
-For enterprise connections, the platform backend reads the same origin's
-`GET /api/mcp/catalog` with a fresh credential-free HTTP client. It neither reads
-the user JWT store nor merges static headers/cookies. DNS pinning, redirect
-rejection, total deadline, 1 MiB limit and strict catalog projection remain
-mandatory. Gateway returns definitions only, including unavailable flags; this
-endpoint is deliberately visible to any client that can reach it.
+For a new ordinary task with omitted MCP selection, admission loads all active,
+visible plugin defaults and filters them through current selection authority.
+Explicit `[]` remains empty. The first task in a pre-created empty Session also
+receives defaults; existing Sessions inherit their last task selection, including
+empty or historical missing fields, without adding current defaults. New expert
+tasks merge authorized defaults with the published Profile and Skill dependencies,
+de-duplicate them and filter by current authority. Per-plugin configuration bounds
+do not impose a 200-tool aggregate limit across plugins.
 
-Platform `GET /api/mcp/catalog-tools` and `GET /api/mcp/{name}/catalog` remain
-admin-only. The management panel and expert editor use this full directory;
-unavailable entries are visible for management but not expert candidates.
-Publication revalidates enterprise references against the anonymous catalog,
-without requiring the publishing administrator's personal tool-call ACL.
-Generic MCP management discovery retains its existing user-credential behavior.
+Accepted Profile Runs retain the optional private
+`agent_profile.platform_default_mcp_tool_ids` source list. It is not a Profile
+revision/hash field or public projection. Replay/Worker use that source, never the
+current defaults; current revocation still applies. Old snapshots without the
+field keep their historical shape and comparison. Skill manifests pin the accepted
+selection using the existing root ordering; new default-bearing replay verifies
+that exact pinning order rather than assuming the Run input has the same order.
 
-Ordinary `/api/mcp/chat-tools` and runtime sessions still discover the actual
-user's tools. Only the intersection of selected tools, platform authorization
-and live Gateway availability is registered with the SDK. Enterprise sessions
-send the user's JWT as standard `Authorization`, refreshed before every HTTP
-dispatch. Static Authorization, JWT-Authorization, Cookie and account/password
-identity headers are rejected for this mode. Generic MCP sessions retain their
-static credentials plus dynamic `JWT-Authorization`. Mode and credential subject
-survive the Claude adapter's private configuration projection; neither becomes
-model input or public event data.
+### Change contract and retirement
 
-To migrate a registered enterprise Gateway, explicitly choose the enterprise
-mode and resubmit its endpoint without the former personal Authorization.
-There is no automatic token copying, service key, catalog mirror or ACL grant.
-The Gateway must support the anonymous GET before this connection is enabled.
+- **Owners:** MCP owns registration/configuration/discovery; Chat and Agent Apps
+  own new-task admission; Runs/Worker retain snapshot and current authorization.
+- **Credentials and concurrency:** management reads never return decrypted URL or
+  headers. Explicit `credentials_action` is `keep`, `replace` or `clear`; editing
+  defaults to `keep`, replacement requires an endpoint. Legacy clients omitting
+  the action retain their existing replace-if-material/otherwise-clear behavior.
+  Updates lock the Server before reading mode, credential and distribution facts,
+  preserving the Server → distribution lock order. Omitted public summaries are
+  merged from the latest distribution-locked authority, not a stale route copy.
+- **Independent test:** `POST /api/admin/mcp/{name}/test` probes a saved
+  connection as the current administrator, even when disabled, within 20 seconds.
+  For enterprise Gateway it negotiates MCP and returns only status and time.
+  For ordinary MCP it also returns safe tool descriptions and a count. It neither
+  enables the connection nor calls business tools or certifies another user's access.
+- **Replacement:** the hard-coded single-file-connector marketplace and ordinary
+  `/mcp` directory are replaced by `/plugins`; ordinary `/mcp` links redirect.
+  `OrdinaryMcpCatalog.tsx` and its MCP-only projection are removed. The existing
+  `OrdinaryMcpCatalog.test.ts` retains real shared discovery-function coverage;
+  Skills retain their shared ordinary catalog policy. No bulk Profile/hash/Run rewrite.
+- **Compatibility:** `catalog_mode` is ignored on writes from older clients
+  and omitted from responses. Gateway defaults are ignored at new-task admission,
+  and the next connection save drops them from plugin metadata. No rewrite of
+  existing Profile revisions, Run snapshots or exact tool references.
+- **Verification:** route/authorization, malformed configuration, multi-plugin
+  capacity, empty Session, explicit cancellation, historical snapshots, actual
+  Skill pin/replay and PostgreSQL two-admin races have owning regressions. UI
+  verification includes permission recovery, per-plugin degradation, identity
+  fences, credential editing and responsive actual-component rendering.
+
+## Enterprise Gateway connections and user identity
+
+`integration_kind` defaults to `mcp`; a Gateway must explicitly use
+`enterprise_gateway`. The platform manages its connection, enablement and
+role/department distribution. The Gateway manages Agent-facing facade tools,
+its internal catalog and per-user business authorization. The platform does
+not hard-code tool names or counts, enumerate the Gateway for management or
+Chat selection, or query anonymous `/api/mcp/catalog`. Plugin Center renders a
+preinstalled connection without using discovery as a health check. Gateway
+rows have no tool count, drawer or default-tool editor.
+
+`/api/mcp/catalog-tools` and `/api/mcp/chat-tools` omit Gateway rows; direct
+per-Server tool directory requests return `409 mcp_gateway_tools_managed` after
+access checks. Profile authoring can only retain existing Gateway references
+from that Profile's publication (see the [Profile lifecycle contract](agent-profile-persistence-boundary.md#4-lifecycle)).
+Retained public operation-summary declarations are not returned or edited by the
+Gateway form. Switching the connection to ordinary MCP retains them; reopen the
+saved connection to edit them. Admin lifecycle writes can explicitly revoke
+them with `public_operation_summaries: {}`.
+
+This is a catalog and management change, not a Server-wide runtime grant. An
+accepted Run still carries exact selections; Worker rechecks current authority
+and the executor registers only the selected tools present in the user's live
+protocol listing. Tool names removed by the Gateway are not remapped or replaced
+by other tools. No Gateway is automatically attached to an unselected Run.
+
+Gateway sessions send the current user's JWT as standard `Authorization`,
+refreshed before each HTTP dispatch. Static Authorization, JWT-Authorization,
+Cookie and account/password identity headers are rejected for this mode. Ordinary
+MCP retains its static credentials plus dynamic `JWT-Authorization`. Integration
+kind and credential subject remain private to the runtime adapter.
 
 ## Principal credential lifetime
 
@@ -444,7 +493,7 @@ those boundaries. Frontend checks use the installed `tsx` test runner, for
 example:
 
 ```text
-cd frontend/web && node node_modules/tsx/dist/cli.mjs --test src/components/mcp/__tests__/MCPServerForm.test.tsx src/components/panels/__tests__/OrdinaryMcpCatalog.test.ts src/components/panels/__tests__/governanceSurfaceSource.test.ts
+cd frontend/web && node node_modules/tsx/dist/cli.mjs --import ./scripts/lobe-ui-test-setup.mjs --test src/components/mcp/__tests__/MCPServerForm.mounted.test.tsx src/components/panels/__tests__/PluginMarketPanel.mounted.test.tsx src/components/panels/__tests__/governanceSurfaceSource.test.ts
 ```
 
 ## Invariants and stop conditions
@@ -508,10 +557,10 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   discovery helpers, whole-directory failure replacement, old card selectors and
   role-count/empty-tool copy. Both projections use the MCP-owned discovery hook;
   mounted regressions retain lifecycle authority checks and cover count, empty,
-  partial failure, refresh and supersession. Enterprise administrator views now
-  use the anonymous Gateway catalog; ordinary-user views retain user-filtered
-  discovery. Registry updates preserve omitted integration kinds and existing
-  generic MCP credentials. No stored tool catalog or duplicated ACL is introduced.
+  partial failure, refresh and supersession for ordinary MCP. Enterprise Gateway
+  rows omit tool enumeration in both projections. Registry updates preserve
+  omitted integration kinds and existing generic MCP credentials. No stored tool
+  catalog or duplicated ACL is introduced.
 - Enterprise sessions replace static personal Authorization with the Run user
   credential on every dispatch. Generic MCP keeps dynamic JWT-Authorization.
   Gateway retains single alternate-header compatibility, rejects conflicting

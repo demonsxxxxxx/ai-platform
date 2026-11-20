@@ -197,10 +197,17 @@ function bootstrapSource(loading = false, chatFiles = false) {
         { tool_id: 'mcp:calendar:list', label: '列出会议', description: '查看授权日历。', server: 'calendar', category: 'mcp', cached: false }
       ], count: 3, unavailable: [] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/' && url.searchParams.get('view') === 'plugins') return json({ servers: [{
+        name: 'synthetic-drive', display_name: '企业文件盘', description: '访问本人已授权的文件。',
+        installation: 'system_preinstalled', user_authorization: 'profile_drive', enabled: true, status: 'active', can_edit: false
+      }], total: 1, skip: 0, limit: 200 });
       if (url.pathname === '/api/mcp/') return json({ servers: [{
-        name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
+        name: 'synthetic-mcp', transport: 'streamable_http',
         enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
       }], total: 1, skip: 0, limit: 20 });
+      if (url.pathname === '/api/mcp/synthetic-drive/tools') return json({
+        server_name: 'synthetic-drive', tools: [{ name: 'synthetic-drive::read_file', description: '读取授权文件', parameters: [] }], count: 1, unavailable_reason: null
+      });
       if (url.pathname === '/api/mcp/synthetic-mcp/catalog') return json({
         server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
       });
@@ -424,8 +431,8 @@ const cases = [
     path: "/plugins",
     selector: "[data-plugin-market]",
     name: "plugins",
-    requiredSelectors: ["[data-plugin-card='personal-file-server']"],
-    requiredRequests: ["/api/profile-drive/status"],
+    requiredSelectors: ["[data-plugin-card='synthetic-drive']"],
+    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-drive/tools", "/api/profile-drive/status"],
   },
   {
     path: "/runs", selector: "[data-run-monitor]", name: "runs",
@@ -557,7 +564,7 @@ async function runCase(viewport, scenario) {
         await browser.client.evaluate(`document.querySelector('[data-librechat-mobile-sidebar] button[title="收起侧边栏"]').click()`);
         await browser.client.waitFor(`document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().right <= 1`, "plugins:mobile-sidebar-close");
       }
-      await browser.client.evaluate(`(() => { const button = [...document.querySelectorAll('[data-plugin-card] button')].find((node) => node.textContent.trim() === '认证'); button.focus(); window.__pluginAuthTrigger = button; button.click(); })()`);
+      await browser.client.evaluate(`(() => { const button = [...document.querySelectorAll('[data-plugin-card] button')].find((node) => ['授权连接', '重新授权'].includes(node.textContent.trim())); button.focus(); window.__pluginAuthTrigger = button; button.click(); })()`);
       await browser.client.waitFor("Boolean(document.querySelector('#file-server-password'))", "plugins:auth-open");
       // Wait for the real popup entrance animation before measuring its controls.
       await browser.client.waitFor(`(() => { const input = document.querySelector('#file-server-password'); return input && input.closest('[role=dialog]').getBoundingClientRect().height > 200 && [...document.querySelectorAll('[role=dialog]')].every((node) => node.getAnimations({ subtree: true }).every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')); })()`, "plugins:auth-painted");

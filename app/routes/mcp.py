@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -90,6 +91,13 @@ class McpServerLifecycleRequest(BaseModel):
     role_quotas: dict[str, McpRoleQuota] = Field(default_factory=dict)
     department_ids: list[str] = Field(default_factory=list)
     public_operation_summaries: dict[str, dict[str, Any]] | None = None
+    plugin: dict[str, Any] | None = None
+    credentials_action: Literal["keep", "replace", "clear"] | None = None
+
+    @field_validator("plugin", mode="before")
+    @classmethod
+    def validate_plugin(cls, value):
+        return None if value is None else mcp_repository.validate_plugin_configuration(value)
 
     @field_validator("public_operation_summaries", mode="before")
     @classmethod
@@ -225,14 +233,15 @@ def _server_response(
     *,
     distribution: dict[str, Any] | None,
     can_edit: bool = False,
-    credentials: tuple[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     distribution_status = str((distribution or {}).get("status") or "disabled")
     enabled = distribution_status == "active"
+    integration_kind = str(row.get("integration_kind") or "mcp")
+    plugin = mcp_repository.plugin_configuration((distribution or {}).get("metadata_json"), integration_kind=integration_kind)
     response = {
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
-        "integration_kind": str(row.get("integration_kind") or "mcp"),
+        "integration_kind": integration_kind,
         "status": distribution_status,
         "enabled": enabled,
         "visible_to_user": bool((distribution or {}).get("visible_to_user")),
@@ -246,11 +255,10 @@ def _server_response(
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
-        "public_operation_summaries": dict(((distribution or {}).get("metadata_json") or {}).get("public_operation_summaries") or {}),
+        **({"public_operation_summaries": dict(((distribution or {}).get("metadata_json") or {}).get("public_operation_summaries") or {})}
+           if integration_kind != "enterprise_gateway" else {}),
+        "plugin": plugin,
     }
-    if credentials is not None:
-        response["url"] = credentials[0]
-        response["headers"] = dict(credentials[1])
     return response
 
 
@@ -268,6 +276,8 @@ def _ordinary_server_response(
         "status": "active" if enabled else "disabled",
         "enabled": enabled,
         "can_edit": False,
+        **mcp_repository.public_plugin_projection(_server_name(row), (distribution or {}).get("metadata_json")),
+        **({"integration_kind": "enterprise_gateway"} if row.get("integration_kind") == "enterprise_gateway" else {}),
     }
 
 
@@ -424,32 +434,6 @@ async def _public_server_access(
     return row, distribution or {}, decision
 
 
-async def _admin_mcp_credentials(
-    principal: AuthPrincipal,
-    *,
-    server_name: str,
-) -> tuple[str, dict[str, str]]:
-    """Load decrypted connection material only for an administrator detail read."""
-
-    async with transaction() as conn:
-        record = await mcp_repository.get_mcp_server_credential(
-            conn,
-            tenant_id=principal.tenant_id,
-            server_name=server_name,
-        )
-    envelope = str((record or {}).get("credential_envelope") or "")
-    if not envelope:
-        return "", {}
-    try:
-        return open_mcp_server_credentials(
-            tenant_id=principal.tenant_id,
-            server_id=server_name,
-            envelope=envelope,
-        )
-    except McpRuntimeContextError as exc:
-        raise _mcp_runtime_http_error(exc) from exc
-
-
 async def _public_projected_servers(
     principal: AuthPrincipal, *, management: bool = False,
 ) -> list[dict[str, Any]]:
@@ -547,7 +531,8 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
         registry_entries=rows,
         distributions_by_server=distribution_map,
     )
-    server_ids = [str(row.get("name") or "") for row in authorized if row.get("name")]
+    server_ids = [str(row["name"]) for row in authorized
+                  if row.get("name") and row.get("integration_kind") != "enterprise_gateway"]
     if not server_ids:
         return [], []
     trace_id = standard_trace_id()
@@ -592,17 +577,6 @@ async def _write_server(
     is_system: bool,
     action: str,
 ) -> dict[str, Any]:
-    if action.endswith(".updated") and "integration_kind" not in request.model_fields_set:
-        async with transaction() as conn:
-            existing = await mcp_repository.get_mcp_server_registry_entry(
-                conn, tenant_id=principal.tenant_id, name=name,
-            )
-        if existing is not None:
-            request = request.model_copy(update={"integration_kind": existing.get("integration_kind", "mcp")})
-    try:
-        normalize_static_mcp_headers(request.headers, integration_kind=request.integration_kind)
-    except McpRuntimeContextError as exc:
-        raise _mcp_runtime_http_error(exc) from exc
     department_ids: list[str] = []
     if request.department_ids:
         try:
@@ -612,6 +586,13 @@ async def _write_server(
         except DepartmentDirectoryError as exc:
             status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    credential_action = request.credentials_action or (
+        "replace" if request.url or request.headers else "clear"
+    )
+    if request.credentials_action == "replace" and not request.url:
+        raise HTTPException(status_code=422, detail="mcp_endpoint_required")
+    if credential_action in {"keep", "clear"} and (request.url or request.headers):
+        raise HTTPException(status_code=422, detail="mcp_credential_action_conflict")
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
@@ -634,6 +615,30 @@ async def _write_server(
                 user_id=principal.user_id,
                 display_name=principal.display_name or principal.user_id,
             )
+            # Serialize mode, credential and distribution reads with lifecycle writers.
+            # Keep the established server -> distribution lock order.
+            existing_server = await mcp_repository.get_mcp_server_registry_entry(
+                conn, tenant_id=principal.tenant_id, name=name, for_update=True,
+            )
+            if existing_server is not None and "integration_kind" not in request.model_fields_set:
+                request = request.model_copy(update={"integration_kind": existing_server.get("integration_kind", "mcp")})
+            normalize_static_mcp_headers(request.headers, integration_kind=request.integration_kind)
+            if credential_action == "keep":
+                if existing_server is None:
+                    raise HTTPException(status_code=404, detail="mcp_server_not_found")
+                credential_state = str(existing_server.get("credential_state") or "not_configured")
+                metadata = dict(existing_server.get("credential_metadata") or {})
+                stored_credential = await mcp_repository.get_mcp_server_credential(
+                    conn, tenant_id=principal.tenant_id, server_name=name,
+                )
+                fingerprint = str((stored_credential or {}).get("credential_fingerprint") or "")
+                if (request.integration_kind != existing_server.get("integration_kind", "mcp")
+                        and (stored_credential or {}).get("credential_envelope")):
+                    _, retained_headers = open_mcp_server_credentials(
+                        tenant_id=principal.tenant_id, server_id=name,
+                        envelope=str(stored_credential.get("credential_envelope") or ""),
+                    )
+                    normalize_static_mcp_headers(retained_headers, integration_kind=request.integration_kind)
             existing_distribution = await identity_capability_distributions.get_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -658,9 +663,19 @@ async def _write_server(
                 updated_by=principal.user_id,
             )
             distribution_metadata = dict((existing_distribution or {}).get("metadata_json") or {})
-            distribution_metadata.pop("public_operation_summaries", None)
+            if request.plugin is not None or existing_server is None:
+                distribution_metadata[mcp_repository.PLUGIN_METADATA_KEY] = (
+                    request.plugin if request.plugin is not None else mcp_repository.validate_plugin_configuration({})
+                )
+            if request.integration_kind == "enterprise_gateway":
+                distribution_metadata[mcp_repository.PLUGIN_METADATA_KEY] = mcp_repository.plugin_configuration(
+                    distribution_metadata, integration_kind="enterprise_gateway",
+                )
             if request.public_operation_summaries is not None:
                 distribution_metadata["public_operation_summaries"] = request.public_operation_summaries
+            else:
+                # Omission must preserve the latest disclosure authority under its own lock.
+                distribution_metadata.pop("public_operation_summaries", None)
             distribution = await mcp_repository.upsert_mcp_server_distribution(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -681,15 +696,16 @@ async def _write_server(
                 metadata_json=distribution_metadata,
                 updated_by=principal.user_id,
             )
-            await mcp_repository.record_mcp_server_credential(
-                conn,
-                tenant_id=principal.tenant_id,
-                server_name=name,
-                credential_fingerprint=fingerprint,
-                metadata=metadata,
-                credential_envelope=credential_envelope,
-                updated_by=principal.user_id,
-            )
+            if credential_action != "keep":
+                await mcp_repository.record_mcp_server_credential(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    server_name=name,
+                    credential_fingerprint=fingerprint,
+                    metadata=metadata,
+                    credential_envelope=credential_envelope,
+                    updated_by=principal.user_id,
+                )
             await identity_audit.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -715,6 +731,8 @@ async def _write_server(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except platform_errors.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
 
 
@@ -724,14 +742,22 @@ async def list_mcp_servers(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(default=None),
+    view: Literal["management", "plugins"] = "management",
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Return governed MCP tool servers without exposing unmanaged lifecycle controls."""
 
     normalized_query = (q or "").strip().lower()
     projected = await _public_projected_servers(principal, management=True)
+    if view == "plugins":
+        projected = [dict(name=server["name"], status=server["status"], enabled=server["enabled"],
+                          can_edit=False, **({"integration_kind": "enterprise_gateway"} if server.get("integration_kind") == "enterprise_gateway" else {}),
+                          **mcp_repository.public_plugin_projection(
+                              server["name"], {mcp_repository.PLUGIN_METADATA_KEY: server.get("plugin", {})},
+                          )) if is_ai_admin(principal) else server for server in projected if server["enabled"]]
     if normalized_query:
-        projected = [server for server in projected if normalized_query in str(server.get("name") or "").lower()]
+        projected = [server for server in projected if normalized_query in
+                     f'{server.get("name", "")} {server.get("display_name", "")} {server.get("description", "")}'.lower()]
     page_servers = projected[skip : skip + limit]
     return {
         "servers": page_servers,
@@ -745,15 +771,10 @@ async def _management_catalog(principal: AuthPrincipal, row: dict[str, Any]) -> 
     server_id = str(row["name"])
     trace_id = standard_trace_id()
     try:
-        if row.get("integration_kind") == "enterprise_gateway":
-            result = await LIVE_MCP_CATALOG.list_server_catalog(
-                tenant_id=principal.tenant_id, server_id=server_id,
-            )
-        else:
-            jwt = await get_mcp_principal_jwt_store().get(principal)
-            return await _discover_server_tools(
-                principal=principal, server_id=server_id, jwt=jwt, trace_id=trace_id,
-            )
+        jwt = await get_mcp_principal_jwt_store().get(principal)
+        return await _discover_server_tools(
+            principal=principal, server_id=server_id, jwt=jwt, trace_id=trace_id,
+        )
     except Exception as exc:
         result = LiveMcpServerResult(server_id, (), "discovery_failed",
             McpCatalogFailure.from_error(exc, stage="catalog"))
@@ -775,7 +796,7 @@ async def list_management_mcp_tools(principal: AuthPrincipal = Depends(require_p
         async with semaphore:
             return await _management_catalog(principal, row)
 
-    results = await asyncio.gather(*(discover(row) for row in rows))
+    results = await asyncio.gather(*(discover(row) for row in rows if row.get("integration_kind") != "enterprise_gateway"))
     tools = [tool.public_payload() for result in results for tool in result.tools]
     tools.sort(key=lambda item: (item["server"], item["label"]))
     return {"tools": tools, "count": len(tools), "unavailable": [
@@ -792,16 +813,73 @@ async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depen
         row = await mcp_repository.get_mcp_server_registry_entry(conn, tenant_id=principal.tenant_id, name=safe_name)
     if row is None:
         raise HTTPException(status_code=404, detail="mcp_server_not_found")
+    if row.get("integration_kind") == "enterprise_gateway":
+        raise HTTPException(status_code=409, detail="mcp_gateway_tools_managed")
     result = await _management_catalog(principal, row)
     return {
         "server_name": safe_name,
         "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
-                   **({"upstream_server": tool.upstream_server} if tool.gateway_source else {}),
                    "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
                    "available": tool.available is not False} for tool in result.tools],
         "count": sum(tool.available is not False for tool in result.tools),
         "unavailable_reason": result.unavailable_reason,
     }
+
+
+@router.post("/admin/mcp/{name}/test")
+async def test_mcp_connection(name: str, principal: AuthPrincipal = Depends(require_principal)) -> dict[str, Any]:
+    """Test a saved connection, including disabled entries; never invoke a business tool."""
+    _require_admin(principal)
+    safe_name = _safe_name(name)
+    async with transaction() as conn:
+        # Pair integration kind with the same saved credential revision. Do not
+        # hold the registry lock across authorization refresh or network I/O.
+        row = await mcp_repository.get_mcp_server_registry_entry(
+            conn, tenant_id=principal.tenant_id, name=safe_name, for_update=True,
+        )
+        if row is None or row.get("status") == "deleted":
+            raise HTTPException(status_code=404, detail="mcp_server_not_found")
+        record = await mcp_repository.get_mcp_server_credential(
+            conn, tenant_id=principal.tenant_id, server_name=safe_name,
+        )
+    checked_at = datetime.now(timezone.utc).isoformat()
+    gateway = row.get("integration_kind") == "enterprise_gateway"
+
+    def response(status: str, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        result = {"status": status, "checked_at": checked_at}
+        return result if gateway else {**result, "tools": tools or [], "count": len(tools or [])}
+
+    envelope = str((record or {}).get("credential_envelope") or "")
+    if not envelope:
+        return response("not_configured")
+    try:
+        endpoint, static_headers = open_mcp_server_credentials(
+            tenant_id=principal.tenant_id, server_id=safe_name, envelope=envelope,
+        )
+        if not endpoint:
+            return response("not_configured")
+        jwt = await get_mcp_principal_jwt_store().get(principal)
+        result = await asyncio.wait_for(LIVE_MCP_CATALOG.test_connection(
+            tenant_id=principal.tenant_id, user_id=principal.user_id, server_id=safe_name, jwt=jwt,
+            endpoint=endpoint, static_headers=static_headers, transport=row["transport"],
+            integration_kind=row.get("integration_kind", "mcp"),
+        ), timeout=20)
+        status = "ready" if result.unavailable_reason is None else (
+            "authorization_required" if result.failure and result.failure.reason == "authorization_required"
+            else "discovery_failed"
+        )
+        if gateway:
+            return response(status)
+        tools = [{"name": tool.public_tool_name, "description": tool.description} for tool in result.tools]
+        return response(status, tools)
+    except (McpRuntimeContextError, HTTPException) as exc:
+        code = exc.code if isinstance(exc, McpRuntimeContextError) else exc.detail
+        status = "authorization_required" if code in {
+            "mcp_principal_jwt_missing", "mcp_principal_jwt_expired", "mcp_jwt_invalid", "mcp_jwt_expired_or_missing",
+        } else "discovery_failed"
+    except Exception:
+        status = "discovery_failed"
+    return response(status)
 
 
 @router.get("/mcp/chat-tools")
@@ -813,6 +891,15 @@ async def list_chat_mcp_tools(
 
     tools, unavailable = await _chat_tool_catalog(principal)
     response: dict[str, Any] = {"tools": tools, "unavailable": unavailable, "count": len(tools)}
+    if session_id is None:
+        async with transaction() as conn:
+            defaults = await mcp_repository.get_default_mcp_tool_ids(
+                conn, tenant_id=principal.tenant_id, principal_department_id=principal.department_id,
+                principal_department_ids=principal.department_ids, principal_roles=principal.roles,
+                is_admin=is_ai_admin(principal), permissions=principal.permissions,
+            )
+        available = {tool["tool_id"] for tool in tools}
+        response["default_mcp_tool_ids"] = [tool_id for tool_id in defaults if tool_id in available]
     if session_id is not None:
         try:
             canonical_session_id = assert_safe_id(session_id, "session_id")
@@ -838,6 +925,20 @@ async def list_chat_mcp_tools(
             if isinstance(latest_input, dict) and "mcp_tool_ids" in latest_input
             else []
         )
+        if latest_input_json is None:
+            async with transaction() as conn:
+                prior_runs = await conversations_session_queries.list_authorized_session_runs(
+                    conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+                    session_id=canonical_session_id, workspace_id=session.get("workspace_id"), limit=1,
+                )
+                if not prior_runs:
+                    defaults = await mcp_repository.get_default_mcp_tool_ids(
+                        conn, tenant_id=principal.tenant_id, principal_department_id=principal.department_id,
+                        principal_department_ids=principal.department_ids, principal_roles=principal.roles,
+                        is_admin=is_ai_admin(principal), permissions=principal.permissions,
+                    )
+                    available = {tool["tool_id"] for tool in tools}
+                    selected = [tool_id for tool_id in defaults if tool_id in available]
         response["selected_mcp_tool_ids"] = selected
     return response
 
@@ -896,16 +997,6 @@ async def get_mcp_server(
         distribution=distribution,
         principal=principal,
     )
-    if is_ai_admin(principal):
-        response = _server_response(
-            row,
-            distribution=distribution,
-            can_edit=True,
-            credentials=await _admin_mcp_credentials(
-                principal,
-                server_name=safe_name,
-            ),
-        )
     return response
 
 
@@ -1026,7 +1117,9 @@ async def discover_mcp_tools(
     """Return governed tool discovery from the platform registry projection."""
 
     safe_name = _safe_name(name)
-    await _public_server_access(principal=principal, name=safe_name)
+    row, _, _ = await _public_server_access(principal=principal, name=safe_name)
+    if row.get("integration_kind") == "enterprise_gateway":
+        raise HTTPException(status_code=409, detail="mcp_gateway_tools_managed")
     trace_id = standard_trace_id()
     try:
         jwt = await get_mcp_principal_jwt_store().get(principal)

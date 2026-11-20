@@ -93,7 +93,8 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]
         for route in active_route_inventory["safe_admin_projection_routes"]
     }
-    assert active_safe_admin_routes == set()
+    # Saved-connection protocol testing is now an active administrator-only API.
+    assert active_safe_admin_routes == {"/api/admin/mcp"}
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]

@@ -242,15 +242,15 @@ export function SidebarRail({
             onClick={onOpenPluginMarket}
             className={railBtn}
             aria-current={isRailItemActive("pluginMarket") ? "page" : undefined}
-            title="插件市场"
-            aria-label="插件市场"
+            title={t("plugins.title")}
+            aria-label={t("plugins.title")}
             itemKey="pluginMarket"
             active={isRailItemActive("pluginMarket")}
           >
             <Plug size={20} />
           </LibreChatRailButton>
         )}
-        <LibreChatRailButton
+        {user?.is_admin === true ? <LibreChatRailButton
           type="button"
           onClick={onOpenMcp}
           className={railBtn}
@@ -261,7 +261,7 @@ export function SidebarRail({
           active={isRailItemActive("mcp")}
         >
           <Server size={20} />
-        </LibreChatRailButton>
+        </LibreChatRailButton> : null}
         {canAccessWorkbenchItem(user, "models") && (
           <LibreChatRailButton
             type="button"

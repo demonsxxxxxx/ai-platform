@@ -7,7 +7,6 @@ import type { McpToolDiscoveryStatus } from "./useMcpToolDiscovery";
 
 interface MCPToolDrawerProps {
   serverName: string;
-  fullCatalog?: boolean;
   status: McpToolDiscoveryStatus;
   tools: MCPToolInfo[];
   onRefresh: () => void;
@@ -15,7 +14,7 @@ interface MCPToolDrawerProps {
   returnFocusRef: RefObject<HTMLElement | null>;
 }
 
-export function MCPToolDrawer({ serverName, fullCatalog = false, status, tools, onRefresh, onClose, returnFocusRef }: MCPToolDrawerProps) {
+export function MCPToolDrawer({ serverName, status, tools, onRefresh, onClose, returnFocusRef }: MCPToolDrawerProps) {
   const { t } = useTranslation();
   const titleId = useId();
   const [search, setSearch] = useState("");
@@ -30,7 +29,7 @@ export function MCPToolDrawer({ serverName, fullCatalog = false, status, tools, 
         <DrawerHeader>
           <div className="min-w-0">
             <DrawerTitle id={titleId}>{t("mcp.tools.title", { name: serverName })}</DrawerTitle>
-            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(fullCatalog ? "mcp.tools.catalogScope" : "mcp.tools.accountScope")}</p>
+            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t("mcp.tools.accountScope")}</p>
           </div>
           <Button type="text" htmlType="button" size="large" data-mcp-tool-detail-close autoFocus aria-label={t("common.close")} onClick={onClose} icon={<X size={18} />} />
         </DrawerHeader>
@@ -45,7 +44,7 @@ export function MCPToolDrawer({ serverName, fullCatalog = false, status, tools, 
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5" aria-busy={status === "loading"}>
           {status !== "ready" ? <p className="py-4 text-sm text-[var(--theme-text-secondary)]">{t(`mcp.discovery.${status}`)}</p> : visibleTools.length === 0 ? (
-            <p className="py-4 text-sm text-[var(--theme-text-secondary)]">{t(query ? "mcp.tools.noMatches" : fullCatalog ? "mcp.tools.catalogEmpty" : "mcp.tools.empty")}</p>
+            <p className="py-4 text-sm text-[var(--theme-text-secondary)]">{t(query ? "mcp.tools.noMatches" : "mcp.tools.empty")}</p>
           ) : (
             <ul className="space-y-3">
               {visibleTools.map((tool) => <li key={tool.name} className="rounded-lg border border-[var(--theme-border)] p-3">

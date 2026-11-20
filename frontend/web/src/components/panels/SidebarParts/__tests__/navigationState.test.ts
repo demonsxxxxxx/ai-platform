@@ -31,7 +31,7 @@ test("safe navigation redirects unauthorized management destinations before rout
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: false }), "/agent-market");
   assert.equal(getSafeWorkbenchNavPath("agentBuilder", { is_admin: true }), "/agent-builder");
   assert.equal(getSafeWorkbenchNavPath("mcp", { is_admin: false }), "/mcp");
-  assert.equal(getSafeWorkbenchNavPath("pluginMarket", { is_admin: false }), "/agent-market");
+  assert.equal(getSafeWorkbenchNavPath("pluginMarket", { is_admin: false }), "/plugins");
   assert.equal(getSafeWorkbenchNavPath("pluginMarket", { is_admin: true }), "/plugins");
 });
 

@@ -186,3 +186,65 @@ test("MCP operational unavailability remains degraded with localized discovery c
   assert.deepEqual(catalog.unavailable, [{ label: "gateway", reasonKey: "tools.catalog.unavailable.discoveryFailed" }]);
   assert.deepEqual(reconcileChatMcpToolSelection(["gateway::stale"], catalog.tools, "degraded"), []);
 });
+
+test("default selection is an exact subset of the current discovered catalog", () => {
+  assert.deepEqual(parseChatMcpCatalogResponse(response({ default_mcp_tool_ids: ["gateway::tenant-search"] })).defaultMcpToolIds, ["gateway::tenant-search"]);
+  for (const defaults of [null, "gateway::tenant-search", ["gateway::unknown"], ["gateway::tenant-search", "gateway::tenant-search"]]) {
+    assert.throws(() => parseChatMcpCatalogResponse(response({ default_mcp_tool_ids: defaults })), /chat_mcp_catalog_defaults_invalid/);
+  }
+});
+
+test("session and identity changes synchronously hide the old catalog before new defaults arrive", async () => {
+  const { installSelectTestDom } = await import("../../components/common/__tests__/selectTestDom");
+  const dom = installSelectTestDom();
+  const { act, createElement, useEffect, useState } = await import("react");
+  const { createLobeTestRoot } = await import("../../components/common/__tests__/lobeUiTestRoot");
+  const { useTools, hasValidatedChatMcpCatalog } = await import("../useTools");
+  const container = document.createElement("div"); document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const oldFetch = globalThis.fetch;
+  let pending!: (value: Response) => void;
+  let current!: ReturnType<typeof useTools>;
+  let selected: string[] | undefined;
+  let choose!: (value: string[] | undefined) => void;
+  const observations: { session: string | null; status: string; ids: string[] | undefined }[] = [];
+  const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
+  function Probe({ session, identity }: { session: string | null; identity: string }) {
+    const catalog = useTools({ sessionId: session, identityScope: identity });
+    current = catalog;
+    const [selection, setSelection] = useState<string[]>();
+    selected = selection; choose = setSelection;
+    observations.push({ session, status: current.catalogState.status, ids: current.serverSelectedToolIds });
+    useEffect(() => {
+      if (selection === undefined && hasValidatedChatMcpCatalog(catalog.catalogState.status)) setSelection(catalog.serverSelectedToolIds);
+    }, [selection, catalog.serverSelectedToolIds, catalog.catalogState.status]);
+    return null;
+  }
+  try {
+    for (const prior of [[], ["gateway::tenant-search"]]) {
+      globalThis.fetch = (async () => json(response({ selected_mcp_tool_ids: prior }))) as typeof fetch;
+      await act(async () => { root.render(createElement(Probe, { session: "old-session", identity: "user-a" })); });
+      await act(async () => choose(undefined));
+      const first = observations.length;
+      globalThis.fetch = (async () => new Promise<Response>(done => { pending = done; })) as typeof fetch;
+      await act(async () => { choose(undefined); root.render(createElement(Probe, { session: null, identity: "user-a" })); });
+      assert.equal(observations[first].status, "loading");
+      assert.equal(observations[first].ids, undefined);
+      assert.equal(selected, undefined);
+      await act(async () => pending(json(response({ default_mcp_tool_ids: ["gateway::tenant-search"] }))));
+      assert.deepEqual(selected, ["gateway::tenant-search"]);
+      await act(async () => choose([]));
+      await act(async () => { void current.refreshTools(); });
+      await act(async () => pending(json(response({ default_mcp_tool_ids: ["gateway::tenant-search"] }))));
+      assert.deepEqual(selected, [], "an explicit new-chat cancellation survives refresh");
+    }
+    const oldRefresh = current.refreshTools;
+    const first = observations.length;
+    await act(async () => root.render(createElement(Probe, { session: null, identity: "user-b" })));
+    assert.equal(observations[first].status, "loading");
+    let unexpected = false;
+    globalThis.fetch = (async () => { unexpected = true; return json(response()); }) as typeof fetch;
+    await act(async () => oldRefresh());
+    assert.equal(unexpected, false, "retained old identity callbacks cannot request new data");
+  } finally { await act(async () => root.unmount()); container.remove(); globalThis.fetch = oldFetch; dom.close(); }
+});

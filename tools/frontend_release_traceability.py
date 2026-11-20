@@ -21,8 +21,8 @@ FRONTEND_NODE_BASE = (
     "sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a"
 )
 FRONTEND_NGINX_BASE = (
-    "nginx:1.30.6-alpine@"
-    "sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951"
+    "nginx:1.30.7-alpine@"
+    "sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598"
 )
 # Full local reproduction; WORKFLOW_* below records parallel CI execution.
 CI_COMMANDS = [

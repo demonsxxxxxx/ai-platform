@@ -363,7 +363,7 @@ async def test_live_catalog_keeps_typed_discovery_reason_private(reason):
     )
 
     assert result.tools == ()
-    assert result.unavailable_reason == "discovery_failed"
+    assert result.unavailable_reason == ("authorization_required" if reason == "authorization_required" else "discovery_failed")
     assert result.failure.stage == "tool_discovery"
     assert result.failure.reason == reason
     assert result.failure.error_type == "McpToolDiscoveryError"
@@ -555,8 +555,8 @@ def install_mcp_route_fakes(
         row = distributions.get(capability_id)
         return dict(row) if row and row["capability_kind"] == capability_kind else None
 
-    async def fake_get_server(conn, *, tenant_id, name):
-        calls.append(("get_server", {"tenant_id": tenant_id, "name": name}))
+    async def fake_get_server(conn, *, tenant_id, name, for_update=False):
+        calls.append(("get_server", {"tenant_id": tenant_id, "name": name, "for_update": for_update}))
         row = servers.get(name)
         return dict(row) if row and row.get("status") != "deleted" else None
 
@@ -770,41 +770,45 @@ def install_mcp_route_fakes(
     return calls
 
 
-def test_enterprise_catalog_does_not_read_user_jwt_and_is_admin_only(monkeypatch):
+def test_enterprise_catalog_routes_never_read_gateway_tools_or_user_credential(monkeypatch):
     from app.routes import mcp
     calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
     client = TestClient(create_app())
-    created = client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+    admin = headers(roles="admin")
+    created = client.post("/api/admin/mcp/", headers=admin, json={
         "name": "gateway", "integration_kind": "enterprise_gateway", "url": "https://gateway.example/",
+        "plugin": {"catalog_mode": "business_catalog", "default_tools": ["demo.lookup"]},
     })
     assert created.status_code == 200
     assert created.json()["integration_kind"] == "enterprise_gateway"
+    assert created.json()["plugin"] == {"display_name": "", "description": "", "user_authorization": "none"}
+    for who in (headers(), admin):
+        plugin, = client.get("/api/mcp/?view=plugins", headers=who).json()["servers"]
+        assert plugin["integration_kind"] == "enterprise_gateway"
+        assert plugin["installation"] == "system_preinstalled"
+        assert "default_tools" not in plugin
 
-    class Catalog:
-        async def list_server_catalog(self, *, tenant_id, server_id):
-            assert tenant_id and server_id == "gateway"
-            return LiveMcpServerResult(server_id, tuple(
-                LiveMcpTool(f"gateway::{name}", "gateway", name, name, "Synthetic", available=available)
-                for name, available in (("demo.allowed", True), ("demo.missing", False))
-            ))
-    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", Catalog())
-    def no_jwt():
-        raise AssertionError("anonymous catalog must not read a user credential")
-    monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", no_jwt)
+    def forbidden():
+        raise AssertionError("directory reads must not obtain a JWT for a Gateway")
+    monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", forbidden)
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", object())
     for path in ("/api/mcp/catalog-tools", "/api/mcp/gateway/catalog"):
         assert client.get(path, headers=headers()).status_code == 403
-        response = client.get(path, headers=headers(roles="admin"))
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["tools"]) == 2
-        assert [tool["available"] for tool in body["tools"]] == [True, False]
-    assert not any(name == "principal_jwt" for name, _ in calls)
+    for path, who in (("/api/mcp/gateway/catalog", admin), ("/api/mcp/gateway/tools", headers())):
+        response = client.get(path, headers=who)
+        assert response.status_code == 409
+        assert response.json() == {"detail": "mcp_gateway_tools_managed"}
+    assert client.get("/api/mcp/catalog-tools", headers=admin).json() == {"tools": [], "count": 0, "unavailable": []}
+    assert client.get("/api/mcp/chat-tools", headers=headers()).json() == {
+        "tools": [], "count": 0, "unavailable": [], "default_mcp_tool_ids": [],
+    }
 
-    # Old lifecycle clients cannot accidentally downgrade an enterprise connection.
-    updated = client.put("/api/admin/mcp/gateway", headers=headers(roles="admin"), json={"url": "https://gateway.example/"})
+    updated = client.put("/api/admin/mcp/gateway", headers=admin, json={"url": "https://gateway.example/"})
     assert updated.status_code == 200
     assert updated.json()["integration_kind"] == "enterprise_gateway"
-    rejected = client.put("/api/admin/mcp/gateway", headers=headers(roles="admin"),
+    assert "default_tools" not in updated.json()["plugin"]
+    assert any(name == "get_server" and payload.get("for_update") for name, payload in calls)
+    rejected = client.put("/api/admin/mcp/gateway", headers=admin,
                           json={"url": "https://gateway.example/", "headers": {"Authorization": "Bearer synthetic"}})
     assert rejected.status_code == 400
 
@@ -875,6 +879,24 @@ def test_chat_mcp_catalog_truthfully_returns_actionable_empty_selection(monkeypa
         "count": 0,
         "selected_mcp_tool_ids": [],
     }
+
+
+@pytest.mark.parametrize("prior", [None, {}, {"input": {}}, {"input": {"mcp_tool_ids": []}}, "legacy-null"])
+def test_chat_catalog_defaults_only_for_a_truly_empty_session(monkeypatch, prior):
+    from app.routes import mcp
+    install_mcp_route_fakes(monkeypatch)
+    async def session(*_args, **_kwargs):
+        return {"id": "session-1", "workspace_id": "default", "latest_run_input_json": None if prior == "legacy-null" else prior}
+    async def runs(*_args, **_kwargs):
+        return [] if prior is None else [{"id": "historical"}]
+    async def defaults(*_args, **_kwargs):
+        return ["ragflow::ragflow-knowledge-search"]
+    monkeypatch.setattr(mcp.conversations_session_queries, "get_authorized_session", session)
+    monkeypatch.setattr(mcp.conversations_session_queries, "list_authorized_session_runs", runs)
+    monkeypatch.setattr(mcp.mcp_repository, "get_default_mcp_tool_ids", defaults)
+    result = TestClient(create_app()).get("/api/mcp/chat-tools?session_id=session-1", headers=headers())
+    assert result.status_code == 200
+    assert result.json()["selected_mcp_tool_ids"] == (["ragflow::ragflow-knowledge-search"] if prior is None else [])
 
 
 def test_chat_mcp_catalog_discovers_again_on_each_request(monkeypatch):
@@ -980,6 +1002,10 @@ def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monk
                 "status": "active",
                 "enabled": True,
                 "can_edit": False,
+                "display_name": "ragflow",
+                "description": "",
+                "installation": "system_preinstalled",
+                "user_authorization": "none",
             }
         ],
         "total": 1,
@@ -1754,7 +1780,7 @@ def test_mcp_lifecycle_delete_and_empty_credential_update_clear_public_state(mon
     assert "clearable" not in {server["name"] for server in list_response.json()["servers"]}
 
 
-def test_mcp_admin_detail_returns_decrypted_credentials_only_to_admin(monkeypatch):
+def test_mcp_admin_detail_keeps_connection_credentials_write_only(monkeypatch):
     install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
     monkeypatch.setattr(
         "app.routes.mcp.open_mcp_server_credentials",
@@ -1779,11 +1805,9 @@ def test_mcp_admin_detail_returns_decrypted_credentials_only_to_admin(monkeypatc
         headers=headers(roles="admin"),
     )
     assert admin_detail.status_code == 200
-    assert admin_detail.json()["url"] == "http://gateway.example/mcp"
-    assert admin_detail.json()["headers"] == {
-        "X-MCP-Username": "svc",
-        "X-MCP-Password": "secret",
-    }
+    assert "url" not in admin_detail.json()
+    assert "headers" not in admin_detail.json()
+    assert admin_detail.json()["credential_state"] == "configured"
 
     ordinary_detail = client.get(
         "/api/mcp/revealable",
@@ -1960,7 +1984,7 @@ def test_mcp_jwt_operational_failures_are_not_authentication_failures(
     single = client.get("/api/mcp/ragflow/tools", headers=headers())
 
     assert bulk.status_code == 200
-    assert bulk.json() == {"tools": [], "count": 0, "unavailable": [{"label": "ragflow", "reason": public_reason}]}
+    assert bulk.json() == {"tools": [], "count": 0, "default_mcp_tool_ids": [], "unavailable": [{"label": "ragflow", "reason": public_reason}]}
     assert bulk.headers.get("X-Force-Relogin") is None
     assert single.status_code == status
     assert single.json() == {"detail": code}
@@ -2096,3 +2120,127 @@ def test_mcp_disabled_management_preserves_tenant_archive_and_missing_distributi
         admin = headers(roles="platform_admin")
         assert client.get("/api/mcp/", headers=admin).json()["total"] == 0
         assert client.get("/api/mcp/ragflow", headers=admin).status_code == 404
+
+
+def test_plugin_directory_is_preinstalled_redacted_and_scoped(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+    config = {"display_name": "Enterprise plugin", "description": "Authorized business access",
+              "catalog_mode": "protocol", "default_tools": ["search"], "user_authorization": "none"}
+    created = client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+        "name": "plugin", "url": "https://private.example/mcp", "headers": {"X-Key": "private-secret"},
+        "plugin": config, "allowed_roles": ["user"],
+    })
+    assert created.status_code == 200
+    ordinary = client.get("/api/mcp/?view=plugins", headers=headers()).json()["servers"]
+    assert ordinary == [{"name": "plugin", "enabled": True, "status": "active", "can_edit": False,
+                         "display_name": config["display_name"], "description": config["description"],
+                         "installation": "system_preinstalled", "user_authorization": "none"}]
+    assert "private" not in json.dumps(ordinary)
+    assert client.get("/api/mcp/?view=plugins", headers=headers(roles="viewer")).json()["servers"] == []
+    assert not any("install" in name for name, _ in calls)
+    client.patch("/api/mcp/plugin/toggle", json={"enabled": False}, headers=headers(roles="admin"))
+    assert client.get("/api/mcp/?view=plugins", headers=headers()).json()["servers"] == []
+    assert client.get("/api/mcp/", headers=headers(roles="admin")).json()["total"] == 1
+
+
+def test_plugin_keep_credentials_preserves_secrets_and_metadata(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+    created = client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+        "name": "keep", "url": "https://private.example/mcp", "headers": {"X-Key": "secret"},
+        "plugin": {"display_name": "First", "default_tools": ["search"]},
+    })
+    assert created.status_code == 200
+    before = len([name for name, _ in calls if name == "record_credential"])
+    updated = client.put("/api/admin/mcp/keep", headers=headers(roles="admin"), json={"credentials_action": "keep"})
+    assert updated.status_code == 200
+    assert updated.json()["credential_state"] == "configured"
+    assert updated.json()["plugin"]["display_name"] == "First"
+    assert len([name for name, _ in calls if name == "record_credential"]) == before
+    cleared = client.put("/api/admin/mcp/keep", headers=headers(roles="admin"), json={"credentials_action": "clear"})
+    assert cleared.status_code == 200 and cleared.json()["credential_state"] == "not_configured"
+    assert "secret" not in updated.text
+
+
+def test_saved_connection_test_is_admin_only_and_works_while_disabled(monkeypatch):
+    from app.routes import mcp
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+    client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+        "name": "disabled-test", "enabled": False, "url": "https://private.example/mcp",
+    })
+    monkeypatch.setattr(mcp, "open_mcp_server_credentials", lambda **_kwargs: ("https://private.example/mcp", {}))
+    probes = []
+    async def probe(**kwargs):
+        probes.append(kwargs)
+        return LiveMcpServerResult("disabled-test", (LiveMcpTool("disabled-test::lookup", "disabled-test", "lookup", "lookup", "Public lookup"),))
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", SimpleNamespace(test_connection=probe))
+    assert client.post("/api/admin/mcp/disabled-test/test", headers=headers()).status_code == 403
+    result = client.post("/api/admin/mcp/disabled-test/test", headers=headers(roles="admin"))
+    assert result.status_code == 200 and result.json()["status"] == "ready"
+    assert result.json()["tools"] == [{"name": "lookup", "description": "Public lookup"}]
+    assert probes[0]["jwt"] == "current-user.jwt"
+    assert "private.example" not in result.text
+    assert client.get("/api/mcp/disabled-test", headers=headers(roles="admin")).json()["enabled"] is False
+    assert not any(name == "toggle_server" for name, _ in calls)
+
+
+@pytest.mark.parametrize("plugin", [
+    {"default_tools": ["search", "search"]}, {"default_tools": ["bad/tool"]}, {"catalog_mode": "unknown"},
+    *({key: value} for key in ("catalog_mode", "user_authorization") for value in ([], {}, None, 7)),
+])
+def test_plugin_invalid_configuration_fails_before_write(monkeypatch, plugin):
+    calls = install_mcp_route_fakes(monkeypatch)
+    response = TestClient(create_app()).post("/api/admin/mcp/", headers=headers(roles="admin"), json={"name": "invalid", "plugin": plugin})
+    assert response.status_code == 422
+    assert not any(name == "upsert_server" for name, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_default_plugin_references_are_filtered_by_current_authority(monkeypatch):
+    from app.bootstrap.mcp import _McpRuntimeServices
+    from app.mcp.api import default_plugin_tool_references
+    rows = [{"capability_id": name, "status": "active", "visible_to_user": True,
+             "metadata_json": {"mcp_plugin": {"default_tools": ["lookup"]}}} for name in ["allowed", "denied"]]
+    assert default_plugin_tool_references(rows) == ["allowed::lookup", "denied::lookup"]
+    async def distributions(*_args, **_kwargs):
+        return rows
+    observed = []
+    async def authorize(_conn, **kwargs):
+        observed.append(kwargs)
+        return [{"tool_id": "allowed::lookup"}]
+    monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, "list_capability_distribution_rows", distributions)
+    services = object.__new__(_McpRuntimeServices)
+    services.selection_authorization = SimpleNamespace(authorize_available_chat=authorize)
+    result = await services.repository_call("get_default_mcp_tool_ids", object(), tenant_id="tenant", principal_department_id="100",
+        principal_department_ids=("100",), principal_roles=["user"], is_admin=False, permissions=[])
+    assert result == ["allowed::lookup"]
+    assert observed[0]["tool_ids"] == ["allowed::lookup", "denied::lookup"]
+    assert observed[0]["include_enterprise_gateway"] is False
+
+
+def test_gateway_connection_test_is_status_only_even_when_disabled(monkeypatch):
+    from app.routes import mcp
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+    admin = headers(roles="admin")
+    created = client.post("/api/admin/mcp/", headers=admin, json={
+        "name": "gateway", "integration_kind": "enterprise_gateway", "enabled": False,
+        "url": "https://gateway.example/mcp",
+    })
+    assert created.status_code == 200
+    monkeypatch.setattr(mcp, "open_mcp_server_credentials", lambda **_kwargs: ("https://gateway.example/mcp", {}))
+    probes = []
+    async def probe(**kwargs):
+        probes.append(kwargs)
+        return LiveMcpServerResult("gateway", ())
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", SimpleNamespace(test_connection=probe))
+    response = client.post("/api/admin/mcp/gateway/test", headers=admin)
+    assert response.status_code == 200
+    assert set(response.json()) == {"status", "checked_at"}
+    assert response.json()["status"] == "ready"
+    assert probes[0]["integration_kind"] == "enterprise_gateway"
+    assert probes[0]["jwt"] == "current-user.jwt"
+    assert not client.get("/api/mcp/gateway", headers=admin).json()["enabled"]
+    assert not any(name == "toggle_server" for name, _ in calls)

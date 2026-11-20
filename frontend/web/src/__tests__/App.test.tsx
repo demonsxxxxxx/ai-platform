@@ -11,13 +11,13 @@ test("App registers Agent Builder as an admin-only authenticated route", () => {
   assert.match(source, /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<AgentBuilderRoute \/>\s*<\/ProtectedRoute>/);
 });
 
-test("App registers Plugin Market as an admin-only authenticated route", () => {
+test("App registers Plugin Center for every authenticated user", () => {
   const source = readFileSync(join(process.cwd(), "src/App.tsx"), "utf8");
 
   assert.match(source, /path=\{APP_ROUTE_PATHS\.pluginMarket\}/);
   assert.match(
     source,
-    /<ProtectedRoute requireAdmin redirectTo=\{APP_ROUTE_PATHS\.agentMarket\}>\s*<PluginMarketPage \/>\s*<\/ProtectedRoute>/,
+    /<ProtectedRoute>\s*<PluginMarketPage \/>\s*<\/ProtectedRoute>/,
   );
   assert.match(source, /activeTab="pluginMarket"/);
 });

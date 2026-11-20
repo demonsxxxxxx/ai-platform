@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { ApiRequestError, authFetch, publicApiErrorMessage } from "../services/api/fetch";
 import i18n from "../i18n";
+import { mcpApi } from "../services/api/mcp";
 import { isPermissionError } from "../components/governance/frontendGovernanceState";
 import type {
   MCPServerResponse,
@@ -414,6 +415,9 @@ export function useMCP(options?: {
     () => authFetch<MCPServerResponse>(`${API_BASE}/${encodeURIComponent(name)}`),
     false,
   ), [requestServer]);
+  const testConnection = useCallback((name: string) => requestServer(
+    () => mcpApi.testConnection(name), true,
+  ), [requestServer]);
   const createServer = useCallback((server: MCPServerCreate, isSystem = false) => requestServer(
     () => authFetch<MCPServerResponse>(`${isSystem ? "/api/admin/mcp" : API_BASE}/`, {
       method: "POST", body: JSON.stringify(server),
@@ -461,6 +465,7 @@ export function useMCP(options?: {
       ? null : visibleCatalogState.error,
     fetchServers,
     getServer,
+    testConnection,
     createServer,
     updateServer,
     deleteServer,

@@ -358,11 +358,32 @@ class McpToolDiscoveryAdapter:
         self._timeout_seconds = timeout_seconds
         self._max_response_bytes = max(1, int(max_response_bytes))
 
+    async def probe_connection(
+        self, endpoint: str, *, static_headers: Mapping[str, str] | None = None,
+        jwt_authorization: str, credential_subject: dict[str, Any] | None = None,
+        integration_kind: str = "mcp",
+    ) -> None:
+        await self._connect(
+            endpoint, static_headers=static_headers, jwt_authorization=jwt_authorization,
+            credential_subject=credential_subject, integration_kind=integration_kind,
+            list_tools=False,
+        )
+
     async def discover_definitions(
         self, endpoint: str, *, static_headers: Mapping[str, str] | None = None,
-        jwt_authorization: str,
-        credential_subject: dict[str, Any] | None = None,
+        jwt_authorization: str, credential_subject: dict[str, Any] | None = None,
         integration_kind: str = "mcp",
+    ) -> tuple[dict[str, Any], ...]:
+        return await self._connect(
+            endpoint, static_headers=static_headers, jwt_authorization=jwt_authorization,
+            credential_subject=credential_subject, integration_kind=integration_kind,
+            list_tools=True,
+        )
+
+    async def _connect(
+        self, endpoint: str, *, static_headers: Mapping[str, str] | None,
+        jwt_authorization: str, credential_subject: dict[str, Any] | None,
+        integration_kind: str, list_tools: bool,
     ) -> tuple[dict[str, Any], ...]:
         try:
             # One deadline owns DNS, handshake, all pages and transport cleanup.
@@ -384,6 +405,8 @@ class McpToolDiscoveryAdapter:
                     # session. Close local resources without adding a DELETE.
                     terminate_on_close=False,
                 ) as session:
+                    if not list_tools:
+                        return ()
                     return tuple(
                         _canonical_live_definition(tool.model_dump(by_alias=True, exclude_none=True))
                         for tool in await list_mcp_tools(session)

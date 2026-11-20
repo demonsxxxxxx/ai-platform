@@ -37,15 +37,17 @@ index digest:
 - `python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8`
 - `ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded`
 - `node:22.23.2-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a`
-- `nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951`
+- `nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598`
 
-The frontend runtime uses the official `1.30.6-alpine` index to replace the
-`1.30.4-alpine` base affected by `CVE-2026-15176`, `CVE-2026-93479`, and
-`CVE-2026-97205`. Official Nginx images install the server and dynamic modules
-with exact package versions; ordinary Alpine package upgrades do not replace
-that group. Updating the base keeps their versions consistent. The index and
-Linux amd64/arm64 subjects are recorded in the official
-[Docker image inventory](https://github.com/docker-library/repo-info/blob/master/repos/nginx/remote/1.30.6-alpine.md).
+The frontend runtime uses the official `1.30.7-alpine` index. It replaces the
+`1.30.6-alpine` base after Trivy reported six fixable Nginx findings
+(`CVE-2026-113425`, `CVE-2026-121810`, `CVE-2026-123007`, `CVE-2026-123633`,
+`CVE-2026-118899`, and `CVE-2026-123634`). The preceding `1.30.6-alpine` pin
+had replaced `1.30.4-alpine` for `CVE-2026-15176`, `CVE-2026-93479`, and
+`CVE-2026-97205`. Official Nginx images pin the server and dynamic modules
+together. Updating the base keeps that group consistent rather than unpinning
+individual packages. The official [Docker image inventory](https://github.com/docker-library/repo-info/blob/master/repos/nginx/remote/1.30.7-alpine.md)
+records the index and Linux amd64/arm64 subjects.
 The existing APK security upgrades, libexpat minimum, proxy configuration,
 provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
 The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
