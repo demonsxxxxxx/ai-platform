@@ -21,7 +21,7 @@ const readApp = () => {
 
 test("admin routes redirect ordinary users before mounting management pages", () => {
   const app = readApp();
-  const routes = ["users", "roles", "settings", "feedback", "models", "plugins"];
+  const routes = ["users", "roles", "settings", "feedback", "models"];
   for (const route of routes) {
     assert.match(
       app,
@@ -31,6 +31,10 @@ test("admin routes redirect ordinary users before mounting management pages", ()
       route,
     );
   }
+});
+
+test("plugin center is authenticated but does not require admin", () => {
+  assert.match(readApp(), /path="\/plugins"\s+element=\{\s+<ProtectedRoute>\s+<PluginMarketPage \/>/);
 });
 
 test("requireAdmin uses the signed is_admin projection instead of permission inference", () => {

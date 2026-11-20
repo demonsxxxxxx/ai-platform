@@ -96,6 +96,11 @@ def snapshot_manifest(skill_id, *, description="Pinned skill"):
 def default_chat_stream_dependencies(monkeypatch):
     configure_skill_services()
 
+    async def no_plugin_defaults(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", no_plugin_defaults)
+
     async def no_submission(*_args, **_kwargs):
         return None
 

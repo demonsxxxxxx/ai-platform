@@ -308,12 +308,14 @@ for (const isAdmin of [false, true]) {
         assert.deepEqual(
           keys,
           isAdmin
-            ? ["skills", "mcp", "agentBuilder", "pluginMarket", "models", "usage", "runs"]
-            : ["skills", "mcp"],
+            ? ["skills", "mcp", "agentBuilder", "models", "usage", "runs"]
+            : ["skills"],
         );
+        assert.ok(sidebar.querySelector('[data-workbench-primary-nav] [data-workbench-nav-item="pluginMarket"]'));
+        const railKeys = Array.from(container.querySelectorAll("[data-workbench-rail-item]"), item => item.getAttribute("data-workbench-rail-item"));
+        assert.ok(railKeys.includes("pluginMarket"));
         if (!isAdmin) {
-          const railKeys = Array.from(container.querySelectorAll("[data-workbench-rail-item]"), item => item.getAttribute("data-workbench-rail-item"));
-          for (const key of ["agentBuilder", "pluginMarket", "models", "runs"]) assert.ok(!railKeys.includes(key));
+          for (const key of ["agentBuilder", "mcp", "models", "runs"]) assert.ok(!railKeys.includes(key));
         }
         const gear = sidebar.querySelector<HTMLButtonElement>('button[aria-label="设置"]');
         assert.ok(gear);
