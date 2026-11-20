@@ -125,6 +125,11 @@ therefore reuse the exact immutable backend subject. Publication is explicitly
 runner-local Docker image IDs are not published image digests and cannot enter
 release-image evidence.
 
+Both the canonical backend build and source-only rebuild precompile `/app/app`
+from the copied sources with checked-hash bytecode. This avoids recompiling
+application modules on every executor start while validating the cache against
+the source at import. Runtime bytecode writes remain disabled.
+
 ### Change Contract: trusted-main BuildKit cache
 
 - Owner: Docker Packaging Authority.

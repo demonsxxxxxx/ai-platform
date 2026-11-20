@@ -104,6 +104,7 @@ RUN rm -rf /app/app /app/tools /app/scripts /app/skills /app/docs/release-eviden
     && rm -f /app/docker-entrypoint.sh /app/.ai-platform-source-revision \\
        /app/.codex-source-revision /app/.source-commit /app/.ai-platform-source-snapshot.json
 COPY app /app/app
+RUN python -m compileall -q -f --invalidation-mode checked-hash /app/app
 COPY tools /app/tools
 COPY scripts /app/scripts
 COPY docs/release-evidence /app/docs/release-evidence
