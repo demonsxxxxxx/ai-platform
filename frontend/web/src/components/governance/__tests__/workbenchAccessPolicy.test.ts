@@ -16,13 +16,13 @@ const ordinaryItems: WorkbenchAccessKey[] = [
   "agentBuilder",
   "apps",
   "skills",
+  "pluginMarket",
   "mcp",
   "notifications",
   "memory",
 ];
 
 const adminOnlyItems: WorkbenchAccessKey[] = [
-  "pluginMarket",
   "users",
   "roles",
   "settings",
@@ -61,7 +61,7 @@ test("path policy covers nested management URLs and leaves public unknown paths 
   assert.equal(canAccessWorkbenchPath(adminUser, "/usage"), true);
   assert.equal(canAccessWorkbenchItem(null, "usage"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
-  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/plugins"), false);
+  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/plugins"), true);
   assert.equal(canAccessWorkbenchPath(adminUser, "/plugins"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/agent-builder"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/unknown"), true);

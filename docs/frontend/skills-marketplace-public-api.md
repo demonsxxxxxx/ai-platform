@@ -173,6 +173,28 @@ they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
 
+The authenticated **插件中心** at `/plugins` shows one system-preinstalled plugin
+per active, visible MCP Server distributed to the current user. It reads
+`GET /api/mcp/?view=plugins&skip=0&limit=200` and subsequent pages; the allowlisted
+item contains `name`, `display_name`, `description`, `installation`,
+`user_authorization`, `enabled`, `status` and `can_edit: false`. Gateway cards
+add `integration_kind: "enterprise_gateway"` so the client skips tool discovery
+and shows no count or tool drawer. Ordinary MCP cards retain current-account
+tool details. Explicit ProfileDrive authentication appears only when configured.
+Neither handshake results nor viewing a card change installation or authority.
+Ordinary `/mcp` links redirect to `/plugins`; administrators retain the separate
+**插件管理** view at `/mcp`. The hard-coded single connector card and the duplicate
+ordinary MCP component/projection are retired; the shared Skills projection stays.
+
+Plugin metadata lives on the existing distribution, not in a per-user install
+store. Admin forms edit the description and optional personal-authentication
+entry. Only ordinary MCP offers per-tool defaults and public operation-summary
+editing. Default candidates come from the saved connection; changes invalidate
+stale results. Enterprise Gateway exposes connection settings, lifecycle and
+distribution, not tool configuration.
+The [MCP execution contract](../architecture/mcp-tool-execution.md#system-preinstalled-plugins-and-new-task-defaults)
+owns authorization, compatibility, snapshot/default semantics and concurrency.
+
 The browser MCP request hook owns catalog failures and lifecycle admission in
 one scoped state. Typed HTTP 403 responses remain visibly unavailable; hiding
 controls does not discard the denial. Explicit permission recovery first
@@ -188,11 +210,10 @@ The administrator directory presents Server enablement separately from live tool
 discovery. Enabled status text, toggle icons and the checked form control use the
 success-green theme token; disabled controls use neutral styling. The toggle's
 pressed state also exposes enablement without depending on color. Counts and the
-searchable tool-detail drawer come from
-`GET /api/mcp/{name}/catalog`. Enterprise Gateway rows show the full anonymous
-directory and available-tool count, retaining unavailable tools in the drawer.
-Generic MCP rows retain current-account discovery. Successful empty discovery
-shows zero. Failed, unqueried, disabled, unconfigured, or unsupported Servers do
+searchable tool-detail drawer for ordinary MCP come from
+`GET /api/mcp/{name}/catalog` with the current administrator's identity.
+Enterprise Gateway rows do not request discovery, display counts or open a tool
+drawer. Successful empty discovery for ordinary MCP shows zero. Failed, unqueried, disabled, unconfigured, or unsupported Servers do
 not show a successful count. Disabled, unconfigured and unsupported registry
 rows do not start browser discovery requests. Refresh queries the current page
 with bounded concurrency, without storing a tool catalog. Each Server retains
@@ -205,8 +226,8 @@ expose connection material or execute tools.
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`
-- `GET /api/mcp/catalog-tools` (admin full directory)
-- `GET /api/mcp/{name}/catalog` (admin Server directory)
+- `GET /api/mcp/catalog-tools` (admin tool directory, ordinary MCP only)
+- `GET /api/mcp/{name}/catalog` (admin Server tool directory, ordinary MCP only)
 - `GET /api/mcp/`
 - `GET /api/mcp/{name}`
 - `GET /api/mcp/{name}/tools`
@@ -218,16 +239,17 @@ Backed read and server lifecycle routes:
 - `POST /api/admin/mcp/`
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
+- `POST /api/admin/mcp/{name}/test` (saved protocol connection, including disabled)
 
-The two admin catalog routes feed the MCP management panel and expert tool
-selector. For `integration_kind: "enterprise_gateway"`, the backend calls
-Gateway `GET /api/mcp/catalog` anonymously: no user JWT lookup, static headers,
-API key or cookies. The Gateway response contains complete tool definitions and
-availability, but no user ACLs or downstream endpoints. The platform projects
-stable references and display metadata only. Aggregate `count` includes all
-returned records; unavailable records carry `available: false` and cannot be
-selected in the expert editor. The single-Server response's `count` is its
-available-tool count. Ordinary Chat continues to use its user-specific API.
+The independent test returns `status` and `checked_at`. For enterprise Gateway
+it only negotiates the MCP connection. For ordinary MCP it also returns `count`
+and tool name/description pairs. It neither enables the connection nor invokes
+a tool or establishes another user's business authority.
+
+The admin and Chat selection catalogs omit enterprise Gateway. Direct
+`/{name}/catalog` and `/{name}/tools` requests for a Gateway return
+`409 mcp_gateway_tools_managed` after access checks. The platform no longer
+fetches or presents the anonymous Gateway business directory.
 
 Server lifecycle writes accept `integration_kind: "mcp" | "enterprise_gateway"`,
 with `mcp` as the create default. Updates from older clients that omit it preserve
@@ -237,22 +259,25 @@ user's standard Authorization instead; generic MCP credentials remain compatible
 A connection's mode is explicit, not derived from its name or endpoint.
 
 `GET /api/mcp/chat-tools` discovers each user's current effective tools from
-every distributed MCP Server by calling `tools/list` with that user's
-server-side company JWT. Dynamic Gateway tool definitions and ACLs are not
-persisted or cached in AI Platform; every request performs a fresh discovery,
-while each Gateway owns its internal catalog and ACL caching. A single
-unavailable Server does not hide tools from other Servers. Responses expose
-stable `mcp_server_id::public_tool_name`
-references and bounded display metadata, never JWTs, static headers, Gateway
-internal IDs, or cache keys. For an enterprise Gateway, a fresh anonymous
-catalog read may add the optional `upstream_server` display field only when its
-public tool name has one unique exact match in the user-authorized `tools/list`
-result. A missing, invalid, duplicate, or unavailable source leaves the
-user-effective tool selectable with `upstream_server: null`; this metadata is
-not an ACL, identity, execution route, or model input. Generic MCP connections
-do not perform this anonymous read and retain connection-based grouping.
-Execution resolves only Server-qualified references.
+each distributed ordinary MCP Server by calling `tools/list` with that user's
+server-side company JWT. A failed Server does not hide tools from healthy
+Servers. Responses expose stable `mcp_server_id::public_tool_name` references
+and bounded public metadata, never credentials or internal IDs. The frontend
+can still read optional `upstream_server` grouping metadata from an older API
+during rollout; the current backend no longer emits it. Accepted Run inputs
+retain their exact references and execution still checks the user's live tool
+availability. Removing the directory does not automatically select a Gateway.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
+
+Without a Session, `/api/mcp/chat-tools` also returns `default_mcp_tool_ids`, an
+exact subset of currently discovered and platform-authorized tools. With a Session
+it returns the existing last-task selection instead. New ordinary tasks receive
+server defaults only when selection is omitted, including first send in an empty
+pre-created Session; explicit `[]` and historical task selections are retained.
+Chat catalog snapshots are bound to Session and identity at render time, so a
+new chat cannot consume a previous Session's ready response before effects run.
+The private source list in accepted Profile Runs prevents retry/resume/Worker from
+adding a subsequently configured default; current revocation still applies.
 
 The Chat tool selector shows MCP source-group headers with their tools collapsed
 by default, and clears manual group expansion when the dialog closes. A nonempty
@@ -292,12 +317,13 @@ Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,
 credential state, bounded metadata, and a credential fingerprint. Endpoint and
 static headers are stored only in a tenant/Server-bound encrypted envelope;
-static headers cannot use the reserved `JWT-Authorization` name. The platform-admin
-`GET /api/mcp/{name}` detail read returns the saved URL and static headers for
-editing. The management form prefills both fields, preserves their values when
-saved unchanged, replaces them when another Server is selected, and clears them
-when creating a Server. Ordinary-user reads, list/export responses and audit
-payloads exclude these connection materials. Company user JWTs remain outside
+static headers cannot use the reserved `JWT-Authorization` name. Management detail
+reads no longer return saved URL/headers; credentials are write-only. Editing
+starts with `credentials_action: keep`, which requires no secret reentry.
+`replace` reveals fresh endpoint/header fields and requires an endpoint; `clear`
+removes the connection. Hidden replacement drafts do not block keep/clear. Older
+API clients omitting the action retain replace-if-material/otherwise-clear.
+All reads, list/export responses and audit payloads exclude connection materials. Company user JWTs remain outside
 the editable Server configuration.
 
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;

@@ -36,6 +36,13 @@ from app.mcp.domain.public_operation_summary import (
     validate_public_operation_summaries as validate_public_operation_summaries,
     public_operation_summary as public_operation_summary,
 )
+from app.mcp.domain.plugin_configuration import (
+    PLUGIN_METADATA_KEY,
+    default_plugin_tool_references,
+    plugin_configuration,
+    public_plugin_projection,
+    validate_plugin_configuration,
+)
 from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import (
     MCP_JWT_AUTHORIZATION_HEADER,
@@ -137,6 +144,11 @@ async def authorize_available_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[d
     return await _repository_call("authorize_available_chat_mcp_tools", conn, **kwargs)
 
 
+async def get_default_mcp_tool_ids(conn: Any, **kwargs: Any) -> list[str]:
+    """Resolve authorized new-task defaults; never mutate accepted snapshots."""
+    return await _repository_call("get_default_mcp_tool_ids", conn, **kwargs)
+
+
 async def get_mcp_server_registry_entry(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
     return await _repository_call("get_mcp_server_registry_entry", conn, **kwargs)
 
@@ -190,6 +202,12 @@ __all__ = [
     "public_operation_summary",
     "BUILTIN_TOOL_IDENTITIES",
     "BUILTIN_TOOL_PARAMETER_CONTRACTS",
+    "PLUGIN_METADATA_KEY",
+    "default_plugin_tool_references",
+    "plugin_configuration",
+    "public_plugin_projection",
+    "validate_plugin_configuration",
+    "get_default_mcp_tool_ids",
     "RISK_ORDER",
     "evaluate_tool_policy",
     "LiveMcpServerResult",

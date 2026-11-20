@@ -98,6 +98,7 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
             "transport": "streamable_http",
             "integration_kind": "mcp",
             "credential_envelope": "sealed-envelope",
+            "metadata_json": {},
         }
         # Recreate the pre-upgrade column shape while retaining real registry/credential rows.
         await conn.execute("alter table mcp_servers drop column integration_kind")

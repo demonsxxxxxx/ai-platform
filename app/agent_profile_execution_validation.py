@@ -7,6 +7,7 @@ from app.control_plane_contracts import (
     RUN_EXECUTION_KIND_SKILL,
 )
 from app.skills.api import is_valid_executable_skill_name
+from app.mcp.api import assert_mcp_tool_reference
 from app.execution.api import MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS
 from app.kernel.identifiers import assert_canonical_sha256, assert_safe_id
 
@@ -76,7 +77,15 @@ def validate_agent_profile_execution_input(
             raise ValueError("agent_profile_required_skill_version_invalid")
     else:
         raise ValueError("agent_profile_execution_kind_invalid")
+    defaults = value.get("platform_default_mcp_tool_ids")
+    if defaults is not None:
+        if (not isinstance(defaults, list) or
+                any(not isinstance(item, str) for item in defaults) or len(defaults) != len(set(defaults))):
+            raise ValueError("agent_profile_mcp_defaults_invalid")
+        for item in defaults:
+            assert_mcp_tool_reference(item, "agent_profile.platform_default_mcp_tool_ids")
     return {
+        **({"platform_default_mcp_tool_ids": defaults} if defaults is not None else {}),
         "agent_id": assert_safe_id(profile_agent_id, "agent_profile.agent_id"),
         "revision": revision,
         "content_hash": content_hash,

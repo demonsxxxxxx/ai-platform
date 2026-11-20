@@ -66,7 +66,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     "utf8",
   );
   const ordinaryCatalog = readFileSync(
-    join(root, "src/components/panels/OrdinaryMcpCatalog.tsx"),
+    join(root, "src/components/panels/PluginMarketPanel.tsx"),
     "utf8",
   );
   assert.match(source, /mcp\.lifecycleGovernance/);
@@ -90,7 +90,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(source, /data-mcp-admin-controls/);
   assert.match(source, /if \(!isAiAdmin\)/);
   assert.match(source, /allAuthorizedCatalog: !isAiAdmin/);
-  assert.match(source, /OrdinaryMcpCatalog/);
+  assert.match(source, /Navigate to="\/plugins" replace/);
   assert.doesNotMatch(source, /data-mcp-summary-status/);
   assert.doesNotMatch(source, /mcp\.admin\.directorySummary/);
   assert.doesNotMatch(source, /mcp\.admin\.permissionSummary/);
@@ -121,20 +121,17 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(form, /else \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);/);
   assert.doesNotMatch(form, /setCommand|setEnvKeys|EnvKeysSelector/);
   assert.match(form, /else \{[\s\S]*setAllowedDepartments\(\[\]\);/);
-  assert.ok(
-    form.indexOf('t("mcp.form.connectionReentry")') <
-      form.indexOf("{/* HTTP/SSE connection */}"),
-    "connection prefill hint must precede the connection fields",
-  );
-  assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
-  assert.match(ordinaryCatalog, /mcp\.available\.empty/);
+  assert.match(form, /credentialsAction === "replace"/);
+  assert.match(form, /credentials_action: credentialsAction/);
+  assert.match(ordinaryCatalog, /data-plugin-market/);
+  assert.match(ordinaryCatalog, /plugins\.empty/);
   const discovery = readFileSync(join(root, "src/components/mcp/useMcpToolDiscovery.ts"), "utf8");
   assert.match(discovery, /mcpApi\.discoverTools/);
   assert.match(ordinaryCatalog, /discovery\.toolsByServer/);
   assert.doesNotMatch(ordinaryCatalog, /listError \|\| toolsUnavailable|collectOrdinaryMcpTools/);
   assert.doesNotMatch(
     ordinaryCatalog,
-    /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,
+    /allowed_roles|role_quotas|server\.url|server\.headers|can_edit/,
   );
 });
 

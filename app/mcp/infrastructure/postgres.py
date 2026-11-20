@@ -473,7 +473,7 @@ async def get_mcp_tool_registry_entry(
         return None
     cursor = await conn.execute(
         """
-        select server.name, server.transport, server.status, distribution.metadata_json
+        select server.name, server.transport, server.status, server.integration_kind, distribution.metadata_json
         from mcp_servers server
         left join tenant_capability_distributions distribution
           on distribution.tenant_id=server.tenant_id
@@ -493,6 +493,7 @@ async def get_mcp_tool_registry_entry(
     return {
         "tool_id": build_mcp_tool_reference(server_id, public_tool_name),
         "server_id": server_id,
+        "integration_kind": str(server.get("integration_kind") or "mcp"),
         "name": public_tool_name,
         "description": "",
         "transport_type": str(server.get("transport") or "streamable_http"),
@@ -516,12 +517,14 @@ async def get_mcp_server_registry_entry(
     *,
     tenant_id: str,
     name: str,
+    for_update: bool = False,
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         f"""
         select {_SERVER_FIELDS}
         from mcp_servers
         where tenant_id = %s and name = %s and status <> 'deleted'
+        {"for update" if for_update else ""}
         """,
         (tenant_id, name),
     )

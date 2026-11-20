@@ -76,7 +76,7 @@ from app.intent_router import (
     classify_execution_polarity,
     route_intent,
 )
-from app.mcp.api import authorize_selected_chat_mcp_tools
+from app.mcp.api import authorize_selected_chat_mcp_tools, get_default_mcp_tool_ids
 from app.models import (
     CapabilitySuggestionResponse,
     ChatMessageResponse,
@@ -1487,30 +1487,30 @@ async def chat_stream(
                 )
                 if isinstance(prior_input, dict) and "mcp_tool_ids" in prior_input:
                     run_input["mcp_tool_ids"] = runs_capability_admission.extract_run_mcp_tool_ids(prior_input)
-
-            # Authorize the final execution selection exactly once, after
-            # explicit, inherited, and Agent-profile MCP sources have been
-            # resolved, but before any Session or Run write is allowed.
+            if request.session_id and admitted_agent_profile is None and (
+                preserve_continuation_skill or (request.selected_mcp_tool_ids is None and continuation_latest_input_json is None)
+            ):
+                continuation_prior_runs = await conversations_session_queries.list_authorized_session_runs(
+                    conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+                    session_id=request.session_id, workspace_id=effective_workspace_id, limit=1)
+            if admitted_agent_profile is None and "mcp_tool_ids" not in run_input and (
+                not request.session_id or (continuation_latest_input_json is None and not continuation_prior_runs)
+            ):
+                defaults = await get_default_mcp_tool_ids(
+                    conn, tenant_id=principal.tenant_id, principal_department_id=principal.department_id,
+                    principal_department_ids=principal.department_ids, principal_roles=principal.roles,
+                    is_admin=is_ai_admin(principal), permissions=principal.permissions)
+                if defaults:
+                    run_input["mcp_tool_ids"] = defaults
             if "mcp_tool_ids" in run_input and admitted_agent_profile is None:
                 await authorize_selected_chat_mcp_tools(
                     conn,
-                    tenant_id=principal.tenant_id,
-                    tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
+                    tenant_id=principal.tenant_id, tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id, principal_department_ids=principal.department_ids,
-                    principal_roles=principal.roles,
-                    is_admin=is_ai_admin(principal),
-                    permissions=principal.permissions,
+                    principal_roles=principal.roles, is_admin=is_ai_admin(principal), permissions=principal.permissions,
                 )
 
             if preserve_continuation_skill and admitted_agent_profile is None:
-                continuation_prior_runs = await conversations_session_queries.list_authorized_session_runs(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    session_id=request.session_id,
-                    workspace_id=effective_workspace_id,
-                    limit=1,
-                )
                 prior_skill_id = str(
                     _row_value(
                         continuation_prior_runs[0] if continuation_prior_runs else {},

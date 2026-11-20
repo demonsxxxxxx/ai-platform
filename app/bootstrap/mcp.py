@@ -20,7 +20,6 @@ from app.db import transaction
 from app.mcp.api import configure_mcp_runtime_services
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
-from app.mcp.infrastructure.gateway_catalog import GatewayCatalogAdapter
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
@@ -81,7 +80,6 @@ class _McpRuntimeServices:
             target_resolver=self._resolve_live_target,
             discovery=McpToolDiscoveryAdapter(),
             sse_discovery=McpToolDiscoveryAdapter(transport="sse"),
-            gateway_catalog=GatewayCatalogAdapter(),
         )
 
     @staticmethod
@@ -124,6 +122,17 @@ class _McpRuntimeServices:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
+        if operation == "get_default_mcp_tool_ids":
+            distributions = await identity_capability_distributions_postgres.list_capability_distribution_rows(
+                conn, tenant_id=kwargs["tenant_id"], capability_kind="mcp_server", include_disabled=False,
+            )
+            references = mcp_api.default_plugin_tool_references(distributions)
+            if not references:
+                return []
+            tools = await self.selection_authorization.authorize_available_chat(
+                conn, tool_ids=references, include_enterprise_gateway=False, **kwargs,
+            )
+            return [str(tool["tool_id"]) for tool in tools]
         if operation == "authorize_available_chat_mcp_tools":
             return await self.selection_authorization.authorize_available_chat(conn, **kwargs)
         if operation == "authorize_selected_chat_mcp_tools":

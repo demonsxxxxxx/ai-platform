@@ -46,7 +46,7 @@ test("mounted registration validates selected field and saves, reloads and revok
       ...saved[0], enabled: true, is_system: false, can_edit: true, allowed_roles: [], role_quotas: {},
     } })));
     assert.equal(container.querySelector<HTMLInputElement>('[aria-label="参数字段路径 1"]')!.value, "project.name");
-    await change('input[type="url"]', "https://example.invalid/mcp");
+    assert.equal(container.querySelector('input[type="url"]'), null, "credential keep requires no secret reentry");
     await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="移除公开摘要 1"]')!.click(); });
     await submit();
     assert.deepEqual(saved[1].public_operation_summaries, {});

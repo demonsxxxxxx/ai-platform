@@ -288,6 +288,7 @@ async def test_dynamic_tool_reference_resolves_only_registered_server():
     assert entry == {
         "tool_id": "gateway::pmm.query_projects",
         "server_id": "gateway",
+        "integration_kind": "mcp",
         "name": "pmm.query_projects",
         "description": "",
         "transport_type": "streamable_http",

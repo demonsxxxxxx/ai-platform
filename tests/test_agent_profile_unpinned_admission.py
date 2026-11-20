@@ -44,6 +44,11 @@ def run_control_request() -> Request:
     })
 
 
+@pytest.fixture(autouse=True)
+def plugin_defaults(monkeypatch):
+    monkeypatch.setattr(chat_routes, "get_default_mcp_tool_ids", AsyncMock(return_value=[]))
+
+
 def forbidden_write():
     return AsyncMock(side_effect=AssertionError("Profile rejection must precede work persistence"))
 

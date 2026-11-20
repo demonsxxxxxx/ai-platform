@@ -1,4 +1,41 @@
 {
+  "plugins": {
+    "title": "插件中心",
+    "subtitle": "系统已为你安装可用插件，在对话中按需选用。",
+    "search": "搜索插件",
+    "loading": "正在加载插件…",
+    "retry": "重试",
+    "failed": "插件目录暂时无法加载",
+    "empty": "暂无分配给你的插件",
+    "noMatches": "未找到插件",
+    "clearSearch": "清除搜索",
+    "preinstalled": "系统预装 · 已安装",
+    "details": "查看详情",
+    "authorize": "授权连接",
+    "reauthorize": "重新授权",
+    "loginAgain": "请重新登录后重试",
+    "status": { "ready": "可用", "checking": "正在检查", "unavailable": "连接异常", "authorization_required": "待授权", "gateway_managed": "工具由企业网关管理" },
+    "settings": {
+      "title": "插件设置",
+      "displayName": "展示名称",
+      "description": "插件介绍",
+      "authorization": "用户授权入口",
+      "noAdditionalAuthorization": "无额外授权入口",
+      "profileDrive": "企业文件盘认证",
+      "defaults": "新任务默认选用入口",
+      "defaultsHint": "默认项不授予业务权限；只影响新任务，普通对话可明确取消。",
+      "saveAndDiscover": "先保存连接，再测试或发现入口后选择默认项。"
+    },
+    "credentials": { "title": "连接凭据", "keep": "保留现有连接与凭据", "replace": "替换连接与凭据", "clear": "清空连接与凭据" },
+    "test": {
+      "title": "测试连接",
+      "ready": "连接测试成功",
+      "authorization_required": "测试身份需要重新授权",
+      "discovery_failed": "连接或协议发现失败",
+      "not_configured": "连接未配置",
+      "identityHint": "使用当前管理员身份检查，不执行业务工具；不代表普通用户已获业务权限。"
+    }
+  },
   "assistantUi": {
     "options": {
       "noSelection": "未选择",
@@ -826,7 +863,7 @@
   },
   "featureMenu": {
     "enhance": "增强",
-    "mcpTools": "MCP 工具",
+    "mcpTools": "插件管理",
     "settings": "设置",
     "skillsMarketplace": "技能市场",
     "upload": "上传",
@@ -1051,7 +1088,8 @@
       "unavailable": "发现失败",
       "disabled": "已停用，未查询",
       "not_configured": "连接未配置",
-      "unsupported_transport": "传输方式不受支持"
+      "unsupported_transport": "传输方式不受支持",
+      "gateway_managed": "由企业网关管理"
     },
     "directory": {
       "actions": "操作",
@@ -1066,8 +1104,6 @@
       "accountScope": "展示当前账户可发现的工具；刷新时实时查询服务器。",
       "accountCount": "当前账户工具数",
       "catalogCount": "可用工具数",
-      "catalogScope": "展示 Gateway 全量目录，缺失或已停用的工具不能选入专家。",
-      "catalogEmpty": "目录中暂无工具",
       "count": "{{count}} 个工具",
       "discoveryStatus": "工具发现",
       "view": "查看工具",
@@ -1096,6 +1132,7 @@
       "allowedDepartmentsDescription": "从部门目录选择，留空表示不限制部门。",
       "connectionReentry": "编辑时会显示已保存的 URL 和 HTTP 头。",
       "publicSummaryTitle": "公开操作摘要",
+      "publicSummaryAfterSwitch": "保存接入类型并重新打开后，可编辑原有公开操作摘要。",
       "publicSummaryDescription": "仅声明可向用户公开的动作及业务对象名称。字段路径以点分隔，例如 project.name；未选字段不会展示。禁止账号、密钥和内部路径。未登记的工具保持只读恢复检查。",
       "publicSummaryInvalid": "请填写唯一工具名、动作、业务对象名称和非敏感参数字段路径",
       "publicSummaryTool": "工具名",
@@ -1139,7 +1176,7 @@
       "integrationKind": "接入类型",
       "genericMcp": "通用 MCP",
       "enterpriseGateway": "企业 Gateway",
-      "enterpriseGatewayHint": "全量目录无需认证；工具调用自动使用当前用户身份，请勿填写个人 token。",
+      "enterpriseGatewayHint": "工具由企业网关管理，无需在此配置。测试仅验证当前账号能否建立 MCP 连接；请勿填写个人 token。",
       "transportHttp": "流式 HTTP",
       "transportSandbox": "沙箱 (mcporter)",
       "transportSse": "SSE（服务器发送事件）",
@@ -1209,7 +1246,7 @@
     "searchPlaceholder": "搜索 MCP 服务器...",
     "subtitle": "管理模型上下文协议服务器，扩展 AI 能力",
     "systemServerVisible": "系统服务器（对所有用户可见）",
-    "title": "MCP 服务器",
+    "title": "插件管理",
     "updateFailed": "更新 MCP 服务器失败",
     "updateSuccess": "MCP 服务器更新成功",
     "userServerVisible": "用户服务器（仅对自己可见）",
@@ -1321,13 +1358,13 @@
     "chat": "对话",
     "files": "文件",
     "marketplace": "技能商店",
-    "mcp": "MCP 工具",
+    "mcp": "插件管理",
     "memory": "记忆",
     "models": "模型",
     "runs": "运行监控",
     "usage": "用量统计",
     "more": "更多",
-    "pluginMarket": "插件市场",
+    "pluginMarket": "插件中心",
     "roles": "角色治理",
     "settings": "设置",
     "skillManagement": "技能管理",
@@ -1531,11 +1568,11 @@
     },
     "mcp": {
       "description": "管理模型上下文协议服务器连接。连接外部工具、数据库和服务，扩展 AI 专家能力。",
-      "title": "MCP 服务器管理"
+      "title": "插件管理"
     },
     "pluginMarket": {
       "description": "发现并认证企业数据源和服务插件，为 AI 工作区增加受控能力。",
-      "title": "插件市场"
+      "title": "插件中心"
     },
     "memory": {
       "description": "查看和管理 AI 记忆内容。持久化上下文和知识存储，实现跨对话的 AI 专家长期理解。",

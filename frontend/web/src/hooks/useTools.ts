@@ -26,6 +26,7 @@ interface ParsedChatMcpCatalog {
   tools: ChatMcpToolState[];
   unavailable: ChatMcpUnavailableService[];
   selectedMcpToolIds: string[] | undefined;
+  defaultMcpToolIds?: string[];
 }
 
 interface ChatMcpCatalogSnapshot extends ParsedChatMcpCatalog {
@@ -175,10 +176,15 @@ export function parseChatMcpCatalogResponse(raw: unknown): ParsedChatMcpCatalog 
     throw new Error("chat_mcp_catalog_selection_invalid");
   }
 
+  const defaults = raw.default_mcp_tool_ids;
+  if (defaults !== undefined && (!Array.isArray(defaults) ||
+      defaults.some(id => typeof id !== "string" || !canonicalTools.some(tool => tool.name === id)) ||
+      new Set(defaults).size !== defaults.length)) throw new Error("chat_mcp_catalog_defaults_invalid");
   return {
     tools: canonicalTools,
     unavailable,
     selectedMcpToolIds: raw.selected_mcp_tool_ids as string[] | undefined,
+    defaultMcpToolIds: (defaults as string[] | undefined) ?? [],
   };
 }
 
@@ -233,41 +239,50 @@ export function reconcileChatMcpToolSelection(
   return (selectedToolIds ?? []).filter((toolId) => authorizedIds.has(toolId));
 }
 
-export function useTools(options?: { enabled?: boolean; sessionId?: string | null }) {
+export function useTools(options?: { enabled?: boolean; sessionId?: string | null; identityScope?: string }) {
   const hookEnabled = options?.enabled !== false;
   const sessionId = options?.sessionId ?? null;
+  const scope = JSON.stringify([hookEnabled, sessionId, options?.identityScope]);
+  const currentScope = useRef(scope);
+  const mounted = useRef(false);
+  currentScope.current = scope;
   const requestGeneration = useRef(0);
-  const [catalog, setCatalog] = useState<ChatMcpCatalogSnapshot>(() =>
-    beginChatMcpCatalogRequest(0),
-  );
+  const [state, setState] = useState(() => ({ scope, snapshot: beginChatMcpCatalogRequest(0) }));
+  const catalog = useMemo(() => state.scope === scope ? state.snapshot : hookEnabled
+    ? beginChatMcpCatalogRequest(requestGeneration.current)
+    : { generation: requestGeneration.current, status: "empty" as const, ...EMPTY_CATALOG }, [state, scope, hookEnabled]);
 
   const fetchTools = useCallback(async () => {
+    if (!mounted.current || currentScope.current !== scope) return;
     const generation = ++requestGeneration.current;
     if (!hookEnabled) {
-      setCatalog({ generation, status: "empty", ...EMPTY_CATALOG });
+      setState({ scope, snapshot: { generation, status: "empty", ...EMPTY_CATALOG } });
       return;
     }
-
-    setCatalog(beginChatMcpCatalogRequest(generation));
+    const current = () => mounted.current && currentScope.current === scope && generation === requestGeneration.current;
+    setState({ scope, snapshot: beginChatMcpCatalogRequest(generation) });
     try {
       const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
       const rawResponse = await authenticatedRequest(`/api/mcp/chat-tools${query}`);
       if (!rawResponse.ok) throw new Error("chat_mcp_catalog_request_failed");
       const payload: unknown = await rawResponse.json();
       const parsed = parseChatMcpCatalogResponse(payload);
-      if (generation !== requestGeneration.current) return;
-      setCatalog((current) => publishChatMcpCatalogSuccess(current, generation, {
+      if (!current()) return;
+      setState(previous => ({ scope, snapshot: publishChatMcpCatalogSuccess(previous.snapshot, generation, {
         ...parsed,
-        selectedMcpToolIds: sessionId ? parsed.selectedMcpToolIds : undefined,
-      }));
+        selectedMcpToolIds: sessionId ? parsed.selectedMcpToolIds : parsed.defaultMcpToolIds,
+      }) }));
     } catch {
-      if (generation !== requestGeneration.current) return;
-      setCatalog((current) => publishChatMcpCatalogFailure(current, generation));
+      if (!current()) return;
+      setState(previous => ({ scope, snapshot: publishChatMcpCatalogFailure(previous.snapshot, generation) }));
     }
-  }, [hookEnabled, sessionId]);
+  }, [hookEnabled, sessionId, scope]);
 
   useEffect(() => {
+    mounted.current = true;
     void fetchTools();
+    const requests = requestGeneration;
+    return () => { mounted.current = false; requests.current++; };
   }, [fetchTools]);
 
   useEffect(() => {

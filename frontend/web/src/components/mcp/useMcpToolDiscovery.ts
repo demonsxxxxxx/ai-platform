@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mcpApi } from "../../services/api/mcp";
-import type { MCPServerResponse, MCPToolDiscoveryResponse, MCPToolInfo } from "../../types";
+import type { MCPToolDiscoveryResponse, MCPToolInfo } from "../../types";
+
+type DiscoveryServer = { name: string; enabled: boolean; transport?: string; credential_state?: string; integration_kind?: string };
 
 export const MCP_TOOL_DISCOVERY_CONCURRENCY = 6;
-export type McpToolDiscoveryStatus = "idle" | "loading" | "ready" | "unavailable" | "disabled" | "not_configured" | "unsupported_transport";
+export type McpToolDiscoveryStatus = "idle" | "loading" | "ready" | "unavailable" | "disabled" | "not_configured" | "unsupported_transport" | "gateway_managed";
 
 interface McpToolDiscoveryResult {
   toolsByServer: Map<string, MCPToolInfo[]>;
   unavailableServers: Set<string>;
+  reasonsByServer: Map<string, string>;
 }
 
 export async function collectMcpTools(
@@ -18,6 +21,7 @@ export async function collectMcpTools(
   const names = Array.from(new Set(serverNames)).filter(Boolean);
   const toolsByServer = new Map<string, MCPToolInfo[]>();
   const unavailableServers = new Set<string>();
+  const reasonsByServer = new Map<string, string>();
   let nextIndex = 0;
   await Promise.all(Array.from({ length: Math.min(MCP_TOOL_DISCOVERY_CONCURRENCY, names.length) }, async () => {
     while (shouldContinue() && nextIndex < names.length) {
@@ -29,22 +33,24 @@ export async function collectMcpTools(
           response.tools.some((tool) => !tool || typeof tool.name !== "string" || !tool.name || typeof tool.description !== "string" || (tool.available !== undefined && typeof tool.available !== "boolean")) ||
           new Set(response.tools.map((tool) => tool.name)).size !== response.tools.length) {
           unavailableServers.add(name);
+          reasonsByServer.set(name, response.unavailable_reason === "authorization_required" ? "authorization_required" : "discovery_failed");
         } else {
           toolsByServer.set(name, response.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: [], ...(tool.available !== undefined ? { available: tool.available } : {}) })));
         }
-      } catch {
+      } catch (error) {
         unavailableServers.add(name);
+        reasonsByServer.set(name, error && typeof error === "object" && "status" in error && error.status === 401 ? "authorization_required" : "discovery_failed");
       }
     }
   }));
-  return { toolsByServer, unavailableServers };
+  return { toolsByServer, unavailableServers, reasonsByServer };
 }
 
-export function useMcpToolDiscovery(servers: MCPServerResponse[], scope: string, enabled: boolean, discover = mcpApi.discoverTools) {
+export function useMcpToolDiscovery(servers: DiscoveryServer[], scope: string, enabled: boolean, discover = mcpApi.discoverTools) {
   const [revision, setRevision] = useState(0);
-  const [result, setResult] = useState<McpToolDiscoveryResult & { key: string }>(() => ({ key: "", toolsByServer: new Map(), unavailableServers: new Set() }));
+  const [result, setResult] = useState<McpToolDiscoveryResult & { key: string }>(() => ({ key: "", toolsByServer: new Map(), unavailableServers: new Set(), reasonsByServer: new Map() }));
   const serverStates = useMemo(() => new Map(servers.map((server): [string, McpToolDiscoveryStatus] => [server.name,
-    !server.enabled ? "disabled" : server.transport === "sandbox" ? "unsupported_transport" : server.credential_state === "not_configured" ? "not_configured" : "idle",
+    server.integration_kind === "enterprise_gateway" ? "gateway_managed" : !server.enabled ? "disabled" : server.transport === "sandbox" ? "unsupported_transport" : server.credential_state === "not_configured" ? "not_configured" : "idle",
   ])), [servers]);
   const key = JSON.stringify([scope, enabled, Array.from(serverStates), revision]);
   const activeKeyRef = useRef(key);
@@ -70,6 +76,7 @@ export function useMcpToolDiscovery(servers: MCPServerResponse[], scope: string,
   return {
     statusByServer,
     toolsByServer: current ? result.toolsByServer : new Map<string, MCPToolInfo[]>(),
+    reasonsByServer: current ? result.reasonsByServer : new Map<string, string>(),
     refresh: () => {
       if (enabled && activeKeyRef.current === key) setRevision((value) => value + 1);
     },

@@ -79,6 +79,7 @@ class McpSelectionAuthorization:
         principal_department_id: str, principal_roles: list[str] | None,
         principal_department_ids: tuple[str, ...] = (),
         is_admin: bool, permissions: list[str] | None, available_only: bool,
+        include_enterprise_gateway: bool = True,
     ) -> list[dict[str, Any]]:
         context = self._context_type(
             tenant_id=tenant_id,
@@ -99,6 +100,8 @@ class McpSelectionAuthorization:
                 if available_only:
                     continue
                 raise _SelectionDenied(context, tool_id)
+            if not include_enterprise_gateway and tool.get("integration_kind") == "enterprise_gateway":
+                continue
             server_id = str(tool.get("server_id") or "")
             try:
                 distribution = await self._get_distribution(

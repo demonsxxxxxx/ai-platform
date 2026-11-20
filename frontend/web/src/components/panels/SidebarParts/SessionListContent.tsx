@@ -390,6 +390,12 @@ export function SessionListContent({
       label: "专家市场",
       onClick: () => navigate("/agent-market"),
     },
+    {
+      key: "pluginMarket",
+      icon: Plug,
+      label: t("plugins.title"),
+      onClick: () => navigate("/plugins"),
+    },
   ];
   const managementNavItems: Array<{
     key: WorkbenchNavItem;
@@ -416,12 +422,6 @@ export function SessionListContent({
       onClick: () => navigate(getSafeWorkbenchNavPath("agentBuilder", user)),
     },
     {
-      key: "pluginMarket",
-      icon: Plug,
-      label: "插件市场",
-      onClick: () => navigate("/plugins"),
-    },
-    {
       key: "models",
       icon: Cpu,
       label: t("nav.models"),
@@ -444,7 +444,7 @@ export function SessionListContent({
     canAccessWorkbenchItem(user, key),
   );
   const visibleManagementNavItems = managementNavItems.filter(({ key }) =>
-    (isAiAdmin || key === "skills" || key === "mcp") &&
+    (isAiAdmin || key === "skills") &&
     canAccessWorkbenchItem(user, key),
   );
 

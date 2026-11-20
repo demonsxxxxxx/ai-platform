@@ -56,7 +56,9 @@ test("company RBAC scenario retains exact role, navigation, route, and layout as
   assert.match(scenario, /navigation\.menuCount === 0/);
   assert.match(scenario, /navigation\.identityVisible === true/);
   assert.match(scenario, /data-ordinary-skills-catalog/);
-  assert.match(scenario, /data-ordinary-mcp-catalog/);
+  assert.match(scenario, /location\.pathname === '\/plugins'/);
+  assert.match(scenario, /data-plugin-market/);
+  assert.doesNotMatch(scenario, /data-ordinary-mcp-catalog/);
   assert.match(scenario, /catalogRoutes\.mcp\.adminControls === false/);
   assert.match(scenario, /layout\.finalPath === "\/users" && layout\.adminContentSeen === true/);
   assert.match(scenario, /layout\.finalPath === "\/chat" && layout\.adminContentSeen === false/);
