@@ -418,3 +418,27 @@ test("publication refresh completion cannot write into a replacement admin owner
       assert.doesNotMatch(text(container), /聊天中的模型列表已重新读取|模型列表暂未刷新/);
     });
 });
+
+function savedWithMissingModel(): AdminModelState {
+  const initial = saved();
+  initial.models.push({ ...initial.models[0], id: "mdl_missing", value: "mock/missing", label: "缺失模型", available: false, enabled: false, order: 2 });
+  return initial;
+}
+
+test("unavailable model names are disabled and attempted input cannot create a publishable draft", async () => {
+  let publications = 0;
+  await withControl({ get: async () => savedWithMissingModel(), publish: async () => { publications += 1; return savedWithMissingModel(); } },
+    async ({ input, change, container }) => {
+      assert.match(text(container), /上游缺失/);
+      assert.equal(props(input("mock/missing 平台显示名称")).disabled, true);
+      // Programmatic events can reach React even on a disabled input. They must not dirty the draft.
+      for (const value of ["不可保存的新名称", "", "x".repeat(161)]) {
+        await change("mock/missing 平台显示名称", value);
+        assert.equal(input("mock/missing 平台显示名称").value, "缺失模型");
+        // The publish action only appears for a dirty draft.
+        assert.equal(container.querySelectorAll("[data-model-admin-publish]").length, 0);
+      }
+      assert.equal(publications, 0);
+      assert.equal(props(input("mock/gpt 平台显示名称")).disabled, false);
+    });
+});

@@ -377,7 +377,7 @@ export function ModelAdminControl({
   };
 
   const updateDraft = (id: string, change: Partial<AdminModelEntry>) => {
-    if (activeRequest.current) return;
+    if (activeRequest.current || !draft.some((model) => model.id === id && model.available)) return;
     setDraft((current) => current.map((model) => model.id === id ? { ...model, ...change } : model));
     setMessage(null); setPublishError(null);
   };
@@ -719,7 +719,7 @@ export function ModelAdminControl({
           <DrawerHeader><div><DrawerTitle>编辑模型</DrawerTitle><p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{editingModel.value}</p></div><Button type="text" aria-label="关闭模型编辑" onClick={() => setEditingModelId(null)} icon={<X size={18} />} /></DrawerHeader>
           <DrawerContent><div className="space-y-5 p-5">
             <section className="space-y-3"><h3 className="text-base font-semibold">基本信息</h3>
-              <label className="flex flex-col gap-1 text-sm">平台显示名称<Input aria-label={`${editingModel.value} 平台显示名称`} disabled={busy !== null} value={editingModel.label} onChange={(event) => updateDraft(editingModel.id, { label: event.target.value })} /></label>
+              <label className="flex flex-col gap-1 text-sm">平台显示名称<Input aria-label={`${editingModel.value} 平台显示名称`} disabled={!editingModel.available || busy !== null} value={editingModel.label} onChange={(event) => updateDraft(editingModel.id, { label: event.target.value })} /></label>
               <p className="text-sm text-[var(--theme-text-secondary)]">供应商：{editingModel.provider_name || "未知供应商"}</p>
             </section>
             <section className="space-y-3"><h3 className="text-base font-semibold">默认参数</h3>

@@ -21,7 +21,7 @@ import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { roleGovernanceApi } from "../../services/api/roleGovernance";
-import { publicApiErrorMessage } from "../../services/api/fetch";
+import { ApiRequestError, publicApiErrorMessage } from "../../services/api/fetch";
 import { Permission } from "../../types";
 import type {
   RoleGovernanceAuditItem,
@@ -35,6 +35,10 @@ type OperationState = {
   kind: "role" | "department" | "approve" | "reject" | "rollback";
   id: string;
 } | null;
+
+function isRoleGovernanceForbidden(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.status === 403;
+}
 
 function formatCapability(value: string): string {
   return value.replace(/[:_]/g, " ");
@@ -223,7 +227,9 @@ export function RolesPanel() {
       setOverview(response);
     } catch (err) {
       setOverview(null);
-      setLoadError(publicApiErrorMessage(err, t("roles.plaza.degraded.detail")));
+      setLoadError(isRoleGovernanceForbidden(err)
+        ? `missing_permission:${Permission.ROLE_READ}`
+        : publicApiErrorMessage(err, t("roles.plaza.degraded.detail")));
     } finally {
       setIsLoading(false);
     }
