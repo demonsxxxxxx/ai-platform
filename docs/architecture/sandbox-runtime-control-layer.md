@@ -302,9 +302,11 @@ generation, timestamps, and reconciliation ownership in one migration.
    provider tracking. A cached SDK connection may be used for the requested
    resource, but a cached lease cannot supply a missing Attempt or replace
    the requested resource or scope. An Attempt/resource tracking conflict
-   fails before deletion. The existing claim-fenced release path accepts
-   an authoritative absence result. Untyped "not found" text, timeouts, other provider failures, and
-   runtime identity mismatches remain stop failures and retain the lease.
+   fails before deletion. A delayed stop result cannot clear or overwrite
+   a replacement connection or lease tracking entry. The claim-fenced
+   release path accepts an authoritative absence result. Untyped "not found"
+   text, timeouts, other provider failures, and runtime identity mismatches
+   remain stop failures and leave the durable lease eligible for retry.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and

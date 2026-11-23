@@ -4434,6 +4434,52 @@ async def test_opensandbox_stop_completion_preserves_new_tracking(monkeypatch, a
     assert original.container_id not in provider._sandboxes
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["connect", "reconnected_get_info", "identity", "get_info", "kill"])
+async def test_opensandbox_stop_failure_preserves_new_tracking(monkeypatch, failure_stage):
+    from app.runtime.sandbox import container_provider
+
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    resource_id = lease.container_id
+    key = (lease.run_id, lease.labels["ai-platform.attempt_id"])
+    old_connection = provider._sandboxes[resource_id]
+    replacement = lease.model_copy(deep=True)
+    new_connection = FakeOpenSandbox(sandbox_id=resource_id)
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def fail_late(*_args, **_kwargs):
+        entered.set()
+        await finish.wait()
+        if failure_stage == "identity":
+            return {"id": "wrong-resource"}
+        raise TimeoutError("operation outcome unknown")
+
+    if failure_stage in {"connect", "reconnected_get_info"}:
+        provider._sandboxes.clear()
+    if failure_stage == "connect":
+        monkeypatch.setattr(provider, "_connect", fail_late)
+    else:
+        monkeypatch.setattr(old_connection, "kill" if failure_stage == "kill" else "get_info", fail_late)
+    task = asyncio.create_task(provider.stop(lease, reason="cold_fallback"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        provider._leases[key] = replacement
+        provider._sandboxes[resource_id] = new_connection
+    finally:
+        finish.set()
+        result = await asyncio.wait_for(task, timeout=2)
+
+    assert (result.container_id, result.status) == (resource_id, "failed")
+    assert provider._leases[key] is replacement
+    assert provider._sandboxes[resource_id] is new_connection
+    assert not new_connection.closed and not new_connection.killed
+    assert old_connection.closed is (failure_stage in {"kill", "reconnected_get_info"})
+    assert old_connection.kill_calls == 0
+
+
 def _paged_opensandbox_provider(manager_class):
     from opensandbox.models.sandboxes import SandboxFilter
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
