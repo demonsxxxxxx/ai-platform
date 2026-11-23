@@ -392,8 +392,15 @@ async def test_reconciler_stops_exact_provider_then_saves_before_terminal_conver
     monkeypatch.setattr(r, "_container_provider_for_lease", lambda _: Provider())
     monkeypatch.setattr(r, "transaction", transaction)
     monkeypatch.setattr(settlement_lease_port, "has_sandbox_executor_reconciliation_claim", claim)
-    async def checkpoint(*args, **kwargs): pass
-    monkeypatch.setattr(r, "_record_reconciliation_stage", checkpoint)
+    stages = []
+    async def checkpoint(_conn, *, lease_id, claim_token, stage):
+        assert lease_id == "lease-a" and claim_token == "claim-a"
+        stages.append(stage)
+        return True
+    monkeypatch.setattr(settlement_lease_port, "record_sandbox_reconciliation_stage", checkpoint)
+    def unexpected_default_port():
+        raise AssertionError("both checkpoint writes must use the claiming port")
+    monkeypatch.setattr(r, "_default_reconciliation_port", unexpected_default_port)
     monkeypatch.setattr(r, "run_storage_io", storage_io)
     row = {"id": "lease-a", "run_id": "run-a", "provider": "opensandbox"}
     action = r._collect_workspace_and_convert_result(
@@ -404,8 +411,10 @@ async def test_reconciler_stops_exact_provider_then_saves_before_terminal_conver
         with pytest.raises(r.SandboxReconciliationStopError):
             await action
         assert calls == ["deliverables.collect", "claim", "provider.stop"]
+        assert len(stages) == 1 and "continuation" not in stages[0]
     else:
         result, _, _ = await action
+        assert len(stages) == 2 and stages[1]["continuation"] == result.executor_payload["continuation_settlement"]
         assert result.executor_payload["continuation_settlement"]["workspace_receipt"]["state"] == "saved"
         assert "continuation_settlement" not in result.result
         assert calls == ["deliverables.collect", "claim", "provider.stop", "workspace.save", "terminal.convert"]

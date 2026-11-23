@@ -880,7 +880,7 @@ async def _collect_workspace_and_convert_result(
             terminal_result=terminal_result,
         )
         await _record_reconciliation_stage(
-            lease_row, claim_token=claim_token, stage={**stage, "continuation": continuation},
+            lease_row, claim_token=claim_token, stage={**stage, "continuation": continuation}, lease_port=lease_port,
         )
     abandoned = threading.Event()
     loop = asyncio.get_running_loop()

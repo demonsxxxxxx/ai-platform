@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -4266,26 +4266,26 @@ class OpenSandboxContainerProvider:
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
         cache_key = _opensandbox_cache_key_for_lease(lease)
-        tracked_keys = [
-            key
+        # Tracking can veto a stale command, never supply a different stop target.
+        if cache_key is None or any(
+            (key == cache_key) != (tracked.container_id == lease.container_id)
             for key, tracked in self._leases.items()
-            if tracked.container_id == lease.container_id and tracked.run_id == lease.run_id
-        ]
-        if len(tracked_keys) == 1:
-            if cache_key is not None and cache_key != tracked_keys[0]:
-                return StopResult(
-                    container_id=lease.container_id,
-                    status="failed",
-                    message="OpenSandbox sandbox stop failed",
-                )
-            cache_key = tracked_keys[0]
-        elif tracked_keys or cache_key is None:
+        ):
             return StopResult(
                 container_id=lease.container_id,
                 status="failed",
                 message="OpenSandbox sandbox stop failed",
             )
-        lease = self._leases.get(cache_key, lease)
+        tracked_at_start = self._leases.get(cache_key)
+
+        def finish_stop(status: Literal["stopped", "not_found"]) -> StopResult:
+            # A concurrent acquisition may replace either tracking entry during provider I/O.
+            if self._leases.get(cache_key) is tracked_at_start:
+                self._leases.pop(cache_key, None)
+            if self._sandboxes.get(lease.container_id) is sandbox:
+                self._sandboxes.pop(lease.container_id, None)
+            return StopResult(container_id=lease.container_id, status=status, message=reason)
+
         sandbox = self._sandboxes.get(lease.container_id)
         if sandbox is None:
             try:
@@ -4305,9 +4305,7 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if is_authoritative_not_found_error(exc):
-                    self._leases.pop(cache_key, None)
-                    self._sandboxes.pop(lease.container_id, None)
-                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+                    return finish_stop("not_found")
                 self._leases.setdefault(cache_key, lease)
                 return StopResult(
                     container_id=lease.container_id,
@@ -4318,9 +4316,7 @@ class OpenSandboxContainerProvider:
             if hasattr(sandbox, "get_info"):
                 info, absent = await read_sandbox_info_for_stop(sandbox)
                 if absent:
-                    self._leases.pop(cache_key, None)
-                    self._sandboxes.pop(lease.container_id, None)
-                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+                    return finish_stop("not_found")
             else:
                 info = sandbox
             status = _opensandbox_status_from_info(info)
@@ -4355,9 +4351,7 @@ class OpenSandboxContainerProvider:
                 )
             except Exception as exc:
                 if is_authoritative_not_found_error(exc):
-                    self._leases.pop(cache_key, None)
-                    self._sandboxes.pop(lease.container_id, None)
-                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+                    return finish_stop("not_found")
                 raise
             if not cleanup_confirmed:
                 self._leases.setdefault(cache_key, lease)
@@ -4367,9 +4361,7 @@ class OpenSandboxContainerProvider:
             self._leases.setdefault(cache_key, lease)
             self._sandboxes[lease.container_id] = sandbox
             return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
-        self._leases.pop(cache_key, None)
-        self._sandboxes.pop(lease.container_id, None)
-        return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+        return finish_stop("stopped")
 
     async def _list_remote_statuses(self, filters: dict[str, str]) -> list[ContainerStatus]:
         settings = get_settings()
