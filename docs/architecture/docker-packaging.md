@@ -52,6 +52,9 @@ The existing APK security upgrades, libexpat minimum, proxy configuration,
 provenance, startup checks, and blocking Trivy `HIGH,CRITICAL` policy remain.
 The APK upgrade list includes `brotli-libs` so the runtime takes `1.2.1-r0` or
 later for `CVE-2026-111497`; the base image ships `1.2.0-r1`.
+It includes `libxml2` so the runtime takes `2.13.9-r3` or later for
+`CVE-2026-86144`; the base image can retain `2.13.9-r2` without an explicit
+upgrade request.
 It also upgrades the installed `libxslt` package from `1.1.43-r3` to the
 repository security update (`1.1.43-r4` or later) for `CVE-2026-125350`,
 `CVE-2026-87636`, and `CVE-2026-9947`; no scanner suppression is introduced.
