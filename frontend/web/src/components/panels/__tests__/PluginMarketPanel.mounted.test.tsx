@@ -91,6 +91,42 @@ test("enterprise Gateway stays installed without a tool lookup, count or tool dr
   } finally { await view.close(); }
 });
 
+test("Gateway preference is saved per card, survives reload and preserves the last saved state on failure", async () => {
+  let enabled = true;
+  let failWrite = false;
+  const view = await harness((url, init) => {
+    if (url.pathname.endsWith("/conversation-preference")) {
+      assert.equal(url.pathname, "/api/mcp/enterprise/conversation-preference");
+      assert.equal(init.method, "PUT");
+      if (failWrite) return json({ detail: "not_saved" }, 503);
+      enabled = JSON.parse(String(init.body)).use_in_conversation;
+      return json({ use_in_conversation: enabled });
+    }
+    return page([{ ...plugin, integration_kind: "enterprise_gateway", use_in_conversation: enabled }]);
+  });
+  try {
+    const control = () => view.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    assert.equal(control().getAttribute("aria-checked"), "true");
+    await act(async () => control().click());
+    assert.equal(control().getAttribute("aria-checked"), "false");
+    const search = view.container.querySelector<HTMLInputElement>('input[placeholder="搜索插件"]')!;
+    await act(async () => change(search, "no match"));
+    assert.equal(control(), null);
+    await act(async () => change(search, ""));
+    assert.equal(control().getAttribute("aria-checked"), "false");
+    await act(async () => button(view.container, "刷新").click());
+    assert.equal(control().getAttribute("aria-checked"), "false");
+    failWrite = true;
+    await act(async () => control().click());
+    assert.equal(control().getAttribute("aria-checked"), "false");
+    assert.match(view.container.querySelector('[role="alert"]')!.textContent!, /未能保存设置/);
+    failWrite = false;
+    await act(async () => control().click());
+    assert.equal(control().getAttribute("aria-checked"), "true");
+    assert.equal(view.calls.some(call => call.url.pathname.endsWith("/tools")), false);
+  } finally { await view.close(); }
+});
+
 test("one unavailable plugin keeps healthy plugins and distinguishes authorization", async () => {
   const view = await harness(url => {
     if (url.pathname.endsWith("/broken/tools")) return json({ server_name: "broken", tools: [], count: 0, unavailable_reason: "discovery_failed" });

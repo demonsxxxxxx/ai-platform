@@ -1149,6 +1149,7 @@ class AgentProfileAuthority:
         selection: SelectedAgentProfileRequest,
         submitted_request: ChatStreamRequest | None = None,
         query_agent_id: str | None = None,
+        include_task_gateway: bool = True,
     ) -> AgentProfileAdmission:
         """Lock and reauthorize exactly the current published revision for one submission."""
 
@@ -1160,7 +1161,10 @@ class AgentProfileAuthority:
         )
         if row is None:
             raise HTTPException(status_code=409, detail="agent_profile_not_available")
-        admission = await self._admission_from_row(conn, principal=principal, row=row, include_platform_defaults=True)
+        admission = await self._admission_from_row(
+            conn, principal=principal, row=row, include_platform_defaults=True,
+            include_task_gateway=include_task_gateway,
+        )
         if submitted_request is not None:
             self.reject_profile_selector_conflicts(
                 submitted_request,
@@ -1294,6 +1298,7 @@ class AgentProfileAuthority:
         execution_kind: str | None = None,
         pinned_platform_default_mcp_tool_ids: list[str] | None = None,
         include_platform_defaults: bool = False,
+        include_task_gateway: bool = False,
     ) -> AgentProfileAdmission:
         """Reauthorize current capabilities and build private/public admission views."""
 
@@ -1349,6 +1354,14 @@ class AgentProfileAuthority:
                 principal_department_ids=principal.department_ids, principal_roles=principal.roles,
                 is_admin=is_ai_admin(principal), permissions=principal.permissions,
             )
+        if include_task_gateway:
+            gateway = await mcp_api.get_task_gateway_mcp_selection(
+                conn, principal=principal, selected_tool_ids=(*effective_mcp_tool_ids, *(platform_defaults or [])),
+            )
+            effective_mcp_tool_ids = tuple(gateway.without_gateway(effective_mcp_tool_ids))
+            platform_defaults = gateway.without_gateway(platform_defaults or [])
+            if mcp_api.executor_supports_external_mcp(skills[0].get("executor_type")):
+                platform_defaults.extend(gateway.tool_ids)
         effective_mcp_tool_ids = tuple(dict.fromkeys([*(platform_defaults or []), *effective_mcp_tool_ids]))
         # Dispatch owns current tool authorization; do not resolve it twice in
         # the same Worker transaction. Replay validates the accepted snapshot.
@@ -1610,7 +1623,9 @@ class AgentProfileAuthority:
                 ):
                     raise platform_errors.RepositoryConflictError("agent_conversation_operation_conflict")
                 return response
-        admission = await self.resolve_for_admission(conn, principal=principal, selection=selection)
+        admission = await self.resolve_for_admission(
+            conn, principal=principal, selection=selection, include_task_gateway=False,
+        )
         resolved_title = title or admission.public_identity.name
         create_session_kwargs: dict[str, Any] = {
             "tenant_id": principal.tenant_id,

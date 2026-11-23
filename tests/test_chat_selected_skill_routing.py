@@ -99,7 +99,13 @@ def default_chat_stream_dependencies(monkeypatch):
     async def no_plugin_defaults(*_args, **_kwargs):
         return []
 
+    from app.mcp.api import TaskGatewaySelection
+
+    async def no_gateway(*_args, **_kwargs):
+        return TaskGatewaySelection(frozenset(), ())
+
     monkeypatch.setattr("app.routes.chat.get_default_mcp_tool_ids", no_plugin_defaults)
+    monkeypatch.setattr("app.routes.chat.get_task_gateway_mcp_selection", no_gateway)
 
     async def no_submission(*_args, **_kwargs):
         return None

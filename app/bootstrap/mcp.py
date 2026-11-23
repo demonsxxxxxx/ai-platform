@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from app.auth import normalize_roles, refresh_company_session
-from app.auth_sessions import browser_auth_grant, store_auth_context_credential
-from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
-
 from dataclasses import dataclass
 from typing import Any
 
+from app.auth import AuthPrincipal, normalize_roles, refresh_company_session
+from app.auth_sessions import browser_auth_grant, store_auth_context_credential
+from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
+
 from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
+from app.identity.infrastructure import postgres as identity_postgres
+from app.identity.api import mcp_gateway_disabled_servers
 from app.bootstrap.identity import build_worker_distribution_authority
 from app.control_plane_contracts import sanitize_public_text
 from app.mcp import api as mcp_api
 from app.mcp.application.selection_authorization import McpSelectionAuthorization
+from app.mcp.application.task_gateway_selection import select_task_gateway_tools
 from app.platform.postgres.errors import RepositoryConflictError
 
 from app.db import transaction
@@ -58,6 +61,23 @@ class _LiveMcpTarget:
 
 
 class _McpRuntimeServices:
+    @staticmethod
+    def _task_gateway_access(principal: AuthPrincipal, row: dict[str, Any]) -> bool:
+        return resolve_capability_access(
+            CapabilityAccessContext(
+                tenant_id=principal.tenant_id, department_id=principal.department_id,
+                department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
+            ),
+            CapabilityDistributionSubject(capability_kind="mcp_server", capability_id=row["capability_id"], distribution=row),
+            intent="use",
+        ).usable
+
+    @staticmethod
+    async def _task_gateway_opt_outs(conn: Any, principal: AuthPrincipal) -> frozenset[str]:
+        return mcp_gateway_disabled_servers(await identity_postgres.get_user_profile_metadata(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+        ))
+
     def __init__(self) -> None:
         mcp_runtime.configure_runtime_dependencies(
             settings_provider=get_settings,
@@ -85,11 +105,13 @@ class _McpRuntimeServices:
     @staticmethod
     async def _resolve_live_target(tenant_id: str, server_id: str) -> _LiveMcpTarget:
         async with transaction() as conn:
-            row = await mcp_postgres.get_mcp_server_runtime_target(
-                conn,
-                tenant_id=tenant_id,
-                server_name=server_id,
-            )
+            return await _McpRuntimeServices._read_live_target(conn, tenant_id, server_id)
+
+    @staticmethod
+    async def _read_live_target(conn: Any, tenant_id: str, server_id: str) -> _LiveMcpTarget:
+        row = await mcp_postgres.get_mcp_server_runtime_target(
+            conn, tenant_id=tenant_id, server_name=server_id,
+        )
         if row is None:
             raise mcp_runtime.McpRuntimeContextError(
                 "mcp_server_not_available",
@@ -122,6 +144,18 @@ class _McpRuntimeServices:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
+        if operation == "list_gateway_mcp_server_ids":
+            rows = await mcp_postgres.list_task_gateway_servers(conn, **kwargs)
+            return frozenset(row["name"] for row in rows)
+        if operation == "get_task_gateway_mcp_selection":
+            return await select_task_gateway_tools(
+                conn, **kwargs, list_servers=mcp_postgres.list_task_gateway_servers,
+                lock_servers=mcp_postgres.lock_task_mcp_servers,
+                read_opt_outs=self._task_gateway_opt_outs, may_use=self._task_gateway_access,
+                list_distributions=identity_capability_distributions_postgres.list_capability_distribution_rows,
+                read_target=self._read_live_target, read_jwt=self.principal_jwt_store.get,
+                discover_tools=self.live_catalog.discover_gateway_task_tools,
+            )
         if operation == "get_default_mcp_tool_ids":
             distributions = await identity_capability_distributions_postgres.list_capability_distribution_rows(
                 conn, tenant_id=kwargs["tenant_id"], capability_kind="mcp_server", include_disabled=False,

@@ -64,6 +64,10 @@ async def test_profile_metadata_merge_is_scoped_locked_and_bounds_final_value(mo
         ),
     ]
 
+    with pytest.raises(api.ProfileMetadataValidationError, match="profile_metadata_reserved_key"):
+        await service.merge(**_scope(), patch={api.MCP_GATEWAY_DISABLED_SERVERS_KEY: ["vendor"]})
+    assert len(calls) == 3
+
     metadata = {"existing": "x" * api.PROFILE_METADATA_MAX_BYTES}
     with pytest.raises(api.ProfileMetadataValidationError, match="profile_metadata_too_large"):
         await service.merge(**_scope(), patch={"theme": "light"})

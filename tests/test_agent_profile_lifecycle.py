@@ -48,7 +48,13 @@ def available_profile_mcp(monkeypatch):
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
     async def no_defaults(*_args, **_kwargs):
         return []
+    from app.mcp.api import TaskGatewaySelection
+
+    async def no_gateway(*_args, **_kwargs):
+        return TaskGatewaySelection(frozenset(), ())
+
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_default_mcp_tool_ids", no_defaults)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_task_gateway_mcp_selection", no_gateway)
 
 
 def _principal(*, roles: list[str] | None = None, department_ids: tuple[str, ...] = ()) -> AuthPrincipal:
@@ -2295,6 +2301,54 @@ async def test_new_profile_defaults_merge_once_and_bound_worker_keeps_source_def
     )
     assert bound.private_execution_input == admission.private_execution_input
     assert bound.mcp_tool_ids == admission.mcp_tool_ids
+
+
+@pytest.mark.asyncio
+async def test_profile_gateway_opt_out_filters_new_run_but_preserves_accepted_snapshot(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
+    from app.mcp.api import TaskGatewaySelection
+    from app.models import SelectedAgentProfileRequest
+
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["enterprise::old", "ordinary::lookup"]
+    _seal_profile_row(row)
+    authority = AgentProfileAuthority()
+
+    async def published(*_args, **_kwargs):
+        return row
+
+    async def validate(*_args, **_kwargs):
+        return ({"skill_id": "general-chat", "skill_version": "version-a", "executor_type": "claude-agent-worker"},)
+
+    active_tools = ("enterprise::current",)
+    who = _principal()
+
+    async def gateway(_conn, *, principal, selected_tool_ids):
+        assert "enterprise::old" in selected_tool_ids
+        assert principal == who
+        return TaskGatewaySelection(frozenset({"enterprise"}), active_tools)
+
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_current_published_agent_profile", published)
+    monkeypatch.setattr("app.agent_apps.authority.agent_profile_repository.get_bound_published_agent_profile", published)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_task_gateway_mcp_selection", gateway)
+    monkeypatch.setattr(authority, "_validate_definition", validate)
+    selection = SelectedAgentProfileRequest(agent_id="agt_support")
+    accepted = await authority.resolve_for_admission(object(), principal=who, selection=selection)
+    assert accepted.mcp_tool_ids == ("enterprise::current", "ordinary::lookup")
+    assert accepted.private_execution_input["platform_default_mcp_tool_ids"] == ["enterprise::current"]
+    active_tools = ()
+    next_run = await authority.resolve_for_admission(object(), principal=who, selection=selection)
+    assert next_run.mcp_tool_ids == ("ordinary::lookup",)
+    assert row["mcp_tool_ids"] == ["enterprise::old", "ordinary::lookup"]
+    bound = await authority.resolve_bound_for_worker_dispatch(
+        object(), principal=who, agent_id="agt_support", revision=row["revision"], content_hash=row["content_hash"],
+        pinned_skill_set=[{"skill_id": "general-chat", "expected_version": "version-a"}], pinned_manifests=[],
+        pinned_executor_type="claude-agent-worker", execution_kind="harness_chat",
+        pinned_platform_default_mcp_tool_ids=accepted.private_execution_input["platform_default_mcp_tool_ids"],
+    )
+    assert bound is not None
+    assert bound.private_execution_input == accepted.private_execution_input
+    assert "enterprise::current" in bound.mcp_tool_ids
 
 
 @pytest.mark.asyncio

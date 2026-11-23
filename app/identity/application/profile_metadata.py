@@ -3,12 +3,23 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
+from app.kernel.identifiers import SAFE_ID_PATTERN
+
 
 PROFILE_METADATA_MAX_BYTES = 16 * 1024
 PROFILE_METADATA_MAX_KEYS = 64
 COMPANY_NAVIGATION_FAVORITES_KEY = "company_navigation_favorite_ids"
 COMPANY_NAVIGATION_FAVORITES_MAX_ITEMS = 256
+MCP_GATEWAY_DISABLED_SERVERS_KEY = "mcp_gateway_disabled_servers"
+MCP_GATEWAY_DISABLED_SERVERS_MAX_ITEMS = 128
 _PROFILE_METADATA_RESERVED_KEYS = frozenset({"display_name", "source"})
+
+
+def mcp_gateway_disabled_servers(metadata: dict[str, Any] | None) -> frozenset[str]:
+    value = (metadata or {}).get(MCP_GATEWAY_DISABLED_SERVERS_KEY)
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(item for item in value if isinstance(item, str))
 
 
 class ProfileMetadataValidationError(ValueError):
@@ -63,6 +74,16 @@ def validate_profile_metadata(metadata: object) -> dict[str, Any]:
     ):
         raise ProfileMetadataValidationError("company_navigation_favorites_invalid")
 
+    gateway_servers = metadata.get(MCP_GATEWAY_DISABLED_SERVERS_KEY, [])
+    if (
+        not isinstance(gateway_servers, list)
+        or len(gateway_servers) > MCP_GATEWAY_DISABLED_SERVERS_MAX_ITEMS
+        or any(not isinstance(item, str) or not SAFE_ID_PATTERN.fullmatch(item) or "::" in item
+               for item in gateway_servers)
+        or len(set(gateway_servers)) != len(gateway_servers)
+    ):
+        raise ProfileMetadataValidationError("mcp_gateway_disabled_servers_invalid")
+
     try:
         encoded = json.dumps(
             metadata,
@@ -105,11 +126,14 @@ class ProfileMetadataService:
         display_name: str,
         patch: object,
     ) -> dict[str, Any]:
+        updates = validate_profile_metadata(patch)
+        if MCP_GATEWAY_DISABLED_SERVERS_KEY in updates:
+            raise ProfileMetadataValidationError("profile_metadata_reserved_key")
         metadata = await self._store.merge(
             tenant_id=tenant_id,
             user_id=user_id,
             display_name=display_name,
-            patch=validate_profile_metadata(patch),
+            patch=updates,
         )
         if metadata is None:
             raise ProfileMetadataScopeError("profile_user_scope_mismatch")

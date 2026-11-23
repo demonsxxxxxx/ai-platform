@@ -36,6 +36,10 @@ def project_authorized_worker_mcp_payload(
     })
 
 
+def executor_supports_external_mcp(executor_type: object) -> bool:
+    return executor_type == "claude-agent-worker"
+
+
 class WorkerMcpDispatchService:
     def __init__(
         self, *, get_tool: Callable[..., Awaitable[Any]],
@@ -119,7 +123,7 @@ class WorkerMcpDispatchService:
                 continue
             allowed_entries.append(tool)
             tool_policy_subjects.append(subject)
-        if allowed_entries and payload.executor_type != "claude-agent-worker":
+        if allowed_entries and not executor_supports_external_mcp(payload.executor_type):
             denial = self._identity.denied(
                 "mcp_tool", str(allowed_entries[0].get("tool_id") or "mcp_tool"),
                 "mcp_sandbox_executor_required",

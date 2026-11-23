@@ -190,6 +190,16 @@ def default_run_model_binding(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def stub_new_run_gateway_discovery(monkeypatch):
+    from app.mcp.api import TaskGatewaySelection
+
+    async def empty(*_args, **_kwargs):
+        return TaskGatewaySelection(frozenset(), ())
+
+    monkeypatch.setattr(runs_module, "get_task_gateway_mcp_selection", empty)
+
+
+@pytest.fixture(autouse=True)
 def default_create_run_workspace_guard(monkeypatch):
     async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
         return {"id": workspace_id, "tenant_id": tenant_id, "status": "active"}
@@ -4987,8 +4997,19 @@ async def test_create_run_selected_skill_maps_stale_lock_to_stable_409_before_wr
 
 
 @pytest.mark.asyncio
-async def test_create_run_queues_skillless_harness_without_skill_authority(monkeypatch):
+@pytest.mark.parametrize("gateway_enabled", [True, False])
+async def test_create_run_queues_skillless_harness_without_skill_authority(monkeypatch, gateway_enabled):
+    from app.mcp.api import TaskGatewaySelection
+
     calls = {"events": []}
+    gateway_tools = ("vendor::live",) if gateway_enabled else ()
+
+    async def gateway(_conn, *, principal, selected_tool_ids):
+        assert (principal.tenant_id, principal.user_id, principal.roles) == ("tenant-a", "user-a", ["admin"])
+        assert selected_tool_ids == ([] if gateway_enabled else ["vendor::stale"])
+        return TaskGatewaySelection(frozenset({"vendor"}), gateway_tools)
+
+    monkeypatch.setattr(runs_module, "get_task_gateway_mcp_selection", gateway)
 
     async def active_harness_agent(conn, *, tenant_id, agent_id):
         calls["agent"] = (tenant_id, agent_id)
@@ -5037,12 +5058,15 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
             workspace_id="default",
             agent_id="general-agent",
             capability_id="general_chat",
-            input={"message": "hello"},
+            input={"message": "hello", **({} if gateway_enabled else {"mcpToolIds": ["vendor::stale"]})},
         ),
-        principal=principal(),
+        principal=principal(roles=["admin"]),
     )
 
     assert response.status == "queued"
+    assert "mcpToolIds" not in calls["queue"]["input"]
+    assert calls["queue"]["input"]["mcp_tool_ids"] == list(gateway_tools)
+    assert calls["create_run"]["input_json"]["input"]["mcp_tool_ids"] == list(gateway_tools)
     assert calls["agent"] == ("tenant-a", "general-agent")
     assert calls["mcp"] == []
     assert calls["create_run"]["execution_kind"] == "harness_chat"
