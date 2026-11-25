@@ -1701,6 +1701,7 @@ async def chat_stream(
                 input_modes=input_modes,
                 preserve_agent_history=admitted_agent_profile is not None,
                 load_session_files=context_file_continuity.list_authorized_session_input_files,
+                reuse_explicit_session_files=admitted_agent_profile is None,
             )
             primary_file_ids = list(file_selection.primary_file_ids)
             reusable_primary_file_ids = list(file_selection.reusable_primary_file_ids)
@@ -1924,7 +1925,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=requested_file_ids,
+                file_ids=[file_id for file_id in requested_file_ids if file_id not in reusable_primary_file_ids],
             )
             context_ref = await record_initial_context_snapshot(
                 conn,

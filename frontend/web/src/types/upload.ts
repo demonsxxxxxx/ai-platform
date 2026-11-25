@@ -18,6 +18,8 @@ export interface MessageAttachment {
   downloadUrl?: string;
   /** Browser-only origin for the current composer's shared drive attachment. */
   profileDriveReference?: ProfileDriveFileReference;
+  /** Borrowed from this session; removing it from the draft must not delete it. */
+  sessionAttachmentReference?: true;
   /** Upload progress (0-100) */
   uploadProgress?: number;
   /** Whether upload is in progress */

@@ -1036,6 +1036,7 @@
     "noPermission": "没有权限上传{{type}}文件",
     "removeAttachment": "移除附件",
     "selectFile": "选择文件",
+    "referenceInReply": "引用到本轮",
     "selectType": "选择文件类型",
     "serverFileTooLarge": "文件超过 50 MB 上限，请压缩或选择更小的文件后重试",
     "serverUnsupportedFileType": "该文件格式或内容不安全，无法上传。请改用安全的常用文件格式",

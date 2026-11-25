@@ -110,6 +110,15 @@ class PlatformContextRetrievalClient:
                 )
         except Exception as exc:
             raise RuntimeError("context_retrieval_callback_failed") from exc
+        if response.status_code == 413 and action == "stage_context_file_to_workspace":
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            detail = body.get("detail") if isinstance(body, dict) else None
+            if detail == "context_file_size_required":
+                raise ContextRetrievalDenied("context_file_size_required")
+            raise ContextRetrievalDenied("context_file_too_large")
         if response.status_code in {401, 403, 409, 413, 422}:
             raise ContextRetrievalDenied("context_scope_denied")
         if response.status_code != 200:

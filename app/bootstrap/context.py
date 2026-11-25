@@ -4,6 +4,9 @@ from pathlib import Path
 from functools import partial
 
 from app.context.infrastructure.artifact_download import download_artifact_object
+from app.context.infrastructure.attachment_cache import AttachmentCache
+from app.settings import get_settings
+from app.control_plane_contracts import RUN_EXECUTION_KIND_HARNESS_CHAT
 
 from app.context.retrieval import (
     ContextRetrievalAuthority,
@@ -70,6 +73,14 @@ async def materialize_worker_context_files(*, payload, workspace: Path):
     """Stage scoped files with Context-owned persistence and storage."""
     if workspace.exists() and workspace.is_symlink():
         raise ValueError("run workspace must not be a symlink")
+    root = Path(get_settings().sandbox_workspace_root).resolve()
+    cache = None
+    if (payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT and not payload.agent_profile
+            and workspace.resolve().is_relative_to(root / "tenants")):
+        cache = AttachmentCache(
+            root / ".attachment-cache-v1",
+            scope=(payload.tenant_id, payload.workspace_id, payload.user_id, payload.session_id),
+        )
     return await materialize_run_context_files(
         repository=context_sources_postgres,
         transaction_factory=transaction, storage=ObjectStorage(), storage_io=run_storage_io,
@@ -77,6 +88,7 @@ async def materialize_worker_context_files(*, payload, workspace: Path):
         tenant_id=payload.tenant_id, workspace_id=payload.workspace_id,
         user_id=payload.user_id, session_id=payload.session_id,
         run_id=payload.run_id, file_ids=payload.file_ids,
+        attachment_cache=cache,
     )
 
 

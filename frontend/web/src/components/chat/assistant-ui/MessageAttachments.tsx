@@ -9,6 +9,7 @@ import type { MessageAttachment } from "../../../types";
 export interface MessageAttachmentsProps {
   attachments: readonly MessageAttachment[];
   onOpen?: (attachment: MessageAttachment, previewSrc?: string) => void;
+  onReference?: (attachment: MessageAttachment) => void;
   className?: string;
 }
 
@@ -98,6 +99,32 @@ function MessageAttachmentRow({
   );
 }
 
+function AttachmentWithReference({ attachment, onOpen, onReference }: {
+  attachment: MessageAttachment;
+  onOpen?: MessageAttachmentsProps["onOpen"];
+  onReference?: MessageAttachmentsProps["onReference"];
+}) {
+  const { t } = useTranslation();
+  if (!onReference || !attachment.key?.startsWith("file_") || attachment.isUploading) {
+    return <MessageAttachmentRow attachment={attachment} onOpen={onOpen} />;
+  }
+  const label = t("fileUpload.referenceInReply", "Use in this reply");
+  return (
+    <div className="flex min-w-0 max-w-full flex-col items-end gap-1">
+      <MessageAttachmentRow attachment={attachment} onOpen={onOpen} />
+      <Button
+        type="text"
+        htmlType="button"
+        size="small"
+        aria-label={`${label}: ${attachment.name}`}
+        onClick={() => onReference(attachment)}
+      >
+        {label}
+      </Button>
+    </div>
+  );
+}
+
 /**
  * Props-driven received-file presentation adapted from assistant-ui's
  * MessageAttachments element. It never owns upload, authorization, or preview
@@ -106,6 +133,7 @@ function MessageAttachmentRow({
 export function MessageAttachments({
   attachments,
   onOpen,
+  onReference,
   className,
 }: MessageAttachmentsProps) {
   if (attachments.length === 0) return null;
@@ -115,11 +143,7 @@ export function MessageAttachments({
       className={`flex max-w-full flex-wrap justify-end gap-2 ${className ?? ""}`}
     >
       {attachments.map((attachment) => (
-        <MessageAttachmentRow
-          key={attachment.id}
-          attachment={attachment}
-          onOpen={onOpen}
-        />
+        <AttachmentWithReference key={attachment.id} attachment={attachment} onOpen={onOpen} onReference={onReference} />
       ))}
     </div>
   );

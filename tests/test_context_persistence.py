@@ -181,6 +181,7 @@ async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
     assert "join lateral" not in file_conn.sql
     assert "sessions.status = 'active'" in file_conn.sql
     assert "context_snapshot.included_file_ids ? files.id" in file_conn.sql
+    assert "files.lifecycle_state = 'active'" in file_conn.sql
     assert "source_run.session_id = current_run.session_id" in file_conn.sql
     assert file_conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", "file-a")
     assert artifact_row["id"] == "artifact-a"

@@ -7,9 +7,12 @@ from pathlib import Path
 import shutil
 from typing import Any
 
+from app.context.infrastructure.attachment_cache import AttachmentCache
+
 from app.context.api import ContextFileContentError, context_stage_filename_fits
 from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
+    XLSX_CONTENT_TYPE,
     validate_context_file_for_stage,
 )
 from app.path_safety import ensure_creatable_inside
@@ -192,6 +195,7 @@ async def select_authorized_run_file_snapshot(
     input_modes: list[object],
     preserve_agent_history: bool,
     load_session_files: Callable[..., Awaitable[list[dict[str, Any]]]],
+    reuse_explicit_session_files: bool = False,
 ) -> RunFileSelection:
     """Load history only when it can participate in the immutable run snapshot."""
 
@@ -204,9 +208,8 @@ async def select_authorized_run_file_snapshot(
     should_load = session_id and (
         preserve_agent_history or (not requested_file_ids and has_file_input_mode(input_modes))
     )
-    if should_load and preserve_agent_history and current_ids:
-        # Preserve the existing reusable classification for explicitly selected
-        # historical IDs without scanning all history to discover membership.
+    if session_id and current_ids and (preserve_agent_history or reuse_explicit_session_files):
+        # Classify explicitly selected historical IDs without loading unrelated history.
         rows.extend(
             dict(row)
             for row in await load_session_files(
@@ -304,6 +307,7 @@ async def list_authorized_session_input_files(
               and files.workspace_id = %s
               and files.user_id = %s
               and files.session_id = %s
+              and files.lifecycle_state = 'active'
               and (%s::text[] is null or files.id = any(%s::text[]))
               and not (files.id = any(%s::text[]))
               and (%s::timestamptz is null
@@ -353,6 +357,7 @@ async def materialize_run_context_files(
     session_id: str,
     run_id: str,
     file_ids: list[str],
+    attachment_cache: AttachmentCache | None = None,
 ) -> ContextFileMaterialization:
     """Authorize, validate, then atomically stage one run's context-file set."""
 
@@ -448,7 +453,7 @@ async def materialize_run_context_files(
             inputs_dir.mkdir(parents=True, exist_ok=True)
         for (
             attachment_index,
-            _file_id,
+            file_id,
             row,
             filename,
             materialized_filename,
@@ -482,8 +487,15 @@ async def materialize_run_context_files(
                 )
             written_paths.append(target)
             temporary_path: Path | None = None
+            is_xlsx = (
+                filename.casefold().endswith(".xlsx")
+                or str(row.get("content_type") or "").split(";", 1)[0].strip().casefold() == XLSX_CONTENT_TYPE
+            )
             try:
-                if hasattr(storage, "download_to_tempfile"):
+                cache_hit = attachment_cache is not None and await storage_io(
+                    attachment_cache.restore, file_id, row, target, size_bytes,
+                )
+                if not cache_hit and hasattr(storage, "download_to_tempfile"):
                     try:
                         downloaded = await storage_io(
                             storage.download_to_tempfile,
@@ -513,10 +525,7 @@ async def materialize_run_context_files(
                             attachment_index=attachment_index,
                         )
                     await storage_io(shutil.copyfile, temporary_path, target)
-                    if filename.casefold().endswith(".xlsx") or str(row.get("content_type") or "").split(";", 1)[0].casefold() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                        content = await storage_io(target.read_bytes)
-                        await storage_io(validate_context_file_for_stage, row, content)
-                else:
+                elif not cache_hit:
                     try:
                         content = await storage_io(
                             storage.get_bytes_bounded,
@@ -537,6 +546,11 @@ async def materialize_run_context_files(
                         ) from exc
                     await storage_io(validate_context_file_for_stage, row, content)
                     await storage_io(target.write_bytes, content)
+                if is_xlsx and (cache_hit or temporary_path is not None):
+                    content = await storage_io(target.read_bytes)
+                    await storage_io(validate_context_file_for_stage, row, content)
+                if attachment_cache is not None and not cache_hit:
+                    await storage_io(attachment_cache.remember, file_id, row, target)
             except ContextFileContentError as exc:
                 raise exc.bind_attachment(
                     attachment_index=attachment_index,

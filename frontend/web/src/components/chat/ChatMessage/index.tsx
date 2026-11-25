@@ -3,7 +3,7 @@ import { memo } from "react";
 import { AssistantMessageContent } from "../assistant-ui/elements/thread";
 import { MessageTiming, type TimingStat } from "../assistant-ui/elements/message-timing";
 import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
-import type { Message, MessagePart } from "../../../types";
+import type { Message, MessageAttachment, MessagePart } from "../../../types";
 import { useTranslation } from "react-i18next";
 import { AssistantUiMarkdownText, AssistantUiMessagePart, AssistantUiMessageStatus } from "../assistant-ui/MessageParts";
 import { getAssistantUiDisplayParts } from "../assistant-ui/externalStoreRuntime";
@@ -25,6 +25,7 @@ import {
 } from "./items/artifactDownloadRegistry";
 
 interface ChatMessageProps {
+  onReferenceAttachment?: (attachment: MessageAttachment) => void;
   artifactDownloadScopeContext?: ArtifactDownloadScopeContext;
   onOpenPreview?: (
     preview: RevealPreviewRequest,
@@ -53,6 +54,7 @@ function currentActivityLabel(parts: readonly MessagePart[]): string | null {
 export const ChatMessage = memo(function ChatMessage({
   artifactDownloadScopeContext,
   onOpenPreview,
+  onReferenceAttachment,
 }: ChatMessageProps) {
   const { t } = useTranslation();
   const { availableModels } = useModelCatalogContext();
@@ -104,6 +106,7 @@ export const ChatMessage = memo(function ChatMessage({
           messageId={message.id}
           content={message.content}
           attachments={message.attachments}
+          onReferenceAttachment={onReferenceAttachment}
           lockedSkillLabel={message.lockedSkillLabel}
           isLastMessage={isLastMessage}
         />

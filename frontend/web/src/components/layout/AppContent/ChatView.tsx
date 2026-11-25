@@ -727,6 +727,19 @@ export function ChatView({
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;
 
+  const referenceSessionAttachment = useCallback((attachment: MessageAttachment) => {
+    if (!sessionId || attachments.some((item) => item.key === attachment.key)) return;
+    if (!uploadControls.validateCount(1)) return;
+    onAttachmentsChange((current) =>
+      current.some((item) => item.key === attachment.key)
+        ? current
+        : [...current, { ...attachment, sessionAttachmentReference: true }],
+    );
+  }, [attachments, onAttachmentsChange, sessionId, uploadControls]);
+  const canReferenceSessionAttachment = Boolean(
+    sessionId && !presentation && canSendInCurrentView && !sessionRunning && !runInputQuestionMode,
+  );
+
   const handleOpenWorkspaceFile = useCallback(
     (file: SessionWorkspaceFile) => {
       if (!file.preview_url) {
@@ -940,6 +953,7 @@ export function ChatView({
             <ChatMessage
               artifactDownloadScopeContext={artifactDownloadScopeContext}
               onOpenPreview={handleOpenPreview}
+              onReferenceAttachment={canReferenceSessionAttachment ? referenceSessionAttachment : undefined}
             />
           </div>
         }
@@ -955,6 +969,8 @@ export function ChatView({
       artifactDownloadScopeContext,
       sessionId,
       handleOpenPreview,
+      canReferenceSessionAttachment,
+      referenceSessionAttachment,
     ],
   );
 

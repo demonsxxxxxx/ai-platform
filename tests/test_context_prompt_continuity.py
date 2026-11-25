@@ -90,6 +90,8 @@ def test_harness_chat_prompt_keeps_bounded_context_manifest_without_private_payl
         },
     )
 
+    assert "inputs/input.docx" in prompt
+    assert "read content only through platform context tools" not in prompt
     assert "Context manifest refs:" not in prompt
     assert "Context manifest: 1 file ref." not in prompt
     assert "Use context retrieval tools before assuming full prior message" not in prompt

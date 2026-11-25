@@ -51,4 +51,17 @@ test("message attachments retain the official received-file slot for documents",
   assert.match(markup, /data-slot="message-attachment"/);
   assert.match(markup, /report\.pdf/);
   assert.doesNotMatch(markup, /href=/);
+  assert.doesNotMatch(markup, /引用到本轮/);
+});
+
+test("only persisted platform files get the reference action", () => {
+  const file = { ...attachment("/files/report.png"), key: "file_report" };
+  const markup = renderToStaticMarkup(
+    React.createElement(MessageAttachments, {
+      attachments: [file, { ...file, id: "uploading", isUploading: true },
+        { ...file, id: "foreign", name: "external.png", key: "external" }],
+      onReference: () => {},
+    }),
+  );
+  assert.equal((markup.match(/aria-label="引用到本轮: report.png"/g) ?? []).length, 1);
 });

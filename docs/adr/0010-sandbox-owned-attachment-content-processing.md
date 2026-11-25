@@ -102,7 +102,22 @@ Output: pass/fail only, with a stable safe reason code.
 The platform writes bytes only below the run-local `inputs/` root after all
 requested files pass A1-A3. The implementation prevents symlinks, collisions,
 and path escape, writes files atomically, and removes partial writes on failure.
-Files are read-only from the Agent contract perspective.
+Docker and OpenSandbox bind the staged Attempt's own `inputs/` subtree
+read-only. The cache root is not a mount source; Attempt files are independent
+copies, never symlinks or hard links to cached bytes.
+
+Ordinary Chat history cards can explicitly reference a previously bound file.
+The same user's active session and its original authorized snapshot must still
+own the file. The new Run records that file ID in its own snapshot without
+moving the original binding. Not selecting a file confers no file authority.
+Before staging, the worker checks current snapshot membership and file lifecycle
+again. Only then may it use its private, host-local attachment cache. A hit
+matches tenant/workspace/user/session/file identity and revalidates size and
+SHA-256; misses fetch from object storage. A slot collision loses a cache hit,
+not an attachment. The cache holds up to 32 committed entries (at most 4 GiB
+plus headers and transient writes); it does not replace object storage.
+Revocation blocks subsequent staging even while an entry is still on disk.
+Remove the host cache with its workspace volume when decommissioning the host.
 
 Owner: sandbox workspace materializer.
 
@@ -113,7 +128,9 @@ Output: ordered metadata and relative `inputs/<basename>` paths.
 The Agent receives the user request plus a metadata-only manifest naming the
 relative input paths, content types, byte counts, and approved retrieval
 capabilities. It receives no server-extracted attachment body and no JSON
-representation of document content.
+representation of document content. Already staged files are not advertised as
+requiring retrieval; the broker remains available for authorized refs that
+were not staged.
 
 Owner: worker and SDK prompt boundary.
 

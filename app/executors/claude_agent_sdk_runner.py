@@ -790,10 +790,9 @@ def _build_context_retrieval_mcp_server(
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
     if sdk_tool is None or create_server is None:
         return None
-    default_tool_names = iter(_SDK_INTERNAL_CONTEXT_TOOLS)
     selected_tool_names = {
         name
-        for name in (tool_names or default_tool_names)
+        for name in (_SDK_INTERNAL_CONTEXT_TOOLS if tool_names is None else tool_names)
         if name in _SDK_INTERNAL_CONTEXT_TOOLS
     }
     if not selected_tool_names:

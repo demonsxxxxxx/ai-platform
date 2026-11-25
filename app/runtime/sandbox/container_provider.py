@@ -1344,6 +1344,16 @@ def _ensure_opensandbox_configuration_still_valid(settings: Any) -> None:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
 
 
+def _attempt_inputs_mount(workspace: WorkspaceLease) -> Path:
+    """Bind only the prepared inputs subdirectory, never a cache or caller path."""
+    workspace_path = Path(workspace.workspace_host_path)
+    inputs = workspace_path / "inputs"
+    if (str(inputs) != workspace.inputs_host_path or inputs.is_symlink()
+            or workspace_path.is_symlink() or not inputs.is_dir()):
+        raise ContainerStartFailedError("Attempt inputs bind is invalid")
+    return inputs
+
+
 def _opensandbox_volumes(
     settings: Any,
     request: SandboxRuntimeRequest,
@@ -1373,6 +1383,13 @@ def _opensandbox_volumes(
             readOnly=False,
         )
     ]
+    if request.materialized_file_names:
+        volumes.append(volume_class(
+            name="attempt-inputs",
+            host=host_class(path=str(_attempt_inputs_mount(workspace))),
+            mountPath=f"{workspace.workspace_container_path}/inputs",
+            readOnly=True,
+        ))
     if skill_mount is not None:
         volumes.append(
             volume_class(
@@ -2707,6 +2724,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         try:
             skill_mount = _prepare_trusted_skill_mount(request, workspace)
             skill_mount_labels = _skill_mount_labels(skill_mount)
+            inputs_mount = _attempt_inputs_mount(workspace) if request.materialized_file_names else None
             native_tool_required = _native_tool_required(request)
             native_tool_admission_evidence = (
                 _native_tool_admission_evidence(
@@ -2890,6 +2908,8 @@ class DockerContainerProvider(DockerLeaseRegistry):
                         "bind": workspace.workspace_container_path,
                         "mode": "rw",
                     },
+                    **({str(inputs_mount): {"bind": f"{workspace.workspace_container_path}/inputs", "mode": "ro"}}
+                       if inputs_mount is not None else {}),
                     **(
                         {
                             str(skill_mount.host_path): {

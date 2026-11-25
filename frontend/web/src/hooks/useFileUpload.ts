@@ -229,7 +229,7 @@ export function removeAttachmentFromUpload(
   onAttachmentsChange((previous) =>
     previous.filter((item) => item.id !== attachment.id),
   );
-  if (attachment.key) {
+  if (attachment.key && !attachment.sessionAttachmentReference) {
     void deleteFile(attachment.key).catch((error) => {
       console.error("Failed to delete file from server:", error);
     });

@@ -1483,11 +1483,12 @@ def test_opensandbox_renewal_deadline_caps_default_and_preserves_smaller_setting
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_create_mounts_only_the_exact_attempt_workspace(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_inputs", [False, True])
+async def test_opensandbox_create_mounts_only_the_exact_attempt_workspace(monkeypatch, tmp_path, with_inputs):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    runtime_request = request()
+    runtime_request = request(materialized_file_names=["report.pdf"] if with_inputs else [])
     settings, leased_workspace, workspace_path = local_opensandbox_workspace(
         tmp_path,
         runtime_request,
@@ -1497,7 +1498,12 @@ async def test_opensandbox_create_mounts_only_the_exact_attempt_workspace(monkey
     await opensandbox_provider().create_or_reuse(runtime_request, leased_workspace)
 
     volumes = FakeOpenSandbox.created[0]["volumes"]
-    assert len(volumes) == 1
+    assert len(volumes) == (2 if with_inputs else 1)
+    if with_inputs:
+        assert volumes[1].name == "attempt-inputs"
+        assert volumes[1].host.path == str(workspace_path / "inputs")
+        assert volumes[1].mount_path == "/workspace/inputs"
+        assert volumes[1].read_only is True
     assert volumes[0].name == "attempt-workspace"
     assert volumes[0].host.path == str(workspace_path)
     assert volumes[0].mount_path == "/workspace"
@@ -2360,7 +2366,8 @@ async def test_docker_provider_list_daemon_error_is_sanitized():
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_creates_container_with_workspace_labels_and_env():
+@pytest.mark.parametrize("with_inputs", [False, True])
+async def test_docker_provider_creates_container_with_workspace_labels_and_env(tmp_path, with_inputs):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     fake = FakeDockerClient()
@@ -2369,17 +2376,24 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
         health_probe=lambda executor_url, timeout_seconds: True,
     )
 
-    lease = await provider.create_or_reuse(request(), workspace())
+    leased_workspace = workspace()
+    if with_inputs:
+        leased_workspace = workspace(workspace_host_path=str(tmp_path / "workspace"))
+        Path(leased_workspace.inputs_host_path).mkdir(parents=True)
+        (Path(leased_workspace.inputs_host_path) / "report.pdf").write_bytes(b"synthetic")
+    lease = await provider.create_or_reuse(
+        request(materialized_file_names=["report.pdf"] if with_inputs else []), leased_workspace,
+    )
     statuses = await provider.list_runtime_containers({"tenant_id": "tenant-a"})
 
     created = fake.created[0]
     assert created["image"] == "registry.example/ai-platform@sha256:" + "a" * 64
     assert created["name"] == "executor-exec-run-a"
     assert created["labels"]["ai-platform.run_id"] == "run-a"
-    assert created["volumes"][workspace().workspace_host_path]["bind"] == "/workspace"
-    assert created["volumes"] == {
-        workspace().workspace_host_path: {"bind": "/workspace", "mode": "rw"}
-    }
+    expected_volumes = {leased_workspace.workspace_host_path: {"bind": "/workspace", "mode": "rw"}}
+    if with_inputs:
+        expected_volumes[leased_workspace.inputs_host_path] = {"bind": "/workspace/inputs", "mode": "ro"}
+    assert created["volumes"] == expected_volumes
     assert created["labels"]["ai-platform.skill_mount.required"] == "false"
     assert "AI_PLATFORM_NATIVE_TOOL_TOKEN" not in created["environment"]
     assert "AI_PLATFORM_NATIVE_TOOL_SOCKET" not in created["environment"]

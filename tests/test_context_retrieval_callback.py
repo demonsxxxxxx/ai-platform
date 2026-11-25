@@ -426,6 +426,32 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload(content):
     assert "content_bytes" not in result
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "detail", "reason"), [
+    (413, "context_file_too_large", "context_file_too_large"),
+    (413, "context_file_size_required", "context_file_size_required"),
+    (403, "context_scope_denied", "context_scope_denied"),
+])
+async def test_context_file_client_distinguishes_limit_from_denial(monkeypatch, status, detail, reason):
+    import httpx
+
+    async def post(self, *_args, **_kwargs):
+        return httpx.Response(status, json={"detail": detail})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    scope = ContextRetrievalScope(
+        tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-a", agent_id="agent-a",
+    )
+    client = PlatformContextRetrievalClient(
+        callback_url="http://platform.test/context-retrieval",
+        callback_token_id="cbt:run-a:attempt-a", callback_token="synthetic",
+        attempt_id="attempt-a", scope=scope,
+    )
+    with pytest.raises(ContextRetrievalDenied, match=f"^{reason}$"):
+        await client._request("stage_context_file_to_workspace", {"file_id": "file-a"})
+
+
 @pytest.mark.parametrize("count", [None, -1, 1, True, False, 0.0, "0", "missing"])
 def test_platform_context_client_rejects_invalid_empty_file_byte_counts(tmp_path, count):
     scope = ContextRetrievalScope(

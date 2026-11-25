@@ -31,6 +31,7 @@ export function createOptimisticMessagesForSend({
     attachments: attachments?.map((attachment) => {
       const projected = { ...attachment };
       delete projected.profileDriveReference;
+      delete projected.sessionAttachmentReference;
       return projected;
     }),
   };
