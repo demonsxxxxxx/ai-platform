@@ -197,11 +197,20 @@ test("market search commits Chinese IME text only after composition ends", async
     const eighthTag = Array.from(moreTags.querySelectorAll("button"))
       .find((button) => (button.textContent ?? "")?.includes("标签 8"));
     assert.ok(eighthTag);
+    moreTags.open = true;
     await React.act(async () => {
       eighthTag.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.match(currentPath, /tag=%E6%A0%87%E7%AD%BE\+8/);
+    const selectedTag = Array.from(container.querySelectorAll('[data-agent-market-filter] > button[aria-pressed="true"]'))
+      .find((button) => button.textContent?.includes("标签 8"));
+    assert.ok(selectedTag, "a tag from 更多标签 becomes visible in the filter bar");
+    assert.ok(selectedTag.querySelector("svg.lucide-check:not(.invisible)"), "the selected tag has a visible non-color cue");
+    assert.equal(moreTags.open, false);
+    assert.equal(dom.document.activeElement, moreTags.querySelector("summary"));
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.equal(container.querySelector('[role="status"][data-agent-market-result-count]')?.textContent, "共 1 位专家");
     const allTags = Array.from(container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button") ?? [])
       .find((button) => (button.textContent ?? "")?.trim() === "全部");
     assert.ok(allTags);
@@ -465,10 +474,11 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 0);
     assert.match((container.textContent ?? ""), /尚未收藏专家/);
 
-    const tagsTab = container.querySelector("[data-agent-market-favorites]");
-    assert.ok(tagsTab);
+    const allTags = Array.from(categoryGroup.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "全部");
+    assert.ok(allTags);
     await React.act(async () => {
-      tagsTab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      allTags.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
