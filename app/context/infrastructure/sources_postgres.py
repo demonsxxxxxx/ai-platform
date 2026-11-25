@@ -97,6 +97,7 @@ async def get_scoped_context_file(
           and sessions.workspace_id = current_run.workspace_id
           and context_snapshot.included_file_ids ? files.id
           and files.id = %s
+          and files.lifecycle_state = 'active'
         """,
         (run_id, tenant_id, workspace_id, user_id, session_id, run_id, file_id),
     )

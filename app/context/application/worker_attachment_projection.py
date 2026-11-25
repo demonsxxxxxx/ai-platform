@@ -24,7 +24,7 @@ def manifest_with_worker_attachment_metadata(
                 "name": item.file_name,
                 "content_type": item.content_type,
                 "size_bytes": item.size_bytes,
-                "requires_retrieval": True,
+                "requires_retrieval": False,
             })
         enriched_files.append(file_ref)
     result["files"] = enriched_files

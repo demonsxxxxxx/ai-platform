@@ -1,7 +1,14 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import hashlib
+import io
+from types import SimpleNamespace
 
 import pytest
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, NameObject
+
+from app.context.infrastructure.attachment_cache import AttachmentCache
 
 from app.context.api import ContextFileContentError
 from app.context.file_continuity import (
@@ -161,6 +168,7 @@ def _session_file(index, *, name=None, content_type="application/pdf", created_a
         "id": f"file-{index:05d}",
         "original_name": name or f"report-{index}.pdf",
         "content_type": content_type,
+        "size_bytes": 1024,
         "created_at": created_at or datetime(2026, 8, 1, tzinfo=timezone.utc),
     }
 
@@ -312,6 +320,175 @@ async def test_authorized_skill_selection_with_current_file_never_reselects_same
     assert selection.primary_file_ids == ("file-current",)
     assert selection.reusable_primary_file_ids == ()
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordinary_chat_reuses_only_explicit_same_session_attachment():
+    conn = SessionFilePageConnection([_session_file(1), _session_file(2)])
+    selection = await select_authorized_run_file_snapshot(
+        conn=conn, tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", requested_file_ids=["file-00001", "file-new"],
+        input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+        load_session_files=list_authorized_session_input_files,
+    )
+    assert selection.primary_file_ids == ("file-00001", "file-new")
+    assert selection.reusable_primary_file_ids == ("file-00001",)
+    assert len(conn.calls) == 1
+    assert conn.calls[0][1][4] == ["file-00001", "file-new"]
+
+
+@pytest.mark.asyncio
+async def test_chat_continuation_automatically_authorizes_recent_same_session_files():
+    conn = SessionFilePageConnection([_session_file(i) for i in range(10)])
+    scope = dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a")
+    selection = await select_authorized_run_file_snapshot(
+        conn=conn, **scope, session_id="session-a", requested_file_ids=[],
+        input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+    )
+
+    assert selection.primary_file_ids == tuple(f"file-{i:05d}" for i in range(9, 1, -1))
+    assert selection.reusable_primary_file_ids == selection.primary_file_ids
+    assert not selection.file_required
+    assert len(conn.calls) == 1
+    statement, params = conn.calls[0]
+    assert params[0:4] == ("tenant-a", "workspace-a", "user-a", "session-a")
+    assert "and files.lifecycle_state = 'active'" in statement
+    assert "and sessions.status = 'active'" in statement
+
+    for session_id in (None, "session-a"):
+        # No session cannot inherit files; a new/current upload takes precedence.
+        new = await select_authorized_run_file_snapshot(
+            conn=conn, **scope, session_id=session_id,
+            requested_file_ids=["file-current"] if session_id else [],
+            input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+        )
+        assert new.primary_file_ids == (("file-current",) if session_id else ())
+        assert not new.reusable_primary_file_ids
+    assert len(conn.calls) == 2  # Only targeted membership for the current upload.
+    assert conn.calls[1][1][4] == ["file-current"]
+
+
+@pytest.mark.asyncio
+async def test_automatic_chat_history_respects_single_and_total_staging_budgets():
+    mib = 1024 * 1024
+    history = [
+        {**_session_file(0), "size_bytes": 24 * mib},
+        {**_session_file(1), "size_bytes": 120 * mib},
+        {**_session_file(2), "size_bytes": 120 * mib},
+        {**_session_file(3), "size_bytes": 129 * mib},
+        _session_file(4, name="长" * 90 + ".pdf"),
+        {**_session_file(5), "size_bytes": None},
+    ]
+    selected = await select_authorized_run_file_snapshot(
+        conn=SessionFilePageConnection(history), tenant_id="tenant-a", workspace_id="workspace-a",
+        user_id="user-a", session_id="session-a", requested_file_ids=[],
+        input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+    )
+    assert selected.primary_file_ids == ("file-00002", "file-00001")
+    assert selected.reusable_primary_file_ids == selected.primary_file_ids
+
+
+@pytest.mark.asyncio
+async def test_automatic_chat_history_keeps_distinct_same_name_files_with_stageable_paths():
+    exact_limit_name = "a" * 251 + ".pdf"
+    history = [
+        _session_file(0, name=exact_limit_name),
+        _session_file(1, name=exact_limit_name),
+        _session_file(2, name="report.pdf"),
+        _session_file(3, name="report.pdf"),
+    ]
+    selection = await select_authorized_run_file_snapshot(
+        conn=SessionFilePageConnection(history), tenant_id="tenant-a", workspace_id="workspace-a",
+        user_id="user-a", session_id="session-a", requested_file_ids=[],
+        input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+    )
+    # Ordinary same-name files can both be staged. For the 255-byte basename
+    # only the newest fits; the older copy would need an appended suffix.
+    assert selection.primary_file_ids == ("file-00003", "file-00002", "file-00001")
+
+
+@pytest.mark.asyncio
+async def test_large_pdf_cache_reuses_bytes_only_after_current_snapshot_authorization(tmp_path):
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=200, height=200)
+    stream = DecodedStreamObject()
+    stream.set_data(b"q Q\n" * (300 * 1024))
+    page[NameObject("/Contents")] = stream
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    raw = buffer.getvalue()
+    assert len(raw) > 1024 * 1024
+    row = {
+        **_session_file(1, name="report.pdf"),
+        "size_bytes": len(raw), "storage_key": "synthetic/report",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    scope = dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a")
+    first_file_ids = (row["id"],)
+    continued = await select_authorized_run_file_snapshot(
+        conn=SessionFilePageConnection([row]), **scope, requested_file_ids=[],
+        input_modes=["chat"], preserve_agent_history=False, continue_chat_attachments=True,
+    )
+    snapshot_files = {
+        "run-first": first_file_ids,
+        "run-followup": continued.primary_file_ids,
+        "run-refetch": continued.primary_file_ids,
+    }
+    download_count = 0
+
+    class Repository:
+        async def get_scoped_context_file(self, _conn, *, run_id, file_id, **request_scope):
+            assert request_scope == scope
+            return row if file_id in snapshot_files.get(run_id, ()) else None
+
+    class Storage:
+        def download_to_tempfile(self, *, storage_key, max_bytes):
+            nonlocal download_count
+            assert storage_key == row["storage_key"]
+            assert max_bytes == len(raw)
+            download_count += 1
+            path = tmp_path / "download"
+            path.write_bytes(raw)
+            return SimpleNamespace(path=path, size_bytes=len(raw), sha256=row["sha256"])
+
+    @asynccontextmanager
+    async def transaction():
+        yield None
+
+    async def storage_io(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    cache = AttachmentCache(tmp_path / "host-cache", scope=("tenant-a", "workspace-a", "user-a", "session-a"))
+
+    async def stage(run_id, file_ids=None):
+        return await materialize_run_context_files(
+            repository=Repository(), storage=Storage(), transaction_factory=transaction,
+            storage_io=storage_io, storage_size_limit_error=ValueError,
+            workspace=tmp_path / run_id, **scope, run_id=run_id,
+            file_ids=list(snapshot_files[run_id] if file_ids is None else file_ids),
+            attachment_cache=cache,
+        )
+
+    await stage("run-first")
+    first = tmp_path / "run-first" / "inputs" / "report.pdf"
+    assert PdfReader(first).pages[0].get_contents().get_data() == stream.get_data()
+    first.write_bytes(b"mutated Attempt copy")
+    assert (await stage("run-followup")).materialized_file_names == ("report.pdf",)
+    assert (tmp_path / "run-followup" / "inputs" / "report.pdf").read_bytes() == raw
+    assert download_count == 1
+    await stage("run-not-selected", ())
+    assert not (tmp_path / "run-not-selected" / "inputs").exists()
+    with pytest.raises(ContextFileContentError, match="context_file_unavailable"):
+        await stage("run-revoked", continued.primary_file_ids)
+    assert not (tmp_path / "run-revoked" / "inputs").exists()
+    assert download_count == 1
+
+    # A same-length cache corruption is a miss, even if the cache identity matches.
+    (slot,) = cache.root.iterdir()
+    slot.write_bytes(slot.read_bytes()[:-1] + b"x")
+    await stage("run-refetch")
+    assert (tmp_path / "run-refetch" / "inputs" / "report.pdf").read_bytes() == raw
+    assert download_count == 2
 
 
 @pytest.mark.asyncio

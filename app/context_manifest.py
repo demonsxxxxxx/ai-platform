@@ -48,6 +48,10 @@ def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[s
         refs = manifest.get(refs_key)
         if not isinstance(refs, list) or not refs:
             continue
+        if refs_key == "files" and not any(
+            isinstance(ref, dict) and ref.get("requires_retrieval") is not False for ref in refs
+        ):
+            continue
         selected.extend(tool_name for tool_name in tool_names if tool_name in advertised)
     return selected
 _PRIVATE_KEY_MARKERS = (

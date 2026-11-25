@@ -2,10 +2,18 @@ import errno
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from app.platform.sandbox.errors import ContainerStartFailedError
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
-from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME, WORKSPACE_RUNTIME_PRIVATE_ROOTS
+from app.sandbox.api import (
+    PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME,
+    WORKSPACE_RUNTIME_PRIVATE_ROOTS,
+    OpenSandboxHostBindError,
+    resolve_opensandbox_host_bind_source,
+)
 from app.settings import get_settings
 from app.path_safety import ensure_creatable_inside
 
@@ -172,6 +180,68 @@ def _write_platform_claude_instructions(workspace: Path, internal: Path) -> None
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class TrustedSkillMount:
+    host_path: Path
+    container_path: str
+    fingerprint: str
+
+
+def _attempt_inputs_mount(workspace: WorkspaceLease) -> Path:
+    root = Path(workspace.workspace_host_path)
+    inputs = root / "inputs"
+    if (str(inputs) != workspace.inputs_host_path or inputs.is_symlink()
+            or root.is_symlink() or not inputs.is_dir()):
+        raise ContainerStartFailedError("Attempt inputs bind is invalid")
+    return inputs
+
+
+def docker_workspace_mounts(
+    workspace: WorkspaceLease, *, with_inputs: bool, skill_mount: TrustedSkillMount | None,
+) -> dict[str, dict[str, str]]:
+    mounts = {workspace.workspace_host_path: {"bind": workspace.workspace_container_path, "mode": "rw"}}
+    if with_inputs:
+        mounts[str(_attempt_inputs_mount(workspace))] = {
+            "bind": f"{workspace.workspace_container_path}/inputs", "mode": "ro",
+        }
+    if skill_mount is not None:
+        mounts[str(skill_mount.host_path)] = {"bind": skill_mount.container_path, "mode": "ro"}
+    return mounts
+
+
+def opensandbox_volumes(
+    settings: Any,
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+    skill_mount: TrustedSkillMount | None,
+    *,
+    host_class: Any,
+    volume_class: Any,
+) -> list[Any]:
+    try:
+        source = resolve_opensandbox_host_bind_source(
+            settings.sandbox_workspace_root, request, workspace, require_existing=os.name == "posix",
+        )
+    except OpenSandboxHostBindError as exc:
+        raise ContainerStartFailedError("OpenSandbox workspace bind is invalid") from exc
+
+    volumes = [volume_class(
+        name="attempt-workspace", host=host_class(path=str(source)),
+        mountPath=workspace.workspace_container_path, readOnly=False,
+    )]
+    if request.materialized_file_names:
+        volumes.append(volume_class(
+            name="attempt-inputs", host=host_class(path=str(_attempt_inputs_mount(workspace))),
+            mountPath=f"{workspace.workspace_container_path}/inputs", readOnly=True,
+        ))
+    if skill_mount is not None:
+        volumes.append(volume_class(
+            name="trusted-skill", host=host_class(path=str(skill_mount.host_path)),
+            mountPath=skill_mount.container_path, readOnly=True,
+        ))
+    return volumes
 
 
 class SandboxWorkspaceManager:

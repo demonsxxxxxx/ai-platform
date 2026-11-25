@@ -695,7 +695,7 @@ class ClaudeAgentWorkerAdapter:
             "user_message": str(
                 payload.input.get("message") or payload.input.get("prompt") or ""
             ),
-            "file_names": file_names,
+            "file_names": staged_file_names,
             "context_pack": prompt_context_pack,
         }
         try:

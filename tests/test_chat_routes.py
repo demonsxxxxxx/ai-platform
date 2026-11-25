@@ -1002,6 +1002,7 @@ async def test_chat_stream_preserves_explicit_mcp_availability_independent_of_po
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.resolve_chat_model_selection", resolve_model)
+    monkeypatch.setattr("app.context.file_continuity.list_authorized_session_input_files", AsyncMock(return_value=[]))
     monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_authorized_session', owned_session)
     monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'get_latest_authorized_session_run_input', latest_input)
     monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, 'list_authorized_session_runs', prior_runs)
@@ -4811,7 +4812,9 @@ async def test_lambchat_docx_attachment_stays_with_general_agent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
+@pytest.mark.parametrize("mode", ["upload", "explicit", "automatic"])
+async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch, mode):
+    reuse = mode != "upload"
     calls = []
 
     async def fake_get_file(conn, *, tenant_id, file_id):
@@ -4821,8 +4824,8 @@ async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
             "tenant_id": "tenant-a",
             "workspace_id": "default",
             "user_id": "user-a",
-            "session_id": None,
-            "run_id": None,
+            "session_id": "ses_review_file_id" if reuse else None,
+            "run_id": "run_source" if reuse else None,
             "original_name": "TR(G)-AD-IP321-1-031-1.0 IP321.docx",
             "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }
@@ -4860,18 +4863,44 @@ async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
+    list_files = AsyncMock(return_value=[{"id": "file_review", "size_bytes": 1024}])
+    from app.routes import chat as chat_routes
+
+    snapshot = AsyncMock(wraps=chat_routes.record_initial_context_snapshot)
+    monkeypatch.setattr(chat_routes, "record_initial_context_snapshot", snapshot)
+    if reuse:
+        monkeypatch.setattr(
+            _owner_conversations_infrastructure_session_queries_postgres, "get_authorized_session",
+            AsyncMock(return_value={"id": "ses_review_file_id", "agent_id": "general-agent", "workspace_id": "default"}),
+        )
+        monkeypatch.setattr(
+            _owner_conversations_infrastructure_session_queries_postgres, "list_authorized_session_runs",
+            AsyncMock(return_value=[{"agent_id": "general-agent", "skill_id": None}]),
+        )
+    monkeypatch.setattr("app.context.file_continuity.list_authorized_session_input_files", list_files)
+    authorize = AsyncMock()
+    monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, "authorize_files_for_run", authorize)
+
     response = await chat_stream(
-        ChatStreamRequest(message="审核一下这个文档", file_ids=["file_review"]),
+        ChatStreamRequest(message="接着核对同一个文档", file_ids=[] if mode == "automatic" else ["file_review"],
+                          session_id="ses_review_file_id" if reuse else None),
         agent_id="general-agent",
         principal=principal(),
     )
 
     assert response.run_id == "run_review_file_id"
-    assert ("get_file", "tenant-a", "file_review") in calls
+    assert authorize.await_args.kwargs["reusable_file_ids"] == (["file_review"] if reuse else [])
+    if reuse:
+        assert list_files.await_args.kwargs["session_id"] == "ses_review_file_id"
+        assert list_files.await_args.kwargs.get("file_ids") == (["file_review"] if mode == "explicit" else None)
+    else:
+        list_files.assert_not_awaited()
+    assert (("get_file", "tenant-a", "file_review") in calls) is (mode != "automatic")
+    assert snapshot.await_args.kwargs["file_ids"] == ["file_review"]
     assert not any(call[0] == "resolve" for call in calls)
-    assert ("session", "general-agent") in calls
+    assert (("session", "general-agent") in calls) is not reuse
     assert ("run", "general-agent", None, ["file_review"]) in calls
-    assert ("files", ["file_review"]) in calls
+    assert ("files", [] if reuse else ["file_review"]) in calls
     assert ("queue", "general-agent", None, ["file_review"]) in calls
 
 

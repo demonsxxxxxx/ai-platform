@@ -30,7 +30,6 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
 )
 from app.chat_session_projection import session_response
-from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import select_authorized_run_file_snapshot
 from app.context_builder import record_initial_context_snapshot
 from app.control_plane_contracts import (
@@ -1700,7 +1699,7 @@ async def chat_stream(
                 requested_file_ids=requested_file_ids,
                 input_modes=input_modes,
                 preserve_agent_history=admitted_agent_profile is not None,
-                load_session_files=context_file_continuity.list_authorized_session_input_files,
+                continue_chat_attachments=admitted_agent_profile is None and execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT,
             )
             primary_file_ids = list(file_selection.primary_file_ids)
             reusable_primary_file_ids = list(file_selection.reusable_primary_file_ids)
@@ -1924,7 +1923,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
-                file_ids=requested_file_ids,
+                file_ids=[file_id for file_id in requested_file_ids if file_id not in reusable_primary_file_ids],
             )
             context_ref = await record_initial_context_snapshot(
                 conn,

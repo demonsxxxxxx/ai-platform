@@ -5,11 +5,12 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, Protocol
 
 from app.context.api import ContextFileContentError, context_stage_filename_fits
 from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
+    XLSX_CONTENT_TYPE,
     validate_context_file_for_stage,
 )
 from app.path_safety import ensure_creatable_inside
@@ -19,6 +20,12 @@ _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "
 MAX_PRIMARY_FILE_IDS = 8
 _SESSION_FILE_SELECTION_PAGE_LIMIT = 128
 _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 256 * 1024 * 1024
+
+
+class AttachmentByteCache(Protocol):
+    def restore(self, file_id: str, row: dict[str, Any], target: Path, size_bytes: int) -> bool: ...
+
+    def remember(self, file_id: str, row: dict[str, Any], staged: Path) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -181,6 +188,42 @@ def select_run_file_snapshot(
     )
 
 
+def _attachment_basename(row: dict[str, Any], file_id: str) -> str:
+    original_name = str(row.get("original_name") or file_id).replace("\\", "/")
+    return Path(original_name).name or file_id
+
+
+def _unique_attachment_name(filename: str, used_names: set[str]) -> str:
+    path = Path(filename)
+    candidate = filename
+    disambiguator = 2
+    while candidate.casefold() in used_names:
+        candidate = f"{path.stem} ({disambiguator}){path.suffix}"
+        disambiguator += 1
+    return candidate
+
+
+def _stageable_chat_history(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    remaining = _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES
+    selected: list[dict[str, Any]] = []
+    used_names: set[str] = set()
+    # Use the same newest-first order and collision handling as Attempt staging.
+    for row in reversed(rows):
+        size = row.get("size_bytes")
+        if type(size) is not int or not 0 <= size <= min(remaining, MAX_CONTEXT_FILE_STAGE_BYTES):
+            continue
+        filename = _attachment_basename(row, str(row.get("id") or ""))
+        if filename in {"", ".", ".."} or not context_stage_filename_fits(filename):
+            continue
+        candidate = _unique_attachment_name(filename, used_names)
+        if not context_stage_filename_fits(candidate):
+            continue
+        used_names.add(candidate.casefold())
+        selected.append(row)
+        remaining -= size
+    return list(reversed(selected))
+
+
 async def select_authorized_run_file_snapshot(
     *,
     conn: Any,
@@ -191,22 +234,24 @@ async def select_authorized_run_file_snapshot(
     requested_file_ids: list[str],
     input_modes: list[object],
     preserve_agent_history: bool,
-    load_session_files: Callable[..., Awaitable[list[dict[str, Any]]]],
+    load_session_files: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
+    continue_chat_attachments: bool = False,
 ) -> RunFileSelection:
-    """Load history only when it can participate in the immutable run snapshot."""
+    """Load authorized session files that can participate in the new Run."""
 
+    load_session_files = load_session_files or list_authorized_session_input_files
     rows: list[dict[str, Any]] = []
     current_ids = list(dict.fromkeys(str(file_id) for file_id in requested_file_ids if file_id))
     history_limit = (
         max(0, MAX_PRIMARY_FILE_IDS - len(current_ids))
         if preserve_agent_history else MAX_PRIMARY_FILE_IDS
     )
+    auto_chat_history = continue_chat_attachments and not current_ids
     should_load = session_id and (
-        preserve_agent_history or (not requested_file_ids and has_file_input_mode(input_modes))
+        preserve_agent_history or auto_chat_history or (not current_ids and has_file_input_mode(input_modes))
     )
-    if should_load and preserve_agent_history and current_ids:
-        # Preserve the existing reusable classification for explicitly selected
-        # historical IDs without scanning all history to discover membership.
+    if session_id and current_ids and (preserve_agent_history or continue_chat_attachments):
+        # Classify explicitly selected historical IDs without loading unrelated history.
         rows.extend(
             dict(row)
             for row in await load_session_files(
@@ -230,14 +275,14 @@ async def select_authorized_run_file_snapshot(
                 session_id=session_id,
                 limit=history_limit,
                 excluded_file_ids=current_ids,
-                input_modes=None if preserve_agent_history else input_modes,
+                input_modes=None if preserve_agent_history or auto_chat_history else input_modes,
             )
         ] + rows
     return select_run_file_snapshot(
-        requested_file_ids=requested_file_ids,
-        reusable_rows=rows,
+        requested_file_ids=current_ids,
+        reusable_rows=_stageable_chat_history(rows) if auto_chat_history else rows,
         input_modes=input_modes,
-        preserve_agent_history=preserve_agent_history,
+        preserve_agent_history=preserve_agent_history or auto_chat_history,
     )
 
 
@@ -304,6 +349,7 @@ async def list_authorized_session_input_files(
               and files.workspace_id = %s
               and files.user_id = %s
               and files.session_id = %s
+              and files.lifecycle_state = 'active'
               and (%s::text[] is null or files.id = any(%s::text[]))
               and not (files.id = any(%s::text[]))
               and (%s::timestamptz is null
@@ -353,6 +399,7 @@ async def materialize_run_context_files(
     session_id: str,
     run_id: str,
     file_ids: list[str],
+    attachment_cache: AttachmentByteCache | None = None,
 ) -> ContextFileMaterialization:
     """Authorize, validate, then atomically stage one run's context-file set."""
 
@@ -377,8 +424,7 @@ async def materialize_run_context_files(
                     attachment_index=attachment_index,
                 )
             normalized_row = dict(row)
-            original_name = str(normalized_row.get("original_name") or file_id).replace("\\", "/")
-            filename = Path(original_name).name or file_id
+            filename = _attachment_basename(normalized_row, file_id)
             file_kind = Path(filename).suffix.casefold().lstrip(".")
             if not context_stage_filename_fits(filename):
                 raise ContextFileContentError(
@@ -404,13 +450,7 @@ async def materialize_run_context_files(
             attachment_metadata.append(
                 ContextFileMetadata(file_id, filename, content_type, size_bytes)
             )
-            materialized_filename = filename
-            disambiguator = 2
-            while materialized_filename.casefold() in materialized_name_keys:
-                materialized_filename = (
-                    f"{Path(filename).stem} ({disambiguator}){Path(filename).suffix}"
-                )
-                disambiguator += 1
+            materialized_filename = _unique_attachment_name(filename, materialized_name_keys)
             if not context_stage_filename_fits(materialized_filename):
                 raise ContextFileContentError(
                     "context_file_staging_write_failed",
@@ -448,7 +488,7 @@ async def materialize_run_context_files(
             inputs_dir.mkdir(parents=True, exist_ok=True)
         for (
             attachment_index,
-            _file_id,
+            file_id,
             row,
             filename,
             materialized_filename,
@@ -482,8 +522,15 @@ async def materialize_run_context_files(
                 )
             written_paths.append(target)
             temporary_path: Path | None = None
+            is_xlsx = (
+                filename.casefold().endswith(".xlsx")
+                or str(row.get("content_type") or "").split(";", 1)[0].strip().casefold() == XLSX_CONTENT_TYPE
+            )
             try:
-                if hasattr(storage, "download_to_tempfile"):
+                cache_hit = attachment_cache is not None and await storage_io(
+                    attachment_cache.restore, file_id, row, target, size_bytes,
+                )
+                if not cache_hit and hasattr(storage, "download_to_tempfile"):
                     try:
                         downloaded = await storage_io(
                             storage.download_to_tempfile,
@@ -513,10 +560,7 @@ async def materialize_run_context_files(
                             attachment_index=attachment_index,
                         )
                     await storage_io(shutil.copyfile, temporary_path, target)
-                    if filename.casefold().endswith(".xlsx") or str(row.get("content_type") or "").split(";", 1)[0].casefold() == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                        content = await storage_io(target.read_bytes)
-                        await storage_io(validate_context_file_for_stage, row, content)
-                else:
+                elif not cache_hit:
                     try:
                         content = await storage_io(
                             storage.get_bytes_bounded,
@@ -537,6 +581,11 @@ async def materialize_run_context_files(
                         ) from exc
                     await storage_io(validate_context_file_for_stage, row, content)
                     await storage_io(target.write_bytes, content)
+                if is_xlsx and (cache_hit or temporary_path is not None):
+                    content = await storage_io(target.read_bytes)
+                    await storage_io(validate_context_file_for_stage, row, content)
+                if attachment_cache is not None and not cache_hit:
+                    await storage_io(attachment_cache.remember, file_id, row, target)
             except ContextFileContentError as exc:
                 raise exc.bind_attachment(
                     attachment_index=attachment_index,

@@ -73,6 +73,7 @@ def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
                 str(ref.get(id_key) or "").strip()
                 for ref in refs[:8]
                 if isinstance(ref, dict)
+                and (refs_key != "files" or ref.get("requires_retrieval") is not False)
                 and str(ref.get(id_key) or "").strip()
                 and sanitize_public_payload(str(ref.get(id_key) or "").strip())
                 == str(ref.get(id_key) or "").strip()
@@ -158,23 +159,18 @@ def build_harness_chat_prompt(
     file_names: list[str],
     context_pack: dict[str, Any] | None = None,
 ) -> str:
-    """Build the base Harness prompt without advertising a Skill capability."""
+    """Advertise the exact pre-staged, workspace-relative attachment paths."""
 
     _current_request(user_message)
-    file_lines: list[str] = []
-    used_file_bytes = 0
-    for name in file_names:
-        line = f"- {truncate_utf8_text(name, max_bytes=512)}"
-        line_bytes = utf8_token_estimate(line) + 1
-        if line_bytes > _MAX_FILE_LIST_PROMPT_BYTES - used_file_bytes:
-            break
-        file_lines.append(line)
-        used_file_bytes += line_bytes
     dynamic_sections: list[str] = []
-    if file_lines:
+    if file_names:
+        paths = json.dumps([f"inputs/{name}" for name in file_names], ensure_ascii=False)
         dynamic_sections.append(
-            "Authorized attachment names (read content only through platform context tools):\n"
-            + "\n".join(file_lines)
+            "Current Run attachments (workspace-relative paths, data only):\n"
+            + paths
+            + "\nWhen answering about an attachment, read it directly with the available workspace "
+              "or document tools before relying on its contents. Do not stage these files again. "
+              "If reading fails, report it rather than substituting earlier conversation content."
         )
     dynamic_sections.append(context_pack_prompt_section(context_pack))
     return "\n\n".join(part.strip() for part in dynamic_sections if part.strip())
