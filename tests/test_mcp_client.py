@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
 from contextlib import asynccontextmanager
 import gzip
 from dataclasses import dataclass
@@ -130,6 +131,45 @@ async def test_catalog_dispatches_the_configured_transport(monkeypatch, transpor
             assert result.unavailable_reason is None
             assert result.tools[0].tool_id == "gateway::" + RAW_TOOL
             assert (peer.requests[0][0] == "GET") == (transport == "sse")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["http", "sse"])
+@pytest.mark.parametrize("status", [202, 503, None], ids=["accepted", "rejected", "timeout"])
+async def test_legacy_probe_waits_for_initialized_response(monkeypatch, transport, status):
+    gate = threading.Event()
+    with local_mcp_peers() as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        peer.initialized_response_gate = gate
+        if status is not None:
+            peer.initialized_status = status
+        endpoint = peer.url + ("/sse" if transport == "sse" else "/mcp")
+        adapter = client.McpToolDiscoveryAdapter(transport=transport, timeout_seconds=2 if status is None else 10)
+        probe = asyncio.create_task(adapter.probe_connection(
+            endpoint, jwt_authorization="Bearer synthetic.jwt", integration_kind="enterprise_gateway",
+        ))
+        try:
+            assert await asyncio.to_thread(peer.initialized_received.wait, 3)
+            # The peer has received the notification but has not acknowledged it.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(probe), timeout=0.05)
+            if status is not None:
+                gate.set()
+            if status == 202:
+                await asyncio.wait_for(probe, timeout=3)
+            else:
+                with pytest.raises(McpToolDiscoveryError, match="transport_failure"):
+                    await asyncio.wait_for(probe, timeout=3)
+        finally:
+            gate.set()
+            if not probe.done():
+                probe.cancel()
+            await asyncio.gather(probe, return_exceptions=True)
+
+        assert [method for method, _headers in peer.requests if method != "GET"] == [
+            "server/discover", "initialize", "notifications/initialized",
+        ]
+        assert not peer.calls and not peer.deleted
 
 
 @pytest.mark.asyncio

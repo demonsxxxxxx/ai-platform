@@ -228,7 +228,11 @@ that exact pinning order rather than assuming the Run input has the same order.
 - **Independent test:** `POST /api/admin/mcp/{name}/test` probes a saved
   connection as the current administrator, even when disabled, within 20 seconds.
   For enterprise Gateway it negotiates MCP and returns only status and time.
-  For ordinary MCP it also returns safe tool descriptions and a count. It neither
+  Modern negotiation completes with `server/discover`. Legacy negotiation also
+  waits for the transport to accept `notifications/initialized` before closing
+  the probe. Rejection or timeout is a connection failure; the probe does not
+  send `tools/list` to confirm delivery. For ordinary MCP the test also returns
+  safe tool descriptions and a count. It neither
   enables the connection nor calls business tools or certifies another user's access.
 - **Replacement:** the hard-coded single-file-connector marketplace and ordinary
   `/mcp` directory are replaced by `/plugins`; ordinary `/mcp` links redirect.

@@ -23,6 +23,7 @@ def local_mcp_peers(*, protocol="legacy"):
         tool_input={"query": "synthetic"}, protocol=protocol, deleted=0, search_tools=False,
         call_error=None, input_required=False, tool_result=None, tool_response_content_type="application/json", model_reply=None,
         reply_queues=[], sse_opened_sessions=queue.Queue(), sse_endpoint_gates={},
+        initialized_received=threading.Event(), initialized_response_gate=None, initialized_status=202,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -160,7 +161,10 @@ def local_mcp_peers(*, protocol="legacy"):
                 result = {"protocolVersion": request["params"]["protocolVersion"], "capabilities": {"tools": {}},
                           "serverInfo": {"name": "synthetic", "version": "1"}}
             elif request["method"] == "notifications/initialized":
-                self.respond({}, 202)
+                state.initialized_received.set()
+                if state.initialized_response_gate is not None:
+                    state.initialized_response_gate.wait(timeout=5)
+                self.respond(b"", state.initialized_status, "text/plain")
                 return
             elif request["method"] == "tools/list":
                 result = {"tools": state.tools}

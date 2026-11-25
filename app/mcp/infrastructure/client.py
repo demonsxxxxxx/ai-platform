@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from builtins import ExceptionGroup
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -163,6 +164,7 @@ class _SingleDispatchMcpClient(Client):
 async def open_mcp_session(
     config, *, timeout_seconds=60.0, max_response_bytes=1024 * 1024,
     max_response_total_bytes=None, terminate_on_close=True, credential_resolver=None,
+    wait_for_legacy_initialized=False,
 ):
     """Keep credentials on one approved origin, including SSE message endpoints."""
     transport = config.get("type")
@@ -204,10 +206,13 @@ async def open_mcp_session(
     origin = httpx.URL(target.endpoint)
     pinned = httpx.URL(target.connect_url)
     guard_failure = None
+    legacy_initialized = asyncio.Event() if wait_for_legacy_initialized else None
 
     def fail(reason):
         nonlocal guard_failure
         guard_failure = guard_failure or reason
+        if legacy_initialized is not None:
+            legacy_initialized.set()
         raise McpToolDiscoveryError(guard_failure)
 
     async def pin_request(request):
@@ -259,6 +264,15 @@ async def open_mcp_session(
         if response.is_stream_consumed:
             bounded_stream.check_chunk(response.content)
         response.stream = bounded_stream
+        # Inspect only the SDK-generated outbound JSON, not remote response bodies.
+        if (
+            legacy_initialized is not None
+            and response.request.method == "POST"
+            and json.loads(response.request.content).get("method") == "notifications/initialized"
+        ):
+            if not response.is_success:
+                fail("transport_failure")
+            legacy_initialized.set()
 
     async def validate_message(message):
         # The SDK reports malformed wire messages through this public callback;
@@ -299,6 +313,10 @@ async def open_mcp_session(
                         protocol_transport, mode="auto", read_timeout_seconds=timeout_seconds,
                         message_handler=validate_message, cache=None,
                     ))
+                if legacy_initialized is not None and session.session.initialize_result is not None:
+                    # The SDK hands off the one-way notification to a background POST.
+                    # Keep the transport open until its response arrives, within the handshake deadline.
+                    await legacy_initialized.wait()
             _install_strict_tool_list_validation(session)
             if guard_failure:
                 raise McpToolDiscoveryError(guard_failure)
@@ -404,6 +422,7 @@ class McpToolDiscoveryAdapter:
                     # Discovery never terminated a potentially shared remote
                     # session. Close local resources without adding a DELETE.
                     terminate_on_close=False,
+                    wait_for_legacy_initialized=not list_tools,
                 ) as session:
                     if not list_tools:
                         return ()
