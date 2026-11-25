@@ -2,6 +2,7 @@ import { Button, Input } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
+  Check,
   Grid2X2,
   List as ListIcon,
   MessageCircle,
@@ -299,6 +300,33 @@ function ExpertMarketCard({
   );
 }
 
+function MarketTagButton({
+  label,
+  count,
+  selected,
+  onClick,
+}: {
+  label: string;
+  count?: number;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type={selected ? "primary" : "default"}
+      size="small"
+      aria-pressed={selected}
+      className="min-h-9 max-w-full"
+      icon={<Check aria-hidden="true" className={selected ? undefined : "invisible"} size={14} />}
+      onClick={onClick}
+      htmlType="button"
+    >
+      <span className="min-w-0 truncate" title={label}>{label}</span>
+      {count !== undefined && <span className="shrink-0 tabular-nums">{count}</span>}
+    </Button>
+  );
+}
+
 function AgentMarketCatalog({
   catalog,
   refresh,
@@ -320,6 +348,8 @@ function AgentMarketCatalog({
   const [view, setView] = useState<MarketView>("grid");
   const [sort, setSort] = useState<MarketSort>("default");
   const [tagSearch, setTagSearch] = useState("");
+  const moreTagsRef = useRef<HTMLDetailsElement>(null);
+  const moreTagsTriggerRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!isSearchComposing.current) setSearchInput(searchQuery);
   }, [searchQuery]);
@@ -382,8 +412,8 @@ function AgentMarketCatalog({
         else selectedTags.add(tag);
         next.delete("tag");
         for (const selectedTag of selectedTags) next.append("tag", selectedTag);
-        next.delete("tab");
       }
+      next.delete("tab");
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -497,46 +527,33 @@ function AgentMarketCatalog({
           <section className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="shrink-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 sm:p-4">
               <div data-agent-market-filter aria-label="市场标签" className="flex flex-wrap items-center gap-2" role="group">
-                <Button type="text"
-                  aria-pressed={activeTab === "tags" && activeTags.length === 0}
-                  className={`min-h-9 rounded-md border px-3 text-xs transition-colors ${
-                    activeTab === "tags" && activeTags.length === 0
-                      ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
-                      : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
-                  }`}
+                <MarketTagButton
+                  label="全部"
+                  selected={activeTab === "tags" && activeTags.length === 0}
                   onClick={() => handleTag(null)}
-                  htmlType="button"
-                >
-                  全部
-                </Button>
-                {hotTags.map((tag) => (
-                  <Button type="text"
-                    aria-pressed={activeTab === "tags" && activeTags.includes(tag)}
-                    className={`flex min-h-9 max-w-full items-center gap-1 rounded-md border px-3 text-xs transition-colors ${
-                      activeTab === "tags" && activeTags.includes(tag)
-                        ? "border-[var(--theme-primary)] bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
-                        : "border-[var(--theme-border)] text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]"
-                    }`}
+                />
+                {[...hotTags, ...(activeTab === "tags" ? activeTags.filter((tag) => !hotTags.includes(tag)) : [])].map((tag) => (
+                  <MarketTagButton
                     key={tag}
+                    label={tag}
+                    count={tagCounts.get(tag)}
+                    selected={activeTab === "tags" && activeTags.includes(tag)}
                     onClick={() => handleTag(tag)}
-                    htmlType="button"
-                  >
-                    <span className="truncate" title={tag}>{tag}</span> <span className="shrink-0 tabular-nums opacity-70">{tagCounts.get(tag)}</span>
-                  </Button>
-                ))}
-                {activeTags.filter((tag) => !hotTags.includes(tag)).map((tag) => (
-                  <Button type="text" key={tag} aria-pressed={true} className="min-h-9 max-w-full truncate rounded-md border border-[var(--theme-primary)] bg-[var(--theme-primary)] px-3 text-xs text-[var(--theme-primary-foreground)]" onClick={() => handleTag(tag)} htmlType="button">
-                    {tag}
-                  </Button>
+                  />
                 ))}
                 {marketTags.length > hotTags.length ? (
-                  <details className="max-w-full">
-                    <summary className="flex min-h-9 cursor-pointer items-center rounded-md border border-[var(--theme-border)] px-3 text-xs text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]">更多标签</summary>
+                  <details ref={moreTagsRef} className="max-w-full">
+                    <summary ref={moreTagsTriggerRef} className="flex min-h-9 cursor-pointer items-center rounded-md border border-[var(--theme-border)] px-3 text-xs text-[var(--theme-text-secondary)] hover:border-[var(--theme-primary)]">更多标签</summary>
                     <div className="mt-2 w-56 max-w-[calc(100vw-4rem)] rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-2 shadow-sm">
                       <Input aria-label="搜索标签" size="small" className="mb-2 w-full" onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索标签" type="search" value={tagSearch} />
                       <div className="max-h-48 space-y-1 overflow-y-auto">
                         {filteredMarketTags.filter((tag) => !hotTags.includes(tag) && !activeTags.includes(tag)).map((tag) => (
-                          <Button type="text" key={tag} aria-pressed={false} className="flex min-h-8 w-full items-center justify-between rounded-md px-2 text-left text-xs hover:bg-[var(--theme-hover)]" onClick={() => handleTag(tag)} htmlType="button">
+                          <Button type="text" key={tag} className="flex min-h-8 w-full items-center justify-between rounded-md px-2 text-left text-xs" onClick={() => {
+                            handleTag(tag);
+                            if (moreTagsRef.current) moreTagsRef.current.open = false;
+                            moreTagsTriggerRef.current?.focus();
+                            setTagSearch("");
+                          }} htmlType="button">
                             <span className="truncate">{tag}</span><span className="ml-2 tabular-nums">{tagCounts.get(tag)}</span>
                           </Button>
                         ))}
@@ -587,7 +604,9 @@ function AgentMarketCatalog({
                 ))}
               </div>
               <div className="ml-auto flex items-center gap-2">
-                <span className="text-xs text-[var(--theme-text-secondary)]">共 {visibleProfiles.length} 位专家</span>
+                <span role="status" data-agent-market-result-count className="text-xs text-[var(--theme-text-secondary)]">
+                  {catalog.phase === "ready" ? `共 ${visibleProfiles.length} 位专家` : null}
+                </span>
                 <div aria-label="专家展示方式" className="flex rounded-md border border-[var(--theme-border)]" data-agent-market-view role="group">
                   <Button type="text"
                     aria-label="网格视图"

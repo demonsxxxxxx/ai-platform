@@ -26,7 +26,6 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.match(source, /更多标签/);
   assert.match(source, /data-agent-market-sort/);
   assert.match(source, /data-agent-market-view/);
-  assert.doesNotMatch(source, /<Check/);
   assert.doesNotMatch(source, /BadgeCheck/);
   assert.match(source, /mobileSidebarOpen/);
   assert.match(source, /useParams/);
