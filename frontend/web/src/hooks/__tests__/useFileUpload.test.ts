@@ -394,10 +394,7 @@ test("removing a Composer attachment cancels pending uploads and deletes ready f
     mimeType: "text/plain",
     size: 1,
   };
-  const referenced: MessageAttachment = {
-    ...ready, id: "previous-turn", key: "file_previous", sessionAttachmentReference: true,
-  };
-  let attachments = [pending, ready, referenced];
+  let attachments = [pending, ready];
   const cancelled: string[] = [];
   const deleted: string[] = [];
   const onAttachmentsChange = (
@@ -425,8 +422,6 @@ test("removing a Composer attachment cancels pending uploads and deletes ready f
     onAttachmentsChange,
     async (key) => deleted.push(key),
   );
-  removeAttachmentFromUpload(referenced, (id) => cancelled.push(id), onAttachmentsChange,
-    async (key) => deleted.push(key));
   await Promise.resolve();
 
   assert.deepEqual(cancelled, ["temp-pending"]);

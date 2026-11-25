@@ -397,7 +397,6 @@ export function buildSubmitChatBody({
     attachments: attachments?.map((attachment) => {
       const projected = { ...attachment };
       delete projected.profileDriveReference;
-      delete projected.sessionAttachmentReference;
       return projected;
     }),
     disabled_skills: selectedSkill ? undefined : disabledSkills,

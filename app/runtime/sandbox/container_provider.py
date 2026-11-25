@@ -163,6 +163,7 @@ from app.runtime.sandbox.opensandbox_policy import (
     selected_opensandbox_profile,
 )
 from app.runtime.sandbox import readiness_evidence
+from app.runtime.sandbox.workspace_manager import TrustedSkillMount as _TrustedSkillMount, docker_workspace_mounts, opensandbox_volumes
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 from app.skills.execution_profiles import NATIVE_COMMAND_ISOLATION
 
@@ -610,13 +611,6 @@ _NATIVE_TOOL_HEALTH_PROBE_TIMEOUT_SECONDS = 3.0
 _NATIVE_TOOL_HEALTH_PROBE_POLL_INTERVAL_SECONDS = 0.01
 _NATIVE_TOOL_ADMISSION_PHASE = "authenticated_container_uds_health"
 _CLAUDE_PROJECT_SETTING_NAMES = ("settings.json", "settings.local.json")
-
-
-@dataclass(frozen=True)
-class _TrustedSkillMount:
-    host_path: Path
-    container_path: str
-    fingerprint: str
 
 
 def _tool_policy_subject_authorized(subject: dict[str, Any], identity: str) -> bool:
@@ -1342,64 +1336,6 @@ def _ensure_opensandbox_configuration_still_valid(settings: Any) -> None:
     _requested_executor_image_digest(settings)
     if not str(getattr(settings, "sandbox_runtime_subject", "") or "").strip():
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
-
-
-def _attempt_inputs_mount(workspace: WorkspaceLease) -> Path:
-    """Bind only the prepared inputs subdirectory, never a cache or caller path."""
-    workspace_path = Path(workspace.workspace_host_path)
-    inputs = workspace_path / "inputs"
-    if (str(inputs) != workspace.inputs_host_path or inputs.is_symlink()
-            or workspace_path.is_symlink() or not inputs.is_dir()):
-        raise ContainerStartFailedError("Attempt inputs bind is invalid")
-    return inputs
-
-
-def _opensandbox_volumes(
-    settings: Any,
-    request: SandboxRuntimeRequest,
-    workspace: WorkspaceLease,
-    skill_mount: _TrustedSkillMount | None,
-    *,
-    host_class: Any,
-    volume_class: Any,
-) -> list[Any]:
-    """Mount only the exact authoritative Attempt workspace and pinned Skill source."""
-
-    try:
-        workspace_source = resolve_opensandbox_host_bind_source(
-            settings.sandbox_workspace_root,
-            request,
-            workspace,
-            require_existing=os.name == "posix",
-        )
-    except OpenSandboxHostBindError as exc:
-        raise ContainerStartFailedError("OpenSandbox workspace bind is invalid") from exc
-
-    volumes = [
-        volume_class(
-            name="attempt-workspace",
-            host=host_class(path=str(workspace_source)),
-            mountPath=workspace.workspace_container_path,
-            readOnly=False,
-        )
-    ]
-    if request.materialized_file_names:
-        volumes.append(volume_class(
-            name="attempt-inputs",
-            host=host_class(path=str(_attempt_inputs_mount(workspace))),
-            mountPath=f"{workspace.workspace_container_path}/inputs",
-            readOnly=True,
-        ))
-    if skill_mount is not None:
-        volumes.append(
-            volume_class(
-                name="trusted-skill",
-                host=host_class(path=str(skill_mount.host_path)),
-                mountPath=skill_mount.container_path,
-                readOnly=True,
-            )
-        )
-    return volumes
 
 
 def _opensandbox_sentinel_path(workspace: WorkspaceLease) -> str:
@@ -2724,7 +2660,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
         try:
             skill_mount = _prepare_trusted_skill_mount(request, workspace)
             skill_mount_labels = _skill_mount_labels(skill_mount)
-            inputs_mount = _attempt_inputs_mount(workspace) if request.materialized_file_names else None
+            workspace_mounts = docker_workspace_mounts(workspace, with_inputs=bool(request.materialized_file_names), skill_mount=skill_mount)
             native_tool_required = _native_tool_required(request)
             native_tool_admission_evidence = (
                 _native_tool_admission_evidence(
@@ -2904,22 +2840,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
                 detach=True,
                 labels={**bootstrap_lease.platform_labels(), **_executor_identity_labels()},
                 volumes={
-                    workspace.workspace_host_path: {
-                        "bind": workspace.workspace_container_path,
-                        "mode": "rw",
-                    },
-                    **({str(inputs_mount): {"bind": f"{workspace.workspace_container_path}/inputs", "mode": "ro"}}
-                       if inputs_mount is not None else {}),
-                    **(
-                        {
-                            str(skill_mount.host_path): {
-                                "bind": skill_mount.container_path,
-                                "mode": "ro",
-                            }
-                        }
-                        if skill_mount is not None
-                        else {}
-                    ),
+                    **workspace_mounts,
                     **(
                         {
                             str(
@@ -3897,7 +3818,7 @@ class OpenSandboxContainerProvider:
             "resource": _opensandbox_resource_limits(request.resource_limits),
             "network_policy": None,
             "entrypoint": _opensandbox_entrypoint(settings),
-            "volumes": _opensandbox_volumes(
+            "volumes": opensandbox_volumes(
                 settings,
                 request,
                 workspace,

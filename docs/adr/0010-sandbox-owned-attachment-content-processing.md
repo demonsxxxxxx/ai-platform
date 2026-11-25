@@ -106,14 +106,20 @@ Docker and OpenSandbox bind the staged Attempt's own `inputs/` subtree
 read-only. The cache root is not a mount source; Attempt files are independent
 copies, never symlinks or hard links to cached bytes.
 
-Ordinary Chat history cards can explicitly reference a previously bound file.
-The same user's active session and its original authorized snapshot must still
-own the file. The new Run records that file ID in its own snapshot without
-moving the original binding. Not selecting a file confers no file authority.
-Before staging, the worker checks current snapshot membership and file lifecycle
-again. Only then may it use its private, host-local attachment cache. A hit
-matches tenant/workspace/user/session/file identity and revalidates size and
-SHA-256; misses fetch from object storage. A slot collision loses a cache hit,
+When ordinary Chat continues an existing session without submitted attachment
+IDs, admission automatically considers its eight most recent active, previously
+bound files from an authorized source snapshot. It selects newest first within
+128 MiB per file and 256 MiB total. This does not require a UI action, a filename
+in the question, or inferred intent. When the request supplies a file set, that
+set takes precedence and no additional history is selected. New sessions do not
+inherit attachments. Skill and Agent Profile selection rules are unchanged.
+
+The new Run records the selected IDs in its own snapshot without moving their
+original bindings or adding new upload cards to the chat. Before staging, the
+worker checks current snapshot membership and file lifecycle again. Only then
+may it use its private, host-local attachment cache. A hit matches
+its tenant, workspace, user, session, and file IDs and revalidates size and
+SHA-256. Misses fetch from object storage. A slot collision loses a cache hit,
 not an attachment. The cache holds up to 32 committed entries (at most 4 GiB
 plus headers and transient writes); it does not replace object storage.
 Revocation blocks subsequent staging even while an entry is still on disk.
@@ -411,6 +417,10 @@ behavior.
 
 ## Acceptance
 
+- After one upload, a text-only follow-up in the same ordinary Chat session
+  can read the original PDF from a fresh Attempt. The request submits no file
+  IDs. The new snapshot contains the same file ID without changing its original
+  binding. A new session and a revoked file do not gain that authority.
 - A valid XLSX with more than 2,048 populated cells materializes to `inputs/`
   and can start an Agent run.
 - The complete nine-file `3.2.S.3.1-IP266` corpus (approximately 164.18 MiB)

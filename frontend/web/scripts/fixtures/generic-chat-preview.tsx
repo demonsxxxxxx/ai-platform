@@ -25,8 +25,6 @@ const previewParams = new URLSearchParams(location.search);
 const theme = previewParams.get("theme") === "dark" ? "dark" : "light";
 const cjkMarkdownPreview = previewParams.has("cjk-markdown");
 const stopPreview = previewParams.has("stop-lifecycle");
-const attachmentPreview = previewParams.has("attachment-reference");
-const withSavedContinuation = cjkMarkdownPreview || stopPreview || attachmentPreview;
 const savedContinuation = { state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true };
 const markdownAnswer = "有，主要有以下几类：\n\n"
   + "- **共享盘访问失败：**多次返回 `reauth_required`，无法读取相关资料。\n"
@@ -267,7 +265,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === "/api/ai/auth/bootstrap" && method === "POST") {
     return json({ status: "ready", protocol_version: 2, generation: 1 });
   }
-  if (withSavedContinuation && url.pathname === "/api/ai/models/groups") {
+  if ((cjkMarkdownPreview || stopPreview) && url.pathname === "/api/ai/models/groups") {
     return json({ groups: [{ id: "cjk-preview-group", name: "合成业务组", type: "business", enabled: true }] });
   }
   if (url.pathname === "/api/agent/models/available") {
@@ -322,7 +320,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return json({
       session_id: SESSION_ID,
       run_id: lastTurn()?.runId ?? null,
-      ...(withSavedContinuation ? { continuation: lastTurn()?.status === "running"
+      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
         ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}),
       events: historyEvents(),
       next_cursor: null,
@@ -332,15 +330,10 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === `/api/sessions/${SESSION_ID}`) {
     return json({ id: SESSION_ID, agent_id: "generic", created_at: EMITTED, updated_at: EMITTED, is_active: true, name: "预览会话", metadata: {} });
   }
-  if (url.pathname === `/api/ai/chat/sessions/${SESSION_ID}/files`) {
-    return json({ session_id: SESSION_ID, files: attachmentPreview ? [{
-      file_id: "file_preview_report", run_id: turns[0].runId, name: "资材排程核对报告.pdf",
-      mime_type: "application/pdf", size_bytes: 2876244,
-    }] : [] });
-  }
+  if (url.pathname === `/api/ai/chat/sessions/${SESSION_ID}/files`) return json({ session_id: SESSION_ID, files: [] });
   if (url.pathname === `/api/chat/sessions/${SESSION_ID}/status`) {
     return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: lastTurn()?.status ?? "succeeded", raw_status: lastTurn()?.status ?? "succeeded",
-      ...(withSavedContinuation ? { continuation: lastTurn()?.status === "running"
+      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
         ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}) });
   }
   if (url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/inputs")) {

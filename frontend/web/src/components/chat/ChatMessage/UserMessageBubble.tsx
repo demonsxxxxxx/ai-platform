@@ -18,14 +18,12 @@ export function UserMessageBubble({
   messageId,
   content,
   attachments,
-  onReferenceAttachment,
   lockedSkillLabel,
   isLastMessage,
 }: {
   messageId: string;
   content?: string;
   attachments?: MessageAttachment[];
-  onReferenceAttachment?: (attachment: MessageAttachment) => void;
   lockedSkillLabel?: string;
   isLastMessage?: boolean;
 }) {
@@ -39,7 +37,6 @@ export function UserMessageBubble({
 
     return (
       <MessageAttachments attachments={attachments} className="mb-1.5"
-        onReference={onReferenceAttachment}
         onOpen={(attachment, previewSrc) => {
           if (previewSrc) {
             sessionImageGallery?.openImage(previewSrc, attachment.name);
