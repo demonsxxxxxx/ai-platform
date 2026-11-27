@@ -23,6 +23,11 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.evaluate(`document.querySelector('[data-agent-starter-prompts] button').click()`);
   await client.waitFor(`document.querySelector('textarea').value.length > 0`, "chat:suggestion-draft");
   const draft = await client.evaluate(`document.querySelector('textarea').value`);
+  const closedLayout = await client.evaluate(`(() => {
+    const composer = document.querySelector('.chat-input-container').getBoundingClientRect();
+    const toggle = document.querySelector('[data-librechat-context-toggle]').getBoundingClientRect();
+    return { composerCenter: composer.x + composer.width / 2, toggleRight: toggle.right };
+  })()`);
   await client.evaluate(`(() => { const toggle = document.querySelector('[data-librechat-context-toggle]'); toggle.focus(); toggle.click(); })()`);
   await client.waitFor(`document.querySelectorAll('[data-workbench-region=context] [role=tabpanel]:not([hidden]) [role=treeitem]').length === 48`, "chat:files-loaded");
   await client.waitFor(`(() => {
@@ -37,12 +42,15 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
     const thread = document.querySelector('[data-workbench-region=thread]');
     const column = thread.parentElement;
     const context = document.querySelector('[data-workbench-region=context]');
+    const header = document.querySelector('[data-workbench-region=header]');
+    const composer = document.querySelector('.chat-input-container');
+    const toggle = document.querySelector('[data-librechat-context-toggle]');
     const popup = context.closest('[role=dialog]');
     const rect = n => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
     const scroll = context.querySelector('[role=tabpanel]:not([hidden]) [data-profile-drive-tree-scroll]');
     const before = window.scrollY;
     scroll.scrollTop = scroll.scrollHeight;
-    return { thread: rect(column), context: rect(context), popup: popup ? rect(popup) : null,
+    return { thread: rect(column), context: rect(context), header: rect(header), composer: rect(composer), toggle: rect(toggle), popup: popup ? rect(popup) : null,
       gridChildren: column.parentElement.children.length, scrollable: scroll.scrollHeight > scroll.clientHeight,
       scrolled: scroll.scrollTop > 0, scrollWidth: scroll.getBoundingClientRect().width, pageUnmoved: window.scrollY === before,
       focusedInside: Boolean(popup?.contains(document.activeElement)), bodyWidth: document.body.scrollWidth };
@@ -53,9 +61,13 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   if (viewport.width >= 1280) {
     assert.equal(geometry.gridChildren, 2, "desktop grid contains only thread and files");
     assert.equal(geometry.popup, null);
-    assert.ok(Math.abs(geometry.thread.y - geometry.context.y) < 2);
-    assert.ok(geometry.context.x >= geometry.thread.right - 1);
+    assert.ok(geometry.context.y >= geometry.header.bottom + 10, "the card starts below the shared header");
+    assert.ok(geometry.context.x >= geometry.thread.right + 12, "the context card has its own gutter");
+    assert.ok(geometry.header.right > geometry.context.right, "the header spans both desktop columns");
+    assert.ok(geometry.context.height <= 384 && geometry.context.bottom < geometry.thread.bottom, "the context is a bounded card, not a full-height rail");
     assert.ok(geometry.context.width >= 280 && geometry.context.width <= 520);
+    assert.equal(geometry.toggle.right, closedLayout.toggleRight, "the context trigger stays in place");
+    assert.ok(geometry.composer.x + geometry.composer.width / 2 < closedLayout.composerCenter, "composer follows the thread into the left track");
   } else {
     assert.ok(geometry.popup && geometry.popup.x >= 0 && geometry.popup.right <= viewport.width + 1);
     assert.ok(geometry.popup.bottom <= viewport.height + 1 && geometry.focusedInside);
@@ -119,7 +131,8 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   const entryClearOfMessage = await client.evaluate(`(() => {
     const toggle = document.querySelector('[data-librechat-context-toggle]').getBoundingClientRect();
     const message = document.querySelector('[data-message-id="user-synthetic-1"]').getBoundingClientRect();
-    return toggle.bottom <= message.top || toggle.left >= message.right || toggle.right <= message.left;
+    const viewport = document.querySelector('[data-virtuoso-scroller]').getBoundingClientRect();
+    return toggle.bottom <= Math.max(message.top, viewport.top) || toggle.left >= message.right || toggle.right <= message.left;
   })()`);
   assert.ok(entryClearOfMessage, JSON.stringify({ entryClearOfMessage, toggle: await client.evaluate(`(() => { const node = document.querySelector('[data-librechat-context-toggle]'); const box = node?.getBoundingClientRect(); return box && { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width, height: box.height }; })()`), message: await client.evaluate(`(() => { const node = document.querySelector('[data-message-id="user-synthetic-1"]'); const box = node?.getBoundingClientRect(); return box && { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width, height: box.height }; })()`) }));
   const activity = await client.evaluate(`([...document.querySelectorAll('[data-chat-activity-status]')]).map(node => {

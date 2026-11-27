@@ -80,7 +80,7 @@ export function getMessageListFooterSpacerClass(
 ): string {
   return isMobileViewport
     ? "h-[calc(1.5rem+env(safe-area-inset-bottom))]"
-    : "h-8";
+    : "h-4";
 }
 
 export function getInitialBottomItemLocation(

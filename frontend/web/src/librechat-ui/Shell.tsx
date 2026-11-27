@@ -2,7 +2,8 @@ import { Button, DrawerRoot, DrawerPortal, DrawerBackdrop, DrawerPopup, DrawerHe
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { libreChatSurface } from "./surface";
+import { clsx } from "clsx";
+import { libreChatSurface, WORKBENCH_CONTEXT_WIDTH } from "./surface";
 import { CloseContextPanelContext } from "./ContextPanel";
 
 export interface LibreChatShellProps {
@@ -24,22 +25,23 @@ export function LibreChatShell({
   const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const contextWidthRef = useRef(360);
+  const contextWidthRef = useRef<number>(WORKBENCH_CONTEXT_WIDTH.default);
   const dragRef = useRef<{ x: number; width: number } | null>(null);
   const resizeContext = (width: number, persist = false) => {
-    const available = (workspaceRef.current?.clientWidth ?? 1000) - 480;
-    const next = Math.round(Math.max(280, Math.min(520, available, width)));
+    // Leave room for reading plus the 16px inter-column and 24px outer gutters.
+    const available = (workspaceRef.current?.clientWidth ?? 1000) - 520;
+    const next = Math.round(Math.max(WORKBENCH_CONTEXT_WIDTH.min, Math.min(WORKBENCH_CONTEXT_WIDTH.max, available, width)));
     contextWidthRef.current = next;
     workspaceRef.current?.style.setProperty("--context-panel-width", `${next}px`);
     if (persist) {
       try { localStorage.setItem("ai-platform-context-width", String(next)); } catch { /* Geometry remains usable without storage. */ }
     }
   };
-  const [contextWidth, setContextWidth] = useState(360);
+  const [contextWidth, setContextWidth] = useState<number>(WORKBENCH_CONTEXT_WIDTH.default);
 
   useEffect(() => {
-    let width = 360;
-    try { width = Number(localStorage.getItem("ai-platform-context-width")) || 360; } catch { /* Use the default width. */ }
+    let width: number = WORKBENCH_CONTEXT_WIDTH.default;
+    try { width = Number(localStorage.getItem("ai-platform-context-width")) || width; } catch { /* Use the default width. */ }
     const update = () => { resizeContext(width); setContextWidth(contextWidthRef.current); };
     update();
     const onResize = () => { resizeContext(contextWidthRef.current); setContextWidth(contextWidthRef.current); };
@@ -73,35 +75,31 @@ export function LibreChatShell({
       data-librechat-shell="phase1"
       data-phase1-closure-shell
     >
+      {(header || rightPanel) && (
+        <div
+          data-workbench-region="header"
+          className={libreChatSurface.threadHeader}
+        >
+          {header && <div className="min-w-0 flex-1">{header}</div>}
+          {rightPanel && <Button type="text"
+            ref={triggerRef}
+            htmlType="button"
+            data-librechat-context-toggle
+            aria-controls="librechat-context-panel"
+            aria-expanded={contextOpen}
+            aria-label={t("workbench.contextLabel")}
+            title={t("workbench.contextLabel")}
+            onClick={() => setContextOpen((open) => !open)}
+            className="ml-auto shrink-0 rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] aria-expanded:bg-[var(--theme-sidebar-panel-muted)] aria-expanded:text-[var(--theme-text)]"
+            icon={<ContextIcon size={18} aria-hidden="true" />}
+          />}
+        </div>
+      )}
       <div
         ref={workspaceRef}
-        className={
-          rightPanel && contextOpen && desktop
-            ? libreChatSurface.workspaceWithContext
-            : libreChatSurface.workspace
-        }
+        className={clsx(libreChatSurface.workspace, rightPanel && contextOpen && desktop && libreChatSurface.workspaceWithContext)}
       >
         <div className={libreChatSurface.thread}>
-          {(header || rightPanel) && (
-            <div
-              data-workbench-region="header"
-              className={libreChatSurface.threadHeader}
-            >
-              {header && <div className="min-w-0 flex-1">{header}</div>}
-              {rightPanel && <Button type="text"
-                ref={triggerRef}
-                htmlType="button"
-                data-librechat-context-toggle
-                aria-controls="librechat-context-panel"
-                aria-expanded={contextOpen}
-                aria-label={t("workbench.contextLabel")}
-                title={t("workbench.contextLabel")}
-                onClick={() => setContextOpen((open) => !open)}
-                className="ml-auto shrink-0 rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
-                icon={<ContextIcon size={18} aria-hidden="true" />}
-              />}
-            </div>
-          )}
           <div
             data-workbench-region="thread"
             className={libreChatSurface.threadBody}
@@ -123,10 +121,10 @@ export function LibreChatShell({
             id="librechat-context-panel"
             aria-label={t("workbench.contextLabel")}
             data-workbench-region="context"
-            className={`${libreChatSurface.context} relative`}
+            className={libreChatSurface.context}
           >
             <div role="separator" tabIndex={0} aria-label="调整文件面板宽度" aria-orientation="vertical"
-              aria-valuemin={280} aria-valuemax={520} aria-valuenow={contextWidth}
+              aria-valuemin={WORKBENCH_CONTEXT_WIDTH.min} aria-valuemax={WORKBENCH_CONTEXT_WIDTH.max} aria-valuenow={contextWidth}
               className="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize touch-none rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--theme-primary)] hover:bg-[var(--theme-border)]"
               onPointerDown={(event) => {
                 if (event.button !== 0) return;
@@ -143,11 +141,11 @@ export function LibreChatShell({
               onKeyDown={(event) => {
                 if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
                 event.preventDefault();
-                resizeContext(event.key === "Home" ? 280 : event.key === "End" ? 520 : contextWidthRef.current + (event.key === "ArrowLeft" ? 20 : -20), true);
+                resizeContext(event.key === "Home" ? WORKBENCH_CONTEXT_WIDTH.min : event.key === "End" ? WORKBENCH_CONTEXT_WIDTH.max : contextWidthRef.current + (event.key === "ArrowLeft" ? 20 : -20), true);
                 setContextWidth(contextWidthRef.current);
               }}
             />
-            {rightPanel}
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[inherit]">{rightPanel}</div>
           </aside>
         )}
       </div>

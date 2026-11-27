@@ -166,6 +166,22 @@
   mask-image: linear-gradient(to right, var(--theme-text) calc(100% - 1.5rem), transparent);
 }
 
+/* Fade the edge of the transcript, never the controls or keyboard focus. */
+[data-chat-transcript-fade]:not(:has(:focus-visible))::after {
+  content: "";
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: 0 0.5rem;
+  z-index: 2;
+  height: 3.5rem;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 12%, var(--theme-workbench-canvas) 100%);
+}
+
+@media (max-width: 639px), (max-height: 640px) {
+  [data-chat-transcript-fade]::after { max-height: 2.25rem; }
+}
+
 /* Reply under an anchored, just-sent message (useMessageScroll sets the height). */
 .chat-anchor-reply {
   display: block;

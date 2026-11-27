@@ -18,6 +18,7 @@ import "../../src/styles/welcome.css";
 import "../../src/styles/syntax-highlight.css";
 import "../../src/styles/markdown.css";
 import "../../src/styles/utilities.css";
+import "./chat-bottom-fade-preview.css";
 import { AuthProvider } from "../../src/hooks/useAuth";
 import { ModelCatalogProvider } from "../../src/contexts/ModelCatalogContext";
 
@@ -25,6 +26,8 @@ const previewParams = new URLSearchParams(location.search);
 const theme = previewParams.get("theme") === "dark" ? "dark" : "light";
 const cjkMarkdownPreview = previewParams.has("cjk-markdown");
 const stopPreview = previewParams.has("stop-lifecycle");
+const bottomFadePreview = previewParams.has("bottom-fade");
+const previewWithModel = cjkMarkdownPreview || stopPreview || bottomFadePreview;
 const savedContinuation = { state: "resumable", action: "continue", reason_code: "saved", workspace_saved: true };
 const markdownAnswer = "有，主要有以下几类：\n\n"
   + "- **共享盘访问失败：**多次返回 `reauth_required`，无法读取相关资料。\n"
@@ -33,7 +36,7 @@ const markdownAnswer = "有，主要有以下几类：\n\n"
   + "- **文件保存与附件的首次尝试未成功：**写入临时目录被权限拦截，随后改用交付目录成功保存。\n\n"
   + "最终交付的 Excel 已通过公式重算检查，结果为 **0 个公式错误**。";
 localStorage.setItem("ai-platform-theme", theme);
-localStorage.setItem("ai-platform-sidebar-collapsed", "false");
+localStorage.setItem("ai-platform-sidebar-collapsed", String(bottomFadePreview));
 localStorage.setItem("language", "zh");
 
 const originalFetch = window.fetch.bind(window);
@@ -71,6 +74,36 @@ addTurn(
   "帮我把这段需求整理成任务清单",
   cjkMarkdownPreview ? markdownAnswer : "收到，我来帮你整理。\n\n**任务清单**\n\n1. 明确目标与验收标准\n2. 拆解为可执行步骤\n3. 标注负责人与截止时间",
 );
+
+if (bottomFadePreview) {
+  addTurn(
+    "请把上线准备材料整理成关键结论、风险和待办事项。",
+    `**结论：可以开始小范围试运行，暂不扩大范围。**
+
+已核对上线清单和回退预案。主流程可以演示，但交接和异常处理仍有两处需要确认。
+
+### 关键风险
+
+- **高 · 回退未演练。** 已有回退步骤，还没有从告警触发到恢复服务的完整记录。
+- **中 · 客服交接未完成。** 常见问题文档已写好，仍需指定首周负责人。
+- **低 · 反馈分散。** 试运行反馈分布在多个会话，容易重复登记。
+
+### 试运行前的四项待办
+
+1. **明确试运行范围。** 只邀请已确认的使用者，并列出本轮不覆盖的场景。
+2. **完成回退演练。** 记录触发条件、每步用时和恢复结果，并明确谁可以叫停。
+3. **确认交接名单。** 安排客服与值班人员，发布问题登记入口和响应约定。
+4. **安排复盘。** 汇总反馈，逐项决定继续、延期或取消。
+
+### 建议观察的信号
+
+- 首次使用：用户能否独立完成主流程？
+- 异常处理：遇到问题时，能否找到负责人和反馈入口？
+- 回退准备：值班人员能否判断何时回退，并说明执行结果？
+
+**下一步：先完成回退演练，再确认试运行日期。**`,
+  );
+}
 
 function addTurn(question: string, answer: string, suggestions?: string[]): PreviewTurn {
   const turn = {
@@ -247,6 +280,29 @@ function markSyntheticPreview() {
   });
 }
 
+function mountBottomFadePreview(root: HTMLElement) {
+  const controls = document.createElement("div");
+  controls.className = "fade-acceptance-toolbar";
+  const title = document.createElement("span");
+  title.textContent = "聊天布局 · 合成验收";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.textContent = "渐隐";
+  toggle.setAttribute("aria-pressed", "true");
+  const themeLink = document.createElement("a");
+  const themeUrl = new URL(location.href);
+  themeUrl.searchParams.set("theme", theme === "dark" ? "light" : "dark");
+  themeLink.href = themeUrl.href;
+  themeLink.textContent = theme === "dark" ? "浅色" : "深色";
+  controls.append(title, toggle, themeLink);
+  document.body.append(controls);
+
+  toggle.addEventListener("click", () => {
+    const disabled = root.toggleAttribute("data-preview-fade-disabled");
+    toggle.setAttribute("aria-pressed", String(!disabled));
+  });
+}
+
 window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
   const method = String(init.method || "GET").toUpperCase();
@@ -265,7 +321,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === "/api/ai/auth/bootstrap" && method === "POST") {
     return json({ status: "ready", protocol_version: 2, generation: 1 });
   }
-  if ((cjkMarkdownPreview || stopPreview) && url.pathname === "/api/ai/models/groups") {
+  if (previewWithModel && url.pathname === "/api/ai/models/groups") {
     return json({ groups: [{ id: "cjk-preview-group", name: "合成业务组", type: "business", enabled: true }] });
   }
   if (url.pathname === "/api/agent/models/available") {
@@ -286,7 +342,13 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return json({ skills: [], total: 0, skip: 0, limit: 20, available_tags: [], effective_permissions: [], effective_permissions_known: true, catalog_read_resolved: true });
   }
   if (url.pathname === "/api/mcp/chat-tools") return json({ tools: [], count: 0, unavailable: [] });
-  if (url.pathname === "/api/profile-drive/status") return json({ status: "disconnected", connected: false, reauthRequired: false });
+  if (bottomFadePreview && url.pathname === "/api/ai/auth/company-credential-handoff") return json({ credential: "synthetic-handoff" });
+  if (url.pathname === "/api/profile-drive/status") return json({ status: bottomFadePreview ? "connected" : "disconnected", connected: bottomFadePreview, reauthRequired: false });
+  if (bottomFadePreview && url.pathname === "/api/profile-drive/files/list") {
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    const names = body.source === "public" ? ["试运行指引.pdf", "值班交接清单.md"] : ["上线准备清单.md", "回退演练记录.md", "试运行反馈表.xlsx"];
+    return json({ status: "success", path: "", truncated: false, entries: names.map((name) => ({ path: name, name, type: "file", size: 1240, lastModifiedUtc: EMITTED })) });
+  }
   if (stopPreview && url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/cancel")) {
     await (lastTurn() as PreviewTurn & { cancelAck: Promise<void> }).cancelAck;
     return json({ run_id: lastTurn()?.runId, status: "cancel_requested" });
@@ -320,7 +382,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     return json({
       session_id: SESSION_ID,
       run_id: lastTurn()?.runId ?? null,
-      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
+      ...(previewWithModel ? { continuation: lastTurn()?.status === "running"
         ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}),
       events: historyEvents(),
       next_cursor: null,
@@ -333,7 +395,7 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === `/api/ai/chat/sessions/${SESSION_ID}/files`) return json({ session_id: SESSION_ID, files: [] });
   if (url.pathname === `/api/chat/sessions/${SESSION_ID}/status`) {
     return json({ session_id: SESSION_ID, run_id: lastTurn()?.runId ?? null, status: lastTurn()?.status ?? "succeeded", raw_status: lastTurn()?.status ?? "succeeded",
-      ...((cjkMarkdownPreview || stopPreview) ? { continuation: lastTurn()?.status === "running"
+      ...(previewWithModel ? { continuation: lastTurn()?.status === "running"
         ? { state: "settling", action: "wait", reason_code: "settling", workspace_saved: false } : savedContinuation } : {}) });
   }
   if (url.pathname.startsWith("/api/ai/runs/") && url.pathname.endsWith("/inputs")) {
@@ -352,9 +414,11 @@ window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   return originalFetch(input, init);
 };
 
-markSyntheticPreview();
+const root = document.getElementById("root")!;
+if (bottomFadePreview) mountBottomFadePreview(root);
+else markSyntheticPreview();
 
-createRoot(document.getElementById("root")!).render(
+createRoot(root).render(
   <MemoryRouter initialEntries={[`/chat/${SESSION_ID}`]}>
     <AuthProvider>
       <ModelCatalogProvider>

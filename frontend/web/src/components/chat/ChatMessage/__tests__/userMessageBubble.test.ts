@@ -14,11 +14,13 @@ test("keeps user message action buttons visible for the latest message", () => {
   assert.equal(className.includes("group-hover:opacity-100"), false);
 });
 
-test("hides older user message action buttons until hover", () => {
+test("reveals older user message actions on hover, keyboard focus and touch", () => {
   const className = getUserMessageActionButtonVisibilityClass(false);
 
   assert.equal(className.includes("opacity-0"), true);
   assert.equal(className.includes("group-hover:opacity-100"), true);
+  assert.equal(className.includes("focus-within:opacity-100"), true);
+  assert.equal(className.includes("[@media(hover:none)]:opacity-100"), true);
 });
 
 test("uses the official message attachment presentation for authorized previews", () => {

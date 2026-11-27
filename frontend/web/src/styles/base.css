@@ -129,7 +129,7 @@ select:-webkit-autofill:active {
   --radius-block: 12px;
   --radius-user-bubble: 22px;
   --radius-composer: 28px;
-  --chat-column-max: 56rem;
+  --chat-column-max: 70.5rem;
   /* LibreChat-style post-login shell tokens */
   --theme-primary: #222222;
   --theme-primary-hover: #333333;

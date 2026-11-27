@@ -49,14 +49,13 @@ test("workbench context uses an inline desktop panel and a responsive drawer", (
 
   assert.match(surface, /libreChatSurface\.workspace/);
   assert.match(surface, /libreChatSurface\.context/);
-  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_minmax\(18rem,20rem\)\]/);
-  assert.match(libreSurface, /fixed inset-y-0 right-0/);
-  assert.match(libreSurface, /w-\[calc\(100vw-3\.25rem\)\]/);
-  assert.match(libreSurface, /xl:static/);
+  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_var\(--context-panel-width\)\]/);
+  assert.match(libreSurface, /context:[\s\S]*?self-start rounded-\[var\(--radius-block\)\]/);
   assert.doesNotMatch(libreSurface, /context:[\s\S]*?"hidden/);
   assert.match(libreShell, /aria-controls="librechat-context-panel"/);
-  assert.match(libreShell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
-  assert.match(libreShell, /event\.key === "Escape"/);
+  assert.match(libreShell, /<DrawerBackdrop data-librechat-context-backdrop/);
+  assert.match(libreShell, /<DrawerPopup placement="right"[^\n]*finalFocus=\{triggerRef\}/);
+  assert.match(libreShell, /event\.key !== "Escape"/);
 });
 
 test("chat app uses the workbench shell instead of old mixed layout ownership", () => {

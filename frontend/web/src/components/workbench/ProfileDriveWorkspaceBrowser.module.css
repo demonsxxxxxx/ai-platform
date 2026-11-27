@@ -1,5 +1,5 @@
 .browser { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
-.toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; height: var(--workbench-header-height, 3.5rem); gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--theme-border); }
+.toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; min-height: 44px; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--theme-border); }
 .toolbar .tabs { align-self: center; }
 .toolbar .refresh { flex-shrink: 0; }
 .browser .panel { display: flex; flex: 1; min-height: 0; padding: 0 12px 12px; }

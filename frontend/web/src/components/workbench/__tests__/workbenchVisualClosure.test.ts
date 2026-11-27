@@ -207,11 +207,11 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
-  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3"/);
+  assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-2 pt-2 sm:px-4 sm:pt-3"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
+  assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*self-start rounded-/);
   assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
-  assert.match(surface, /workspaceWithContext:[\s\S]*var\(--context-panel-width,360px\)/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*var\(--context-panel-width\)/);
   assert.match(shell, /data-librechat-context-toggle/);
   assert.match(shell, /aria-controls="librechat-context-panel"/);
   assert.match(shell, /contextOpen && desktop && \([\s\S]*<aside/);

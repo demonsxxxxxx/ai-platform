@@ -123,7 +123,7 @@ test("chat keeps aligned gutters and a compact composer without changing its con
   assert.match(chatCss, /env\(safe-area-inset-bottom\)/);
 });
 
-test("empty chat keeps the first task prompt reachable and context uses one quiet divider", () => {
+test("empty chat keeps the first task prompt reachable and desktop context uses a bounded card", () => {
   const welcome = read("src/components/chat/WelcomePage.tsx");
   const welcomeCss = read("src/styles/welcome.css");
   const surface = read("src/librechat-ui/surface.ts");
@@ -142,16 +142,16 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   const driveCss = read("src/components/workbench/ProfileDriveWorkspaceBrowser.module.css");
   assert.match(surface, /\[--workbench-header-height:3\.5rem\]/);
   assert.match(surface, /threadHeader:[\s\S]*?h-\[var\(--workbench-header-height\)\]/);
-  assert.match(driveCss, /\.toolbar\s*\{[^}]*height:\s*var\(--workbench-header-height,\s*3\.5rem\)[^}]*border-bottom:\s*1px solid var\(--theme-border\)/);
+  assert.match(driveCss, /\.toolbar\s*\{[^}]*min-height:\s*44px[^}]*border-bottom:\s*1px solid var\(--theme-border\)/);
   assert.match(driveBrowser, /<TabsRoot[^>]*variant="rounded"/);
   const toolbarCss = driveCss.split("\n").filter((line) => /\.toolbar|\.tabs/.test(line)).join("\n");
   assert.doesNotMatch(toolbarCss, /border-inline-end|border-inline-start|\.tab\[aria-selected|inset 0 -2px/);
   assert.doesNotMatch(driveBrowser, /<nav[\s\S]*?>\{title\}<\/Button>/);
-  assert.match(surface, /context:[\s\S]*?min-h-0 min-w-0[\s\S]*?border-l/);
+  assert.match(surface, /context:[\s\S]*?min-h-0 min-w-0[\s\S]*?rounded-\[var\(--radius-block\)\] border /);
   assert.doesNotMatch(surface, /context:[\s\S]*?fixed inset-y-0/);
   assert.match(shell, /<DrawerPopup placement="right" width="min\(22rem, calc\(100vw - 2rem\)\)"/);
   assert.match(shell, /rightPanel && contextOpen && desktop/);
-  assert.match(surface, /workspaceWithContext:[\s\S]*?var\(--context-panel-width,360px\)/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*?var\(--context-panel-width\)/);
   assert.match(shell, /role="separator"/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel|px-4 py-3/);
   assert.doesNotMatch(driveBrowser, /workbenchSurface\.compactPanel/);

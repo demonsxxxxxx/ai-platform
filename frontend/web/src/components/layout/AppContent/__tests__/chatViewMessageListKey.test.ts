@@ -65,16 +65,24 @@ test("passes an authenticated session scope through virtualized message rows", (
 });
 
 test("anchors floating scroll buttons to the chat input", () => {
+  const composer = chatViewSource.slice(
+    chatViewSource.indexOf("const composer = ("),
+    chatViewSource.indexOf("<AssistantUiProjection"),
+  );
   assert.match(
     chatViewSource,
     /const FLOATING_SCROLL_BUTTON_OFFSET_CLASS = "bottom-full mb-3";/,
   );
-  assert.equal(
-    chatViewSource.match(/\$\{FLOATING_SCROLL_BUTTON_OFFSET_CLASS\}/g)?.length,
-    2,
+  assert.match(
+    composer,
+    /showScrollTop && \(\s*<div\s+className=\{`absolute [^`]*\$\{FLOATING_SCROLL_BUTTON_OFFSET_CLASS\}`\}\s*>\s*<Button[^>]*onClick=\{scrollToTop\}/,
   );
-  assert.match(chatViewSource, /const composer = \(\s*<div className="relative"/);
-  assert.match(chatViewSource, /<ChatInput\s+\{\.\.\.chatInputProps\}/);
+  assert.match(
+    composer,
+    /!isNearBottom && \(\s*<div className="absolute bottom-full left-1\/2 z-50 mb-1 -translate-x-1\/2">\s*<Button[^>]*data-chat-return-to-bottom[^>]*onClick=\{scrollToBottom\}/,
+  );
+  assert.match(composer, /const composer = \(\s*<div className="relative" data-chat-shell-composer>/);
+  assert.match(composer, /<ChatInput\s+\{\.\.\.chatInputProps\}/);
   assert.doesNotMatch(chatViewSource, /bottom-\d+/);
 });
 
