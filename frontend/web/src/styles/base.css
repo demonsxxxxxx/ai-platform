@@ -312,33 +312,26 @@ html[data-mobile-keyboard="true"] #root {
   background: var(--theme-bg);
 }
 
-/* Custom scrollbar - subtle and thin */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+/* Keep platform scrollbars visible on light and dark surfaces. */
+:root,
+.composer-attachment-strip {
+  scrollbar-width: thin;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+:root {
+  scrollbar-color: color-mix(in srgb, var(--theme-text-secondary) 82%, var(--theme-bg-card)) transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--theme-text) 8%, transparent);
-  border-radius: 10px;
-  transition: background 0.3s ease;
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--theme-text-secondary);
+    border-radius: 9999px;
+  }
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--theme-text) 18%, transparent);
-}
-
-/* Dark mode scrollbar */
-.dark ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--theme-bg-card) 8%, transparent);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--theme-bg-card) 15%, transparent);
+@media (forced-colors: active) {
+  :root { scrollbar-color: auto; }
 }
 
 /* ── Sidebar scroll effects (disabled — solid-color overlays cause truncation) ── */
@@ -483,8 +476,7 @@ html[data-mobile-keyboard="true"] #root {
 }
 
 /* Composer-only attachment framing; message previews keep their own presentation. */
-/* Composer attachment chip (ChatGPT Clone): equal-height rounded tile, the
-   remove control as a corner badge and upload progress along the bottom edge. */
+/* Equal-height attachment tiles; the action owns its own space. */
 .composer-attachment-card {
   position: relative;
   display: flex;
@@ -502,15 +494,23 @@ html[data-mobile-keyboard="true"] #root {
   border-radius: 16px;
 }
 
+.composer-attachment-card .composer-attachment-tile:disabled {
+  opacity: 1;
+}
+
+.attachment-filename-tooltip {
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 8px;
+  background: var(--theme-bg-card);
+  color: var(--theme-text);
+}
+
 .dark .composer-attachment-card {
   background: var(--theme-sidebar-panel-muted);
 }
 
 .composer-attachment-remove {
-  position: absolute;
-  top: -7px;
-  right: -7px;
-  z-index: 1;
+  margin-inline-end: 5px;
 }
 
 .composer-attachment-progress {

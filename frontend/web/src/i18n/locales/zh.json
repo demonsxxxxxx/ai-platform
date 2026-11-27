@@ -1048,7 +1048,8 @@
     "uploadSuccess": "上传成功",
     "uploading": "上传中...",
     "waiting": "等待上传...",
-    "waitingForCapacity": "等待可用上传名额..."
+    "waitingForCapacity": "等待可用上传名额...",
+    "confirming": "正在确认上传…"
   },
   "imageViewer": {
     "download": "下载",

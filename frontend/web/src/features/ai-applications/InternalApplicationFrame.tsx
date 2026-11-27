@@ -48,7 +48,7 @@ export function AppFrame({
 export function ConnectionNotice({ failed, message }: { failed: boolean; message?: string }) {
   if (!failed) return null;
   return (
-    <div className="connection-notice flex items-start gap-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-4 py-3 text-sm text-[var(--theme-warning)]">
+    <div className="connection-notice flex items-start gap-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-4 py-3 text-sm text-[var(--theme-warning-text)]">
       <AlertCircle size={17} className="mt-0.5 shrink-0" />
       <span>{message || "应用配置暂时无法连接，页面仍可预览；连接平台后即可提交任务。"}</span>
     </div>
@@ -57,7 +57,7 @@ export function ConnectionNotice({ failed, message }: { failed: boolean; message
 
 export function AgentStatus({ loading, failed, label = "平台已接入" }: { loading: boolean; failed: boolean; label?: string }) {
   const text = loading ? "正在连接" : failed ? "待连接" : label;
-  const color = loading ? "text-[var(--theme-warning)]" : failed ? "text-[var(--theme-warning)]" : "text-[var(--theme-success)]";
+  const color = loading || failed ? "text-[var(--theme-warning-text)]" : "text-[var(--theme-success-text)]";
   return (
     <span className={`hidden items-center gap-1.5 text-xs font-medium sm:flex ${color}`}>
       <span className={`size-2 rounded-full ${loading ? "bg-[var(--theme-warning)]" : failed ? "bg-[var(--theme-warning)]" : "bg-[var(--theme-success)]"}`} />

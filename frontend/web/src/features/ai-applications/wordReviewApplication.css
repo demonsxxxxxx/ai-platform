@@ -7,90 +7,54 @@
 }
 
 .review-page .review-hero {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
   max-width: 1200px;
-  margin: 0 auto 22px;
-}
-
-.review-page .hero-copy {
-  min-width: 0;
-}
-
-.review-page .hero-copy h1 {
-  margin: 0;
-  color: var(--theme-text);
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 1.28;
-}
-
-.review-page .hero-copy p {
-  margin: 6px 0 0;
-  color: var(--theme-text-secondary);
-  font-size: 14px;
-  line-height: 1.5;
+  margin: 0 auto 16px;
 }
 
 .review-page .hero-status {
   display: grid;
-  grid-template-columns: repeat(3, minmax(104px, 1fr)) repeat(2, minmax(138px, 1.2fr));
-  align-items: stretch;
-  min-width: 0;
-  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  background: var(--theme-workbench-panel);
 }
 
 .review-page .status-item {
   display: flex;
-  min-height: 78px;
+  min-height: 58px;
   flex-direction: column;
   justify-content: center;
-  padding: 12px 16px;
-  border: 1px solid var(--theme-border);
-  border-radius: 12px;
-  background: var(--theme-workbench-panel);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  padding: 8px 16px;
 }
 
-.review-page .status-item:nth-child(n + 4) {
-  border-color: var(--theme-info-ring);
-  background: var(--theme-info-soft);
+.review-page .status-item + .status-item {
+  border-inline-start: 1px solid var(--theme-border);
 }
 
 .review-page .status-value {
   color: var(--theme-text);
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 600;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
-}
-
-.review-page .status-item:nth-child(n + 4) .status-value {
-  color: var(--theme-info);
 }
 
 .review-page .status-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--theme-text-secondary);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
 }
 
-.review-page .status-item:nth-child(n + 4) .status-label {
-  color: var(--theme-info);
-}
-
 .review-page .status-badge {
   padding: 1px 5px;
   border-radius: 4px;
-  color: var(--theme-info);
-  background: var(--theme-info-soft);
+  color: var(--theme-text-secondary);
+  background: var(--theme-workbench-canvas);
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
@@ -214,6 +178,21 @@
   flex: 1;
 }
 
+.review-page .upload-item.is-upload-failed {
+  border-color: var(--theme-danger-ring);
+}
+
+.review-page .is-upload-failed .upload-item-meta,
+.review-page .upload-item-error {
+  color: var(--theme-danger-text);
+}
+
+.review-page .upload-item-error {
+  margin-top: 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .review-page .upload-item-name,
 .review-page .task-name {
   display: block;
@@ -243,7 +222,7 @@
   padding: 10px 12px;
   border: 1px solid var(--theme-info-ring);
   border-radius: 10px;
-  color: var(--theme-info);
+  color: var(--theme-info-text);
   background: var(--theme-info-soft);
   font-size: 13px;
   line-height: 1.5;
@@ -375,7 +354,7 @@
   margin-top: 10px;
   padding: 8px 10px;
   border-radius: 8px;
-  color: var(--theme-danger);
+  color: var(--theme-danger-text);
   background: var(--theme-danger-soft);
   font-size: 12px;
   line-height: 1.5;
@@ -490,23 +469,19 @@
     padding: 14px;
   }
 
-  .review-page .review-hero {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .review-page .hero-status {
-    width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .review-page .status-item {
-    min-height: 68px;
+  .review-page .status-item:nth-child(odd) {
+    border-inline-start: 0;
   }
 
-  .review-page .hero-copy h1 {
-    font-size: 22px;
+  .review-page .status-item:nth-child(n + 3) {
+    border-block-start: 1px solid var(--theme-border);
   }
+
+  .review-page .status-item:last-child { grid-column: 1 / -1; }
 
   .review-page .review-panel-header {
     flex-direction: column;
@@ -526,22 +501,8 @@
     padding: 12px;
   }
 
-  .review-page .hero-status {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-
   .review-page .status-item {
-    min-height: 56px;
     padding: 8px 12px;
-  }
-
-  .review-page .status-item:last-child {
-    grid-column: 1 / -1;
-  }
-
-  .review-page .status-value {
-    font-size: 20px;
   }
 
   .review-page .review-upload {

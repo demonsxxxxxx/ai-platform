@@ -347,51 +347,6 @@
   color: var(--theme-text-secondary);
 }
 
-/* Attachment scrollbar — always reserves space, thumb visible on hover */
-.attachment-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-}
-
-.attachment-scroll:hover {
-  scrollbar-color: color-mix(in srgb, var(--theme-text-tertiary) 30%, transparent) transparent;
-}
-
-.attachment-scroll::-webkit-scrollbar {
-  height: 3px;
-}
-
-.attachment-scroll::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 0 8px;
-}
-
-.attachment-scroll::-webkit-scrollbar-thumb {
-  background: transparent;
-  border-radius: 9999px;
-  transition: background 0.25s;
-}
-
-.attachment-scroll:hover::-webkit-scrollbar-thumb {
-  background: var(--theme-hover);
-}
-
-.attachment-scroll:hover::-webkit-scrollbar-thumb:hover {
-  background: var(--theme-hover);
-}
-
-.dark .attachment-scroll:hover {
-  scrollbar-color: color-mix(in srgb, var(--theme-text-secondary) 30%, transparent) transparent;
-}
-
-.dark .attachment-scroll:hover::-webkit-scrollbar-thumb {
-  background: var(--theme-hover);
-}
-
-.dark .attachment-scroll:hover::-webkit-scrollbar-thumb:hover {
-  background: var(--theme-hover);
-}
-
 /* ===== EditorSidebar — Unified Right Sidebar / Mobile Bottom Sheet ===== */
 
 /* --- Overlay backdrop --- */

@@ -26,9 +26,10 @@ test("composer uploads once, preserves authorized files after a rejected send, a
   authApi.getCurrentUser = async () => ({ id: principalId, tenant_id: "upload-tenant", username: principalId, email: "upload@example.test", roles: ["admin"], permissions: [Permission.FILE_UPLOAD_DOCUMENT], is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
   uploadApi.getConfig = async () => { throw new Error("synthetic optional limits unavailable"); };
   let finishUpload!: (value: UploadResult) => void;
+  let failUpload!: (error: Error) => void;
   let uploads = 0;
   let aborts = 0;
-  uploadApi.uploadFile = () => ({ promise: new Promise((resolve) => { uploads++; finishUpload = resolve; }), abort: () => { aborts++; } });
+  uploadApi.uploadFile = () => ({ promise: new Promise((resolve, reject) => { uploads++; finishUpload = resolve; failUpload = reject; }), abort: () => { aborts++; } });
   const removedKeys: string[] = [];
   uploadApi.deleteFile = async (key) => { removedKeys.push(key); return { file_id: key, lifecycle_state: "deleted", deletion_state: "deleted", reconcile_required: false }; };
   let accept = false;
@@ -82,7 +83,7 @@ test("composer uploads once, preserves authorized files after a rejected send, a
     assert.equal(uploads, 1, "retry must not upload again");
     assert.equal(container.querySelector("[data-composer-file-reference]"), null);
     await add("cancel.txt");
-    const cancel = container.querySelector<HTMLButtonElement>('button[aria-label="取消上传"]');
+    const cancel = container.querySelector<HTMLButtonElement>('button[aria-label="取消上传 cancel.txt"]');
     assert.ok(cancel);
     await act(async () => cancel.click());
     await act(async () => finishUpload({ ...result(), name: "cancel.txt" }));
@@ -118,6 +119,11 @@ test("composer uploads once, preserves authorized files after a rejected send, a
     assert.equal(runtime!.getState().attachments.length, 0);
     assert.equal(container.querySelector("[data-composer-file-reference]"), null);
     assert.equal(uploads, 4, "first-session handoff preserves one upload per selected file");
+
+    await add("failed.txt");
+    await act(async () => failUpload(new Error("synthetic upload failure")));
+    assert.equal(container.querySelector("[data-composer-file-reference]"), null);
+    assert.equal(runtime!.getState().attachments.length, 0, "failed upload does not leave a native attachment blocking the next send");
   } finally {
     await act(async () => root.unmount());
     authApi.bootstrapAuthContext = original.bootstrap;

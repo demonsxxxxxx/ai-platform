@@ -415,7 +415,7 @@ export function startFileUploadTask({
       });
       if (message !== null) {
         reportFailure(error);
-        notifyError(message);
+        notifyError(`${file.name}：${message}`);
       }
       finish();
       return null;

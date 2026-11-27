@@ -9,6 +9,8 @@ import {
   formatFileSize as formatFileSizeUtil,
 } from "../documents/utils";
 import { useSafeAttachmentImageSrc } from "./attachmentImageSafety";
+import { AttachmentFilename } from "./AttachmentFilename";
+import { AttachmentFilenameTooltip } from "./AttachmentFilenameTooltip";
 
 // Re-export formatFileSize for external use
 // eslint-disable-next-line react-refresh/only-export-components
@@ -72,9 +74,9 @@ export const AttachmentCard = memo(function AttachmentCard({
   const isCompact = size === "compact";
   const isQueued = attachment.uploadStatus === "queued";
   const isRetrying = attachment.uploadStatus === "retrying";
-  // Corner badge in the ChatGPT Clone attachment style.
+  const isConfirming = isUploading && !isQueued && !isRetrying && (attachment.uploadProgress ?? 0) >= 100;
   const removeButtonClass =
-    "composer-attachment-remove flex items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text-secondary)] transition-colors duration-150 hover:text-[var(--theme-text)]";
+    "composer-attachment-remove flex shrink-0 items-center justify-center rounded-full text-[var(--theme-text-secondary)]";
 
   const handleClick = () => {
     onClick?.(imageSrc);
@@ -87,42 +89,37 @@ export const AttachmentCard = memo(function AttachmentCard({
 
   const previewLabel = isImage
     ? `${t("imageViewer.fullscreen")} ${attachment.name}`
-    : `${t("fileUpload.selectFile")} ${attachment.name}`;
+    : `${t("documents.preview")} ${attachment.name}`;
   const state = isUploading
     ? isQueued
       ? "queued"
       : isRetrying
         ? "retrying"
-        : "uploading"
+        : isConfirming ? "confirming" : "uploading"
     : "complete";
 
   // This is the props-driven equivalent of assistant-ui's AttachmentPrimitive.Root.
   if (isCompact) {
-    return (
-      <div
-        data-slot="attachment-root"
-        data-state={state}
-        data-attachment-source="composer"
-        className="composer-attachment-card"
-      >
+    const tile = (
         <Button
           type="text"
           htmlType="button"
           data-slot="attachment-tile"
           onClick={handleClick}
-          aria-label={previewLabel}
+          disabled={isUploading || !onClick}
+          aria-label={isUploading ? attachment.name : previewLabel}
           style={{
             height: "auto",
             minWidth: 0,
-            width: "100%",
-            padding: "8px 12px 8px 8px",
+            flex: "1 1 0%",
+            padding: "6px 5px 6px 7px",
             background: "transparent",
             border: "none",
             boxShadow: "none",
             justifyContent: "flex-start",
             textAlign: "left",
           }}
-          className={clsx("composer-attachment-tile", isUploading && !onCancel && "pointer-events-none")}
+          className="composer-attachment-tile"
         >
           <div
             className={clsx(
@@ -154,20 +151,19 @@ export const AttachmentCard = memo(function AttachmentCard({
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <span title={attachment.name}
-              className="block w-full truncate text-[13px] font-medium leading-5 text-[var(--theme-text)]">
-              {attachment.name}
-            </span>
-            <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
+            <AttachmentFilename name={attachment.name} className="text-[13px] font-medium leading-5 text-[var(--theme-text)]" />
+            <span className="mt-0.5 truncate text-xs text-[var(--theme-text-secondary)]">
               {isUploading
                 ? isQueued
                   ? t("fileUpload.waiting")
                   : isRetrying
                     ? t("fileUpload.waitingForCapacity")
-                    : `${attachment.uploadProgress ?? 0}%`
+                    : isConfirming
+                      ? t("fileUpload.confirming")
+                      : `${attachment.uploadProgress ?? 0}%`
                 : formatFileSize(attachment.size)}
             </span>
-            {isUploading && !isQueued && !isRetrying && (
+            {isUploading && !isQueued && !isRetrying && !isConfirming && (
               <div
                 className="composer-attachment-progress overflow-hidden bg-[var(--theme-border)]"
                 role="progressbar"
@@ -184,7 +180,21 @@ export const AttachmentCard = memo(function AttachmentCard({
             )}
           </div>
         </Button>
+    );
 
+    return (
+      <div
+        data-slot="attachment-root"
+        data-state={state}
+        data-attachment-source="composer"
+        className="composer-attachment-card"
+      >
+        {isUploading || !onClick ? tile : (
+          <AttachmentFilenameTooltip name={attachment.name}>
+            {tile}
+          </AttachmentFilenameTooltip>
+        )}
+        {isConfirming && <span role="status" className="sr-only">{attachment.name}：{t("fileUpload.confirming")}</span>}
         {variant === "editable" &&
           (isUploading && onCancel ? (
             <Button
@@ -197,12 +207,12 @@ export const AttachmentCard = memo(function AttachmentCard({
               style={{ height: 24, width: 24, minWidth: 24, padding: 0 }}
               className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
-              aria-label={t("fileUpload.cancelUpload")}
+              aria-label={`${t("fileUpload.cancelUpload")} ${attachment.name}`}
             >
               <X size={12} aria-hidden="true" />
             </Button>
           ) : (
-            onRemove && (
+            !isUploading && onRemove && (
               <Button
                 type="text"
                 htmlType="button"
