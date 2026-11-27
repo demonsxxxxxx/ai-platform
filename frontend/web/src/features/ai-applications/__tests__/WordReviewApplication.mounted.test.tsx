@@ -102,6 +102,24 @@ test("real Word route fails empty EOF and DONE-without-files instead of persisti
   }
 });
 
+test("an invalid Word file reports upload failure without showing uploaded or review progress", async () => {
+  const view = await harness();
+  try {
+    await view.select(new File([], "empty.docx"));
+    const rejected = view.container.querySelector(".upload-item")!;
+    assert.match(rejected.textContent!, /上传失败.*文件为空/);
+    assert.doesNotMatch(rejected.textContent!, /已上传/);
+    const record = view.container.querySelector(".task-card.is-failed")!;
+    assert.match(record.textContent!, /上传失败.*文件为空/);
+    assert.equal(record.querySelector('[role="progressbar"]'), null);
+    assert.equal(button(view.container, "开始审核").disabled, true);
+    assert.equal(view.uploads, 0);
+    await view.select();
+    assert.equal(view.container.querySelector(".upload-item .upload-item-meta")?.textContent?.startsWith("已上传"), true);
+    assert.equal(button(view.container, "开始审核").disabled, false);
+  } finally { await view.close(); }
+});
+
 test("real Word route accepts fragmented terminal result and suppresses duplicate same-render starts", async () => {
   const bytes = new TextEncoder().encode(success);
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { for (const byte of bytes) c.enqueue(Uint8Array.of(byte)); c.close(); } })) });

@@ -13,11 +13,14 @@ test("sent attachments sit above the text bubble, not inside it", () => {
   assert.match(read("../MessageAttachments.tsx"), /flex max-w-full flex-wrap justify-end gap-2/);
 });
 
-test("composer attachment chips share one height with corner remove badges", () => {
+test("composer attachment chips share one height and reserve room for actions", () => {
   const css = read("../../../../styles/base.css");
   const card = css.match(/\.composer-attachment-card \{[^}]*\}/)?.[0] ?? "";
   assert.match(card, /height: 56px/);
-  assert.match(css, /\.composer-attachment-remove \{[^}]*position: absolute/);
+  assert.match(card, /display: flex/);
+  assert.doesNotMatch(css, /\.composer-attachment-remove \{[^}]*position: absolute/);
   assert.match(css, /\.composer-attachment-progress \{[^}]*position: absolute/);
-  assert.match(read("../../../../styles/chat.css"), /\.composer-attachment-strip \{[^}]*mask-image/);
+  const chat = read("../../../../styles/chat.css");
+  assert.match(chat, /\[data-more-left="true"\]::before,[\s\S]*?\[data-more-right="true"\]::after \{[^}]*pointer-events: none/);
+  assert.doesNotMatch(chat, /\.composer-attachment-strip \{[^}]*mask-image/);
 });

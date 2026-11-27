@@ -95,19 +95,21 @@ export async function checkChatIntegration(client, viewport, scenario, { theme, 
   await client.evaluate('window.__chatIntegration.attachmentPreview()');
   await client.waitFor("document.querySelectorAll('[data-slot=composer-attachment]').length === 3", "chat:attachment-preview");
   const attachmentLayout = await client.evaluate(`(() => {
-    const list = document.querySelector('[data-slot=composer-attachments]');
+    const list = document.querySelector('.composer-attachment-strip');
     const card = list.querySelector('[data-slot=attachment-root]');
-    const title = card.querySelector('[title]');
+    const title = card.querySelector('[data-attachment-filename]');
+    const stem = title?.firstElementChild;
     const remove = card.querySelector('button[aria-label^="移除附件"]');
     const rect = card.getBoundingClientRect();
-    return { fullName: title?.title, ellipsis: title && title.scrollWidth > title.clientWidth,
+    return { fullName: card.querySelector('[data-slot=attachment-tile]')?.getAttribute('aria-label'),
+      ellipsis: stem && stem.scrollWidth > stem.clientWidth, extension: title?.lastElementChild?.textContent,
       size: card.textContent, width: rect.width, left: rect.left, right: rect.right,
-      removeVisible: remove && Number(getComputedStyle(remove).opacity) === 1 && remove.getBoundingClientRect().width >= 24,
+      removeVisible: remove && Number(getComputedStyle(remove).opacity) === 1 && remove.getBoundingClientRect().width >= 24 && title.getBoundingClientRect().right <= remove.getBoundingClientRect().left,
       pageOverflow: document.documentElement.scrollWidth > innerWidth,
       scrollable: list.scrollWidth > list.clientWidth,
       queued: Boolean(list.querySelector('[data-state=queued]')), uploading: Boolean(list.querySelector('[role=progressbar][aria-valuenow="45"]')) };
   })()`);
-  assert.ok(attachmentLayout.fullName?.includes('ECM SDK说明文档v5.17') && attachmentLayout.ellipsis && attachmentLayout.size.includes('1.9 MB'), JSON.stringify(attachmentLayout));
+  assert.ok(attachmentLayout.fullName?.includes('ECM SDK说明文档v5.17') && attachmentLayout.ellipsis && attachmentLayout.extension === '.pdf' && attachmentLayout.size.includes('1.9 MB'), JSON.stringify(attachmentLayout));
   assert.ok(attachmentLayout.removeVisible && attachmentLayout.queued && attachmentLayout.uploading && !attachmentLayout.pageOverflow, JSON.stringify(attachmentLayout));
   assert.ok(attachmentLayout.left >= 0 && attachmentLayout.right <= viewport.width && attachmentLayout.width >= 240, JSON.stringify(attachmentLayout));
   const attachmentsScreenshot = await captureScreenshot(client, evidenceDir, `${prefix}-composer-attachments`);
