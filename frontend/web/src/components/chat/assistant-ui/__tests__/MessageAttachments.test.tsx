@@ -44,11 +44,12 @@ test("message attachments retain the official received-file slot for documents",
   };
   const markup = renderToStaticMarkup(
     React.createElement(MessageAttachments, {
-      attachments: [documentAttachment],
+      attachments: [documentAttachment], onOpen: () => {},
     }),
   );
 
   assert.match(markup, /data-slot="message-attachment"/);
-  assert.match(markup, /report\.pdf/);
+  assert.match(markup, /aria-label="预览 report\.pdf"/);
+  assert.match(markup, /data-attachment-filename[^>]*>.*<span class="shrink-0">\.pdf/);
   assert.doesNotMatch(markup, /href=/);
 });

@@ -80,10 +80,11 @@ test("compact composer files expose full long names and visible remove actions w
   const name = "ECM SDK说明文档v5.17_企业集成开发指南与接口参考_最终修订版.pdf";
   const markup = renderToStaticMarkup(React.createElement(AttachmentCard, {
     attachment: createImageAttachment({ name, type: "document", mimeType: "application/pdf", size: 1992294 }),
-    variant: "editable", size: "compact", onRemove: () => {},
+    variant: "editable", size: "compact", onRemove: () => {}, onClick: () => {},
   }));
   assert.match(markup, /composer-attachment-card/);
-  assert.ok(markup.includes(`title="${name}"`));
+  assert.ok(markup.includes(`aria-label="预览 ${name}"`));
+  assert.match(markup, /data-attachment-filename[^>]*>.*<span class="shrink-0">\.pdf/);
   assert.match(markup, /1.9 MB/);
   assert.doesNotMatch(markup, /sm:opacity-0|theme-info/);
   assert.ok(markup.includes(`aria-label="移除附件 ${name}"`));
@@ -99,7 +100,7 @@ for (const isUploading of [false, true]) {
       onRemove: () => {},
       onCancel: () => {},
     }));
-    const label = isUploading ? "取消上传" : "移除附件 private.png";
+    const label = isUploading ? "取消上传 private.png" : "移除附件 private.png";
     const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
     assert.ok(button, `missing ${label} action`);
     assert.match(button, /height:24px/);
@@ -108,3 +109,14 @@ for (const isUploading of [false, true]) {
     assert.match(button, /type="button"/);
   });
 }
+
+test("100% transferred still cannot preview until the upload is confirmed", () => {
+  const markup = renderToStaticMarkup(React.createElement(AttachmentCard, {
+    attachment: createImageAttachment({ uploadProgress: 100, uploadStatus: "uploading" }),
+    isUploading: true, size: "compact", variant: "editable", onClick: () => {}, onCancel: () => {},
+  }));
+  assert.match(markup, /data-state="confirming"/);
+  assert.match(markup, /<button(?=[^>]*data-slot="attachment-tile")(?=[^>]*\bdisabled="")/);
+  assert.match(markup, /正在确认上传/);
+  assert.doesNotMatch(markup, /role="progressbar"/);
+});

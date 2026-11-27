@@ -3,6 +3,8 @@ import { FileTextIcon, ImageIcon, PaperclipIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../../common/AttachmentCard";
+import { AttachmentFilename } from "../../common/AttachmentFilename";
+import { AttachmentFilenameTooltip } from "../../common/AttachmentFilenameTooltip";
 import { useSafeAttachmentImageSrc } from "../../common/attachmentImageSafety";
 import type { MessageAttachment } from "../../../types";
 
@@ -37,9 +39,7 @@ function MessageAttachmentRow({
         />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 pe-2">
-        <span className="truncate text-[13.5px] text-[var(--theme-text)]">
-          {attachment.name}
-        </span>
+        <AttachmentFilename name={attachment.name} className="text-[13.5px] text-[var(--theme-text)]" />
         <span className="text-xs text-[var(--theme-text-secondary)]">
           {formatFileSize(attachment.size)}
         </span>
@@ -59,9 +59,7 @@ function MessageAttachmentRow({
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-[13.5px] text-[var(--theme-text)]">
-          {attachment.name}
-        </span>
+        <AttachmentFilename name={attachment.name} className="text-[13.5px] text-[var(--theme-text)]" />
         <span className="text-xs text-[var(--theme-text-secondary)]">
           {formatFileSize(attachment.size)}
         </span>
@@ -74,23 +72,25 @@ function MessageAttachmentRow({
     : "flex w-[15rem] max-w-full items-center gap-2.5 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] dark:bg-[var(--theme-sidebar-panel-muted)] p-1.5 pe-3 text-start";
 
   return onOpen ? (
-    <Button
-      type="text"
-      htmlType="button"
-      data-slot="message-attachment"
-      onClick={() => onOpen(attachment, previewSrc)}
-      aria-label={`${isImage ? t("imageViewer.fullscreen") : t("fileUpload.selectFile")} ${attachment.name}`}
-      style={{
-        height: "auto",
-        minHeight: 40,
-        justifyContent: "flex-start",
-        padding: isImage ? 6 : "6px 12px 6px 6px",
-        textAlign: "left",
-      }}
-      className={`${className} transition-colors hover:border-[var(--theme-border-strong)]`}
-    >
-      {content}
-    </Button>
+    <AttachmentFilenameTooltip name={attachment.name}>
+      <Button
+        type="text"
+        htmlType="button"
+        data-slot="message-attachment"
+        onClick={() => onOpen(attachment, previewSrc)}
+        aria-label={`${isImage ? t("imageViewer.fullscreen") : t("documents.preview")} ${attachment.name}`}
+        style={{
+          height: "auto",
+          minHeight: 40,
+          justifyContent: "flex-start",
+          padding: isImage ? 6 : "6px 12px 6px 6px",
+          textAlign: "left",
+        }}
+        className={`${className} transition-colors hover:border-[var(--theme-border-strong)]`}
+      >
+        {content}
+      </Button>
+    </AttachmentFilenameTooltip>
   ) : (
     <div data-slot="message-attachment" className={className}>
       {content}
