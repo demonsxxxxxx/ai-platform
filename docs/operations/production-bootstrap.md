@@ -148,7 +148,7 @@ be the browser-visible frontend origin.
 
 ## Application deployment boundary
 
-The only current application package is `ai-platform-internal-test.tar.gz`.
+The only current application package is `ai-platform-vX.Y.Z.tar.gz`.
 Follow the [single deployment guide](../../deploy/ai-platform/README.md) and
 [release runbook](release-operations-runbook.md), not a second production-package
 procedure. The package fixes native Docker `bridge` and the `internal-test`

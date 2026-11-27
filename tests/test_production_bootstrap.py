@@ -1263,7 +1263,7 @@ def test_readme_keeps_production_host_preparation_separate_from_current_package(
 
     command = "python3 deploy.py"
     assert command in readme and command in runbook
-    assert "ai-platform-internal-test.tar.gz" in readme
+    assert "ai-platform-vX.Y.Z.tar.gz" in readme
     assert "deploy/ai-platform/README.md" in readme
     assert "docs/operations/production-bootstrap.md" in readme
     assert "../../deploy/ai-platform/README.md" in production

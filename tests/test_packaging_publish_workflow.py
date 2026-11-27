@@ -166,6 +166,8 @@ def test_requested_release_version_is_strict_literal_input(version, valid):
     "version,failure,expected_calls,success",
     [
         ("v0.1.0", "", ["main", "tag", "create", "view"], True),
+        ("v12.30.456", "", ["main", "tag", "create", "view"], True),
+        ("v0.1.0", "missing_package", ["main"], False),
         ("", "", [], False),
         ("v0.1.0", "required_failed", [], False),
         ("v0.1.0", "required_unavailable", [], False),
@@ -208,6 +210,7 @@ def test_release_publication_fails_closed_without_reusing_version(
     gh.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
+        "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
         "if args[:2] == ['api', '--hostname']:\n"
         "    with open(os.environ['GH_TEST_LOG'], 'a') as log:\n"
@@ -231,6 +234,8 @@ def test_release_publication_fails_closed_without_reusing_version(
         "elif kind == 'tag':\n"
         "    if failure == 'tag_exists': sys.exit(1)\n"
         "elif kind == 'create':\n"
+        "    assert Path(args[3]).read_bytes() == b'package'\n"
+        "    assert not Path('ai-platform-internal-test.tar.gz').exists()\n"
         "    if failure == 'create': sys.exit(1)\n"
         "elif kind == 'view':\n"
         "    if failure == 'view_unavailable': sys.exit(1)\n"
@@ -240,6 +245,8 @@ def test_release_publication_fails_closed_without_reusing_version(
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    if failure != "missing_package":
+        (tmp_path / "ai-platform-internal-test.tar.gz").write_bytes(b"package")
     source = "a" * 40
     result = subprocess.run(
         ["bash", "-c", publish["run"]],
@@ -278,7 +285,7 @@ def test_release_publication_fails_closed_without_reusing_version(
             ]
         elif call["kind"] == "create":
             assert args[:3] == ["release", "create", version]
-            assert args[3:5] == ["ai-platform-internal-test.tar.gz", "--repo"]
+            assert args[3:5] == [f"ai-platform-{version}.tar.gz", "--repo"]
 
             assert args[args.index("--title") + 1] == version
             assert "--verify-tag" in args
@@ -846,7 +853,7 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     assert "ASSET_PATH" not in public["env"]
     assert "ASSET_LABEL" not in public["env"]
     assert 'release create "$RELEASE_TAG"' in public["run"]
-    assert '"ai-platform-internal-test.tar.gz"' in public["run"]
+    assert '"$RELEASE_ASSET_NAME"' in public["run"]
     assert "release-image-manifest.json" not in public["run"]
     assert "ai-platform-production.tar.gz" not in public["run"]
     assert "release upload" not in public["run"]
@@ -1118,7 +1125,7 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
     assert 'release create "$RELEASE_TAG"' in release["run"]
-    assert '"ai-platform-internal-test.tar.gz"' in release["run"]
+    assert 'RELEASE_ASSET_NAME="ai-platform-${RELEASE_TAG}.tar.gz"' in release["run"]
     package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
     verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
     assert steps.index(verification) < steps.index(package) < steps.index(release)

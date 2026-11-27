@@ -1,10 +1,9 @@
 # Deploy a released version
 
-There is one deployment package: `ai-platform-internal-test.tar.gz`. Download it
-from the chosen immutable official Deployment Release. `internal-test` in the
-archive name and this source filename is a retained historical name, not a
-choice between two deployment packages. The assembler includes this guide as
-`README.md` inside the archive; use it for both first installs and upgrades.
+Download the single deployment package, `ai-platform-vX.Y.Z.tar.gz`, from the
+chosen immutable Deployment Release. Older immutable Releases retain their
+original attachment name. The assembler includes this guide as `README.md`
+inside the archive; use it for both first installs and upgrades.
 
 Its `deploy.py`, `compose.yaml`, `compose.override.yaml`, pinned image manifest
 and release evidence belong to the same commit. Do not repack the archive or
