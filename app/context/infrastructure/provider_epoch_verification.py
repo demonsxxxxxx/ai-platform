@@ -18,7 +18,7 @@ from typing import Any
 from app.context.domain.provider_media import ProviderMediaTransfer
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES, MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
-    ProviderSessionConflictError, provider_entry_json_bytes,
+    ProviderSessionConflictError,
 )
 from app.context.infrastructure.provider_epoch_ledger import read_provider_ledger, verify_provider_ledger
 from app.context.infrastructure.provider_images import read_epoch_images
@@ -30,7 +30,7 @@ _COUNTERS = ("id", "provider_session_id", "next_sequence", "entry_count", "trans
 @dataclass(frozen=True)
 class ProviderEpochProof:
     ledger_sha256: str
-    prefix_bytes: tuple[int, ...]
+    ack_bytes: dict[int, int]
     native_calls: tuple[tuple[int, dict], ...]
 
 
@@ -103,16 +103,14 @@ def finish_epoch_proof(epoch, rows, receipts, media: ProviderMediaTransfer) -> P
         raise ProviderSessionConflictError("provider_session_image_snapshot_conflict")
     stamp = ledger_fingerprint(epoch, rows, receipts, media.objects)
     verified = verify_provider_ledger(epoch=epoch, rows=deepcopy(rows), receipts=receipts, media=media)
-    sizes = [0]
     calls = []
-    for row in verified:
-        sizes.append(sizes[-1] + provider_entry_json_bytes(row["entry_json"]))
+    for row in verified.rows:
         message = row["entry_json"].get("message")
         content = message.get("content") if isinstance(message, dict) else None
         for block in content if isinstance(content, list) else ():
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 calls.append((row["sequence"], deepcopy(block)))
-    return ProviderEpochProof(stamp, tuple(sizes), tuple(calls))
+    return ProviderEpochProof(stamp, verified.ack_bytes, tuple(calls))
 
 
 async def checked_epoch_proof(conn, *, epoch, rows, receipts) -> ProviderEpochProof:

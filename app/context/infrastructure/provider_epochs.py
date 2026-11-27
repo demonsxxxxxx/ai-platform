@@ -654,7 +654,7 @@ async def _verified_provider_entries(
     from app.context.infrastructure.provider_epoch_ledger import read_provider_ledger, verify_provider_ledger
 
     rows, receipts = await read_provider_ledger(conn, epoch=epoch)
-    return verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts, media=media)
+    return verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts, media=media).rows
 
 async def verified_provider_prefix(
     conn: AsyncConnection, *, epoch: Mapping[str, Any], final_sequence: int,
@@ -664,23 +664,14 @@ async def verified_provider_prefix(
     from app.context.infrastructure.provider_epoch_verification import checked_epoch_proof
 
     rows, receipts = await read_provider_ledger(conn, epoch=epoch)
-    proof = None
     if any(row.get("image_references") for row in rows):
-        proof = await checked_epoch_proof(conn, epoch=epoch, rows=rows, receipts=receipts)
+        ack_bytes = (await checked_epoch_proof(conn, epoch=epoch, rows=rows, receipts=receipts)).ack_bytes
     else:
-        rows = verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts)
-    if type(final_sequence) is not int or not 0 <= final_sequence < epoch["next_sequence"]:
+        verified = verify_provider_ledger(epoch=epoch, rows=rows, receipts=receipts)
+        rows, ack_bytes = verified.rows, verified.ack_bytes
+    if type(final_sequence) is not int or final_sequence not in ack_bytes:
         raise ProviderSessionConflictError("provider_session_terminal_receipt_invalid")
-    if final_sequence:
-        cursor = await conn.execute(
-            "select last_sequence from provider_session_append_receipts "
-            "where epoch_id = %s and last_sequence = %s", (epoch["id"], final_sequence),
-        )
-        if await cursor.fetchone() is None:
-            raise ProviderSessionConflictError("provider_session_terminal_receipt_invalid")
-    prefix = rows[:final_sequence]
-    total = proof.prefix_bytes[final_sequence] if proof else sum(len(_canonical(row["entry_json"])) for row in prefix)
-    return prefix, total
+    return rows[:final_sequence], ack_bytes[final_sequence]
 
 
 def _require_continuation_available(recovery: object) -> None:
@@ -794,7 +785,7 @@ async def prepare_provider_epoch(
         epoch_id = f"pe_{uuid.uuid4().hex}"
         provider_id = str(head["provider_session_id"])
         mode = "native_resume"
-        prefix_structured_bytes = sum(
+        prefix_structured_bytes = head["structured_bytes"] if final_sequence == head["next_sequence"] - 1 else sum(
             len(row["entry_canonical_json"].encode("utf-8")) if row.get("entry_canonical_json") is not None
             else provider_entry_json_bytes(row["entry_json"]) for row in prefix
         )

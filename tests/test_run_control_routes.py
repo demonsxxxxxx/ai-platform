@@ -4399,7 +4399,7 @@ async def test_resume_run_as_new_task_rejects_active_source_without_copy(monkeyp
         raise AssertionError("active source must not be copied for resume")
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "_copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
     with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="active_run"):
@@ -4449,7 +4449,7 @@ async def test_resume_run_as_new_task_rejects_source_without_completed_outputs(m
         raise AssertionError("source without checkpoint outputs must not be copied for resume")
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
-    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "_copy_run_as_new_task", fail_copy_run_as_new_task)
     conn = RecordingConnection()
 
     with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="no_checkpoint_outputs"):
@@ -4503,7 +4503,7 @@ async def test_resume_run_as_new_task_rejects_when_resume_is_already_active(monk
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", fake_completed_steps_for_resume)
     monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", fake_get_active_resume_for_source_run, raising=False)
-    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fail_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "_copy_run_as_new_task", fail_copy_run_as_new_task)
 
     with pytest.raises(_repo_app_platform_postgres_errors.RepositoryConflictError, match="resume_already_active"):
         await _repo_app_runs_infrastructure_replay_postgres.resume_run_as_new_task(
@@ -4548,7 +4548,12 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
             }
         }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids, checkpoints):
+        assert checkpoints == ({"code": "code output"}, {
+            "code": {
+                "checkpoint_id": "checkpoint-code", "source_step_id": "step-code-source", "copied_from_run_id": run_id,
+            },
+        })
         calls.append(("copy", tenant_id, user_id, run_id))
         return {
             "session_id": "ses-old",
@@ -4577,7 +4582,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
     monkeypatch.setattr(replay_persistence, "get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", fake_completed_steps_for_resume)
     monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", fake_get_active_resume_for_source_run)
-    monkeypatch.setattr(replay_persistence, "copy_run_as_new_task", fake_copy_run_as_new_task)
+    monkeypatch.setattr(replay_persistence, "_copy_run_as_new_task", fake_copy_run_as_new_task)
     monkeypatch.setattr(replay_persistence, "append_event", fake_append_event)
     monkeypatch.setattr(replay_persistence, "append_audit_log", fake_append_audit_log)
 

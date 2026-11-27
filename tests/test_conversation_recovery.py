@@ -77,6 +77,7 @@ class Cursor:
 
 class PrefixConnection:
     def __init__(self):
+        self.reads = []
         self.entries = [dict(sequence=n, subpath=path, entry_json=entry, entry_canonical_json=None, image_references=[], image_format=None)
                         for n, path, entry in [(1, "", {"type": "user"}),
                                               (2, "", {"type": "assistant"}),
@@ -90,11 +91,10 @@ class PrefixConnection:
                           structured_bytes=sum(len(provider_epochs._canonical(r["entry_json"])) for r in self.entries))
 
     async def execute(self, query, values):
+        self.reads.append(query)
         assert query.count("%s") == len(values)
         if "from provider_session_entries " in query:
             return Cursor(rows=self.entries)
-        if "select last_sequence" in query:
-            return Cursor(row=next((r for r in self.receipts if r["last_sequence"] == values[1]), None))
         return Cursor(rows=self.receipts)
 
 
@@ -104,12 +104,21 @@ async def test_prefix_validates_main_children_full_bytes_and_whole_ack_boundary(
     prefix, total = await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=2)
     assert [row["sequence"] for row in prefix] == [1, 2]
     assert total == sum(len(provider_epochs._canonical(row["entry_json"])) for row in prefix)
+    assert len(conn.reads) == 2  # Entries and receipts are already locked and verified.
     with pytest.raises(ProviderSessionConflictError, match="terminal_receipt_invalid"):
         await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=1)
     with pytest.raises(ProviderSessionConflictError, match="terminal_receipt_invalid"):
         await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=4)
     conn.receipts.pop()
     with pytest.raises(ProviderSessionConflictError, match="integrity_unavailable"):
+        await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=2)
+
+
+@pytest.mark.asyncio
+async def test_prefix_still_rejects_corrupt_tail_after_valid_ack():
+    conn = PrefixConnection()
+    conn.receipts[1]["batch_sha256"] = "0" * 64
+    with pytest.raises(ProviderSessionConflictError, match="integrity_mismatch"):
         await provider_epochs.verified_provider_prefix(conn, epoch=conn.epoch, final_sequence=2)
 
 
