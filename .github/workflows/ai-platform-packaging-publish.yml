@@ -641,6 +641,7 @@ jobs:
             exit 1
           fi
           RELEASE_TAG="$REQUESTED_RELEASE_VERSION"
+          RELEASE_ASSET_NAME="ai-platform-${RELEASE_TAG}.tar.gz"
           test -x "$GH_CLI_BIN"
           python tools/release_required_checks.py \
             --repository "$GITHUB_REPOSITORY" \
@@ -650,11 +651,12 @@ jobs:
               --jq '.object.sha'
           )"
           test "$current_main" = "$GITHUB_SHA"
+          mv -T -- ai-platform-internal-test.tar.gz "$RELEASE_ASSET_NAME"
           # Atomic creation fails if the version already exists; never reuse or move it.
           "$GH_CLI_BIN" api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
-            "ai-platform-internal-test.tar.gz" \
+            "$RELEASE_ASSET_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$RELEASE_TAG" \

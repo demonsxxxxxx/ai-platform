@@ -332,7 +332,8 @@ def test_release_runbook_remains_the_only_executable_release_authority():
     runbook = read(RUNBOOK)
 
     assert "python3 deploy.py --env-file /absolute/path/to/.env" in runbook
-    assert "ai-platform-internal-test.tar.gz" in runbook
+    assert "ai-platform-vX.Y.Z.tar.gz" in runbook
+    assert "ai-platform-internal-test.tar.gz" in runbook  # Unversioned test artifact.
     assert "ai-platform-production.tar.gz" not in runbook
     assert "immutable Deployment Release" in runbook
     assert "do not mix package files" in runbook

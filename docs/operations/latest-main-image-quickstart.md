@@ -1,9 +1,8 @@
 # Deployment package quickstart
 
 The immutable Deployment Release contains one runtime-only deployment package,
-`ai-platform-internal-test.tar.gz`, with its matching manifest inside. The archive
-name is retained historical naming, not a choice between test and production
-packages. Use the [single deployment guide](../../deploy/ai-platform/README.md);
+`ai-platform-vX.Y.Z.tar.gz`, with its matching manifest inside. Use the
+[single deployment guide](../../deploy/ai-platform/README.md);
 this quickstart summarizes the same install/upgrade path and security limits.
 
 Extract the archive into a new directory and do not mix files with another

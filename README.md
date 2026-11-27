@@ -12,11 +12,10 @@ Thin platform service for the enterprise AI Agent platform.
 
 ## Deployment quick start
 
-Download `ai-platform-internal-test.tar.gz` from the chosen immutable Deployment
+Download `ai-platform-vX.Y.Z.tar.gz` from the chosen immutable Deployment
 Release and extract it into a new directory on a trusted isolated test host.
-This is the single deployment package; its `internal-test` filename is retained
-historical naming, not a separate deployment track. The package fixes the application version and image digests; no Git checkout,
-Actions query or host build is needed.
+There is one deployment package per Release. It fixes the application version
+and image digests; no Git checkout, Actions query or host build is needed.
 
 After the one-time Docker/Compose and OpenSandbox host preparation, configure
 an owner-held `0600` environment file (reuse the existing file when upgrading):

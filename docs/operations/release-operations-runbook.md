@@ -2,11 +2,12 @@
 
 This is the executable application release procedure. An explicitly requested
 version publishes an immutable Deployment Release with one operator asset,
-`ai-platform-internal-test.tar.gz`,
-containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
-GitHub Actions, source checkouts, and host image builds are not part of a normal
-application install or upgrade. The archive retains its historical `internal-test`
-name; there is no test/production package selection. The
+`ai-platform-vX.Y.Z.tar.gz` (for example, `ai-platform-v0.6.1.tar.gz`),
+containing the runtime-only package and matching `release-image-manifest.json`.
+A host consumes that package directly. Git, GitHub Actions, source checkouts,
+and host image builds are not part of a normal application install or upgrade.
+The filename does not change the internal-test security profile or introduce a
+production package. The
 [single deployment guide](../../deploy/ai-platform/README.md) describes the
 configuration and commands included in that package.
 
@@ -28,9 +29,9 @@ Automatic images and temporary packages remain independent of this Release-only
 test gate.
 Packaging verifies the two application image subjects, binds their complete
 `linux/amd64` registry digests, and creates one package from the manifest.
-Only an explicit version attaches `ai-platform-internal-test.tar.gz` to an immutable
-Deployment Release. GitHub's automatically generated source archives may still
-appear; they are not operator packages.
+Only an explicit version publishes the package to an immutable Deployment
+Release. The attachment filename uses that Release tag. GitHub's automatically
+generated source archives may still appear; they are not operator packages.
 
 The package contains the exact Compose file, internal-test OpenSandbox overlay,
 an optional ProfileDrive CA bind overlay, `.env.example`, `deploy.py`, the release
@@ -71,8 +72,9 @@ seven days. It is produced only by blank-version manual runs after
 package qualification; it is a temporary test package, not a formal Release or
 production deployment approval. Separate audit evidence remains for 30 days.
 Formal version runs publish the single package in their immutable Release
-instead. Existing Releases and tags are not cleaned up by this workflow, and
-publication retains `--latest=false`; it does not select a new GitHub Latest.
+instead. Existing immutable Releases retain their original attachments, including
+those named `ai-platform-internal-test.tar.gz`. The workflow does not modify old
+Releases or tags, and `--latest=false` preserves GitHub's Latest selection.
 
 A named version is reserved only after qualification and a fresh main-commit
 check. An existing tag is a hard failure, never moved or reused. If publication

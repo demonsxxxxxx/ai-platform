@@ -1,12 +1,11 @@
 # Deployment guide
 
-There is one current deployment package, `ai-platform-internal-test.tar.gz`, and
-one [installation and upgrade guide](README.internal-test.md). The retained
-`internal-test` archive/source filename is historical naming, not a second
-package or a choice of deployment tracks. The assembler embeds that guide as
-`README.md` in the archive. Download the package from one immutable Deployment
-Release and follow its included instructions; do not assemble it from source
-templates or mix files from different Releases.
+Each immutable Deployment Release contains one package,
+`ai-platform-vX.Y.Z.tar.gz`. The assembler embeds the
+[installation and upgrade guide](README.internal-test.md) as `README.md`.
+Download the package from the chosen Release and follow its included
+instructions; do not assemble it from source templates or mix files from
+different Releases.
 
 The former standalone static-frontend deployment CLI is retired. Frontend
 installation and upgrades use this same package and its image/provenance checks;
