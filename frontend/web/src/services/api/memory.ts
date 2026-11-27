@@ -12,6 +12,15 @@ const defaultAiPlatformClient: AiPlatformApiClient = {
   request: authFetch,
 };
 
+export type MemoryRedactionMode = "standard" | "strict";
+
+// Match the GET projection: absent or unrecognized modes fail closed.
+export function normalizeMemoryRedactionMode(value: unknown): MemoryRedactionMode {
+  return typeof value === "string" && value.trim() === "standard"
+    ? "standard"
+    : "strict";
+}
+
 export interface MemoryPolicy {
   tenant_id: string;
   workspace_id: string;
@@ -20,6 +29,8 @@ export interface MemoryPolicy {
   memory_enabled: boolean;
   long_term_memory_enabled: boolean;
   retention_days: number;
+  // Older projections may omit this; preserve with the GET fail-closed rule.
+  redaction_mode?: MemoryRedactionMode;
   source: string;
   reason: string;
   updated_by: string;
@@ -36,6 +47,7 @@ export interface MemoryPolicyRequest {
   memory_enabled: boolean;
   long_term_memory_enabled: boolean;
   retention_days: number;
+  redaction_mode?: MemoryRedactionMode;
   reason?: string;
 }
 

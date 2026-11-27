@@ -34,6 +34,7 @@ import {
   fetchAdminMemoryRecords,
   fetchMemoryPolicy,
   fetchMemoryRecords,
+  normalizeMemoryRedactionMode,
   setMemoryPolicy,
   type AiPlatformMemoryRecord,
   type MemoryPolicy,
@@ -467,6 +468,7 @@ export function MemoryPanel() {
         memory_enabled: memoryEnabled,
         long_term_memory_enabled: false,
         retention_days: retentionDays,
+        redaction_mode: normalizeMemoryRedactionMode(policy.redaction_mode),
         reason,
       });
       if (!ownsWrite()) return;
