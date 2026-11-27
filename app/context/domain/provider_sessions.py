@@ -109,6 +109,13 @@ def provider_entry_json_bytes(entry: Mapping[str, Any]) -> int:
 def normalize_provider_entry(
     entry: Mapping[str, Any], *, subpath: object = None
 ) -> ProviderSessionEntry:
+    item, _ = _normalize_sized_provider_entry(entry, subpath=subpath)
+    return item
+
+
+def _normalize_sized_provider_entry(
+    entry: Mapping[str, Any], *, subpath: object
+) -> tuple[ProviderSessionEntry, int]:
     if not isinstance(entry, Mapping):
         raise ProviderSessionContinuityError("provider_session_entry_shape_invalid")
     normalized_entry = dict(entry)
@@ -130,11 +137,12 @@ def normalize_provider_entry(
             raise ProviderSessionContinuityError("provider_session_entry_uuid_too_long")
     else:
         raise ProviderSessionContinuityError("provider_session_entry_uuid_invalid")
-    return ProviderSessionEntry(
+    item = ProviderSessionEntry(
         entry=normalized_entry,
         sdk_entry_uuid=sdk_entry_uuid,
         subpath=normalize_provider_subpath(subpath),
     )
+    return item, entry_bytes
 
 
 def normalize_provider_entry_batch(
@@ -148,8 +156,8 @@ def normalize_provider_entry_batch(
     normalized: list[ProviderSessionEntry] = []
     total_bytes = 0
     for entry in entries:
-        item = normalize_provider_entry(entry, subpath=normalized_subpath)
-        total_bytes += provider_entry_json_bytes(item.entry)
+        item, entry_bytes = _normalize_sized_provider_entry(entry, subpath=normalized_subpath)
+        total_bytes += entry_bytes
         if total_bytes > MAX_PROVIDER_SESSION_BATCH_BYTES:
             raise ProviderSessionContinuityError("provider_session_entry_batch_too_large")
         normalized.append(item)

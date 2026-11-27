@@ -199,6 +199,11 @@ The source is immutable: a failed child Attempt cannot add its tail to another
 Attempt resumed from the original source. The 4096-entry/64-MiB raw transcript
 budget and 128-entry/16-MiB admission reserves remain; structured bytes are
 statistics, not an aggregate gate. Full copies have bounded but repeated storage cost.
+Prefix restoration still verifies the entire source, including any unselected
+tail. It uses the verified append receipts for ACK boundaries and cumulative
+byte counts, without a second receipt query or serializing the prefix again to
+count transcript bytes. Image-bearing epochs use the same facts from the scoped
+media proof after checking the locked ledger. The storage layout is unchanged.
 
 Active cancellation records intent and revokes new execution. The original live
 writer may drain append and terminal receipts under its narrowly scoped previous

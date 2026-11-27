@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from app.context.domain.provider_media import PROVIDER_MEDIA_FORMAT, restore_provider_images
@@ -9,6 +10,12 @@ from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES, ProviderSessionConflictError, normalize_provider_subpath,
     provider_entry_json_bytes, normalize_provider_entry_batch,
 )
+
+
+@dataclass(frozen=True)
+class VerifiedProviderLedger:
+    rows: list[dict]
+    ack_bytes: dict[int, int]
 
 
 async def read_provider_ledger(conn: Any, *, epoch: Mapping[str, Any]):
@@ -29,7 +36,9 @@ async def read_provider_ledger(conn: Any, *, epoch: Mapping[str, Any]):
     return rows, receipts
 
 
-def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receipts: list[dict], media=None):
+def verify_provider_ledger(
+    *, epoch: Mapping[str, Any], rows: list[dict], receipts: list[dict], media=None,
+) -> VerifiedProviderLedger:
     from app.context.infrastructure.provider_epochs import _canonical, batch_digest, _has_ambiguous_legacy_number
     if len(rows) > MAX_PROVIDER_SESSION_ENTRIES:
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
@@ -43,6 +52,7 @@ def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receip
     expected = 1
     total_bytes = 0
     structured_bytes = 0
+    ack_bytes = {0: 0}
     try:
         for receipt in receipts:
             count = receipt.get("entry_count")
@@ -66,11 +76,13 @@ def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receip
                 if original is None:
                     entry = row["entry_json"]
                     ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
+                    structured_bytes += provider_entry_json_bytes(entry)
                 else:
                     entry = json.loads(original)
-                    if _canonical(entry).decode("utf-8") != original:
+                    original_bytes = original.encode("utf-8")
+                    if _canonical(entry) != original_bytes:
                         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-                structured_bytes += provider_entry_json_bytes(entry)
+                    structured_bytes += len(original_bytes)
                 refs = row["image_references"]
                 if refs:
                     if row["image_format"] != PROVIDER_MEDIA_FORMAT or original is None:
@@ -89,6 +101,7 @@ def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receip
             for row, item in zip(batch_rows, batch):
                 row["entry_json"] = item.entry
             total_bytes += batch_bytes
+            ack_bytes[receipt["last_sequence"]] = total_bytes
             expected += count
     except ProviderSessionConflictError:
         raise
@@ -99,4 +112,4 @@ def verify_provider_ledger(*, epoch: Mapping[str, Any], rows: list[dict], receip
     if (type(epoch.get("structured_bytes")) is not int or structured_bytes != epoch["structured_bytes"]
         or type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]):
         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-    return rows
+    return VerifiedProviderLedger(rows=rows, ack_bytes=ack_bytes)

@@ -216,8 +216,6 @@ async def test_epoch_image_proof_rechecks_locked_ledger_and_current_owner_after_
             class Cursor:
                 async def fetchall(self):
                     return copy.deepcopy(rows if "from provider_session_entries" in query else receipts)
-                async def fetchone(self):
-                    return {"last_sequence": params[1]} if any(r["last_sequence"] == params[1] for r in receipts) else None
             return Cursor()
 
     @asynccontextmanager

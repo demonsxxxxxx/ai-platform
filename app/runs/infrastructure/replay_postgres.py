@@ -45,6 +45,9 @@ from psycopg import AsyncConnection
 from typing import Any
 
 
+_CompletedCheckpoints = tuple[dict[str, str], dict[str, dict[str, str]]]
+
+
 async def copy_run_as_new_task(
     conn: AsyncConnection,
     *,
@@ -52,6 +55,21 @@ async def copy_run_as_new_task(
     user_id: str,
     run_id: str,
     principal_department_ids: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    return await _copy_run_as_new_task(
+        conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id,
+        principal_department_ids=principal_department_ids,
+    )
+
+
+async def _copy_run_as_new_task(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    principal_department_ids: tuple[str, ...],
+    checkpoints: _CompletedCheckpoints | None = None,
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
@@ -185,11 +203,9 @@ async def copy_run_as_new_task(
         raise RepositoryConflictError("run_execution_skill_identity_mismatch")
     new_run_id = new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
-    completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-    )
+    if checkpoints is None:
+        checkpoints = await _completed_steps_for_resume(conn, tenant_id=tenant_id, run_id=run_id)
+    completed_step_outputs, completed_step_checkpoints = checkpoints
     if completed_step_outputs:
         resume_payload: dict[str, Any] = {
             "copied_from_run_id": run_id,
@@ -398,12 +414,12 @@ async def resume_run_as_new_task(
     source_status = str(source.get("status") or "")
     if source_status in ACTIVE_RUN_STATUSES:
         raise RepositoryConflictError("active_run")
-    completed_step_outputs, _completed_step_checkpoints = await _completed_steps_for_resume(
+    checkpoints = await _completed_steps_for_resume(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    if not completed_step_outputs:
+    if not checkpoints[0]:
         raise RepositoryConflictError("no_checkpoint_outputs")
     active_resume = await get_active_resume_for_source_run(
         conn,
@@ -413,12 +429,13 @@ async def resume_run_as_new_task(
     )
     if active_resume is not None:
         raise RepositoryConflictError("resume_already_active")
-    copied = await copy_run_as_new_task(
+    copied = await _copy_run_as_new_task(
         conn,
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
         principal_department_ids=principal_department_ids,
+        checkpoints=checkpoints,
     )
     if copied is None:
         return None
@@ -641,7 +658,7 @@ async def _completed_steps_for_resume(
     *,
     tenant_id: str,
     run_id: str,
-) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+) -> _CompletedCheckpoints:
     cursor = await conn.execute(
         """
         select id, step_key, payload_json

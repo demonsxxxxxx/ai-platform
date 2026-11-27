@@ -506,9 +506,6 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         calls["mcp"] = kwargs
         return []
 
-    async def completed(*args, **kwargs):
-        return {"step-a": "done"}, {}
-
     async def no_active_child(*args, **kwargs):
         return None
 
@@ -526,14 +523,27 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", forbid_skill_authority)
     monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
     monkeypatch.setattr(replay_persistence, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
-    monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", completed)
     monkeypatch.setattr(replay_persistence, "get_active_retry_for_source_run", no_active_child)
     monkeypatch.setattr(replay_persistence, "get_active_resume_for_source_run", no_active_child)
     monkeypatch.setattr(replay_persistence, "append_event", no_write)
     monkeypatch.setattr(replay_persistence, "append_message", record_message)
     monkeypatch.setattr(replay_persistence, "append_audit_log", no_write)
 
-    conn = RecordingConnection()
+    class CheckpointConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            cursor = await super().execute(sql, params)
+            if "from run_steps" not in sql:
+                return cursor
+
+            class Checkpoints:
+                async def fetchall(self):
+                    return [{"id": "step-source", "step_key": "step-a", "payload_json": {
+                        "output": "done", "checkpoint_id": "checkpoint-a",
+                    }}]
+
+            return Checkpoints()
+
+    conn = CheckpointConnection()
     operation_function = {
         "copy": _repo_owner_app_runs_infrastructure_replay_postgres.copy_run_as_new_task,
         "retry": _repo_owner_app_runs_infrastructure_replay_postgres.retry_run_as_new_task,
@@ -569,6 +579,14 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
     persisted_input = json.loads(insert_params[19])
     assert persisted_input["schema_version"] == "ai-platform.run-payload.v2"
     assert persisted_input["skill_manifests"] == []
+    assert [params for sql, params in conn.calls if "from run_steps" in sql] == [("tenant-a", "run-legacy")]
+    assert persisted_input["input"]["resume"] == {
+        "copied_from_run_id": "run-legacy",
+        "completed_step_outputs": {"step-a": "done"},
+        "completed_step_checkpoints": {"step-a": {
+            "checkpoint_id": "checkpoint-a", "source_step_id": "step-source", "copied_from_run_id": "run-legacy",
+        }},
+    }
     if source_kind == "harness_documents":
         assert copied["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
         assert persisted_input["input"][DOCUMENT_PLUGIN_INPUT_KEY] == DOCUMENT_PLUGIN_REVISION
