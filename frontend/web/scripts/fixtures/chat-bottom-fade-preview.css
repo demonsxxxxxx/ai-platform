@@ -1,0 +1,45 @@
+/* Acceptance styling only; never imported by the product entry. */
+.fade-acceptance-toolbar {
+  position: fixed;
+  z-index: 9999;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 38px;
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-bg-sidebar);
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+}
+
+.fade-acceptance-toolbar :is(button, a) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding-inline: 9px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: var(--radius-control);
+  color: var(--theme-text);
+}
+
+.fade-acceptance-toolbar button[aria-pressed="true"] {
+  background: var(--theme-primary);
+  color: var(--theme-primary-foreground);
+}
+
+body:has([data-librechat-context-backdrop]) .fade-acceptance-toolbar {
+  visibility: hidden;
+}
+
+body:has(.fade-acceptance-toolbar) #root {
+  --fade-acceptance-toolbar-height: 38px;
+  --app-viewport-height: calc(100dvh - var(--fade-acceptance-toolbar-height));
+  padding-top: var(--fade-acceptance-toolbar-height);
+}
+
+[data-preview-fade-disabled] [data-chat-transcript-fade]::after {
+  display: none;
+}

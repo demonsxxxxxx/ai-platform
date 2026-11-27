@@ -16,6 +16,8 @@ export const LIBRECHAT_SHELL_GEOMETRY = {
   mobileMaxWidth: "min(85vw, 380px)",
 } as const;
 
+export const WORKBENCH_CONTEXT_WIDTH = { default: 320, min: 280, max: 520 } as const;
+
 export const FORBIDDEN_LIBRECHAT_IMPORTS = [
   /librechat-data-provider/,
   /useRecoilState/,
@@ -27,24 +29,23 @@ export const FORBIDDEN_LIBRECHAT_IMPORTS = [
 
 export const libreChatSurface = {
   root: clsx(
-    "librechat-shell-root [--workbench-header-height:3.5rem] flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
+    "librechat-shell-root [--workbench-header-height:3.5rem] flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
   ),
   workspace: clsx(
-    "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
+    "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)]",
   ),
   workspaceWithContext: clsx(
-    "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
-    "xl:grid-cols-[minmax(0,1fr)_var(--context-panel-width,360px)]",
+    "gap-x-4 pe-6 xl:grid-cols-[minmax(0,1fr)_var(--context-panel-width)]",
   ),
   thread: clsx(
     "librechat-shell-thread workbench-thread-frame relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]",
   ),
-  threadBody: "flex min-h-0 flex-1 flex-col px-2 pb-1 pt-2 sm:px-4 sm:pt-3",
+  threadBody: "flex min-h-0 flex-1 flex-col px-2 pt-2 sm:px-4 sm:pt-3",
   threadHeader:
     "flex h-[var(--workbench-header-height)] shrink-0 items-center gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-4 sm:px-5",
-  composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-2 pt-1.5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-6",
+  composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-2 pt-0.5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1.125rem,env(safe-area-inset-bottom))]",
   context: clsx(
-    "flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)]",
+    "relative mt-3 flex max-h-[min(24rem,calc(100%-1.5rem))] min-h-0 min-w-0 flex-col self-start rounded-[var(--radius-block)] border border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] shadow-sm",
   ),
   panel: clsx(
     "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]",

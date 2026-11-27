@@ -127,7 +127,7 @@ export const ChatMessage = memo(function ChatMessage({
       data-message-stopping={message.isStopping || undefined}
       data-outline-anchor="true"
       data-outline-id={createMessageAnchorId(message.id)}
-      className="group w-full scroll-mt-6 rounded-lg py-3 transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
+      className="group w-full scroll-mt-6 rounded-lg py-2 transition-[background-color,box-shadow] duration-300 data-[external-navigation-highlighted=true]:bg-[var(--theme-warning-soft)] data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-[var(--theme-warning-ring)]"
     >
       <AssistantMessageContent>
         <div className="min-h-0 min-w-0">

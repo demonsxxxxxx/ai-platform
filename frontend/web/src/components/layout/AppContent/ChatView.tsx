@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ListTree } from "lucide-react";
+import { ArrowDown, ListTree } from "lucide-react";
 import { ThreadPrimitive, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
@@ -1093,24 +1093,17 @@ export function ChatView({
       )}
 
       {messages.length > 0 && !isNearBottom && (
-        <Button type="text"
-          onClick={scrollToBottom}
-          className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-neutral-900 dark:hover:bg-neutral-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
-          aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            className="w-4 h-4 text-neutral-500 dark:text-neutral-300"
-          >
-            <path
-              fillRule="evenodd"
-              d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </Button>
+        <div className="absolute bottom-full left-1/2 z-50 mb-1 -translate-x-1/2">
+          <Button
+            type="default"
+            shape="circle"
+            size="large"
+            data-chat-return-to-bottom
+            onClick={scrollToBottom}
+            aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
+            icon={ArrowDown}
+          />
+        </div>
       )}
 
       {visibleConnectionStatus && activeConnectionOwner && (
@@ -1208,6 +1201,7 @@ export function ChatView({
       <main
         ref={messagesContainerRef}
         data-chat-transcript
+        data-chat-transcript-fade={messages.length > 0 && !isNearBottom ? "" : undefined}
         data-session-id={sessionId ?? undefined}
         onDragOver={handleProfileDriveDragOver}
         onDrop={handleProfileDriveDrop}

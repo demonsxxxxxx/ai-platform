@@ -82,7 +82,7 @@ test("keeps the mobile footer spacer compact so history loads can settle near th
     getMessageListFooterSpacerClass(true),
     "h-[calc(1.5rem+env(safe-area-inset-bottom))]",
   );
-  assert.equal(getMessageListFooterSpacerClass(false), "h-8");
+  assert.equal(getMessageListFooterSpacerClass(false), "h-4");
 });
 
 test("falls back to the footer sentinel when Virtuoso handles are unavailable", () => {
