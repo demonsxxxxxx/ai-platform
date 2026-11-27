@@ -85,6 +85,12 @@ The platform owns these durable facts:
 
 ## Target lifecycle
 
+[ADR 0017](../adr/0017-session-scoped-sandbox-runtime.md) (accepted direction)
+changes the resource lifetime from one Attempt to one session plus idle
+reclamation, adds an `idle` state, and keeps execution authority per Attempt.
+This section still describes the current per-Attempt behavior until those
+slices land and update it.
+
 The target platform state machine is:
 
 | State | Meaning | Allowed next states |

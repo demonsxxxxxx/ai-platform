@@ -8,6 +8,9 @@ Proposed（待评审）。本 ADR 不改变现行行为；现行合同仍以 [AD
 [Sandbox Runtime](../architecture/sandbox-runtime-control-layer.md) 为准。事实盘点见
 [执行链路状态盘点](../exec-plans/execution-chain-state-inventory.md)。
 
+D1 中"绑定精确 Run/Attempt 的受管沙箱"和 D5 正常完成的"停止并释放资源"由
+[ADR 0017](0017-session-scoped-sandbox-runtime.md) 修订：资源按会话存活，执行权仍按 Attempt。
+
 ## Context
 
 近 60 天修复集中在执行链路，盘点发现：一个沙箱任务跨 6 个状态维度，终态可从 10 条路径到达，

@@ -64,8 +64,16 @@ Accepted rationale is recorded in [ADR 0001](adr/0001-agent-app-revision-authori
 [ADR 0007](adr/0007-fixed-browser-authentication-day.md),
 [ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md),
 [ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md),
-[ADR 0013](adr/0013-redis-stream-only-sse.md), and
-[ADR 0015](adr/0015-agent-autonomy-and-effect-boundaries.md).
+[ADR 0013](adr/0013-redis-stream-only-sse.md),
+[ADR 0015](adr/0015-agent-autonomy-and-effect-boundaries.md),
+[ADR 0017](adr/0017-session-scoped-sandbox-runtime.md), and
+[ADR 0018](adr/0018-postgres-replay-redis-live.md).
+ADR 0017 makes the sandbox resource session-scoped with idle reclamation while
+execution authority stays per Attempt; until its slices land, the Sandbox Runtime
+and Provider continuity contracts remain the current behavior.
+ADR 0018 makes `run_events` the sole public replay authority and keeps Redis
+Stream as the low-latency live path; until its slices land, ADR 0013 and the SSE
+contracts remain the current behavior.
 ADR 0015 supersedes ADR 0001's conversation-wide execution pin: ordinary new
 Runs resolve the current publication, while accepted-Run replay keeps its snapshot.
 ADR 0012 owns the v4 event model; the schema and accepted Assistant-part extension
