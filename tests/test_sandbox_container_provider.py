@@ -4385,6 +4385,115 @@ async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(mon
     assert provider._sandboxes[lease.container_id] is sandbox
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["resource", "attempt", "session", "missing_attempt"])
+async def test_opensandbox_stop_never_substitutes_cached_stop_authority(monkeypatch, mismatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    current = await provider.create_or_reuse(request(), workspace())
+    changes = {
+        "resource": {"container_id": "osb-previous-resource"},
+        "attempt": {"labels": {**current.labels, "ai-platform.attempt_id": "qat-previous"}},
+        "session": {"session_id": "session-previous"},
+        "missing_attempt": {"labels": {k: v for k, v in current.labels.items() if k != "ai-platform.attempt_id"}},
+    }
+    previous = current.model_copy(update=changes[mismatch])
+    sandbox = FakeOpenSandbox.instances[current.container_id]
+    result = await provider.stop(previous, reason="cold_fallback")
+    assert (result.container_id, result.status) == (previous.container_id, "failed")
+    assert not sandbox.killed and not sandbox.closed
+    assert provider._sandboxes[current.container_id] is sandbox
+    assert provider._leases[(current.run_id, "qat-test-attempt")] is current
+    # The rejected command must not prevent cleanup of the true owner.
+    assert (await provider.stop(current, reason="current_owner_cleanup")).status == "stopped"
+    assert sandbox.kill_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("absent", [False, True])
+async def test_opensandbox_stop_completion_preserves_new_tracking(monkeypatch, absent):
+    from opensandbox.exceptions import SandboxApiException
+    from app.runtime.sandbox import container_provider
+
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    original = await provider.create_or_reuse(request(), workspace())
+    old_connection = FakeOpenSandbox.instances[original.container_id]
+    replacement = original.model_copy(update={"container_id": "replacement-resource"})
+    key = (original.run_id, original.labels["ai-platform.attempt_id"])
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def delayed_kill():
+        entered.set()
+        await finish.wait()
+        if absent:
+            raise SandboxApiException("old resource already absent", status_code=404)
+
+    monkeypatch.setattr(old_connection, "kill", delayed_kill)
+    task = asyncio.create_task(provider.stop(original, reason="cold_fallback"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        provider._leases[key] = replacement
+        new_connection = object()
+        provider._sandboxes[replacement.container_id] = new_connection
+    finally:
+        finish.set()
+        result = await asyncio.wait_for(task, timeout=2)
+    assert (result.container_id, result.status) == (original.container_id, "not_found" if absent else "stopped")
+    assert provider._leases[key] is replacement
+    assert provider._sandboxes[replacement.container_id] is new_connection
+    assert original.container_id not in provider._sandboxes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["connect", "reconnected_get_info", "identity", "get_info", "kill"])
+async def test_opensandbox_stop_failure_preserves_new_tracking(monkeypatch, failure_stage):
+    from app.runtime.sandbox import container_provider
+
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    resource_id = lease.container_id
+    key = (lease.run_id, lease.labels["ai-platform.attempt_id"])
+    old_connection = provider._sandboxes[resource_id]
+    replacement = lease.model_copy(deep=True)
+    new_connection = FakeOpenSandbox(sandbox_id=resource_id)
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def fail_late(*_args, **_kwargs):
+        entered.set()
+        await finish.wait()
+        if failure_stage == "identity":
+            return {"id": "wrong-resource"}
+        raise TimeoutError("operation outcome unknown")
+
+    if failure_stage in {"connect", "reconnected_get_info"}:
+        provider._sandboxes.clear()
+    if failure_stage == "connect":
+        monkeypatch.setattr(provider, "_connect", fail_late)
+    else:
+        monkeypatch.setattr(old_connection, "kill" if failure_stage == "kill" else "get_info", fail_late)
+    task = asyncio.create_task(provider.stop(lease, reason="cold_fallback"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        provider._leases[key] = replacement
+        provider._sandboxes[resource_id] = new_connection
+    finally:
+        finish.set()
+        result = await asyncio.wait_for(task, timeout=2)
+
+    assert (result.container_id, result.status) == (resource_id, "failed")
+    assert provider._leases[key] is replacement
+    assert provider._sandboxes[resource_id] is new_connection
+    assert not new_connection.closed and not new_connection.killed
+    assert old_connection.closed is (failure_stage in {"kill", "reconnected_get_info"})
+    assert old_connection.kill_calls == 0
+
+
 def _paged_opensandbox_provider(manager_class):
     from opensandbox.models.sandboxes import SandboxFilter
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
@@ -4785,7 +4894,8 @@ async def test_opensandbox_provider_stop_reads_scope_from_sdk_get_info(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_provider_stop_reconnects_without_health_check(monkeypatch):
+@pytest.mark.parametrize("retain_tracking", [False, True])
+async def test_opensandbox_provider_stop_reconnects_without_health_check(monkeypatch, retain_tracking):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
@@ -4794,12 +4904,19 @@ async def test_opensandbox_provider_stop_reconnects_without_health_check(monkeyp
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
     provider._sandboxes.clear()
+    if not retain_tracking:
+        provider._leases.clear()
+    # A recovered handle is a distinct object. Reconnection is not proof of its scope.
+    recovered = lease.model_copy(deep=True)
+    wrong_scope = recovered.model_copy(update={"session_id": "previous-session"})
+    assert (await provider.stop(wrong_scope, reason="expired")).status == "failed"
+    assert not FakeOpenSandbox.instances[lease.container_id].killed
+    assert [call["sandbox_id"] for call in FakeOpenSandbox.connect_calls] == [lease.container_id]
+    provider._sandboxes.clear()
+    stop_result = await provider.stop(recovered, reason="expired")
 
-    stop_result = await provider.stop(lease, reason="expired")
-
-    assert stop_result.status == "stopped"
-    assert FakeOpenSandbox.connect_calls
-    assert FakeOpenSandbox.connect_calls[0]["sandbox_id"] == "osb-run-a"
+    assert (stop_result.status, stop_result.container_id) == ("stopped", recovered.container_id)
+    assert [call["sandbox_id"] for call in FakeOpenSandbox.connect_calls] == [recovered.container_id] * 2
     assert FakeOpenSandbox.connect_calls[0]["skip_health_check"] is True
     assert FakeOpenSandbox.instances["osb-run-a"].killed is True
 

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +50,7 @@ sandbox_leases = build_sandbox_executor_reconciliation_port()
 @pytest.mark.parametrize("lose_terminal_cas", [False, True])
 @pytest.mark.parametrize("terminal_kind", ["cancelled", "mcp_unknown", "succeeded", "failed", "succeeded_after_cancel"])
 async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_native_admission(
-    executor_acceptance_database, monkeypatch, tmp_path, lose_terminal_cas, terminal_kind, operator_fault=None, with_image=False, lose_checkpoint_claim=False,
+    executor_acceptance_database, monkeypatch, tmp_path, lose_terminal_cas, terminal_kind, operator_fault=None, with_image=False, lose_checkpoint_claim=False, fresh_stop=None,
 ):
     conn = executor_acceptance_database
     configure_context_services()
@@ -90,15 +91,19 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     historical_request = SimpleNamespace(**{key:getattr(payload,key) for key in (
         "tenant_id","workspace_id","user_id","session_id","run_id","attempt_id")},sandbox_mode="ephemeral",browser_enabled=False)
     current_settings, historical_handle, historical_payload = historical_image_lease_binding(historical_request)
+    if fresh_stop is not None:
+        # This producer is current, not the historical-image checkpoint fixture.
+        current_settings.opensandbox_executor_image = historical_payload["requested_image"]
+        current_settings.opensandbox_executor_image_digest = historical_payload["requested_image_digest"]
     monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings",lambda:current_settings)
     lease = await sandbox_leases.create_sandbox_lease(conn, **{key: getattr(payload,key) for key in (
         "tenant_id","workspace_id","user_id","session_id","run_id","attempt_id")}, trace_id="trace-a",
         sandbox_mode="ephemeral",provider="opensandbox",browser_enabled=False,ttl_seconds=1800,
         resource_limits_json={},user_visible_payload_json={},lease_payload_json={**historical_payload,"attempt_id":started["id"],
             "owner_generation":4,"callback_token_id":"cbt:run-a:"+started["id"]+":g4"},
-        runtime_container_id="container-a",runtime_container_name=historical_handle["runtime_container_name"],runtime_executor_url="http://synthetic.invalid",
+        runtime_container_id=historical_payload["container_id"],runtime_container_name=historical_handle["runtime_container_name"],runtime_executor_url="http://synthetic.invalid",
         runtime_workspace_container_path="/workspace",lease_id="runtime-lease")
-    assert reconciler._sandbox_cleanup.container_lease_from_persisted_row(lease) is None
+    assert (reconciler._sandbox_cleanup.container_lease_from_persisted_row(lease) is None) == (fresh_stop is None)
     callback_scope = dict(**scope_map,run_id="run-a",attempt_id=started["id"],provider_session_id=frozen["provider_session_id"],subpath=None)
     await provider_epochs.callback_provider_epoch(conn, **callback_scope,action="load",entries=[],expected_sequence=None)
     entries = [{"type": "user", "uuid": "synthetic-user", "message": {"role": "user", "content": "synthetic input"}},
@@ -200,9 +205,18 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     monkeypatch.setattr(reconciler,"transaction",transaction)
     monkeypatch.setattr(reconciler,"SandboxWorkspaceManager",lambda:manager)
     monkeypatch.setattr(reconciler,"_container_provider_for_lease",lambda _:GoneProvider())
-    await reconciler._record_reconciliation_stage(row,claim_token="claim-a",stage=stage)
+    if fresh_stop is None:
+        await reconciler._record_reconciliation_stage(row,claim_token="claim-a",stage=stage)
+    else:
+        assert "terminal_reconciliation" not in row["lease_payload_json"]
+        monkeypatch.setattr(continuation_composition, "get_settings", lambda: SimpleNamespace(sandbox_workspace_root=manager.root))
+        producer = manager.prepare(request)
+        document = Path(producer.workspace_host_path) / "previous-turn.txt"
+        document.write_text("original turn")
+        document.chmod(0o644)
+        monkeypatch.setattr(reconciler, "_container_provider_for_lease", lambda _: fresh_stop)
     registry = AdapterRegistry({"claude-agent-worker":ClaudeAgentWorkerAdapter()})
-    if operator_fault is None:
+    if operator_fault is None and fresh_stop is None:
         result, provider, handle = await reconciler._collect_workspace_and_convert_result(row,lease_port=build_sandbox_executor_reconciliation_port(),registry=registry,
             claim_token="claim-a",continuation_ports=build_continuation_settlement_ports())
         assert result.executor_payload["continuation_settlement"] == continuation
@@ -224,7 +238,8 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         # Observe the real Context write; do not replace its claim, prefix or generation checks.
         assert kwargs["sdk_settlement"]["status"] == expected_status
         recovery = await original_settle(actual, **kwargs)
-        assert recovery["state"] == expected_recovery and recovery["owner_generation"] == pending_generation
+        assert recovery["state"] == expected_recovery, recovery.get("reason_code")
+        assert recovery["owner_generation"] == pending_generation
         if kwargs.get("validate_only"):
             original_epoch = await (await actual.execute("select state,recovery_json from provider_session_epochs where id=%s",(frozen["provider_epoch_id"],))).fetchone()
             assert original_epoch == {"state":"active","recovery_json":None}
@@ -398,6 +413,14 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
     assert (await (await conn.execute("select count(*) as n from provider_session_append_receipts where epoch_id=%s", (epoch["id"],))).fetchone())["n"] == 1
     persisted = await (await conn.execute("select status,executor_cleanup_status from sandbox_leases where id='runtime-lease'")).fetchone()
     assert persisted == dict(status="released",executor_cleanup_status="finalized")
+    if fresh_stop is not None:
+        detail = await (await conn.execute(
+            "select settlement_phase, source_lease_id from run_attempt_settlements where attempt_id=%s", (started["id"],)
+        )).fetchone()
+        assert detail == {"settlement_phase": "settled", "source_lease_id": lease["id"]}
+        receipt = epoch["recovery_json"]["workspace_receipt"]
+        assert receipt["source_stop_evidence"] == "provider_stopped"
+        assert (manager.root / receipt["source_ref"] / "data" / "previous-turn.txt").read_text() == "original turn"
     if operator_fault is None:
         # A completed checkpoint is no longer claimable and cannot revisit its provider.
         assert await reconciler.reconcile_pending_executor_terminals_once(lease_port=build_sandbox_executor_reconciliation_port(), 
@@ -448,6 +471,32 @@ async def test_cancelled_checkpoint_settles_context_in_real_worker_and_next_nati
         assert fields["recovery_tool_gate"]["state"] == "inspection"
         assert "Bash" not in fields["recovery_tool_gate"]["allowed_tool_identities"]
         assert "Write" not in fields["recovery_tool_gate"]["allowed_tool_identities"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "linux", reason="requires real Linux workspace snapshot IO")
+async def test_successful_fresh_stop_reaches_worker_settlement_and_next_native_admission(
+    executor_acceptance_database, monkeypatch, tmp_path,
+):
+    """Verify fresh host checkpoint and Worker DB commit, with seeded admission and simulated provider I/O."""
+    from app.runtime.sandbox.contracts import StopResult
+
+    calls = []
+
+    class Producer:
+        async def collect_workspace(self, lease, request, workspace, paths):
+            assert not paths
+            calls.append(("collect", lease.container_id))
+
+        async def stop(self, lease, *, reason):
+            calls.append(("stop", lease.container_id))
+            return StopResult(container_id=lease.container_id, status="stopped")
+
+    await test_cancelled_checkpoint_settles_context_in_real_worker_and_next_native_admission(
+        executor_acceptance_database, monkeypatch, tmp_path, lose_terminal_cas=False,
+        terminal_kind="succeeded", fresh_stop=Producer(),
+    )
+    assert calls == [("collect", "container-a"), ("stop", "container-a")]
 
 
 @pytest.mark.asyncio
