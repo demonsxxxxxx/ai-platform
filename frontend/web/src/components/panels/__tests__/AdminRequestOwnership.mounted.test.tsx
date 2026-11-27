@@ -210,6 +210,19 @@ test("Memory old policy and admin reads cannot replace a new agent scope", async
   } finally { await view.close(); }
 });
 
+test("Memory degraded summary does not repeat the admin section error", async () => {
+  const view = await harness(createElement(MemoryPanel), request => {
+    if (request.url.pathname.endsWith("/admin/memory/policies")) throw new Error("synthetic admin read failure");
+    return defaultMemory(request);
+  });
+  try {
+    const page = view.container.querySelector('[data-memory-workbench-shell][data-frontend-governance-state="degraded"]');
+    assert.ok(page);
+    assert.equal(page.textContent?.split("记忆请求暂时无法完成，请重试。").length, 2);
+    assert.equal(button(view.container, "保存策略").disabled, false);
+  } finally { await view.close(); }
+});
+
 test("clearing session releases loading and suppresses the old records result", async () => {
   const records = deferred<Response>();
   const view = await harness(createElement(MemoryPanel), request => request.url.pathname === "/api/ai/memory/records" ? records.promise : defaultMemory(request));

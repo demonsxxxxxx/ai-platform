@@ -611,9 +611,7 @@ export function MemoryPanel() {
             surface="memory-workbench-degraded"
             title={t("memory.workbench.degradedTitle")}
             description={t("memory.workbench.degradedDescription")}
-            details={
-              topLevelProjectionError ? [topLevelProjectionError] : undefined
-            }
+            details={policyError ? [policyError] : undefined}
             className="mb-4 max-w-none text-left"
           />
         ) : null}

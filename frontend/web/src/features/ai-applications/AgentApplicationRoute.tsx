@@ -49,6 +49,10 @@ function reviewStatusColor(status: WordReviewStatus): string | undefined {
   if (["uploading", "queued", "running"].includes(status)) return "warning";
 }
 
+function isWordReviewUploadFailure(task: Pick<WordReviewTask, "status" | "fileId">): boolean {
+  return task.status === "failed" && !task.fileId;
+}
+
 const WORD_REVIEW_API_BASE = (
   import.meta.env?.VITE_WORD_REVIEW_API_TARGET?.trim() || "http://10.56.0.211:8014"
 ).replace(/\/+$/, "");
@@ -717,7 +721,7 @@ function useWordReviewController(workId: string, tenantId: string) {
       const message = error instanceof Error ? error.message : "上传失败，请检查审核服务连接。";
       const patch: Partial<WordReviewTask> = {
         status: "failed",
-        progress: 100,
+        progress: 0,
         error: message,
         latestProgress: "上传失败",
         finishedAt: Date.now(),
@@ -1147,11 +1151,7 @@ function WordReviewApplication() {
     >
       <div className="review-page">
         <ConnectionNotice failed={serviceFailed} message={failureReason} />
-        <section className="review-hero">
-          <div className="hero-copy">
-            <h1>Word文档审核</h1>
-            <p>上传文档由 AI 自动进行审核处理，生成可下载结果</p>
-          </div>
+        <section className="review-hero" aria-label="审核统计">
           <div className="hero-status">
             {reviewStats.map((stat) => (
               <div key={stat.label} className="status-item">
@@ -1213,15 +1213,20 @@ function WordReviewApplication() {
             {tasks.length > 0 && (
               <div className="upload-list">
                 {tasks.map((task) => (
-                  <div key={task.localId} className="upload-item">
+                  <div key={task.localId} className={`upload-item${isWordReviewUploadFailure(task) ? " is-upload-failed" : ""}`}>
                     <FileText size={18} className="upload-item-icon" />
                     <div className="upload-item-info">
-                      <span className="upload-item-name">{task.name}</span>
+                      <span className="upload-item-name" title={task.name}>{task.name}</span>
                       <span className="upload-item-meta">
                         {task.status === "uploading"
                           ? `上传中 ${task.progress ?? 0}%`
-                          : `已上传${formatFileSize(task.size) ? ` · ${formatFileSize(task.size)}` : ""}`}
+                          : isWordReviewUploadFailure(task)
+                            ? "上传失败"
+                            : task.fileId
+                              ? `已上传${formatFileSize(task.size) ? ` · ${formatFileSize(task.size)}` : ""}`
+                              : reviewStatusLabel(task.status)}
                       </span>
+                      {isWordReviewUploadFailure(task) && task.error && <p className="upload-item-error" role="status">{task.error}</p>}
                     </div>
                     <Button type="text"
                       htmlType="button"
@@ -1237,7 +1242,6 @@ function WordReviewApplication() {
               </div>
             )}
 
-            {tasks.find((task) => task.error)?.error && <p className="task-error">{tasks.find((task) => task.error)?.error}</p>}
             <div className="primary-actions">
               <Button type="primary"
                 htmlType="button"
@@ -1303,13 +1307,13 @@ function WordReviewApplication() {
                         <div className="task-content">
                           <div className="task-title-row">
                             <span className="task-name" title={task.name}>{task.name}</span>
-                            <Tag color={reviewStatusColor(task.status)} shape="round" size="small">{reviewStatusLabel(task.status)}</Tag>
+                            <Tag color={reviewStatusColor(task.status)} shape="round" size="small">{isWordReviewUploadFailure(task) ? "上传失败" : reviewStatusLabel(task.status)}</Tag>
                           </div>
-                          <Progress percent={task.progress} size={6} showInfo={false} status={task.status === "completed" ? "success" : ["failed", "timeout"].includes(task.status) ? "exception" : "normal"} aria-label={`${task.name}处理进度`} />
+                          {!isWordReviewUploadFailure(task) && <Progress percent={task.progress} size={6} showInfo={false} status={task.status === "completed" ? "success" : ["failed", "timeout"].includes(task.status) ? "exception" : "normal"} aria-label={`${task.name}处理进度`} />}
                           <div className="task-meta">
                             <span>Word文档审核</span>
                             {formatFileSize(task.size) && <span>{formatFileSize(task.size)}</span>}
-                            <span>{task.latestProgress || reviewStatusLabel(task.status)}</span>
+                            {!isWordReviewUploadFailure(task) && <span>{task.latestProgress || reviewStatusLabel(task.status)}</span>}
                             {task.durationMs > 0 && <span>耗时 {Math.round(task.durationMs / 1000)} 秒</span>}
                           </div>
                           {task.error && <div className="task-error">{task.error}</div>}

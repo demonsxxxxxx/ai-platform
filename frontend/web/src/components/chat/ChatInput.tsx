@@ -9,7 +9,7 @@ import {
   memo,
   type SetStateAction,
 } from "react";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { createPlatformAttachmentAdapter } from "./assistant-ui/attachmentBinding";
 import { submitComposerMessage } from "./assistant-ui/composerSubmission";
 import { usePlatformComposer } from "./assistant-ui/platformComposer";
@@ -138,6 +138,7 @@ export const ChatInput = memo(function ChatInput({
   const ownerKey = `${user?.tenant_id ?? ""}:${user?.id ?? ""}`;
   const aui = useAui();
   const composerRuntime = aui.composer;
+  const nativeAttachments = useAuiState((state) => state.composer.attachments);
   const { register: registerComposer } = usePlatformComposer();
   const localDraftSnapshotRef = useRef<ChatInputDraftSnapshot>({
     value: "",
@@ -309,19 +310,26 @@ export const ChatInput = memo(function ChatInput({
     if (questionMode) return;
     // Profile type/count/size validation remains in the shared upload controller.
     uploadPlatformFiles(files, category, (file) => {
-      const scopeRevision = draftSnapshot.scopeRevision;
-      void composerRuntime.addAttachment(file).then(() => {
-        if (draftSnapshot.scopeRevision !== scopeRevision) return;
-        const added = composerRuntime.getState().attachments.find((item) => item.file === file);
-        const handle = added && getUploadHandle(added.id);
-        void handle?.done.then((result) => {
-          if (result || draftSnapshot.scopeRevision !== scopeRevision) return;
-          const index = composerRuntime.getState().attachments.findIndex((item) => item.id === added?.id);
-          if (index >= 0) void composerRuntime.attachment({ index }).remove();
-        });
-      }).catch(() => { /* The upload controller already reports validation/upload failures. */ });
+      void composerRuntime.addAttachment(file).catch(() => { /* The upload controller already reports validation/upload failures. */ });
     });
-  }, [composerRuntime, draftSnapshot, getUploadHandle, questionMode, uploadPlatformFiles]);
+  }, [composerRuntime, questionMode, uploadPlatformFiles]);
+
+  useEffect(() => {
+    // The native store publishes additions on a React update, not necessarily
+    // before addAttachment resolves. Observe the committed IDs to retire failures.
+    let active = true;
+    const scopeRevision = draftSnapshot.scopeRevision;
+    for (const { id, status } of nativeAttachments) {
+      if (status.type === "complete") continue;
+      void getUploadHandle(id)?.done.then((result) => {
+        if (result || !active || draftSnapshot.scopeRevision !== scopeRevision) return;
+        if (composerRuntime.getState().attachments.some((item) => item.id === id)) {
+          void composerRuntime.attachment({ id }).remove();
+        }
+      });
+    }
+    return () => { active = false; };
+  }, [composerRuntime, draftSnapshot, getUploadHandle, nativeAttachments]);
 
   const removeAttachment = useCallback((attachment: MessageAttachment) => {
     const handle = getUploadHandle(attachment.id);
